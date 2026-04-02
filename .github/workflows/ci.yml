@@ -53,18 +53,27 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/apt-cache
-          key: apt-wails-${{ runner.os }}
+          key: apt-wails-${{ runner.os }}-noble
 
       - name: Install Linux deps
         run: |
+          mkdir -p ~/apt-cache/partial
           sudo apt-get update
           sudo apt-get install -y -o dir::cache::archives="$HOME/apt-cache" libgtk-3-dev libwebkit2gtk-4.1-dev
 
+      - name: Cache wails binary
+        id: cache-wails
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/go/bin/wails
+          key: wails-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
       - name: Install wails
+        if: steps.cache-wails.outputs.cache-hit != 'true'
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Lint frontend
         run: cd frontend && npm ci && npx oxlint .
 
       - name: Build
-        run: wails build -tags webkit2_41
+        run: ~/go/bin/wails build -tags webkit2_41
