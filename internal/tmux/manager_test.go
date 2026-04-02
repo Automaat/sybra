@@ -64,6 +64,15 @@ func TestListSessions(t *testing.T) {
 	_ = sessions
 }
 
+func TestSendKeysNonexistent(t *testing.T) {
+	requireTmux(t)
+	m := NewManager()
+	err := m.SendKeys("synapse-nonexistent-test-xyz", "echo hello")
+	if err == nil {
+		t.Error("expected error for nonexistent session")
+	}
+}
+
 func TestCreateAndCleanupSession(t *testing.T) {
 	requireTmux(t)
 	m := NewManager()

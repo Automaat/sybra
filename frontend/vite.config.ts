@@ -7,6 +7,9 @@ export default defineConfig({
     tailwindcss(),
     svelte(),
   ],
+  resolve: {
+    conditions: ['browser'],
+  },
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],

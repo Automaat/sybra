@@ -247,6 +247,37 @@ func TestReadClaudeSessions(t *testing.T) {
 	}
 }
 
+func TestInferStateDirect(t *testing.T) {
+	// Empty cwd/sessionID → idle
+	if got := inferState("", ""); got != StateIdle {
+		t.Errorf("inferState empty = %q, want %q", got, StateIdle)
+	}
+
+	// Nonexistent session file → idle
+	if got := inferState("/nonexistent/path", "no-session"); got != StateIdle {
+		t.Errorf("inferState nonexistent = %q, want %q", got, StateIdle)
+	}
+}
+
+func TestReadSessionStateEmpty(t *testing.T) {
+	ss := readSessionState("", "")
+	if ss.msgType != "" {
+		t.Errorf("msgType = %q, want empty", ss.msgType)
+	}
+
+	ss = readSessionState("/some/path", "")
+	if ss.msgType != "" {
+		t.Errorf("msgType = %q, want empty", ss.msgType)
+	}
+}
+
+func TestDiscoverAgentsEmpty(t *testing.T) {
+	m, _ := newTestManager(t)
+	agents := m.DiscoverAgents()
+	// May return nil or empty depending on system state
+	_ = agents
+}
+
 func TestProcessAlive(t *testing.T) {
 	// Current process should be alive
 	if !processAlive(os.Getpid()) {
