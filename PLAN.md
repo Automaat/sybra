@@ -139,7 +139,7 @@ func (a *App) GetAgentOutput(agentID string) []agent.StreamEvent
 
 ### Phase 1 — Scaffold [DONE]
 - [x] `wails init -n synapse -t svelte-ts`
-- [ ] Install Skeleton UI + Vox theming
+- [x] Svelte 5 + Tailwind 4 + Skeleton v4 + Vox theme
 - [x] Create Go package dirs, define all model structs
 - [x] Wire app.go with bound methods
 - [x] golangci-lint v2 strict config (gocritic, nilerr, nilnesserr, nilnil, nolintlint, modernize)
