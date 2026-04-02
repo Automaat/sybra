@@ -1,6 +1,6 @@
 [tools]
 go = "1.26.1"
-node = "22"
+node = "24"
 
 [tasks.dev]
 run = "wails dev"
