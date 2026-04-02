@@ -1,0 +1,15 @@
+[tools]
+go = "1.26.1"
+node = "22"
+
+[tasks.dev]
+run = "wails dev"
+description = "Run wails dev server"
+
+[tasks.build]
+run = "wails build"
+description = "Build production binary"
+
+[tasks.lint]
+run = ["golangci-lint run ./...", "cd frontend && npx oxlint ."]
+description = "Run all linters"

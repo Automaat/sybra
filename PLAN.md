@@ -137,12 +137,15 @@ func (a *App) GetAgentOutput(agentID string) []agent.StreamEvent
 
 ## Implementation Phases
 
-### Phase 1 — Scaffold
-- `wails init -n synapse -t svelte-ts`
-- Install Skeleton UI: `npm i @skeletonlabs/skeleton @skeletonlabs/tw-plugin`
-- Create Go package dirs, define all model structs
-- Wire app.go with stub methods
-- Verify `wails dev` works
+### Phase 1 — Scaffold [DONE]
+- [x] `wails init -n synapse -t svelte-ts`
+- [x] Svelte 5 + Tailwind 4 + Skeleton v4 + Vox theme
+- [x] Create Go package dirs, define all model structs
+- [x] Wire app.go with bound methods
+- [x] golangci-lint v2 strict config (gocritic, nilerr, nilnesserr, nilnil, nolintlint, modernize)
+- [x] oxlint for frontend linting
+- [x] GitHub Actions CI (lint-go, lint-frontend, build)
+- [x] mise.toml (Go 1.26.1, Node 22, dev/build/lint tasks)
 
 ### Phase 2 — Task System
 - `task/parser.go`: split frontmatter + body, marshal/unmarshal
