@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -107,8 +108,7 @@ func processAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 checks if process exists without actually signaling it
-	return p.Signal(os.Signal(nil)) == nil
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 func agentName(s claudeSession) string {
