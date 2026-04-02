@@ -48,7 +48,7 @@
     </div>
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
       <span class="text-xs font-medium text-surface-500">Total Cost</span>
-      <p class="mt-1 text-2xl font-bold">${totalCost.toFixed(4)}</p>
+      <p class="mt-1 text-2xl font-bold">${totalCost.toFixed(2)}</p>
     </div>
   </div>
 

@@ -63,7 +63,7 @@
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">task: {a.taskId}</span>
     {/if}
     {#if a.costUsd > 0}
-      <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(4)}</span>
+      <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(2)}</span>
     {/if}
     <span class="ml-auto opacity-60">{timeAgo(a.startedAt)}</span>
   </div>
