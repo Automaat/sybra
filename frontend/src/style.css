@@ -14,6 +14,6 @@ html, body {
   height: 100%;
 }
 
-[data-scope='radio-group'][data-part='control'] {
-  flex-direction: row;
+[data-scope='radio-group'] [data-part='control'] {
+  flex-direction: row !important;
 }

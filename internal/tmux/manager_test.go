@@ -1,8 +1,16 @@
 package tmux
 
 import (
+	"os/exec"
 	"testing"
 )
+
+func requireTmux(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+}
 
 func TestNewManager(t *testing.T) {
 	m := NewManager()
@@ -12,6 +20,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestSessionExistsNonexistent(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
 	if m.SessionExists("synapse-nonexistent-test-xyz") {
 		t.Error("nonexistent session should return false")
@@ -19,6 +28,7 @@ func TestSessionExistsNonexistent(t *testing.T) {
 }
 
 func TestKillSessionNonexistent(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
 	err := m.KillSession("synapse-nonexistent-test-xyz")
 	if err == nil {
@@ -27,15 +37,16 @@ func TestKillSessionNonexistent(t *testing.T) {
 }
 
 func TestCapturePaneNonexistent(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
 	_, err := m.CapturePaneOutput("synapse-nonexistent-test-xyz")
-	if err != nil {
-		return // expected
+	if err == nil {
+		t.Error("expected error for nonexistent session")
 	}
-	t.Error("expected error for nonexistent session")
 }
 
 func TestPaneCommandNonexistent(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
 	_, err := m.PaneCommand("synapse-nonexistent-test-xyz")
 	if err == nil {
@@ -44,22 +55,20 @@ func TestPaneCommandNonexistent(t *testing.T) {
 }
 
 func TestListSessions(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
-	// Should not error even if tmux server isn't running
 	sessions, err := m.ListSessions()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// sessions may be nil/empty or have entries — both valid
 	_ = sessions
 }
 
 func TestCreateAndCleanupSession(t *testing.T) {
+	requireTmux(t)
 	m := NewManager()
 
 	name := "synapse-test-unit"
-
-	// Cleanup in case previous test run left a session
 	_ = m.KillSession(name)
 
 	err := m.CreateSession(name, "sleep 60")
