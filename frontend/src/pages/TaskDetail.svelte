@@ -1,18 +1,25 @@
 <script lang="ts">
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
-  import type { task } from '../../wailsjs/go/models.js'
+  import type { agent, task } from '../../wailsjs/go/models.js'
+  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { taskStore } from '../stores/tasks.svelte.js'
+  import { agentStore } from '../stores/agents.svelte.js'
   import StatusBadge from '../components/StatusBadge.svelte'
+  import StreamOutput from '../components/StreamOutput.svelte'
 
   interface Props {
     taskId: string
     onback: () => void
+    onviewagent: (agentId: string) => void
   }
 
-  const { taskId, onback }: Props = $props()
+  const { taskId, onback, onviewagent }: Props = $props()
 
   let t = $state<task.Task | null>(null)
   let error = $state('')
+  let prompt = $state('')
+  let starting = $state(false)
+  let runningAgent = $state<agent.Agent | null>(null)
 
   const statusOptions = [
     { value: 'todo', label: 'Todo' },
@@ -23,6 +30,19 @@
 
   $effect(() => {
     loadTask()
+    const existing = agentStore.byTask(taskId)
+    if (existing && existing.state === 'running') {
+      runningAgent = existing
+    }
+  })
+
+  $effect(() => {
+    if (!runningAgent) return
+    const unsub = EventsOn(`agent:state:${runningAgent.id}`, (data: agent.Agent) => {
+      runningAgent = data
+      agentStore.updateAgent(data.id, data)
+    })
+    return () => { unsub() }
   })
 
   async function loadTask() {
@@ -39,6 +59,20 @@
       t = await taskStore.update(taskId, { status: value })
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function startAgent() {
+    if (!t || !prompt.trim()) return
+    starting = true
+    error = ''
+    try {
+      runningAgent = await agentStore.start(taskId, t.agentMode, prompt.trim())
+      prompt = ''
+    } catch (e) {
+      error = String(e)
+    } finally {
+      starting = false
     }
   }
 
@@ -127,6 +161,60 @@
         <span>Created: {formatDate(t.createdAt)}</span>
         <span>Updated: {formatDate(t.updatedAt)}</span>
       </div>
+
+      <hr class="border-surface-300 dark:border-surface-600" />
+
+      {#if runningAgent}
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-surface-500">Agent</span>
+              <button
+                type="button"
+                class="font-mono text-sm text-primary-500 hover:underline"
+                onclick={() => onviewagent(runningAgent!.id)}
+              >
+                {runningAgent.id}
+              </button>
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium
+                {runningAgent.state === 'running' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' : 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
+                {#if runningAgent.state === 'running'}
+                  <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success-500"></span>
+                {/if}
+                {runningAgent.state}
+              </span>
+            </div>
+            {#if runningAgent.state === 'running'}
+              <button
+                type="button"
+                class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600"
+                onclick={() => agentStore.stop(runningAgent!.id)}
+              >
+                Stop
+              </button>
+            {/if}
+          </div>
+          <StreamOutput agentId={runningAgent.id} />
+        </div>
+      {:else}
+        <div class="flex flex-col gap-3">
+          <span class="text-sm font-medium text-surface-500">Run Agent</span>
+          <textarea
+            class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
+            rows="3"
+            placeholder="Enter prompt for the agent..."
+            bind:value={prompt}
+          ></textarea>
+          <button
+            type="button"
+            class="w-fit rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+            onclick={startAgent}
+            disabled={starting || !prompt.trim()}
+          >
+            {starting ? 'Starting...' : `Start ${t.agentMode} agent`}
+          </button>
+        </div>
+      {/if}
     </div>
   {:else if !error}
     <p class="text-sm opacity-60">Loading...</p>

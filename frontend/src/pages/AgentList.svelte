@@ -1,0 +1,51 @@
+<script lang="ts">
+  import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
+  import { agentStore } from '../stores/agents.svelte.js'
+  import AgentCard from '../components/AgentCard.svelte'
+
+  interface Props {
+    onselect: (id: string) => void
+  }
+
+  const { onselect }: Props = $props()
+
+  let filter = $state('all')
+
+  const states = [
+    { value: 'all', label: 'All' },
+    { value: 'running', label: 'Running' },
+    { value: 'stopped', label: 'Stopped' },
+    { value: 'idle', label: 'Idle' },
+  ]
+
+  const filtered = $derived(agentStore.byState(filter))
+</script>
+
+<div class="flex flex-col gap-4 p-6">
+  <SegmentedControl value={filter} onValueChange={(details) => (filter = details.value ?? 'all')}>
+    <SegmentedControl.Indicator />
+    {#each states as s}
+      <SegmentedControl.Item value={s.value}>
+        <SegmentedControl.ItemText>{s.label}</SegmentedControl.ItemText>
+        <SegmentedControl.ItemHiddenInput />
+      </SegmentedControl.Item>
+    {/each}
+  </SegmentedControl>
+
+  {#if agentStore.loading}
+    <p class="text-center text-sm opacity-60">Loading agents...</p>
+  {:else if agentStore.error}
+    <p class="text-center text-sm text-error-500">{agentStore.error}</p>
+  {:else if filtered.length === 0}
+    <div class="flex flex-col items-center gap-2 py-16 opacity-50">
+      <p class="text-lg">No agents</p>
+      <p class="text-sm">Start an agent from a task to see it here</p>
+    </div>
+  {:else}
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {#each filtered as a (a.id)}
+        <AgentCard agent={a} onclick={() => onselect(a.id)} />
+      {/each}
+    </div>
+  {/if}
+</div>
