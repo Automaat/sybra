@@ -132,11 +132,11 @@ jobs:
         run: cd frontend && npx playwright test --reporter=github
 
       - name: Dump wails dev log
-        if: failure()
+        if: always()
         run: cat /tmp/wails-dev.log || true
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
+        if: always()
         with:
           name: playwright-report
           path: frontend/test-results/

@@ -24,6 +24,11 @@ async function clickSegment(page: Page, scope: 'main' | 'dialog', label: string)
   await container.getByRole('radio', { name: label, exact: true }).first().click()
 }
 
+test.beforeEach(async ({ page }) => {
+  page.on('console', (msg) => console.log(`[browser ${msg.type()}] ${msg.text()}`))
+  page.on('pageerror', (err) => console.log(`[browser error] ${err.message}`))
+})
+
 test.afterAll(async () => {
   await cleanupCreatedTasks()
 })
