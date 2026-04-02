@@ -96,7 +96,7 @@ describe('AgentDetail', () => {
       expect(screen.getByText('headless')).toBeDefined()
       expect(screen.getByText('external')).toBeDefined()
       expect(screen.getByText('task-1')).toBeDefined()
-      expect(screen.getByText('$0.5678')).toBeDefined()
+      expect(screen.getByText('$0.57')).toBeDefined()
       expect(screen.getByText('12345')).toBeDefined()
       expect(screen.getByText('sess-123')).toBeDefined()
       expect(screen.getByText('claude -p test')).toBeDefined()

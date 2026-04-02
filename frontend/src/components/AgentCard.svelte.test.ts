@@ -83,7 +83,7 @@ describe('AgentCard', () => {
 
   it('shows cost when costUsd > 0', () => {
     render(AgentCard, { props: { agent: makeAgent({ costUsd: 0.1234 }), onclick: () => {} } })
-    expect(screen.getByText('$0.1234')).toBeDefined()
+    expect(screen.getByText('$0.12')).toBeDefined()
   })
 
   it('does not show cost when costUsd is 0', () => {
