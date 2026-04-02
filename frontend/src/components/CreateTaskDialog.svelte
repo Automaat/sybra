@@ -69,15 +69,17 @@
         <div class="flex flex-col gap-1">
           <span class="text-sm font-medium">Agent Mode</span>
           <SegmentedControl value={mode} onValueChange={(details) => (mode = details.value ?? 'headless')}>
-            <SegmentedControl.Indicator />
-            <SegmentedControl.Item value="headless">
-              <SegmentedControl.ItemText>Headless</SegmentedControl.ItemText>
-              <SegmentedControl.ItemHiddenInput />
-            </SegmentedControl.Item>
-            <SegmentedControl.Item value="interactive">
-              <SegmentedControl.ItemText>Interactive</SegmentedControl.ItemText>
-              <SegmentedControl.ItemHiddenInput />
-            </SegmentedControl.Item>
+            <SegmentedControl.Control>
+              <SegmentedControl.Indicator />
+              <SegmentedControl.Item value="headless">
+                <SegmentedControl.ItemText>Headless</SegmentedControl.ItemText>
+                <SegmentedControl.ItemHiddenInput />
+              </SegmentedControl.Item>
+              <SegmentedControl.Item value="interactive">
+                <SegmentedControl.ItemText>Interactive</SegmentedControl.ItemText>
+                <SegmentedControl.ItemHiddenInput />
+              </SegmentedControl.Item>
+            </SegmentedControl.Control>
           </SegmentedControl>
         </div>
 
