@@ -28,6 +28,7 @@
   $effect(() => {
     taskStore.load()
     agentStore.load()
+    agentStore.startPolling()
 
     const unsub1 = EventsOn('task:created', () => taskStore.load())
     const unsub2 = EventsOn('task:updated', () => taskStore.load())
@@ -37,6 +38,7 @@
       unsub1()
       unsub2()
       unsub3()
+      agentStore.stopPolling()
     }
   })
 </script>

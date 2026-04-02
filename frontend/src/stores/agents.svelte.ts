@@ -6,6 +6,7 @@ class AgentStore {
   outputs = $state<Map<string, agent.StreamEvent[]>>(new Map())
   loading = $state(false)
   error = $state('')
+  private pollTimer: ReturnType<typeof setInterval> | null = null
 
   get list(): agent.Agent[] {
     return [...this.agents.values()].sort((a, b) => {
@@ -71,6 +72,18 @@ class AgentStore {
 
   updateAgent(agentID: string, data: agent.Agent): void {
     this.agents.set(agentID, data)
+  }
+
+  startPolling(): void {
+    this.stopPolling()
+    this.pollTimer = setInterval(() => this.load(), 5000)
+  }
+
+  stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer)
+      this.pollTimer = null
+    }
   }
 }
 
