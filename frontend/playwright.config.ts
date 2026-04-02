@@ -19,7 +19,7 @@ export default defineConfig({
   webServer: {
     command: 'cd .. && wails dev',
     url: 'http://localhost:34115',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: true,
     timeout: 60_000,
   },
 })
