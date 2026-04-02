@@ -1,0 +1,78 @@
+package watcher
+
+import (
+	"context"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+)
+
+type EmitFunc func(event string, data any)
+
+type Watcher struct {
+	dir  string
+	emit EmitFunc
+}
+
+func New(dir string, emit EmitFunc) *Watcher {
+	return &Watcher{dir: dir, emit: emit}
+}
+
+func (w *Watcher) Start(ctx context.Context) error {
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+
+	if err := fw.Add(w.dir); err != nil {
+		_ = fw.Close()
+		return err
+	}
+
+	go w.loop(ctx, fw)
+	return nil
+}
+
+func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
+	defer func() { _ = fw.Close() }()
+
+	debounce := make(map[string]time.Time)
+	const debounceInterval = 200 * time.Millisecond
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-fw.Events:
+			if !ok {
+				return
+			}
+			if !strings.HasSuffix(event.Name, ".md") {
+				continue
+			}
+
+			now := time.Now()
+			if last, exists := debounce[event.Name]; exists && now.Sub(last) < debounceInterval {
+				continue
+			}
+			debounce[event.Name] = now
+
+			switch {
+			case event.Has(fsnotify.Create):
+				w.emit("task:created", event.Name)
+			case event.Has(fsnotify.Write):
+				w.emit("task:updated", event.Name)
+			case event.Has(fsnotify.Remove):
+				w.emit("task:deleted", event.Name)
+			}
+
+		case err, ok := <-fw.Errors:
+			if !ok {
+				return
+			}
+			log.Printf("watcher error: %v", err)
+		}
+	}
+}
