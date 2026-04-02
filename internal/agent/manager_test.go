@@ -166,6 +166,28 @@ func TestAgentOutput(t *testing.T) {
 	}
 }
 
+func TestCapturePaneNotFound(t *testing.T) {
+	m, _ := newTestManager(t)
+	_, err := m.CapturePane("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent agent")
+	}
+}
+
+func TestCapturePaneNoTmuxSession(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a, err := m.StartAgent("task-1", "headless", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.CapturePane(a.ID)
+	if err == nil {
+		t.Fatal("expected error for agent without tmux session")
+	}
+}
+
 func TestShutdown(t *testing.T) {
 	m, _ := newTestManager(t)
 
