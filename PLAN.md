@@ -147,12 +147,14 @@ func (a *App) GetAgentOutput(agentID string) []agent.StreamEvent
 - [x] GitHub Actions CI (lint-go, lint-frontend, build)
 - [x] mise.toml (Go 1.26.1, Node 22, dev/build/lint tasks)
 
-### Phase 2 — Task System
-- `task/parser.go`: split frontmatter + body, marshal/unmarshal
-- `task/store.go`: List/Get/Create/Update against tasks/ dir
-- Frontend: TaskList + TaskDetail pages with Skeleton components
-- Svelte stores for reactive task state
-- Create sample .md files
+### Phase 2 — Task System [DONE]
+- [x] `task/parser.go`: split frontmatter + body, marshal/unmarshal
+- [x] `task/store.go`: List/Get/Create/Update against tasks/ dir
+- [x] Frontend: TaskList + TaskDetail pages with Skeleton components
+- [x] Svelte stores for reactive task state
+- [x] Create sample .md files
+- [x] Playwright e2e tests (14 tests against wails dev on :34115)
+- [x] GitHub Actions e2e job (macos-15, wails dev + Playwright)
 
 ### Phase 3 — Headless Agent
 - `agent/runner_headless.go`: spawn claude -p, parse NDJSON stream

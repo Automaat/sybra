@@ -13,5 +13,9 @@ frontend/node_modules/
 .DS_Store
 Thumbs.db
 
+# Test
+frontend/test-results/
+frontend/playwright-report/
+
 # Binary
 synapse
