@@ -146,7 +146,7 @@
                   rows="2"
                   placeholder="Tell the agent what to do..."
                   bind:value={promptText}
-                  onkeydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitPrompt(t.id) }}
+                  onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitPrompt(t.id) } }}
                 ></textarea>
                 <button
                   type="button"
