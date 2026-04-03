@@ -1,7 +1,7 @@
 ---
 id: db0001
 title: Design database migration strategy
-status: blocked
+status: in-review
 agent_mode: headless
 allowed_tools: []
 tags: [backend, database]

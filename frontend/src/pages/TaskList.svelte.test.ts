@@ -12,19 +12,6 @@ vi.mock('../stores/tasks.svelte.js', () => ({
   },
 }))
 
-vi.mock('@skeletonlabs/skeleton-svelte', () => {
-  return {
-    SegmentedControl: Object.assign(() => {}, {
-      Control: () => {},
-      Indicator: () => {},
-      Item: Object.assign(() => {}, {
-        ItemText: () => {},
-        ItemHiddenInput: () => {},
-      }),
-    }),
-  }
-})
-
 const { taskStore } = await import('../stores/tasks.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
@@ -63,24 +50,28 @@ describe('TaskList', () => {
     expect(screen.getByText('Failed to load')).toBeDefined()
   })
 
-  it('shows empty state when no tasks', () => {
+  it('renders all four status columns', () => {
     mockByStatus.mockReturnValue([])
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('No tasks')).toBeDefined()
-    expect(screen.getByText('Create a task to get started')).toBeDefined()
+    expect(screen.getByText('Todo')).toBeDefined()
+    expect(screen.getByText('In Progress')).toBeDefined()
+    expect(screen.getByText('In Review')).toBeDefined()
+    expect(screen.getByText('Done')).toBeDefined()
   })
 
-  it('renders task cards when tasks exist', () => {
+  it('calls byStatus for each column status', () => {
+    mockByStatus.mockReturnValue([])
+    render(TaskList, { props: { onselect: vi.fn() } })
+    expect(mockByStatus).toHaveBeenCalledWith('todo')
+    expect(mockByStatus).toHaveBeenCalledWith('in-progress')
+    expect(mockByStatus).toHaveBeenCalledWith('in-review')
+    expect(mockByStatus).toHaveBeenCalledWith('done')
+  })
+
+  it('renders task cards in columns', () => {
     const tasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
     mockByStatus.mockReturnValue(tasks)
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('First Task')).toBeDefined()
-    expect(screen.getByText('Second Task')).toBeDefined()
-  })
-
-  it('calls byStatus with default "all" filter', () => {
-    mockByStatus.mockReturnValue([])
-    render(TaskList, { props: { onselect: vi.fn() } })
-    expect(mockByStatus).toHaveBeenCalledWith('all')
+    expect(screen.getAllByText('First Task')).toHaveLength(4)
   })
 })

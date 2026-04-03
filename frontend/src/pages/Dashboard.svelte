@@ -17,8 +17,8 @@
   const tasksByStatus = $derived({
     todo: taskStore.byStatus('todo').length,
     'in-progress': taskStore.byStatus('in-progress').length,
+    'in-review': taskStore.byStatus('in-review').length,
     done: taskStore.byStatus('done').length,
-    blocked: taskStore.byStatus('blocked').length,
   })
   const totalTasks = $derived(taskStore.list.length)
 
@@ -65,8 +65,8 @@
       <span class="rounded bg-success-200 px-2.5 py-1 text-xs text-success-800 dark:bg-success-700 dark:text-success-200">
         Done <strong>{tasksByStatus.done}</strong>
       </span>
-      <span class="rounded bg-error-200 px-2.5 py-1 text-xs text-error-800 dark:bg-error-700 dark:text-error-200">
-        Blocked <strong>{tasksByStatus.blocked}</strong>
+      <span class="rounded bg-warning-200 px-2.5 py-1 text-xs text-warning-800 dark:bg-warning-700 dark:text-warning-200">
+        In Review <strong>{tasksByStatus['in-review']}</strong>
       </span>
     </div>
   </div>
@@ -98,7 +98,7 @@
             <span class="rounded px-2 py-0.5 text-xs
               {t.status === 'done' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
                t.status === 'in-progress' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
-               t.status === 'blocked' ? 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200' :
+               t.status === 'in-review' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
                'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
               {t.status}
             </span>

@@ -180,7 +180,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	original := Task{
 		ID:        "rt1",
 		Title:     "Round trip",
-		Status:    StatusBlocked,
+		Status:    StatusInReview,
 		AgentMode: "interactive",
 		Tags:      []string{"test", "ci"},
 		Body:      "## Steps\n- Step one\n- Step two",

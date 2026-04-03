@@ -29,8 +29,8 @@
   const statusOptions = [
     { value: 'todo', label: 'Todo' },
     { value: 'in-progress', label: 'In Progress' },
+    { value: 'in-review', label: 'In Review' },
     { value: 'done', label: 'Done' },
-    { value: 'blocked', label: 'Blocked' },
   ]
 
   $effect(() => {

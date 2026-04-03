@@ -43,12 +43,13 @@ test.describe('Task List', () => {
     await expect(page.getByText('Design database migration strategy')).toBeVisible()
   })
 
-  test('shows status badges with correct labels', async ({ page }) => {
+  test('shows all kanban columns', async ({ page }) => {
     await goToTaskList(page)
 
-    await expect(page.getByText('Todo').first()).toBeVisible()
-    await expect(page.getByText('In Progress').first()).toBeVisible()
-    await expect(page.getByText('Blocked').first()).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Todo' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'In Progress' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'In Review' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Done' })).toBeVisible()
   })
 
   test('shows app bar with Tasks title and New Task button', async ({ page }) => {
@@ -58,35 +59,20 @@ test.describe('Task List', () => {
     await expect(page.getByText('+ New Task')).toBeVisible()
   })
 
-  test('filters tasks by status', async ({ page }) => {
+  test('displays tasks in correct kanban columns', async ({ page }) => {
     await goToTaskList(page)
 
-    // Click "Todo" filter
-    await clickSegment(page, 'main', 'Todo')
-    await expect(page.getByText('Implement auth middleware')).toBeVisible()
-    await expect(page.getByText('Write API integration tests')).not.toBeVisible()
-    await expect(page.getByText('Design database migration strategy')).not.toBeVisible()
+    // Todo column contains auth middleware task
+    const todoCol = page.locator('div', { has: page.getByRole('heading', { name: 'Todo' }) })
+    await expect(todoCol.getByText('Implement auth middleware')).toBeVisible()
 
-    // Click "Blocked" filter
-    await clickSegment(page, 'main', 'Blocked')
-    await expect(page.getByText('Design database migration strategy')).toBeVisible()
-    await expect(page.getByText('Implement auth middleware')).not.toBeVisible()
+    // In Progress column contains API tests task
+    const inProgressCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Progress' }) })
+    await expect(inProgressCol.getByText('Write API integration tests')).toBeVisible()
 
-    // Click "All" to reset
-    await clickSegment(page, 'main', 'All')
-    await expect(page.getByText('Implement auth middleware')).toBeVisible()
-    await expect(page.getByText('Write API integration tests')).toBeVisible()
-    await expect(page.getByText('Design database migration strategy')).toBeVisible()
-  })
-
-  test('shows empty state when filter matches nothing', async ({ page }) => {
-    await goToTaskList(page)
-
-    // "Done" filter — no sample tasks have done status
-    await clickSegment(page, 'main', 'Done')
-
-    await expect(page.getByText('No tasks')).toBeVisible()
-    await expect(page.getByText('Create a task to get started')).toBeVisible()
+    // In Review column contains db migration task
+    const inReviewCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Review' }) })
+    await expect(inReviewCol.getByText('Design database migration strategy')).toBeVisible()
   })
 })
 
@@ -150,15 +136,15 @@ test.describe('Task Detail', () => {
     // Wait for backend update
     await page.waitForTimeout(500)
 
-    // Go back and verify the list reflects the change
+    // Go back and verify the task moved to In Progress column
     await page.getByText('Back to tasks').click()
     await waitForTasks(page)
 
-    const card = page.locator('button', { hasText: 'Implement auth middleware' })
-    await expect(card.getByText('In Progress')).toBeVisible()
+    const inProgressCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Progress' }) })
+    await expect(inProgressCol.getByText('Implement auth middleware')).toBeVisible()
 
     // Restore original status
-    await card.click()
+    await page.getByText('Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await clickSegment(page, 'main', 'Todo')
   })

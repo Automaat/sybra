@@ -7,8 +7,8 @@ type Status string
 const (
 	StatusTodo       Status = "todo"
 	StatusInProgress Status = "in-progress"
+	StatusInReview   Status = "in-review"
 	StatusDone       Status = "done"
-	StatusBlocked    Status = "blocked"
 )
 
 type Task struct {
