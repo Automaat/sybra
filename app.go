@@ -1183,12 +1183,16 @@ func (a *App) handlePRIssue(issue github.PRIssue) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
 		prompt = fmt.Sprintf(
-			"PR #%d on %s has merge conflicts on branch `%s`.\n\n"+
-				"1. Fetch latest from base branch\n"+
-				"2. Rebase or merge to resolve conflicts\n"+
-				"3. Push the resolved branch\n\n"+
-				"Use `git` commands. Do NOT force-push.",
-			issue.PR.Number, issue.PR.Repository, issue.PR.HeadRefName,
+			"Fix merge conflicts on branch `%s` (PR #%d). "+
+				"Do NOT investigate — go straight to fixing.\n\n"+
+				"```bash\n"+
+				"git fetch origin main\n"+
+				"git rebase origin/main\n"+
+				"# resolve each conflict, git add, git rebase --continue\n"+
+				"git push --force-with-lease\n"+
+				"```\n\n"+
+				"Resolve conflicts to keep BOTH sides' changes. Push when done.",
+			issue.PR.HeadRefName, issue.PR.Number,
 		)
 		a.logAudit(audit.EventPRConflictDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -1196,13 +1200,14 @@ func (a *App) handlePRIssue(issue github.PRIssue) {
 
 	case github.PRIssueCIFailure:
 		prompt = fmt.Sprintf(
-			"PR #%d on %s has failing CI on branch `%s`.\n\n"+
-				"1. Run `gh run list --branch %s --limit 5` to find failed run\n"+
-				"2. Run `gh run view <run-id> --log-failed` for details\n"+
-				"3. Fix the failing tests or code\n"+
-				"4. Commit and push the fix\n\n"+
-				"Only fix the CI failure, no unrelated changes.",
-			issue.PR.Number, issue.PR.Repository, issue.PR.HeadRefName,
+			"Fix failing CI on branch `%s` (PR #%d). "+
+				"Do NOT investigate git state — go straight to the failure.\n\n"+
+				"```bash\n"+
+				"gh run list --branch %s --limit 3\n"+
+				"gh run view <FAILED_RUN_ID> --log-failed\n"+
+				"```\n\n"+
+				"Read the failure, fix the code, commit and push. No unrelated changes.",
+			issue.PR.HeadRefName, issue.PR.Number,
 			issue.PR.HeadRefName,
 		)
 		a.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
