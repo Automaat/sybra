@@ -78,6 +78,79 @@ export namespace agent {
 
 }
 
+export namespace github {
+	
+	export class PullRequest {
+	    number: number;
+	    title: string;
+	    url: string;
+	    repository: string;
+	    repoName: string;
+	    author: string;
+	    isDraft: boolean;
+	    labels: string[];
+	    ciStatus: string;
+	    reviewDecision: string;
+	    unresolvedCount: number;
+	    createdAt: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PullRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.repository = source["repository"];
+	        this.repoName = source["repoName"];
+	        this.author = source["author"];
+	        this.isDraft = source["isDraft"];
+	        this.labels = source["labels"];
+	        this.ciStatus = source["ciStatus"];
+	        this.reviewDecision = source["reviewDecision"];
+	        this.unresolvedCount = source["unresolvedCount"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+	export class ReviewSummary {
+	    createdByMe: PullRequest[];
+	    reviewRequested: PullRequest[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.createdByMe = this.convertValues(source["createdByMe"], PullRequest);
+	        this.reviewRequested = this.convertValues(source["reviewRequested"], PullRequest);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace task {
 	
 	export class Task {

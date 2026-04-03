@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watcher"
@@ -298,4 +299,8 @@ func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 		return nil, err
 	}
 	return ag.Output(), nil
+}
+
+func (a *App) FetchReviews() (github.ReviewSummary, error) {
+	return github.FetchReviews()
 }
