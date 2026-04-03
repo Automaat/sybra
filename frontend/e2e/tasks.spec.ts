@@ -17,7 +17,7 @@ async function cleanupCreatedTasks() {
 
 async function goToTaskList(page: Page) {
   await page.goto('/')
-  await page.locator('[data-part="trigger"]', { hasText: 'Tasks' }).click()
+  await page.locator('[data-part="trigger"]', { hasText: 'Board' }).click()
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
 }
 
@@ -213,7 +213,7 @@ test.describe('Create Task', () => {
 test.describe('Navigation Rail', () => {
   test('tasks nav trigger is visible', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByText('Tasks', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('Board', { exact: true }).first()).toBeVisible()
   })
 
   test('clicking tasks nav returns to task list from detail', async ({ page }) => {
@@ -222,7 +222,7 @@ test.describe('Navigation Rail', () => {
     await page.getByText('Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
-    const navTrigger = page.locator('[data-part="trigger"]', { hasText: 'Tasks' })
+    const navTrigger = page.locator('[data-part="trigger"]', { hasText: 'Board' })
     await navTrigger.click()
 
     await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
