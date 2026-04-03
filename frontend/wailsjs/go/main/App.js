@@ -34,6 +34,10 @@ export function DiscoverAgents() {
   return window['go']['main']['App']['DiscoverAgents']();
 }
 
+export function FetchReviews() {
+  return window['go']['main']['App']['FetchReviews']();
+}
+
 export function GetAgentOutput(arg1) {
   return window['go']['main']['App']['GetAgentOutput'](arg1);
 }
