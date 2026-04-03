@@ -62,10 +62,13 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 
 			switch {
 			case event.Has(fsnotify.Create):
+				w.logger.Info("watcher.event", "op", "created", "file", event.Name)
 				w.emit("task:created", event.Name)
 			case event.Has(fsnotify.Write):
+				w.logger.Debug("watcher.event", "op", "updated", "file", event.Name)
 				w.emit("task:updated", event.Name)
 			case event.Has(fsnotify.Remove):
+				w.logger.Info("watcher.event", "op", "deleted", "file", event.Name)
 				w.emit("task:deleted", event.Name)
 			}
 

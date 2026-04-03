@@ -134,7 +134,12 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 }
 
 func (a *App) DeleteTask(id string) error {
-	return a.tasks.Delete(id)
+	a.logger.Info("task.delete", "task_id", id)
+	if err := a.tasks.Delete(id); err != nil {
+		a.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
@@ -238,11 +243,23 @@ func (a *App) GetProject(id string) (project.Project, error) {
 }
 
 func (a *App) CreateProject(url string) (project.Project, error) {
-	return a.projects.Create(url)
+	a.logger.Info("project.create", "url", url)
+	p, err := a.projects.Create(url)
+	if err != nil {
+		a.logger.Error("project.create.failed", "url", url, "err", err)
+		return p, err
+	}
+	a.logger.Info("project.created", "id", p.ID, "url", url)
+	return p, nil
 }
 
 func (a *App) DeleteProject(id string) error {
-	return a.projects.Delete(id)
+	a.logger.Info("project.delete", "id", id)
+	if err := a.projects.Delete(id); err != nil {
+		a.logger.Error("project.delete.failed", "id", id, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (a *App) ListWorktrees(projectID string) ([]project.Worktree, error) {
@@ -331,6 +348,7 @@ func (a *App) ListTmuxSessions() ([]tmux.SessionInfo, error) {
 }
 
 func (a *App) KillTmuxSession(name string) error {
+	a.logger.Info("tmux.kill", "session", name)
 	return a.tmux.KillSession(name)
 }
 
@@ -516,7 +534,8 @@ func (a *App) TriageTask(id string) error {
 
 	a.logger.Info("triage.start", "task_id", t.ID, "title", t.Title, "dir", dir)
 
-	ag, err := a.agents.StartAgentInDir(t.ID, "triage:"+t.Title, "headless", prompt, nil, dir)
+	triageTools := []string{"Bash", "Read", "Skill"}
+	ag, err := a.agents.StartAgentInDir(t.ID, "triage:"+t.Title, "headless", prompt, triageTools, dir)
 	if err != nil {
 		return err
 	}
@@ -674,6 +693,7 @@ func (a *App) ApprovePlan(id string) (task.Task, error) {
 	if t.Status != task.StatusPlanReview {
 		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
 	}
+	a.logger.Info("plan.approve", "task_id", id, "title", t.Title)
 	return a.tasks.Update(id, map[string]any{
 		"status": string(task.StatusTodo),
 	})
@@ -687,6 +707,7 @@ func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
 	if t.Status != task.StatusPlanReview {
 		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
 	}
+	a.logger.Info("plan.reject", "task_id", id, "title", t.Title, "has_feedback", feedback != "")
 	body := t.Body
 	if feedback != "" {
 		body += "\n\n## Plan Feedback\n\n" + feedback

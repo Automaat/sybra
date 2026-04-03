@@ -13,6 +13,13 @@ Triage incoming tasks: analyze content, assign tags, set appropriate agent mode,
 
 The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
 
+## Constraints
+
+- Do NOT explore the codebase, read source files, or spawn sub-agents
+- Triage based on title, body, and URL context only
+- Keep total cost under $0.05 per task
+- Code exploration happens during planning/implementation, not triage
+
 ## Process
 
 ### 1. List pending tasks
