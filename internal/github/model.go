@@ -13,6 +13,7 @@ type PullRequest struct {
 	HeadRefName     string   `json:"headRefName"`
 	CIStatus        string   `json:"ciStatus"`       // SUCCESS, FAILURE, PENDING, or ""
 	ReviewDecision  string   `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
+	Mergeable       string   `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 	UnresolvedCount int      `json:"unresolvedCount"`
 	CreatedAt       string   `json:"createdAt"`
 	UpdatedAt       string   `json:"updatedAt"`

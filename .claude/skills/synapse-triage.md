@@ -19,6 +19,7 @@ The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--bod
 - Triage based on title, body, and URL context only
 - Keep total cost under $0.05 per task
 - Code exploration happens during planning/implementation, not triage
+- Ignore agent runs with a `role` field (triage, plan, eval, pr-fix) — those are system agents, not implementation agents
 
 ## Process
 

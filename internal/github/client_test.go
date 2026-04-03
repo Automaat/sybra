@@ -13,6 +13,7 @@ func TestConvertPRs_basic(t *testing.T) {
 			Title:          "feat: add thing",
 			URL:            "https://github.com/org/repo/pull/42",
 			IsDraft:        false,
+			Mergeable:      "MERGEABLE",
 			CreatedAt:      "2026-04-01T00:00:00Z",
 			UpdatedAt:      "2026-04-02T00:00:00Z",
 			ReviewDecision: "APPROVED",
@@ -46,6 +47,45 @@ func TestConvertPRs_basic(t *testing.T) {
 	}
 	if pr.ReviewDecision != "APPROVED" {
 		t.Errorf("ReviewDecision = %q, want %q", pr.ReviewDecision, "APPROVED")
+	}
+	if pr.Mergeable != "MERGEABLE" {
+		t.Errorf("Mergeable = %q, want %q", pr.Mergeable, "MERGEABLE")
+	}
+}
+
+func TestConvertPRs_mergeable(t *testing.T) {
+	tests := []struct {
+		name      string
+		mergeable string
+		want      string
+	}{
+		{"mergeable", "MERGEABLE", "MERGEABLE"},
+		{"conflicting", "CONFLICTING", "CONFLICTING"},
+		{"unknown", "UNKNOWN", "UNKNOWN"},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := gqlPR{
+				Number:    1,
+				Title:     "test",
+				URL:       "https://example.com",
+				Mergeable: tt.mergeable,
+			}
+			node.Author.Login = "user"
+			node.Author.Type = "User"
+			node.Repository.Name = "repo"
+			node.Repository.NameWithOwner = "org/repo"
+
+			prs := convertPRs([]gqlPR{node})
+			if len(prs) != 1 {
+				t.Fatalf("got %d PRs, want 1", len(prs))
+			}
+			if prs[0].Mergeable != tt.want {
+				t.Errorf("Mergeable = %q, want %q", prs[0].Mergeable, tt.want)
+			}
+		})
 	}
 }
 

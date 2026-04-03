@@ -21,6 +21,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     headRefName: 'feature/test',
     ciStatus: '',
     reviewDecision: '',
+    mergeable: '',
     unresolvedCount: 0,
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',

@@ -30,6 +30,7 @@ const prQuery = `query($q: String!) {
         url
         headRefName
         isDraft
+        mergeable
         createdAt
         updatedAt
         reviewDecision
@@ -68,6 +69,7 @@ type gqlPR struct {
 	URL            string `json:"url"`
 	HeadRefName    string `json:"headRefName"`
 	IsDraft        bool   `json:"isDraft"`
+	Mergeable      string `json:"mergeable"`
 	CreatedAt      string `json:"createdAt"`
 	UpdatedAt      string `json:"updatedAt"`
 	ReviewDecision string `json:"reviewDecision"`
@@ -178,6 +180,7 @@ func convertPRs(nodes []gqlPR) []PullRequest {
 			RepoName:        n.Repository.Name,
 			Author:          n.Author.Login,
 			IsDraft:         n.IsDraft,
+			Mergeable:       n.Mergeable,
 			Labels:          labels,
 			CIStatus:        ciStatus,
 			ReviewDecision:  n.ReviewDecision,

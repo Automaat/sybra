@@ -40,6 +40,7 @@ type App struct {
 	logger       *slog.Logger
 	logDir       string
 	auditDir     string
+	prTracker    *github.IssueTracker
 }
 
 func NewApp(logger *slog.Logger, cfg *config.Config) *App {
@@ -85,11 +86,13 @@ func (a *App) startup(ctx context.Context) {
 	a.watcher = w
 	_ = w.Start(ctx)
 
+	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.reconnectAgents()
 	a.cleanStaleRuns()
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
 	go a.orchestratorLoop(ctx)
+	go a.prPollLoop(ctx)
 	a.logger.Info("app.started")
 }
 
@@ -144,7 +147,8 @@ func (a *App) cleanStaleRuns() {
 		return
 	}
 	for i := range tasks {
-		for _, run := range tasks[i].AgentRuns {
+		for j := range tasks[i].AgentRuns {
+			run := &tasks[i].AgentRuns[j]
 			if run.State != string(agent.StateRunning) {
 				continue
 			}
@@ -284,10 +288,15 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 	}
 
 	wtPath := filepath.Join(a.worktreesDir, t.DirName())
+	wtBranch := "synapse/" + t.DirName()
 	if _, statErr := os.Stat(wtPath); statErr == nil {
+		if t.Branch == "" {
+			if _, err := a.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
+				a.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
+			}
+		}
 		return wtPath, nil
 	}
-	wtBranch := "synapse/" + t.DirName()
 	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, branch); err != nil {
 		// Branch may exist from a previous run — try checkout instead of new branch
 		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
@@ -296,6 +305,13 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 	}
 
 	a.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
+
+	if t.Branch == "" {
+		if _, err := a.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
+			a.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
+		}
+	}
+
 	return wtPath, nil
 }
 
@@ -714,7 +730,7 @@ func (a *App) TriageTask(id string) error {
 		return err
 	}
 	if err := a.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		AgentID: ag.ID, Role: "triage", Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
@@ -754,6 +770,17 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	if strings.HasPrefix(ag.Name, "triage:") {
 		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
 		a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
+		return
+	}
+
+	if strings.HasPrefix(ag.Name, "pr-fix:") {
+		a.logger.Info("pr-fix.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+		a.logAudit(audit.EventPRFixAgentStarted, ag.TaskID, ag.ID, agentData)
+		go func() {
+			if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
+				a.logger.Error("pr-fix.eval", "task_id", ag.TaskID, "err", err)
+			}
+		}()
 		return
 	}
 
@@ -826,18 +853,27 @@ func (a *App) EvaluateTask(taskID, agentResult string) error {
 	}
 
 	prompt := fmt.Sprintf(
-		"Evaluate task %s using /synapse-evaluate skill. Get the task with synapse-cli, "+
-			"review the agent result below, and update the task status.\n\n"+
-			"## Agent Result\n\n%s", t.ID, truncated)
+		"Evaluate task %s. Do NOT read source code or review diffs.\n\n"+
+			"1. Run: synapse-cli --json get %s\n"+
+			"2. Check agent result below for PR URLs (github.com/.../pull/N). "+
+			"If found, link: synapse-cli --json update %s --pr <number>\n"+
+			"3. Set status based on agent result:\n"+
+			"   - Work done, PR created/pushed → in-review\n"+
+			"   - Failed, errors, incomplete → human-required\n"+
+			"   - Never set done or todo\n"+
+			"   Run: synapse-cli --json update %s --status <status>\n\n"+
+			"## Agent Result\n\n%s",
+		t.ID, t.ID, t.ID, t.ID, truncated)
 
 	a.logger.Info("eval.start", "task_id", t.ID, "title", t.Title, "dir", dir)
 
-	ag, err := a.agents.StartAgentInDir(t.ID, "eval:"+t.Title, "headless", prompt, nil, dir)
+	evalTools := []string{"Bash"}
+	ag, err := a.agents.StartAgentInDir(t.ID, "eval:"+t.Title, "headless", prompt, evalTools, dir)
 	if err != nil {
 		return err
 	}
 	if err := a.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		AgentID: ag.ID, Role: "eval", Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
@@ -877,7 +913,7 @@ func (a *App) PlanTask(id string) error {
 		return err
 	}
 	if err := a.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		AgentID: ag.ID, Role: "plan", Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
@@ -962,4 +998,168 @@ func (a *App) RegisterSpotlightHotkey() {
 		return
 	}
 	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+}
+
+const (
+	prPollFast = 1 * time.Minute
+	prPollSlow = 5 * time.Minute
+)
+
+func (a *App) prPollLoop(ctx context.Context) {
+	timer := time.NewTimer(10 * time.Second) // initial fetch shortly after startup
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			next := a.pollAndMonitorPRs()
+			a.logger.Debug("pr-poll.next", "interval", next)
+			timer.Reset(next)
+		}
+	}
+}
+
+func (a *App) pollAndMonitorPRs() time.Duration {
+	summary, err := github.FetchReviews()
+	if err != nil {
+		a.logger.Warn("pr-monitor.fetch", "err", err)
+		return prPollSlow
+	}
+
+	runtime.EventsEmit(a.ctx, "reviews:updated", summary)
+
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return prPollSlow
+	}
+
+	var matchers []github.TaskMatcher
+	for i := range tasks {
+		if tasks[i].Status != task.StatusInReview {
+			continue
+		}
+		if tasks[i].PRNumber == 0 && tasks[i].Branch == "" {
+			continue
+		}
+		matchers = append(matchers, github.TaskMatcher{
+			ID:       tasks[i].ID,
+			PRNumber: tasks[i].PRNumber,
+			Branch:   tasks[i].Branch,
+		})
+	}
+
+	if len(matchers) == 0 {
+		return prPollSlow
+	}
+
+	issues := github.MatchTaskPRs(summary.CreatedByMe, matchers)
+	a.prTracker.Cleanup()
+
+	for i := range issues {
+		if a.agents.HasRunningAgentForTask(issues[i].TaskID) {
+			continue
+		}
+		if !a.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind) {
+			continue
+		}
+		a.handlePRIssue(issues[i])
+	}
+
+	if prNeedsAttention(summary.CreatedByMe) {
+		return prPollFast
+	}
+	return prPollSlow
+}
+
+func prNeedsAttention(prs []github.PullRequest) bool {
+	for i := range prs {
+		if prs[i].CIStatus == "PENDING" || prs[i].CIStatus == "FAILURE" {
+			return true
+		}
+		if prs[i].Mergeable == "CONFLICTING" || prs[i].Mergeable == "UNKNOWN" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) handlePRIssue(issue github.PRIssue) {
+	t, err := a.tasks.Get(issue.TaskID)
+	if err != nil {
+		return
+	}
+
+	if _, err := a.tasks.Update(t.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+	}); err != nil {
+		a.logger.Error("pr-monitor.status-update", "task_id", t.ID, "err", err)
+		return
+	}
+
+	var prompt string
+	switch issue.Kind {
+	case github.PRIssueConflict:
+		prompt = fmt.Sprintf(
+			"PR #%d on %s has merge conflicts on branch `%s`.\n\n"+
+				"1. Fetch latest from base branch\n"+
+				"2. Rebase or merge to resolve conflicts\n"+
+				"3. Push the resolved branch\n\n"+
+				"Use `git` commands. Do NOT force-push.",
+			issue.PR.Number, issue.PR.Repository, issue.PR.HeadRefName,
+		)
+		a.logAudit(audit.EventPRConflictDetected, t.ID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository,
+		})
+
+	case github.PRIssueCIFailure:
+		prompt = fmt.Sprintf(
+			"PR #%d on %s has failing CI on branch `%s`.\n\n"+
+				"1. Run `gh run list --branch %s --limit 5` to find failed run\n"+
+				"2. Run `gh run view <run-id> --log-failed` for details\n"+
+				"3. Fix the failing tests or code\n"+
+				"4. Commit and push the fix\n\n"+
+				"Only fix the CI failure, no unrelated changes.",
+			issue.PR.Number, issue.PR.Repository, issue.PR.HeadRefName,
+			issue.PR.HeadRefName,
+		)
+		a.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository,
+		})
+	}
+
+	dir := ""
+	if t.ProjectID != "" {
+		d, wtErr := a.prepareWorktree(t)
+		if wtErr != nil {
+			a.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)
+			return
+		}
+		dir = d
+	}
+
+	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s", t.Title, prompt)
+	ag, err := a.agents.StartAgentInDir(t.ID, "pr-fix:"+t.Title, "headless", fullPrompt, nil, dir)
+	if err != nil {
+		a.logger.Error("pr-monitor.agent-start", "task_id", t.ID, "err", err)
+		return
+	}
+
+	a.prTracker.MarkHandled(t.ID, issue.Kind)
+	a.logAudit(audit.EventPRFixAgentStarted, t.ID, ag.ID, map[string]any{
+		"issue": string(issue.Kind), "pr": issue.PR.Number,
+	})
+
+	if err := a.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID: ag.ID, Role: "pr-fix", Mode: "headless",
+		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("pr-monitor.add-run", "task_id", t.ID, "err", err)
+	}
+
+	a.logger.Info("pr-monitor.fix-started",
+		"task_id", t.ID, "issue", string(issue.Kind),
+		"pr", issue.PR.Number, "agent_id", ag.ID,
+	)
 }

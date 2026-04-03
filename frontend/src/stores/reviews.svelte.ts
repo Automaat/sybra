@@ -1,4 +1,5 @@
 import { FetchReviews } from '../../wailsjs/go/main/App.js'
+import { EventsOn } from '../../wailsjs/runtime/runtime.js'
 import type { github } from '../../wailsjs/go/models.js'
 
 class ReviewStore {
@@ -6,7 +7,7 @@ class ReviewStore {
   reviewRequested = $state<github.PullRequest[]>([])
   loading = $state(false)
   error = $state('')
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private cancelListener: (() => void) | null = null
 
   get totalCount(): number {
     return this.createdByMe.length + this.reviewRequested.length
@@ -57,17 +58,27 @@ class ReviewStore {
     }
   }
 
-  startPolling(): void {
-    this.stopPolling()
-    this.pollTimer = setInterval(() => this.load(), 60_000)
+  listen(): void {
+    this.stopListening()
+    this.cancelListener = EventsOn('reviews:updated', (summary: any) => {
+      this.createdByMe = summary.createdByMe ?? []
+      this.reviewRequested = summary.reviewRequested ?? []
+    })
   }
 
-  stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
+  stopListening(): void {
+    if (this.cancelListener) {
+      this.cancelListener()
+      this.cancelListener = null
     }
   }
+
+  // Keep for manual refresh from UI
+  startPolling(): void {}
+  stopPolling(): void {}
 }
 
 export const reviewStore = new ReviewStore()
+if (typeof window !== 'undefined' && (window as any).runtime) {
+  reviewStore.listen()
+}

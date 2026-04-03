@@ -390,6 +390,18 @@
             </button>
           {/each}
         </div>
+      {:else if t.prNumber && t.projectId}
+        <div class="flex flex-col gap-1">
+          <span class="text-sm font-medium text-surface-500">Pull Request</span>
+          <button
+            type="button"
+            class="flex w-fit items-center gap-1.5 text-sm text-purple-600 hover:underline dark:text-purple-400"
+            onclick={() => BrowserOpenURL(`https://github.com/${t.projectId}/pull/${t.prNumber}`)}
+          >
+            <svg class="h-4 w-4 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+            {t.projectId}#{t.prNumber}
+          </button>
+        </div>
       {/if}
 
       <div class="flex flex-col gap-1">

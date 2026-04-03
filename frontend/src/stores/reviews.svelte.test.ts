@@ -1,9 +1,17 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockFetchReviews = vi.fn()
+let eventCallbacks: Record<string, (data: unknown) => void> = {}
 
 vi.mock('../../wailsjs/go/main/App.js', () => ({
   FetchReviews: (...args: unknown[]) => mockFetchReviews(...args),
+}))
+
+vi.mock('../../wailsjs/runtime/runtime.js', () => ({
+  EventsOn: (event: string, cb: (data: unknown) => void) => {
+    eventCallbacks[event] = cb
+    return () => { delete eventCallbacks[event] }
+  },
 }))
 
 const { reviewStore } = await import('./reviews.svelte.js')
@@ -20,6 +28,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     labels: [],
     ciStatus: '',
     reviewDecision: '',
+    mergeable: '',
     unresolvedCount: 0,
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
@@ -30,15 +39,12 @@ function makePR(overrides: Record<string, unknown> = {}) {
 describe('ReviewStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    eventCallbacks = {}
     reviewStore.createdByMe = []
     reviewStore.reviewRequested = []
     reviewStore.error = ''
     reviewStore.loading = false
-    reviewStore.stopPolling()
-  })
-
-  afterEach(() => {
-    reviewStore.stopPolling()
+    reviewStore.stopListening()
   })
 
   describe('load', () => {
@@ -104,38 +110,35 @@ describe('ReviewStore', () => {
     })
   })
 
-  describe('polling', () => {
-    it('polls at 60s interval', () => {
-      vi.useFakeTimers()
-      mockFetchReviews.mockResolvedValue({ createdByMe: [], reviewRequested: [] })
+  describe('event listener', () => {
+    it('updates state from reviews:updated event', () => {
+      reviewStore.listen()
 
-      reviewStore.startPolling()
+      const cb = eventCallbacks['reviews:updated']
+      expect(cb).toBeDefined()
 
-      vi.advanceTimersByTime(60_000)
-      expect(mockFetchReviews).toHaveBeenCalledTimes(1)
+      cb({ createdByMe: [makePR({ number: 10 })], reviewRequested: [makePR({ number: 20 })] })
 
-      vi.advanceTimersByTime(60_000)
-      expect(mockFetchReviews).toHaveBeenCalledTimes(2)
-
-      reviewStore.stopPolling()
-      vi.advanceTimersByTime(120_000)
-      expect(mockFetchReviews).toHaveBeenCalledTimes(2)
-
-      vi.useRealTimers()
+      expect(reviewStore.createdByMe).toHaveLength(1)
+      expect(reviewStore.createdByMe[0].number).toBe(10)
+      expect(reviewStore.reviewRequested).toHaveLength(1)
+      expect(reviewStore.reviewRequested[0].number).toBe(20)
     })
 
-    it('replaces existing timer on restart', () => {
-      vi.useFakeTimers()
-      mockFetchReviews.mockResolvedValue({ createdByMe: [], reviewRequested: [] })
+    it('handles null in event data', () => {
+      reviewStore.listen()
+      eventCallbacks['reviews:updated']({ createdByMe: null, reviewRequested: null })
 
-      reviewStore.startPolling()
-      reviewStore.startPolling()
+      expect(reviewStore.createdByMe).toHaveLength(0)
+      expect(reviewStore.reviewRequested).toHaveLength(0)
+    })
 
-      vi.advanceTimersByTime(60_000)
-      expect(mockFetchReviews).toHaveBeenCalledTimes(1)
+    it('stopListening removes callback', () => {
+      reviewStore.listen()
+      expect(eventCallbacks['reviews:updated']).toBeDefined()
 
-      reviewStore.stopPolling()
-      vi.useRealTimers()
+      reviewStore.stopListening()
+      expect(eventCallbacks['reviews:updated']).toBeUndefined()
     })
   })
 })

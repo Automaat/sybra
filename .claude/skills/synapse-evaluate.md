@@ -1,13 +1,20 @@
 ---
 name: synapse-evaluate
-description: Evaluate completed Synapse tasks — review agent output, determine appropriate status transition. Use when asked to evaluate task completion.
-allowed-tools: Bash, Read
+description: Evaluate completed Synapse tasks — determine status transition and link PRs. Use when asked to evaluate task completion.
+allowed-tools: Bash
 user-invocable: true
 ---
 
 # Synapse Task Evaluation
 
-Evaluate a task after an agent has finished work. Determine the appropriate status transition based on the agent's output.
+Decide what happens to a task after an agent finishes. Do NOT read source code, review diffs, or explore the codebase.
+
+## Constraints
+
+- Do NOT use Read tool or explore any files
+- Do NOT review code quality, style, or correctness
+- Only analyze the agent result text provided in the prompt
+- Keep total cost under $0.02 per evaluation
 
 ## Process
 
@@ -17,33 +24,43 @@ Evaluate a task after an agent has finished work. Determine the appropriate stat
 synapse-cli --json get <id>
 ```
 
-### 2. Analyze the agent result
+### 2. Link PR if created
 
-Review the agent result provided in the prompt. Consider:
+Search the agent result for PR references. Look for:
+- `gh pr create` output containing a URL like `https://github.com/.../pull/N`
+- Mentions of "PR #N" or "pull request #N"
+- Branch names pushed (for branch linking)
 
-- Did the agent complete the work described in the task?
-- Are there errors or signs of failure?
-- Is the output a partial result that needs review?
+If found, link to task:
 
-### 3. Decide on status transition
+```bash
+# Link PR number
+synapse-cli --json update <id> --pr <number>
 
-| Condition | New Status | Rationale |
-|-----------|-----------|-----------|
-| Agent completed work successfully | in-review | Human must review before done |
-| Agent failed, hit errors, or produced no useful output | human-required | Needs human to decide retry |
-| Agent explicitly said it's blocked or needs input | human-required | Needs human intervention |
+# Link branch if known and not already set
+synapse-cli --json update <id> --branch <branch-name>
+```
 
-### Guidelines
+### 3. Decide status transition
 
-- **Never set `done`** — only humans move tasks to `done` after review
-- **Never set `todo`** — this triggers auto-dispatch and can create duplicate agents
+Based ONLY on the agent result text:
+
+| Condition | New Status |
+|-----------|-----------|
+| Agent completed work, PR created or code pushed | in-review |
+| Agent completed but no PR/push (partial work) | human-required |
+| Agent failed, hit errors, looped | human-required |
+| Agent blocked, needs input | human-required |
+
+### Rules
+
+- **Never set `done`** — only humans do that
+- **Never set `todo`** — triggers auto-dispatch, creates duplicate agents
 - Default to `in-review` when uncertain
-- Set `human-required` if the agent output shows errors, loops, or incomplete work
+- Set `human-required` if agent output shows errors, loops, or incomplete work
 
-### 4. Update the task status
+### 4. Update status
 
 ```bash
 synapse-cli --json update <id> --status <new-status>
 ```
-
-If relevant, append a brief evaluation note to the task body explaining the decision.

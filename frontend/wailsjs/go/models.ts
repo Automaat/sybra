@@ -84,14 +84,15 @@ export namespace github {
 	    number: number;
 	    title: string;
 	    url: string;
-	    headRefName: string;
 	    repository: string;
 	    repoName: string;
 	    author: string;
 	    isDraft: boolean;
 	    labels: string[];
+	    headRefName: string;
 	    ciStatus: string;
 	    reviewDecision: string;
+	    mergeable: string;
 	    unresolvedCount: number;
 	    createdAt: string;
 	    updatedAt: string;
@@ -105,14 +106,15 @@ export namespace github {
 	        this.number = source["number"];
 	        this.title = source["title"];
 	        this.url = source["url"];
-	        this.headRefName = source["headRefName"];
 	        this.repository = source["repository"];
 	        this.repoName = source["repoName"];
 	        this.author = source["author"];
 	        this.isDraft = source["isDraft"];
 	        this.labels = source["labels"];
+	        this.headRefName = source["headRefName"];
 	        this.ciStatus = source["ciStatus"];
 	        this.reviewDecision = source["reviewDecision"];
+	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
@@ -226,6 +228,7 @@ export namespace task {
 	
 	export class AgentRun {
 	    agentId: string;
+	    role: string;
 	    mode: string;
 	    state: string;
 	    // Go type: time
@@ -241,6 +244,7 @@ export namespace task {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.agentId = source["agentId"];
+	        this.role = source["role"];
 	        this.mode = source["mode"];
 	        this.state = source["state"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
