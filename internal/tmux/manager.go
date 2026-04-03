@@ -33,8 +33,8 @@ func (m *Manager) SessionExists(name string) bool {
 }
 
 type SessionInfo struct {
-	Name    string
-	Created string
+	Name    string `json:"name"`
+	Created string `json:"created"`
 }
 
 func (m *Manager) ListSessions() ([]SessionInfo, error) {

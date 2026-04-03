@@ -17,6 +17,7 @@ type App struct {
 	ctx      context.Context
 	tasks    *task.Store
 	agents   *agent.Manager
+	tmux     *tmux.Manager
 	watcher  *watcher.Watcher
 	tasksDir string
 	logger   *slog.Logger
@@ -38,11 +39,11 @@ func (a *App) startup(ctx context.Context) {
 	store, _ := task.NewStore(a.tasksDir)
 	a.tasks = store
 
-	tm := tmux.NewManager()
+	a.tmux = tmux.NewManager()
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
-	a.agents = agent.NewManager(ctx, tm, emit, a.logger, a.logDir)
+	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -82,7 +83,7 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.agents.StartAgent(taskID, mode, prompt, t.AllowedTools)
+	return a.agents.StartAgent(taskID, t.Title, mode, prompt, t.AllowedTools)
 }
 
 func (a *App) StopAgent(agentID string) error {
@@ -109,11 +110,49 @@ func (a *App) AttachAgent(agentID string) error {
 	if ag.TmuxSession == "" {
 		return fmt.Errorf("agent %s has no tmux session", agentID)
 	}
-	script := fmt.Sprintf(`tell application "Terminal"
+	title := ag.Name
+	if title == "" {
+		title = ag.TaskID
+	}
+	return openTmuxInGhostty(ag.TmuxSession, title)
+}
+
+func (a *App) ListTmuxSessions() ([]tmux.SessionInfo, error) {
+	return a.tmux.ListSessions()
+}
+
+func (a *App) KillTmuxSession(name string) error {
+	return a.tmux.KillSession(name)
+}
+
+func (a *App) AttachTmuxSession(name string) error {
+	return openTmuxInGhostty(name, name)
+}
+
+func openTmuxInGhostty(session, tabTitle string) error {
+	label := "Synapse: " + tabTitle
+	script := fmt.Sprintf(`tell application "Ghostty"
 	activate
-	do script "tmux attach -t %s"
-end tell`, ag.TmuxSession)
-	return exec.Command("osascript", "-e", script).Run()
+	set synapseWins to (every window whose name contains "Synapse:")
+	set winCount to (count of synapseWins)
+	set cfg to new surface configuration
+	set command of cfg to "/bin/zsh -lic 'printf \"\\033]0;%s\\007\"; exec tmux attach -t %s'"
+	if winCount > 0 then
+		new tab in (item 1 of synapseWins) with configuration cfg
+	else
+		new window with configuration cfg
+	end if
+end tell`, label, session)
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("osascript: %w: %s", err, string(out))
+	}
+	return nil
+}
+
+func (a *App) TriageTask(id string) error {
+	a.logger.Info("triage not implemented", "task_id", id)
+	return nil
 }
 
 func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
