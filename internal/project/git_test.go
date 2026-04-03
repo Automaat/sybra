@@ -203,6 +203,55 @@ func TestCreateAndRemoveWorktree(t *testing.T) {
 	}
 }
 
+func TestParseWorktreePorcelain(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		wantLen    int
+		wantTaskID string
+		wantBranch string
+	}{
+		{
+			name:    "old format bare id",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/a1b2c3d4",
+		},
+		{
+			name:    "new format slug-id",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/implement-auth-a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/implement-auth-a1b2c3d4",
+		},
+		{
+			name:    "non-synapse branch",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/feature/foo\n",
+			wantLen: 1, wantTaskID: "", wantBranch: "feature/foo",
+		},
+		{
+			name:    "bare entry skipped",
+			raw:     "worktree /tmp/bare.git\nbare\n",
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseWorktreePorcelain(tt.raw)
+			if len(got) != tt.wantLen {
+				t.Fatalf("len = %d, want %d", len(got), tt.wantLen)
+			}
+			if tt.wantLen == 0 {
+				return
+			}
+			if got[0].TaskID != tt.wantTaskID {
+				t.Errorf("TaskID = %q, want %q", got[0].TaskID, tt.wantTaskID)
+			}
+			if got[0].Branch != tt.wantBranch {
+				t.Errorf("Branch = %q, want %q", got[0].Branch, tt.wantBranch)
+			}
+		})
+	}
+}
+
 func TestCreateWorktreeInvalidBase(t *testing.T) {
 	if !hasGit() {
 		t.Skip("git not available")

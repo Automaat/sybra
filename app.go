@@ -193,11 +193,11 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 		return "", fmt.Errorf("default branch: %w", err)
 	}
 
-	wtPath := filepath.Join(a.worktreesDir, t.ID)
+	wtPath := filepath.Join(a.worktreesDir, t.DirName())
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		return wtPath, nil
 	}
-	wtBranch := "synapse/" + t.ID
+	wtBranch := "synapse/" + t.DirName()
 	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, branch); err != nil {
 		// Branch may exist from a previous run — try checkout instead of new branch
 		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
@@ -213,13 +213,12 @@ func (a *App) cleanupWorktree(ag *agent.Agent) {
 	if ag.TaskID == "" {
 		return
 	}
-	wtPath := filepath.Join(a.worktreesDir, ag.TaskID)
-	if _, err := os.Stat(wtPath); err != nil {
-		return
-	}
-
 	t, err := a.tasks.Get(ag.TaskID)
 	if err != nil || t.ProjectID == "" {
+		return
+	}
+	wtPath := filepath.Join(a.worktreesDir, t.DirName())
+	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
 	proj, err := a.projects.Get(t.ProjectID)

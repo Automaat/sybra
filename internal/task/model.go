@@ -27,6 +27,7 @@ type AgentRun struct {
 
 type Task struct {
 	ID           string     `yaml:"id" json:"id"`
+	Slug         string     `yaml:"slug,omitempty" json:"slug"`
 	Title        string     `yaml:"title" json:"title"`
 	Status       Status     `yaml:"status" json:"status"`
 	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
@@ -39,4 +40,11 @@ type Task struct {
 
 	Body     string `yaml:"-" json:"body"`
 	FilePath string `yaml:"-" json:"filePath"`
+}
+
+func (t Task) DirName() string {
+	if t.Slug == "" {
+		return t.ID
+	}
+	return t.Slug + "-" + t.ID
 }

@@ -116,9 +116,13 @@ func parseWorktreePorcelain(raw string) []Worktree {
 			case strings.HasPrefix(line, "branch "):
 				ref := strings.TrimPrefix(line, "branch ")
 				wt.Branch = strings.TrimPrefix(ref, "refs/heads/")
-				wt.TaskID = strings.TrimPrefix(wt.Branch, "synapse/")
-				if wt.TaskID == wt.Branch {
-					wt.TaskID = ""
+				if name, ok := strings.CutPrefix(wt.Branch, "synapse/"); ok {
+					// Task ID is always the last 8 chars (uuid[:8])
+					if len(name) >= 8 {
+						wt.TaskID = name[len(name)-8:]
+					} else {
+						wt.TaskID = name
+					}
 				}
 			}
 		}

@@ -59,8 +59,10 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		mode = "interactive"
 	}
 	now := time.Now().UTC()
+	id := uuid.NewString()[:8]
 	t := Task{
-		ID:        uuid.NewString()[:8],
+		ID:        id,
+		Slug:      Slugify(title),
 		Title:     title,
 		Status:    StatusNew,
 		AgentMode: mode,
