@@ -21,8 +21,6 @@ export function DeleteTask(arg1:string):Promise<void>;
 
 export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
-export function EvaluateTask(arg1:string,arg2:string):Promise<void>;
-
 export function FetchReviews():Promise<github.ReviewSummary>;
 
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;

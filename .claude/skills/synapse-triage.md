@@ -9,6 +9,10 @@ user-invocable: true
 
 Triage incoming tasks: analyze content, assign tags, set appropriate agent mode, update status.
 
+## CLI Reference
+
+The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
+
 ## Process
 
 ### 1. List pending tasks

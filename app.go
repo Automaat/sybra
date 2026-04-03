@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watcher"
@@ -61,6 +62,7 @@ func (a *App) startup(ctx context.Context) {
 	_ = w.Start(ctx)
 
 	a.syncSkills()
+	a.RegisterSpotlightHotkey()
 	a.logger.Info("app.started")
 }
 
@@ -399,4 +401,23 @@ func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 
 func (a *App) FetchReviews() (github.ReviewSummary, error) {
 	return github.FetchReviews()
+}
+
+func (a *App) RegisterSpotlightHotkey() {
+	spotlight.OnSubmit(func(text string) {
+		a.logger.Info("spotlight.submit", "text", text)
+		go func() {
+			if _, err := a.CreateTask(text, "", "headless"); err != nil {
+				a.logger.Error("spotlight.create", "err", err)
+			}
+		}()
+	})
+
+	if err := spotlight.Register(func() {
+		spotlight.ShowPanel(680, 72)
+	}); err != nil {
+		a.logger.Error("spotlight.register", "err", err)
+		return
+	}
+	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
 }

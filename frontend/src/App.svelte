@@ -27,6 +27,8 @@
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
   let quickAddOpen = $state(false)
+  let quitConfirmVisible = $state(false)
+  let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
   const pageTitle = $derived(
     page.kind === 'dashboard' ? 'Dashboard' :
@@ -48,7 +50,11 @@
     const unsub1 = EventsOn('task:created', () => taskStore.load())
     const unsub2 = EventsOn('task:updated', () => taskStore.load())
     const unsub3 = EventsOn('task:deleted', () => taskStore.load())
-
+    const unsubQuit = EventsOn('app:quit-confirm', () => {
+      quitConfirmVisible = true
+      if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
+      quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
+    })
     function handleKeydown(e: KeyboardEvent) {
       if (e.metaKey && (e.key === '=' || e.key === '+')) {
         e.preventDefault()
@@ -99,6 +105,8 @@
       unsub1()
       unsub2()
       unsub3()
+      unsubQuit()
+      if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       taskStore.stopPolling()
       agentStore.stopPolling()
       window.removeEventListener('keydown', handleKeydown)
@@ -232,3 +240,9 @@
   open={quickAddOpen}
   onclose={() => (quickAddOpen = false)}
 />
+
+{#if quitConfirmVisible}
+  <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg bg-surface-700 px-4 py-2 text-sm text-white shadow-lg">
+    Press <kbd class="rounded bg-surface-500 px-1.5 py-0.5 font-mono text-xs">&#8984;Q</kbd> again to quit
+  </div>
+{/if}
