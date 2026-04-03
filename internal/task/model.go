@@ -5,6 +5,7 @@ import "time"
 type Status string
 
 const (
+	StatusNew        Status = "new"
 	StatusTodo       Status = "todo"
 	StatusInProgress Status = "in-progress"
 	StatusInReview   Status = "in-review"

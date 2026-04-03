@@ -27,6 +27,7 @@
   let runningAgent = $state<agent.Agent | null>(null)
 
   const statusOptions = [
+    { value: 'new', label: 'New' },
     { value: 'todo', label: 'Todo' },
     { value: 'in-progress', label: 'In Progress' },
     { value: 'in-review', label: 'In Review' },

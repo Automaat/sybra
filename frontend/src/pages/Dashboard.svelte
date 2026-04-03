@@ -15,6 +15,7 @@
   const totalAgents = $derived(agentStore.list.length)
 
   const tasksByStatus = $derived({
+    new: taskStore.byStatus('new').length,
     todo: taskStore.byStatus('todo').length,
     'in-progress': taskStore.byStatus('in-progress').length,
     'in-review': taskStore.byStatus('in-review').length,
@@ -56,6 +57,9 @@
   <div class="flex flex-col gap-2">
     <span class="text-sm font-medium text-surface-500">Task Status</span>
     <div class="flex gap-3">
+      <span class="rounded bg-tertiary-200 px-2.5 py-1 text-xs text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
+        New <strong>{tasksByStatus.new}</strong>
+      </span>
       <span class="rounded bg-surface-200 px-2.5 py-1 text-xs dark:bg-surface-700">
         Todo <strong>{tasksByStatus.todo}</strong>
       </span>
@@ -99,6 +103,7 @@
               {t.status === 'done' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
                t.status === 'in-progress' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
                t.status === 'in-review' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
+               t.status === 'new' ? 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200' :
                'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
               {t.status}
             </span>

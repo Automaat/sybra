@@ -48,8 +48,8 @@ func TestStoreCreate(t *testing.T) {
 	if task.AgentMode != "headless" {
 		t.Errorf("AgentMode = %q, want %q", task.AgentMode, "headless")
 	}
-	if task.Status != StatusTodo {
-		t.Errorf("Status = %q, want %q", task.Status, StatusTodo)
+	if task.Status != StatusNew {
+		t.Errorf("Status = %q, want %q", task.Status, StatusNew)
 	}
 	if task.FilePath == "" {
 		t.Error("FilePath is empty")
