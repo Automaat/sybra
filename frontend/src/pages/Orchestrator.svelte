@@ -23,6 +23,14 @@
     triageAgents.filter((a) => a.state === 'running').length
   )
 
+  const evalAgents = $derived(
+    agentStore.list.filter((a) => a.name?.startsWith('eval:'))
+  )
+
+  const runningEvalCount = $derived(
+    evalAgents.filter((a) => a.state === 'running').length
+  )
+
   function scrollToBottom() {
     if (container) {
       container.scrollTop = container.scrollHeight
@@ -187,6 +195,52 @@
             </div>
             <div class="p-2">
               <StreamOutput agentId={ta.id} />
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <!-- Eval Agents -->
+  <section class="flex min-h-0 flex-1 flex-col gap-3">
+    <div class="flex items-center gap-3">
+      <h3 class="text-sm font-semibold text-surface-200">Eval Agents</h3>
+      {#if runningEvalCount > 0}
+        <span class="rounded-full bg-warning-500/20 px-2 py-0.5 text-xs font-medium text-warning-400">
+          {runningEvalCount} running
+        </span>
+      {/if}
+    </div>
+
+    {#if evalAgents.length === 0}
+      <p class="py-4 text-center text-xs text-surface-500">
+        No evaluations yet. Agents trigger eval on completion.
+      </p>
+    {:else}
+      <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+        {#each evalAgents as ea (ea.id)}
+          <div class="rounded-lg border border-surface-300 bg-surface-800 dark:border-surface-600">
+            <div class="flex items-center justify-between border-b border-surface-700 px-3 py-2">
+              <div class="flex items-center gap-2">
+                <div
+                  class="h-2 w-2 rounded-full {ea.state === 'running' ? 'bg-warning-500 animate-pulse' : ea.state === 'stopped' ? 'bg-surface-500' : 'bg-warning-500'}"
+                ></div>
+                <span class="text-xs font-medium text-surface-200">
+                  {ea.name?.replace('eval:', '') || ea.taskId}
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                {#if ea.costUsd > 0}
+                  <span class="text-xs text-surface-400">${ea.costUsd.toFixed(4)}</span>
+                {/if}
+                <span class="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] font-medium text-surface-300">
+                  {ea.state}
+                </span>
+              </div>
+            </div>
+            <div class="p-2">
+              <StreamOutput agentId={ea.id} />
             </div>
           </div>
         {/each}

@@ -55,6 +55,9 @@ func (s *Store) Get(id string) (Task, error) {
 }
 
 func (s *Store) Create(title, body, mode string) (Task, error) {
+	if mode == "" {
+		mode = "interactive"
+	}
 	now := time.Now().UTC()
 	t := Task{
 		ID:        uuid.NewString()[:8],
@@ -120,4 +123,44 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
+}
+
+func (s *Store) AddRun(taskID string, run AgentRun) error {
+	t, err := s.Get(taskID)
+	if err != nil {
+		return err
+	}
+	t.AgentRuns = append(t.AgentRuns, run)
+	d, err := Marshal(t)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(t.FilePath, d, 0o644)
+}
+
+func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error {
+	t, err := s.Get(taskID)
+	if err != nil {
+		return err
+	}
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID != agentID {
+			continue
+		}
+		if v, ok := updates["state"].(string); ok {
+			t.AgentRuns[i].State = v
+		}
+		if v, ok := updates["cost_usd"].(float64); ok {
+			t.AgentRuns[i].CostUSD = v
+		}
+		if v, ok := updates["result"].(string); ok {
+			t.AgentRuns[i].Result = v
+		}
+		break
+	}
+	d, err := Marshal(t)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(t.FilePath, d, 0o644)
 }

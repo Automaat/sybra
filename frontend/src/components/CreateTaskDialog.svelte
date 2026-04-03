@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Dialog, SegmentedControl } from '@skeletonlabs/skeleton-svelte'
+  import { Dialog } from '@skeletonlabs/skeleton-svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
 
   interface Props {
@@ -12,14 +12,14 @@
 
   let title = $state('')
   let body = $state('')
-  let mode = $state('headless')
+  let headless = $state(false)
   let submitting = $state(false)
   let error = $state('')
 
   function reset() {
     title = ''
     body = ''
-    mode = 'headless'
+    headless = false
     error = ''
   }
 
@@ -30,7 +30,7 @@
     submitting = true
     error = ''
     try {
-      const t = await taskStore.create(title.trim(), body, mode)
+      const t = await taskStore.create(title.trim(), body, headless ? 'headless' : 'interactive')
       reset()
       onOpenChange(false)
       oncreated?.(t.id)
@@ -66,22 +66,14 @@
           />
         </label>
 
-        <div class="flex flex-col gap-1">
-          <span class="text-sm font-medium">Agent Mode</span>
-          <SegmentedControl value={mode} onValueChange={(details) => (mode = details.value ?? 'headless')}>
-            <SegmentedControl.Control>
-              <SegmentedControl.Indicator />
-              <SegmentedControl.Item value="headless">
-                <SegmentedControl.ItemText>Headless</SegmentedControl.ItemText>
-                <SegmentedControl.ItemHiddenInput />
-              </SegmentedControl.Item>
-              <SegmentedControl.Item value="interactive">
-                <SegmentedControl.ItemText>Interactive</SegmentedControl.ItemText>
-                <SegmentedControl.ItemHiddenInput />
-              </SegmentedControl.Item>
-            </SegmentedControl.Control>
-          </SegmentedControl>
-        </div>
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            bind:checked={headless}
+            class="rounded border-surface-300 dark:border-surface-600"
+          />
+          <span class="text-sm font-medium">Headless</span>
+        </label>
 
         <label class="flex flex-col gap-1">
           <span class="text-sm font-medium">Description</span>

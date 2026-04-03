@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
@@ -53,6 +54,7 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
+	a.agents.SetOnComplete(a.handleAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -105,7 +107,25 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.agents.StartAgent(taskID, t.Title, mode, prompt, t.AllowedTools)
+	if t.Status != task.StatusInProgress {
+		if _, err := a.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			a.logger.Error("task.auto-status", "task_id", taskID, "err", err)
+		}
+	}
+	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
+	ag, err := a.agents.StartAgent(taskID, t.Title, mode, fullPrompt, t.AllowedTools)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.tasks.AddRun(taskID, task.AgentRun{
+		AgentID:   ag.ID,
+		Mode:      mode,
+		State:     string(agent.StateRunning),
+		StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
+	}
+	return ag, nil
 }
 
 func (a *App) StopAgent(agentID string) error {
@@ -289,7 +309,83 @@ func (a *App) TriageTask(id string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
+	}
 	a.logger.Info("triage.agent_started", "task_id", t.ID, "agent_id", ag.ID)
+	return nil
+}
+
+func (a *App) handleAgentComplete(ag *agent.Agent) {
+	var resultContent string
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" {
+			resultContent = ev.Content
+		}
+	}
+
+	// Persist run result to task file
+	truncatedResult := resultContent
+	if len(truncatedResult) > 2000 {
+		truncatedResult = truncatedResult[:2000] + "\n... (truncated)"
+	}
+	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
+		"state":    string(ag.State),
+		"cost_usd": ag.CostUSD,
+		"result":   truncatedResult,
+	}); err != nil {
+		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+
+	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
+		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+		return
+	}
+
+	go func() {
+		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
+			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		}
+	}()
+}
+
+func (a *App) EvaluateTask(taskID, agentResult string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+
+	if t.Status != task.StatusInProgress {
+		a.logger.Info("eval.skip", "task_id", t.ID, "status", string(t.Status), "reason", "not_in_progress")
+		return nil
+	}
+
+	dir := config.HomeDir()
+
+	truncated := agentResult
+	if len(truncated) > 4000 {
+		truncated = truncated[:4000] + "\n... (truncated)"
+	}
+
+	prompt := fmt.Sprintf(
+		"Evaluate task %s using /synapse-evaluate skill. Get the task with synapse-cli, "+
+			"review the agent result below, and update the task status.\n\n"+
+			"## Agent Result\n\n%s", t.ID, truncated)
+
+	a.logger.Info("eval.start", "task_id", t.ID, "title", t.Title, "dir", dir)
+
+	ag, err := a.agents.StartAgentInDir(t.ID, "eval:"+t.Title, "headless", prompt, nil, dir)
+	if err != nil {
+		return err
+	}
+	if err := a.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
+	}
+	a.logger.Info("eval.agent_started", "task_id", t.ID, "agent_id", ag.ID)
 	return nil
 }
 

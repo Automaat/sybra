@@ -33,7 +33,7 @@
 
     submitting = true
     try {
-      const t = await taskStore.create(value.trim(), '', 'headless')
+      const t = await taskStore.create(value.trim(), '', 'interactive')
       value = ''
       onclose()
       oncreated?.(t.id)

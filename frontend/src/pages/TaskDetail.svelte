@@ -22,7 +22,7 @@
   let t = $state<task.Task | null>(null)
   let error = $state('')
   let prompt = $state('')
-  let agentMode = $state('headless')
+  let agentMode = $state('interactive')
   let starting = $state(false)
   let runningAgent = $state<agent.Agent | null>(null)
 
@@ -54,7 +54,7 @@
   async function loadTask() {
     try {
       t = await taskStore.get(taskId)
-      agentMode = t.agentMode || 'headless'
+      agentMode = t.agentMode || 'interactive'
     } catch (e) {
       error = String(e)
     }
@@ -95,6 +95,20 @@
     }
   }
 
+  const triaging = $derived(
+    agentStore.list.some((a) => a.taskId === taskId && a.name?.startsWith('triage:') && a.state === 'running')
+  )
+
+  const evaluating = $derived(
+    agentStore.list.some((a) => a.taskId === taskId && a.name?.startsWith('eval:') && a.state === 'running')
+  )
+
+  let expandedRun = $state<string | null>(null)
+
+  const pastRuns = $derived(
+    (t?.agentRuns ?? []).slice().reverse()
+  )
+
   function formatDate(date: any): string {
     if (!date) return '-'
     return new Date(date).toLocaleString()
@@ -123,6 +137,18 @@
         <h1 class="text-2xl font-bold">{t.title}</h1>
         <div class="flex items-center gap-2">
           <StatusBadge status={t.status} />
+          {#if triaging}
+            <span class="inline-flex items-center gap-1 rounded-full bg-primary-200 px-2 py-0.5 text-xs font-medium text-primary-800 dark:bg-primary-700 dark:text-primary-200">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
+              Triaging
+            </span>
+          {/if}
+          {#if evaluating}
+            <span class="inline-flex items-center gap-1 rounded-full bg-warning-200 px-2 py-0.5 text-xs font-medium text-warning-800 dark:bg-warning-700 dark:text-warning-200">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
+              Evaluating
+            </span>
+          {/if}
           <button
             type="button"
             class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
@@ -235,25 +261,15 @@
       {:else}
         <div class="flex flex-col gap-3">
           <span class="text-sm font-medium text-surface-500">Run Agent</span>
-          <div class="flex flex-col gap-1">
-            <SegmentedControl
-              orientation="horizontal"
-              value={agentMode}
-              onValueChange={(details) => { if (details.value) agentMode = details.value }}
-            >
-              <SegmentedControl.Control>
-                <SegmentedControl.Indicator />
-                <SegmentedControl.Item value="headless">
-                  <SegmentedControl.ItemText>Headless</SegmentedControl.ItemText>
-                  <SegmentedControl.ItemHiddenInput />
-                </SegmentedControl.Item>
-                <SegmentedControl.Item value="interactive">
-                  <SegmentedControl.ItemText>Interactive</SegmentedControl.ItemText>
-                  <SegmentedControl.ItemHiddenInput />
-                </SegmentedControl.Item>
-              </SegmentedControl.Control>
-            </SegmentedControl>
-          </div>
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={agentMode === 'headless'}
+              onchange={(e) => { agentMode = e.currentTarget.checked ? 'headless' : 'interactive' }}
+              class="rounded border-surface-300 dark:border-surface-600"
+            />
+            <span class="text-sm">Headless</span>
+          </label>
           <textarea
             class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
             rows="3"
@@ -266,8 +282,46 @@
             onclick={startAgent}
             disabled={starting || !prompt.trim()}
           >
-            {starting ? 'Starting...' : `Start ${agentMode} agent`}
+            {starting ? 'Starting...' : 'Start agent'}
           </button>
+        </div>
+      {/if}
+
+      {#if pastRuns.length > 0}
+        <hr class="border-surface-300 dark:border-surface-600" />
+        <div class="flex flex-col gap-3">
+          <span class="text-sm font-medium text-surface-500">Agent History</span>
+          {#each pastRuns as run (run.agentId)}
+            <div class="rounded-lg border border-surface-300 bg-surface-50 dark:border-surface-600 dark:bg-surface-800">
+              <button
+                type="button"
+                class="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
+                onclick={() => { expandedRun = expandedRun === run.agentId ? null : run.agentId }}
+              >
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-surface-400">{run.agentId}</span>
+                  <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{run.mode}</span>
+                  <span class="rounded px-1.5 py-0.5 {run.state === 'stopped' ? 'bg-surface-200 dark:bg-surface-700' : 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200'}">
+                    {run.state || 'running'}
+                  </span>
+                </div>
+                <div class="flex items-center gap-3 text-surface-400">
+                  {#if run.costUsd > 0}
+                    <span>${run.costUsd.toFixed(4)}</span>
+                  {/if}
+                  <span>{formatDate(run.startedAt)}</span>
+                  <svg class="h-4 w-4 transition-transform {expandedRun === run.agentId ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </button>
+              {#if expandedRun === run.agentId && run.result}
+                <div class="border-t border-surface-300 px-3 py-2 dark:border-surface-600">
+                  <pre class="whitespace-pre-wrap text-xs text-surface-300">{run.result}</pre>
+                </div>
+              {/if}
+            </div>
+          {/each}
         </div>
       {/if}
     </div>

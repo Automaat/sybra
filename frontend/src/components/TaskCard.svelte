@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { task } from '../../wailsjs/go/models.js'
+  import { agentStore } from '../stores/agents.svelte.js'
 
   interface Props {
     task: task.Task
@@ -7,6 +8,14 @@
   }
 
   const { task: t, onclick }: Props = $props()
+
+  const triaging = $derived(
+    agentStore.list.some((a) => a.taskId === t.id && a.name?.startsWith('triage:') && a.state === 'running')
+  )
+
+  const evaluating = $derived(
+    agentStore.list.some((a) => a.taskId === t.id && a.name?.startsWith('eval:') && a.state === 'running')
+  )
 
   function timeAgo(date: any): string {
     if (!date) return ''
@@ -31,6 +40,20 @@
     <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">
       {t.agentMode}
     </span>
+
+    {#if triaging}
+      <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
+        Triaging
+      </span>
+    {/if}
+
+    {#if evaluating}
+      <span class="inline-flex items-center gap-1 rounded bg-warning-200 px-1.5 py-0.5 text-warning-800 dark:bg-warning-700 dark:text-warning-200">
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
+        Evaluating
+      </span>
+    {/if}
 
     {#if t.tags?.length}
       {#each t.tags as tag}

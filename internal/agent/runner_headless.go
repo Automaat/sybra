@@ -92,6 +92,9 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 	a.State = StateStopped
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.CostUSD)
 	m.emit("agent:state:"+a.ID, a)
+	if m.onComplete != nil {
+		m.onComplete(a)
+	}
 }
 
 func parseStreamEvent(line []byte) StreamEvent {

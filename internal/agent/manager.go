@@ -16,13 +16,14 @@ import (
 type EmitFunc func(event string, data any)
 
 type Manager struct {
-	agents map[string]*Agent
-	mu     sync.RWMutex
-	ctx    context.Context
-	tmux   *tmux.Manager
-	emit   EmitFunc
-	logger *slog.Logger
-	logDir string
+	agents     map[string]*Agent
+	mu         sync.RWMutex
+	ctx        context.Context
+	tmux       *tmux.Manager
+	emit       EmitFunc
+	onComplete func(ag *Agent)
+	logger     *slog.Logger
+	logDir     string
 }
 
 func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -34,6 +35,10 @@ func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *sl
 		logger: logger,
 		logDir: logDir,
 	}
+}
+
+func (m *Manager) SetOnComplete(fn func(ag *Agent)) {
+	m.onComplete = fn
 }
 
 func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt string, allowedTools []string) (*Agent, error) {
@@ -132,6 +137,9 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	m.logger.Info("agent.stop", "id", agentID)
 	m.emit("agent:state:"+agentID, a)
+	if m.onComplete != nil {
+		m.onComplete(a)
+	}
 	return nil
 }
 
