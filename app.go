@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -447,6 +448,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.maybeStartOrchestrator()
+			a.maybeDispatchTasks()
 		}
 	}
 }
@@ -479,6 +481,88 @@ func (a *App) maybeStartOrchestrator() {
 	if err := a.StartOrchestrator(); err != nil {
 		a.logger.Error("orchestrator.auto-start.failed", "err", err)
 	}
+}
+
+const maxConcurrentAgents = 3
+
+func (a *App) maybeDispatchTasks() {
+	running := 0
+	for _, ag := range a.agents.ListAgents() {
+		if ag.State == agent.StateRunning {
+			running++
+		}
+	}
+	if running >= maxConcurrentAgents {
+		return
+	}
+
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+
+	var candidates []task.Task
+	for i := range tasks {
+		if tasks[i].Status != task.StatusTodo {
+			continue
+		}
+		if tasks[i].AgentMode == "" || len(tasks[i].Tags) == 0 {
+			continue
+		}
+		if slices.Contains(tasks[i].Tags, "large") {
+			continue
+		}
+		candidates = append(candidates, tasks[i])
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	slices.SortFunc(candidates, func(a, b task.Task) int {
+		pa, pb := taskPriority(a.Tags), taskPriority(b.Tags)
+		if pa != pb {
+			return pa - pb
+		}
+		sa, sb := taskSize(a.Tags), taskSize(b.Tags)
+		return sa - sb
+	})
+
+	slots := maxConcurrentAgents - running
+	for i := range min(slots, len(candidates)) {
+		t := candidates[i]
+		a.logger.Info("auto-dispatch", "task_id", t.ID, "title", t.Title)
+		if _, err := a.UpdateTask(t.ID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			a.logger.Error("auto-dispatch.failed", "task_id", t.ID, "err", err)
+		}
+	}
+}
+
+func taskPriority(tags []string) int {
+	for _, t := range tags {
+		switch t {
+		case "urgent":
+			return 0
+		case "high":
+			return 1
+		case "normal":
+			return 2
+		case "low":
+			return 3
+		}
+	}
+	return 2
+}
+
+func taskSize(tags []string) int {
+	for _, t := range tags {
+		switch t {
+		case "small":
+			return 0
+		case "medium":
+			return 1
+		}
+	}
+	return 1
 }
 
 const orchestratorSession = "synapse-orchestrator"

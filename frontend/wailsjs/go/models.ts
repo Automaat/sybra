@@ -267,6 +267,7 @@ export namespace task {
 	}
 	export class Task {
 	    id: string;
+	    slug: string;
 	    title: string;
 	    status: string;
 	    agentMode: string;
@@ -288,6 +289,7 @@ export namespace task {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.slug = source["slug"];
 	        this.title = source["title"];
 	        this.status = source["status"];
 	        this.agentMode = source["agentMode"];
