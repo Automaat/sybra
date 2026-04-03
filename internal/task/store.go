@@ -79,6 +79,17 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	return t, nil
 }
 
+func (s *Store) Delete(id string) error {
+	t, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(t.FilePath); err != nil {
+		return fmt.Errorf("delete task file: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	t, err := s.Get(id)
 	if err != nil {

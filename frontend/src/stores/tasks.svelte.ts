@@ -1,4 +1,4 @@
-import { ListTasks, GetTask, CreateTask, UpdateTask } from '../../wailsjs/go/main/App.js'
+import { ListTasks, GetTask, CreateTask, UpdateTask, DeleteTask } from '../../wailsjs/go/main/App.js'
 import { task } from '../../wailsjs/go/models.js'
 
 class TaskStore {
@@ -52,6 +52,11 @@ class TaskStore {
     const result = await UpdateTask(id, updates)
     this.tasks.set(result.id, result)
     return result
+  }
+
+  async remove(id: string): Promise<void> {
+    await DeleteTask(id)
+    this.tasks.delete(id)
   }
 }
 
