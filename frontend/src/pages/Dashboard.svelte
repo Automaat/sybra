@@ -1,4 +1,5 @@
 <script lang="ts">
+  import snarkdown from 'snarkdown'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import AgentCard from '../components/AgentCard.svelte'
@@ -19,6 +20,7 @@
     todo: taskStore.byStatus('todo').length,
     'in-progress': taskStore.byStatus('in-progress').length,
     'in-review': taskStore.byStatus('in-review').length,
+    'human-required': taskStore.byStatus('human-required').length,
     done: taskStore.byStatus('done').length,
   })
   const totalTasks = $derived(taskStore.list.length)
@@ -28,6 +30,28 @@
   )
 
   const recentTasks = $derived(taskStore.list.slice(0, 5))
+  const humanRequiredTasks = $derived(taskStore.byStatus('human-required'))
+
+  let expandedTaskId = $state<string | null>(null)
+  let promptText = $state('')
+  let submitting = $state(false)
+  let submitError = $state('')
+
+  async function submitPrompt(taskId: string) {
+    if (!promptText.trim()) return
+    submitting = true
+    submitError = ''
+    try {
+      await agentStore.start(taskId, 'headless', promptText.trim())
+      await taskStore.update(taskId, { status: 'in-progress' })
+      promptText = ''
+      expandedTaskId = null
+    } catch (e) {
+      submitError = String(e)
+    } finally {
+      submitting = false
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-6 p-6">
@@ -72,6 +96,9 @@
       <span class="rounded bg-warning-200 px-2.5 py-1 text-xs text-warning-800 dark:bg-warning-700 dark:text-warning-200">
         In Review <strong>{tasksByStatus['in-review']}</strong>
       </span>
+      <span class="rounded bg-error-200 px-2.5 py-1 text-xs text-error-800 dark:bg-error-700 dark:text-error-200">
+        Human Required <strong>{tasksByStatus['human-required']}</strong>
+      </span>
     </div>
   </div>
 
@@ -82,6 +109,56 @@
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {#each [...runningAgents, ...pausedAgents] as a (a.id)}
           <AgentCard agent={a} onclick={() => onviewagent(a.id)} />
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Human required -->
+  {#if humanRequiredTasks.length > 0}
+    <div class="flex flex-col gap-2">
+      <span class="text-sm font-medium text-error-500">Human Required ({humanRequiredTasks.length})</span>
+      <div class="flex flex-col gap-1">
+        {#each humanRequiredTasks as t (t.id)}
+          <div class="rounded-lg border border-error-300 bg-error-50 dark:border-error-700 dark:bg-error-950">
+            <button
+              type="button"
+              class="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors hover:bg-error-100 dark:hover:bg-error-900"
+              onclick={() => { expandedTaskId = expandedTaskId === t.id ? null : t.id; promptText = ''; submitError = '' }}
+            >
+              <span class="font-medium">{t.title}</span>
+              <svg class="h-4 w-4 text-error-500 transition-transform {expandedTaskId === t.id ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {#if expandedTaskId === t.id}
+              <div class="flex flex-col gap-2 border-t border-error-300 px-4 py-3 dark:border-error-700">
+                {#if t.body}
+                  <div class="prose prose-sm max-w-none text-surface-700 dark:text-surface-300 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-medium [&_p]:text-xs [&_li]:text-xs [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_strong]:font-semibold [&_code]:rounded [&_code]:bg-surface-200 [&_code]:px-1 [&_code]:text-xs [&_code]:dark:bg-surface-700 [&_a]:text-primary-500 [&_a]:underline">
+                    {@html snarkdown(t.body)}
+                  </div>
+                {/if}
+                {#if submitError}
+                  <p class="text-xs text-error-500">{submitError}</p>
+                {/if}
+                <textarea
+                  class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-2 text-sm dark:border-surface-600 dark:bg-surface-800"
+                  rows="2"
+                  placeholder="Tell the agent what to do..."
+                  bind:value={promptText}
+                  onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitPrompt(t.id) } }}
+                ></textarea>
+                <button
+                  type="button"
+                  class="w-fit rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+                  onclick={() => submitPrompt(t.id)}
+                  disabled={submitting || !promptText.trim()}
+                >
+                  {submitting ? 'Starting...' : 'Send to agent'}
+                </button>
+              </div>
+            {/if}
+          </div>
         {/each}
       </div>
     </div>
@@ -103,6 +180,7 @@
               {t.status === 'done' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
                t.status === 'in-progress' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
                t.status === 'in-review' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
+               t.status === 'human-required' ? 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200' :
                t.status === 'new' ? 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200' :
                'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
               {t.status}

@@ -5,11 +5,12 @@ import "time"
 type Status string
 
 const (
-	StatusNew        Status = "new"
-	StatusTodo       Status = "todo"
-	StatusInProgress Status = "in-progress"
-	StatusInReview   Status = "in-review"
-	StatusDone       Status = "done"
+	StatusNew           Status = "new"
+	StatusTodo          Status = "todo"
+	StatusInProgress    Status = "in-progress"
+	StatusInReview      Status = "in-review"
+	StatusHumanRequired Status = "human-required"
+	StatusDone          Status = "done"
 )
 
 type AgentRun struct {

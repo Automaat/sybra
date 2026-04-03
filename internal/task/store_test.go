@@ -318,6 +318,36 @@ func TestStoreUpdateProjectID(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateStatusHumanRequired(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Blocked task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.Update(created.ID, map[string]any{
+		"status": "human-required",
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Status != StatusHumanRequired {
+		t.Errorf("Status = %q, want %q", updated.Status, StatusHumanRequired)
+	}
+
+	reloaded, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Status != StatusHumanRequired {
+		t.Errorf("persisted Status = %q, want %q", reloaded.Status, StatusHumanRequired)
+	}
+}
+
 func TestStoreUpdateNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

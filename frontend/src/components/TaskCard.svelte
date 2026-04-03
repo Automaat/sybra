@@ -9,6 +9,8 @@
 
   const { task: t, onclick }: Props = $props()
 
+  let dragging = $state(false)
+
   const triaging = $derived(
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('triage:') && a.state === 'running')
   )
@@ -31,8 +33,15 @@
 
 <button
   type="button"
-  class="w-full rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+  draggable="true"
+  class="w-full rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700 {dragging ? 'opacity-40' : ''}"
   onclick={onclick}
+  ondragstart={(e) => {
+    dragging = true
+    e.dataTransfer!.setData('text/plain', t.id)
+    e.dataTransfer!.effectAllowed = 'move'
+  }}
+  ondragend={() => { dragging = false }}
 >
   <h3 class="mb-1.5 text-sm font-semibold leading-tight">{t.title}</h3>
 

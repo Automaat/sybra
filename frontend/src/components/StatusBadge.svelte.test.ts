@@ -8,6 +8,11 @@ describe('StatusBadge', () => {
     expect(screen.getByText('Todo')).toBeDefined()
   })
 
+  it('renders human-required status', () => {
+    render(StatusBadge, { props: { status: 'human-required' } })
+    expect(screen.getByText('Human Required')).toBeDefined()
+  })
+
   it('renders unknown status as-is', () => {
     render(StatusBadge, { props: { status: 'custom' } })
     expect(screen.getByText('custom')).toBeDefined()
