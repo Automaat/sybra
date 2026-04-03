@@ -21,6 +21,10 @@ synapse/
 │   │   └── runner_headless.go # claude -p NDJSON stream parser
 │   ├── tmux/
 │   │   └── manager.go       # tmux session CRUD via os/exec
+│   ├── project/             # GitHub repo mirror + git worktree management
+│   │   ├── model.go         # Project struct
+│   │   ├── store.go         # YAML-backed project store
+│   │   └── git.go           # Clone, worktree, fetch operations
 │   ├── watcher/
 │   │   └── watcher.go       # fsnotify on tasks/ dir, debounced
 │   └── github/
@@ -96,6 +100,7 @@ status: todo              # todo|in-progress|done|blocked
 agent_mode: headless      # interactive|headless
 allowed_tools: []         # empty = all tools allowed
 tags: [backend, auth]
+project_id: owner/repo    # optional, links to a registered project
 created_at: 2026-04-02T10:00:00Z
 updated_at: 2026-04-02T10:00:00Z
 ---
@@ -104,6 +109,20 @@ Task body in markdown.
 ```
 
 Parse with `task.Parse(path)` or `task.ParseBytes(data)`. Marshal with `task.Marshal(t)`.
+
+### Projects
+
+Projects mirror GitHub repos. Created from a GitHub URL, cloned as bare repos.
+
+**Storage:** `~/.synapse/projects/` (YAML metadata), `~/.synapse/clones/` (bare git repos), `~/.synapse/worktrees/` (per-task checkouts).
+
+**Flow:** Create project from URL → bare clone → assign `project_id` to tasks → agent start auto-creates worktree → worktree cleaned up on agent completion.
+
+**CLI:**
+```bash
+synapse-cli project list|get|create|delete
+synapse-cli create --title "..." --project "owner/repo"
+```
 
 ### Agent Execution Modes
 

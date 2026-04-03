@@ -32,7 +32,7 @@ func main() {
 	}
 	defer cleanup()
 
-	app := NewApp(logger, cfg.Logging.Dir, cfg.TasksDir, cfg.SkillsDir, cfg.RepoDir)
+	app := NewApp(logger, cfg)
 
 	var (
 		quitArmed bool

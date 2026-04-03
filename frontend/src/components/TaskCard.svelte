@@ -41,6 +41,12 @@
       {t.agentMode}
     </span>
 
+    {#if t.projectId}
+      <span class="rounded bg-primary-100 px-1.5 py-0.5 text-primary-700 dark:bg-primary-800 dark:text-primary-300">
+        {t.projectId}
+      </span>
+    {/if}
+
     {#if triaging}
       <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>

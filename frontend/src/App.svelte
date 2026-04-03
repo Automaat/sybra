@@ -3,11 +3,15 @@
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'
+  import { projectStore } from './stores/projects.svelte.js'
   import TaskList from './pages/TaskList.svelte'
   import TaskDetail from './pages/TaskDetail.svelte'
   import AgentList from './pages/AgentList.svelte'
   import AgentDetail from './pages/AgentDetail.svelte'
+  import ProjectList from './pages/ProjectList.svelte'
+  import ProjectDetail from './pages/ProjectDetail.svelte'
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
+  import CreateProjectDialog from './components/CreateProjectDialog.svelte'
   import QuickAddTask from './components/QuickAddTask.svelte'
   import Dashboard from './pages/Dashboard.svelte'
   import TmuxSessions from './pages/TmuxSessions.svelte'
@@ -18,6 +22,8 @@
     | { kind: 'dashboard' }
     | { kind: 'task-list' }
     | { kind: 'task-detail'; taskId: string }
+    | { kind: 'project-list' }
+    | { kind: 'project-detail'; projectId: string }
     | { kind: 'agent-list' }
     | { kind: 'agent-detail'; agentId: string }
     | { kind: 'orchestrator' }
@@ -26,6 +32,7 @@
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
+  let projectDialogOpen = $state(false)
   let quickAddOpen = $state(false)
   let quitConfirmVisible = $state(false)
   let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
@@ -34,6 +41,8 @@
     page.kind === 'dashboard' ? 'Dashboard' :
     page.kind === 'task-list' ? 'Tasks' :
     page.kind === 'task-detail' ? 'Task Detail' :
+    page.kind === 'project-list' ? 'Projects' :
+    page.kind === 'project-detail' ? 'Project Detail' :
     page.kind === 'agent-list' ? 'Agents' :
     page.kind === 'orchestrator' ? 'Orchestrator' :
     page.kind === 'tmux' ? 'Tmux Sessions' :
@@ -46,6 +55,8 @@
     taskStore.startPolling()
     agentStore.load()
     agentStore.startPolling()
+    projectStore.load()
+    projectStore.startPolling()
 
     const unsub1 = EventsOn('task:created', () => taskStore.load())
     const unsub2 = EventsOn('task:updated', () => taskStore.load())
@@ -84,17 +95,21 @@
       }
       if (e.metaKey && e.key === '3') {
         e.preventDefault()
-        page = { kind: 'agent-list' }
+        page = { kind: 'project-list' }
       }
       if (e.metaKey && e.key === '4') {
         e.preventDefault()
-        page = { kind: 'orchestrator' }
+        page = { kind: 'agent-list' }
       }
       if (e.metaKey && e.key === '5') {
         e.preventDefault()
-        page = { kind: 'tmux' }
+        page = { kind: 'orchestrator' }
       }
       if (e.metaKey && e.key === '6') {
+        e.preventDefault()
+        page = { kind: 'tmux' }
+      }
+      if (e.metaKey && e.key === '7') {
         e.preventDefault()
         page = { kind: 'github' }
       }
@@ -109,6 +124,7 @@
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       taskStore.stopPolling()
       agentStore.stopPolling()
+      projectStore.stopPolling()
       window.removeEventListener('keydown', handleKeydown)
     }
   })
@@ -137,6 +153,15 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
         </svg>
         <Navigation.TriggerText>Tasks</Navigation.TriggerText>
+      </Navigation.Trigger>
+      <Navigation.Trigger
+        onclick={() => (page = { kind: 'project-list' })}
+        data-active={page.kind === 'project-list' || page.kind === 'project-detail' || undefined}
+      >
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+        <Navigation.TriggerText>Projects</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
         onclick={() => (page = { kind: 'agent-list' })}
@@ -211,6 +236,17 @@
           onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
           ondelete={() => (page = { kind: 'task-list' })}
         />
+      {:else if page.kind === 'project-list'}
+        <ProjectList
+          onselect={(id) => (page = { kind: 'project-detail', projectId: id })}
+          onadd={() => (projectDialogOpen = true)}
+        />
+      {:else if page.kind === 'project-detail'}
+        <ProjectDetail
+          projectId={page.projectId}
+          onback={() => (page = { kind: 'project-list' })}
+          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
+        />
       {:else if page.kind === 'agent-list'}
         <AgentList onselect={(id) => (page = { kind: 'agent-detail', agentId: id })} />
       {:else if page.kind === 'agent-detail'}
@@ -234,6 +270,12 @@
   open={dialogOpen}
   onOpenChange={(open) => (dialogOpen = open)}
   oncreated={(id) => (page = { kind: 'task-detail', taskId: id })}
+/>
+
+<CreateProjectDialog
+  open={projectDialogOpen}
+  onOpenChange={(open) => (projectDialogOpen = open)}
+  oncreated={(id) => (page = { kind: 'project-detail', projectId: id })}
 />
 
 <QuickAddTask

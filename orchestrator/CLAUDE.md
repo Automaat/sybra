@@ -73,6 +73,20 @@ gh api repos/<owner>/<repo>/commits --jq '.[0:5] | .[].commit.message'
 
 Use gathered context to inform tags and mode selection.
 
+### Project Assignment
+
+If the task references a GitHub repo that is registered as a project, assign it:
+
+```bash
+# List registered projects
+synapse-cli --json project list
+
+# Assign project to task
+synapse-cli --json update <id> --project "owner/repo"
+```
+
+When a task has a project assigned, the system automatically creates a git worktree from the project's bare clone when starting an agent. This gives each agent an isolated working copy.
+
 ## Dispatch Rules
 
 ### When to Start an Agent

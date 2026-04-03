@@ -29,6 +29,7 @@ type Task struct {
 	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
 	AllowedTools []string   `yaml:"allowed_tools" json:"allowedTools"`
 	Tags         []string   `yaml:"tags" json:"tags"`
+	ProjectID    string     `yaml:"project_id,omitempty" json:"projectId"`
 	AgentRuns    []AgentRun `yaml:"agent_runs,omitempty" json:"agentRuns"`
 	CreatedAt    time.Time  `yaml:"created_at" json:"createdAt"`
 	UpdatedAt    time.Time  `yaml:"updated_at" json:"updatedAt"`

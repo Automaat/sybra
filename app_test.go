@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 )
@@ -45,14 +46,26 @@ func setupApp(t *testing.T) *App {
 	}
 }
 
+func testConfig(t *testing.T) *config.Config {
+	t.Helper()
+	return &config.Config{
+		Logging:      config.LoggingConfig{Dir: t.TempDir()},
+		TasksDir:     t.TempDir(),
+		SkillsDir:    t.TempDir(),
+		ProjectsDir:  t.TempDir(),
+		ClonesDir:    t.TempDir(),
+		WorktreesDir: t.TempDir(),
+	}
+}
+
 func TestNewApp(t *testing.T) {
-	tasksDir := t.TempDir()
-	a := NewApp(discardLogger(), t.TempDir(), tasksDir, t.TempDir(), "")
+	cfg := testConfig(t)
+	a := NewApp(discardLogger(), cfg)
 	if a == nil {
 		t.Fatal("NewApp returned nil")
 	}
-	if a.tasksDir != tasksDir {
-		t.Errorf("tasksDir = %q, want %q", a.tasksDir, tasksDir)
+	if a.tasksDir != cfg.TasksDir {
+		t.Errorf("tasksDir = %q, want %q", a.tasksDir, cfg.TasksDir)
 	}
 }
 
@@ -342,7 +355,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestStartup(t *testing.T) {
-	a := NewApp(discardLogger(), t.TempDir(), t.TempDir(), t.TempDir(), "")
+	a := NewApp(discardLogger(), testConfig(t))
 	if a.tasksDir == "" {
 		t.Error("tasksDir should not be empty")
 	}

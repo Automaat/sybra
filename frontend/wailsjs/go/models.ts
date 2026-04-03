@@ -151,6 +151,57 @@ export namespace github {
 
 }
 
+export namespace project {
+	
+	export class Project {
+	    id: string;
+	    name: string;
+	    owner: string;
+	    repo: string;
+	    url: string;
+	    clonePath: string;
+	    // Go type: time
+	    createdAt: any;
+	    // Go type: time
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Project(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.owner = source["owner"];
+	        this.repo = source["repo"];
+	        this.url = source["url"];
+	        this.clonePath = source["clonePath"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace task {
 	
 	export class AgentRun {
@@ -203,6 +254,7 @@ export namespace task {
 	    agentMode: string;
 	    allowedTools: string[];
 	    tags: string[];
+	    projectId: string;
 	    agentRuns: AgentRun[];
 	    // Go type: time
 	    createdAt: any;
@@ -223,6 +275,7 @@ export namespace task {
 	        this.agentMode = source["agentMode"];
 	        this.allowedTools = source["allowedTools"];
 	        this.tags = source["tags"];
+	        this.projectId = source["projectId"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);

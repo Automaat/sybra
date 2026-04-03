@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
@@ -21,25 +22,28 @@ import (
 )
 
 type App struct {
-	ctx       context.Context
-	tasks     *task.Store
-	agents    *agent.Manager
-	tmux      *tmux.Manager
-	watcher   *watcher.Watcher
-	tasksDir  string
-	skillsDir string
-	repoDir   string
-	logger    *slog.Logger
-	logDir    string
+	ctx          context.Context
+	tasks        *task.Store
+	projects     *project.Store
+	agents       *agent.Manager
+	tmux         *tmux.Manager
+	watcher      *watcher.Watcher
+	tasksDir     string
+	skillsDir    string
+	repoDir      string
+	worktreesDir string
+	logger       *slog.Logger
+	logDir       string
 }
 
-func NewApp(logger *slog.Logger, logDir, tasksDir, skillsDir, repoDir string) *App {
+func NewApp(logger *slog.Logger, cfg *config.Config) *App {
 	return &App{
-		tasksDir:  tasksDir,
-		skillsDir: skillsDir,
-		repoDir:   repoDir,
-		logger:    logger,
-		logDir:    logDir,
+		tasksDir:     cfg.TasksDir,
+		skillsDir:    cfg.SkillsDir,
+		repoDir:      cfg.RepoDir,
+		worktreesDir: cfg.WorktreesDir,
+		logger:       logger,
+		logDir:       cfg.Logging.Dir,
 	}
 }
 
@@ -49,6 +53,12 @@ func (a *App) startup(ctx context.Context) {
 
 	store, _ := task.NewStore(a.tasksDir)
 	a.tasks = store
+
+	projStore, _ := project.NewStore(
+		filepath.Join(config.HomeDir(), "projects"),
+		filepath.Join(config.HomeDir(), "clones"),
+	)
+	a.projects = projStore
 
 	a.tmux = tmux.NewManager()
 	emit := func(event string, data any) {
@@ -114,8 +124,24 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 			a.logger.Error("task.auto-status", "task_id", taskID, "err", err)
 		}
 	}
+
+	dir := ""
+	if t.ProjectID != "" {
+		d, wtErr := a.prepareWorktree(t)
+		if wtErr != nil {
+			a.logger.Error("worktree.prepare", "task_id", taskID, "err", wtErr)
+		} else {
+			dir = d
+		}
+	}
+
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
-	ag, err := a.agents.StartAgent(taskID, t.Title, mode, fullPrompt, t.AllowedTools)
+	var ag *agent.Agent
+	if dir != "" {
+		ag, err = a.agents.StartAgentInDir(taskID, t.Title, mode, fullPrompt, t.AllowedTools, dir)
+	} else {
+		ag, err = a.agents.StartAgent(taskID, t.Title, mode, fullPrompt, t.AllowedTools)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +154,70 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return ag, nil
+}
+
+func (a *App) prepareWorktree(t task.Task) (string, error) {
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+
+	if err := project.FetchOrigin(proj.ClonePath); err != nil {
+		a.logger.Warn("worktree.fetch", "project", proj.ID, "err", err)
+	}
+
+	branch, err := project.DefaultBranch(proj.ClonePath)
+	if err != nil {
+		return "", fmt.Errorf("default branch: %w", err)
+	}
+
+	wtPath := filepath.Join(a.worktreesDir, t.ID)
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, "synapse/"+t.ID, branch); err != nil {
+		return "", fmt.Errorf("create worktree: %w", err)
+	}
+
+	return wtPath, nil
+}
+
+func (a *App) cleanupWorktree(ag *agent.Agent) {
+	if ag.TaskID == "" {
+		return
+	}
+	wtPath := filepath.Join(a.worktreesDir, ag.TaskID)
+	if _, err := os.Stat(wtPath); err != nil {
+		return
+	}
+
+	t, err := a.tasks.Get(ag.TaskID)
+	if err != nil {
+		return
+	}
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return
+	}
+
+	if err := project.RemoveWorktree(proj.ClonePath, wtPath); err != nil {
+		a.logger.Error("worktree.cleanup", "path", wtPath, "err", err)
+	} else {
+		a.logger.Info("worktree.cleaned", "path", wtPath)
+	}
+}
+
+func (a *App) ListProjects() ([]project.Project, error) {
+	return a.projects.List()
+}
+
+func (a *App) GetProject(id string) (project.Project, error) {
+	return a.projects.Get(id)
+}
+
+func (a *App) CreateProject(url string) (project.Project, error) {
+	return a.projects.Create(url)
+}
+
+func (a *App) DeleteProject(id string) error {
+	return a.projects.Delete(id)
 }
 
 func (a *App) StopAgent(agentID string) error {
@@ -340,6 +430,8 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	}); err != nil {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+
+	a.cleanupWorktree(ag)
 
 	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
 		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")

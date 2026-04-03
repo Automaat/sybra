@@ -11,7 +11,7 @@ Triage incoming tasks: analyze content, assign tags, set appropriate agent mode,
 
 ## CLI Reference
 
-The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
+The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
 
 ## Process
 
@@ -72,7 +72,21 @@ synapse-cli --json update <id> --tags "backend,small,review"
 synapse-cli --json update <id> --mode headless
 ```
 
-### 5. Update status when triaged
+### 5. Assign project (if applicable)
+
+Check if the task references a known project (GitHub repo). List available projects:
+
+```bash
+synapse-cli --json project list
+```
+
+If the task body/URL matches a registered project, assign it:
+
+```bash
+synapse-cli --json update <id> --project "owner/repo"
+```
+
+### 6. Update status when triaged
 
 If the task is still `new` after assigning tags and mode, move it to `todo`:
 

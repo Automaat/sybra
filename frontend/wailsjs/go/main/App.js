@@ -22,8 +22,16 @@ export function CaptureOrchestratorPane() {
   return window['go']['main']['App']['CaptureOrchestratorPane']();
 }
 
+export function CreateProject(arg1) {
+  return window['go']['main']['App']['CreateProject'](arg1);
+}
+
 export function CreateTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateTask'](arg1, arg2, arg3);
+}
+
+export function DeleteProject(arg1) {
+  return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
 export function DeleteTask(arg1) {
@@ -46,6 +54,10 @@ export function GetAgentOutput(arg1) {
   return window['go']['main']['App']['GetAgentOutput'](arg1);
 }
 
+export function GetProject(arg1) {
+  return window['go']['main']['App']['GetProject'](arg1);
+}
+
 export function GetTask(arg1) {
   return window['go']['main']['App']['GetTask'](arg1);
 }
@@ -60,6 +72,10 @@ export function KillTmuxSession(arg1) {
 
 export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
+}
+
+export function ListProjects() {
+  return window['go']['main']['App']['ListProjects']();
 }
 
 export function ListTasks() {
