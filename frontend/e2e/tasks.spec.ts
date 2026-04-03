@@ -17,7 +17,7 @@ async function cleanupCreatedTasks() {
 
 async function goToTaskList(page: Page) {
   await page.goto('/')
-  await page.locator('[data-part="trigger"]', { hasText: 'Board' }).click()
+  await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
 }
 
@@ -222,7 +222,7 @@ test.describe('Navigation Rail', () => {
     await page.getByText('Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
-    const navTrigger = page.locator('[data-part="trigger"]', { hasText: 'Board' })
+    const navTrigger = page.locator('[data-part="trigger"]', { hasText: /Board/ })
     await navTrigger.click()
 
     await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
