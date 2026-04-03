@@ -59,7 +59,20 @@ Files: N changed (+A/-D)
 <description excerpt, max ~500 chars>"
 ```
 
-### 3. Assign tags based on analysis
+### 3. Add brief description if missing
+
+If the task body is empty or has no meaningful context beyond a URL, add a 2-3 sentence description based on what you know from the title, URL context (if fetched), and general understanding. Do NOT explore the codebase or read source files — just clarify what the task is about and what "done" looks like.
+
+```bash
+synapse-cli --json update <id> \
+  --body "Brief description of what needs to happen and expected outcome.
+
+Original context preserved here if any."
+```
+
+Skip if the task already has a clear, descriptive body.
+
+### 4. Assign tags based on analysis
 
 Common tag categories:
 - **Domain**: `backend`, `frontend`, `infra`, `docs`, `ci`
@@ -70,7 +83,7 @@ Common tag categories:
 synapse-cli --json update <id> --tags "backend,small,review"
 ```
 
-### 4. Set agent mode
+### 5. Set agent mode
 
 - `headless` — automated tasks: code reviews, simple fixes, test writing
 - `interactive` — tasks needing human guidance: architecture decisions, complex debugging
@@ -79,7 +92,7 @@ synapse-cli --json update <id> --tags "backend,small,review"
 synapse-cli --json update <id> --mode headless
 ```
 
-### 5. Assign project (if applicable)
+### 6. Assign project (if applicable)
 
 Check if the task references a known project (GitHub repo). List available projects:
 
@@ -93,7 +106,7 @@ If the task body/URL matches a registered project, assign it:
 synapse-cli --json update <id> --project "owner/repo"
 ```
 
-### 6. Decide: planning or direct implementation
+### 7. Decide: planning or direct implementation
 
 Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
 
@@ -112,7 +125,7 @@ synapse-cli --json update <id> --status todo
 | Size `small`, type `bug`/`refactor`/`review`/`chore` | todo |
 | PR review | todo |
 
-Step 6 already sets the status — no further status update needed. Skip if a previous step already changed the status.
+Step 7 already sets the status — no further status update needed. Skip if a previous step already changed the status.
 
 ## Decision Criteria
 
