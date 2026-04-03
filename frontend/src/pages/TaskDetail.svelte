@@ -31,6 +31,7 @@
     { value: 'todo', label: 'Todo' },
     { value: 'in-progress', label: 'In Progress' },
     { value: 'in-review', label: 'In Review' },
+    { value: 'human-required', label: 'Human Required' },
     { value: 'done', label: 'Done' },
   ]
 

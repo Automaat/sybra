@@ -32,7 +32,7 @@ Review the agent result provided in the prompt. Consider:
 | Agent completed work successfully, task is simple/mechanical | done | No review needed |
 | Agent completed work but output needs human verification | in-review | Complex changes need eyes |
 | Agent failed, hit errors, or produced no useful output | todo | Reset for retry |
-| Agent explicitly said it's blocked or needs input | blocked | Needs human intervention |
+| Agent explicitly said it's blocked or needs input | human-required | Needs human intervention |
 
 ### Guidelines
 

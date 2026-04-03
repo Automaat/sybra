@@ -59,6 +59,21 @@ status: done
 			wantErr: true,
 		},
 		{
+			name: "human-required status",
+			input: `---
+id: hr1
+title: Needs human
+status: human-required
+---
+Blocked on credentials`,
+			want: Task{
+				ID:     "hr1",
+				Title:  "Needs human",
+				Status: StatusHumanRequired,
+				Body:   "Blocked on credentials",
+			},
+		},
+		{
 			name: "allowed_tools parsed",
 			input: `---
 id: t1

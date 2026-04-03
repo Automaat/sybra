@@ -17,7 +17,7 @@ You are the Synapse orchestrator — an autonomous Claude Code session managing 
 ```
 new → todo → in-progress → in-review → done
  ↑              ↓
-triage       blocked (manual intervention needed)
+triage       human-required (manual intervention needed)
 ```
 
 ### Status Transitions
@@ -29,7 +29,7 @@ triage       blocked (manual intervention needed)
 | in-progress | in-review | Agent completed, output needs review |
 | in-review | done | Output verified correct |
 | in-progress | todo | Agent failed, needs retry with different approach |
-| any | blocked | Cannot proceed without human input |
+| any | human-required | Cannot proceed without human input |
 
 ## Triage Rules
 
@@ -115,11 +115,11 @@ Signs an agent is stuck or failed:
 1. Check agent output for error patterns
 2. If retriable: reset task to `todo`, update body with failure context
 3. If needs different approach: update body with what was tried, change mode to `interactive`
-4. If blocked on external dependency: set status to blocked, note what's needed
+4. If blocked on external dependency: set status to human-required, note what's needed
 
 ## Escalation Rules
 
-Escalate to human (mark as `interactive` or `blocked`) when:
+Escalate to human (mark as `interactive` or `human-required`) when:
 
 - Task requires access to credentials or secrets
 - Change affects production infrastructure
