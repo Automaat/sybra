@@ -975,8 +975,8 @@ func (a *App) ApprovePlan(id string) (task.Task, error) {
 	}
 	a.logger.Info("plan.approve", "task_id", id, "title", t.Title)
 	a.logAudit(audit.EventPlanApproved, id, "", map[string]any{"title": t.Title})
-	return a.tasks.Update(id, map[string]any{
-		"status": string(task.StatusTodo),
+	return a.UpdateTask(id, map[string]any{
+		"status": string(task.StatusInProgress),
 	})
 }
 
