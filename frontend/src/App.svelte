@@ -115,6 +115,7 @@
           taskId={page.taskId}
           onback={() => (page = { kind: 'task-list' })}
           onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
+          ondelete={() => (page = { kind: 'task-list' })}
         />
       {:else if page.kind === 'agent-list'}
         <AgentList onselect={(id) => (page = { kind: 'agent-detail', agentId: id })} />

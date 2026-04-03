@@ -12,13 +12,17 @@
     taskId: string
     onback: () => void
     onviewagent: (agentId: string) => void
+    ondelete: () => void
   }
 
-  const { taskId, onback, onviewagent }: Props = $props()
+  const { taskId, onback, onviewagent, ondelete }: Props = $props()
+
+  let deleting = $state(false)
 
   let t = $state<task.Task | null>(null)
   let error = $state('')
   let prompt = $state('')
+  let agentMode = $state('headless')
   let starting = $state(false)
   let runningAgent = $state<agent.Agent | null>(null)
 
@@ -49,6 +53,7 @@
   async function loadTask() {
     try {
       t = await taskStore.get(taskId)
+      agentMode = t.agentMode || 'headless'
     } catch (e) {
       error = String(e)
     }
@@ -68,12 +73,24 @@
     starting = true
     error = ''
     try {
-      runningAgent = await agentStore.start(taskId, t.agentMode, prompt.trim())
+      runningAgent = await agentStore.start(taskId, agentMode, prompt.trim())
       prompt = ''
     } catch (e) {
       error = String(e)
     } finally {
       starting = false
+    }
+  }
+
+  async function deleteTask() {
+    if (!t) return
+    deleting = true
+    try {
+      await taskStore.remove(taskId)
+      ondelete()
+    } catch (e) {
+      error = String(e)
+      deleting = false
     }
   }
 
@@ -103,7 +120,17 @@
     <div class="flex flex-col gap-6">
       <div class="flex items-start justify-between gap-4">
         <h1 class="text-2xl font-bold">{t.title}</h1>
-        <StatusBadge status={t.status} />
+        <div class="flex items-center gap-2">
+          <StatusBadge status={t.status} />
+          <button
+            type="button"
+            class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
+            onclick={deleteTask}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </button>
+        </div>
       </div>
 
       <div class="flex flex-col gap-1">
@@ -207,6 +234,25 @@
       {:else}
         <div class="flex flex-col gap-3">
           <span class="text-sm font-medium text-surface-500">Run Agent</span>
+          <div class="flex flex-col gap-1">
+            <SegmentedControl
+              orientation="horizontal"
+              value={agentMode}
+              onValueChange={(details) => { if (details.value) agentMode = details.value }}
+            >
+              <SegmentedControl.Control>
+                <SegmentedControl.Indicator />
+                <SegmentedControl.Item value="headless">
+                  <SegmentedControl.ItemText>Headless</SegmentedControl.ItemText>
+                  <SegmentedControl.ItemHiddenInput />
+                </SegmentedControl.Item>
+                <SegmentedControl.Item value="interactive">
+                  <SegmentedControl.ItemText>Interactive</SegmentedControl.ItemText>
+                  <SegmentedControl.ItemHiddenInput />
+                </SegmentedControl.Item>
+              </SegmentedControl.Control>
+            </SegmentedControl>
+          </div>
           <textarea
             class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
             rows="3"
@@ -219,7 +265,7 @@
             onclick={startAgent}
             disabled={starting || !prompt.trim()}
           >
-            {starting ? 'Starting...' : `Start ${t.agentMode} agent`}
+            {starting ? 'Starting...' : `Start ${agentMode} agent`}
           </button>
         </div>
       {/if}

@@ -3,6 +3,7 @@ import { render, screen, cleanup } from '@testing-library/svelte'
 
 const mockGet = vi.fn()
 const mockUpdate = vi.fn()
+const mockRemove = vi.fn()
 const mockStart = vi.fn()
 const mockStop = vi.fn()
 const mockByTask = vi.fn()
@@ -13,6 +14,7 @@ vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get: (...args: unknown[]) => mockGet(...args),
     update: (...args: unknown[]) => mockUpdate(...args),
+    remove: (...args: unknown[]) => mockRemove(...args),
   },
 }))
 
@@ -76,7 +78,7 @@ describe('TaskDetail', () => {
   it('shows loading initially before loadTask resolves', () => {
     mockGet.mockReturnValue(new Promise(() => {}))
     render(TaskDetail, {
-      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn() },
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     expect(screen.getByText('Loading...')).toBeDefined()
   })
@@ -84,7 +86,7 @@ describe('TaskDetail', () => {
   it('shows task title after loading', async () => {
     mockGet.mockResolvedValue(mockTask)
     render(TaskDetail, {
-      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn() },
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Test Task')).toBeDefined()
@@ -94,7 +96,7 @@ describe('TaskDetail', () => {
   it('shows error when loadTask fails', async () => {
     mockGet.mockRejectedValue(new Error('not found'))
     render(TaskDetail, {
-      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn() },
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Error: not found')).toBeDefined()
@@ -104,8 +106,45 @@ describe('TaskDetail', () => {
   it('shows back to tasks button', () => {
     mockGet.mockReturnValue(new Promise(() => {}))
     render(TaskDetail, {
-      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn() },
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     expect(screen.getByText('Back to tasks')).toBeDefined()
+  })
+
+  it('shows delete button after loading', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete')).toBeDefined()
+    })
+  })
+
+  it('calls remove and ondelete when delete clicked', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    mockRemove.mockResolvedValue(undefined)
+    const ondelete = vi.fn()
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete')).toBeDefined()
+    })
+    screen.getByText('Delete').click()
+    await vi.waitFor(() => {
+      expect(mockRemove).toHaveBeenCalledWith('task-1')
+      expect(ondelete).toHaveBeenCalled()
+    })
+  })
+
+  it('shows start agent button with mode', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Start headless agent')).toBeDefined()
+    })
   })
 })

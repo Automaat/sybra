@@ -75,6 +75,10 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	return a.tasks.Update(id, updates)
 }
 
+func (a *App) DeleteTask(id string) error {
+	return a.tasks.Delete(id)
+}
+
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
