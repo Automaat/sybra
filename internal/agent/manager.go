@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,13 +36,14 @@ func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *sl
 	}
 }
 
-func (m *Manager) StartAgent(taskID, mode, prompt string, allowedTools []string) (*Agent, error) {
+func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt string, allowedTools []string) (*Agent, error) {
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(m.ctx)
 
 	a := &Agent{
 		ID:        id,
 		TaskID:    taskID,
+		Name:      taskTitle,
 		Mode:      mode,
 		State:     StateRunning,
 		StartedAt: time.Now().UTC(),
@@ -58,7 +60,7 @@ func (m *Manager) StartAgent(taskID, mode, prompt string, allowedTools []string)
 	case "headless":
 		go m.runHeadless(ctx, a, prompt, allowedTools)
 	case "interactive":
-		a.TmuxSession = fmt.Sprintf("synapse-%s", id)
+		a.TmuxSession = fmt.Sprintf("synapse-%s-%s", sanitizeSessionName(taskTitle), id)
 		if err := m.tmux.CreateSession(a.TmuxSession, "claude"); err != nil {
 			cancel()
 			m.mu.Lock()
@@ -172,4 +174,21 @@ func (m *Manager) Shutdown() {
 			_ = m.tmux.KillSession(a.TmuxSession)
 		}
 	}
+}
+
+var sessionNameRe = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func sanitizeSessionName(title string) string {
+	s := strings.ToLower(strings.TrimSpace(title))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = sessionNameRe.ReplaceAllString(s, "")
+	s = strings.Trim(s, "-")
+	if len(s) > 30 {
+		s = s[:30]
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		return "task"
+	}
+	return s
 }

@@ -6,16 +6,20 @@ export function AttachAgent(arg1) {
   return window['go']['main']['App']['AttachAgent'](arg1);
 }
 
+export function AttachTmuxSession(arg1) {
+  return window['go']['main']['App']['AttachTmuxSession'](arg1);
+}
+
 export function CaptureAgentPane(arg1) {
   return window['go']['main']['App']['CaptureAgentPane'](arg1);
 }
 
-export function DeleteTask(arg1) {
-  return window['go']['main']['App']['DeleteTask'](arg1);
-}
-
 export function CreateTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateTask'](arg1, arg2, arg3);
+}
+
+export function DeleteTask(arg1) {
+  return window['go']['main']['App']['DeleteTask'](arg1);
 }
 
 export function DiscoverAgents() {
@@ -30,12 +34,20 @@ export function GetTask(arg1) {
   return window['go']['main']['App']['GetTask'](arg1);
 }
 
+export function KillTmuxSession(arg1) {
+  return window['go']['main']['App']['KillTmuxSession'](arg1);
+}
+
 export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
 }
 
 export function ListTasks() {
   return window['go']['main']['App']['ListTasks']();
+}
+
+export function ListTmuxSessions() {
+  return window['go']['main']['App']['ListTmuxSessions']();
 }
 
 export function StartAgent(arg1, arg2, arg3) {

@@ -9,6 +9,7 @@
   import AgentDetail from './pages/AgentDetail.svelte'
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
   import Dashboard from './pages/Dashboard.svelte'
+  import TmuxSessions from './pages/TmuxSessions.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -16,6 +17,7 @@
     | { kind: 'task-detail'; taskId: string }
     | { kind: 'agent-list' }
     | { kind: 'agent-detail'; agentId: string }
+    | { kind: 'tmux' }
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
@@ -25,6 +27,7 @@
     page.kind === 'task-list' ? 'Tasks' :
     page.kind === 'task-detail' ? 'Task Detail' :
     page.kind === 'agent-list' ? 'Agents' :
+    page.kind === 'tmux' ? 'Tmux Sessions' :
     'Agent Detail'
   )
 
@@ -79,6 +82,15 @@
         </svg>
         <Navigation.TriggerText>Agents</Navigation.TriggerText>
       </Navigation.Trigger>
+      <Navigation.Trigger
+        onclick={() => (page = { kind: 'tmux' })}
+        data-active={page.kind === 'tmux' || undefined}
+      >
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <Navigation.TriggerText>Tmux</Navigation.TriggerText>
+      </Navigation.Trigger>
     </Navigation.Content>
   </Navigation>
 
@@ -125,6 +137,8 @@
           onback={() => (page = { kind: 'agent-list' })}
           onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
         />
+      {:else if page.kind === 'tmux'}
+        <TmuxSessions />
       {/if}
     </main>
   </div>
