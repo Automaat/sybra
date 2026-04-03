@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskCard from '../components/TaskCard.svelte'
 
@@ -9,46 +8,35 @@
 
   const { onselect }: Props = $props()
 
-  let filter = $state('all')
-
-  const statuses = [
-    { value: 'all', label: 'All' },
-    { value: 'todo', label: 'Todo' },
-    { value: 'in-progress', label: 'In Progress' },
-    { value: 'done', label: 'Done' },
-    { value: 'blocked', label: 'Blocked' },
+  const columns = [
+    { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
+    { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400' },
+    { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400' },
+    { status: 'done', label: 'Done', border: 'border-t-success-500 dark:border-t-success-400' },
   ]
-
-  const filtered = $derived(taskStore.byStatus(filter))
 </script>
 
-<div class="flex flex-col gap-4 p-6">
-  <SegmentedControl orientation="horizontal" value={filter} onValueChange={(details) => (filter = details.value ?? 'all')}>
-    <SegmentedControl.Control>
-      <SegmentedControl.Indicator />
-      {#each statuses as s}
-        <SegmentedControl.Item value={s.value}>
-          <SegmentedControl.ItemText>{s.label}</SegmentedControl.ItemText>
-          <SegmentedControl.ItemHiddenInput />
-        </SegmentedControl.Item>
-      {/each}
-    </SegmentedControl.Control>
-  </SegmentedControl>
-
+<div class="flex h-full gap-4 overflow-x-auto p-6">
   {#if taskStore.loading}
-    <p class="text-center text-sm opacity-60">Loading tasks...</p>
+    <p class="m-auto text-sm opacity-60">Loading tasks...</p>
   {:else if taskStore.error}
-    <p class="text-center text-sm text-error-500">{taskStore.error}</p>
-  {:else if filtered.length === 0}
-    <div class="flex flex-col items-center gap-2 py-16 opacity-50">
-      <p class="text-lg">No tasks</p>
-      <p class="text-sm">Create a task to get started</p>
-    </div>
+    <p class="m-auto text-sm text-error-500">{taskStore.error}</p>
   {:else}
-    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {#each filtered as t (t.id)}
-        <TaskCard task={t} onclick={() => onselect(t.id)} />
-      {/each}
-    </div>
+    {#each columns as col}
+      {@const tasks = taskStore.byStatus(col.status)}
+      <div class="flex min-w-[250px] flex-1 flex-col rounded-lg border-t-4 bg-surface-100 dark:bg-surface-900 {col.border}">
+        <div class="flex items-center justify-between px-3 py-2">
+          <h2 class="text-sm font-semibold">{col.label}</h2>
+          <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
+            {tasks.length}
+          </span>
+        </div>
+        <div class="flex flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
+          {#each tasks as t (t.id)}
+            <TaskCard task={t} onclick={() => onselect(t.id)} />
+          {/each}
+        </div>
+      </div>
+    {/each}
   {/if}
 </div>

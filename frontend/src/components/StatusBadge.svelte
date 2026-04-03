@@ -8,8 +8,8 @@
   const config: Record<string, { label: string; classes: string }> = {
     'todo': { label: 'Todo', classes: 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' },
     'in-progress': { label: 'In Progress', classes: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' },
+    'in-review': { label: 'In Review', classes: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' },
     'done': { label: 'Done', classes: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' },
-    'blocked': { label: 'Blocked', classes: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200' },
   }
 
   const resolved = $derived(config[status] ?? { label: status, classes: 'bg-surface-200 text-surface-800' })
