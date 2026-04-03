@@ -168,6 +168,34 @@ Chose headless mode because PR is a dependency bump with <50 lines changed.
 ..."
 ```
 
+## Audit Log Analysis
+
+Synapse records structured audit events (task lifecycle, agent runs, costs, failures) as NDJSON at `~/.synapse/logs/audit/`. Use these to identify workflow problems and suggest improvements.
+
+### Quick health check
+
+```bash
+synapse-cli --json audit --since 7d --summary
+```
+
+### What to look for
+
+| Signal | Threshold | Action |
+|--------|-----------|--------|
+| failure_rate > 0.2 | High | Check failed agents: `synapse-cli --json audit --since 7d --type agent.failed` |
+| plan_rejection_rate > 0.3 | High | Tasks are under-specified at triage — improve context gathering |
+| status bottleneck: plan-review > 4h | Medium | Human is the bottleneck — auto-approve small tasks |
+| status bottleneck: human-required > 8h | High | Tasks stuck — notify or escalate |
+| avg_cycle_time trending up | Medium | Compare weekly summaries |
+
+### Deep analysis
+
+Use `/synapse-audit` skill for a full report covering failures, bottlenecks, cost outliers, and triage accuracy.
+
+### Periodic review
+
+Run audit analysis during the monitor phase of the core loop. Suggested cadence: daily summary check, weekly deep analysis.
+
 ## Working Conventions
 
 - Always use `synapse-cli --json` for task operations

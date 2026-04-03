@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
@@ -69,6 +71,8 @@ func run(args []string) int {
 		return cmdDelete(store, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
+	case "audit":
+		return cmdAudit(cfg, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -399,6 +403,89 @@ func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
+func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
+	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
+	until := fs.String("until", "", "end of time window (date YYYY-MM-DD, default: now)")
+	eventType := fs.String("type", "", "filter by event type prefix")
+	taskID := fs.String("task", "", "filter by task ID")
+	summary := fs.Bool("summary", false, "output aggregated summary instead of raw events")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+
+	now := time.Now().UTC()
+	sinceTime := parseSince(*since, now)
+	untilTime := now
+	if *until != "" {
+		if t, err := time.Parse(time.DateOnly, *until); err == nil {
+			untilTime = t.Add(24*time.Hour - time.Nanosecond)
+		}
+	}
+
+	q := audit.Query{
+		Since:  sinceTime,
+		Until:  untilTime,
+		Type:   *eventType,
+		TaskID: *taskID,
+	}
+
+	events, err := audit.Read(cfg.AuditDir(), q)
+	if err != nil {
+		return fatal(jsonOut, "read audit: %v", err)
+	}
+
+	if *summary {
+		s := audit.Summarize(events, sinceTime, untilTime)
+		return printJSON(s)
+	}
+
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		for i := range events {
+			_ = enc.Encode(events[i])
+		}
+		return 0
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "TIMESTAMP\tTYPE\tTASK\tAGENT\tDATA")
+	for i := range events {
+		e := events[i]
+		dataStr := ""
+		for k, v := range e.Data {
+			if dataStr != "" {
+				dataStr += " "
+			}
+			dataStr += fmt.Sprintf("%s=%v", k, v)
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			e.Timestamp.Format("2006-01-02 15:04:05"),
+			e.Type, e.TaskID, e.AgentID, dataStr)
+	}
+	_ = w.Flush()
+	return 0
+}
+
+func parseSince(s string, now time.Time) time.Time {
+	// Try duration formats: "24h", "7d", "30d"
+	if strings.HasSuffix(s, "d") {
+		if n, err := fmt.Sscanf(s, "%d", new(int)); err == nil && n == 1 {
+			var days int
+			_, _ = fmt.Sscanf(s, "%d", &days)
+			return now.AddDate(0, 0, -days)
+		}
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return now.Add(-d)
+	}
+	// Try date format
+	if t, err := time.Parse(time.DateOnly, s); err == nil {
+		return t
+	}
+	return now.Add(-24 * time.Hour)
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage: synapse-cli [--json] <command> [flags]
 
@@ -413,6 +500,8 @@ Commands:
   project get <id>
   project create --url <github-url>
   project delete <id>
+
+  audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
 
 Global flags:
   --json   Output as JSON`)
