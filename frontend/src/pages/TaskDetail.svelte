@@ -235,7 +235,6 @@
         <div class="flex flex-col gap-3">
           <span class="text-sm font-medium text-surface-500">Run Agent</span>
           <div class="flex flex-col gap-1">
-            <span class="text-sm font-medium text-surface-500">Mode</span>
             <SegmentedControl
               orientation="horizontal"
               value={agentMode}

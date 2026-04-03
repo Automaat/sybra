@@ -110,7 +110,7 @@ test.describe('Task Detail', () => {
     const main = page.getByRole('main')
 
     // Agent mode
-    await expect(main.getByText('Agent Mode')).toBeVisible()
+    await expect(main.getByText('Agent Mode', { exact: true })).toBeVisible()
     await expect(main.getByText('headless').first()).toBeVisible()
 
     // Tags
@@ -199,7 +199,7 @@ test.describe('Create Task', () => {
 
     // Agent mode should show interactive in the detail metadata
     const main = page.getByRole('main')
-    await expect(main.locator('span', { hasText: 'interactive' })).toBeVisible()
+    await expect(main.getByText('Agent Mode').locator('..').getByText('interactive')).toBeVisible()
 
     // Go back — new task should appear in list
     await page.getByText('Back to tasks').click()
