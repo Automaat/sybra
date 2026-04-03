@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,9 @@ func (m *Manager) StartAgent(taskID, mode, prompt string, allowedTools []string)
 			m.logger.Error("agent.tmux.create", "id", id, "err", err)
 			return nil, fmt.Errorf("create tmux session: %w", err)
 		}
+		if prompt != "" {
+			go m.sendInteractivePrompt(ctx, a, prompt)
+		}
 	default:
 		cancel()
 		return nil, fmt.Errorf("unknown mode: %s", mode)
@@ -73,6 +77,35 @@ func (m *Manager) StartAgent(taskID, mode, prompt string, allowedTools []string)
 
 	m.emit("agent:state:"+id, a)
 	return a, nil
+}
+
+func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt string) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timeout:
+			m.logger.Error("agent.interactive.timeout", "id", a.ID, "msg", "claude did not become ready in 30s")
+			return
+		case <-ticker.C:
+			out, err := m.tmux.CapturePaneOutput(a.TmuxSession)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(out, "❯") {
+				if err := m.tmux.SendKeys(a.TmuxSession, prompt); err != nil {
+					m.logger.Error("agent.interactive.sendkeys", "id", a.ID, "err", err)
+				} else {
+					m.logger.Info("agent.interactive.prompt_sent", "id", a.ID)
+				}
+				return
+			}
+		}
+	}
 }
 
 func (m *Manager) StopAgent(agentID string) error {
@@ -122,6 +155,9 @@ func (m *Manager) CapturePane(agentID string) (string, error) {
 	}
 	if a.TmuxSession == "" {
 		return "", fmt.Errorf("agent %s has no tmux session", agentID)
+	}
+	if a.State == StateStopped {
+		return "", nil
 	}
 	return m.tmux.CapturePaneOutput(a.TmuxSession)
 }

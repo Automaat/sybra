@@ -49,9 +49,9 @@
     if (!details.open) reset()
   }}
 >
-  <Dialog.Backdrop class="fixed inset-0 bg-black/50" />
-  <Dialog.Positioner class="fixed inset-0 flex items-center justify-center p-4">
-    <Dialog.Content class="w-full max-w-lg rounded-xl bg-surface-50 p-6 shadow-xl dark:bg-surface-800">
+  <Dialog.Backdrop class="fixed inset-0 z-40 bg-black/50" />
+  <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <Dialog.Content class="w-full max-w-lg rounded-xl bg-surface-50 p-6 shadow-2xl dark:bg-surface-950">
       <Dialog.Title class="mb-4 text-lg font-bold">New Task</Dialog.Title>
 
       <form onsubmit={handleSubmit} class="flex flex-col gap-4">
