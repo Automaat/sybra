@@ -71,13 +71,19 @@ func (m *Manager) StartAgentInDir(taskID, taskTitle, mode, prompt string, allowe
 		go m.runHeadless(ctx, a, prompt, allowedTools)
 	case "interactive":
 		a.TmuxSession = fmt.Sprintf("synapse-%s-%s", sanitizeSessionName(taskTitle), id)
-		if err := m.tmux.CreateSession(a.TmuxSession, "claude"); err != nil {
+		var createErr error
+		if dir != "" {
+			createErr = m.tmux.CreateSessionInDir(a.TmuxSession, "claude", dir)
+		} else {
+			createErr = m.tmux.CreateSession(a.TmuxSession, "claude")
+		}
+		if createErr != nil {
 			cancel()
 			m.mu.Lock()
 			delete(m.agents, id)
 			m.mu.Unlock()
-			m.logger.Error("agent.tmux.create", "id", id, "err", err)
-			return nil, fmt.Errorf("create tmux session: %w", err)
+			m.logger.Error("agent.tmux.create", "id", id, "err", createErr)
+			return nil, fmt.Errorf("create tmux session: %w", createErr)
 		}
 		if prompt != "" {
 			go m.sendInteractivePrompt(ctx, a, prompt)
@@ -182,13 +188,83 @@ func (m *Manager) Shutdown() {
 	defer m.mu.RUnlock()
 	m.logger.Info("agent.shutdown", "count", len(m.agents))
 	for _, a := range m.agents {
-		if a.cancel != nil {
+		// Only cancel headless agents — interactive tmux sessions survive restarts
+		if a.Mode == "headless" && a.cancel != nil {
 			a.cancel()
 		}
-		if a.Mode == "interactive" && a.TmuxSession != "" {
-			_ = m.tmux.KillSession(a.TmuxSession)
+	}
+}
+
+// ReconnectSessions scans tmux for surviving synapse-* sessions and rebuilds
+// in-memory agent state for each. Called on startup so app restarts don't lose
+// track of running interactive agents.
+func (m *Manager) ReconnectSessions(tasks []TaskInfo) int {
+	sessions, err := m.tmux.ListSessions()
+	if err != nil {
+		m.logger.Warn("reconnect.list", "err", err)
+		return 0
+	}
+
+	taskBySession := make(map[string]TaskInfo)
+	for _, t := range tasks {
+		expected := fmt.Sprintf("synapse-%s-", sanitizeSessionName(t.Title))
+		for _, s := range sessions {
+			if strings.HasPrefix(s.Name, expected) {
+				taskBySession[s.Name] = t
+			}
 		}
 	}
+
+	reconnected := 0
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, s := range sessions {
+		if !strings.HasPrefix(s.Name, "synapse-") || s.Name == "synapse-orchestrator" {
+			continue
+		}
+		// Skip if already tracked
+		alreadyTracked := false
+		for _, a := range m.agents {
+			if a.TmuxSession == s.Name {
+				alreadyTracked = true
+				break
+			}
+		}
+		if alreadyTracked {
+			continue
+		}
+
+		// Extract short ID from session name (last segment after final -)
+		parts := strings.Split(s.Name, "-")
+		id := parts[len(parts)-1]
+
+		a := &Agent{
+			ID:          id,
+			Mode:        "interactive",
+			State:       StateRunning,
+			TmuxSession: s.Name,
+			StartedAt:   time.Now().UTC(),
+		}
+		if t, ok := taskBySession[s.Name]; ok {
+			a.TaskID = t.ID
+			a.Name = t.Title
+		} else {
+			a.Name = s.Name
+		}
+
+		m.agents[id] = a
+		m.logger.Info("reconnect.session", "id", id, "session", s.Name, "task", a.TaskID)
+		m.emit("agent:state:"+id, a)
+		reconnected++
+	}
+	return reconnected
+}
+
+// TaskInfo is minimal task data needed for reconnection.
+type TaskInfo struct {
+	ID    string
+	Title string
 }
 
 var sessionNameRe = regexp.MustCompile(`[^a-z0-9-]+`)

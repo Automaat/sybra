@@ -73,6 +73,7 @@ func (a *App) startup(ctx context.Context) {
 	a.watcher = w
 	_ = w.Start(ctx)
 
+	a.reconnectAgents()
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
 	go a.orchestratorLoop(ctx)
@@ -83,6 +84,26 @@ func (a *App) shutdown(_ context.Context) {
 	a.logger.Info("app.stopping")
 	a.agents.Shutdown()
 	a.logger.Info("app.stopped")
+}
+
+func (a *App) reconnectAgents() {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		a.logger.Warn("reconnect.tasks", "err", err)
+		return
+	}
+
+	var infos []agent.TaskInfo
+	for i := range tasks {
+		if tasks[i].Status == task.StatusInProgress {
+			infos = append(infos, agent.TaskInfo{ID: tasks[i].ID, Title: tasks[i].Title})
+		}
+	}
+
+	n := a.agents.ReconnectSessions(infos)
+	if n > 0 {
+		a.logger.Info("reconnect.done", "count", n)
+	}
 }
 
 func (a *App) ListTasks() ([]task.Task, error) {
