@@ -90,6 +90,18 @@ export function ListTmuxSessions() {
   return window['go']['main']['App']['ListTmuxSessions']();
 }
 
+export function ListWorktrees(arg1) {
+  return window['go']['main']['App']['ListWorktrees'](arg1);
+}
+
+export function OpenInEditor(arg1) {
+  return window['go']['main']['App']['OpenInEditor'](arg1);
+}
+
+export function OpenInTerminal(arg1) {
+  return window['go']['main']['App']['OpenInTerminal'](arg1);
+}
+
 export function PlanTask(arg1) {
   return window['go']['main']['App']['PlanTask'](arg1);
 }

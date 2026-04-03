@@ -12,3 +12,10 @@ type Project struct {
 	CreatedAt time.Time `yaml:"created_at" json:"createdAt"`
 	UpdatedAt time.Time `yaml:"updated_at" json:"updatedAt"`
 }
+
+type Worktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	TaskID string `json:"taskId"`
+	Head   string `json:"head"`
+}

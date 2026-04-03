@@ -199,6 +199,24 @@ export namespace project {
 		    return a;
 		}
 	}
+	export class Worktree {
+	    path: string;
+	    branch: string;
+	    taskId: string;
+	    head: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Worktree(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.branch = source["branch"];
+	        this.taskId = source["taskId"];
+	        this.head = source["head"];
+	    }
+	}
 
 }
 

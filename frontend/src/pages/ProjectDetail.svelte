@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import type { project } from '../../wailsjs/go/models.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskCard from '../components/TaskCard.svelte'
+  import WorktreeList from '../components/WorktreeList.svelte'
 
   interface Props {
     projectId: string
@@ -15,6 +17,12 @@
   let p = $state<project.Project | null>(null)
   let error = $state('')
   let deleting = $state(false)
+  let activeTab = $state('tasks')
+
+  const tabs = [
+    { value: 'tasks', label: 'Tasks' },
+    { value: 'worktrees', label: 'Worktrees' },
+  ]
 
   $effect(() => {
     loadProject()
@@ -109,36 +117,52 @@
 
       <hr class="border-surface-300 dark:border-surface-600" />
 
-      <div class="flex flex-col gap-3">
-        <div class="flex items-center justify-between">
-          <span class="text-sm font-medium text-surface-500">Tasks ({projectTasks.length})</span>
-        </div>
+      <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'tasks')}>
+        <SegmentedControl.Control>
+          <SegmentedControl.Indicator />
+          {#each tabs as tab}
+            <SegmentedControl.Item value={tab.value}>
+              <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
+              <SegmentedControl.ItemHiddenInput />
+            </SegmentedControl.Item>
+          {/each}
+        </SegmentedControl.Control>
+      </SegmentedControl>
 
-        {#if projectTasks.length === 0}
-          <p class="py-4 text-center text-sm text-surface-400">No tasks assigned to this project</p>
-        {:else}
-          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {#each [
-              { key: 'todo', label: 'Todo', tasks: tasksByStatus.todo, border: 'border-t-surface-400' },
-              { key: 'inProgress', label: 'In Progress', tasks: tasksByStatus.inProgress, border: 'border-t-primary-500' },
-              { key: 'inReview', label: 'In Review', tasks: tasksByStatus.inReview, border: 'border-t-warning-500' },
-              { key: 'done', label: 'Done', tasks: tasksByStatus.done, border: 'border-t-success-500' },
-            ] as col (col.key)}
-              <div class="flex flex-col rounded-lg border-t-4 bg-surface-100 dark:bg-surface-900 {col.border}">
-                <div class="flex items-center justify-between px-3 py-2">
-                  <h3 class="text-xs font-semibold">{col.label}</h3>
-                  <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">{col.tasks.length}</span>
-                </div>
-                <div class="flex flex-col gap-2 overflow-y-auto px-2 pb-2">
-                  {#each col.tasks as t (t.id)}
-                    <TaskCard task={t} onclick={() => onviewtask(t.id)} />
-                  {/each}
-                </div>
-              </div>
-            {/each}
+      {#if activeTab === 'tasks'}
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium text-surface-500">Tasks ({projectTasks.length})</span>
           </div>
-        {/if}
-      </div>
+
+          {#if projectTasks.length === 0}
+            <p class="py-4 text-center text-sm text-surface-400">No tasks assigned to this project</p>
+          {:else}
+            <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {#each [
+                { key: 'todo', label: 'Todo', tasks: tasksByStatus.todo, border: 'border-t-surface-400' },
+                { key: 'inProgress', label: 'In Progress', tasks: tasksByStatus.inProgress, border: 'border-t-primary-500' },
+                { key: 'inReview', label: 'In Review', tasks: tasksByStatus.inReview, border: 'border-t-warning-500' },
+                { key: 'done', label: 'Done', tasks: tasksByStatus.done, border: 'border-t-success-500' },
+              ] as col (col.key)}
+                <div class="flex flex-col rounded-lg border-t-4 bg-surface-100 dark:bg-surface-900 {col.border}">
+                  <div class="flex items-center justify-between px-3 py-2">
+                    <h3 class="text-xs font-semibold">{col.label}</h3>
+                    <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">{col.tasks.length}</span>
+                  </div>
+                  <div class="flex flex-col gap-2 overflow-y-auto px-2 pb-2">
+                    {#each col.tasks as t (t.id)}
+                      <TaskCard task={t} onclick={() => onviewtask(t.id)} />
+                    {/each}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {:else if activeTab === 'worktrees'}
+        <WorktreeList projectId={projectId} />
+      {/if}
     </div>
   {:else if !error}
     <p class="text-sm opacity-60">Loading...</p>

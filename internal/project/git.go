@@ -86,6 +86,49 @@ func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
 	return nil
 }
 
+func ListWorktrees(barePath string) ([]Worktree, error) {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = barePath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w", err)
+	}
+	return parseWorktreePorcelain(string(out)), nil
+}
+
+func parseWorktreePorcelain(raw string) []Worktree {
+	var result []Worktree
+	for block := range strings.SplitSeq(strings.TrimSpace(raw), "\n\n") {
+		if strings.Contains(block, "\nbare") || strings.HasSuffix(block, "\nbare") {
+			continue
+		}
+		var wt Worktree
+		for line := range strings.SplitSeq(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "worktree "):
+				wt.Path = strings.TrimPrefix(line, "worktree ")
+			case strings.HasPrefix(line, "HEAD "):
+				h := strings.TrimPrefix(line, "HEAD ")
+				if len(h) > 7 {
+					h = h[:7]
+				}
+				wt.Head = h
+			case strings.HasPrefix(line, "branch "):
+				ref := strings.TrimPrefix(line, "branch ")
+				wt.Branch = strings.TrimPrefix(ref, "refs/heads/")
+				wt.TaskID = strings.TrimPrefix(wt.Branch, "synapse/")
+				if wt.TaskID == wt.Branch {
+					wt.TaskID = ""
+				}
+			}
+		}
+		if wt.Path != "" {
+			result = append(result, wt)
+		}
+	}
+	return result
+}
+
 func RemoveWorktree(barePath, worktreePath string) error {
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
 	cmd.Dir = barePath

@@ -50,6 +50,12 @@ export function ListTasks():Promise<Array<task.Task>>;
 
 export function ListTmuxSessions():Promise<Array<tmux.SessionInfo>>;
 
+export function ListWorktrees(arg1:string):Promise<Array<project.Worktree>>;
+
+export function OpenInEditor(arg1:string):Promise<void>;
+
+export function OpenInTerminal(arg1:string):Promise<void>;
+
 export function PlanTask(arg1:string):Promise<void>;
 
 export function RegisterSpotlightHotkey():Promise<void>;
