@@ -195,6 +195,42 @@ func TestStoreUpdate(t *testing.T) {
 	}
 }
 
+func TestStoreDelete(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Delete me", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if _, err := os.Stat(created.FilePath); !os.IsNotExist(err) {
+		t.Error("file should be removed after delete")
+	}
+
+	_, err = store.Get(created.ID)
+	if err == nil {
+		t.Fatal("expected error after deleting task")
+	}
+}
+
+func TestStoreDeleteNotFound(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete("nonexistent"); err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+}
+
 func TestStoreUpdateNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

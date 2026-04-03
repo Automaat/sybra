@@ -110,4 +110,41 @@ describe('TaskDetail', () => {
     })
     expect(screen.getByText('Back to tasks')).toBeDefined()
   })
+
+  it('shows delete button after loading', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete')).toBeDefined()
+    })
+  })
+
+  it('calls remove and ondelete when delete clicked', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    mockRemove.mockResolvedValue(undefined)
+    const ondelete = vi.fn()
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete')).toBeDefined()
+    })
+    screen.getByText('Delete').click()
+    await vi.waitFor(() => {
+      expect(mockRemove).toHaveBeenCalledWith('task-1')
+      expect(ondelete).toHaveBeenCalled()
+    })
+  })
+
+  it('shows start agent button with mode', async () => {
+    mockGet.mockResolvedValue(mockTask)
+    render(TaskDetail, {
+      props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Start headless agent')).toBeDefined()
+    })
+  })
 })
