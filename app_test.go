@@ -3,6 +3,8 @@ package main
 import (
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -215,6 +217,116 @@ func TestGetAgentOutputNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+}
+
+func TestSyncFile(t *testing.T) {
+	a := setupApp(t)
+	a.repoDir = t.TempDir()
+
+	srcDir := filepath.Join(a.repoDir, "sub")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcFile := filepath.Join(srcDir, "test.md")
+	if err := os.WriteFile(srcFile, []byte("# hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dstFile := filepath.Join(t.TempDir(), "out", "test.md")
+	a.syncFile(srcFile, dstFile)
+
+	data, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("dst not written: %v", err)
+	}
+	if string(data) != "# hello" {
+		t.Errorf("content = %q, want %q", string(data), "# hello")
+	}
+}
+
+func TestSyncFileMissingSrc(t *testing.T) {
+	a := setupApp(t)
+	dstFile := filepath.Join(t.TempDir(), "should-not-exist.md")
+	a.syncFile("/nonexistent/file.md", dstFile)
+
+	if _, err := os.Stat(dstFile); !os.IsNotExist(err) {
+		t.Error("dst should not be created when src missing")
+	}
+}
+
+func TestSyncDir(t *testing.T) {
+	a := setupApp(t)
+
+	srcDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b.md", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("content-"+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Add a subdirectory that should be skipped
+	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(t.TempDir(), "dst-skills")
+	a.syncDir(srcDir, dstDir)
+
+	// Only .md files should be copied
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("got %d files, want 2 (.md only)", len(entries))
+	}
+}
+
+func TestSyncDirMissingSrc(t *testing.T) {
+	a := setupApp(t)
+	dstDir := filepath.Join(t.TempDir(), "should-not-exist")
+	a.syncDir("/nonexistent/dir", dstDir)
+
+	if _, err := os.Stat(dstDir); !os.IsNotExist(err) {
+		t.Error("dst dir should not be created when src missing")
+	}
+}
+
+func TestSyncSkillsNoRepoDir(t *testing.T) {
+	a := setupApp(t)
+	a.repoDir = ""
+	// Should not panic; falls back to cwd
+	a.syncSkills()
+}
+
+func TestSyncSkillsWithRepoDir(t *testing.T) {
+	a := setupApp(t)
+
+	repoDir := t.TempDir()
+	a.repoDir = repoDir
+
+	// Create source skills dir
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "skill.md"), []byte("# skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create orchestrator CLAUDE.md
+	orchDir := filepath.Join(repoDir, "orchestrator")
+	if err := os.MkdirAll(orchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orchDir, "CLAUDE.md"), []byte("# orchestrator"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not panic
+	a.syncSkills()
 }
 
 func TestShutdown(t *testing.T) {

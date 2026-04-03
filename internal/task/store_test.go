@@ -231,6 +231,63 @@ func TestStoreDeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateTags(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Tagged task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.Update(created.ID, map[string]any{
+		"tags": []string{"backend", "auth"},
+	})
+	if err != nil {
+		t.Fatalf("update tags: %v", err)
+	}
+
+	if len(updated.Tags) != 2 {
+		t.Fatalf("Tags len = %d, want 2", len(updated.Tags))
+	}
+	if updated.Tags[0] != "backend" || updated.Tags[1] != "auth" {
+		t.Errorf("Tags = %v, want [backend auth]", updated.Tags)
+	}
+
+	// Verify persisted
+	reloaded, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Tags) != 2 {
+		t.Errorf("persisted Tags len = %d, want 2", len(reloaded.Tags))
+	}
+}
+
+func TestStoreUpdateAgentMode(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Mode task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.Update(created.ID, map[string]any{
+		"agent_mode": "interactive",
+	})
+	if err != nil {
+		t.Fatalf("update agent_mode: %v", err)
+	}
+	if updated.AgentMode != "interactive" {
+		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "interactive")
+	}
+}
+
 func TestStoreUpdateNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
