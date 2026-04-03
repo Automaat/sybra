@@ -18,6 +18,8 @@
   const { taskId, onback, onviewagent, ondelete }: Props = $props()
 
   let deleting = $state(false)
+  let editingBody = $state(false)
+  let bodyDraft = $state('')
 
   let t = $state<task.Task | null>(null)
   let error = $state('')
@@ -80,6 +82,32 @@
       error = String(e)
     } finally {
       starting = false
+    }
+  }
+
+  function startEditingBody() {
+    bodyDraft = t?.body ?? ''
+    editingBody = true
+  }
+
+  async function saveBody() {
+    if (!t) return
+    editingBody = false
+    const trimmed = bodyDraft.trim()
+    if (trimmed === (t.body ?? '').trim()) return
+    try {
+      t = await taskStore.update(taskId, { body: trimmed })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function handleBodyKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      saveBody()
+    } else if (e.key === 'Escape') {
+      editingBody = false
     }
   }
 
@@ -208,12 +236,38 @@
         {/if}
       </div>
 
-      {#if t.body}
-        <div class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1">
+        <div class="flex items-center justify-between">
           <span class="text-sm font-medium text-surface-500">Description</span>
-          <pre class="whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-100 p-4 text-sm dark:border-surface-600 dark:bg-surface-900">{t.body}</pre>
+          {#if editingBody}
+            <span class="text-xs text-surface-400">
+              {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to save · Esc to cancel
+            </span>
+          {/if}
         </div>
-      {/if}
+        {#if editingBody}
+          <!-- svelte-ignore a11y_autofocus -->
+          <textarea
+            class="min-h-[8rem] w-full resize-y rounded-lg border border-primary-400 bg-surface-50 p-4 font-mono text-sm dark:border-primary-500 dark:bg-surface-900"
+            bind:value={bodyDraft}
+            onblur={saveBody}
+            onkeydown={handleBodyKeydown}
+            autofocus
+          ></textarea>
+        {:else}
+          <button
+            type="button"
+            class="w-full cursor-text rounded-lg border border-surface-300 bg-surface-100 p-4 text-left transition-colors hover:border-primary-400 dark:border-surface-600 dark:bg-surface-900 dark:hover:border-primary-500"
+            onclick={startEditingBody}
+          >
+            {#if t.body}
+              <pre class="whitespace-pre-wrap text-sm">{t.body}</pre>
+            {:else}
+              <span class="text-sm text-surface-400 italic">Click to add description...</span>
+            {/if}
+          </button>
+        {/if}
+      </div>
 
       <div class="flex gap-6 text-xs text-surface-400">
         <span>Created: {formatDate(t.createdAt)}</span>
