@@ -133,7 +133,7 @@
             {#if expandedTaskId === t.id}
               <div class="flex flex-col gap-2 border-t border-error-300 px-4 py-3 dark:border-error-700">
                 {#if t.body}
-                  <pre class="whitespace-pre-wrap text-xs text-surface-500">{t.body}</pre>
+                  <pre class="whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">{t.body}</pre>
                 {/if}
                 {#if submitError}
                   <p class="text-xs text-error-500">{submitError}</p>
