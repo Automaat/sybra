@@ -14,6 +14,8 @@ vi.mock('../wailsjs/runtime/runtime.js', () => ({
 vi.mock('./stores/tasks.svelte.js', () => ({
   taskStore: {
     load: (...args: unknown[]) => mockLoad(...args),
+    startPolling: () => {},
+    stopPolling: () => {},
     loading: false,
     error: '',
     list: [],
