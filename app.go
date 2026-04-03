@@ -155,11 +155,6 @@ func (a *App) TriageTask(id string) error {
 	return nil
 }
 
-func (a *App) TriageTask(id string) error {
-	a.logger.Info("triage not implemented", "task_id", id)
-	return nil
-}
-
 func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 	ag, err := a.agents.GetAgent(agentID)
 	if err != nil {
