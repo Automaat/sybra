@@ -1,9 +1,11 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNewStore(t *testing.T) {
@@ -357,5 +359,214 @@ func TestStoreUpdateNotFound(t *testing.T) {
 	_, err = store.Update("nonexistent", map[string]any{"title": "x"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+	}
+}
+
+func TestStoreAddRun(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Run task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := AgentRun{
+		AgentID:   "agent-001",
+		Mode:      "headless",
+		State:     "running",
+		StartedAt: time.Now().UTC(),
+	}
+
+	if err := store.AddRun(created.ID, run); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+	if got.AgentRuns[0].AgentID != "agent-001" {
+		t.Errorf("AgentID = %q, want %q", got.AgentRuns[0].AgentID, "agent-001")
+	}
+	if got.AgentRuns[0].State != "running" {
+		t.Errorf("State = %q, want %q", got.AgentRuns[0].State, "running")
+	}
+}
+
+func TestStoreAddRunMultiple(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Multi run", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 3 {
+		run := AgentRun{
+			AgentID: fmt.Sprintf("agent-%d", i),
+			Mode:    "headless",
+			State:   "done",
+		}
+		if err := store.AddRun(created.ID, run); err != nil {
+			t.Fatalf("AddRun %d: %v", i, err)
+		}
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AgentRuns) != 3 {
+		t.Fatalf("AgentRuns len = %d, want 3", len(got.AgentRuns))
+	}
+}
+
+func TestStoreAddRunNotFound(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.AddRun("nonexistent", AgentRun{AgentID: "x"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+}
+
+func TestStoreUpdateRun(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Update run", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := AgentRun{
+		AgentID: "agent-upd",
+		Mode:    "headless",
+		State:   "running",
+	}
+	if err := store.AddRun(created.ID, run); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-upd", map[string]any{
+		"state":    "done",
+		"cost_usd": 0.42,
+		"result":   "success",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+	r := got.AgentRuns[0]
+	if r.State != "done" {
+		t.Errorf("State = %q, want %q", r.State, "done")
+	}
+	if r.CostUSD != 0.42 {
+		t.Errorf("CostUSD = %f, want 0.42", r.CostUSD)
+	}
+	if r.Result != "success" {
+		t.Errorf("Result = %q, want %q", r.Result, "success")
+	}
+}
+
+func TestStoreUpdateRunNotFound(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun("nonexistent", "agent-x", map[string]any{"state": "done"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+}
+
+func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("No match", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-a", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update with wrong agent ID — should not error but should not change anything
+	err = store.UpdateRun(created.ID, "agent-wrong", map[string]any{"state": "done"})
+	if err != nil {
+		t.Fatalf("UpdateRun with wrong agent: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].State != "running" {
+		t.Errorf("State should be unchanged, got %q", got.AgentRuns[0].State)
+	}
+}
+
+func TestStoreCreateDefaultMode(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Default mode", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AgentMode != "interactive" {
+		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "interactive")
+	}
+}
+
+func TestStoreListSkipsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a valid task
+	if _, err := store.Create("Valid", "", "headless"); err != nil {
+		t.Fatal(err)
+	}
+	// Write a malformed markdown file
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
 	}
 }

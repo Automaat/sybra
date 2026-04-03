@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -339,6 +340,131 @@ func TestParseGQLResponse_errors(t *testing.T) {
 	}
 	if resp.Errors[0].Message != "rate limited" {
 		t.Errorf("error message = %q, want %q", resp.Errors[0].Message, "rate limited")
+	}
+}
+
+type fakeExecer struct {
+	output []byte
+	err    error
+	calls  int
+}
+
+func (f *fakeExecer) run(_ ...string) ([]byte, error) {
+	f.calls++
+	return f.output, f.err
+}
+
+func TestSearchPRsWith_success(t *testing.T) {
+	response := `{
+		"data": {
+			"search": {
+				"nodes": [
+					{
+						"number": 5,
+						"title": "test",
+						"url": "https://github.com/o/r/pull/5",
+						"author": {"login": "dev", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []}
+					}
+				]
+			}
+		}
+	}`
+
+	fe := &fakeExecer{output: []byte(response)}
+	prs, err := searchPRsWith(fe, "is:pr is:open")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("got %d PRs, want 1", len(prs))
+	}
+	if prs[0].Number != 5 {
+		t.Errorf("Number = %d, want 5", prs[0].Number)
+	}
+}
+
+func TestSearchPRsWith_execError(t *testing.T) {
+	fe := &fakeExecer{
+		output: []byte("gh: not logged in"),
+		err:    fmt.Errorf("exit status 1"),
+	}
+	_, err := searchPRsWith(fe, "is:pr")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); got == "" {
+		t.Error("error should contain message")
+	}
+}
+
+func TestSearchPRsWith_invalidJSON(t *testing.T) {
+	fe := &fakeExecer{output: []byte("not json")}
+	_, err := searchPRsWith(fe, "is:pr")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestSearchPRsWith_graphqlError(t *testing.T) {
+	response := `{"data":{"search":{"nodes":[]}},"errors":[{"message":"rate limited"}]}`
+	fe := &fakeExecer{output: []byte(response)}
+	_, err := searchPRsWith(fe, "is:pr")
+	if err == nil {
+		t.Fatal("expected error for graphql error")
+	}
+	if got := err.Error(); got != "graphql: rate limited" {
+		t.Errorf("error = %q, want %q", got, "graphql: rate limited")
+	}
+}
+
+func TestFetchReviewsWith_success(t *testing.T) {
+	response := `{
+		"data": {
+			"search": {
+				"nodes": [
+					{
+						"number": 1,
+						"title": "my PR",
+						"url": "https://github.com/o/r/pull/1",
+						"author": {"login": "me", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []}
+					}
+				]
+			}
+		}
+	}`
+
+	fe := &fakeExecer{output: []byte(response)}
+	summary, err := fetchReviewsWith(fe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fe.calls != 2 {
+		t.Errorf("expected 2 calls (created + requested), got %d", fe.calls)
+	}
+	if len(summary.CreatedByMe) != 1 {
+		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
+	}
+	if len(summary.ReviewRequested) != 1 {
+		t.Errorf("ReviewRequested len = %d, want 1", len(summary.ReviewRequested))
+	}
+}
+
+func TestFetchReviewsWith_firstCallFails(t *testing.T) {
+	fe := &fakeExecer{
+		output: []byte("auth error"),
+		err:    fmt.Errorf("exit 1"),
+	}
+	_, err := fetchReviewsWith(fe)
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 

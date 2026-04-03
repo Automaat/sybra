@@ -7,6 +7,20 @@ import (
 	"strings"
 )
 
+// execer abstracts command execution for testing.
+type execer interface {
+	run(args ...string) ([]byte, error)
+}
+
+type ghExecer struct{}
+
+func (ghExecer) run(args ...string) ([]byte, error) {
+	cmd := exec.Command("gh", args...)
+	return cmd.CombinedOutput()
+}
+
+var defaultExecer execer = ghExecer{}
+
 const prQuery = `query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes {
@@ -86,15 +100,19 @@ type gqlPR struct {
 
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
 func FetchReviews() (ReviewSummary, error) {
+	return fetchReviewsWith(defaultExecer)
+}
+
+func fetchReviewsWith(e execer) (ReviewSummary, error) {
 	var summary ReviewSummary
 
-	created, err := searchPRs("is:pr is:open author:@me")
+	created, err := searchPRsWith(e, "is:pr is:open author:@me")
 	if err != nil {
 		return summary, fmt.Errorf("fetch created PRs: %w", err)
 	}
 	summary.CreatedByMe = created
 
-	requested, err := searchPRs("is:pr is:open review-requested:@me")
+	requested, err := searchPRsWith(e, "is:pr is:open review-requested:@me")
 	if err != nil {
 		return summary, fmt.Errorf("fetch review requests: %w", err)
 	}
@@ -103,11 +121,10 @@ func FetchReviews() (ReviewSummary, error) {
 	return summary, nil
 }
 
-func searchPRs(query string) ([]PullRequest, error) {
-	cmd := exec.Command("gh", "api", "graphql",
+func searchPRsWith(e execer, query string) ([]PullRequest, error) {
+	out, err := e.run("api", "graphql",
 		"-f", "query="+prQuery,
 		"-f", "q="+query)
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
 	}

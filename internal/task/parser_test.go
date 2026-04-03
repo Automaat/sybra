@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseBytes(t *testing.T) {
@@ -238,5 +239,134 @@ func TestMarshalEmptyBody(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if lines[len(lines)-1] != "---" {
 		t.Errorf("last line = %q, want %q", lines[len(lines)-1], "---")
+	}
+}
+
+func TestMarshalRoundTripAllowedTools(t *testing.T) {
+	original := Task{
+		ID:           "at1",
+		Title:        "Tools roundtrip",
+		Status:       StatusTodo,
+		AgentMode:    "headless",
+		AllowedTools: []string{"Read", "Write", "Bash"},
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if len(parsed.AllowedTools) != len(original.AllowedTools) {
+		t.Fatalf("AllowedTools len = %d, want %d", len(parsed.AllowedTools), len(original.AllowedTools))
+	}
+	for i, tool := range original.AllowedTools {
+		if parsed.AllowedTools[i] != tool {
+			t.Errorf("AllowedTools[%d] = %q, want %q", i, parsed.AllowedTools[i], tool)
+		}
+	}
+}
+
+func TestMarshalRoundTripAgentRuns(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	original := Task{
+		ID:        "ar1",
+		Title:     "AgentRuns roundtrip",
+		Status:    StatusInProgress,
+		AgentMode: "headless",
+		AgentRuns: []AgentRun{
+			{
+				AgentID:   "agent-001",
+				Mode:      "headless",
+				State:     "done",
+				StartedAt: now,
+				CostUSD:   1.23,
+				Result:    "success",
+				LogFile:   "/tmp/log.txt",
+			},
+			{
+				AgentID:   "agent-002",
+				Mode:      "interactive",
+				State:     "running",
+				StartedAt: now,
+			},
+		},
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if len(parsed.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(parsed.AgentRuns))
+	}
+
+	r := parsed.AgentRuns[0]
+	if r.AgentID != "agent-001" {
+		t.Errorf("AgentRuns[0].AgentID = %q, want %q", r.AgentID, "agent-001")
+	}
+	if r.CostUSD != 1.23 {
+		t.Errorf("AgentRuns[0].CostUSD = %f, want 1.23", r.CostUSD)
+	}
+	if r.Result != "success" {
+		t.Errorf("AgentRuns[0].Result = %q, want %q", r.Result, "success")
+	}
+	if r.LogFile != "/tmp/log.txt" {
+		t.Errorf("AgentRuns[0].LogFile = %q, want %q", r.LogFile, "/tmp/log.txt")
+	}
+
+	r2 := parsed.AgentRuns[1]
+	if r2.AgentID != "agent-002" {
+		t.Errorf("AgentRuns[1].AgentID = %q, want %q", r2.AgentID, "agent-002")
+	}
+	if r2.State != "running" {
+		t.Errorf("AgentRuns[1].State = %q, want %q", r2.State, "running")
+	}
+}
+
+func TestMarshalUpdatesTimestamp(t *testing.T) {
+	before := time.Now().UTC().Add(-time.Second)
+	task := Task{
+		ID:     "ts1",
+		Title:  "Timestamp test",
+		Status: StatusTodo,
+	}
+
+	data, err := Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if parsed.UpdatedAt.Before(before) {
+		t.Errorf("UpdatedAt = %v, expected after %v", parsed.UpdatedAt, before)
+	}
+}
+
+func TestParseBytesSpecialCharsInBody(t *testing.T) {
+	input := "---\nid: sc1\ntitle: Special\nstatus: todo\n---\n## Code\n```go\nfunc main() { fmt.Println(\"hello\") }\n```\n\n- Item with `backticks`\n- Item with *emphasis*"
+	task, err := ParseBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !strings.Contains(task.Body, "```go") {
+		t.Error("body should contain code fence")
+	}
+	if !strings.Contains(task.Body, "`backticks`") {
+		t.Error("body should contain backticks")
 	}
 }
