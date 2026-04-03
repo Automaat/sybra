@@ -200,7 +200,6 @@
       {#if page.kind === 'dashboard'}
         <Dashboard
           onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
-          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
         />
       {:else if page.kind === 'task-list'}
         <TaskList onselect={(id) => (page = { kind: 'task-detail', taskId: id })} />

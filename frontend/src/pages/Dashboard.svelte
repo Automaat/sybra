@@ -5,10 +5,9 @@
 
   interface Props {
     onviewagent: (agentId: string) => void
-    onviewtask: (taskId: string) => void
   }
 
-  const { onviewagent, onviewtask }: Props = $props()
+  const { onviewagent }: Props = $props()
 
   const runningAgents = $derived(agentStore.byState('running'))
   const pausedAgents = $derived(agentStore.byState('paused'))
@@ -27,7 +26,6 @@
     agentStore.list.reduce((sum, a) => sum + (a.costUsd ?? 0), 0),
   )
 
-  const recentTasks = $derived(taskStore.list.slice(0, 5))
 </script>
 
 <div class="flex flex-col gap-6 p-6">
@@ -87,29 +85,4 @@
     </div>
   {/if}
 
-  <!-- Recent tasks -->
-  {#if recentTasks.length > 0}
-    <div class="flex flex-col gap-2">
-      <span class="text-sm font-medium text-surface-500">Recent Tasks</span>
-      <div class="flex flex-col gap-1">
-        {#each recentTasks as t (t.id)}
-          <button
-            type="button"
-            class="flex items-center justify-between rounded-lg border border-surface-300 bg-surface-50 px-4 py-2.5 text-left text-sm transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
-            onclick={() => onviewtask(t.id)}
-          >
-            <span class="font-medium">{t.title}</span>
-            <span class="rounded px-2 py-0.5 text-xs
-              {t.status === 'done' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
-               t.status === 'in-progress' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
-               t.status === 'in-review' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
-               t.status === 'new' ? 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200' :
-               'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
-              {t.status}
-            </span>
-          </button>
-        {/each}
-      </div>
-    </div>
-  {/if}
 </div>

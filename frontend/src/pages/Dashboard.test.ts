@@ -73,7 +73,7 @@ describe('Dashboard', () => {
   })
 
   it('renders dashboard heading', () => {
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
     expect(screen.getByText('Dashboard')).toBeTruthy()
   })
 
@@ -84,7 +84,7 @@ describe('Dashboard', () => {
     taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }) as any)
     taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'done' }) as any)
 
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.getByText('Running Agents')).toBeTruthy()
     expect(screen.getByText('Waiting for Input')).toBeTruthy()
@@ -96,7 +96,7 @@ describe('Dashboard', () => {
     agentStore.agents.set('a1', makeAgent({ id: 'a1', costUsd: 1.555 }) as any)
     agentStore.agents.set('a2', makeAgent({ id: 'a2', costUsd: 2.445 }) as any)
 
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.getByText('$4.00')).toBeTruthy()
   })
@@ -106,7 +106,7 @@ describe('Dashboard', () => {
     taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'in-progress' }) as any)
     taskStore.tasks.set('t3', makeTask({ id: 't3', status: 'done' }) as any)
 
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.getByText('Task Status')).toBeTruthy()
   })
@@ -115,7 +115,7 @@ describe('Dashboard', () => {
     agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }) as any)
     agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'paused' }) as any)
 
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.getByText('Active Agents')).toBeTruthy()
   })
@@ -123,17 +123,9 @@ describe('Dashboard', () => {
   it('hides active agents section when none running/paused', () => {
     agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'stopped' }) as any)
 
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
+    render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.queryByText('Active Agents')).toBeNull()
   })
 
-  it('shows recent tasks', () => {
-    taskStore.tasks.set('t1', makeTask({ id: 't1', title: 'My Task' }) as any)
-
-    render(Dashboard, { props: { onviewagent: vi.fn(), onviewtask: vi.fn() } })
-
-    expect(screen.getByText('Recent Tasks')).toBeTruthy()
-    expect(screen.getByText('My Task')).toBeTruthy()
-  })
 })
