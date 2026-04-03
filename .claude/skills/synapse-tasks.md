@@ -38,7 +38,7 @@ synapse-cli --json delete <id>
 
 ## Task Fields
 
-- **status**: `new` | `todo` | `in-progress` | `in-review` | `done`
+- **status**: `new` | `todo` | `in-progress` | `in-review` | `human-required` | `done`
 - **mode**: `headless` (automated claude -p) | `interactive` (tmux session)
 - **tags**: comma-separated labels
 

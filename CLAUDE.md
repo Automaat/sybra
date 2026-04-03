@@ -92,7 +92,7 @@ Tasks are YAML frontmatter + GFM markdown files in `tasks/`:
 ---
 id: task-abc123
 title: Implement auth middleware
-status: todo              # todo|in-progress|done|blocked
+status: todo              # new|todo|in-progress|in-review|human-required|done
 agent_mode: headless      # interactive|headless
 allowed_tools: []         # empty = all tools allowed
 tags: [backend, auth]

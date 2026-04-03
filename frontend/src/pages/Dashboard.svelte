@@ -19,6 +19,7 @@
     todo: taskStore.byStatus('todo').length,
     'in-progress': taskStore.byStatus('in-progress').length,
     'in-review': taskStore.byStatus('in-review').length,
+    'human-required': taskStore.byStatus('human-required').length,
     done: taskStore.byStatus('done').length,
   })
   const totalTasks = $derived(taskStore.list.length)
@@ -72,6 +73,9 @@
       <span class="rounded bg-warning-200 px-2.5 py-1 text-xs text-warning-800 dark:bg-warning-700 dark:text-warning-200">
         In Review <strong>{tasksByStatus['in-review']}</strong>
       </span>
+      <span class="rounded bg-error-200 px-2.5 py-1 text-xs text-error-800 dark:bg-error-700 dark:text-error-200">
+        Human Required <strong>{tasksByStatus['human-required']}</strong>
+      </span>
     </div>
   </div>
 
@@ -103,6 +107,7 @@
               {t.status === 'done' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
                t.status === 'in-progress' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
                t.status === 'in-review' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
+               t.status === 'human-required' ? 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200' :
                t.status === 'new' ? 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200' :
                'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
               {t.status}

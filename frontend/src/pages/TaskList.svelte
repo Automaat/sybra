@@ -13,6 +13,7 @@
     { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
     { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400' },
     { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400' },
+    { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400' },
     { status: 'done', label: 'Done', border: 'border-t-success-500 dark:border-t-success-400' },
   ]
 </script>
