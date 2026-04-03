@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -709,17 +710,30 @@ func (a *App) FetchReviews() (github.ReviewSummary, error) {
 }
 
 func (a *App) RegisterSpotlightHotkey() {
-	spotlight.OnSubmit(func(text string) {
-		a.logger.Info("spotlight.submit", "text", text)
+	spotlight.OnSubmit(func(title, projectID string) {
+		a.logger.Info("spotlight.submit", "title", title, "project", projectID)
 		go func() {
-			if _, err := a.CreateTask(text, "", "headless"); err != nil {
+			t, err := a.CreateTask(title, "", "headless")
+			if err != nil {
 				a.logger.Error("spotlight.create", "err", err)
+				return
+			}
+			if projectID != "" {
+				if _, err := a.UpdateTask(t.ID, map[string]any{"project_id": projectID}); err != nil {
+					a.logger.Error("spotlight.project", "err", err)
+				}
 			}
 		}()
 	})
 
 	if err := spotlight.Register(func() {
-		spotlight.ShowPanel(680, 72)
+		projectsJSON := "[]"
+		if projects, err := a.ListProjects(); err == nil {
+			if data, err := json.Marshal(projects); err == nil {
+				projectsJSON = string(data)
+			}
+		}
+		spotlight.ShowPanel(projectsJSON)
 	}); err != nil {
 		a.logger.Error("spotlight.register", "err", err)
 		return
