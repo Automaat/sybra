@@ -13,6 +13,8 @@
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
   import CreateProjectDialog from './components/CreateProjectDialog.svelte'
   import QuickAddTask from './components/QuickAddTask.svelte'
+  import ToastContainer from './components/ToastContainer.svelte'
+  import { notificationStore } from './stores/notifications.svelte.js'
   import Dashboard from './pages/Dashboard.svelte'
   import TmuxSessions from './pages/TmuxSessions.svelte'
   import Orchestrator from './pages/Orchestrator.svelte'
@@ -61,6 +63,8 @@
     const unsub1 = EventsOn('task:created', () => taskStore.load())
     const unsub2 = EventsOn('task:updated', () => taskStore.load())
     const unsub3 = EventsOn('task:deleted', () => taskStore.load())
+    notificationStore.load()
+    const unsubNotif = notificationStore.listen()
     const unsubQuit = EventsOn('app:quit-confirm', () => {
       quitConfirmVisible = true
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
@@ -120,6 +124,7 @@
       unsub1()
       unsub2()
       unsub3()
+      unsubNotif()
       unsubQuit()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       taskStore.stopPolling()
@@ -281,6 +286,8 @@
   open={quickAddOpen}
   onclose={() => (quickAddOpen = false)}
 />
+
+<ToastContainer onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
 
 {#if quitConfirmVisible}
   <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg bg-surface-700 px-4 py-2 text-sm text-white shadow-lg">

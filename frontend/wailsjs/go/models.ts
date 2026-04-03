@@ -155,8 +155,37 @@ export namespace github {
 
 }
 
+export namespace notification {
+
+	export class Notification {
+	    id: string;
+	    level: string;
+	    title: string;
+	    message: string;
+	    taskId?: string;
+	    agentId?: string;
+	    createdAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Notification(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.level = source["level"];
+	        this.title = source["title"];
+	        this.message = source["message"];
+	        this.taskId = source["taskId"];
+	        this.agentId = source["agentId"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+
+}
+
 export namespace project {
-	
+
 	export class Project {
 	    id: string;
 	    name: string;
@@ -168,11 +197,11 @@ export namespace project {
 	    createdAt: any;
 	    // Go type: time
 	    updatedAt: any;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -184,7 +213,7 @@ export namespace project {
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -208,11 +237,11 @@ export namespace project {
 	    branch: string;
 	    taskId: string;
 	    head: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Worktree(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
