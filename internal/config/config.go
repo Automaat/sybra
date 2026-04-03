@@ -10,12 +10,18 @@ import (
 
 type Config struct {
 	Logging      LoggingConfig `yaml:"logging"`
+	Audit        AuditConfig   `yaml:"audit"`
 	TasksDir     string        `yaml:"tasks_dir"`
 	SkillsDir    string        `yaml:"skills_dir"`
 	RepoDir      string        `yaml:"repo_dir"`
 	ProjectsDir  string        `yaml:"projects_dir"`
 	ClonesDir    string        `yaml:"clones_dir"`
 	WorktreesDir string        `yaml:"worktrees_dir"`
+}
+
+type AuditConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	RetentionDays int  `yaml:"retention_days"`
 }
 
 type LoggingConfig struct {
@@ -41,8 +47,16 @@ func DefaultConfig() *Config {
 			MaxSizeMB: 50,
 			MaxFiles:  5,
 		},
+		Audit: AuditConfig{
+			Enabled:       true,
+			RetentionDays: 30,
+		},
 		TasksDir: defaultTasksDir(),
 	}
+}
+
+func (c *Config) AuditDir() string {
+	return filepath.Join(c.Logging.Dir, "audit")
 }
 
 func Load() (*Config, error) {

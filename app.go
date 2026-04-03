@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
@@ -31,12 +32,14 @@ type App struct {
 	agents       *agent.Manager
 	tmux         *tmux.Manager
 	watcher      *watcher.Watcher
+	audit        *audit.Logger
 	tasksDir     string
 	skillsDir    string
 	repoDir      string
 	worktreesDir string
 	logger       *slog.Logger
 	logDir       string
+	auditDir     string
 }
 
 func NewApp(logger *slog.Logger, cfg *config.Config) *App {
@@ -47,12 +50,20 @@ func NewApp(logger *slog.Logger, cfg *config.Config) *App {
 		worktreesDir: cfg.WorktreesDir,
 		logger:       logger,
 		logDir:       cfg.Logging.Dir,
+		auditDir:     cfg.AuditDir(),
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.logger.Info("app.starting")
+
+	al, err := audit.NewLogger(a.auditDir)
+	if err != nil {
+		a.logger.Error("audit.init", "err", err)
+	}
+	a.audit = al
+	_ = audit.Cleanup(a.auditDir, 30)
 
 	store, _ := task.NewStore(a.tasksDir)
 	a.tasks = store
@@ -85,7 +96,24 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(_ context.Context) {
 	a.logger.Info("app.stopping")
 	a.agents.Shutdown()
+	if a.audit != nil {
+		_ = a.audit.Close()
+	}
 	a.logger.Info("app.stopped")
+}
+
+func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
+	if a.audit == nil {
+		return
+	}
+	if err := a.audit.Log(audit.Event{
+		Type:    eventType,
+		TaskID:  taskID,
+		AgentID: agentID,
+		Data:    data,
+	}); err != nil {
+		a.logger.Error("audit.log", "type", eventType, "err", err)
+	}
 }
 
 func (a *App) reconnectAgents() {
@@ -145,6 +173,7 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 	if err != nil {
 		return t, err
 	}
+	a.logAudit(audit.EventTaskCreated, t.ID, "", map[string]any{"title": title, "mode": mode})
 	if t.Status == task.StatusNew {
 		a.logger.Info("auto-triage.start", "task_id", t.ID, "title", t.Title)
 		go func() {
@@ -157,6 +186,15 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 }
 
 func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
+	var prevStatus string
+	if newStatus, ok := updates["status"].(string); ok {
+		if prev, getErr := a.tasks.Get(id); getErr == nil {
+			prevStatus = string(prev.Status)
+			if prevStatus != newStatus {
+				a.logAudit(audit.EventTaskStatusChanged, id, "", map[string]any{"from": prevStatus, "to": newStatus})
+			}
+		}
+	}
 	t, err := a.tasks.Update(id, updates)
 	if err != nil {
 		return t, err
@@ -185,6 +223,7 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 
 func (a *App) DeleteTask(id string) error {
 	a.logger.Info("task.delete", "task_id", id)
+	a.logAudit(audit.EventTaskDeleted, id, "", nil)
 	if err := a.tasks.Delete(id); err != nil {
 		a.logger.Error("task.delete.failed", "task_id", id, "err", err)
 		return err
@@ -217,6 +256,7 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": mode, "title": t.Title})
 	if err := a.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Mode:      mode,
@@ -624,6 +664,7 @@ func (a *App) StartOrchestrator() error {
 		return fmt.Errorf("create orchestrator session: %w", err)
 	}
 	a.logger.Info("orchestrator.started")
+	a.logAudit(audit.EventOrchestratorStart, "", "", nil)
 	runtime.EventsEmit(a.ctx, "orchestrator:state", "running")
 	return nil
 }
@@ -633,6 +674,7 @@ func (a *App) StopOrchestrator() error {
 		return fmt.Errorf("stop orchestrator: %w", err)
 	}
 	a.logger.Info("orchestrator.stopped")
+	a.logAudit(audit.EventOrchestratorStop, "", "", nil)
 	runtime.EventsEmit(a.ctx, "orchestrator:state", "stopped")
 	return nil
 }
@@ -688,6 +730,14 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 		}
 	}
 
+	duration := time.Since(ag.StartedAt).Seconds()
+	agentData := map[string]any{
+		"mode":       ag.Mode,
+		"cost_usd":   ag.CostUSD,
+		"duration_s": duration,
+		"state":      string(ag.State),
+	}
+
 	// Persist run result to task file
 	truncatedResult := resultContent
 	if len(truncatedResult) > 2000 {
@@ -703,11 +753,13 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 
 	if strings.HasPrefix(ag.Name, "triage:") {
 		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+		a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
 		return
 	}
 
 	if strings.HasPrefix(ag.Name, "plan:") {
 		a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+		a.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
 		body := ""
 		if t, err := a.tasks.Get(ag.TaskID); err == nil {
 			body = t.Body
@@ -726,6 +778,7 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 
 	if strings.HasPrefix(ag.Name, "eval:") {
 		a.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
+		a.logAudit(audit.EventEvalCompleted, ag.TaskID, ag.ID, agentData)
 		t, err := a.tasks.Get(ag.TaskID)
 		if err != nil {
 			return
@@ -740,6 +793,12 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 		}
 		return
 	}
+
+	eventType := audit.EventAgentCompleted
+	if ag.State != agent.StateStopped {
+		eventType = audit.EventAgentFailed
+	}
+	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
 
 	go func() {
 		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
@@ -835,6 +894,7 @@ func (a *App) ApprovePlan(id string) (task.Task, error) {
 		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
 	}
 	a.logger.Info("plan.approve", "task_id", id, "title", t.Title)
+	a.logAudit(audit.EventPlanApproved, id, "", map[string]any{"title": t.Title})
 	return a.tasks.Update(id, map[string]any{
 		"status": string(task.StatusTodo),
 	})
@@ -849,6 +909,7 @@ func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
 		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
 	}
 	a.logger.Info("plan.reject", "task_id", id, "title", t.Title, "has_feedback", feedback != "")
+	a.logAudit(audit.EventPlanRejected, id, "", map[string]any{"title": t.Title, "has_feedback": feedback != ""})
 	body := t.Body
 	if feedback != "" {
 		body += "\n\n## Plan Feedback\n\n" + feedback
