@@ -43,6 +43,20 @@
     const unsub3 = EventsOn('task:deleted', () => taskStore.load())
 
     function handleKeydown(e: KeyboardEvent) {
+      if (e.metaKey && (e.key === '=' || e.key === '+')) {
+        e.preventDefault()
+        const current = parseFloat(document.documentElement.style.zoom || '1')
+        document.documentElement.style.zoom = String(Math.min(current + 0.1, 2))
+      }
+      if (e.metaKey && e.key === '-') {
+        e.preventDefault()
+        const current = parseFloat(document.documentElement.style.zoom || '1')
+        document.documentElement.style.zoom = String(Math.max(current - 0.1, 0.5))
+      }
+      if (e.metaKey && e.key === '0') {
+        e.preventDefault()
+        document.documentElement.style.zoom = '1'
+      }
       if (e.metaKey && e.key === 'n') {
         e.preventDefault()
         quickAddOpen = true
