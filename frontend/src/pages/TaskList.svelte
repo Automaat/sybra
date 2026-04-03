@@ -21,7 +21,6 @@
   }
 
   const columns = [
-    { status: 'new', label: 'Inbox', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
     { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
     { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400' },
     { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400' },
