@@ -29,6 +29,28 @@
   )
 
   const recentTasks = $derived(taskStore.list.slice(0, 5))
+  const humanRequiredTasks = $derived(taskStore.byStatus('human-required'))
+
+  let expandedTaskId = $state<string | null>(null)
+  let promptText = $state('')
+  let submitting = $state(false)
+  let submitError = $state('')
+
+  async function submitPrompt(taskId: string) {
+    if (!promptText.trim()) return
+    submitting = true
+    submitError = ''
+    try {
+      await agentStore.start(taskId, 'headless', promptText.trim())
+      await taskStore.update(taskId, { status: 'in-progress' })
+      promptText = ''
+      expandedTaskId = null
+    } catch (e) {
+      submitError = String(e)
+    } finally {
+      submitting = false
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-6 p-6">
@@ -86,6 +108,54 @@
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {#each [...runningAgents, ...pausedAgents] as a (a.id)}
           <AgentCard agent={a} onclick={() => onviewagent(a.id)} />
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Human required -->
+  {#if humanRequiredTasks.length > 0}
+    <div class="flex flex-col gap-2">
+      <span class="text-sm font-medium text-error-500">Human Required ({humanRequiredTasks.length})</span>
+      <div class="flex flex-col gap-1">
+        {#each humanRequiredTasks as t (t.id)}
+          <div class="rounded-lg border border-error-300 bg-error-50 dark:border-error-700 dark:bg-error-950">
+            <button
+              type="button"
+              class="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors hover:bg-error-100 dark:hover:bg-error-900"
+              onclick={() => { expandedTaskId = expandedTaskId === t.id ? null : t.id; promptText = ''; submitError = '' }}
+            >
+              <span class="font-medium">{t.title}</span>
+              <svg class="h-4 w-4 text-error-500 transition-transform {expandedTaskId === t.id ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {#if expandedTaskId === t.id}
+              <div class="flex flex-col gap-2 border-t border-error-300 px-4 py-3 dark:border-error-700">
+                {#if t.body}
+                  <pre class="whitespace-pre-wrap text-xs text-surface-500">{t.body}</pre>
+                {/if}
+                {#if submitError}
+                  <p class="text-xs text-error-500">{submitError}</p>
+                {/if}
+                <textarea
+                  class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-2 text-sm dark:border-surface-600 dark:bg-surface-800"
+                  rows="2"
+                  placeholder="Tell the agent what to do..."
+                  bind:value={promptText}
+                  onkeydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitPrompt(t.id) }}
+                ></textarea>
+                <button
+                  type="button"
+                  class="w-fit rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+                  onclick={() => submitPrompt(t.id)}
+                  disabled={submitting || !promptText.trim()}
+                >
+                  {submitting ? 'Starting...' : 'Send to agent'}
+                </button>
+              </div>
+            {/if}
+          </div>
         {/each}
       </div>
     </div>
