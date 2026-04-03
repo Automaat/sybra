@@ -144,7 +144,7 @@ describe('TaskDetail', () => {
       props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     await vi.waitFor(() => {
-      expect(screen.getByText('Start headless agent')).toBeDefined()
+      expect(screen.getByText('Start agent')).toBeDefined()
     })
   })
 })
