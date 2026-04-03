@@ -58,6 +58,10 @@ export function StopAgent(arg1) {
   return window['go']['main']['App']['StopAgent'](arg1);
 }
 
+export function TriageTask(arg1) {
+  return window['go']['main']['App']['TriageTask'](arg1);
+}
+
 export function UpdateTask(arg1, arg2) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2);
 }

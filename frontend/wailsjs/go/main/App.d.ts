@@ -32,4 +32,6 @@ export function StartAgent(arg1:string,arg2:string,arg3:string):Promise<agent.Ag
 
 export function StopAgent(arg1:string):Promise<void>;
 
+export function TriageTask(arg1:string):Promise<void>;
+
 export function UpdateTask(arg1:string,arg2:Record<string, any>):Promise<task.Task>;

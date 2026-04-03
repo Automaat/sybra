@@ -59,7 +59,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	t := Task{
 		ID:        uuid.NewString()[:8],
 		Title:     title,
-		Status:    StatusTodo,
+		Status:    StatusNew,
 		AgentMode: mode,
 		CreatedAt: now,
 		UpdatedAt: now,

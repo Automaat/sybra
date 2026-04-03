@@ -8,6 +8,7 @@
   import AgentList from './pages/AgentList.svelte'
   import AgentDetail from './pages/AgentDetail.svelte'
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
+  import QuickAddTask from './components/QuickAddTask.svelte'
   import Dashboard from './pages/Dashboard.svelte'
   import TmuxSessions from './pages/TmuxSessions.svelte'
 
@@ -21,6 +22,7 @@
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
+  let quickAddOpen = $state(false)
 
   const pageTitle = $derived(
     page.kind === 'dashboard' ? 'Dashboard' :
@@ -40,11 +42,36 @@
     const unsub2 = EventsOn('task:updated', () => taskStore.load())
     const unsub3 = EventsOn('task:deleted', () => taskStore.load())
 
+    function handleKeydown(e: KeyboardEvent) {
+      if (e.metaKey && e.key === 'n') {
+        e.preventDefault()
+        quickAddOpen = true
+      }
+      if (e.metaKey && e.key === '1') {
+        e.preventDefault()
+        page = { kind: 'dashboard' }
+      }
+      if (e.metaKey && e.key === '2') {
+        e.preventDefault()
+        page = { kind: 'task-list' }
+      }
+      if (e.metaKey && e.key === '3') {
+        e.preventDefault()
+        page = { kind: 'agent-list' }
+      }
+      if (e.metaKey && e.key === '4') {
+        e.preventDefault()
+        page = { kind: 'tmux' }
+      }
+    }
+    window.addEventListener('keydown', handleKeydown)
+
     return () => {
       unsub1()
       unsub2()
       unsub3()
       agentStore.stopPolling()
+      window.removeEventListener('keydown', handleKeydown)
     }
   })
 </script>
@@ -101,15 +128,14 @@
           <h2 class="text-lg font-semibold">{pageTitle}</h2>
         </AppBar.Lead>
         <AppBar.Trail>
-          {#if page.kind === 'task-list'}
-            <button
-              type="button"
-              class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
-              onclick={() => (dialogOpen = true)}
-            >
-              + New Task
-            </button>
-          {/if}
+          <button
+            type="button"
+            class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
+            onclick={() => (dialogOpen = true)}
+            title="New Task (Cmd+N)"
+          >
+            + New Task
+          </button>
         </AppBar.Trail>
       </AppBar.Toolbar>
     </AppBar>
@@ -148,4 +174,9 @@
   open={dialogOpen}
   onOpenChange={(open) => (dialogOpen = open)}
   oncreated={(id) => (page = { kind: 'task-detail', taskId: id })}
+/>
+
+<QuickAddTask
+  open={quickAddOpen}
+  onclose={() => (quickAddOpen = false)}
 />
