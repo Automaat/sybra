@@ -29,6 +29,8 @@
   let deleting = $state(false)
   let editingBody = $state(false)
   let bodyDraft = $state('')
+  let editingTitle = $state(false)
+  let titleDraft = $state('')
 
   let t = $state<task.Task | null>(null)
   let error = $state('')
@@ -71,6 +73,34 @@
       agentMode = t.agentMode || 'interactive'
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  function startEditingTitle() {
+    if (!t) return
+    titleDraft = t.title
+    editingTitle = true
+  }
+
+  async function saveTitle() {
+    if (!t || !titleDraft.trim() || titleDraft.trim() === t.title) {
+      editingTitle = false
+      return
+    }
+    try {
+      t = await taskStore.update(taskId, { title: titleDraft.trim() })
+    } catch (e) {
+      error = String(e)
+    }
+    editingTitle = false
+  }
+
+  function handleTitleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      saveTitle()
+    } else if (e.key === 'Escape') {
+      editingTitle = false
     }
   }
 
@@ -206,7 +236,21 @@
   {#if t}
     <div class="flex flex-col gap-6">
       <div class="flex items-start justify-between gap-4">
-        <h1 class="text-2xl font-bold">{t.title}</h1>
+        {#if editingTitle}
+          <input
+            class="text-2xl font-bold bg-transparent border-b-2 border-primary-500 outline-none w-full"
+            bind:value={titleDraft}
+            onblur={saveTitle}
+            onkeydown={handleTitleKeydown}
+            autofocus
+          />
+        {:else}
+          <h1
+            class="text-2xl font-bold cursor-pointer hover:text-primary-500 transition-colors"
+            onclick={startEditingTitle}
+            title="Click to edit title"
+          >{t.title}</h1>
+        {/if}
         <div class="flex items-center gap-2">
           <StatusBadge status={t.status} />
           {#if triaging}
