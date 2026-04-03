@@ -50,12 +50,15 @@ describe('TaskList', () => {
     expect(screen.getByText('Failed to load')).toBeDefined()
   })
 
-  it('renders all four status columns', () => {
+  it('renders all status columns', () => {
     mockByStatus.mockReturnValue([])
     render(TaskList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('Todo')).toBeDefined()
+    expect(screen.getByText('Planning')).toBeDefined()
+    expect(screen.getByText('Plan Review')).toBeDefined()
     expect(screen.getByText('In Progress')).toBeDefined()
     expect(screen.getByText('In Review')).toBeDefined()
+    expect(screen.getByText('Human Required')).toBeDefined()
     expect(screen.getByText('Done')).toBeDefined()
   })
 
@@ -64,8 +67,11 @@ describe('TaskList', () => {
     render(TaskList, { props: { onselect: vi.fn() } })
     expect(mockByStatus).toHaveBeenCalledWith('new')
     expect(mockByStatus).toHaveBeenCalledWith('todo')
+    expect(mockByStatus).toHaveBeenCalledWith('planning')
+    expect(mockByStatus).toHaveBeenCalledWith('plan-review')
     expect(mockByStatus).toHaveBeenCalledWith('in-progress')
     expect(mockByStatus).toHaveBeenCalledWith('in-review')
+    expect(mockByStatus).toHaveBeenCalledWith('human-required')
     expect(mockByStatus).toHaveBeenCalledWith('done')
   })
 
@@ -73,6 +79,6 @@ describe('TaskList', () => {
     const tasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
     mockByStatus.mockReturnValue(tasks)
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(screen.getAllByText('First Task')).toHaveLength(5)
+    expect(screen.getAllByText('First Task')).toHaveLength(8)
   })
 })

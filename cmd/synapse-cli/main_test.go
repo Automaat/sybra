@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Automaat/synapse/internal/task"
@@ -18,7 +19,8 @@ func mustUnmarshal(t *testing.T, data string, v any) {
 func setupStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_TASKS_DIR", dir)
+	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYNAPSE_TASKS_DIR", filepath.Join(dir, "tasks"))
 	return dir
 }
 
@@ -185,5 +187,126 @@ func TestNoArgs(t *testing.T) {
 	code, _ := runCLI(t)
 	if code == 0 {
 		t.Error("expected non-zero exit for no args")
+	}
+}
+
+func TestCreateWithProject(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "proj task", "--project", "owner/repo")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+	if created.ProjectID != "owner/repo" {
+		t.Errorf("projectId = %q, want %q", created.ProjectID, "owner/repo")
+	}
+}
+
+func TestUpdateProject(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "no proj")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--project", "org/myrepo")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.ProjectID != "org/myrepo" {
+		t.Errorf("projectId = %q, want %q", updated.ProjectID, "org/myrepo")
+	}
+}
+
+func TestListFilterProject(t *testing.T) {
+	setupStore(t)
+
+	runCLI(t, "--json", "create", "--title", "proj task", "--project", "owner/repo")
+	runCLI(t, "--json", "create", "--title", "other task")
+
+	code, out := runCLI(t, "--json", "list", "--project", "owner/repo")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var tasks []task.Task
+	mustUnmarshal(t, out, &tasks)
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 project task, got %d", len(tasks))
+	}
+}
+
+func TestProjectListEmpty(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "project", "list")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	var projects []map[string]any
+	mustUnmarshal(t, out, &projects)
+	if len(projects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(projects))
+	}
+}
+
+func TestProjectNoSubcommand(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project")
+	if code == 0 {
+		t.Error("expected non-zero exit for no subcommand")
+	}
+}
+
+func TestProjectUnknownSubcommand(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "bogus")
+	if code == 0 {
+		t.Error("expected non-zero exit for unknown subcommand")
+	}
+}
+
+func TestProjectGetNotFound(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "get", "nonexistent/repo")
+	if code == 0 {
+		t.Error("expected non-zero exit for nonexistent project")
+	}
+}
+
+func TestProjectDeleteNotFound(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "delete", "nonexistent/repo")
+	if code == 0 {
+		t.Error("expected non-zero exit for nonexistent project")
+	}
+}
+
+func TestProjectCreateNoURL(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "create")
+	if code == 0 {
+		t.Error("expected non-zero exit for missing url")
+	}
+}
+
+func TestProjectGetNoID(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "get")
+	if code == 0 {
+		t.Error("expected non-zero exit for missing id")
+	}
+}
+
+func TestProjectDeleteNoID(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "project", "delete")
+	if code == 0 {
+		t.Error("expected non-zero exit for missing id")
 	}
 }

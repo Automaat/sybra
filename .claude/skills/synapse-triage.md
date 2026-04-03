@@ -11,7 +11,14 @@ Triage incoming tasks: analyze content, assign tags, set appropriate agent mode,
 
 ## CLI Reference
 
-The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
+The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
+
+## Constraints
+
+- Do NOT explore the codebase, read source files, or spawn sub-agents
+- Triage based on title, body, and URL context only
+- Keep total cost under $0.05 per task
+- Code exploration happens during planning/implementation, not triage
 
 ## Process
 
@@ -72,15 +79,40 @@ synapse-cli --json update <id> --tags "backend,small,review"
 synapse-cli --json update <id> --mode headless
 ```
 
-### 5. Update status when triaged
+### 5. Assign project (if applicable)
 
-If the task is still `new` after assigning tags and mode, move it to `todo`:
+Check if the task references a known project (GitHub repo). List available projects:
 
 ```bash
+synapse-cli --json project list
+```
+
+If the task body/URL matches a registered project, assign it:
+
+```bash
+synapse-cli --json update <id> --project "owner/repo"
+```
+
+### 6. Decide: planning or direct implementation
+
+Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
+
+```bash
+# Complex tasks: medium/large features, architecture decisions → planning
+synapse-cli --json update <id> --status planning
+
+# Simple tasks: small bugs, refactors, reviews, chores → todo
 synapse-cli --json update <id> --status todo
 ```
 
-Skip this step if a previous update already changed the status.
+| Signal | Status |
+|--------|--------|
+| Size `medium` or `large` + type `feature` | planning |
+| Architecture decision, unclear scope | planning |
+| Size `small`, type `bug`/`refactor`/`review`/`chore` | todo |
+| PR review | todo |
+
+Step 6 already sets the status — no further status update needed. Skip if a previous step already changed the status.
 
 ## Decision Criteria
 

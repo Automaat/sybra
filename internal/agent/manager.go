@@ -182,7 +182,9 @@ func (m *Manager) Shutdown() {
 	defer m.mu.RUnlock()
 	m.logger.Info("agent.shutdown", "count", len(m.agents))
 	for _, a := range m.agents {
-		a.cancel()
+		if a.cancel != nil {
+			a.cancel()
+		}
 		if a.Mode == "interactive" && a.TmuxSession != "" {
 			_ = m.tmux.KillSession(a.TmuxSession)
 		}

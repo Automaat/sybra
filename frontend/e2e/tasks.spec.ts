@@ -159,8 +159,8 @@ test.describe('Create Task', () => {
     await expect(page.getByRole('dialog')).toBeVisible()
     await expect(page.getByPlaceholder('Task title...')).toBeVisible()
 
-    // Close via Cancel
-    await page.getByText('Cancel').click()
+    // Close via Cancel (scoped to New Task dialog)
+    await page.getByLabel('New Task').getByText('Cancel').click()
     await expect(page.getByPlaceholder('Task title...')).not.toBeVisible()
   })
 

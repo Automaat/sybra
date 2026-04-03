@@ -9,9 +9,13 @@ const mockTask = {
   agentMode: 'headless',
   allowedTools: [],
   tags: ['backend'],
+  projectId: '',
+  agentRuns: [],
   createdAt: '2026-04-01T00:00:00Z',
   updatedAt: '2026-04-01T00:00:00Z',
   body: '',
+  filePath: '',
+  convertValues: () => {},
 }
 
 describe('TaskCard', () => {

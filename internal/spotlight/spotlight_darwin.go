@@ -2,23 +2,26 @@ package spotlight
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework AppKit -framework Carbon
+#cgo LDFLAGS: -framework AppKit -framework Carbon -framework WebKit
+#include <stdlib.h>
 
 int registerGlobalHotkey(void);
-void showSpotlightPanel(int width, int height);
+void showSpotlightPanel(const char *projectsJSON);
 void dismissSpotlightPanel(void);
+void resizeSpotlightPanel(int height);
 */
 import "C"
 
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 )
 
 var (
 	callbackMu sync.Mutex
 	callbackFn func()
-	submitFn   func(text string)
+	submitFn   func(title, projectID string)
 )
 
 //export goHotkeyCallback
@@ -32,13 +35,14 @@ func goHotkeyCallback() {
 }
 
 //export goSpotlightSubmit
-func goSpotlightSubmit(ctext *C.char) {
-	text := C.GoString(ctext)
+func goSpotlightSubmit(ctitle, cprojectID *C.char) {
+	title := C.GoString(ctitle)
+	projectID := C.GoString(cprojectID)
 	callbackMu.Lock()
 	fn := submitFn
 	callbackMu.Unlock()
 	if fn != nil {
-		fn(text)
+		fn(title, projectID)
 	}
 }
 
@@ -55,19 +59,21 @@ func Register(callback func()) error {
 	return nil
 }
 
-// OnSubmit sets the callback invoked when user submits text in the spotlight panel.
-func OnSubmit(fn func(text string)) {
+// OnSubmit sets the callback invoked when user submits in the spotlight panel.
+func OnSubmit(fn func(title, projectID string)) {
 	callbackMu.Lock()
 	submitFn = fn
 	callbackMu.Unlock()
 }
 
-// ShowPanel shows the spotlight overlay panel on the current screen.
-func ShowPanel(width, height int) {
-	C.showSpotlightPanel(C.int(width), C.int(height))
+// ShowPanel shows the spotlight panel with the given projects JSON array.
+func ShowPanel(projectsJSON string) {
+	cstr := C.CString(projectsJSON)
+	defer C.free(unsafe.Pointer(cstr))
+	C.showSpotlightPanel(cstr)
 }
 
-// DismissPanel hides the spotlight panel and returns focus.
+// DismissPanel hides the spotlight panel.
 func DismissPanel() {
 	C.dismissSpotlightPanel()
 }

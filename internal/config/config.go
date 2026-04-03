@@ -9,10 +9,13 @@ import (
 )
 
 type Config struct {
-	Logging   LoggingConfig `yaml:"logging"`
-	TasksDir  string        `yaml:"tasks_dir"`
-	SkillsDir string        `yaml:"skills_dir"`
-	RepoDir   string        `yaml:"repo_dir"`
+	Logging      LoggingConfig `yaml:"logging"`
+	TasksDir     string        `yaml:"tasks_dir"`
+	SkillsDir    string        `yaml:"skills_dir"`
+	RepoDir      string        `yaml:"repo_dir"`
+	ProjectsDir  string        `yaml:"projects_dir"`
+	ClonesDir    string        `yaml:"clones_dir"`
+	WorktreesDir string        `yaml:"worktrees_dir"`
 }
 
 type LoggingConfig struct {
@@ -77,6 +80,15 @@ func Load() (*Config, error) {
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = defaultSkillsDir()
 	}
+	if cfg.ProjectsDir == "" {
+		cfg.ProjectsDir = defaultProjectsDir()
+	}
+	if cfg.ClonesDir == "" {
+		cfg.ClonesDir = defaultClonesDir()
+	}
+	if cfg.WorktreesDir == "" {
+		cfg.WorktreesDir = defaultWorktreesDir()
+	}
 
 	return cfg, nil
 }
@@ -115,4 +127,16 @@ func defaultTasksDir() string {
 
 func defaultSkillsDir() string {
 	return filepath.Join(HomeDir(), "skills")
+}
+
+func defaultProjectsDir() string {
+	return filepath.Join(HomeDir(), "projects")
+}
+
+func defaultClonesDir() string {
+	return filepath.Join(HomeDir(), "clones")
+}
+
+func defaultWorktreesDir() string {
+	return filepath.Join(HomeDir(), "worktrees")
 }

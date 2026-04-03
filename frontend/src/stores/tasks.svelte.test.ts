@@ -164,7 +164,15 @@ describe('TaskStore', () => {
 
       expect(taskStore.byStatus('todo')).toHaveLength(2)
       expect(taskStore.byStatus('done')).toHaveLength(1)
-      expect(taskStore.byStatus('blocked')).toHaveLength(0)
+      expect(taskStore.byStatus('human-required')).toHaveLength(0)
+    })
+
+    it('filters human-required status', () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required' }) as any)
+      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'todo' }) as any)
+
+      expect(taskStore.byStatus('human-required')).toHaveLength(1)
+      expect(taskStore.byStatus('human-required')[0].id).toBe('t1')
     })
 
     it('returns all for "all" filter', () => {

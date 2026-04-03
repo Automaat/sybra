@@ -1,4 +1,4 @@
-import { ListTasks, GetTask, CreateTask, UpdateTask, DeleteTask } from '../../wailsjs/go/main/App.js'
+import { ListTasks, GetTask, CreateTask, UpdateTask, DeleteTask, ApprovePlan, RejectPlan } from '../../wailsjs/go/main/App.js'
 import { task } from '../../wailsjs/go/models.js'
 
 class TaskStore {
@@ -58,6 +58,18 @@ class TaskStore {
   async remove(id: string): Promise<void> {
     await DeleteTask(id)
     this.tasks.delete(id)
+  }
+
+  async approvePlan(id: string): Promise<task.Task> {
+    const result = await ApprovePlan(id)
+    this.tasks.set(result.id, result)
+    return result
+  }
+
+  async rejectPlan(id: string, feedback: string): Promise<task.Task> {
+    const result = await RejectPlan(id, feedback)
+    this.tasks.set(result.id, result)
+    return result
   }
 
   startPolling(): void {
