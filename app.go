@@ -214,7 +214,7 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	if t.Status == task.StatusInProgress && !a.agents.HasRunningAgentForTask(t.ID) {
 		a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
 		go func() {
-			if _, err := a.StartAgent(t.ID, "headless", "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+			if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
 				a.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
 			}
 		}()
