@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readdir, unlink } from 'node:fs/promises'
-import { join, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-const TASKS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../tasks')
+const SYNAPSE_HOME = process.env.SYNAPSE_HOME ?? join(homedir(), '.synapse')
+const TASKS_DIR = join(SYNAPSE_HOME, 'tasks')
 
 async function cleanupCreatedTasks() {
   const files = await readdir(TASKS_DIR)

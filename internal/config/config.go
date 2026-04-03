@@ -9,7 +9,8 @@ import (
 )
 
 type Config struct {
-	Logging LoggingConfig `yaml:"logging"`
+	Logging  LoggingConfig `yaml:"logging"`
+	TasksDir string        `yaml:"tasks_dir"`
 }
 
 type LoggingConfig struct {
@@ -17,6 +18,14 @@ type LoggingConfig struct {
 	Dir       string `yaml:"dir"`
 	MaxSizeMB int    `yaml:"max_size_mb"`
 	MaxFiles  int    `yaml:"max_files"`
+}
+
+func HomeDir() string {
+	if dir := os.Getenv("SYNAPSE_HOME"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".synapse")
 }
 
 func DefaultConfig() *Config {
@@ -27,6 +36,7 @@ func DefaultConfig() *Config {
 			MaxSizeMB: 50,
 			MaxFiles:  5,
 		},
+		TasksDir: defaultTasksDir(),
 	}
 }
 
@@ -39,6 +49,10 @@ func Load() (*Config, error) {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
+	} else if os.IsNotExist(err) {
+		if writeErr := writeDefaultConfig(path); writeErr != nil {
+			return nil, writeErr
+		}
 	}
 
 	if v := os.Getenv("SYNAPSE_LOG_LEVEL"); v != "" {
@@ -50,6 +64,12 @@ func Load() (*Config, error) {
 
 	if cfg.Logging.Dir == "" {
 		cfg.Logging.Dir = defaultLogDir()
+	}
+	if cfg.TasksDir == "" {
+		cfg.TasksDir = defaultTasksDir()
+	}
+	if v := os.Getenv("SYNAPSE_TASKS_DIR"); v != "" {
+		cfg.TasksDir = v
 	}
 
 	return cfg, nil
@@ -68,18 +88,21 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 	}
 }
 
-func configPath() string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "synapse", "config.yaml")
+func writeDefaultConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "synapse", "config.yaml")
+	return os.WriteFile(path, []byte("# Synapse configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+}
+
+func configPath() string {
+	return filepath.Join(HomeDir(), "config.yaml")
 }
 
 func defaultLogDir() string {
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "synapse", "logs")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "synapse", "logs")
+	return filepath.Join(HomeDir(), "logs")
+}
+
+func defaultTasksDir() string {
+	return filepath.Join(HomeDir(), "tasks")
 }

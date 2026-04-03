@@ -155,9 +155,16 @@ jobs:
       - name: Install Playwright browsers
         run: cd frontend && npx playwright install chromium
 
+      - name: Seed e2e fixtures
+        run: |
+          mkdir -p "$SYNAPSE_HOME/tasks"
+          cp frontend/e2e/fixtures/*.md "$SYNAPSE_HOME/tasks/"
+        env:
+          SYNAPSE_HOME: /tmp/synapse-e2e
+
       - name: Start wails dev
         run: |
-          wails dev > /tmp/wails-dev.log 2>&1 &
+          SYNAPSE_HOME=/tmp/synapse-e2e wails dev > /tmp/wails-dev.log 2>&1 &
           WAILS_PID=$!
           echo "WAILS_PID=$WAILS_PID" >> "$GITHUB_ENV"
           echo "Waiting for wails dev (pid $WAILS_PID)..."
@@ -185,6 +192,8 @@ jobs:
 
       - name: Run e2e tests
         run: cd frontend && npx playwright test --reporter=github
+        env:
+          SYNAPSE_HOME: /tmp/synapse-e2e
 
       - name: Dump wails dev log
         if: failure()
