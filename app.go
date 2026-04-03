@@ -75,6 +75,7 @@ func (a *App) startup(ctx context.Context) {
 	_ = w.Start(ctx)
 
 	a.reconnectAgents()
+	a.cleanStaleRuns()
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
 	go a.orchestratorLoop(ctx)
@@ -104,6 +105,30 @@ func (a *App) reconnectAgents() {
 	n := a.agents.ReconnectSessions(infos)
 	if n > 0 {
 		a.logger.Info("reconnect.done", "count", n)
+	}
+}
+
+// cleanStaleRuns marks agent_runs still showing "running" as "stopped" if no
+// matching in-memory agent exists. Fixes leftover state from crashes/restarts.
+func (a *App) cleanStaleRuns() {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range tasks {
+		for _, run := range tasks[i].AgentRuns {
+			if run.State != string(agent.StateRunning) {
+				continue
+			}
+			if a.agents.HasRunningAgentForTask(tasks[i].ID) {
+				continue
+			}
+			a.logger.Info("stale-run.cleanup", "task_id", tasks[i].ID, "agent_id", run.AgentID)
+			_ = a.tasks.UpdateRun(tasks[i].ID, run.AgentID, map[string]any{
+				"state":  string(agent.StateStopped),
+				"result": "stale: marked stopped on startup",
+			})
+		}
 	}
 }
 
@@ -144,7 +169,7 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 			}
 		}()
 	}
-	if t.Status == task.StatusInProgress {
+	if t.Status == task.StatusInProgress && !a.agents.HasRunningAgentForTask(t.ID) {
 		a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
 		go func() {
 			if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
@@ -531,6 +556,9 @@ func (a *App) maybeDispatchTasks() {
 			continue
 		}
 		if slices.Contains(tasks[i].Tags, "large") {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(tasks[i].ID) {
 			continue
 		}
 		candidates = append(candidates, tasks[i])

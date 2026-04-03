@@ -169,6 +169,18 @@ func (m *Manager) ListAgents() []*Agent {
 	return agents
 }
 
+// HasRunningAgentForTask returns true if any agent is currently running for the given task.
+func (m *Manager) HasRunningAgentForTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		if a.TaskID == taskID && a.State == StateRunning {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) CapturePane(agentID string) (string, error) {
 	a, err := m.GetAgent(agentID)
 	if err != nil {

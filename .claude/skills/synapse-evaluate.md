@@ -30,14 +30,15 @@ Review the agent result provided in the prompt. Consider:
 | Condition | New Status | Rationale |
 |-----------|-----------|-----------|
 | Agent completed work successfully | in-review | Human must review before done |
-| Agent failed, hit errors, or produced no useful output | todo | Reset for retry |
+| Agent failed, hit errors, or produced no useful output | human-required | Needs human to decide retry |
 | Agent explicitly said it's blocked or needs input | human-required | Needs human intervention |
 
 ### Guidelines
 
 - **Never set `done`** — only humans move tasks to `done` after review
+- **Never set `todo`** — this triggers auto-dispatch and can create duplicate agents
 - Default to `in-review` when uncertain
-- Set `todo` if the agent output shows errors, loops, or incomplete work
+- Set `human-required` if the agent output shows errors, loops, or incomplete work
 
 ### 4. Update the task status
 
