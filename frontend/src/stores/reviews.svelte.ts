@@ -41,7 +41,7 @@ class ReviewStore {
       const byBranch = repoPRs.filter((pr) => pr.headRefName === task.branch)
       if (byBranch.length > 0) return byBranch
     }
-    return repoPRs
+    return []
   }
 
   async load(): Promise<void> {
