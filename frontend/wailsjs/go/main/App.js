@@ -78,6 +78,10 @@ export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
 }
 
+export function ListNotifications() {
+  return window['go']['main']['App']['ListNotifications']();
+}
+
 export function ListProjects() {
   return window['go']['main']['App']['ListProjects']();
 }
@@ -112,6 +116,10 @@ export function RegisterSpotlightHotkey() {
 
 export function RejectPlan(arg1, arg2) {
   return window['go']['main']['App']['RejectPlan'](arg1, arg2);
+}
+
+export function SetDesktopNotifications(arg1) {
+  return window['go']['main']['App']['SetDesktopNotifications'](arg1);
 }
 
 export function StartAgent(arg1, arg2, arg3) {

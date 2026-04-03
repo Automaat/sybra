@@ -4,6 +4,7 @@ import {task} from '../models';
 import {project} from '../models';
 import {agent} from '../models';
 import {github} from '../models';
+import {notification} from '../models';
 import {tmux} from '../models';
 
 export function ApprovePlan(arg1:string):Promise<task.Task>;
@@ -44,6 +45,8 @@ export function KillTmuxSession(arg1:string):Promise<void>;
 
 export function ListAgents():Promise<Array<agent.Agent>>;
 
+export function ListNotifications():Promise<Array<notification.Notification>>;
+
 export function ListProjects():Promise<Array<project.Project>>;
 
 export function ListTasks():Promise<Array<task.Task>>;
@@ -61,6 +64,8 @@ export function PlanTask(arg1:string):Promise<void>;
 export function RegisterSpotlightHotkey():Promise<void>;
 
 export function RejectPlan(arg1:string,arg2:string):Promise<task.Task>;
+
+export function SetDesktopNotifications(arg1:boolean):Promise<void>;
 
 export function StartAgent(arg1:string,arg2:string,arg3:string):Promise<agent.Agent>;
 

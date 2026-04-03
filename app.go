@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/task"
@@ -32,6 +33,7 @@ type App struct {
 	agents       *agent.Manager
 	tmux         *tmux.Manager
 	watcher      *watcher.Watcher
+	notifier     *notification.Emitter
 	audit        *audit.Logger
 	tasksDir     string
 	skillsDir    string
@@ -79,6 +81,7 @@ func (a *App) startup(ctx context.Context) {
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
+	a.notifier = notification.New(emit)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
 	a.agents.SetOnComplete(a.handleAgentComplete)
 
@@ -823,7 +826,18 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 
-	if strings.HasPrefix(ag.Name, "triage:") {
+	// Notify for non-system agents
+	if !strings.HasPrefix(ag.Name, "triage:") && !strings.HasPrefix(ag.Name, "eval:") {
+		level := notification.LevelSuccess
+		title := "Agent completed"
+		if ag.State == agent.StateStopped && !hasResultEvent(ag) {
+			level = notification.LevelError
+			title = "Agent failed"
+		}
+		a.notifier.Send(level, title, ag.Name, ag.TaskID, ag.ID)
+	}
+
+	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
 		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
 		a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
 		return
@@ -1047,6 +1061,23 @@ func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 
 func (a *App) FetchReviews() (github.ReviewSummary, error) {
 	return github.FetchReviews()
+}
+
+func (a *App) ListNotifications() []notification.Notification {
+	return a.notifier.List()
+}
+
+func (a *App) SetDesktopNotifications(enabled bool) {
+	a.notifier.SetDesktop(enabled)
+}
+
+func hasResultEvent(ag *agent.Agent) bool {
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) RegisterSpotlightHotkey() {

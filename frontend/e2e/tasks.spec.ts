@@ -81,7 +81,7 @@ test.describe('Task Detail', () => {
   test('navigates to task detail on card click', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
 
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await expect(page.getByText('Back to tasks')).toBeVisible()
@@ -91,7 +91,7 @@ test.describe('Task Detail', () => {
   test('shows task metadata', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     const main = page.getByRole('main')
@@ -116,7 +116,7 @@ test.describe('Task Detail', () => {
   test('navigates back to list', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     await page.getByText('Back to tasks').click()
@@ -128,7 +128,7 @@ test.describe('Task Detail', () => {
   test('changes task status via segmented control', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     // Change status to In Progress
@@ -142,10 +142,10 @@ test.describe('Task Detail', () => {
     await waitForTasks(page)
 
     const inProgressCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Progress' }) })
-    await expect(inProgressCol.getByText('Implement auth middleware')).toBeVisible()
+    await expect(inProgressCol.getByRole('heading', { name: 'Implement auth middleware' })).toBeVisible()
 
     // Restore original status
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await clickSegment(page, 'main', 'Todo')
   })
@@ -219,7 +219,7 @@ test.describe('Navigation Rail', () => {
   test('clicking tasks nav returns to task list from detail', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByText('Implement auth middleware').click()
+    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     const navTrigger = page.locator('[data-part="trigger"]', { hasText: /Board/ })

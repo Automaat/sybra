@@ -36,6 +36,14 @@ vi.mock('./stores/agents.svelte.js', () => ({
   },
 }))
 
+vi.mock('./stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    load: vi.fn().mockResolvedValue(undefined),
+    listen: vi.fn(() => vi.fn()),
+    notifications: [],
+  },
+}))
+
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
   Navigation: Object.assign(() => {}, {
     Header: () => {},

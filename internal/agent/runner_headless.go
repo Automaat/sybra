@@ -211,4 +211,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 	a.State = StateStopped
 	m.logger.Error("agent.error", "id", a.ID, "err", err)
 	m.emit("agent:error:"+a.ID, err.Error())
+	if m.onComplete != nil {
+		m.onComplete(a)
+	}
 }
