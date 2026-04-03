@@ -22,21 +22,19 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Logging.Dir == "" {
 		t.Error("Dir should not be empty")
 	}
+	if cfg.TasksDir == "" {
+		t.Error("TasksDir should not be empty")
+	}
 }
 
 func TestLoadFromYAML(t *testing.T) {
 	dir := t.TempDir()
-	cfgDir := filepath.Join(dir, "synapse")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("SYNAPSE_HOME", dir)
 
 	yaml := []byte("logging:\n  level: debug\n  max_size_mb: 10\n  max_files: 3\n")
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), yaml, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	t.Setenv("XDG_CONFIG_HOME", dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -54,9 +52,10 @@ func TestLoadFromYAML(t *testing.T) {
 }
 
 func TestLoadEnvOverride(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("SYNAPSE_HOME", t.TempDir())
 	t.Setenv("SYNAPSE_LOG_LEVEL", "error")
 	t.Setenv("SYNAPSE_LOG_DIR", "/tmp/test-logs")
+	t.Setenv("SYNAPSE_TASKS_DIR", "/tmp/test-tasks")
 
 	cfg, err := Load()
 	if err != nil {
@@ -67,6 +66,9 @@ func TestLoadEnvOverride(t *testing.T) {
 	}
 	if cfg.Logging.Dir != "/tmp/test-logs" {
 		t.Errorf("Dir = %q, want %q", cfg.Logging.Dir, "/tmp/test-logs")
+	}
+	if cfg.TasksDir != "/tmp/test-tasks" {
+		t.Errorf("TasksDir = %q, want %q", cfg.TasksDir, "/tmp/test-tasks")
 	}
 }
 
@@ -93,8 +95,9 @@ func TestSlogLevel(t *testing.T) {
 	}
 }
 
-func TestLoadMissingConfigFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+func TestLoadMissingConfigCreatesDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYNAPSE_HOME", dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -103,19 +106,20 @@ func TestLoadMissingConfigFile(t *testing.T) {
 	if cfg.Logging.Level != "info" {
 		t.Errorf("Level = %q, want %q", cfg.Logging.Level, "info")
 	}
+
+	// config.yaml should have been created
+	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
+		t.Errorf("config.yaml not created: %v", err)
+	}
 }
 
 func TestLoadInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
-	cfgDir := filepath.Join(dir, "synapse")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(":{bad yaml"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("SYNAPSE_HOME", dir)
 
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(":{bad yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := Load()
 	if err == nil {
@@ -125,16 +129,11 @@ func TestLoadInvalidYAML(t *testing.T) {
 
 func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 	dir := t.TempDir()
-	cfgDir := filepath.Join(dir, "synapse")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// YAML with empty dir field
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("logging:\n  dir: \"\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("SYNAPSE_HOME", dir)
 
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  dir: \"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, err := Load()
 	if err != nil {
@@ -145,34 +144,37 @@ func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestConfigPathWithoutXDG(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+func TestHomeDirDefault(t *testing.T) {
+	t.Setenv("SYNAPSE_HOME", "")
 
-	path := configPath()
+	dir := HomeDir()
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".config", "synapse", "config.yaml")
-	if path != want {
-		t.Errorf("configPath() = %q, want %q", path, want)
+	want := filepath.Join(home, ".synapse")
+	if dir != want {
+		t.Errorf("HomeDir() = %q, want %q", dir, want)
 	}
 }
 
-func TestDefaultLogDirWithoutXDG(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "")
+func TestHomeDirOverride(t *testing.T) {
+	t.Setenv("SYNAPSE_HOME", "/custom/synapse")
 
-	dir := defaultLogDir()
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".local", "share", "synapse", "logs")
-	if dir != want {
-		t.Errorf("defaultLogDir() = %q, want %q", dir, want)
+	dir := HomeDir()
+	if dir != "/custom/synapse" {
+		t.Errorf("HomeDir() = %q, want %q", dir, "/custom/synapse")
 	}
 }
 
-func TestDefaultLogDirWithXDG(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "/custom/data")
+func TestPathsUnderHomeDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYNAPSE_HOME", dir)
 
-	dir := defaultLogDir()
-	want := filepath.Join("/custom/data", "synapse", "logs")
-	if dir != want {
-		t.Errorf("defaultLogDir() = %q, want %q", dir, want)
+	if got := configPath(); got != filepath.Join(dir, "config.yaml") {
+		t.Errorf("configPath() = %q, want under %q", got, dir)
+	}
+	if got := defaultLogDir(); got != filepath.Join(dir, "logs") {
+		t.Errorf("defaultLogDir() = %q, want under %q", got, dir)
+	}
+	if got := defaultTasksDir(); got != filepath.Join(dir, "tasks") {
+		t.Errorf("defaultTasksDir() = %q, want under %q", got, dir)
 	}
 }

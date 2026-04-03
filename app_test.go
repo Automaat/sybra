@@ -3,7 +3,6 @@ package main
 import (
 	"io"
 	"log/slog"
-	"path/filepath"
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -38,12 +37,13 @@ func setupApp(t *testing.T) *App {
 }
 
 func TestNewApp(t *testing.T) {
-	a := NewApp(discardLogger(), t.TempDir())
+	tasksDir := t.TempDir()
+	a := NewApp(discardLogger(), t.TempDir(), tasksDir)
 	if a == nil {
 		t.Fatal("NewApp returned nil")
 	}
-	if a.tasksDir != "tasks" {
-		t.Errorf("tasksDir = %q, want %q", a.tasksDir, "tasks")
+	if a.tasksDir != tasksDir {
+		t.Errorf("tasksDir = %q, want %q", a.tasksDir, tasksDir)
 	}
 }
 
@@ -223,8 +223,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestStartup(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{tasksDir: filepath.Join(dir, "tasks"), logger: discardLogger()}
+	a := NewApp(discardLogger(), t.TempDir(), t.TempDir())
 	if a.tasksDir == "" {
 		t.Error("tasksDir should not be empty")
 	}

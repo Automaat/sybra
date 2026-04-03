@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/task"
@@ -24,9 +23,9 @@ type App struct {
 	logDir   string
 }
 
-func NewApp(logger *slog.Logger, logDir string) *App {
+func NewApp(logger *slog.Logger, logDir, tasksDir string) *App {
 	return &App{
-		tasksDir: "tasks",
+		tasksDir: tasksDir,
 		logger:   logger,
 		logDir:   logDir,
 	}
@@ -36,8 +35,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.logger.Info("app.starting")
 
-	absDir, _ := filepath.Abs(a.tasksDir)
-	store, _ := task.NewStore(absDir)
+	store, _ := task.NewStore(a.tasksDir)
 	a.tasks = store
 
 	tm := tmux.NewManager()
@@ -46,7 +44,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.agents = agent.NewManager(ctx, tm, emit, a.logger, a.logDir)
 
-	w := watcher.New(absDir, emit, a.logger)
+	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
 	_ = w.Start(ctx)
 

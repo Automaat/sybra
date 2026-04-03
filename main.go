@@ -27,7 +27,7 @@ func main() {
 	}
 	defer cleanup()
 
-	app := NewApp(logger, cfg.Logging.Dir)
+	app := NewApp(logger, cfg.Logging.Dir, cfg.TasksDir)
 
 	err = wails.Run(&options.App{
 		Title:  "Synapse",
