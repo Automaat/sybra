@@ -773,8 +773,15 @@ func (a *App) TriageTask(id string) error {
 
 	a.logger.Info("triage.start", "task_id", t.ID, "title", t.Title, "dir", dir)
 
-	triageTools := []string{"Bash", "Read", "Skill"}
-	ag, err := a.agents.StartAgentInDir(t.ID, "triage:"+t.Title, "headless", prompt, triageTools, dir)
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID:       t.ID,
+		Name:         "triage:" + t.Title,
+		Mode:         "headless",
+		Prompt:       prompt,
+		AllowedTools: []string{"Bash", "Read", "Skill"},
+		Dir:          dir,
+		Model:        "sonnet",
+	})
 	if err != nil {
 		return err
 	}
@@ -916,8 +923,15 @@ func (a *App) EvaluateTask(taskID, agentResult string) error {
 
 	a.logger.Info("eval.start", "task_id", t.ID, "title", t.Title, "dir", dir)
 
-	evalTools := []string{"Bash"}
-	ag, err := a.agents.StartAgentInDir(t.ID, "eval:"+t.Title, "headless", prompt, evalTools, dir)
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID:       t.ID,
+		Name:         "eval:" + t.Title,
+		Mode:         "headless",
+		Prompt:       prompt,
+		AllowedTools: []string{"Bash"},
+		Dir:          dir,
+		Model:        "sonnet",
+	})
 	if err != nil {
 		return err
 	}
