@@ -84,6 +84,7 @@ export namespace github {
 	    number: number;
 	    title: string;
 	    url: string;
+	    headRefName: string;
 	    repository: string;
 	    repoName: string;
 	    author: string;
@@ -104,6 +105,7 @@ export namespace github {
 	        this.number = source["number"];
 	        this.title = source["title"];
 	        this.url = source["url"];
+	        this.headRefName = source["headRefName"];
 	        this.repository = source["repository"];
 	        this.repoName = source["repoName"];
 	        this.author = source["author"];
@@ -274,6 +276,8 @@ export namespace task {
 	    allowedTools: string[];
 	    tags: string[];
 	    projectId: string;
+	    branch: string;
+	    prNumber: number;
 	    agentRuns: AgentRun[];
 	    // Go type: time
 	    createdAt: any;
@@ -296,6 +300,8 @@ export namespace task {
 	        this.allowedTools = source["allowedTools"];
 	        this.tags = source["tags"];
 	        this.projectId = source["projectId"];
+	        this.branch = source["branch"];
+	        this.prNumber = source["prNumber"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);

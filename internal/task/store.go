@@ -119,6 +119,12 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	if v, ok := updates["project_id"].(string); ok {
 		t.ProjectID = v
 	}
+	if v, ok := updates["branch"].(string); ok {
+		t.Branch = v
+	}
+	if v, ok := updates["pr_number"].(float64); ok {
+		t.PRNumber = int(v)
+	}
 
 	data, err := Marshal(t)
 	if err != nil {

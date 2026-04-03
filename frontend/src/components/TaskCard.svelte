@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { task } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { reviewStore } from '../stores/reviews.svelte.js'
 
   interface Props {
     task: task.Task
@@ -27,6 +28,9 @@
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running' && !a.name?.startsWith('triage:') && !a.name?.startsWith('eval:') && !a.name?.startsWith('plan:'))
   )
 
+  const linkedPRs = $derived(reviewStore.byTask(t))
+  const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
+
   function timeAgo(date: any): string {
     if (!date) return ''
     const now = Date.now()
@@ -51,7 +55,15 @@
   }}
   ondragend={() => { dragging = false }}
 >
-  <h3 class="mb-1.5 text-sm font-semibold leading-tight">{t.title}</h3>
+  <div class="mb-1.5 flex items-center gap-1.5">
+    {#if topPR?.ciStatus}
+      <span
+        class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {topPR.ciStatus === 'SUCCESS' ? 'bg-green-500' : topPR.ciStatus === 'FAILURE' ? 'bg-red-500' : 'bg-yellow-500'}"
+        title="CI: {topPR.ciStatus.toLowerCase()}"
+      ></span>
+    {/if}
+    <h3 class="text-sm font-semibold leading-tight">{t.title}</h3>
+  </div>
 
   <div class="flex flex-wrap items-center gap-1.5 text-xs text-surface-500">
     <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">
@@ -89,6 +101,18 @@
       <span class="inline-flex items-center gap-1 rounded bg-warning-200 px-1.5 py-0.5 text-warning-800 dark:bg-warning-700 dark:text-warning-200">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
         Evaluating
+      </span>
+    {/if}
+
+    {#if topPR}
+      <span class="inline-flex items-center gap-1 rounded bg-purple-500/15 px-1.5 py-0.5 font-medium text-purple-600 dark:text-purple-400" title={topPR.title}>
+        <svg class="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+        #{topPR.number}
+        {#if topPR.reviewDecision === 'APPROVED'}
+          <span class="text-green-500" title="Approved">✓</span>
+        {:else if topPR.reviewDecision === 'CHANGES_REQUESTED'}
+          <span class="text-red-500" title="Changes requested">✗</span>
+        {/if}
       </span>
     {/if}
 

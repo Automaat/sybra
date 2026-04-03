@@ -139,6 +139,15 @@ func cmdGet(s *task.Store, args []string, jsonOut bool) int {
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
+	if t.ProjectID != "" {
+		fmt.Printf("Project: %s\n", t.ProjectID)
+	}
+	if t.Branch != "" {
+		fmt.Printf("Branch: %s\n", t.Branch)
+	}
+	if t.PRNumber > 0 {
+		fmt.Printf("PR: #%d\n", t.PRNumber)
+	}
 	fmt.Printf("Created: %s\n", t.CreatedAt.Format("2006-01-02 15:04"))
 	fmt.Printf("Updated: %s\n", t.UpdatedAt.Format("2006-01-02 15:04"))
 	if t.Body != "" {
@@ -154,6 +163,8 @@ func cmdCreate(s *task.Store, args []string, jsonOut bool) int {
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
+	branch := fs.String("branch", "", "Git branch name")
+	pr := fs.Int("pr", 0, "GitHub PR number")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -176,6 +187,12 @@ func cmdCreate(s *task.Store, args []string, jsonOut bool) int {
 	}
 	if *proj != "" {
 		updates["project_id"] = *proj
+	}
+	if *branch != "" {
+		updates["branch"] = *branch
+	}
+	if *pr > 0 {
+		updates["pr_number"] = float64(*pr)
 	}
 	if len(updates) > 0 {
 		t, err = s.Update(t.ID, updates)
@@ -204,6 +221,8 @@ func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
 	mode := fs.String("mode", "", "new agent mode")
 	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
 	proj := fs.String("project", "", "project id (owner/repo)")
+	branch := fs.String("branch", "", "Git branch name")
+	pr := fs.Int("pr", 0, "GitHub PR number")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -230,6 +249,12 @@ func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
 	}
 	if *proj != "" {
 		updates["project_id"] = *proj
+	}
+	if *branch != "" {
+		updates["branch"] = *branch
+	}
+	if *pr > 0 {
+		updates["pr_number"] = float64(*pr)
 	}
 
 	if len(updates) == 0 {
@@ -492,8 +517,8 @@ func usage() {
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
   get      <id>
-  create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2] [--project ID]
-  update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T] [--project ID]
+  create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N]
+  update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N]
   delete   <id>
 
   project list

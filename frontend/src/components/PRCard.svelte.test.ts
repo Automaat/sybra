@@ -18,6 +18,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     author: 'dev',
     isDraft: false,
     labels: [],
+    headRefName: 'feature/test',
     ciStatus: '',
     reviewDecision: '',
     unresolvedCount: 0,

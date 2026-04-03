@@ -2,8 +2,10 @@
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import type { agent, task } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { reviewStore } from '../stores/reviews.svelte.js'
   import StatusBadge from '../components/StatusBadge.svelte'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
@@ -147,6 +149,8 @@
     (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('plan:') && a.state === 'running')
   )
 
+  const linkedPRs = $derived(t ? reviewStore.byTask(t) : [])
+
   let rejectFeedback = $state('')
   let planActionLoading = $state(false)
 
@@ -274,6 +278,20 @@
           </div>
         {/if}
 
+        {#if t.projectId}
+          <div class="flex flex-col gap-1">
+            <span class="font-medium text-surface-500">Project</span>
+            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono dark:bg-surface-700">{t.projectId}</span>
+          </div>
+        {/if}
+
+        {#if t.branch}
+          <div class="flex flex-col gap-1">
+            <span class="font-medium text-surface-500">Branch</span>
+            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono dark:bg-surface-700">{t.branch}</span>
+          </div>
+        {/if}
+
         {#if t.allowedTools?.length}
           <div class="flex flex-col gap-1">
             <span class="font-medium text-surface-500">Allowed Tools</span>
@@ -285,6 +303,50 @@
           </div>
         {/if}
       </div>
+
+      {#if linkedPRs.length > 0}
+        <div class="flex flex-col gap-2">
+          <span class="text-sm font-medium text-surface-500">Pull Requests</span>
+          {#each linkedPRs as pr (pr.number)}
+            <button
+              type="button"
+              class="flex w-full items-start justify-between gap-3 rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+              onclick={() => BrowserOpenURL(pr.url)}
+            >
+              <div class="flex items-center gap-2">
+                {#if pr.ciStatus}
+                  <span
+                    class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-green-500' : pr.ciStatus === 'FAILURE' ? 'bg-red-500' : 'bg-yellow-500'}"
+                    title="CI: {pr.ciStatus.toLowerCase()}"
+                  ></span>
+                {/if}
+                <svg class="h-4 w-4 shrink-0 text-purple-500" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+                <div class="flex flex-col">
+                  <span class="text-sm font-semibold">{pr.title}</span>
+                  <span class="text-xs text-surface-500">{pr.repository}#{pr.number} by {pr.author}</span>
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5">
+                {#if pr.isDraft}
+                  <span class="rounded bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">Draft</span>
+                {/if}
+                {#if pr.reviewDecision === 'APPROVED'}
+                  <span class="rounded bg-green-500/15 px-1.5 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">Approved</span>
+                {:else if pr.reviewDecision === 'CHANGES_REQUESTED'}
+                  <span class="rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-medium text-red-600 dark:text-red-400">Changes</span>
+                {:else if pr.reviewDecision === 'REVIEW_REQUIRED'}
+                  <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs font-medium text-yellow-600 dark:text-yellow-400">Review needed</span>
+                {/if}
+                {#if pr.unresolvedCount > 0}
+                  <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs font-medium text-yellow-600 dark:text-yellow-400"
+                    title="{pr.unresolvedCount} unresolved"
+                  >{pr.unresolvedCount} unresolved</span>
+                {/if}
+              </div>
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <div class="flex flex-col gap-1">
         <div class="flex items-center justify-between">

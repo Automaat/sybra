@@ -10,6 +10,7 @@ type PullRequest struct {
 	Author          string   `json:"author"`
 	IsDraft         bool     `json:"isDraft"`
 	Labels          []string `json:"labels"`
+	HeadRefName     string   `json:"headRefName"`
 	CIStatus        string   `json:"ciStatus"`       // SUCCESS, FAILURE, PENDING, or ""
 	ReviewDecision  string   `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
 	UnresolvedCount int      `json:"unresolvedCount"`
