@@ -59,6 +59,8 @@
   const columns = [
     { status: 'new', label: 'Inbox', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
     { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
+    { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
+    { status: 'plan-review', label: 'Plan Review', border: 'border-t-tertiary-300 dark:border-t-tertiary-600' },
     { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400' },
     { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400' },
     { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400' },

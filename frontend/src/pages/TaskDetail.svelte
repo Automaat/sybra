@@ -17,6 +17,15 @@
 
   const { taskId, onback, onviewagent, ondelete }: Props = $props()
 
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') onback()
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
+  })
+
   let deleting = $state(false)
 
   let t = $state<task.Task | null>(null)
@@ -29,6 +38,8 @@
   const statusOptions = [
     { value: 'new', label: 'New' },
     { value: 'todo', label: 'Todo' },
+    { value: 'planning', label: 'Planning' },
+    { value: 'plan-review', label: 'Plan Review' },
     { value: 'in-progress', label: 'In Progress' },
     { value: 'in-review', label: 'In Review' },
     { value: 'human-required', label: 'Human Required' },
@@ -104,6 +115,38 @@
     (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('eval:') && a.state === 'running')
   )
 
+  const planningAgent = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('plan:') && a.state === 'running')
+  )
+
+  let rejectFeedback = $state('')
+  let planActionLoading = $state(false)
+
+  async function approvePlan() {
+    if (!t) return
+    planActionLoading = true
+    try {
+      t = await taskStore.approvePlan(taskId)
+    } catch (e) {
+      error = String(e)
+    } finally {
+      planActionLoading = false
+    }
+  }
+
+  async function rejectPlan() {
+    if (!t) return
+    planActionLoading = true
+    try {
+      t = await taskStore.rejectPlan(taskId, rejectFeedback.trim())
+      rejectFeedback = ''
+    } catch (e) {
+      error = String(e)
+    } finally {
+      planActionLoading = false
+    }
+  }
+
   let expandedRun = $state<string | null>(null)
 
   const pastRuns = $derived(
@@ -142,6 +185,12 @@
             <span class="inline-flex items-center gap-1 rounded-full bg-primary-200 px-2 py-0.5 text-xs font-medium text-primary-800 dark:bg-primary-700 dark:text-primary-200">
               <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
               Triaging
+            </span>
+          {/if}
+          {#if planningAgent}
+            <span class="inline-flex items-center gap-1 rounded-full bg-tertiary-200 px-2 py-0.5 text-xs font-medium text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-tertiary-500"></span>
+              Planning
             </span>
           {/if}
           {#if evaluating}
@@ -220,6 +269,36 @@
         <span>Created: {formatDate(t.createdAt)}</span>
         <span>Updated: {formatDate(t.updatedAt)}</span>
       </div>
+
+      {#if t.status === 'plan-review'}
+        <div class="flex flex-col gap-3 rounded-lg border border-tertiary-300 bg-tertiary-50 p-4 dark:border-tertiary-700 dark:bg-tertiary-900/30">
+          <span class="text-sm font-semibold text-tertiary-700 dark:text-tertiary-300">Plan Review</span>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="rounded-lg bg-success-500 px-4 py-2 text-sm font-medium text-white hover:bg-success-600 disabled:opacity-50"
+              onclick={approvePlan}
+              disabled={planActionLoading}
+            >
+              Approve Plan
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-error-500 px-4 py-2 text-sm font-medium text-white hover:bg-error-600 disabled:opacity-50"
+              onclick={rejectPlan}
+              disabled={planActionLoading}
+            >
+              Reject Plan
+            </button>
+          </div>
+          <textarea
+            class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
+            rows="2"
+            placeholder="Rejection feedback (optional)..."
+            bind:value={rejectFeedback}
+          ></textarea>
+        </div>
+      {/if}
 
       <hr class="border-surface-300 dark:border-surface-600" />
 

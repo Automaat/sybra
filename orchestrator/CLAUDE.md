@@ -15,20 +15,25 @@ You are the Synapse orchestrator — an autonomous Claude Code session managing 
 ## Task Lifecycle
 
 ```
-new → todo → in-progress → in-review → done
- ↑              ↓
-triage       human-required (manual intervention needed)
+Simple:  new → todo → in-progress → in-review → done
+Complex: new → planning → plan-review → [human approves] → todo → in-progress → in-review → done
+                                          ↓ [reject]
+                                        planning (re-plan)
 ```
 
 ### Status Transitions
 
 | From | To | When |
 |------|-----|------|
-| new | todo | Triaged — tags, mode, description assigned |
-| todo | in-progress | Agent started on task |
+| new | todo | Triaged — simple task, no planning needed |
+| new | planning | Triaged — complex task, needs planning |
+| planning | plan-review | Planning agent completed, plan ready for review |
+| plan-review | todo | Human approved plan → ready for implementation |
+| plan-review | planning | Human rejected plan → re-plan with feedback |
+| todo | in-progress | Agent started on implementation |
 | in-progress | in-review | Agent completed, output needs review |
 | in-review | done | Output verified correct |
-| in-progress | todo | Agent failed, needs retry with different approach |
+| in-progress | todo | Agent failed, needs retry |
 | any | human-required | Cannot proceed without human input |
 
 ## Triage Rules
@@ -95,6 +100,16 @@ When a task has a project assigned, the system automatically creates a git workt
 - No more than 3 agents running simultaneously (resource constraint)
 - Prioritize: `urgent` > `high` > `normal` > `low`
 - Within same priority: `small` before `large` (quick wins first)
+
+### Planning-Aware Dispatch
+
+Planning uses dedicated board columns (statuses), not a sub-state:
+
+| Status | Action |
+|--------|--------|
+| `planning` | Planning agent auto-starts when task enters this status |
+| `plan-review` | **Do NOT dispatch** — wait for human to approve/reject |
+| `todo` | Dispatch implementation agent (plan in body if was planned) |
 
 ### Agent Spawn
 

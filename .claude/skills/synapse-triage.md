@@ -86,15 +86,26 @@ If the task body/URL matches a registered project, assign it:
 synapse-cli --json update <id> --project "owner/repo"
 ```
 
-### 6. Update status when triaged
+### 6. Decide: planning or direct implementation
 
-If the task is still `new` after assigning tags and mode, move it to `todo`:
+Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
 
 ```bash
+# Complex tasks: medium/large features, architecture decisions → planning
+synapse-cli --json update <id> --status planning
+
+# Simple tasks: small bugs, refactors, reviews, chores → todo
 synapse-cli --json update <id> --status todo
 ```
 
-Skip this step if a previous update already changed the status.
+| Signal | Status |
+|--------|--------|
+| Size `medium` or `large` + type `feature` | planning |
+| Architecture decision, unclear scope | planning |
+| Size `small`, type `bug`/`refactor`/`review`/`chore` | todo |
+| PR review | todo |
+
+Step 6 already sets the status — no further status update needed. Skip if a previous step already changed the status.
 
 ## Decision Criteria
 

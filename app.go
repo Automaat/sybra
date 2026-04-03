@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
@@ -73,6 +74,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
+	go a.orchestratorLoop(ctx)
 	a.logger.Info("app.started")
 }
 
@@ -107,7 +109,27 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 }
 
 func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
-	return a.tasks.Update(id, updates)
+	t, err := a.tasks.Update(id, updates)
+	if err != nil {
+		return t, err
+	}
+	if t.Status == task.StatusPlanning {
+		a.logger.Info("auto-plan.start", "task_id", t.ID, "title", t.Title)
+		go func() {
+			if planErr := a.PlanTask(t.ID); planErr != nil {
+				a.logger.Error("auto-plan.failed", "task_id", t.ID, "err", planErr)
+			}
+		}()
+	}
+	if t.Status == task.StatusInProgress {
+		a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
+		go func() {
+			if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+				a.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
+			}
+		}()
+	}
+	return t, nil
 }
 
 func (a *App) DeleteTask(id string) error {
@@ -129,19 +151,13 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	if t.ProjectID != "" {
 		d, wtErr := a.prepareWorktree(t)
 		if wtErr != nil {
-			a.logger.Error("worktree.prepare", "task_id", taskID, "err", wtErr)
-		} else {
-			dir = d
+			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
+		dir = d
 	}
 
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
-	var ag *agent.Agent
-	if dir != "" {
-		ag, err = a.agents.StartAgentInDir(taskID, t.Title, mode, fullPrompt, t.AllowedTools, dir)
-	} else {
-		ag, err = a.agents.StartAgent(taskID, t.Title, mode, fullPrompt, t.AllowedTools)
-	}
+	ag, err := a.agents.StartAgentInDir(taskID, t.Title, mode, fullPrompt, t.AllowedTools, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -172,10 +188,18 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 	}
 
 	wtPath := filepath.Join(a.worktreesDir, t.ID)
-	if err := project.CreateWorktree(proj.ClonePath, wtPath, "synapse/"+t.ID, branch); err != nil {
-		return "", fmt.Errorf("create worktree: %w", err)
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		return wtPath, nil
+	}
+	wtBranch := "synapse/" + t.ID
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, branch); err != nil {
+		// Branch may exist from a previous run — try checkout instead of new branch
+		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
+			return "", fmt.Errorf("create worktree: %w (retry: %w)", err, errRe)
+		}
 	}
 
+	a.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
 	return wtPath, nil
 }
 
@@ -189,7 +213,7 @@ func (a *App) cleanupWorktree(ag *agent.Agent) {
 	}
 
 	t, err := a.tasks.Get(ag.TaskID)
-	if err != nil {
+	if err != nil || t.ProjectID == "" {
 		return
 	}
 	proj, err := a.projects.Get(t.ProjectID)
@@ -345,6 +369,50 @@ func (a *App) syncFile(src, dst string) {
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
 }
 
+func (a *App) orchestratorLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.maybeStartOrchestrator()
+		}
+	}
+}
+
+func (a *App) maybeStartOrchestrator() {
+	if a.tmux.SessionExists(orchestratorSession) {
+		return
+	}
+
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+
+	hasActive := false
+	for i := range tasks {
+		switch tasks[i].Status {
+		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
+			hasActive = true
+		}
+		if hasActive {
+			break
+		}
+	}
+	if !hasActive {
+		return
+	}
+
+	a.logger.Info("orchestrator.auto-start", "reason", "active tasks detected")
+	if err := a.StartOrchestrator(); err != nil {
+		a.logger.Error("orchestrator.auto-start.failed", "err", err)
+	}
+}
+
 const orchestratorSession = "synapse-orchestrator"
 
 func (a *App) StartOrchestrator() error {
@@ -431,10 +499,34 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 
-	a.cleanupWorktree(ag)
-
-	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
+	if strings.HasPrefix(ag.Name, "triage:") {
 		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+		return
+	}
+
+	if strings.HasPrefix(ag.Name, "plan:") {
+		a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+		body := ""
+		if t, err := a.tasks.Get(ag.TaskID); err == nil {
+			body = t.Body
+		}
+		if resultContent != "" {
+			body += "\n\n## Plan\n\n" + resultContent
+		}
+		if _, err := a.tasks.Update(ag.TaskID, map[string]any{
+			"status": string(task.StatusPlanReview),
+			"body":   body,
+		}); err != nil {
+			a.logger.Error("plan.update", "task_id", ag.TaskID, "err", err)
+		}
+		return
+	}
+
+	if strings.HasPrefix(ag.Name, "eval:") {
+		a.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
+		if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+			a.cleanupWorktree(ag)
+		}
 		return
 	}
 
@@ -481,6 +573,77 @@ func (a *App) EvaluateTask(taskID, agentResult string) error {
 	}
 	a.logger.Info("eval.agent_started", "task_id", t.ID, "agent_id", ag.ID)
 	return nil
+}
+
+func (a *App) PlanTask(id string) error {
+	t, err := a.tasks.Get(id)
+	if err != nil {
+		return err
+	}
+
+	dir := ""
+	if t.ProjectID != "" {
+		d, wtErr := a.prepareWorktree(t)
+		if wtErr != nil {
+			return fmt.Errorf("worktree required for project task: %w", wtErr)
+		}
+		dir = d
+	}
+
+	prompt := fmt.Sprintf(
+		"Plan task %s using /synapse-plan skill. Get the task with synapse-cli, "+
+			"analyze the codebase, and produce a detailed implementation plan. "+
+			"Do NOT implement anything.", t.ID)
+
+	a.logger.Info("plan.start", "task_id", t.ID, "title", t.Title)
+
+	var ag *agent.Agent
+	if dir != "" {
+		ag, err = a.agents.StartAgentInDir(t.ID, "plan:"+t.Title, "headless", prompt, nil, dir)
+	} else {
+		ag, err = a.agents.StartAgentInDir(t.ID, "plan:"+t.Title, "headless", prompt, nil, config.HomeDir())
+	}
+	if err != nil {
+		return err
+	}
+	if err := a.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID: ag.ID, Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("task.add-run", "task_id", t.ID, "err", err)
+	}
+	a.logger.Info("plan.agent_started", "task_id", t.ID, "agent_id", ag.ID)
+	return nil
+}
+
+func (a *App) ApprovePlan(id string) (task.Task, error) {
+	t, err := a.tasks.Get(id)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if t.Status != task.StatusPlanReview {
+		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
+	}
+	return a.tasks.Update(id, map[string]any{
+		"status": string(task.StatusTodo),
+	})
+}
+
+func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
+	t, err := a.tasks.Get(id)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if t.Status != task.StatusPlanReview {
+		return task.Task{}, fmt.Errorf("task %s status is %q, expected 'plan-review'", id, t.Status)
+	}
+	body := t.Body
+	if feedback != "" {
+		body += "\n\n## Plan Feedback\n\n" + feedback
+	}
+	return a.tasks.Update(id, map[string]any{
+		"status": string(task.StatusPlanning),
+		"body":   body,
+	})
 }
 
 func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {

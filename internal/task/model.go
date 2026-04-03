@@ -9,6 +9,8 @@ const (
 	StatusTodo          Status = "todo"
 	StatusInProgress    Status = "in-progress"
 	StatusInReview      Status = "in-review"
+	StatusPlanning      Status = "planning"
+	StatusPlanReview    Status = "plan-review"
 	StatusHumanRequired Status = "human-required"
 	StatusDone          Status = "done"
 )

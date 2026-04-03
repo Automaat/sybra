@@ -19,6 +19,14 @@
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('eval:') && a.state === 'running')
   )
 
+  const planning = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('plan:') && a.state === 'running')
+  )
+
+  const agentRunning = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running' && !a.name?.startsWith('triage:') && !a.name?.startsWith('eval:') && !a.name?.startsWith('plan:'))
+  )
+
   function timeAgo(date: any): string {
     if (!date) return ''
     const now = Date.now()
@@ -60,6 +68,20 @@
       <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
         Triaging
+      </span>
+    {/if}
+
+    {#if planning}
+      <span class="inline-flex items-center gap-1 rounded bg-tertiary-200 px-1.5 py-0.5 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-tertiary-500"></span>
+        Planning
+      </span>
+    {/if}
+
+    {#if agentRunning}
+      <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success-500"></span>
+        Agent
       </span>
     {/if}
 
