@@ -55,6 +55,8 @@ export function ListTmuxSessions():Promise<Array<tmux.SessionInfo>>;
 
 export function ListWorktrees(arg1:string):Promise<Array<project.Worktree>>;
 
+export function MarkPRReady(arg1:string,arg2:number):Promise<void>;
+
 export function OpenInEditor(arg1:string):Promise<void>;
 
 export function OpenInTerminal(arg1:string):Promise<void>;

@@ -1,7 +1,10 @@
 <script lang="ts">
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { reviewStore } from '../stores/reviews.svelte.js'
+  import { MarkPRReady } from '../../wailsjs/go/main/App.js'
   import AgentCard from '../components/AgentCard.svelte'
+  import PRCard from '../components/PRCard.svelte'
 
   interface Props {
     onviewagent: (agentId: string) => void
@@ -25,6 +28,13 @@
   const totalCost = $derived(
     agentStore.list.reduce((sum, a) => sum + (a.costUsd ?? 0), 0),
   )
+
+  const draftPRs = $derived(reviewStore.createdByMe.filter((pr) => pr.isDraft))
+
+  async function markReady(repo: string, number: number) {
+    await MarkPRReady(repo, number)
+    await reviewStore.load()
+  }
 
 </script>
 
@@ -72,6 +82,18 @@
       </span>
     </div>
   </div>
+
+  <!-- Draft PRs -->
+  {#if draftPRs.length > 0}
+    <div class="flex flex-col gap-2">
+      <span class="text-sm font-medium text-surface-500">Draft PRs</span>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {#each draftPRs as pr (pr.url)}
+          <PRCard {pr} actionLabel="Ready for Review" onaction={() => markReady(pr.repository, pr.number)} />
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <!-- Running + waiting agents -->
   {#if runningAgents.length > 0 || pausedAgents.length > 0}

@@ -15,6 +15,7 @@ export namespace agent {
 	    command?: string;
 	    name?: string;
 	    project?: string;
+	    model?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
@@ -35,6 +36,7 @@ export namespace agent {
 	        this.command = source["command"];
 	        this.name = source["name"];
 	        this.project = source["project"];
+	        this.model = source["model"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

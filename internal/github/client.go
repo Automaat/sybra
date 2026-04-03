@@ -192,6 +192,19 @@ func convertPRs(nodes []gqlPR) []PullRequest {
 	return prs
 }
 
+// MarkReady marks a draft pull request as ready for review.
+func MarkReady(repo string, number int) error {
+	return markReadyWith(defaultExecer, repo, number)
+}
+
+func markReadyWith(e execer, repo string, number int) error {
+	out, err := e.run("pr", "ready", fmt.Sprintf("%d", number), "-R", repo)
+	if err != nil {
+		return fmt.Errorf("gh pr ready: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
 }

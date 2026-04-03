@@ -1080,6 +1080,10 @@ func hasResultEvent(ag *agent.Agent) bool {
 	return false
 }
 
+func (a *App) MarkPRReady(repo string, number int) error {
+	return github.MarkReady(repo, number)
+}
+
 func (a *App) RegisterSpotlightHotkey() {
 	spotlight.OnSubmit(func(title, projectID string) {
 		a.logger.Info("spotlight.submit", "title", title, "project", projectID)

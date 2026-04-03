@@ -4,9 +4,11 @@
 
   interface Props {
     pr: github.PullRequest
+    actionLabel?: string
+    onaction?: () => void
   }
 
-  const { pr }: Props = $props()
+  const { pr, actionLabel, onaction }: Props = $props()
 
   function timeAgo(date: string): string {
     if (!date) return ''
@@ -64,4 +66,14 @@
 
     <span class="ml-auto opacity-60">{timeAgo(pr.updatedAt)}</span>
   </div>
+
+  {#if onaction}
+    <button
+      type="button"
+      class="mt-2 rounded bg-primary-600 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-primary-700"
+      onclick={(e) => { e.stopPropagation(); onaction(); }}
+    >
+      {actionLabel ?? 'Action'}
+    </button>
+  {/if}
 </button>
