@@ -65,7 +65,7 @@ describe('TaskList', () => {
   it('calls byStatus for each column status', () => {
     mockByStatus.mockReturnValue([])
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(mockByStatus).toHaveBeenCalledWith('new')
+    expect(mockByStatus).not.toHaveBeenCalledWith('new')
     expect(mockByStatus).toHaveBeenCalledWith('todo')
     expect(mockByStatus).toHaveBeenCalledWith('planning')
     expect(mockByStatus).toHaveBeenCalledWith('plan-review')
@@ -79,6 +79,6 @@ describe('TaskList', () => {
     const tasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
     mockByStatus.mockReturnValue(tasks)
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(screen.getAllByText('First Task')).toHaveLength(8)
+    expect(screen.getAllByText('First Task')).toHaveLength(7)
   })
 })

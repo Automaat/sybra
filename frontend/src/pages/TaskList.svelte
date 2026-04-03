@@ -57,7 +57,6 @@
   }
 
   const columns = [
-    { status: 'new', label: 'Inbox', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
     { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
     { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
     { status: 'plan-review', label: 'Plan Review', border: 'border-t-tertiary-300 dark:border-t-tertiary-600' },
