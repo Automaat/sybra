@@ -426,7 +426,29 @@ export namespace stats {
 }
 
 export namespace task {
-	
+
+	export class ReviewComment {
+	    id: string;
+	    line: number;
+	    body: string;
+	    resolved: boolean;
+	    // Go type: time
+	    createdAt: any;
+
+	    static createFrom(source: any = {}) {
+	        return new ReviewComment(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.line = source["line"];
+	        this.body = source["body"];
+	        this.resolved = source["resolved"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
+
 	export class AgentRun {
 	    agentId: string;
 	    role: string;

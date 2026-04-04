@@ -21,6 +21,7 @@
   import Orchestrator from './pages/Orchestrator.svelte'
   import GitHub from './pages/GitHub.svelte'
   import Stats from './pages/Stats.svelte'
+  import PlanReviews from './pages/PlanReviews.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -34,6 +35,7 @@
     | { kind: 'tmux' }
     | { kind: 'github' }
     | { kind: 'stats' }
+    | { kind: 'plan-reviews' }
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
@@ -53,6 +55,7 @@
     page.kind === 'tmux' ? 'Tmux Sessions' :
     page.kind === 'github' ? 'GitHub' :
     page.kind === 'stats' ? 'Stats' :
+    page.kind === 'plan-reviews' ? 'Plan Reviews' :
     'Agent Detail'
   )
 
@@ -125,6 +128,10 @@
         page = { kind: 'github' }
       }
       if (e.metaKey && e.key === '8') {
+        e.preventDefault()
+        page = { kind: 'plan-reviews' }
+      }
+      if (e.metaKey && e.key === '9') {
         e.preventDefault()
         page = { kind: 'stats' }
       }
@@ -214,6 +221,20 @@
         <Navigation.TriggerText>GitHub</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
+        onclick={() => (page = { kind: 'plan-reviews' })}
+        data-active={page.kind === 'plan-reviews' || undefined}
+      >
+        <div class="relative">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+          </svg>
+          {#if taskStore.byStatus('plan-review').length > 0}
+            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning-500 text-[9px] font-bold text-white">{taskStore.byStatus('plan-review').length}</span>
+          {/if}
+        </div>
+        <Navigation.TriggerText>Reviews</Navigation.TriggerText>
+      </Navigation.Trigger>
+      <Navigation.Trigger
         onclick={() => (page = { kind: 'stats' })}
         data-active={page.kind === 'stats' || undefined}
       >
@@ -257,6 +278,7 @@
           onback={() => (page = { kind: 'task-list' })}
           onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
           ondelete={() => (page = { kind: 'task-list' })}
+          onreviewplan={() => (page = { kind: 'plan-reviews' })}
         />
       {:else if page.kind === 'project-list'}
         <ProjectList
@@ -283,6 +305,8 @@
         <TmuxSessions />
       {:else if page.kind === 'github'}
         <GitHub />
+      {:else if page.kind === 'plan-reviews'}
+        <PlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
       {:else if page.kind === 'stats'}
         <Stats />
       {/if}

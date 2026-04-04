@@ -457,5 +457,21 @@ func (a *App) handlePRIssue(issue github.PRIssue) {
 	)
 }
 
+func (a *App) ListReviewComments(taskID string) ([]task.ReviewComment, error) {
+	return a.tasks.Comments().List(taskID)
+}
+
+func (a *App) AddReviewComment(taskID string, line int, body string) (task.ReviewComment, error) {
+	return a.tasks.Comments().Add(taskID, line, body)
+}
+
+func (a *App) ResolveReviewComment(taskID, commentID string) error {
+	return a.tasks.Comments().Resolve(taskID, commentID)
+}
+
+func (a *App) DeleteReviewComment(taskID, commentID string) error {
+	return a.tasks.Comments().Delete(taskID, commentID)
+}
+
 // referenced to satisfy project import (used via a.projects field type)
 var _ *project.Store

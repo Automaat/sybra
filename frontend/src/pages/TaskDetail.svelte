@@ -18,9 +18,10 @@
     onback: () => void
     onviewagent: (agentId: string) => void
     ondelete: () => void
+    onreviewplan?: (taskId: string) => void
   }
 
-  const { taskId, onback, onviewagent, ondelete }: Props = $props()
+  const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') onback()
@@ -495,7 +496,16 @@
 
       {#if t.status === 'plan-review'}
         <div class="flex flex-col gap-3 rounded-lg border border-tertiary-300 bg-tertiary-50 p-4 dark:border-tertiary-700 dark:bg-tertiary-900/30">
-          <span class="text-sm font-semibold text-tertiary-700 dark:text-tertiary-300">Plan Review</span>
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-semibold text-tertiary-700 dark:text-tertiary-300">Plan Review</span>
+            {#if onreviewplan}
+              <button
+                type="button"
+                class="text-xs text-primary-500 hover:underline"
+                onclick={() => onreviewplan!(t.id)}
+              >Review Plan →</button>
+            {/if}
+          </div>
           <div class="flex gap-2">
             <button
               type="button"

@@ -12,7 +12,8 @@ import (
 )
 
 type Store struct {
-	dir string
+	dir      string
+	comments *CommentStore
 }
 
 // atomicWrite writes data to path via a temp file + rename to prevent
@@ -40,7 +41,11 @@ func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
 	}
-	return &Store{dir: dir}, nil
+	return &Store{dir: dir, comments: NewCommentStore(dir)}, nil
+}
+
+func (s *Store) Comments() *CommentStore {
+	return s.comments
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -114,6 +119,7 @@ func (s *Store) Delete(id string) error {
 	if err := os.Remove(t.FilePath); err != nil {
 		return fmt.Errorf("delete task file: %w", err)
 	}
+	_ = s.comments.DeleteAll(id)
 	return nil
 }
 
