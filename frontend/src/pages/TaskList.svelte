@@ -58,10 +58,37 @@
     selectedAgentMode = ''
   }
 
-  function toggleTag(tag: string) {
-    selectedTags = selectedTags.includes(tag)
-      ? selectedTags.filter(t => t !== tag)
-      : [...selectedTags, tag]
+  // Tag input with autosuggest
+  let tagInput = $state('')
+  let tagInputFocused = $state(false)
+  let tagInputRef = $state<HTMLInputElement | null>(null)
+
+  const tagSuggestions = $derived(
+    tagInput.trim()
+      ? allTags.filter(t => t.toLowerCase().includes(tagInput.toLowerCase()) && !selectedTags.includes(t))
+      : []
+  )
+
+  function addTag(tag: string) {
+    if (!selectedTags.includes(tag)) {
+      selectedTags = [...selectedTags, tag]
+    }
+    tagInput = ''
+  }
+
+  function removeTag(tag: string) {
+    selectedTags = selectedTags.filter(t => t !== tag)
+  }
+
+  function handleTagKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && tagSuggestions.length > 0) {
+      e.preventDefault()
+      addTag(tagSuggestions[0])
+    } else if (e.key === 'Backspace' && !tagInput && selectedTags.length > 0) {
+      selectedTags = selectedTags.slice(0, -1)
+    } else if (e.key === 'Escape') {
+      tagInputRef?.blur()
+    }
   }
 
   const agentModes = [
@@ -114,7 +141,7 @@
 
 <div class="flex h-full flex-col">
   <!-- Filter bar -->
-  <div class="flex flex-wrap items-center gap-3 border-b border-surface-200 px-6 py-3 dark:border-surface-700">
+  <div class="flex flex-wrap items-center gap-3 border-b border-surface-200 px-6 py-3 dark:border-surface-800">
     <!-- Search -->
     <div class="relative">
       <svg class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -124,7 +151,7 @@
         type="text"
         bind:value={searchQuery}
         placeholder="Search tasks..."
-        class="w-56 rounded-md border border-surface-300 bg-surface-50 py-1.5 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-600 dark:bg-surface-800"
+        class="w-56 rounded-md border border-surface-300 bg-surface-50 py-1.5 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
       />
     </div>
 
@@ -132,7 +159,7 @@
     {#if projectStore.list.length > 0}
       <select
         bind:value={selectedProjectId}
-        class="rounded-md border border-surface-300 bg-surface-50 px-2 py-1.5 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-600 dark:bg-surface-800"
+        class="rounded-md border border-surface-300 bg-surface-50 px-2 py-1.5 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
       >
         <option value="">All projects</option>
         {#each projectStore.list as p}
@@ -142,7 +169,7 @@
     {/if}
 
     <!-- Agent mode pills -->
-    <div class="flex rounded-md border border-surface-300 dark:border-surface-600">
+    <div class="flex rounded-md border border-surface-300 dark:border-surface-700">
       {#each agentModes as mode}
         <button
           type="button"
@@ -156,22 +183,40 @@
       {/each}
     </div>
 
-    <!-- Tag chips -->
-    {#if allTags.length > 0}
-      <div class="flex flex-wrap items-center gap-1">
-        {#each allTags as tag}
-          <button
-            type="button"
-            class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {selectedTags.includes(tag)
-              ? 'bg-primary-500 text-white dark:bg-primary-600'
-              : 'bg-surface-200 text-surface-600 hover:bg-surface-300 dark:bg-surface-700 dark:text-surface-300 dark:hover:bg-surface-600'}"
-            onclick={() => toggleTag(tag)}
-          >
+    <!-- Tag filter -->
+    <div class="relative">
+      <div class="flex flex-wrap items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 py-1 dark:border-surface-700 dark:bg-surface-800">
+        {#each selectedTags as tag}
+          <span class="inline-flex items-center gap-1 rounded bg-primary-500 px-1.5 py-0.5 text-xs font-medium text-white dark:bg-primary-600">
             {tag}
-          </button>
+            <button type="button" class="hover:text-primary-200" onclick={() => removeTag(tag)}>&times;</button>
+          </span>
         {/each}
+        <input
+          bind:this={tagInputRef}
+          bind:value={tagInput}
+          type="text"
+          placeholder={selectedTags.length ? '' : 'Filter by tag...'}
+          class="min-w-[80px] flex-1 bg-transparent py-0.5 text-sm outline-none"
+          onfocus={() => (tagInputFocused = true)}
+          onblur={() => setTimeout(() => (tagInputFocused = false), 150)}
+          onkeydown={handleTagKeydown}
+        />
       </div>
-    {/if}
+      {#if tagInputFocused && tagSuggestions.length > 0}
+        <div class="absolute top-full z-10 mt-1 w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
+          {#each tagSuggestions as suggestion}
+            <button
+              type="button"
+              class="w-full px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700"
+              onmousedown={() => addTag(suggestion)}
+            >
+              {suggestion}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
 
     <!-- Right side: clear + show done -->
     <div class="ml-auto flex items-center gap-3">
