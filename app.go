@@ -217,6 +217,17 @@ func (a *App) restartStaleInProgress() {
 		if slices.Contains(t.Tags, "review") {
 			continue
 		}
+		// Tasks whose last agent was a pr-fix should not be re-implemented.
+		// Move them back to in-review so prPollLoop can re-detect and fix.
+		if lastRun := lastAgentRun(t); lastRun != nil && lastRun.Role == "pr-fix" {
+			a.logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
+			if _, err := a.tasks.Update(t.ID, map[string]any{
+				"status": string(task.StatusInReview),
+			}); err != nil {
+				a.logger.Error("restart-stale.revert", "task_id", t.ID, "err", err)
+			}
+			continue
+		}
 		if t.ProjectID == "" {
 			a.logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
 			continue
@@ -230,6 +241,13 @@ func (a *App) restartStaleInProgress() {
 			}
 		})
 	}
+}
+
+func lastAgentRun(t *task.Task) *task.AgentRun {
+	if len(t.AgentRuns) == 0 {
+		return nil
+	}
+	return &t.AgentRuns[len(t.AgentRuns)-1]
 }
 
 func (a *App) syncSkills() {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/stats"
@@ -294,6 +295,9 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	if strings.HasPrefix(ag.Name, "pr-fix:") {
 		a.logger.Info("pr-fix.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
 		a.logAudit(audit.EventPRFixAgentStarted, ag.TaskID, ag.ID, agentData)
+		// Clear debounce so the next poll cycle can re-detect unresolved issues
+		a.prTracker.Clear(ag.TaskID, github.PRIssueConflict)
+		a.prTracker.Clear(ag.TaskID, github.PRIssueCIFailure)
 		go func() {
 			if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
 				a.logger.Error("pr-fix.eval", "task_id", ag.TaskID, "err", err)
