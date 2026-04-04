@@ -570,6 +570,7 @@ func (a *App) maybeStartOrchestrator() {
 		switch tasks[i].Status {
 		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
 			hasActive = true
+		default:
 		}
 		if hasActive {
 			break
