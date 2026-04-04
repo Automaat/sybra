@@ -1,5 +1,6 @@
 import { FetchReviews } from '../../wailsjs/go/main/App.js'
 import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+import { ReviewsUpdated } from '../lib/events.js'
 import type { github } from '../../wailsjs/go/models.js'
 
 class ReviewStore {
@@ -60,7 +61,7 @@ class ReviewStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn('reviews:updated', (summary: any) => {
+    this.cancelListener = EventsOn(ReviewsUpdated, (summary: any) => {
       this.createdByMe = summary.createdByMe ?? []
       this.reviewRequested = summary.reviewRequested ?? []
     })

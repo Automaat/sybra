@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
 )
 
@@ -79,7 +80,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 		}
 
 		a.outputBuffer = append(a.outputBuffer, event)
-		m.emit("agent:output:"+a.ID, event)
+		m.emit(events.AgentOutput(a.ID), event)
 
 		if event.Type == "result" {
 			a.SessionID = event.SessionID
@@ -105,7 +106,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 		close(a.done)
 	}
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.CostUSD)
-	m.emit("agent:state:"+a.ID, a)
+	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
@@ -228,7 +229,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 		close(a.done)
 	}
 	m.logger.Error("agent.error", "id", a.ID, "err", err)
-	m.emit("agent:error:"+a.ID, err.Error())
+	m.emit(events.AgentError(a.ID), err.Error())
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}

@@ -1,6 +1,7 @@
 import { EventsOn } from '../../wailsjs/runtime/runtime.js'
 import { ListNotifications } from '../../wailsjs/go/main/App.js'
 import type { notification } from '../../wailsjs/go/models.js'
+import { Notification as NotificationEvent } from '../lib/events.js'
 
 class NotificationStore {
   notifications = $state<notification.Notification[]>([])
@@ -10,7 +11,7 @@ class NotificationStore {
   }
 
   listen(): () => void {
-    return EventsOn('notification', (n: notification.Notification) => {
+    return EventsOn(NotificationEvent, (n: notification.Notification) => {
       this.notifications = [n, ...this.notifications].slice(0, 50)
     })
   }

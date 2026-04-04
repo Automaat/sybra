@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
@@ -23,12 +24,12 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func newTestManager(t *testing.T) (mgr *Manager, events *[]string) {
+func newTestManager(t *testing.T) (mgr *Manager, emitted *[]string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	emitted := &[]string{}
+	emitted = &[]string{}
 	emit := func(event string, _ any) {
 		*emitted = append(*emitted, event)
 	}
@@ -140,7 +141,7 @@ func TestStopAgent(t *testing.T) {
 	// Should have emitted state events for start and stop
 	hasStop := false
 	for _, e := range *emitted {
-		if e == "agent:state:"+a.ID {
+		if e == events.AgentState(a.ID) {
 			hasStop = true
 		}
 	}

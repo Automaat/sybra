@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { agentOutput } from '../lib/events.js'
 import { render, screen, cleanup } from '@testing-library/svelte'
 
 const mockGetOutput = vi.fn()
@@ -100,7 +101,7 @@ describe('StreamOutput', () => {
     render(StreamOutput, { props: { agentId: 'agent-42' } })
 
     await vi.waitFor(() => {
-      expect(mockEventsOn).toHaveBeenCalledWith('agent:output:agent-42', expect.any(Function))
+      expect(mockEventsOn).toHaveBeenCalledWith(agentOutput('agent-42'), expect.any(Function))
     })
   })
 

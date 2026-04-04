@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
@@ -227,7 +228,7 @@ func (a *App) pollAndMonitorPRs() time.Duration {
 		return prPollSlow
 	}
 
-	runtime.EventsEmit(a.ctx, "reviews:updated", summary)
+	runtime.EventsEmit(a.ctx, events.ReviewsUpdated, summary)
 
 	tasks, err := a.tasks.List()
 	if err != nil {

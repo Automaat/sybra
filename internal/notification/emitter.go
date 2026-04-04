@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/google/uuid"
 )
 
@@ -45,7 +46,7 @@ func (e *Emitter) Send(level Level, title, message, taskID, agentID string) {
 	e.buffer = append(e.buffer, n)
 	e.mu.Unlock()
 
-	e.emit("notification", n)
+	e.emit(events.Notification, n)
 
 	if e.desktop {
 		_ = sendDesktopNotification(title, message)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
@@ -34,7 +35,7 @@ func TestHandleError(t *testing.T) {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
 	}
 
-	wantEvent := "agent:error:test-123"
+	wantEvent := events.AgentError("test-123")
 	if emittedEvent != wantEvent {
 		t.Errorf("event = %q, want %q", emittedEvent, wantEvent)
 	}
@@ -73,7 +74,7 @@ func TestRunHeadlessFailsToStart(t *testing.T) {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
 	}
 
-	if lastEvent != "agent:error:test-headless" && lastEvent != "agent:state:test-headless" {
+	if lastEvent != events.AgentError("test-headless") && lastEvent != events.AgentState("test-headless") {
 		t.Errorf("last event = %q, want error or state event", lastEvent)
 	}
 }

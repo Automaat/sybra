@@ -8,6 +8,7 @@
   } from '../../wailsjs/go/main/App.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { OrchestratorState } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
 
   let running = $state(false)
@@ -87,7 +88,7 @@
   $effect(() => {
     checkStatus()
 
-    const unsub = EventsOn('orchestrator:state', (state: string) => {
+    const unsub = EventsOn(OrchestratorState, (state: string) => {
       running = state === 'running'
       if (!running) output = ''
     })

@@ -2,6 +2,7 @@
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { agentState } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
 
@@ -22,7 +23,7 @@
     const cached = agentStore.agents.get(agentId)
     if (cached) a = cached
 
-    const unsub = EventsOn(`agent:state:${agentId}`, (data: agent.Agent) => {
+    const unsub = EventsOn(agentState(agentId), (data: agent.Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
     })

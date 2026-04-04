@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { agentState } from '../lib/events.js'
 import { render, screen, cleanup } from '@testing-library/svelte'
 
 const mockStop = vi.fn()
@@ -110,7 +111,7 @@ describe('AgentDetail', () => {
     })
     await vi.waitFor(() => {
       expect(mockEventsOn).toHaveBeenCalledWith(
-        'agent:state:agent-1',
+        agentState('agent-1'),
         expect.any(Function),
       )
     })

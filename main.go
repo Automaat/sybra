@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -56,7 +57,7 @@ func main() {
 		}
 
 		quitArmed = true
-		wailsruntime.EventsEmit(app.ctx, "app:quit-confirm")
+		wailsruntime.EventsEmit(app.ctx, events.AppQuitConfirm)
 		quitTimer = time.AfterFunc(3*time.Second, func() {
 			quitMu.Lock()
 			defer quitMu.Unlock()

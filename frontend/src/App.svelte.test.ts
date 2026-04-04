@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
+import { TaskCreated, TaskUpdated, TaskDeleted } from './lib/events.js'
 import { render, cleanup } from '@testing-library/svelte'
 
 const mockLoad = vi.fn()
@@ -115,8 +116,8 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 0))
 
     const eventNames = mockEventsOn.mock.calls.map((c: unknown[]) => c[0])
-    expect(eventNames).toContain('task:created')
-    expect(eventNames).toContain('task:updated')
-    expect(eventNames).toContain('task:deleted')
+    expect(eventNames).toContain(TaskCreated)
+    expect(eventNames).toContain(TaskUpdated)
+    expect(eventNames).toContain(TaskDeleted)
   })
 })

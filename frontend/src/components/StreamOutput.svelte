@@ -2,6 +2,7 @@
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { agentOutput } from '../lib/events.js'
 
   interface Props {
     agentId: string
@@ -32,7 +33,7 @@
       scrollToBottom()
     })
 
-    const unsub = EventsOn(`agent:output:${agentId}`, (event: agent.StreamEvent) => {
+    const unsub = EventsOn(agentOutput(agentId), (event: agent.StreamEvent) => {
       events = [...events, event]
       agentStore.appendEvent(agentId, event)
       requestAnimationFrame(scrollToBottom)

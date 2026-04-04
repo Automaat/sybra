@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Navigation, AppBar } from '@skeletonlabs/skeleton-svelte'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import * as ev from './lib/events.js'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'
   import { projectStore } from './stores/projects.svelte.js'
@@ -68,10 +69,10 @@
     projectStore.load()
     projectStore.startPolling()
 
-    const unsubTasks = onEvents(['task:created', 'task:updated', 'task:deleted'], () => taskStore.load())
+    const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], () => taskStore.load())
     notificationStore.load()
     const unsubNotif = notificationStore.listen()
-    const unsubQuit = EventsOn('app:quit-confirm', () => {
+    const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
       quitConfirmVisible = true
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)

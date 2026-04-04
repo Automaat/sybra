@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { ReviewsUpdated } from '../lib/events.js'
 
 const mockFetchReviews = vi.fn()
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
@@ -114,7 +115,7 @@ describe('ReviewStore', () => {
     it('updates state from reviews:updated event', () => {
       reviewStore.listen()
 
-      const cb = eventCallbacks['reviews:updated']
+      const cb = eventCallbacks[ReviewsUpdated]
       expect(cb).toBeDefined()
 
       cb({ createdByMe: [makePR({ number: 10 })], reviewRequested: [makePR({ number: 20 })] })
@@ -127,7 +128,7 @@ describe('ReviewStore', () => {
 
     it('handles null in event data', () => {
       reviewStore.listen()
-      eventCallbacks['reviews:updated']({ createdByMe: null, reviewRequested: null })
+      eventCallbacks[ReviewsUpdated]({ createdByMe: null, reviewRequested: null })
 
       expect(reviewStore.createdByMe).toHaveLength(0)
       expect(reviewStore.reviewRequested).toHaveLength(0)
@@ -135,10 +136,10 @@ describe('ReviewStore', () => {
 
     it('stopListening removes callback', () => {
       reviewStore.listen()
-      expect(eventCallbacks['reviews:updated']).toBeDefined()
+      expect(eventCallbacks[ReviewsUpdated]).toBeDefined()
 
       reviewStore.stopListening()
-      expect(eventCallbacks['reviews:updated']).toBeUndefined()
+      expect(eventCallbacks[ReviewsUpdated]).toBeUndefined()
     })
   })
 })

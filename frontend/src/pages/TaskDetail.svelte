@@ -2,6 +2,7 @@
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import type { agent, task } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { agentState } from '../lib/events.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
   import { StartReview } from '../../wailsjs/go/main/App.js'
   import { taskStore } from '../stores/tasks.svelte.js'
@@ -55,7 +56,7 @@
 
   $effect(() => {
     if (!runningAgent) return
-    const unsub = EventsOn(`agent:state:${runningAgent.id}`, (data: agent.Agent) => {
+    const unsub = EventsOn(agentState(runningAgent.id), (data: agent.Agent) => {
       runningAgent = data
       agentStore.updateAgent(data.id, data)
     })

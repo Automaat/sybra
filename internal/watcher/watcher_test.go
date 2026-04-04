@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	ev "github.com/Automaat/synapse/internal/events"
 )
 
 func discardLogger() *slog.Logger {
@@ -65,7 +67,7 @@ func TestStartAndEmitCreate(t *testing.T) {
 
 	select {
 	case event := <-got:
-		if event != "task:created" && event != "task:updated" {
+		if event != ev.TaskCreated && event != ev.TaskUpdated {
 			t.Errorf("unexpected event %q, want task:created or task:updated", event)
 		}
 	case <-time.After(2 * time.Second):
@@ -104,11 +106,11 @@ func TestStartAndEmitDelete(t *testing.T) {
 	for {
 		select {
 		case event := <-got:
-			if event == "task:deleted" {
+			if event == ev.TaskDeleted {
 				return
 			}
 		case <-timeout:
-			t.Error("expected task:deleted event")
+			t.Error("expected " + ev.TaskDeleted + " event")
 			return
 		}
 	}
@@ -168,7 +170,7 @@ func TestDebounce(t *testing.T) {
 
 	got := make(chan string, 10)
 	emit := func(event string, _ any) {
-		if event == "task:created" {
+		if event == ev.TaskCreated {
 			select {
 			case got <- event:
 			default:

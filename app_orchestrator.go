@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -27,7 +28,7 @@ func (a *App) StartOrchestrator() error {
 	}
 	a.logger.Info("orchestrator.started")
 	a.logAudit(audit.EventOrchestratorStart, "", "", nil)
-	runtime.EventsEmit(a.ctx, "orchestrator:state", "running")
+	runtime.EventsEmit(a.ctx, events.OrchestratorState, "running")
 	return nil
 }
 
@@ -38,7 +39,7 @@ func (a *App) StopOrchestrator() error {
 	}
 	a.logger.Info("orchestrator.stopped")
 	a.logAudit(audit.EventOrchestratorStop, "", "", nil)
-	runtime.EventsEmit(a.ctx, "orchestrator:state", "stopped")
+	runtime.EventsEmit(a.ctx, events.OrchestratorState, "stopped")
 	return nil
 }
 

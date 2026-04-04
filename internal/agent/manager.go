@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/google/uuid"
 )
@@ -102,7 +103,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}
 
-	m.emit("agent:state:"+id, a)
+	m.emit(events.AgentState(id), a)
 	return a, nil
 }
 
@@ -176,7 +177,7 @@ func (m *Manager) StopAgent(agentID string) error {
 	a.State = StateStopped
 
 	m.logger.Info("agent.stop", "id", agentID)
-	m.emit("agent:state:"+agentID, a)
+	m.emit(events.AgentState(agentID), a)
 
 	if a.Mode == "interactive" {
 		if a.TmuxSession != "" {
@@ -265,7 +266,7 @@ func (m *Manager) markStopped(a *Agent) {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	m.emit("agent:state:"+a.ID, a)
+	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
@@ -393,7 +394,7 @@ func (m *Manager) ReconnectSessions(tasks []TaskInfo) int {
 
 		m.agents[id] = a
 		m.logger.Info("reconnect.session", "id", id, "session", s.Name, "task", a.TaskID)
-		m.emit("agent:state:"+id, a)
+		m.emit(events.AgentState(id), a)
 		reconnected++
 	}
 	return reconnected
