@@ -6,10 +6,12 @@ import { homedir } from 'node:os'
 const SYNAPSE_HOME = process.env.SYNAPSE_HOME ?? join(homedir(), '.synapse')
 const TASKS_DIR = join(SYNAPSE_HOME, 'tasks')
 
+const FIXTURE_FILES = new Set(['auth0001.md', 'test0001.md', 'db0001.md'])
+
 async function cleanupCreatedTasks() {
   const files = await readdir(TASKS_DIR)
   for (const f of files) {
-    if (!f.startsWith('sample-') && f.endsWith('.md')) {
+    if (!FIXTURE_FILES.has(f) && f.endsWith('.md')) {
       await unlink(join(TASKS_DIR, f))
     }
   }

@@ -42,16 +42,15 @@ func (s *Store) List() ([]Task, error) {
 }
 
 func (s *Store) Get(id string) (Task, error) {
-	tasks, err := s.List()
+	path := filepath.Join(s.dir, id+".md")
+	t, err := Parse(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return Task{}, fmt.Errorf("task %s not found", id)
+		}
 		return Task{}, err
 	}
-	for i := range tasks {
-		if tasks[i].ID == id {
-			return tasks[i], nil
-		}
-	}
-	return Task{}, fmt.Errorf("task %s not found", id)
+	return t, nil
 }
 
 func (s *Store) Create(title, body, mode string) (Task, error) {
