@@ -110,6 +110,7 @@ func (a *App) startup(ctx context.Context) {
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.reconnectAgents()
 	a.cleanStaleRuns()
+	a.restartStaleInProgress()
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
@@ -186,6 +187,35 @@ func (a *App) cleanStaleRuns() {
 				"result": "stale: marked stopped on startup",
 			})
 		}
+	}
+}
+
+// restartStaleInProgress finds in-progress tasks with no running agent and
+// restarts them. Covers headless agents lost during app restart.
+func (a *App) restartStaleInProgress() {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Status != task.StatusInProgress {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		if slices.Contains(t.Tags, "review") {
+			continue
+		}
+		a.logger.Info("restart-stale.start", "task_id", t.ID, "title", t.Title)
+		taskID := t.ID
+		mode := t.AgentMode
+		a.wg.Go(func() {
+			if _, err := a.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+				a.logger.Error("restart-stale.failed", "task_id", taskID, "err", err)
+			}
+		})
 	}
 }
 
@@ -349,11 +379,8 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 		}
 		return wtPath, nil
 	}
-	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "origin/"+branch); err != nil {
-		// Branch may exist from a previous run — try checkout instead of new branch
-		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
-			return "", fmt.Errorf("create worktree: %w (retry: %w)", err, errRe)
-		}
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "refs/remotes/origin/"+branch); err != nil {
+		return "", fmt.Errorf("create worktree: %w", err)
 	}
 
 	a.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)

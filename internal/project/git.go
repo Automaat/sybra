@@ -72,16 +72,12 @@ func CreateWorktree(barePath, worktreePath, branch, baseBranch string) error {
 	cmd := exec.Command("git", "worktree", "add", worktreePath, "-b", branch, baseBranch)
 	cmd.Dir = barePath
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree add: %w: %s", err, string(out))
-	}
-	return nil
-}
-
-func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
-	cmd := exec.Command("git", "worktree", "add", worktreePath, branch)
-	cmd.Dir = barePath
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree add (existing): %w: %s", err, string(out))
+		// Branch already exists from a previous run — reuse it
+		cmd2 := exec.Command("git", "worktree", "add", worktreePath, branch)
+		cmd2.Dir = barePath
+		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("git worktree add: %w: %s (retry: %w: %s)", err, string(out), err2, string(out2))
+		}
 	}
 	return nil
 }
