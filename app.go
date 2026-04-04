@@ -105,10 +105,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
+	a.syncSkills()
 	a.reconnectAgents()
 	a.cleanStaleRuns()
 	a.restartStaleInProgress()
-	a.syncSkills()
 	a.RegisterSpotlightHotkey()
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 	a.wg.Go(func() { a.prPollLoop(ctx) })
@@ -228,15 +228,13 @@ func (a *App) syncSkills() {
 		a.logger.Info("skills.sync.fallback_cwd", "dir", cwd)
 	}
 
-	home := config.HomeDir()
-	a.logger.Info("skills.sync.start", "src", repoDir, "dst", home)
+	a.logger.Info("skills.sync.start", "src", repoDir, "dst", a.skillsDir)
 
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
-	skillsDst := filepath.Join(home, ".claude", "skills")
-	a.syncDir(skillsSrc, skillsDst)
+	a.syncDir(skillsSrc, a.skillsDir)
 
 	claudeSrc := filepath.Join(repoDir, "orchestrator", "CLAUDE.md")
-	claudeDst := filepath.Join(home, "CLAUDE.md")
+	claudeDst := filepath.Join(config.HomeDir(), "CLAUDE.md")
 	a.syncFile(claudeSrc, claudeDst)
 
 	a.logger.Info("skills.sync.done")
