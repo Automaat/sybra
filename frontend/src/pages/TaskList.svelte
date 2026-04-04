@@ -58,6 +58,17 @@
     selectedAgentMode = ''
   }
 
+  // Project dropdown
+  let projectDropdownOpen = $state(false)
+
+  const selectedProjectLabel = $derived(
+    selectedProjectId
+      ? projectStore.list.find(p => p.id === selectedProjectId)
+          ? `${projectStore.list.find(p => p.id === selectedProjectId)!.owner}/${projectStore.list.find(p => p.id === selectedProjectId)!.repo}`
+          : selectedProjectId
+      : 'All projects'
+  )
+
   // Tag input with autosuggest
   let tagInput = $state('')
   let tagInputFocused = $state(false)
@@ -157,15 +168,39 @@
 
     <!-- Project filter -->
     {#if projectStore.list.length > 0}
-      <select
-        bind:value={selectedProjectId}
-        class="h-8 rounded-md border border-surface-300 bg-surface-50 px-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
-      >
-        <option value="">All projects</option>
-        {#each projectStore.list as p}
-          <option value={p.id}>{p.owner}/{p.repo}</option>
-        {/each}
-      </select>
+      <div class="relative">
+        <button
+          type="button"
+          class="flex h-8 items-center gap-2 rounded-md border border-surface-300 bg-surface-50 px-2.5 text-sm dark:border-surface-700 dark:bg-surface-800"
+          onclick={() => (projectDropdownOpen = !projectDropdownOpen)}
+          onblur={() => setTimeout(() => (projectDropdownOpen = false), 150)}
+        >
+          <span class={selectedProjectId ? '' : 'text-surface-400'}>{selectedProjectLabel}</span>
+          <svg class="h-3.5 w-3.5 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {#if projectDropdownOpen}
+          <div class="absolute top-full z-10 mt-1 min-w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
+            <button
+              type="button"
+              class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === '' ? 'font-medium text-primary-500' : ''}"
+              onmousedown={() => { selectedProjectId = ''; projectDropdownOpen = false }}
+            >
+              All projects
+            </button>
+            {#each projectStore.list as p}
+              <button
+                type="button"
+                class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === p.id ? 'font-medium text-primary-500' : ''}"
+                onmousedown={() => { selectedProjectId = p.id; projectDropdownOpen = false }}
+              >
+                {p.owner}/{p.repo}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/if}
 
     <!-- Agent mode pills -->
