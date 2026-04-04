@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -27,6 +28,8 @@ import (
 
 type App struct {
 	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 	tasks        *task.Store
 	projects     *project.Store
 	agents       *agent.Manager
@@ -56,6 +59,7 @@ func NewApp(logger *slog.Logger, cfg *config.Config) *App {
 }
 
 func (a *App) startup(ctx context.Context) {
+	ctx, a.cancel = context.WithCancel(ctx)
 	a.ctx = ctx
 	a.logger.Info("app.starting")
 
@@ -91,13 +95,18 @@ func (a *App) startup(ctx context.Context) {
 	a.cleanStaleRuns()
 	a.syncSkills()
 	a.RegisterSpotlightHotkey()
-	go a.orchestratorLoop(ctx)
-	go a.prPollLoop(ctx)
+	a.wg.Add(2)
+	go func() { defer a.wg.Done(); a.orchestratorLoop(ctx) }()
+	go func() { defer a.wg.Done(); a.prPollLoop(ctx) }()
 	a.logger.Info("app.started")
 }
 
 func (a *App) shutdown(_ context.Context) {
 	a.logger.Info("app.stopping")
+	if a.cancel != nil {
+		a.cancel()
+	}
+	a.wg.Wait()
 	a.agents.Shutdown()
 	if a.audit != nil {
 		_ = a.audit.Close()
@@ -180,7 +189,9 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 	a.logAudit(audit.EventTaskCreated, t.ID, "", map[string]any{"title": title, "mode": mode})
 	if t.Status == task.StatusTodo {
 		a.logger.Info("auto-triage.start", "task_id", t.ID, "title", t.Title)
+		a.wg.Add(1)
 		go func() {
+			defer a.wg.Done()
 			if triageErr := a.TriageTask(t.ID); triageErr != nil {
 				a.logger.Error("auto-triage.failed", "task_id", t.ID, "err", triageErr)
 			}
@@ -205,7 +216,9 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	}
 	if t.Status == task.StatusPlanning {
 		a.logger.Info("auto-plan.start", "task_id", t.ID, "title", t.Title)
+		a.wg.Add(1)
 		go func() {
+			defer a.wg.Done()
 			if planErr := a.PlanTask(t.ID); planErr != nil {
 				a.logger.Error("auto-plan.failed", "task_id", t.ID, "err", planErr)
 			}
@@ -213,14 +226,17 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	}
 	if t.Status == task.StatusInProgress && !a.agents.HasRunningAgentForTask(t.ID) {
 		a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
+		a.wg.Add(1)
 		go func() {
+			defer a.wg.Done()
 			if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
 				a.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
 			}
 		}()
 	}
 	if t.Status == task.StatusDone {
-		go a.cleanupWorktree(t.ID)
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.cleanupWorktree(t.ID) }()
 	}
 	return t, nil
 }
@@ -827,7 +843,9 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	}
 	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
 
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
 			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		}
