@@ -617,3 +617,48 @@ func TestParseGQLResponse_botFiltered(t *testing.T) {
 		t.Errorf("got %d PRs, want 0 (bot should be filtered)", len(prs))
 	}
 }
+
+func TestHasPendingReview_pending(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`[{"state":"COMMENTED"},{"state":"PENDING"}]`)}
+	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Error("expected pending review, got false")
+	}
+}
+
+func TestHasPendingReview_noPending(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`[{"state":"APPROVED"},{"state":"COMMENTED"}]`)}
+	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("expected no pending review, got true")
+	}
+}
+
+func TestHasPendingReview_empty(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`[]`)}
+	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("expected no pending review, got true")
+	}
+}
+
+func TestHasPendingReview_error(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte("not found"), err: fmt.Errorf("exit 1")}
+	_, err := hasPendingReviewWith(fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}

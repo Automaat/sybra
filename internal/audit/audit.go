@@ -21,6 +21,8 @@ const (
 	EventPRFixAgentStarted   = "pr_monitor.fix_agent_started"
 	EventPRMerged            = "pr_monitor.merged"
 	EventPRClosed            = "pr_monitor.closed"
+	EventReviewStarted       = "review.agent_started"
+	EventReviewPublished     = "review.published"
 )
 
 type Event struct {

@@ -209,6 +209,31 @@ func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
 }
 
+// HasPendingReview checks if the authenticated user has a pending (draft) review on a PR.
+// Pending reviews are only visible to their author via the REST API.
+func HasPendingReview(repo string, number int) (bool, error) {
+	return hasPendingReviewWith(defaultExecer, repo, number)
+}
+
+func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
+	out, err := e.run("api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	if err != nil {
+		return false, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(out)), err)
+	}
+	var reviews []struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(out, &reviews); err != nil {
+		return false, fmt.Errorf("parse reviews: %w", err)
+	}
+	for i := range reviews {
+		if reviews[i].State == "PENDING" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // PRState holds the current state of a specific PR.
 type PRState struct {
 	State    string `json:"state"`    // OPEN, CLOSED, MERGED
