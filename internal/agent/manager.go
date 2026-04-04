@@ -64,7 +64,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cancel:     cancel,
 		sessionCWD: cfg.Dir,
 	}
-	if mode == "headless" {
+	if cfg.Mode == "headless" {
 		a.done = make(chan struct{})
 	}
 
