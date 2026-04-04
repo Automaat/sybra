@@ -66,15 +66,27 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.Error("audit.init", "err", err)
 	}
 	a.audit = al
-	_ = audit.Cleanup(a.auditDir, 30)
+	if err := audit.Cleanup(a.auditDir, 30); err != nil {
+		a.logger.Error("audit.cleanup", "err", err)
+	}
 
-	store, _ := task.NewStore(a.tasksDir)
+	store, err := task.NewStore(a.tasksDir)
+	if err != nil {
+		a.logger.Error("task.store.init", "err", err)
+		runtime.Quit(ctx)
+		return
+	}
 	a.tasks = store
 
-	projStore, _ := project.NewStore(
+	projStore, err := project.NewStore(
 		filepath.Join(config.HomeDir(), "projects"),
 		filepath.Join(config.HomeDir(), "clones"),
 	)
+	if err != nil {
+		a.logger.Error("project.store.init", "err", err)
+		runtime.Quit(ctx)
+		return
+	}
 	a.projects = projStore
 
 	a.tmux = tmux.NewManager()
@@ -87,7 +99,9 @@ func (a *App) startup(ctx context.Context) {
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
-	_ = w.Start(ctx)
+	if err := w.Start(ctx); err != nil {
+		a.logger.Error("watcher.start", "err", err)
+	}
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.reconnectAgents()

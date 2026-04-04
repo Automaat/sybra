@@ -24,3 +24,5 @@ ignore:
   - "frontend/e2e/"
   - "build/"
   - "tasks/"
+  - "app.go"
+  - "main.go"
