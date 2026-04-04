@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/spotlight"
+	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watcher"
@@ -35,6 +36,7 @@ type App struct {
 	watcher      *watcher.Watcher
 	notifier     *notification.Emitter
 	audit        *audit.Logger
+	stats        *stats.Store
 	tasksDir     string
 	skillsDir    string
 	repoDir      string
@@ -69,6 +71,16 @@ func (a *App) startup(ctx context.Context) {
 	a.audit = al
 	if err := audit.Cleanup(a.auditDir, 30); err != nil {
 		a.logger.Error("audit.cleanup", "err", err)
+	}
+
+	statsStore, err := stats.NewStore(config.StatsFile())
+	if err != nil {
+		a.logger.Error("stats.init", "err", err)
+	} else {
+		a.stats = statsStore
+		if err := statsStore.Backfill(a.auditDir); err != nil {
+			a.logger.Error("stats.backfill", "err", err)
+		}
 	}
 
 	store, err := task.NewStore(a.tasksDir)

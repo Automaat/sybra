@@ -4,6 +4,7 @@ import {task} from '../models';
 import {project} from '../models';
 import {agent} from '../models';
 import {github} from '../models';
+import {stats} from '../models';
 import {notification} from '../models';
 import {tmux} from '../models';
 
@@ -36,6 +37,8 @@ export function FetchReviews():Promise<github.ReviewSummary>;
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 
 export function GetProject(arg1:string):Promise<project.Project>;
+
+export function GetStats():Promise<stats.StatsResponse>;
 
 export function GetTask(arg1:string):Promise<task.Task>;
 

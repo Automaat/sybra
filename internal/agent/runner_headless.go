@@ -84,6 +84,8 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 		if event.Type == "result" {
 			a.SessionID = event.SessionID
 			a.CostUSD += event.CostUSD
+			a.InputTokens += event.InputTokens
+			a.OutputTokens += event.OutputTokens
 			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", a.CostUSD)
 		}
 	}
@@ -136,6 +138,12 @@ func parseStreamEvent(line []byte) (StreamEvent, error) {
 		event.SessionID, _ = raw["session_id"].(string)
 		if cost, ok := raw["total_cost_usd"].(float64); ok {
 			event.CostUSD = cost
+		}
+		if v, ok := raw["total_input_tokens"].(float64); ok {
+			event.InputTokens = int(v)
+		}
+		if v, ok := raw["total_output_tokens"].(float64); ok {
+			event.OutputTokens = int(v)
 		}
 
 	default:

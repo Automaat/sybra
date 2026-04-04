@@ -16,20 +16,22 @@ const (
 )
 
 type Agent struct {
-	ID          string    `json:"id"`
-	TaskID      string    `json:"taskId"`
-	Mode        string    `json:"mode"`
-	State       State     `json:"state"`
-	SessionID   string    `json:"sessionId"`
-	TmuxSession string    `json:"tmuxSession"`
-	CostUSD     float64   `json:"costUsd"`
-	StartedAt   time.Time `json:"startedAt"`
-	External    bool      `json:"external"`
-	PID         int       `json:"pid,omitempty"`
-	Command     string    `json:"command,omitempty"`
-	Name        string    `json:"name,omitempty"`
-	Project     string    `json:"project,omitempty"`
-	Model       string    `json:"model,omitempty"`
+	ID           string    `json:"id"`
+	TaskID       string    `json:"taskId"`
+	Mode         string    `json:"mode"`
+	State        State     `json:"state"`
+	SessionID    string    `json:"sessionId"`
+	TmuxSession  string    `json:"tmuxSession"`
+	CostUSD      float64   `json:"costUsd"`
+	InputTokens  int       `json:"inputTokens,omitempty"`
+	OutputTokens int       `json:"outputTokens,omitempty"`
+	StartedAt    time.Time `json:"startedAt"`
+	External     bool      `json:"external"`
+	PID          int       `json:"pid,omitempty"`
+	Command      string    `json:"command,omitempty"`
+	Name         string    `json:"name,omitempty"`
+	Project      string    `json:"project,omitempty"`
+	Model        string    `json:"model,omitempty"`
 
 	ExitErr      error `json:"-"`
 	outputBuffer []StreamEvent
@@ -57,9 +59,11 @@ type RunConfig struct {
 }
 
 type StreamEvent struct {
-	Type      string  `json:"type"`
-	Content   string  `json:"content,omitempty"`
-	SessionID string  `json:"session_id,omitempty"`
-	CostUSD   float64 `json:"cost_usd,omitempty"`
-	Subtype   string  `json:"subtype,omitempty"`
+	Type         string  `json:"type"`
+	Content      string  `json:"content,omitempty"`
+	SessionID    string  `json:"session_id,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+	InputTokens  int     `json:"input_tokens,omitempty"`
+	OutputTokens int     `json:"output_tokens,omitempty"`
+	Subtype      string  `json:"subtype,omitempty"`
 }

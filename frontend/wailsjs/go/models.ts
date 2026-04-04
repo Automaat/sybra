@@ -8,6 +8,8 @@ export namespace agent {
 	    sessionId: string;
 	    tmuxSession: string;
 	    costUsd: number;
+	    inputTokens?: number;
+	    outputTokens?: number;
 	    // Go type: time
 	    startedAt: any;
 	    external: boolean;
@@ -30,6 +32,8 @@ export namespace agent {
 	        this.sessionId = source["sessionId"];
 	        this.tmuxSession = source["tmuxSession"];
 	        this.costUsd = source["costUsd"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.external = source["external"];
 	        this.pid = source["pid"];
@@ -62,6 +66,8 @@ export namespace agent {
 	    content?: string;
 	    session_id?: string;
 	    cost_usd?: number;
+	    input_tokens?: number;
+	    output_tokens?: number;
 	    subtype?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -74,6 +80,8 @@ export namespace agent {
 	        this.content = source["content"];
 	        this.session_id = source["session_id"];
 	        this.cost_usd = source["cost_usd"];
+	        this.input_tokens = source["input_tokens"];
+	        this.output_tokens = source["output_tokens"];
 	        this.subtype = source["subtype"];
 	    }
 	}
@@ -253,6 +261,166 @@ export namespace project {
 	        this.taskId = source["taskId"];
 	        this.head = source["head"];
 	    }
+	}
+
+}
+
+export namespace stats {
+	
+	export class Summary {
+	    totalCostUsd: number;
+	    totalRuns: number;
+	    avgCostPerRun: number;
+	    avgDurationS: number;
+	    totalDurationS: number;
+	    totalInputTokens: number;
+	    totalOutputTokens: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Summary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalCostUsd = source["totalCostUsd"];
+	        this.totalRuns = source["totalRuns"];
+	        this.avgCostPerRun = source["avgCostPerRun"];
+	        this.avgDurationS = source["avgDurationS"];
+	        this.totalDurationS = source["totalDurationS"];
+	        this.totalInputTokens = source["totalInputTokens"];
+	        this.totalOutputTokens = source["totalOutputTokens"];
+	    }
+	}
+	export class GroupedStat {
+	    key: string;
+	    stats: Summary;
+	
+	    static createFrom(source: any = {}) {
+	        return new GroupedStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.stats = this.convertValues(source["stats"], Summary);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RunRecord {
+	    id: string;
+	    taskId: string;
+	    projectId?: string;
+	    mode: string;
+	    role: string;
+	    model?: string;
+	    costUsd: number;
+	    durationS: number;
+	    inputTokens?: number;
+	    outputTokens?: number;
+	    outcome: string;
+	    // Go type: time
+	    timestamp: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new RunRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.taskId = source["taskId"];
+	        this.projectId = source["projectId"];
+	        this.mode = source["mode"];
+	        this.role = source["role"];
+	        this.model = source["model"];
+	        this.costUsd = source["costUsd"];
+	        this.durationS = source["durationS"];
+	        this.inputTokens = source["inputTokens"];
+	        this.outputTokens = source["outputTokens"];
+	        this.outcome = source["outcome"];
+	        this.timestamp = this.convertValues(source["timestamp"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class StatsResponse {
+	    today: Summary;
+	    thisWeek: Summary;
+	    thisMonth: Summary;
+	    allTime: Summary;
+	    byProject: GroupedStat[];
+	    byMode: GroupedStat[];
+	    byRole: GroupedStat[];
+	    byModel: GroupedStat[];
+	    recentRuns: RunRecord[];
+	
+	    static createFrom(source: any = {}) {
+	        return new StatsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.today = this.convertValues(source["today"], Summary);
+	        this.thisWeek = this.convertValues(source["thisWeek"], Summary);
+	        this.thisMonth = this.convertValues(source["thisMonth"], Summary);
+	        this.allTime = this.convertValues(source["allTime"], Summary);
+	        this.byProject = this.convertValues(source["byProject"], GroupedStat);
+	        this.byMode = this.convertValues(source["byMode"], GroupedStat);
+	        this.byRole = this.convertValues(source["byRole"], GroupedStat);
+	        this.byModel = this.convertValues(source["byModel"], GroupedStat);
+	        this.recentRuns = this.convertValues(source["recentRuns"], RunRecord);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

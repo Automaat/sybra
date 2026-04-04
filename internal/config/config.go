@@ -154,3 +154,7 @@ func defaultClonesDir() string {
 func defaultWorktreesDir() string {
 	return filepath.Join(HomeDir(), "worktrees")
 }
+
+func StatsFile() string {
+	return filepath.Join(HomeDir(), "stats.json")
+}

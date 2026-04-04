@@ -19,6 +19,7 @@
   import TmuxSessions from './pages/TmuxSessions.svelte'
   import Orchestrator from './pages/Orchestrator.svelte'
   import GitHub from './pages/GitHub.svelte'
+  import Stats from './pages/Stats.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -31,6 +32,7 @@
     | { kind: 'orchestrator' }
     | { kind: 'tmux' }
     | { kind: 'github' }
+    | { kind: 'stats' }
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
@@ -49,6 +51,7 @@
     page.kind === 'orchestrator' ? 'Orchestrator' :
     page.kind === 'tmux' ? 'Tmux Sessions' :
     page.kind === 'github' ? 'GitHub' :
+    page.kind === 'stats' ? 'Stats' :
     'Agent Detail'
   )
 
@@ -116,6 +119,10 @@
       if (e.metaKey && e.key === '7') {
         e.preventDefault()
         page = { kind: 'github' }
+      }
+      if (e.metaKey && e.key === '8') {
+        e.preventDefault()
+        page = { kind: 'stats' }
       }
     }
     window.addEventListener('keydown', handleKeydown)
@@ -204,6 +211,15 @@
         </svg>
         <Navigation.TriggerText>GitHub</Navigation.TriggerText>
       </Navigation.Trigger>
+      <Navigation.Trigger
+        onclick={() => (page = { kind: 'stats' })}
+        data-active={page.kind === 'stats' || undefined}
+      >
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+        <Navigation.TriggerText>Stats</Navigation.TriggerText>
+      </Navigation.Trigger>
     </Navigation.Content>
   </Navigation>
 
@@ -265,6 +281,8 @@
         <TmuxSessions />
       {:else if page.kind === 'github'}
         <GitHub />
+      {:else if page.kind === 'stats'}
+        <Stats />
       {/if}
     </main>
   </div>

@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 )
@@ -241,6 +242,8 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 		"state":      string(ag.State),
 	}
 
+	a.recordStats(ag, duration)
+
 	// Persist run result to task file
 	truncatedResult := resultContent
 	if len(truncatedResult) > 2000 {
@@ -359,4 +362,41 @@ func hasResultEvent(ag *agent.Agent) bool {
 		}
 	}
 	return false
+}
+
+func (a *App) recordStats(ag *agent.Agent, duration float64) {
+	if a.stats == nil {
+		return
+	}
+	outcome := "completed"
+	if !hasResultEvent(ag) {
+		outcome = "failed"
+	}
+	var projectID string
+	if t, err := a.tasks.Get(ag.TaskID); err == nil {
+		projectID = t.ProjectID
+	}
+	_ = a.stats.Record(stats.RunRecord{
+		ID:           ag.ID,
+		TaskID:       ag.TaskID,
+		ProjectID:    projectID,
+		Mode:         ag.Mode,
+		Role:         deriveRole(ag.Name),
+		Model:        ag.Model,
+		CostUSD:      ag.CostUSD,
+		DurationS:    duration,
+		InputTokens:  ag.InputTokens,
+		OutputTokens: ag.OutputTokens,
+		Outcome:      outcome,
+		Timestamp:    ag.StartedAt,
+	})
+}
+
+func deriveRole(name string) string {
+	for _, prefix := range []string{"triage:", "plan:", "eval:", "pr-fix:", "review:"} {
+		if strings.HasPrefix(name, prefix) {
+			return strings.TrimSuffix(prefix, ":")
+		}
+	}
+	return "implementation"
 }

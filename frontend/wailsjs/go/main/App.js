@@ -62,6 +62,10 @@ export function GetProject(arg1) {
   return window['go']['main']['App']['GetProject'](arg1);
 }
 
+export function GetStats() {
+  return window['go']['main']['App']['GetStats']();
+}
+
 export function GetTask(arg1) {
   return window['go']['main']['App']['GetTask'](arg1);
 }
