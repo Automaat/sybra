@@ -236,8 +236,40 @@ func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
 
 // PRState holds the current state of a specific PR.
 type PRState struct {
-	State    string `json:"state"`    // OPEN, CLOSED, MERGED
-	MergedAt string `json:"mergedAt"` // non-empty if merged
+	State             string `json:"state"`     // OPEN, CLOSED, MERGED
+	MergedAt          string `json:"mergedAt"`  // non-empty if merged
+	Mergeable         string `json:"mergeable"` // MERGEABLE, CONFLICTING, UNKNOWN
+	StatusCheckRollup []struct {
+		State string `json:"state"` // SUCCESS, FAILURE, PENDING, ERROR, etc.
+	} `json:"statusCheckRollup"`
+}
+
+// CIStatus returns a simplified CI status: SUCCESS, FAILURE, PENDING, or "".
+// FAILURE takes precedence over PENDING.
+func (s PRState) CIStatus() string {
+	if len(s.StatusCheckRollup) == 0 {
+		return ""
+	}
+	hasPending := false
+	for _, c := range s.StatusCheckRollup {
+		switch c.State {
+		case "FAILURE", "ERROR":
+			return "FAILURE"
+		case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "STALE":
+			hasPending = true
+		}
+	}
+	if hasPending {
+		return "PENDING"
+	}
+	return "SUCCESS"
+}
+
+// ReadyToMerge reports whether the PR is open, has no conflicts, and CI passes.
+func (s PRState) ReadyToMerge() bool {
+	return s.State == "OPEN" &&
+		s.Mergeable == "MERGEABLE" &&
+		(s.CIStatus() == "SUCCESS" || s.CIStatus() == "")
 }
 
 // FetchPRState fetches the current state of a specific PR by repo and number.
@@ -247,7 +279,7 @@ func FetchPRState(repo string, number int) (PRState, error) {
 
 func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
-		"--repo", repo, "--json", "state,mergedAt")
+		"--repo", repo, "--json", "state,mergedAt,mergeable,statusCheckRollup")
 	if err != nil {
 		return PRState{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
