@@ -155,6 +155,9 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	case int:
 		t.PRNumber = v
 	}
+	if v, ok := updates["issue"].(string); ok {
+		t.Issue = v
+	}
 	if v, ok := updates["reviewed"].(bool); ok {
 		t.Reviewed = v
 	}
