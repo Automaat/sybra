@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -144,13 +143,9 @@ func (a *App) startReviewAgent(t task.Task) error {
 }
 
 func (a *App) prepareReviewWorktree(t task.Task) (string, error) {
-	proj, err := a.projects.Get(t.ProjectID)
+	proj, wtPath, err := a.worktreeProject(t)
 	if err != nil {
-		return "", fmt.Errorf("get project: %w", err)
-	}
-
-	if err := project.FetchOrigin(proj.ClonePath); err != nil {
-		a.logger.Warn("review.worktree.fetch", "project", proj.ID, "err", err)
+		return "", err
 	}
 
 	branch, err := github.FetchPRBranch(t.ProjectID, t.PRNumber)
@@ -158,7 +153,6 @@ func (a *App) prepareReviewWorktree(t task.Task) (string, error) {
 		return "", fmt.Errorf("fetch pr branch: %w", err)
 	}
 
-	wtPath := filepath.Join(a.worktreesDir, t.DirName())
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		return wtPath, nil
 	}

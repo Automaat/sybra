@@ -84,14 +84,23 @@ func (a *App) autoAssignProject(t task.Task) task.Task {
 	return t
 }
 
-func (a *App) prepareWorktree(t task.Task) (string, error) {
+// worktreeProject resolves the project for t, fetches origin, and returns
+// the project and the worktree path. Fetch errors are logged and non-fatal.
+func (a *App) worktreeProject(t task.Task) (project.Project, string, error) {
 	proj, err := a.projects.Get(t.ProjectID)
 	if err != nil {
-		return "", fmt.Errorf("get project: %w", err)
+		return project.Project{}, "", fmt.Errorf("get project: %w", err)
 	}
-
 	if err := project.FetchOrigin(proj.ClonePath); err != nil {
 		a.logger.Warn("worktree.fetch", "project", proj.ID, "err", err)
+	}
+	return proj, filepath.Join(a.worktreesDir, t.DirName()), nil
+}
+
+func (a *App) prepareWorktree(t task.Task) (string, error) {
+	proj, wtPath, err := a.worktreeProject(t)
+	if err != nil {
+		return "", err
 	}
 
 	branch, err := project.DefaultBranch(proj.ClonePath)
@@ -99,7 +108,6 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 		return "", fmt.Errorf("default branch: %w", err)
 	}
 
-	wtPath := filepath.Join(a.worktreesDir, t.DirName())
 	wtBranch := "synapse/" + t.DirName()
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		if t.Branch == "" {
