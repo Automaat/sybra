@@ -64,10 +64,11 @@ describe('TaskList', () => {
   it('calls byStatus for each column status', () => {
     mockByStatus.mockReturnValue([])
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(mockByStatus).not.toHaveBeenCalledWith('new')
+    // todo column includes new + todo, planning column includes planning + plan-review
+    expect(mockByStatus).toHaveBeenCalledWith('new')
     expect(mockByStatus).toHaveBeenCalledWith('todo')
     expect(mockByStatus).toHaveBeenCalledWith('planning')
-    expect(mockByStatus).toHaveBeenCalledWith('plan-review') // merged into Planning column
+    expect(mockByStatus).toHaveBeenCalledWith('plan-review')
     expect(mockByStatus).toHaveBeenCalledWith('in-progress')
     expect(mockByStatus).toHaveBeenCalledWith('in-review')
     expect(mockByStatus).toHaveBeenCalledWith('human-required')
@@ -75,11 +76,14 @@ describe('TaskList', () => {
   })
 
   it('renders task cards in columns', () => {
-    const tasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
-    mockByStatus.mockImplementation((status: string) =>
-      status === 'plan-review' ? [] : tasks,
-    )
+    const todoTasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'todo') return todoTasks
+      if (status === 'in-progress') return todoTasks
+      return []
+    })
     render(TaskList, { props: { onselect: vi.fn() } })
-    expect(screen.getAllByText('First Task')).toHaveLength(6)
+    // todo column + in-progress column = 2 columns with tasks
+    expect(screen.getAllByText('First Task')).toHaveLength(2)
   })
 })
