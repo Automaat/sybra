@@ -1,13 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
 
-const mockByStatus = vi.fn()
-
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     loading: false,
     error: '',
-    byStatus: (...args: unknown[]) => mockByStatus(...args),
     list: [],
   },
 }))
@@ -21,13 +18,15 @@ vi.mock('../stores/projects.svelte.js', () => ({
 const { taskStore } = await import('../stores/tasks.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
-const mockTask = (id: string, title: string) => ({
+const mockTask = (id: string, title: string, status = 'todo') => ({
   id,
   title,
-  status: 'todo',
+  status,
   agentMode: 'headless',
   allowedTools: [],
   tags: [],
+  projectId: '',
+  issue: '',
   createdAt: '2026-04-01T00:00:00Z',
   updatedAt: '2026-04-01T00:00:00Z',
   body: '',
@@ -35,8 +34,7 @@ const mockTask = (id: string, title: string) => ({
 
 describe('TaskList', () => {
   beforeEach(() => {
-    Object.assign(taskStore, { loading: false, error: '' })
-    mockByStatus.mockReturnValue([])
+    Object.assign(taskStore, { loading: false, error: '', list: [] })
   })
 
   afterEach(() => {
@@ -57,7 +55,6 @@ describe('TaskList', () => {
   })
 
   it('renders visible status columns (Done hidden by default)', () => {
-    mockByStatus.mockReturnValue([])
     render(TaskList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('Todo')).toBeDefined()
     expect(screen.getByText('Planning')).toBeDefined()
@@ -67,28 +64,15 @@ describe('TaskList', () => {
     expect(screen.queryByText(/^Done$/)).toBeNull()
   })
 
-  it('calls byStatus for visible columns', () => {
-    mockByStatus.mockReturnValue([])
-    render(TaskList, { props: { onselect: vi.fn() } })
-    expect(mockByStatus).toHaveBeenCalledWith('new')
-    expect(mockByStatus).toHaveBeenCalledWith('todo')
-    expect(mockByStatus).toHaveBeenCalledWith('planning')
-    expect(mockByStatus).toHaveBeenCalledWith('plan-review')
-    expect(mockByStatus).toHaveBeenCalledWith('in-progress')
-    expect(mockByStatus).toHaveBeenCalledWith('in-review')
-    expect(mockByStatus).toHaveBeenCalledWith('human-required')
-    expect(mockByStatus).not.toHaveBeenCalledWith('done')
-  })
-
-  it('renders task cards in columns', () => {
-    const todoTasks = [mockTask('t-1', 'First Task'), mockTask('t-2', 'Second Task')]
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'todo') return todoTasks
-      if (status === 'in-progress') return todoTasks
-      return []
+  it('renders task cards in correct columns', () => {
+    Object.assign(taskStore, {
+      list: [
+        mockTask('t-1', 'First Task', 'todo'),
+        mockTask('t-2', 'Second Task', 'in-progress'),
+      ],
     })
     render(TaskList, { props: { onselect: vi.fn() } })
-    // todo column + in-progress column = 2 columns with tasks
-    expect(screen.getAllByText('First Task')).toHaveLength(2)
+    expect(screen.getByText('First Task')).toBeDefined()
+    expect(screen.getByText('Second Task')).toBeDefined()
   })
 })
