@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -261,6 +262,112 @@ func TestParseWorktreePorcelain(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(bare)
+	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// Create a conflicting commit on main.
+	gitWt := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	gitWt("config", "user.email", "test@test.com")
+	gitWt("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "branch")
+
+	// Make a conflicting commit on a new branch from original base.
+	gitWt("checkout", "-b", "conflict-base", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("conflicting"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "conflict")
+	gitWt("checkout", "synapse/test")
+
+	// Start a rebase that will conflict.
+	cmd := exec.Command("git", "rebase", "conflict-base")
+	cmd.Dir = wtPath
+	_ = cmd.Run() // expected to fail with conflict
+
+	// Verify rebase is in progress.
+	statusOut, _ := exec.Command("git", "-C", wtPath, "status").Output()
+	if !contains(string(statusOut), "rebase") {
+		t.Skip("could not create rebase conflict state")
+	}
+
+	if err := SanitizeWorktree(wtPath); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+
+	// Rebase should be aborted.
+	statusOut, _ = exec.Command("git", "-C", wtPath, "status").Output()
+	if contains(string(statusOut), "rebase") {
+		t.Error("rebase still in progress after sanitize")
+	}
+}
+
+func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(bare)
+	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// Create a local branch that shadows origin/main.
+	cmd := exec.Command("git", "branch", "origin/main", "HEAD")
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create shadow branch: %v: %s", err, out)
+	}
+
+	if err := SanitizeWorktree(wtPath); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+
+	// Shadow branch should be deleted.
+	out, _ := exec.Command("git", "-C", wtPath, "branch", "--list", "origin/main").Output()
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("shadow branch origin/main still exists: %s", out)
+	}
+}
+
+func contains(s, sub string) bool {
+	return strings.Contains(s, sub)
 }
 
 func TestCreateWorktreeInvalidBase(t *testing.T) {
