@@ -7,14 +7,17 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 )
 
+// ListTasks returns all tasks from the task store.
 func (a *App) ListTasks() ([]task.Task, error) {
 	return a.tasks.List()
 }
 
+// GetTask returns a single task by ID.
 func (a *App) GetTask(id string) (task.Task, error) {
 	return a.tasks.Get(id)
 }
 
+// CreateTask creates a new task and triggers auto-triage for todo tasks.
 func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 	t, err := a.tasks.Create(title, body, mode)
 	if err != nil {
@@ -32,6 +35,8 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 	return t, nil
 }
 
+// UpdateTask applies field updates to a task and triggers auto-planning or
+// auto-implementation based on the resulting status.
 func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	var prevStatus string
 	if newStatus, ok := updates["status"].(string); ok {
@@ -68,6 +73,7 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	return t, nil
 }
 
+// DeleteTask removes a task file from disk.
 func (a *App) DeleteTask(id string) error {
 	a.logger.Info("task.delete", "task_id", id)
 	a.logAudit(audit.EventTaskDeleted, id, "", nil)

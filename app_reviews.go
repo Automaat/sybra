@@ -20,10 +20,12 @@ const (
 	prPollSlow = 5 * time.Minute
 )
 
+// FetchReviews returns open PRs across registered GitHub projects that need review.
 func (a *App) FetchReviews() (github.ReviewSummary, error) {
 	return github.FetchReviews()
 }
 
+// MarkPRReady converts a GitHub draft PR to ready-for-review.
 func (a *App) MarkPRReady(repo string, number int) error {
 	return github.MarkReady(repo, number)
 }

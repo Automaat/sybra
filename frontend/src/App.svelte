@@ -52,6 +52,11 @@
     'Agent Detail'
   )
 
+  function onEvents(events: string[], handler: () => void): () => void {
+    const unsubs = events.map(e => EventsOn(e, handler))
+    return () => unsubs.forEach(u => u())
+  }
+
   $effect(() => {
     taskStore.load()
     taskStore.startPolling()
@@ -60,9 +65,7 @@
     projectStore.load()
     projectStore.startPolling()
 
-    const unsub1 = EventsOn('task:created', () => taskStore.load())
-    const unsub2 = EventsOn('task:updated', () => taskStore.load())
-    const unsub3 = EventsOn('task:deleted', () => taskStore.load())
+    const unsubTasks = onEvents(['task:created', 'task:updated', 'task:deleted'], () => taskStore.load())
     notificationStore.load()
     const unsubNotif = notificationStore.listen()
     const unsubQuit = EventsOn('app:quit-confirm', () => {
@@ -121,9 +124,7 @@
     window.addEventListener('keydown', handleKeydown)
 
     return () => {
-      unsub1()
-      unsub2()
-      unsub3()
+      unsubTasks()
       unsubNotif()
       unsubQuit()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)

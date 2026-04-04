@@ -17,6 +17,7 @@ import (
 const orchestratorSession = "synapse-orchestrator"
 const maxConcurrentAgents = 3
 
+// StartOrchestrator creates the orchestrator tmux session running claude.
 func (a *App) StartOrchestrator() error {
 	if a.tmux.SessionExists(orchestratorSession) {
 		return fmt.Errorf("orchestrator already running")
@@ -30,6 +31,7 @@ func (a *App) StartOrchestrator() error {
 	return nil
 }
 
+// StopOrchestrator kills the orchestrator tmux session.
 func (a *App) StopOrchestrator() error {
 	if err := a.tmux.KillSession(orchestratorSession); err != nil {
 		return fmt.Errorf("stop orchestrator: %w", err)
@@ -40,10 +42,12 @@ func (a *App) StopOrchestrator() error {
 	return nil
 }
 
+// IsOrchestratorRunning reports whether the orchestrator tmux session exists.
 func (a *App) IsOrchestratorRunning() bool {
 	return a.tmux.SessionExists(orchestratorSession)
 }
 
+// CaptureOrchestratorPane returns the current terminal output of the orchestrator.
 func (a *App) CaptureOrchestratorPane() (string, error) {
 	if !a.tmux.SessionExists(orchestratorSession) {
 		return "", fmt.Errorf("orchestrator not running")
@@ -51,6 +55,7 @@ func (a *App) CaptureOrchestratorPane() (string, error) {
 	return a.tmux.CapturePaneOutput(orchestratorSession)
 }
 
+// AttachOrchestrator opens the orchestrator tmux session in Ghostty.
 func (a *App) AttachOrchestrator() error {
 	if !a.tmux.SessionExists(orchestratorSession) {
 		return fmt.Errorf("orchestrator not running")

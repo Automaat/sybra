@@ -65,14 +65,20 @@ func (w *RotatingWriter) rotate() error {
 		src := fmt.Sprintf("%s.%d", w.path, i)
 		dst := fmt.Sprintf("%s.%d", w.path, i+1)
 		if i == w.maxFiles-1 {
-			_ = os.Remove(src)
+			if err := os.Remove(src); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "rotating_writer: remove %s: %v\n", src, err)
+			}
 		} else {
-			_ = os.Rename(src, dst)
+			if err := os.Rename(src, dst); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "rotating_writer: rename %s -> %s: %v\n", src, dst, err)
+			}
 		}
 	}
 
 	// current -> .1
-	_ = os.Rename(w.path, fmt.Sprintf("%s.1", w.path))
+	if err := os.Rename(w.path, fmt.Sprintf("%s.1", w.path)); err != nil {
+		fmt.Fprintf(os.Stderr, "rotating_writer: rename %s: %v\n", w.path, err)
+	}
 
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
