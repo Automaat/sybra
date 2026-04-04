@@ -53,6 +53,16 @@ describe('TaskCard', () => {
     expect(handler).toHaveBeenCalledOnce()
   })
 
+  it('shows Needs Review badge for plan-review status', () => {
+    render(TaskCard, { props: { task: { ...mockTask, status: 'plan-review' }, onclick: () => {} } })
+    expect(screen.getByText('Needs Review')).toBeDefined()
+  })
+
+  it('does not show Needs Review badge for other statuses', () => {
+    render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
+    expect(screen.queryByText('Needs Review')).toBeNull()
+  })
+
   describe('timeAgo', () => {
     beforeEach(() => {
       vi.useFakeTimers()
