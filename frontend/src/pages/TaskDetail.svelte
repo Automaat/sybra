@@ -380,6 +380,20 @@
           </div>
         {/if}
 
+        {#if t.issue}
+          <div class="flex flex-col gap-1">
+            <span class="font-medium text-surface-500">Issue</span>
+            <button
+              type="button"
+              class="flex w-fit items-center gap-1.5 text-sm text-blue-600 hover:underline dark:text-blue-400"
+              onclick={() => t && BrowserOpenURL(t.issue)}
+            >
+              <svg class="h-4 w-4 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"/></svg>
+              {t.issue}
+            </button>
+          </div>
+        {/if}
+
         {#if t.allowedTools?.length}
           <div class="flex flex-col gap-1">
             <span class="font-medium text-surface-500">Allowed Tools</span>

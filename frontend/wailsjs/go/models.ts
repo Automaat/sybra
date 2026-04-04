@@ -315,6 +315,7 @@ export namespace task {
 	    projectId: string;
 	    branch: string;
 	    prNumber: number;
+	    issue: string;
 	    reviewed: boolean;
 	    agentRuns: AgentRun[];
 	    // Go type: time
@@ -340,6 +341,7 @@ export namespace task {
 	        this.projectId = source["projectId"];
 	        this.branch = source["branch"];
 	        this.prNumber = source["prNumber"];
+	        this.issue = source["issue"];
 	        this.reviewed = source["reviewed"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
