@@ -91,6 +91,12 @@
       </span>
     {/if}
 
+    {#if t.status === 'plan-review'}
+      <span class="inline-flex items-center gap-1 rounded bg-error-200 px-1.5 py-0.5 font-semibold text-error-800 dark:bg-error-700 dark:text-error-200">
+        Needs Review
+      </span>
+    {/if}
+
     {#if agentRunning}
       <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success-500"></span>
