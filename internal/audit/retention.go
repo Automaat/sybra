@@ -19,10 +19,10 @@ func Cleanup(dir string, retentionDays int) error {
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.DateOnly)
 
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ndjson") {
+		day, ok := strings.CutSuffix(e.Name(), ".ndjson")
+		if e.IsDir() || !ok {
 			continue
 		}
-		day := strings.TrimSuffix(e.Name(), ".ndjson")
 		if day < cutoff {
 			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}

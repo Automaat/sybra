@@ -104,18 +104,16 @@ func parseWorktreePorcelain(raw string) []Worktree {
 		}
 		var wt Worktree
 		for line := range strings.SplitSeq(block, "\n") {
-			switch {
-			case strings.HasPrefix(line, "worktree "):
-				wt.Path = strings.TrimPrefix(line, "worktree ")
-			case strings.HasPrefix(line, "HEAD "):
-				h := strings.TrimPrefix(line, "HEAD ")
-				if len(h) > 7 {
-					h = h[:7]
+			if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+				wt.Path = rest
+			} else if rest, ok := strings.CutPrefix(line, "HEAD "); ok {
+				if len(rest) > 7 {
+					rest = rest[:7]
 				}
-				wt.Head = h
-			case strings.HasPrefix(line, "branch "):
-				ref := strings.TrimPrefix(line, "branch ")
-				wt.Branch = strings.TrimPrefix(ref, "refs/heads/")
+				wt.Head = rest
+			} else if ref, ok := strings.CutPrefix(line, "branch "); ok {
+				branch, _ := strings.CutPrefix(ref, "refs/heads/")
+				wt.Branch = branch
 				if name, ok := strings.CutPrefix(wt.Branch, "synapse/"); ok {
 					// Task ID is always the last 8 chars (uuid[:8])
 					if len(name) >= 8 {

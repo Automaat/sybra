@@ -52,10 +52,10 @@ func auditFiles(dir string, since, until time.Time) ([]string, error) {
 
 	var paths []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ndjson") {
+		day, ok := strings.CutSuffix(e.Name(), ".ndjson")
+		if e.IsDir() || !ok {
 			continue
 		}
-		day := strings.TrimSuffix(e.Name(), ".ndjson")
 		if day >= sinceDay && day <= untilDay {
 			paths = append(paths, filepath.Join(dir, e.Name()))
 		}
