@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 )
@@ -38,11 +39,17 @@ func setupApp(t *testing.T) *App {
 	logDir := filepath.Join(os.TempDir(), "synapse-test-logs")
 	mgr := agent.NewManager(t.Context(), tm, emit, logger, logDir)
 
+	notifier := notification.New(emit)
+	agentOrch := newAgentOrchestrator(store, nil, mgr, nil, logger, "")
+	workflow := newTaskWorkflow(store, mgr, nil, logger, notifier, agentOrch)
+
 	return &App{
-		tasks:    store,
-		agents:   mgr,
-		tasksDir: dir,
-		logger:   logger,
+		tasks:     store,
+		agents:    mgr,
+		tasksDir:  dir,
+		logger:    logger,
+		agentOrch: agentOrch,
+		workflow:  workflow,
 	}
 }
 

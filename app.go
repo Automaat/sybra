@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
@@ -45,6 +47,9 @@ type App struct {
 	logDir       string
 	auditDir     string
 	prTracker    *github.IssueTracker
+	agentOrch    *AgentOrchestrator
+	reviewer     *ReviewHandler
+	workflow     *TaskWorkflow
 }
 
 func NewApp(logger *slog.Logger, cfg *config.Config) *App {
@@ -108,7 +113,15 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.notifier = notification.New(emit)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
-	a.agents.SetOnComplete(a.handleAgentComplete)
+
+	a.prTracker = github.NewIssueTracker(30 * time.Minute)
+
+	// Initialize domain services (dependency order: agentOrch → reviewer, workflow)
+	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktreesDir)
+	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.agentOrch)
+	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
+
+	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -116,7 +129,6 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.Error("watcher.start", "err", err)
 	}
 
-	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.syncSkills()
 	a.reconnectAgents()
 	a.cleanupOrphanedWorktrees()
@@ -263,6 +275,11 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 	return &t.AgentRuns[len(t.AgentRuns)-1]
 }
 
+// StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
+func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
+	return a.agentOrch.StartAgent(taskID, mode, prompt)
+}
+
 func (a *App) syncSkills() {
 	repoDir := a.repoDir
 	if repoDir == "" {
@@ -322,6 +339,259 @@ func (a *App) syncFile(src, dst string) {
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
 }
 
+func (a *App) orchestratorLoop(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.agents.CheckInteractiveSessions()
+			a.maybeStartOrchestrator()
+			a.maybeDispatchTasks()
+			a.maybeResumePlanning()
+			a.cleanupOrphanedWorktrees()
+		}
+	}
+}
+
+func (a *App) maybeStartOrchestrator() {
+	if a.tmux.SessionExists(orchestratorSession) {
+		return
+	}
+
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+
+	hasActive := false
+	for i := range tasks {
+		switch tasks[i].Status {
+		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
+			hasActive = true
+		default:
+		}
+		if hasActive {
+			break
+		}
+	}
+	if !hasActive {
+		return
+	}
+
+	a.logger.Info("orchestrator.auto-start", "reason", "active tasks detected")
+	if err := a.StartOrchestrator(); err != nil {
+		a.logger.Error("orchestrator.auto-start.failed", "err", err)
+	}
+}
+
+const maxConcurrentAgents = 3
+
+func (a *App) maybeDispatchTasks() {
+	running := 0
+	for _, ag := range a.agents.ListAgents() {
+		if ag.State == agent.StateRunning {
+			running++
+		}
+	}
+	if running >= maxConcurrentAgents {
+		return
+	}
+
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+
+	var candidates []task.Task
+	for i := range tasks {
+		if tasks[i].Status != task.StatusTodo {
+			continue
+		}
+		if tasks[i].AgentMode == "" || len(tasks[i].Tags) == 0 {
+			continue
+		}
+		if slices.Contains(tasks[i].Tags, "large") {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(tasks[i].ID) {
+			continue
+		}
+		if tasks[i].PRNumber > 0 && tasks[i].ProjectID != "" {
+			prState, err := github.FetchPRState(tasks[i].ProjectID, tasks[i].PRNumber)
+			if err == nil && prState.ReadyToMerge() {
+				a.logger.Info("auto-dispatch.skip", "task_id", tasks[i].ID, "reason", "pr_ready_to_merge",
+					"pr", tasks[i].PRNumber, "mergeable", prState.Mergeable, "ci", prState.CIStatus())
+				continue
+			}
+		}
+		candidates = append(candidates, tasks[i])
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	slices.SortFunc(candidates, func(a, b task.Task) int {
+		pa, pb := taskPriority(a.Tags), taskPriority(b.Tags)
+		if pa != pb {
+			return pa - pb
+		}
+		sa, sb := taskSize(a.Tags), taskSize(b.Tags)
+		return sa - sb
+	})
+
+	slots := maxConcurrentAgents - running
+	for i := range min(slots, len(candidates)) {
+		t := candidates[i]
+		a.logger.Info("auto-dispatch", "task_id", t.ID, "title", t.Title)
+		if slices.Contains(t.Tags, "review") {
+			if _, err := a.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+				a.logger.Error("auto-dispatch.review.status", "task_id", t.ID, "err", err)
+				continue
+			}
+			if err := a.reviewer.startReviewAgent(t); err != nil {
+				a.logger.Error("auto-dispatch.review.failed", "task_id", t.ID, "err", err)
+			}
+			continue
+		}
+		if _, err := a.UpdateTask(t.ID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			a.logger.Error("auto-dispatch.failed", "task_id", t.ID, "err", err)
+		}
+	}
+}
+
+func (a *App) maybeResumePlanning() {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range tasks {
+		if tasks[i].Status != task.StatusPlanning {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(tasks[i].ID) {
+			continue
+		}
+		a.logger.Info("plan.resume", "task_id", tasks[i].ID, "title", tasks[i].Title)
+		go func(id string) {
+			if err := a.workflow.PlanTask(id); err != nil {
+				a.logger.Error("plan.resume.failed", "task_id", id, "err", err)
+			}
+		}(tasks[i].ID)
+	}
+}
+
+func taskPriority(tags []string) int {
+	for _, t := range tags {
+		switch t {
+		case "urgent":
+			return 0
+		case "high":
+			return 1
+		case "normal":
+			return 2
+		case "low":
+			return 3
+		}
+	}
+	return 2
+}
+
+func taskSize(tags []string) int {
+	for _, t := range tags {
+		switch t {
+		case "small":
+			return 0
+		case "medium":
+			return 1
+		}
+	}
+	return 1
+}
+
+const orchestratorSession = "synapse-orchestrator"
+
+func (a *App) StartOrchestrator() error {
+	if a.tmux.SessionExists(orchestratorSession) {
+		return fmt.Errorf("orchestrator already running")
+	}
+	if err := a.tmux.CreateSessionInDir(orchestratorSession, "claude", config.HomeDir()); err != nil {
+		return fmt.Errorf("create orchestrator session: %w", err)
+	}
+	a.logger.Info("orchestrator.started")
+	a.logAudit(audit.EventOrchestratorStart, "", "", nil)
+	runtime.EventsEmit(a.ctx, events.OrchestratorState, "running")
+	return nil
+}
+
+func (a *App) StopOrchestrator() error {
+	if err := a.tmux.KillSession(orchestratorSession); err != nil {
+		return fmt.Errorf("stop orchestrator: %w", err)
+	}
+	a.logger.Info("orchestrator.stopped")
+	a.logAudit(audit.EventOrchestratorStop, "", "", nil)
+	runtime.EventsEmit(a.ctx, events.OrchestratorState, "stopped")
+	return nil
+}
+
+func (a *App) IsOrchestratorRunning() bool {
+	return a.tmux.SessionExists(orchestratorSession)
+}
+
+func (a *App) CaptureOrchestratorPane() (string, error) {
+	if !a.tmux.SessionExists(orchestratorSession) {
+		return "", fmt.Errorf("orchestrator not running")
+	}
+	return a.tmux.CapturePaneOutput(orchestratorSession)
+}
+
+func (a *App) AttachOrchestrator() error {
+	if !a.tmux.SessionExists(orchestratorSession) {
+		return fmt.Errorf("orchestrator not running")
+	}
+	return openTmuxInGhostty(orchestratorSession, "Orchestrator")
+}
+
+// TriageTask delegates to TaskWorkflow.
+func (a *App) TriageTask(id string) error {
+	return a.workflow.TriageTask(id)
+}
+
+// PlanTask delegates to TaskWorkflow.
+func (a *App) PlanTask(id string) error {
+	return a.workflow.PlanTask(id)
+}
+
+// ApprovePlan delegates to TaskWorkflow.
+func (a *App) ApprovePlan(id string) (task.Task, error) {
+	return a.workflow.ApprovePlan(id)
+}
+
+// RejectPlan delegates to TaskWorkflow.
+func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
+	return a.workflow.RejectPlan(id, feedback)
+}
+
+// EvaluateTask delegates to TaskWorkflow.
+func (a *App) EvaluateTask(taskID, agentResult string) error {
+	return a.workflow.EvaluateTask(taskID, agentResult)
+}
+
+func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
+	ag, err := a.agents.GetAgent(agentID)
+	if err != nil {
+		return nil, err
+	}
+	return ag.Output(), nil
+}
+
+func (a *App) FetchReviews() (github.ReviewSummary, error) {
+	return github.FetchReviews()
+}
+
 // ListNotifications returns pending in-app notifications.
 func (a *App) ListNotifications() []notification.Notification {
 	return a.notifier.List()
@@ -330,6 +600,10 @@ func (a *App) ListNotifications() []notification.Notification {
 // SetDesktopNotifications enables or disables macOS desktop notifications.
 func (a *App) SetDesktopNotifications(enabled bool) {
 	a.notifier.SetDesktop(enabled)
+}
+
+func (a *App) MarkPRReady(repo string, number int) error {
+	return github.MarkReady(repo, number)
 }
 
 // RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
@@ -363,4 +637,20 @@ func (a *App) RegisterSpotlightHotkey() {
 		return
 	}
 	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+}
+
+func (a *App) prPollLoop(ctx context.Context) {
+	timer := time.NewTimer(10 * time.Second) // initial fetch shortly after startup
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			next := a.reviewer.pollAndMonitorPRs()
+			a.logger.Debug("pr-poll.next", "interval", next)
+			timer.Reset(next)
+		}
+	}
 }
