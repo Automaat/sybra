@@ -106,10 +106,17 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "refs/remotes/origin/"+branch); err != nil {
-		return "", fmt.Errorf("create worktree: %w", err)
+		// Branch may exist from a previous run — try checkout instead
+		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
+			return "", fmt.Errorf("create worktree: %w (retry: %w)", err, errRe)
+		}
 	}
 
 	a.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
+
+	if err := project.PushUpstream(wtPath, wtBranch); err != nil {
+		a.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+	}
 
 	if t.Branch == "" {
 		if _, err := a.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
