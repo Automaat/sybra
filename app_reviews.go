@@ -38,16 +38,21 @@ func (a *App) createReviewTask(pr github.PullRequest, projectID string) {
 		return
 	}
 
-	if _, err := a.tasks.Update(t.ID, map[string]any{
+	t, err = a.tasks.Update(t.ID, map[string]any{
 		"tags":       "review",
 		"project_id": projectID,
 		"pr_number":  pr.Number,
-		"status":     string(task.StatusTodo),
-	}); err != nil {
+		"status":     string(task.StatusInReview),
+	})
+	if err != nil {
 		a.logger.Error("review.update-task", "task_id", t.ID, "err", err)
 		return
 	}
 	a.logger.Info("review.task-created", "task_id", t.ID, "pr", pr.Number, "project", projectID)
+
+	if err := a.startReviewAgent(t); err != nil {
+		a.logger.Error("review.auto-start", "task_id", t.ID, "err", err)
+	}
 }
 
 func (a *App) startReviewAgent(t task.Task) error {
@@ -219,6 +224,12 @@ func (a *App) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullR
 	}
 	matches := github.MatchReviewPRs(reviewPRs, projectMatchers)
 	for i := range matches {
+		if matches[i].PR.IsDraft {
+			continue
+		}
+		if matches[i].PR.ReviewDecision == "APPROVED" {
+			continue
+		}
 		if a.hasReviewTask(tasks, matches[i].PR.Number) {
 			continue
 		}
