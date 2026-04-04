@@ -508,6 +508,62 @@ func TestFetchReviewsWith_firstCallFails(t *testing.T) {
 	}
 }
 
+func TestFetchPRStateWith(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		execErr error
+		want    PRState
+		wantErr bool
+	}{
+		{
+			name:   "merged PR",
+			output: `{"state":"MERGED","mergedAt":"2026-04-01T12:00:00Z"}`,
+			want:   PRState{State: "MERGED", MergedAt: "2026-04-01T12:00:00Z"},
+		},
+		{
+			name:   "closed PR",
+			output: `{"state":"CLOSED","mergedAt":""}`,
+			want:   PRState{State: "CLOSED"},
+		},
+		{
+			name:   "open PR",
+			output: `{"state":"OPEN","mergedAt":""}`,
+			want:   PRState{State: "OPEN"},
+		},
+		{
+			name:    "exec error",
+			output:  "gh: not found",
+			execErr: fmt.Errorf("exit 1"),
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON",
+			output:  "not json",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
+			got, err := fetchPRStateWith(fe, "o/r", 42)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got.State != tt.want.State {
+				t.Errorf("State = %q, want %q", got.State, tt.want.State)
+			}
+			if got.MergedAt != tt.want.MergedAt {
+				t.Errorf("MergedAt = %q, want %q", got.MergedAt, tt.want.MergedAt)
+			}
+		})
+	}
+}
+
 func TestParseGQLResponse_botFiltered(t *testing.T) {
 	raw := `{
 		"data": {

@@ -208,3 +208,27 @@ func markReadyWith(e execer, repo string, number int) error {
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
 }
+
+// PRState holds the current state of a specific PR.
+type PRState struct {
+	State    string `json:"state"`    // OPEN, CLOSED, MERGED
+	MergedAt string `json:"mergedAt"` // non-empty if merged
+}
+
+// FetchPRState fetches the current state of a specific PR by repo and number.
+func FetchPRState(repo string, number int) (PRState, error) {
+	return fetchPRStateWith(defaultExecer, repo, number)
+}
+
+func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
+	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "state,mergedAt")
+	if err != nil {
+		return PRState{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var s PRState
+	if err := json.Unmarshal(out, &s); err != nil {
+		return PRState{}, fmt.Errorf("parse pr state: %w", err)
+	}
+	return s, nil
+}
