@@ -28,6 +28,11 @@ func (a *App) MarkPRReady(repo string, number int) error {
 	return github.MarkReady(repo, number)
 }
 
+const (
+	reviewSmallAdditions = 200
+	reviewSmallFiles     = 5
+)
+
 func (a *App) createReviewTask(pr github.PullRequest, projectID string) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
@@ -42,7 +47,7 @@ func (a *App) createReviewTask(pr github.PullRequest, projectID string) {
 		"tags":       "review",
 		"project_id": projectID,
 		"pr_number":  pr.Number,
-		"status":     string(task.StatusInReview),
+		"status":     string(task.StatusTodo),
 	})
 	if err != nil {
 		a.logger.Error("review.update-task", "task_id", t.ID, "err", err)
@@ -50,9 +55,50 @@ func (a *App) createReviewTask(pr github.PullRequest, projectID string) {
 	}
 	a.logger.Info("review.task-created", "task_id", t.ID, "pr", pr.Number, "project", projectID)
 
-	if err := a.startReviewAgent(t); err != nil {
-		a.logger.Error("review.auto-start", "task_id", t.ID, "err", err)
+	a.wg.Go(func() { a.triageReview(t) })
+}
+
+func (a *App) triageReview(t task.Task) {
+	stats, err := github.FetchPRStats(t.ProjectID, t.PRNumber)
+	if err != nil {
+		a.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
+		// fallback: start agent when we can't determine size
+		if _, err := a.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInReview)}); err != nil {
+			a.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
+		}
+		if err := a.startReviewAgent(t); err != nil {
+			a.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
+		}
+		return
 	}
+
+	a.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
+
+	if stats.Additions < reviewSmallAdditions && stats.ChangedFiles < reviewSmallFiles {
+		if _, err := a.tasks.Update(t.ID, map[string]any{"status": string(task.StatusHumanRequired)}); err != nil {
+			a.logger.Error("review.triage.human", "task_id", t.ID, "err", err)
+		}
+		a.logger.Info("review.triage.small", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
+		return
+	}
+
+	if _, err := a.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInReview)}); err != nil {
+		a.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
+	}
+	if err := a.startReviewAgent(t); err != nil {
+		a.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
+	}
+}
+
+func (a *App) StartReview(taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		return fmt.Errorf("task %s has no linked PR", taskID)
+	}
+	return a.startReviewAgent(t)
 }
 
 func (a *App) startReviewAgent(t task.Task) error {

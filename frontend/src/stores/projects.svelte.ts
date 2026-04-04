@@ -29,25 +29,25 @@ class ProjectStore extends EntityStore<project.Project> {
 
   async get(id: string): Promise<project.Project> {
     const result = await GetProject(id)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async create(url: string, type: string = 'pet'): Promise<project.Project> {
     const result = await CreateProject(url, type)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async update(id: string, type: string): Promise<project.Project> {
     const result = await UpdateProject(id, type)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async remove(id: string): Promise<void> {
     await DeleteProject(id)
-    this.items.delete(id)
+    this.delete(id)
   }
 }
 

@@ -134,6 +134,10 @@ export function StartOrchestrator() {
   return window['go']['main']['App']['StartOrchestrator']();
 }
 
+export function StartReview(arg1) {
+  return window['go']['main']['App']['StartReview'](arg1);
+}
+
 export function StopAgent(arg1) {
   return window['go']['main']['App']['StopAgent'](arg1);
 }

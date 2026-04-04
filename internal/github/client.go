@@ -234,6 +234,31 @@ func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
 	return false, nil
 }
 
+// PRStats holds size metrics for a pull request.
+type PRStats struct {
+	Additions    int `json:"additions"`
+	Deletions    int `json:"deletions"`
+	ChangedFiles int `json:"changedFiles"`
+}
+
+// FetchPRStats returns additions, deletions, and changed file count for a PR.
+func FetchPRStats(repo string, number int) (PRStats, error) {
+	return fetchPRStatsWith(defaultExecer, repo, number)
+}
+
+func fetchPRStatsWith(e execer, repo string, number int) (PRStats, error) {
+	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "additions,deletions,changedFiles")
+	if err != nil {
+		return PRStats{}, fmt.Errorf("gh pr view %d stats: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var s PRStats
+	if err := json.Unmarshal(out, &s); err != nil {
+		return PRStats{}, fmt.Errorf("parse pr stats: %w", err)
+	}
+	return s, nil
+}
+
 // PRState holds the current state of a specific PR.
 type PRState struct {
 	State    string `json:"state"`    // OPEN, CLOSED, MERGED

@@ -43,7 +43,7 @@ class AgentStore extends EntityStore<agent.Agent> {
 
   async start(taskID: string, mode: string, prompt: string): Promise<agent.Agent> {
     const result = await StartAgent(taskID, mode, prompt)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     this.outputs.set(result.id, [])
     return result
   }
@@ -53,7 +53,7 @@ class AgentStore extends EntityStore<agent.Agent> {
     const a = this.items.get(agentID)
     if (a) {
       a.state = 'stopped'
-      this.items.set(agentID, a)
+      this.set(agentID, a)
     }
   }
 
@@ -69,7 +69,7 @@ class AgentStore extends EntityStore<agent.Agent> {
   }
 
   updateAgent(agentID: string, data: agent.Agent): void {
-    this.items.set(agentID, data)
+    this.set(agentID, data)
   }
 }
 

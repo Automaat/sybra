@@ -13,6 +13,16 @@ export class EntityStore<T extends { id: string }> {
     return [...this.items.values()].sort(this.sortFn)
   }
 
+  protected set(id: string, item: T): void {
+    this.items = new Map(this.items).set(id, item)
+  }
+
+  protected delete(id: string): void {
+    const next = new Map(this.items)
+    next.delete(id)
+    this.items = next
+  }
+
   async load(): Promise<void> {
     this.loading = true
     this.error = ''

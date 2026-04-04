@@ -3,6 +3,7 @@
   import type { agent, task } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
+  import { StartReview } from '../../wailsjs/go/main/App.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
@@ -181,6 +182,28 @@
 
   const linkedPRs = $derived(t ? reviewStore.byTask(t) : [])
 
+  let reviewLoading = $state(false)
+
+  const isReviewTask = $derived(t?.tags?.includes('review') ?? false)
+
+  const reviewingAgent = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('review:') && a.state === 'running')
+  )
+
+  async function runReview() {
+    if (!t) return
+    reviewLoading = true
+    error = ''
+    try {
+      await StartReview(taskId)
+      await loadTask()
+    } catch (e) {
+      error = String(e)
+    } finally {
+      reviewLoading = false
+    }
+  }
+
   let rejectFeedback = $state('')
   let planActionLoading = $state(false)
 
@@ -274,6 +297,27 @@
               <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
               Evaluating
             </span>
+          {/if}
+          {#if reviewingAgent}
+            <span class="inline-flex items-center gap-1 rounded-full bg-purple-200 px-2 py-0.5 text-xs font-medium text-purple-800 dark:bg-purple-700 dark:text-purple-200">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-purple-500"></span>
+              Reviewing
+            </span>
+          {/if}
+          {#if t.reviewed}
+            <span class="inline-flex items-center gap-1 rounded-full bg-success-200 px-2 py-0.5 text-xs font-medium text-success-800 dark:bg-success-700 dark:text-success-200" title="Review agent completed">
+              ✓ Reviewed
+            </span>
+          {/if}
+          {#if isReviewTask && t.prNumber && t.projectId}
+            <button
+              type="button"
+              class="rounded bg-purple-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-purple-600 disabled:opacity-50"
+              onclick={runReview}
+              disabled={reviewLoading || reviewingAgent}
+            >
+              {reviewLoading ? 'Starting...' : t.reviewed ? 'Re-run Review' : 'Run Review'}
+            </button>
           {/if}
           <button
             type="button"

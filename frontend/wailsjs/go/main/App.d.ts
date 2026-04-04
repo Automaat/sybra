@@ -73,6 +73,8 @@ export function StartAgent(arg1:string,arg2:string,arg3:string):Promise<agent.Ag
 
 export function StartOrchestrator():Promise<void>;
 
+export function StartReview(arg1:string):Promise<void>;
+
 export function StopAgent(arg1:string):Promise<void>;
 
 export function StopOrchestrator():Promise<void>;

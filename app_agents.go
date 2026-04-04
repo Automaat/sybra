@@ -288,6 +288,9 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	if strings.HasPrefix(ag.Name, "review:") {
 		a.logger.Info("review.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
 		a.logAudit(audit.EventReviewStarted, ag.TaskID, ag.ID, agentData)
+		if _, err := a.tasks.Update(ag.TaskID, map[string]any{"reviewed": true}); err != nil {
+			a.logger.Error("review.mark-reviewed", "task_id", ag.TaskID, "err", err)
+		}
 		go a.resolveReviewStatus(ag.TaskID)
 		return
 	}

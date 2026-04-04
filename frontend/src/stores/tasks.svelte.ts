@@ -36,36 +36,36 @@ class TaskStore extends EntityStore<task.Task> {
 
   async get(id: string): Promise<task.Task> {
     const result = await GetTask(id)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async create(title: string, body: string, mode: string): Promise<task.Task> {
     const result = await CreateTask(title, body, mode)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async update(id: string, updates: Record<string, any>): Promise<task.Task> {
     const result = await UpdateTask(id, updates)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async remove(id: string): Promise<void> {
     await DeleteTask(id)
-    this.items.delete(id)
+    this.delete(id)
   }
 
   async approvePlan(id: string): Promise<task.Task> {
     const result = await ApprovePlan(id)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 
   async rejectPlan(id: string, feedback: string): Promise<task.Task> {
     const result = await RejectPlan(id, feedback)
-    this.items.set(result.id, result)
+    this.set(result.id, result)
     return result
   }
 }
