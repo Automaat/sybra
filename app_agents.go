@@ -239,113 +239,103 @@ func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 	return ag.Output(), nil
 }
 
+func extractResultContent(ag *agent.Agent) string {
+	var result string
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" {
+			result = ev.Content
+		}
+	}
+	return result
+}
+
+func buildAgentData(ag *agent.Agent) map[string]any {
+	return map[string]any{
+		"mode":       ag.Mode,
+		"cost_usd":   ag.CostUSD,
+		"duration_s": time.Since(ag.StartedAt).Seconds(),
+		"state":      string(ag.State),
+	}
+}
+
+func (a *App) persistAgentRun(ag *agent.Agent, resultContent string) {
+	truncated := resultContent
+	if len(truncated) > 2000 {
+		truncated = truncated[:2000] + "\n... (truncated)"
+	}
+	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
+		"state":    string(ag.State),
+		"cost_usd": ag.CostUSD,
+		"result":   truncated,
+	}); err != nil {
+		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+}
+
+func (a *App) notifyAgentComplete(ag *agent.Agent) {
+	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
+		return
+	}
+	level := notification.LevelSuccess
+	title := "Agent completed"
+	if ag.State == agent.StateStopped && !hasResultEvent(ag) {
+		level = notification.LevelError
+		title = "Agent failed"
+	}
+	a.notifier.Send(level, title, ag.Name, ag.TaskID, ag.ID)
+}
+
 func (a *App) handleAgentComplete(ag *agent.Agent) {
 	if ag.TaskID == "" {
 		a.logger.Warn("agent.complete.skip", "agent_id", ag.ID, "reason", "empty task_id")
 		return
 	}
+	resultContent := extractResultContent(ag)
+	agentData := buildAgentData(ag)
+	a.recordStats(ag, time.Since(ag.StartedAt).Seconds())
+	a.persistAgentRun(ag, resultContent)
+	a.notifyAgentComplete(ag)
 
-	var resultContent string
-	for _, ev := range ag.Output() {
-		if ev.Type == "result" {
-			resultContent = ev.Content
-		}
+	switch {
+	case strings.HasPrefix(ag.Name, "triage:"):
+		a.handleTriageComplete(ag, agentData)
+	case strings.HasPrefix(ag.Name, "eval:"):
+		a.handleEvalComplete(ag, agentData)
+	case strings.HasPrefix(ag.Name, "pr-fix:"):
+		a.handlePRFixComplete(ag, resultContent, agentData)
+	case strings.HasPrefix(ag.Name, "plan:"):
+		a.handlePlanComplete(ag, resultContent, agentData)
+	case strings.HasPrefix(ag.Name, "review:"):
+		a.handleReviewComplete(ag, agentData)
+	default:
+		a.handleDefaultComplete(ag, resultContent, agentData)
 	}
-
-	duration := time.Since(ag.StartedAt).Seconds()
-	agentData := map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   ag.CostUSD,
-		"duration_s": duration,
-		"state":      string(ag.State),
-	}
-
-	a.recordStats(ag, duration)
-
-	// Persist run result to task file
-	truncatedResult := resultContent
-	if len(truncatedResult) > 2000 {
-		truncatedResult = truncatedResult[:2000] + "\n... (truncated)"
-	}
-	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
-		"state":    string(ag.State),
-		"cost_usd": ag.CostUSD,
-		"result":   truncatedResult,
-	}); err != nil {
-		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
-	}
-
-	// Notify for non-system agents
-	if !strings.HasPrefix(ag.Name, "triage:") && !strings.HasPrefix(ag.Name, "eval:") {
-		level := notification.LevelSuccess
-		title := "Agent completed"
-		if ag.State == agent.StateStopped && !hasResultEvent(ag) {
-			level = notification.LevelError
-			title = "Agent failed"
-		}
-		a.notifier.Send(level, title, ag.Name, ag.TaskID, ag.ID)
-	}
-
-	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
-		a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
-		a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
-		return
-	}
-
-	if strings.HasPrefix(ag.Name, "pr-fix:") {
-		a.logger.Info("pr-fix.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-		a.logAudit(audit.EventPRFixAgentStarted, ag.TaskID, ag.ID, agentData)
-		// Clear debounce so the next poll cycle can re-detect unresolved issues
-		a.prTracker.Clear(ag.TaskID, github.PRIssueConflict)
-		a.prTracker.Clear(ag.TaskID, github.PRIssueCIFailure)
-		go func() {
-			if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
-				a.logger.Error("pr-fix.eval", "task_id", ag.TaskID, "err", err)
-			}
-		}()
-		return
-	}
-
-	if strings.HasPrefix(ag.Name, "plan:") {
-		a.completePlanAgent(ag, resultContent, agentData)
-		return
-	}
-
-	if strings.HasPrefix(ag.Name, "eval:") {
-		a.completeEvalAgent(ag, agentData)
-		return
-	}
-
-	if strings.HasPrefix(ag.Name, "review:") {
-		a.logger.Info("review.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-		a.logAudit(audit.EventReviewStarted, ag.TaskID, ag.ID, agentData)
-		if _, err := a.tasks.Update(ag.TaskID, map[string]any{"reviewed": true}); err != nil {
-			a.logger.Error("review.mark-reviewed", "task_id", ag.TaskID, "err", err)
-		}
-		go a.resolveReviewStatus(ag.TaskID)
-		return
-	}
-
-	eventType := audit.EventAgentCompleted
-	if ag.State != agent.StateStopped {
-		eventType = audit.EventAgentFailed
-	}
-	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
-
-	// Cleanup worktree if task was already marked done while agent was running.
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
-		go a.cleanupWorktree(ag.TaskID)
-		return
-	}
-
-	a.wg.Go(func() {
-		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
-			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
-		}
-	})
 }
 
-func (a *App) completePlanAgent(ag *agent.Agent, resultContent string, agentData map[string]any) {
+func (a *App) handleTriageComplete(ag *agent.Agent, agentData map[string]any) {
+	a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+	a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
+}
+
+func (a *App) handleEvalComplete(ag *agent.Agent, agentData map[string]any) {
+	a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+	a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
+}
+
+func (a *App) handlePRFixComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
+	a.logger.Info("pr-fix.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+	a.logAudit(audit.EventPRFixAgentStarted, ag.TaskID, ag.ID, agentData)
+	// Clear debounce so the next poll cycle can re-detect unresolved issues
+	a.prTracker.Clear(ag.TaskID, github.PRIssueConflict)
+	a.prTracker.Clear(ag.TaskID, github.PRIssueCIFailure)
+	go func() {
+		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
+			a.logger.Error("pr-fix.eval", "task_id", ag.TaskID, "err", err)
+		}
+	}()
+}
+
+func (a *App) handlePlanComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
 	a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
 	a.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
 	body := ""
@@ -363,17 +353,33 @@ func (a *App) completePlanAgent(ag *agent.Agent, resultContent string, agentData
 	}
 }
 
-func (a *App) completeEvalAgent(ag *agent.Agent, agentData map[string]any) {
-	a.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
-	a.logAudit(audit.EventEvalCompleted, ag.TaskID, ag.ID, agentData)
-	t, err := a.tasks.Get(ag.TaskID)
-	if err != nil {
+func (a *App) handleReviewComplete(ag *agent.Agent, agentData map[string]any) {
+	a.logger.Info("review.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+	a.logAudit(audit.EventReviewStarted, ag.TaskID, ag.ID, agentData)
+	if _, err := a.tasks.Update(ag.TaskID, map[string]any{"reviewed": true}); err != nil {
+		a.logger.Error("review.mark-reviewed", "task_id", ag.TaskID, "err", err)
+	}
+	go a.resolveReviewStatus(ag.TaskID)
+}
+
+func (a *App) handleDefaultComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
+	eventType := audit.EventAgentCompleted
+	if ag.State != agent.StateStopped {
+		eventType = audit.EventAgentFailed
+	}
+	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
+
+	// Cleanup worktree if task was already marked done while agent was running.
+	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+		go a.cleanupWorktree(ag.TaskID)
 		return
 	}
-	if t.Status == task.StatusDone {
-		a.logger.Info("eval.skip_done", "agent_id", ag.ID, "task_id", ag.TaskID)
-		return
-	}
+
+	a.wg.Go(func() {
+		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
+			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		}
+	})
 }
 
 func hasResultEvent(ag *agent.Agent) bool {
