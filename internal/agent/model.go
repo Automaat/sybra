@@ -36,6 +36,9 @@ type Agent struct {
 	cmd          *exec.Cmd
 	cancel       context.CancelFunc
 	sessionCWD   string
+	// done is closed when the headless goroutine has fully exited.
+	// Used by HasRunningAgentForTask to guard worktree cleanup.
+	done chan struct{}
 }
 
 func (a *Agent) Output() []StreamEvent {

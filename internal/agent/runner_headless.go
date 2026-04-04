@@ -99,6 +99,9 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 	}
 
 	a.State = StateStopped
+	if a.done != nil {
+		close(a.done)
+	}
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.CostUSD)
 	m.emit("agent:state:"+a.ID, a)
 	if m.onComplete != nil {
@@ -213,6 +216,9 @@ func strVal(m map[string]any, key string) string {
 
 func (m *Manager) handleError(a *Agent, err error) {
 	a.State = StateStopped
+	if a.done != nil {
+		close(a.done)
+	}
 	m.logger.Error("agent.error", "id", a.ID, "err", err)
 	m.emit("agent:error:"+a.ID, err.Error())
 	if m.onComplete != nil {

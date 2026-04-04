@@ -64,6 +64,9 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cancel:     cancel,
 		sessionCWD: cfg.Dir,
 	}
+	if mode == "headless" {
+		a.done = make(chan struct{})
+	}
 
 	m.mu.Lock()
 	m.agents[id] = a
@@ -172,15 +175,19 @@ func (m *Manager) StopAgent(agentID string) error {
 	}
 	a.State = StateStopped
 
-	if a.Mode == "interactive" && a.TmuxSession != "" {
-		_ = m.tmux.KillSession(a.TmuxSession)
-	}
-
 	m.logger.Info("agent.stop", "id", agentID)
 	m.emit("agent:state:"+agentID, a)
-	if m.onComplete != nil {
-		m.onComplete(a)
+
+	if a.Mode == "interactive" {
+		if a.TmuxSession != "" {
+			_ = m.tmux.KillSession(a.TmuxSession)
+		}
+		// Interactive agents have no goroutine — call onComplete here.
+		if m.onComplete != nil {
+			m.onComplete(a)
+		}
 	}
+	// Headless: goroutine calls onComplete and closes done after process exits.
 	return nil
 }
 
@@ -205,18 +212,29 @@ func (m *Manager) ListAgents() []*Agent {
 }
 
 // HasRunningAgentForTask returns true if any agent is currently running for the given task.
-// For headless agents, verifies the process is still alive.
+// For headless agents this checks whether the goroutine has truly exited (via the done
+// channel) rather than the State field, which may be set to Stopped by StopAgent before
+// the goroutine finishes — avoiding a race where the worktree is cleaned up while the
+// agent process is still using it.
 func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, a := range m.agents {
-		if a.TaskID != taskID || a.State != StateRunning {
+		if a.TaskID != taskID {
 			continue
 		}
-		if a.Mode == "headless" && a.cmd != nil && a.cmd.ProcessState != nil {
-			continue // process exited, state is stale
+		if a.done != nil {
+			// headless: goroutine alive until done is closed
+			select {
+			case <-a.done:
+				// goroutine exited
+			default:
+				return true
+			}
+		} else if a.State == StateRunning {
+			// interactive: no goroutine, rely on state
+			return true
 		}
-		return true
 	}
 	return false
 }
