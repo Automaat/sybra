@@ -14,6 +14,27 @@ type Store struct {
 	dir string
 }
 
+// atomicWrite writes data to path via a temp file + rename to prevent
+// partial reads from concurrent goroutines.
+func atomicWrite(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
@@ -77,7 +98,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 
 	filename := fmt.Sprintf("%s.md", t.ID)
 	t.FilePath = filepath.Join(s.dir, filename)
-	if err := os.WriteFile(t.FilePath, data, 0o644); err != nil {
+	if err := atomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
@@ -142,7 +163,7 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	if err := os.WriteFile(t.FilePath, data, 0o644); err != nil {
+	if err := atomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
@@ -158,7 +179,7 @@ func (s *Store) AddRun(taskID string, run AgentRun) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(t.FilePath, d, 0o644)
+	return atomicWrite(t.FilePath, d)
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error {
@@ -185,5 +206,5 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(t.FilePath, d, 0o644)
+	return atomicWrite(t.FilePath, d)
 }
