@@ -378,18 +378,20 @@ func (m *Manager) ReconnectSessions(tasks []TaskInfo) int {
 		parts := strings.Split(s.Name, "-")
 		id := parts[len(parts)-1]
 
+		t, hasTask := taskBySession[s.Name]
+		if !hasTask {
+			m.logger.Debug("reconnect.skip-orphan", "session", s.Name)
+			continue
+		}
+
 		a := &Agent{
 			ID:          id,
 			Mode:        "interactive",
 			State:       StateRunning,
 			TmuxSession: s.Name,
+			TaskID:      t.ID,
+			Name:        t.Title,
 			StartedAt:   time.Now().UTC(),
-		}
-		if t, ok := taskBySession[s.Name]; ok {
-			a.TaskID = t.ID
-			a.Name = t.Title
-		} else {
-			a.Name = s.Name
 		}
 
 		m.agents[id] = a

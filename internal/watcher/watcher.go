@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -87,8 +88,15 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 				w.logger.Debug("watcher.event", "op", "updated", "file", event.Name)
 				w.emit(events.TaskUpdated, event.Name)
 			case event.Has(fsnotify.Remove):
-				w.logger.Info("watcher.event", "op", "deleted", "file", event.Name)
-				w.emit(events.TaskDeleted, event.Name)
+				// Atomic writes (tmp+rename) emit Remove for the old inode.
+				// If the file still exists, treat as update instead of delete.
+				if _, err := os.Stat(event.Name); err == nil {
+					w.logger.Debug("watcher.event", "op", "updated", "file", event.Name)
+					w.emit(events.TaskUpdated, event.Name)
+				} else {
+					w.logger.Info("watcher.event", "op", "deleted", "file", event.Name)
+					w.emit(events.TaskDeleted, event.Name)
+				}
 			}
 
 		case err, ok := <-fw.Errors:
