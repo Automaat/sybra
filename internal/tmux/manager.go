@@ -21,6 +21,8 @@ func (m *Manager) CreateSessionInDir(name, cmd, dir string) error {
 	return run("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", dir, cmd)
 }
 
+// SendKeys pastes text into a tmux pane via load-buffer + paste-buffer.
+// Does NOT send Enter — caller is responsible for submitting.
 func (m *Manager) SendKeys(name, keys string) error {
 	f, err := os.CreateTemp("", "synapse-prompt-*.txt")
 	if err != nil {
@@ -37,10 +39,7 @@ func (m *Manager) SendKeys(name, keys string) error {
 	if err := run("load-buffer", f.Name()); err != nil {
 		return fmt.Errorf("load-buffer: %w", err)
 	}
-	if err := run("paste-buffer", "-t", name); err != nil {
-		return fmt.Errorf("paste-buffer: %w", err)
-	}
-	return run("send-keys", "-t", name, "Enter")
+	return run("paste-buffer", "-t", name)
 }
 
 // SendRawKeys sends tmux key names (e.g. "Down", "Enter") directly via send-keys.

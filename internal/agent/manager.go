@@ -147,9 +147,12 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 			if strings.Contains(out, "❯") && !strings.Contains(out, "Yes, I accept") {
 				if err := m.tmux.SendKeys(a.TmuxSession, prompt); err != nil {
 					m.logger.Error("agent.interactive.sendkeys", "id", a.ID, "err", err)
-				} else {
-					m.logger.Info("agent.interactive.prompt_sent", "id", a.ID)
+					return
 				}
+				// Delay so Claude Code processes the paste before submitting
+				time.Sleep(500 * time.Millisecond)
+				_ = m.tmux.SendRawKeys(a.TmuxSession, "Enter")
+				m.logger.Info("agent.interactive.prompt_sent", "id", a.ID)
 				return
 			}
 		}
