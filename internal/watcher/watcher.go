@@ -15,11 +15,25 @@ type Watcher struct {
 	dir    string
 	emit   EmitFunc
 	logger *slog.Logger
+	ready  chan struct{}
+	done   chan struct{}
 }
 
 func New(dir string, emit EmitFunc, logger *slog.Logger) *Watcher {
-	return &Watcher{dir: dir, emit: emit, logger: logger}
+	return &Watcher{
+		dir:    dir,
+		emit:   emit,
+		logger: logger,
+		ready:  make(chan struct{}),
+		done:   make(chan struct{}),
+	}
 }
+
+// Ready returns a channel closed when the watcher loop is running.
+func (w *Watcher) Ready() <-chan struct{} { return w.ready }
+
+// Done returns a channel closed when the watcher loop exits.
+func (w *Watcher) Done() <-chan struct{} { return w.done }
 
 func (w *Watcher) Start(ctx context.Context) error {
 	fw, err := fsnotify.NewWatcher()
@@ -37,7 +51,11 @@ func (w *Watcher) Start(ctx context.Context) error {
 }
 
 func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
-	defer func() { _ = fw.Close() }()
+	defer func() {
+		_ = fw.Close()
+		close(w.done)
+	}()
+	close(w.ready)
 
 	debounce := make(map[string]time.Time)
 	const debounceInterval = 200 * time.Millisecond

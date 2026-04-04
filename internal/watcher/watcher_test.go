@@ -6,14 +6,21 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
-	"sync"
 	"testing"
 	"time"
 )
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func waitReady(t *testing.T, w *Watcher) {
+	t.Helper()
+	select {
+	case <-w.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher not ready in time")
+	}
 }
 
 func TestNew(t *testing.T) {
@@ -37,51 +44,32 @@ func TestStartInvalidDir(t *testing.T) {
 func TestStartAndEmitCreate(t *testing.T) {
 	dir := t.TempDir()
 
-	var mu sync.Mutex
-	var events []string
-
+	got := make(chan string, 10)
 	emit := func(event string, _ any) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, event)
+		select {
+		case got <- event:
+		default:
+		}
 	}
 
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, w)
 
 	mdPath := filepath.Join(dir, "test-task.md")
 	if err := os.WriteFile(mdPath, []byte("# Task"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	waitForAnyEvent := func() bool {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			mu.Lock()
-			n := len(events)
-			mu.Unlock()
-			if n > 0 {
-				return true
-			}
-			time.Sleep(50 * time.Millisecond)
+	select {
+	case event := <-got:
+		if event != "task:created" && event != "task:updated" {
+			t.Errorf("unexpected event %q, want task:created or task:updated", event)
 		}
-		return false
-	}
-
-	if !waitForAnyEvent() {
+	case <-time.After(2 * time.Second):
 		t.Error("expected at least one event after creating .md file")
-	}
-
-	mu.Lock()
-	hasCreate := slices.Contains(events, "task:created") || slices.Contains(events, "task:updated")
-	mu.Unlock()
-
-	if !hasCreate {
-		t.Error("expected task:created or task:updated event")
 	}
 }
 
@@ -94,77 +82,71 @@ func TestStartAndEmitDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var mu sync.Mutex
-	var events []string
-
+	got := make(chan string, 10)
 	emit := func(event string, _ any) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, event)
+		select {
+		case got <- event:
+		default:
+		}
 	}
 
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, w)
 
 	if err := os.Remove(mdPath); err != nil {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		found := slices.Contains(events, "task:deleted")
-		mu.Unlock()
-		if found {
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-got:
+			if event == "task:deleted" {
+				return
+			}
+		case <-timeout:
+			t.Error("expected task:deleted event")
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	t.Error("expected task:deleted event")
 }
 
 func TestNonMarkdownIgnored(t *testing.T) {
 	dir := t.TempDir()
 
-	var mu sync.Mutex
-	var emitCount int
-
-	emit := func(string, any) {
-		mu.Lock()
-		emitCount++
-		mu.Unlock()
+	got := make(chan string, 1)
+	emit := func(event string, _ any) {
+		select {
+		case got <- event:
+		default:
+		}
 	}
 
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, w)
 
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-
-	mu.Lock()
-	count := emitCount
-	mu.Unlock()
-
-	if count != 0 {
-		t.Errorf("emitted %d events for non-md file, want 0", count)
+	// Wait past debounce window; any event arriving is a failure.
+	select {
+	case event := <-got:
+		t.Errorf("expected no events for non-md file, got %q", event)
+	case <-time.After(400 * time.Millisecond):
+		// no events, as expected
 	}
 }
 
 func TestContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 
-	// Use an already-expired deadline to test that the loop exits cleanly
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(200*time.Millisecond))
 	defer cancel()
 
@@ -173,21 +155,24 @@ func TestContextCancellation(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for deadline to expire and loop to exit
-	time.Sleep(400 * time.Millisecond)
+	select {
+	case <-w.Done():
+		// goroutine exited cleanly after context cancellation
+	case <-time.After(2 * time.Second):
+		t.Error("watcher goroutine did not exit after context cancellation")
+	}
 }
 
 func TestDebounce(t *testing.T) {
 	dir := t.TempDir()
 
-	var mu sync.Mutex
-	var createCount int
-
+	got := make(chan string, 10)
 	emit := func(event string, _ any) {
 		if event == "task:created" {
-			mu.Lock()
-			createCount++
-			mu.Unlock()
+			select {
+			case got <- event:
+			default:
+			}
 		}
 	}
 
@@ -195,24 +180,27 @@ func TestDebounce(t *testing.T) {
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, w)
 
 	mdPath := filepath.Join(dir, "rapid.md")
 	for range 5 {
 		if err := os.WriteFile(mdPath, []byte("data"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-
-	mu.Lock()
-	count := createCount
-	mu.Unlock()
-
-	if count >= 5 {
-		t.Errorf("debounce failed: got %d events, expected fewer than 5", count)
+	// Drain events until debounce window expires with no new events.
+	var count int
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case <-got:
+			count++
+		case <-timeout:
+			if count >= 5 {
+				t.Errorf("debounce failed: got %d events, expected fewer than 5", count)
+			}
+			return
+		}
 	}
 }
