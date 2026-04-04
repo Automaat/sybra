@@ -60,12 +60,24 @@ func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 		})
 	}
 	if t.Status == task.StatusInProgress && !a.agents.HasRunningAgentForTask(t.ID) && !slices.Contains(t.Tags, "review") {
-		a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
-		a.wg.Go(func() {
-			if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
-				a.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
+		if prevStatus == string(task.StatusInReview) {
+			a.logger.Info("auto-fix-review.start", "task_id", t.ID, "title", t.Title)
+			if _, err := a.tasks.Update(t.ID, map[string]any{"run_role": "pr-fix"}); err != nil {
+				a.logger.Error("auto-fix-review.set-role", "task_id", t.ID, "err", err)
 			}
-		})
+			a.wg.Go(func() {
+				if err := a.startPRFixReviewAgent(t.ID); err != nil {
+					a.logger.Error("auto-fix-review.failed", "task_id", t.ID, "err", err)
+				}
+			})
+		} else {
+			a.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
+			a.wg.Go(func() {
+				if _, err := a.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+					a.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
+				}
+			})
+		}
 	}
 	if t.Status == task.StatusDone {
 		a.wg.Go(func() { a.cleanupWorktree(t.ID) })
