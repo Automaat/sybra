@@ -234,6 +234,7 @@ func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
 	branch := fs.String("branch", "", "Git branch name")
 	pr := fs.Int("pr", 0, "GitHub PR number")
 	issue := fs.String("issue", "", "GitHub issue URL")
+	statusReason := fs.String("status-reason", "", "reason for status change")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -244,6 +245,9 @@ func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
 	}
 	if *status != "" {
 		updates["status"] = *status
+	}
+	if *statusReason != "" {
+		updates["status_reason"] = *statusReason
 	}
 	if *body != "" {
 		updates["body"] = *body
@@ -560,7 +564,7 @@ Commands:
            STATUS: new|todo|planning|plan-review|in-progress|in-review|human-required|done
   get      <id>
   create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
-  update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
   delete   <id>
 
   project list

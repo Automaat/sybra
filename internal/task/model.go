@@ -63,6 +63,7 @@ type Task struct {
 	Branch       string     `yaml:"branch,omitempty" json:"branch"`
 	PRNumber     int        `yaml:"pr_number,omitempty" json:"prNumber"`
 	Issue        string     `yaml:"issue,omitempty" json:"issue"`
+	StatusReason string     `yaml:"status_reason,omitempty" json:"statusReason"`
 	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
 	AgentRuns    []AgentRun `yaml:"agent_runs,omitempty" json:"agentRuns"`
 	CreatedAt    time.Time  `yaml:"created_at" json:"createdAt"`

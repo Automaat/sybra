@@ -66,9 +66,9 @@ func (a *App) EvaluateTask(taskID, agentResult string) error {
 			"If found, link: synapse-cli --json update %s --pr <number>\n"+
 			"3. Set status based on agent result:\n"+
 			"   - Work done, PR created/pushed → in-review\n"+
-			"   - Failed, errors, incomplete → human-required\n"+
+			"   - Failed, errors, incomplete → human-required (MUST include --status-reason explaining why)\n"+
 			"   - Never set done or todo\n"+
-			"   Run: synapse-cli --json update %s --status <status>\n\n"+
+			"   Run: synapse-cli --json update %s --status <status> [--status-reason \"reason\"]\n\n"+
 			"## Agent Result\n\n%s",
 		t.ID, t.ID, t.ID, t.ID, truncated)
 

@@ -130,6 +130,13 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 			return Task{}, vErr
 		}
 		t.Status = st
+		// Clear reason when status changes unless a new reason is provided
+		if _, hasReason := updates["status_reason"]; !hasReason {
+			t.StatusReason = ""
+		}
+	}
+	if v, ok := updates["status_reason"].(string); ok {
+		t.StatusReason = v
 	}
 	if v, ok := updates["agent_mode"].(string); ok {
 		t.AgentMode = v

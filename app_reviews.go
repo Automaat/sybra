@@ -77,7 +77,10 @@ func (a *App) triageReview(t task.Task) {
 	a.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
 	if stats.Additions < reviewSmallAdditions && stats.ChangedFiles < reviewSmallFiles {
-		if _, err := a.tasks.Update(t.ID, map[string]any{"status": string(task.StatusHumanRequired)}); err != nil {
+		if _, err := a.tasks.Update(t.ID, map[string]any{
+			"status":        string(task.StatusHumanRequired),
+			"status_reason": fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles),
+		}); err != nil {
 			a.logger.Error("review.triage.human", "task_id", t.ID, "err", err)
 		}
 		a.logger.Info("review.triage.small", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
@@ -188,10 +191,13 @@ func (a *App) resolveReviewStatus(taskID string) {
 	}
 
 	nextStatus := task.StatusInReview
+	updates := map[string]any{"status": string(nextStatus)}
 	if pending {
 		nextStatus = task.StatusHumanRequired
+		updates["status"] = string(nextStatus)
+		updates["status_reason"] = "pending review needs human submission"
 	}
-	if _, err := a.tasks.Update(taskID, map[string]any{"status": string(nextStatus)}); err != nil {
+	if _, err := a.tasks.Update(taskID, updates); err != nil {
 		a.logger.Error("review.status-update", "task_id", taskID, "err", err)
 	}
 }

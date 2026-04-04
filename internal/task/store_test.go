@@ -346,13 +346,17 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 
 	updated, err := store.Update(created.ID, map[string]any{
-		"status": "human-required",
+		"status":        "human-required",
+		"status_reason": "agent failed with errors",
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if updated.Status != StatusHumanRequired {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusHumanRequired)
+	}
+	if updated.StatusReason != "agent failed with errors" {
+		t.Errorf("StatusReason = %q, want %q", updated.StatusReason, "agent failed with errors")
 	}
 
 	reloaded, err := store.Get(created.ID)
@@ -361,6 +365,18 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 	if reloaded.Status != StatusHumanRequired {
 		t.Errorf("persisted Status = %q, want %q", reloaded.Status, StatusHumanRequired)
+	}
+	if reloaded.StatusReason != "agent failed with errors" {
+		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "agent failed with errors")
+	}
+
+	// Verify reason clears when status changes without explicit reason
+	updated2, err := store.Update(created.ID, map[string]any{"status": "in-progress"})
+	if err != nil {
+		t.Fatalf("update2: %v", err)
+	}
+	if updated2.StatusReason != "" {
+		t.Errorf("StatusReason after status change = %q, want empty", updated2.StatusReason)
 	}
 }
 
