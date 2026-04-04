@@ -1,6 +1,9 @@
 package github
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestMatchTaskPRs(t *testing.T) {
 	tests := []struct {
@@ -89,6 +92,109 @@ func TestMatchTaskPRs(t *testing.T) {
 				}
 				if got[i].TaskID != tt.want[i].TaskID {
 					t.Errorf("issue[%d].TaskID = %q, want %q", i, got[i].TaskID, tt.want[i].TaskID)
+				}
+			}
+		})
+	}
+}
+
+func TestDetectClosedTaskPRs(t *testing.T) {
+	merged := PRState{State: "MERGED", MergedAt: "2026-04-01T12:00:00Z"}
+	closed := PRState{State: "CLOSED"}
+	open := PRState{State: "OPEN"}
+
+	makeFetch := func(states map[int]PRState) func(string, int) (PRState, error) {
+		return func(_ string, num int) (PRState, error) {
+			if s, ok := states[num]; ok {
+				return s, nil
+			}
+			return PRState{}, fmt.Errorf("not found")
+		}
+	}
+
+	tests := []struct {
+		name    string
+		openPRs []PullRequest
+		tasks   []TaskMatcher
+		states  map[int]PRState
+		want    []ClosedPR
+	}{
+		{
+			name:    "no tasks",
+			openPRs: nil,
+			tasks:   nil,
+			states:  nil,
+			want:    nil,
+		},
+		{
+			name:    "task without PRNumber skipped",
+			openPRs: nil,
+			tasks:   []TaskMatcher{{ID: "t1", Branch: "feat/x", ProjectID: "o/r"}},
+			states:  nil,
+			want:    nil,
+		},
+		{
+			name:    "task without ProjectID skipped",
+			openPRs: nil,
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			states:  map[int]PRState{42: merged},
+			want:    nil,
+		},
+		{
+			name:    "PR still open – skipped",
+			openPRs: []PullRequest{{Number: 42}},
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42, ProjectID: "o/r"}},
+			states:  map[int]PRState{42: open},
+			want:    nil,
+		},
+		{
+			name:    "PR merged → done",
+			openPRs: nil,
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42, ProjectID: "o/r"}},
+			states:  map[int]PRState{42: merged},
+			want:    []ClosedPR{{TaskID: "t1", PRNumber: 42, State: "MERGED"}},
+		},
+		{
+			name:    "PR closed → done",
+			openPRs: nil,
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42, ProjectID: "o/r"}},
+			states:  map[int]PRState{42: closed},
+			want:    []ClosedPR{{TaskID: "t1", PRNumber: 42, State: "CLOSED"}},
+		},
+		{
+			name:    "fetch error – skipped",
+			openPRs: nil,
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 99, ProjectID: "o/r"}},
+			states:  map[int]PRState{},
+			want:    nil,
+		},
+		{
+			name:    "mixed: one open, one merged",
+			openPRs: []PullRequest{{Number: 10}},
+			tasks: []TaskMatcher{
+				{ID: "t1", PRNumber: 10, ProjectID: "o/r"},
+				{ID: "t2", PRNumber: 20, ProjectID: "o/r"},
+			},
+			states: map[int]PRState{10: open, 20: merged},
+			want:   []ClosedPR{{TaskID: "t2", PRNumber: 20, State: "MERGED"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectClosedTaskPRs(tt.openPRs, tt.tasks, makeFetch(tt.states))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d results, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i].TaskID != tt.want[i].TaskID {
+					t.Errorf("[%d] TaskID = %q, want %q", i, got[i].TaskID, tt.want[i].TaskID)
+				}
+				if got[i].PRNumber != tt.want[i].PRNumber {
+					t.Errorf("[%d] PRNumber = %d, want %d", i, got[i].PRNumber, tt.want[i].PRNumber)
+				}
+				if got[i].State != tt.want[i].State {
+					t.Errorf("[%d] State = %q, want %q", i, got[i].State, tt.want[i].State)
 				}
 			}
 		})

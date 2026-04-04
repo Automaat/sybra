@@ -1044,9 +1044,10 @@ func (a *App) pollAndMonitorPRs() time.Duration {
 			continue
 		}
 		matchers = append(matchers, github.TaskMatcher{
-			ID:       tasks[i].ID,
-			PRNumber: tasks[i].PRNumber,
-			Branch:   tasks[i].Branch,
+			ID:        tasks[i].ID,
+			PRNumber:  tasks[i].PRNumber,
+			Branch:    tasks[i].Branch,
+			ProjectID: tasks[i].ProjectID,
 		})
 	}
 
@@ -1065,6 +1066,20 @@ func (a *App) pollAndMonitorPRs() time.Duration {
 			continue
 		}
 		a.handlePRIssue(issues[i])
+	}
+
+	closedPRs := github.DetectClosedTaskPRs(summary.CreatedByMe, matchers, github.FetchPRState)
+	for _, c := range closedPRs {
+		if _, err := a.tasks.Update(c.TaskID, map[string]any{"status": string(task.StatusDone)}); err != nil {
+			a.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
+			continue
+		}
+		eventType := audit.EventPRMerged
+		if c.State == "CLOSED" {
+			eventType = audit.EventPRClosed
+		}
+		a.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
+		a.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State)
 	}
 
 	if prNeedsAttention(summary.CreatedByMe) {

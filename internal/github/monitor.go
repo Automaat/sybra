@@ -17,9 +17,46 @@ type PRIssue struct {
 
 // TaskMatcher is the minimal task info needed for PR matching.
 type TaskMatcher struct {
-	ID       string
+	ID        string
+	PRNumber  int
+	Branch    string
+	ProjectID string // owner/repo, used for closed/merged PR detection
+}
+
+// ClosedPR represents a PR linked to a task that is merged or closed.
+type ClosedPR struct {
+	TaskID   string
 	PRNumber int
-	Branch   string
+	State    string // "MERGED" or "CLOSED"
+}
+
+// DetectClosedTaskPRs finds tasks whose linked PRs are no longer open.
+// Requires TaskMatcher.ProjectID and PRNumber to be set.
+// It skips tasks whose PR still appears in openPRs.
+func DetectClosedTaskPRs(openPRs []PullRequest, tasks []TaskMatcher, fetchState func(repo string, number int) (PRState, error)) []ClosedPR {
+	openByNumber := make(map[int]struct{}, len(openPRs))
+	for i := range openPRs {
+		openByNumber[openPRs[i].Number] = struct{}{}
+	}
+
+	var closed []ClosedPR
+	for i := range tasks {
+		t := &tasks[i]
+		if t.PRNumber == 0 || t.ProjectID == "" {
+			continue
+		}
+		if _, isOpen := openByNumber[t.PRNumber]; isOpen {
+			continue
+		}
+		state, err := fetchState(t.ProjectID, t.PRNumber)
+		if err != nil {
+			continue
+		}
+		if state.State == "MERGED" || state.State == "CLOSED" {
+			closed = append(closed, ClosedPR{TaskID: t.ID, PRNumber: t.PRNumber, State: state.State})
+		}
+	}
+	return closed
 }
 
 // MatchTaskPRs finds issues on PRs that are linked to tasks.
