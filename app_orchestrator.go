@@ -77,6 +77,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 			a.maybeStartOrchestrator()
 			a.maybeDispatchTasks()
 			a.maybeResumePlanning()
+			a.cleanupOrphanedWorktrees()
 		}
 	}
 }

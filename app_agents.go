@@ -156,6 +156,48 @@ func (a *App) cleanupWorktree(taskID string) {
 	}
 }
 
+// cleanupOrphanedWorktrees scans the worktrees directory and removes entries
+// that no longer have an active task or running agent.
+func (a *App) cleanupOrphanedWorktrees() {
+	entries, err := os.ReadDir(a.worktreesDir)
+	if err != nil {
+		return
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	// Build lookup: dirName → task
+	active := make(map[string]*task.Task, len(tasks))
+	for i := range tasks {
+		active[tasks[i].DirName()] = &tasks[i]
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		wtPath := filepath.Join(a.worktreesDir, name)
+
+		t, exists := active[name]
+		switch {
+		case !exists:
+			// Task deleted — remove worktree directory.
+		case t.Status != task.StatusDone:
+			continue
+		case a.agents.HasRunningAgentForTask(t.ID):
+			continue
+		}
+
+		if err := os.RemoveAll(wtPath); err != nil {
+			a.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+		} else {
+			a.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+		}
+	}
+}
+
 // startPRFixReviewAgent starts a headless agent to address review comments on
 // the task's PR. Named "pr-fix:" so handleAgentComplete routes it correctly.
 func (a *App) startPRFixReviewAgent(taskID string) error {
@@ -352,6 +394,11 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	default:
 		a.handleDefaultComplete(ag, resultContent, agentData)
 	}
+
+	// Cleanup worktree if task is done and no other agent is running.
+	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+		go a.cleanupWorktree(ag.TaskID)
+	}
 }
 
 func (a *App) handleTriageComplete(ag *agent.Agent, agentData map[string]any) {
@@ -410,12 +457,6 @@ func (a *App) handleDefaultComplete(ag *agent.Agent, resultContent string, agent
 		eventType = audit.EventAgentFailed
 	}
 	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
-
-	// Cleanup worktree if task was already marked done while agent was running.
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
-		go a.cleanupWorktree(ag.TaskID)
-		return
-	}
 
 	a.wg.Go(func() {
 		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {

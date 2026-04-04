@@ -119,6 +119,7 @@ func (a *App) startup(ctx context.Context) {
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.syncSkills()
 	a.reconnectAgents()
+	a.cleanupOrphanedWorktrees()
 	a.cleanStaleRuns()
 	a.restartStaleInProgress()
 	a.RegisterSpotlightHotkey()
