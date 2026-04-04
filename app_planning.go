@@ -214,10 +214,14 @@ func (w *TaskWorkflow) EvaluateTask(taskID, agentResult string) error {
 	prompt := fmt.Sprintf(
 		"Evaluate task %s. Do NOT read source code or review diffs.\n\n"+
 			"1. Run: synapse-cli --json get %s\n"+
-			"2. Check agent result below for PR URLs (github.com/.../pull/N). "+
-			"If found, link: synapse-cli --json update %s --pr <number>\n"+
-			"3. Set status based on agent result:\n"+
-			"   - Work done, PR created/pushed → in-review\n"+
+			"2. Find the PR number:\n"+
+			"   a. Check task's pr_number field from step 1\n"+
+			"   b. Check agent result below for PR URLs (github.com/.../pull/N)\n"+
+			"   c. If neither found AND task has a branch, run: gh pr list --repo <project_id> --head <branch> --json number\n"+
+			"   If PR found by any method, link: synapse-cli --json update %s --pr <number>\n"+
+			"3. Set status based on findings:\n"+
+			"   - PR exists (found in any step above) → in-review\n"+
+			"   - Work done but no PR → human-required\n"+
 			"   - Failed, errors, incomplete → human-required (MUST include --status-reason explaining why)\n"+
 			"   - Never set done or todo\n"+
 			"   Run: synapse-cli --json update %s --status <status> [--status-reason \"reason\"]\n\n"+
