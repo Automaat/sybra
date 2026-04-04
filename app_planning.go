@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 )
 
+// TriageTask runs a headless triage agent to assign tags and mode to a task.
 func (a *App) TriageTask(id string) error {
 	t, err := a.tasks.Get(id)
 	if err != nil {
@@ -41,6 +42,8 @@ func (a *App) TriageTask(id string) error {
 	return nil
 }
 
+// EvaluateTask runs a headless eval agent that sets final task status based on
+// the implementing agent's result (links PR, sets in-review or human-required).
 func (a *App) EvaluateTask(taskID, agentResult string) error {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -95,6 +98,8 @@ func (a *App) EvaluateTask(taskID, agentResult string) error {
 	return nil
 }
 
+// PlanTask runs a headless planning agent that produces an implementation plan
+// and moves the task to plan-review when done.
 func (a *App) PlanTask(id string) error {
 	t, err := a.tasks.Get(id)
 	if err != nil {
@@ -144,6 +149,8 @@ func (a *App) PlanTask(id string) error {
 	return nil
 }
 
+// ApprovePlan transitions a plan-review task to in-progress, triggering
+// auto-implementation.
 func (a *App) ApprovePlan(id string) (task.Task, error) {
 	t, err := a.tasks.Get(id)
 	if err != nil {
@@ -159,6 +166,8 @@ func (a *App) ApprovePlan(id string) (task.Task, error) {
 	})
 }
 
+// RejectPlan moves a plan-review task back to planning with optional feedback,
+// then immediately re-runs the planning agent.
 func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
 	t, err := a.tasks.Get(id)
 	if err != nil {

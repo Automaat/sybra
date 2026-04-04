@@ -17,6 +17,8 @@ import (
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
+// StartAgent spawns an agent for the given task, preparing a worktree if the
+// task is linked to a project.
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -153,22 +155,28 @@ func (a *App) cleanupWorktree(taskID string) {
 	}
 }
 
+// StopAgent sends a stop signal to the given agent.
 func (a *App) StopAgent(agentID string) error {
 	return a.agents.StopAgent(agentID)
 }
 
+// ListAgents returns all in-memory agents (managed and external).
 func (a *App) ListAgents() []*agent.Agent {
 	return a.agents.ListAgents()
 }
 
+// DiscoverAgents scans running Claude processes, registers new external agents,
+// and refreshes state of already-tracked ones.
 func (a *App) DiscoverAgents() []*agent.Agent {
 	return a.agents.DiscoverAgents()
 }
 
+// CaptureAgentPane captures the current tmux pane output for an interactive agent.
 func (a *App) CaptureAgentPane(agentID string) (string, error) {
 	return a.agents.CapturePane(agentID)
 }
 
+// AttachAgent opens the tmux session for an interactive agent in Ghostty.
 func (a *App) AttachAgent(agentID string) error {
 	ag, err := a.agents.GetAgent(agentID)
 	if err != nil {
@@ -184,15 +192,18 @@ func (a *App) AttachAgent(agentID string) error {
 	return openTmuxInGhostty(ag.TmuxSession, title)
 }
 
+// ListTmuxSessions returns all active tmux sessions.
 func (a *App) ListTmuxSessions() ([]tmux.SessionInfo, error) {
 	return a.tmux.ListSessions()
 }
 
+// KillTmuxSession terminates the named tmux session.
 func (a *App) KillTmuxSession(name string) error {
 	a.logger.Info("tmux.kill", "session", name)
 	return a.tmux.KillSession(name)
 }
 
+// AttachTmuxSession opens the named tmux session in Ghostty.
 func (a *App) AttachTmuxSession(name string) error {
 	return openTmuxInGhostty(name, name)
 }
@@ -218,6 +229,7 @@ end tell`, label, session)
 	return nil
 }
 
+// GetAgentOutput returns the stream events captured from a headless agent.
 func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
 	ag, err := a.agents.GetAgent(agentID)
 	if err != nil {

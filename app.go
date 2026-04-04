@@ -291,14 +291,17 @@ func (a *App) syncFile(src, dst string) {
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
 }
 
+// ListNotifications returns pending in-app notifications.
 func (a *App) ListNotifications() []notification.Notification {
 	return a.notifier.List()
 }
 
+// SetDesktopNotifications enables or disables macOS desktop notifications.
 func (a *App) SetDesktopNotifications(enabled bool) {
 	a.notifier.SetDesktop(enabled)
 }
 
+// RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
 func (a *App) RegisterSpotlightHotkey() {
 	spotlight.OnSubmit(func(title, projectID string) {
 		a.logger.Info("spotlight.submit", "title", title, "project", projectID)

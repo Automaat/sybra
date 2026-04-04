@@ -10,14 +10,17 @@ import (
 	"github.com/Automaat/synapse/internal/project"
 )
 
+// ListProjects returns all registered projects.
 func (a *App) ListProjects() ([]project.Project, error) {
 	return a.projects.List()
 }
 
+// GetProject returns a single project by ID.
 func (a *App) GetProject(id string) (project.Project, error) {
 	return a.projects.Get(id)
 }
 
+// CreateProject clones a GitHub repo as a bare mirror and registers it.
 func (a *App) CreateProject(url, ptype string) (project.Project, error) {
 	a.logger.Info("project.create", "url", url, "type", ptype)
 	p, err := a.projects.Create(url, project.ProjectType(ptype))
@@ -29,6 +32,7 @@ func (a *App) CreateProject(url, ptype string) (project.Project, error) {
 	return p, nil
 }
 
+// UpdateProject changes the type (pet/work) of a registered project.
 func (a *App) UpdateProject(id, ptype string) (project.Project, error) {
 	a.logger.Info("project.update", "id", id, "type", ptype)
 	p, err := a.projects.Update(id, project.ProjectType(ptype))
@@ -39,6 +43,7 @@ func (a *App) UpdateProject(id, ptype string) (project.Project, error) {
 	return p, nil
 }
 
+// DeleteProject removes a project and its bare clone from disk.
 func (a *App) DeleteProject(id string) error {
 	a.logger.Info("project.delete", "id", id)
 	if err := a.projects.Delete(id); err != nil {
@@ -48,6 +53,7 @@ func (a *App) DeleteProject(id string) error {
 	return nil
 }
 
+// ListWorktrees returns all git worktrees for the given project's bare clone.
 func (a *App) ListWorktrees(projectID string) ([]project.Worktree, error) {
 	proj, err := a.projects.Get(projectID)
 	if err != nil {
@@ -56,6 +62,7 @@ func (a *App) ListWorktrees(projectID string) ([]project.Worktree, error) {
 	return project.ListWorktrees(proj.ClonePath)
 }
 
+// OpenInTerminal opens a worktree path in a new Ghostty terminal tab.
 func (a *App) OpenInTerminal(path string) error {
 	clean := filepath.Clean(path)
 	if !strings.HasPrefix(clean, filepath.Clean(a.worktreesDir)) {
@@ -67,6 +74,7 @@ func (a *App) OpenInTerminal(path string) error {
 	return openDirInGhostty(clean)
 }
 
+// OpenInEditor opens a worktree path in Zed.
 func (a *App) OpenInEditor(path string) error {
 	clean := filepath.Clean(path)
 	if !strings.HasPrefix(clean, filepath.Clean(a.worktreesDir)) {

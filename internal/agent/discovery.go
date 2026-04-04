@@ -25,7 +25,28 @@ var nonAlphanumDash = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
 func (m *Manager) DiscoverAgents() []*Agent {
 	sessions := readClaudeSessions()
+	m.refreshTracked()
+	return m.discoverNew(sessions)
+}
 
+// refreshTracked updates state of already-tracked external agents.
+func (m *Manager) refreshTracked() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.agents {
+		if !a.External {
+			continue
+		}
+		if !processAlive(a.PID) {
+			a.State = StateStopped
+		} else {
+			a.State = inferState(a.sessionCWD, a.SessionID)
+		}
+	}
+}
+
+// discoverNew registers and returns external agents not yet tracked.
+func (m *Manager) discoverNew(sessions []claudeSession) []*Agent {
 	m.mu.RLock()
 	trackedPIDs := make(map[int]bool)
 	for _, a := range m.agents {
@@ -38,26 +59,11 @@ func (m *Manager) DiscoverAgents() []*Agent {
 	}
 	m.mu.RUnlock()
 
-	// Refresh state of already-tracked external agents
-	m.mu.Lock()
-	for _, a := range m.agents {
-		if !a.External {
-			continue
-		}
-		if !processAlive(a.PID) {
-			a.State = StateStopped
-		} else {
-			a.State = inferState(a.sessionCWD, a.SessionID)
-		}
-	}
-	m.mu.Unlock()
-
 	var discovered []*Agent
 	for _, s := range sessions {
 		if trackedPIDs[s.PID] {
 			continue
 		}
-
 		if !processAlive(s.PID) {
 			continue
 		}

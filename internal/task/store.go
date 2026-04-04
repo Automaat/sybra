@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,7 @@ func (s *Store) List() ([]Task, error) {
 		}
 		t, err := Parse(filepath.Join(s.dir, e.Name()))
 		if err != nil {
+			slog.Default().Warn("task.parse.skip", "file", e.Name(), "err", err)
 			continue
 		}
 		tasks = append(tasks, t)
