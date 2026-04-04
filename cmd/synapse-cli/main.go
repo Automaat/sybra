@@ -93,6 +93,9 @@ func cmdList(s *task.Store, args []string, jsonOut bool) int {
 	}
 
 	if *status != "" {
+		if _, err := task.ValidateStatus(*status); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
 		tasks = filterStatus(tasks, *status)
 	}
 	if *tag != "" {
@@ -554,6 +557,7 @@ func usage() {
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
+           STATUS: new|todo|planning|plan-review|in-progress|in-review|human-required|done
   get      <id>
   create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
   update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]

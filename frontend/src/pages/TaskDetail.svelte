@@ -7,6 +7,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { STATUS_OPTIONS } from '../lib/statuses.js'
   import StatusBadge from '../components/StatusBadge.svelte'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
@@ -42,16 +43,7 @@
   let starting = $state(false)
   let runningAgent = $state<agent.Agent | null>(null)
 
-  const statusOptions = [
-    { value: 'new', label: 'New' },
-    { value: 'todo', label: 'Todo' },
-    { value: 'planning', label: 'Planning' },
-    { value: 'plan-review', label: 'Plan Review' },
-    { value: 'in-progress', label: 'In Progress' },
-    { value: 'in-review', label: 'In Review' },
-    { value: 'human-required', label: 'Human Required' },
-    { value: 'done', label: 'Done' },
-  ]
+  const statusOptions = STATUS_OPTIONS
 
   $effect(() => {
     loadTask()

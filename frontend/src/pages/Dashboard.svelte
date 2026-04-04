@@ -2,6 +2,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { ALL_STATUSES } from '../lib/statuses.js'
   import { MarkPRReady } from '../../wailsjs/go/main/App.js'
   import AgentCard from '../components/AgentCard.svelte'
   import PRCard from '../components/PRCard.svelte'
@@ -16,13 +17,9 @@
   const pausedAgents = $derived(agentStore.byState('paused'))
   const totalAgents = $derived(agentStore.list.length)
 
-  const tasksByStatus = $derived({
-    new: taskStore.byStatus('new').length,
-    todo: taskStore.byStatus('todo').length,
-    'in-progress': taskStore.byStatus('in-progress').length,
-    'in-review': taskStore.byStatus('in-review').length,
-    done: taskStore.byStatus('done').length,
-  })
+  const tasksByStatus = $derived(
+    Object.fromEntries(ALL_STATUSES.map(s => [s.value, taskStore.byStatus(s.value).length]))
+  )
   const totalTasks = $derived(taskStore.list.length)
 
   const totalCost = $derived(
@@ -64,22 +61,12 @@
   <!-- Task status breakdown -->
   <div class="flex flex-col gap-2">
     <span class="text-sm font-medium text-surface-500">Task Status</span>
-    <div class="flex gap-3">
-      <span class="rounded bg-tertiary-200 px-2.5 py-1 text-xs text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
-        New <strong>{tasksByStatus.new}</strong>
-      </span>
-      <span class="rounded bg-surface-200 px-2.5 py-1 text-xs dark:bg-surface-700">
-        Todo <strong>{tasksByStatus.todo}</strong>
-      </span>
-      <span class="rounded bg-primary-200 px-2.5 py-1 text-xs text-primary-800 dark:bg-primary-700 dark:text-primary-200">
-        In Progress <strong>{tasksByStatus['in-progress']}</strong>
-      </span>
-      <span class="rounded bg-success-200 px-2.5 py-1 text-xs text-success-800 dark:bg-success-700 dark:text-success-200">
-        Done <strong>{tasksByStatus.done}</strong>
-      </span>
-      <span class="rounded bg-warning-200 px-2.5 py-1 text-xs text-warning-800 dark:bg-warning-700 dark:text-warning-200">
-        In Review <strong>{tasksByStatus['in-review']}</strong>
-      </span>
+    <div class="flex flex-wrap gap-3">
+      {#each ALL_STATUSES as s (s.value)}
+        <span class="rounded px-2.5 py-1 text-xs {s.pillClasses}">
+          {s.label} <strong>{tasksByStatus[s.value]}</strong>
+        </span>
+      {/each}
     </div>
   </div>
 

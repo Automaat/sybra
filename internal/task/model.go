@@ -24,10 +24,18 @@ var validStatuses = map[Status]bool{
 	StatusHumanRequired: true, StatusDone: true,
 }
 
+// AllStatuses returns every valid status in display order.
+func AllStatuses() []Status {
+	return []Status{
+		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
+		StatusInProgress, StatusInReview, StatusHumanRequired, StatusDone,
+	}
+}
+
 func ValidateStatus(s string) (Status, error) {
 	st := Status(s)
 	if !validStatuses[st] {
-		return "", fmt.Errorf("invalid status %q", s)
+		return "", fmt.Errorf("invalid status %q (valid: %v)", s, AllStatuses())
 	}
 	return st, nil
 }

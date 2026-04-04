@@ -3,6 +3,7 @@
   import type { project } from '../../wailsjs/go/models.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
+  import { BOARD_COLUMNS } from '../lib/statuses.js'
   import TaskCard from '../components/TaskCard.svelte'
   import WorktreeList from '../components/WorktreeList.svelte'
 
@@ -41,12 +42,14 @@
     taskStore.list.filter((t) => t.projectId === projectId)
   )
 
-  const tasksByStatus = $derived({
-    todo: projectTasks.filter((t) => t.status === 'new' || t.status === 'todo'),
-    inProgress: projectTasks.filter((t) => t.status === 'in-progress'),
-    inReview: projectTasks.filter((t) => t.status === 'in-review'),
-    done: projectTasks.filter((t) => t.status === 'done'),
-  })
+  const tasksByColumn = $derived(
+    BOARD_COLUMNS.map(col => ({
+      ...col,
+      tasks: col.includes.length > 0
+        ? projectTasks.filter(t => col.includes.includes(t.status as any))
+        : projectTasks.filter(t => t.status === col.status),
+    }))
+  )
 
   async function deleteProject() {
     if (!p) return
@@ -169,13 +172,8 @@
           {#if projectTasks.length === 0}
             <p class="py-4 text-center text-sm text-surface-400">No tasks assigned to this project</p>
           {:else}
-            <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {#each [
-                { key: 'todo', label: 'Todo', tasks: tasksByStatus.todo, border: 'border-t-surface-400' },
-                { key: 'inProgress', label: 'In Progress', tasks: tasksByStatus.inProgress, border: 'border-t-primary-500' },
-                { key: 'inReview', label: 'In Review', tasks: tasksByStatus.inReview, border: 'border-t-warning-500' },
-                { key: 'done', label: 'Done', tasks: tasksByStatus.done, border: 'border-t-success-500' },
-              ] as col (col.key)}
+            <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              {#each tasksByColumn as col (col.status)}
                 <div class="flex flex-col rounded-lg border-t-4 bg-surface-100 dark:bg-surface-900 {col.border}">
                   <div class="flex items-center justify-between px-3 py-2">
                     <h3 class="text-xs font-semibold">{col.label}</h3>

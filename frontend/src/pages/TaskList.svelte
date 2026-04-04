@@ -1,5 +1,6 @@
 <script lang="ts">
   import { taskStore } from '../stores/tasks.svelte.js'
+  import { BOARD_COLUMNS } from '../lib/statuses.js'
   import TaskCard from '../components/TaskCard.svelte'
 
   interface Props {
@@ -56,14 +57,7 @@
     }
   }
 
-  const columns = [
-    { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500' },
-    { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400' },
-    { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400' },
-    { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400' },
-    { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400' },
-    { status: 'done', label: 'Done', border: 'border-t-success-500 dark:border-t-success-400' },
-  ]
+  const columns = BOARD_COLUMNS
 </script>
 
 <div class="flex h-full gap-4 overflow-x-auto p-6">
@@ -73,8 +67,8 @@
     <p class="m-auto text-sm text-error-500">{taskStore.error}</p>
   {:else}
     {#each columns as col}
-      {@const tasks = col.status === 'planning'
-        ? [...taskStore.byStatus('planning'), ...taskStore.byStatus('plan-review')]
+      {@const tasks = col.includes.length > 0
+        ? col.includes.flatMap(s => taskStore.byStatus(s))
         : taskStore.byStatus(col.status)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
