@@ -151,7 +151,7 @@
         type="text"
         bind:value={searchQuery}
         placeholder="Search tasks..."
-        class="w-56 rounded-md border border-surface-300 bg-surface-50 py-1.5 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        class="h-8 w-56 rounded-md border border-surface-300 bg-surface-50 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
       />
     </div>
 
@@ -159,7 +159,7 @@
     {#if projectStore.list.length > 0}
       <select
         bind:value={selectedProjectId}
-        class="rounded-md border border-surface-300 bg-surface-50 px-2 py-1.5 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        class="h-8 rounded-md border border-surface-300 bg-surface-50 px-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
       >
         <option value="">All projects</option>
         {#each projectStore.list as p}
@@ -169,11 +169,11 @@
     {/if}
 
     <!-- Agent mode pills -->
-    <div class="flex rounded-md border border-surface-300 dark:border-surface-700">
+    <div class="flex h-8 rounded-md border border-surface-300 dark:border-surface-700">
       {#each agentModes as mode}
         <button
           type="button"
-          class="px-2.5 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {selectedAgentMode === mode.value
+          class="px-2.5 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {selectedAgentMode === mode.value
             ? 'bg-primary-500 text-white dark:bg-primary-600'
             : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
           onclick={() => (selectedAgentMode = mode.value)}
@@ -185,7 +185,7 @@
 
     <!-- Tag filter -->
     <div class="relative">
-      <div class="flex flex-wrap items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 py-1 dark:border-surface-700 dark:bg-surface-800">
+      <div class="flex h-8 flex-wrap items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 dark:border-surface-700 dark:bg-surface-800">
         {#each selectedTags as tag}
           <span class="inline-flex items-center gap-1 rounded bg-primary-500 px-1.5 py-0.5 text-xs font-medium text-white dark:bg-primary-600">
             {tag}
