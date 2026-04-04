@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -134,6 +135,14 @@ func (a *App) maybeDispatchTasks() {
 		}
 		if a.agents.HasRunningAgentForTask(tasks[i].ID) {
 			continue
+		}
+		if tasks[i].PRNumber > 0 && tasks[i].ProjectID != "" {
+			prState, err := github.FetchPRState(tasks[i].ProjectID, tasks[i].PRNumber)
+			if err == nil && prState.ReadyToMerge() {
+				a.logger.Info("auto-dispatch.skip", "task_id", tasks[i].ID, "reason", "pr_ready_to_merge",
+					"pr", tasks[i].PRNumber, "mergeable", prState.Mergeable, "ci", prState.CIStatus())
+				continue
+			}
 		}
 		candidates = append(candidates, tasks[i])
 	}

@@ -586,6 +586,68 @@ func TestFetchPRStateWith(t *testing.T) {
 	}
 }
 
+func TestPRState_CIStatus(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		checks []struct{ State string }
+		want   string
+	}{
+		{"no checks", nil, ""},
+		{"all success", []struct{ State string }{{"SUCCESS"}, {"NEUTRAL"}}, "SUCCESS"},
+		{"has failure", []struct{ State string }{{"SUCCESS"}, {"FAILURE"}}, "FAILURE"},
+		{"has error", []struct{ State string }{{"ERROR"}}, "FAILURE"},
+		{"has pending", []struct{ State string }{{"SUCCESS"}, {"PENDING"}}, "PENDING"},
+		{"failure beats pending", []struct{ State string }{{"PENDING"}, {"FAILURE"}}, "FAILURE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			checks := make([]struct {
+				State string `json:"state"`
+			}, len(tt.checks))
+			for i, c := range tt.checks {
+				checks[i].State = c.State
+			}
+			s := PRState{StatusCheckRollup: checks}
+			if got := s.CIStatus(); got != tt.want {
+				t.Errorf("CIStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPRState_ReadyToMerge(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		state     PRState
+		wantReady bool
+	}{
+		{"open mergeable no ci", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
+		{"open mergeable ci success", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
+			State string `json:"state"`
+		}{{"SUCCESS"}}}, true},
+		{"not open", PRState{State: "MERGED", Mergeable: "MERGEABLE"}, false},
+		{"conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
+		{"unknown mergeable", PRState{State: "OPEN", Mergeable: "UNKNOWN"}, false},
+		{"ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
+			State string `json:"state"`
+		}{{"FAILURE"}}}, false},
+		{"ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
+			State string `json:"state"`
+		}{{"PENDING"}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.state.ReadyToMerge(); got != tt.wantReady {
+				t.Errorf("ReadyToMerge() = %v, want %v", got, tt.wantReady)
+			}
+		})
+	}
+}
+
 func TestParseGQLResponse_botFiltered(t *testing.T) {
 	t.Parallel()
 	raw := `{
