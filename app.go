@@ -786,39 +786,12 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 	}
 
 	if strings.HasPrefix(ag.Name, "plan:") {
-		a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-		a.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
-		body := ""
-		if t, err := a.tasks.Get(ag.TaskID); err == nil {
-			body = t.Body
-		}
-		if resultContent != "" {
-			body += "\n\n## Plan\n\n" + resultContent
-		}
-		if _, err := a.tasks.Update(ag.TaskID, map[string]any{
-			"status": string(task.StatusPlanReview),
-			"body":   body,
-		}); err != nil {
-			a.logger.Error("plan.update", "task_id", ag.TaskID, "err", err)
-		}
+		a.completePlanAgent(ag, resultContent, agentData)
 		return
 	}
 
 	if strings.HasPrefix(ag.Name, "eval:") {
-		a.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
-		a.logAudit(audit.EventEvalCompleted, ag.TaskID, ag.ID, agentData)
-		t, err := a.tasks.Get(ag.TaskID)
-		if err != nil {
-			return
-		}
-		if t.Status == task.StatusDone {
-			a.logger.Warn("eval.reverted_done", "agent_id", ag.ID, "task_id", ag.TaskID)
-			if _, uerr := a.tasks.Update(ag.TaskID, map[string]any{
-				"status": string(task.StatusInReview),
-			}); uerr != nil {
-				a.logger.Error("eval.revert_status", "task_id", ag.TaskID, "err", uerr)
-			}
-		}
+		a.completeEvalAgent(ag, agentData)
 		return
 	}
 
@@ -833,6 +806,41 @@ func (a *App) handleAgentComplete(ag *agent.Agent) {
 			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		}
 	}()
+}
+
+func (a *App) completePlanAgent(ag *agent.Agent, resultContent string, agentData map[string]any) {
+	a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
+	a.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
+	body := ""
+	if t, err := a.tasks.Get(ag.TaskID); err == nil {
+		body = t.Body
+	}
+	if resultContent != "" {
+		body += "\n\n## Plan\n\n" + resultContent
+	}
+	if _, err := a.tasks.Update(ag.TaskID, map[string]any{
+		"status": string(task.StatusPlanReview),
+		"body":   body,
+	}); err != nil {
+		a.logger.Error("plan.update", "task_id", ag.TaskID, "err", err)
+	}
+}
+
+func (a *App) completeEvalAgent(ag *agent.Agent, agentData map[string]any) {
+	a.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
+	a.logAudit(audit.EventEvalCompleted, ag.TaskID, ag.ID, agentData)
+	t, err := a.tasks.Get(ag.TaskID)
+	if err != nil {
+		return
+	}
+	if t.Status == task.StatusDone {
+		a.logger.Warn("eval.reverted_done", "agent_id", ag.ID, "task_id", ag.TaskID)
+		if _, uerr := a.tasks.Update(ag.TaskID, map[string]any{
+			"status": string(task.StatusInReview),
+		}); uerr != nil {
+			a.logger.Error("eval.revert_status", "task_id", ag.TaskID, "err", uerr)
+		}
+	}
 }
 
 func (a *App) EvaluateTask(taskID, agentResult string) error {
