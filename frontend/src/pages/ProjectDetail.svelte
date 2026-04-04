@@ -17,6 +17,7 @@
   let p = $state<project.Project | null>(null)
   let error = $state('')
   let deleting = $state(false)
+  let updatingType = $state(false)
   let activeTab = $state('tasks')
 
   const tabs = [
@@ -59,6 +60,19 @@
     }
   }
 
+  async function toggleType() {
+    if (!p) return
+    updatingType = true
+    try {
+      const newType = p.type === 'work' ? 'pet' : 'work'
+      p = await projectStore.update(projectId, newType)
+    } catch (e) {
+      error = String(e)
+    } finally {
+      updatingType = false
+    }
+  }
+
   function formatDate(date: any): string {
     if (!date) return '-'
     return new Date(date).toLocaleString()
@@ -85,7 +99,14 @@
     <div class="flex flex-col gap-6">
       <div class="flex items-start justify-between gap-4">
         <div class="flex flex-col gap-1">
-          <h1 class="text-2xl font-bold">{p.owner}/{p.repo}</h1>
+          <div class="flex items-center gap-2">
+            <h1 class="text-2xl font-bold">{p.owner}/{p.repo}</h1>
+            {#if p.type === 'work'}
+              <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-warning-100 text-warning-700 dark:bg-warning-900/40 dark:text-warning-300">work</span>
+            {:else}
+              <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400">pet</span>
+            {/if}
+          </div>
           <a
             href={p.url}
             target="_blank"
@@ -93,14 +114,24 @@
             class="text-sm text-primary-500 hover:underline"
           >{p.url}</a>
         </div>
-        <button
-          type="button"
-          class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
-          onclick={deleteProject}
-          disabled={deleting}
-        >
-          {deleting ? 'Deleting...' : 'Delete'}
-        </button>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="rounded px-2.5 py-1 text-xs font-medium disabled:opacity-50 {p.type === 'work' ? 'bg-surface-200 text-surface-700 hover:bg-surface-300 dark:bg-surface-700 dark:text-surface-300 dark:hover:bg-surface-600' : 'bg-warning-100 text-warning-700 hover:bg-warning-200 dark:bg-warning-900/40 dark:text-warning-300 dark:hover:bg-warning-900/60'}"
+            onclick={toggleType}
+            disabled={updatingType}
+          >
+            {updatingType ? '...' : p.type === 'work' ? 'Switch to Pet' : 'Switch to Work'}
+          </button>
+          <button
+            type="button"
+            class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
+            onclick={deleteProject}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </button>
+        </div>
       </div>
 
       <div class="flex gap-6 text-sm">

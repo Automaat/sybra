@@ -170,7 +170,7 @@ func TestStoreCreateInvalidURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = store.Create("https://gitlab.com/owner/repo")
+	_, err = store.Create("https://gitlab.com/owner/repo", ProjectTypePet)
 	if err == nil {
 		t.Fatal("expected error for non-github URL")
 	}
@@ -189,9 +189,74 @@ func TestStoreCreateDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = store.Create("https://github.com/owner/repo")
+	_, err = store.Create("https://github.com/owner/repo", ProjectTypePet)
 	if err == nil {
 		t.Fatal("expected error for duplicate project")
+	}
+}
+
+func TestStoreDefaultTypeOnRead(t *testing.T) {
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo"}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Type != ProjectTypePet {
+		t.Errorf("Type = %q, want %q", got.Type, ProjectTypePet)
+	}
+}
+
+func TestStoreUpdate(t *testing.T) {
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo", Type: ProjectTypePet}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Update("owner/repo", ProjectTypeWork)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got.Type != ProjectTypeWork {
+		t.Errorf("Type = %q, want %q", got.Type, ProjectTypeWork)
+	}
+
+	persisted, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Type != ProjectTypeWork {
+		t.Errorf("persisted Type = %q, want %q", persisted.Type, ProjectTypeWork)
+	}
+}
+
+func TestStoreUpdateInvalidType(t *testing.T) {
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo"}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Update("owner/repo", "enterprise")
+	if err == nil {
+		t.Fatal("expected error for invalid project type")
 	}
 }
 

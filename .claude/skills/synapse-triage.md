@@ -127,6 +127,17 @@ If the task body/URL matches a registered project, assign it:
 synapse-cli --json update <id> --project "owner/repo"
 ```
 
+After assigning, look up the project type:
+
+```bash
+synapse-cli --json project get "owner/repo"
+```
+
+If `type` is `work`, apply these overrides in the next steps:
+- Force `planning` status for medium/large features (regardless of other signals)
+- Set mode to `interactive` unless the task is a PR review
+- Add note to body: "Work project — enforcing higher standards"
+
 ### 8. Decide: planning or direct implementation
 
 Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
@@ -145,6 +156,7 @@ synapse-cli --json update <id> --status todo
 | Architecture decision, unclear scope | planning |
 | Size `small`, type `bug`/`refactor`/`review`/`chore` | todo |
 | PR review | todo |
+| **Work project** + size `medium`/`large` + type `feature` | planning (forced) |
 
 Step 8 already sets the status — no further status update needed. Skip if a previous step already changed the status.
 

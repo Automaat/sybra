@@ -19,7 +19,7 @@ export function CaptureAgentPane(arg1:string):Promise<string>;
 
 export function CaptureOrchestratorPane():Promise<string>;
 
-export function CreateProject(arg1:string):Promise<project.Project>;
+export function CreateProject(arg1:string,arg2:string):Promise<project.Project>;
 
 export function CreateTask(arg1:string,arg2:string,arg3:string):Promise<task.Task>;
 
@@ -78,5 +78,7 @@ export function StopAgent(arg1:string):Promise<void>;
 export function StopOrchestrator():Promise<void>;
 
 export function TriageTask(arg1:string):Promise<void>;
+
+export function UpdateProject(arg1:string,arg2:string):Promise<project.Project>;
 
 export function UpdateTask(arg1:string,arg2:Record<string, any>):Promise<task.Task>;

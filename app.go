@@ -388,14 +388,24 @@ func (a *App) GetProject(id string) (project.Project, error) {
 	return a.projects.Get(id)
 }
 
-func (a *App) CreateProject(url string) (project.Project, error) {
-	a.logger.Info("project.create", "url", url)
-	p, err := a.projects.Create(url)
+func (a *App) CreateProject(url, ptype string) (project.Project, error) {
+	a.logger.Info("project.create", "url", url, "type", ptype)
+	p, err := a.projects.Create(url, project.ProjectType(ptype))
 	if err != nil {
 		a.logger.Error("project.create.failed", "url", url, "err", err)
 		return p, err
 	}
 	a.logger.Info("project.created", "id", p.ID, "url", url)
+	return p, nil
+}
+
+func (a *App) UpdateProject(id, ptype string) (project.Project, error) {
+	a.logger.Info("project.update", "id", id, "type", ptype)
+	p, err := a.projects.Update(id, project.ProjectType(ptype))
+	if err != nil {
+		a.logger.Error("project.update.failed", "id", id, "err", err)
+		return p, err
+	}
 	return p, nil
 }
 

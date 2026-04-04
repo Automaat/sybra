@@ -195,6 +195,7 @@ export namespace project {
 	    repo: string;
 	    url: string;
 	    clonePath: string;
+	    type: string;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -212,6 +213,7 @@ export namespace project {
 	        this.repo = source["repo"];
 	        this.url = source["url"];
 	        this.clonePath = source["clonePath"];
+	        this.type = source["type"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }

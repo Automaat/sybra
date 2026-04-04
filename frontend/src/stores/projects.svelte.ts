@@ -1,4 +1,4 @@
-import { ListProjects, GetProject, CreateProject, DeleteProject } from '../../wailsjs/go/main/App.js'
+import { ListProjects, GetProject, CreateProject, UpdateProject, DeleteProject } from '../../wailsjs/go/main/App.js'
 import { project } from '../../wailsjs/go/models.js'
 
 class ProjectStore {
@@ -38,8 +38,14 @@ class ProjectStore {
     return result
   }
 
-  async create(url: string): Promise<project.Project> {
-    const result = await CreateProject(url)
+  async create(url: string, type: string = 'pet'): Promise<project.Project> {
+    const result = await CreateProject(url, type)
+    this.projects.set(result.id, result)
+    return result
+  }
+
+  async update(id: string, type: string): Promise<project.Project> {
+    const result = await UpdateProject(id, type)
     this.projects.set(result.id, result)
     return result
   }
