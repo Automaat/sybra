@@ -186,6 +186,22 @@ func readLastJSONL(path string) sessionState {
 	}
 }
 
+func readClaudeSessionByPID(pidStr string) claudeSession {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return claudeSession{}
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", pidStr+".json"))
+	if err != nil {
+		return claudeSession{}
+	}
+	var s claudeSession
+	if err := json.Unmarshal(data, &s); err != nil {
+		return claudeSession{}
+	}
+	return s
+}
+
 func readClaudeSessions() []claudeSession {
 	home, err := os.UserHomeDir()
 	if err != nil {

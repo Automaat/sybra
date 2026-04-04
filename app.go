@@ -593,6 +593,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			a.agents.CheckInteractiveSessions()
 			a.maybeStartOrchestrator()
 			a.maybeDispatchTasks()
 			a.maybeResumePlanning()
