@@ -199,16 +199,20 @@ func (a *App) cleanStaleRuns() {
 	}
 }
 
-// restartStaleInProgress finds in-progress tasks with no running agent and
-// restarts them. Covers headless agents lost during app restart.
+// restartStaleInProgress re-dispatches headless in-progress tasks that lost
+// their agent due to a crash or restart. Interactive tasks are handled by
+// reconnectAgents (tmux sessions survive restarts).
 func (a *App) restartStaleInProgress() {
 	tasks, err := a.tasks.List()
 	if err != nil {
 		return
 	}
 	for i := range tasks {
-		t := &tasks[i]
+		t := tasks[i]
 		if t.Status != task.StatusInProgress {
+			continue
+		}
+		if t.AgentMode != "headless" {
 			continue
 		}
 		if a.agents.HasRunningAgentForTask(t.ID) {
@@ -219,7 +223,7 @@ func (a *App) restartStaleInProgress() {
 		}
 		// Tasks whose last agent was a pr-fix should not be re-implemented.
 		// Move them back to in-review so prPollLoop can re-detect and fix.
-		if lastRun := lastAgentRun(t); lastRun != nil && lastRun.Role == "pr-fix" {
+		if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
 			a.logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
 			if _, err := a.tasks.Update(t.ID, map[string]any{
 				"status": string(task.StatusInReview),
@@ -232,14 +236,22 @@ func (a *App) restartStaleInProgress() {
 			a.logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
 			continue
 		}
-		a.logger.Info("restart-stale.start", "task_id", t.ID, "title", t.Title)
+		a.logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
 		taskID := t.ID
-		mode := t.AgentMode
-		a.wg.Go(func() {
-			if _, err := a.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
-				a.logger.Error("restart-stale.failed", "task_id", taskID, "err", err)
-			}
-		})
+		runRole := t.RunRole
+		if runRole == "pr-fix" {
+			a.wg.Go(func() {
+				if err := a.startPRFixReviewAgent(taskID); err != nil {
+					a.logger.Error("restart.pr-fix.failed", "task_id", taskID, "err", err)
+				}
+			})
+		} else {
+			a.wg.Go(func() {
+				if _, err := a.StartAgent(taskID, "headless", "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+					a.logger.Error("restart.implement.failed", "task_id", taskID, "err", err)
+				}
+			})
+		}
 	}
 }
 

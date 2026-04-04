@@ -170,6 +170,9 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	if v, ok := updates["reviewed"].(bool); ok {
 		t.Reviewed = v
 	}
+	if v, ok := updates["run_role"].(string); ok {
+		t.RunRole = v
+	}
 
 	data, err := Marshal(t)
 	if err != nil {

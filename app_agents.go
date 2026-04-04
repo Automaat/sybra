@@ -156,6 +156,48 @@ func (a *App) cleanupWorktree(taskID string) {
 	}
 }
 
+// startPRFixReviewAgent starts a headless agent to address review comments on
+// the task's PR. Named "pr-fix:" so handleAgentComplete routes it correctly.
+func (a *App) startPRFixReviewAgent(taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+
+	t = a.autoAssignProject(t)
+	dir := ""
+	if t.ProjectID != "" {
+		d, wtErr := a.prepareWorktree(t)
+		if wtErr != nil {
+			return fmt.Errorf("worktree required: %w", wtErr)
+		}
+		dir = d
+	}
+
+	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID:       taskID,
+		Name:         "pr-fix:" + t.Title,
+		Mode:         t.AgentMode,
+		Prompt:       prompt,
+		AllowedTools: t.AllowedTools,
+		Dir:          dir,
+		Model:        "sonnet",
+	})
+	if err != nil {
+		return err
+	}
+
+	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": t.AgentMode, "title": t.Title, "role": "pr-fix"})
+	if err := a.tasks.AddRun(taskID, task.AgentRun{
+		AgentID: ag.ID, Role: "pr-fix", Mode: t.AgentMode,
+		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
+	}
+	return nil
+}
+
 // StopAgent sends a stop signal to the given agent.
 func (a *App) StopAgent(agentID string) error {
 	return a.agents.StopAgent(agentID)
