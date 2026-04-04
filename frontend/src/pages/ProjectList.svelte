@@ -57,6 +57,11 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
             <span class="text-sm font-semibold">{p.owner}/{p.repo}</span>
+            {#if p.type === 'work'}
+              <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-warning-100 text-warning-700 dark:bg-warning-900/40 dark:text-warning-300">work</span>
+            {:else}
+              <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400">pet</span>
+            {/if}
           </div>
           <div class="flex items-center gap-2 text-xs text-surface-500">
             <span>Added {formatDate(p.createdAt)}</span>

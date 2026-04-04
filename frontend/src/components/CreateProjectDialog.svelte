@@ -11,11 +11,13 @@
   const { open, onOpenChange, oncreated }: Props = $props()
 
   let url = $state('')
+  let projectType = $state<'pet' | 'work'>('pet')
   let submitting = $state(false)
   let error = $state('')
 
   function reset() {
     url = ''
+    projectType = 'pet'
     error = ''
   }
 
@@ -26,7 +28,7 @@
     submitting = true
     error = ''
     try {
-      const p = await projectStore.create(url.trim())
+      const p = await projectStore.create(url.trim(), projectType)
       reset()
       onOpenChange(false)
       oncreated?.(p.id)
@@ -61,6 +63,26 @@
             required
           />
         </label>
+
+        <div class="flex flex-col gap-1">
+          <span class="text-sm font-medium">Project Type</span>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors {projectType === 'pet' ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' : 'border-surface-300 bg-surface-100 hover:bg-surface-200 dark:border-surface-600 dark:bg-surface-700 dark:hover:bg-surface-600'}"
+              onclick={() => (projectType = 'pet')}
+            >
+              Pet Project
+            </button>
+            <button
+              type="button"
+              class="flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors {projectType === 'work' ? 'border-warning-500 bg-warning-50 text-warning-700 dark:bg-warning-900/30 dark:text-warning-300' : 'border-surface-300 bg-surface-100 hover:bg-surface-200 dark:border-surface-600 dark:bg-surface-700 dark:hover:bg-surface-600'}"
+              onclick={() => (projectType = 'work')}
+            >
+              Work Project
+            </button>
+          </div>
+        </div>
 
         {#if error}
           <p class="text-sm text-error-500">{error}</p>

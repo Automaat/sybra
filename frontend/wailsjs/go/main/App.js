@@ -26,8 +26,8 @@ export function CaptureOrchestratorPane() {
   return window['go']['main']['App']['CaptureOrchestratorPane']();
 }
 
-export function CreateProject(arg1) {
-  return window['go']['main']['App']['CreateProject'](arg1);
+export function CreateProject(arg1, arg2) {
+  return window['go']['main']['App']['CreateProject'](arg1, arg2);
 }
 
 export function CreateTask(arg1, arg2, arg3) {
@@ -144,6 +144,10 @@ export function StopOrchestrator() {
 
 export function TriageTask(arg1) {
   return window['go']['main']['App']['TriageTask'](arg1);
+}
+
+export function UpdateProject(arg1, arg2) {
+  return window['go']['main']['App']['UpdateProject'](arg1, arg2);
 }
 
 export function UpdateTask(arg1, arg2) {

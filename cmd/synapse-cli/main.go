@@ -341,7 +341,7 @@ func filterProject(tasks []task.Task, projectID string) []task.Task {
 
 func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: project <list|get|create|delete> [flags]")
+		return fatal(jsonOut, "usage: project <list|get|create|update|delete> [flags]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -351,6 +351,8 @@ func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 		return cmdProjectGet(ps, rest, jsonOut)
 	case "create":
 		return cmdProjectCreate(ps, rest, jsonOut)
+	case "update":
+		return cmdProjectUpdate(ps, rest, jsonOut)
 	case "delete":
 		return cmdProjectDelete(ps, rest, jsonOut)
 	default:
@@ -370,9 +372,9 @@ func cmdProjectList(ps *project.Store, jsonOut bool) int {
 		return printJSON(projects)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tNAME\tURL")
+	_, _ = fmt.Fprintln(w, "ID\tTYPE\tNAME\tURL")
 	for i := range projects {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", projects[i].ID, projects[i].Name, projects[i].URL)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", projects[i].ID, projects[i].Type, projects[i].Name, projects[i].URL)
 	}
 	_ = w.Flush()
 	return 0
@@ -389,21 +391,22 @@ func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
 	if jsonOut {
 		return printJSON(p)
 	}
-	fmt.Printf("ID:    %s\nName:  %s\nOwner: %s\nRepo:  %s\nURL:   %s\nClone: %s\n",
-		p.ID, p.Name, p.Owner, p.Repo, p.URL, p.ClonePath)
+	fmt.Printf("ID:    %s\nName:  %s\nOwner: %s\nRepo:  %s\nURL:   %s\nType:  %s\nClone: %s\n",
+		p.ID, p.Name, p.Owner, p.Repo, p.URL, p.Type, p.ClonePath)
 	return 0
 }
 
 func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("project create", flag.ContinueOnError)
 	url := fs.String("url", "", "GitHub repository URL (required)")
+	ptype := fs.String("type", "pet", "project type: pet|work")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if *url == "" {
 		return fatal(jsonOut, "url is required")
 	}
-	p, err := ps.Create(*url)
+	p, err := ps.Create(*url, project.ProjectType(*ptype))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -411,6 +414,30 @@ func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 		return printJSON(p)
 	}
 	fmt.Printf("Created project %s\n", p.ID)
+	return 0
+}
+
+func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: project update <id> --type work|pet")
+	}
+	id := args[0]
+	fs := flag.NewFlagSet("project update", flag.ContinueOnError)
+	ptype := fs.String("type", "", "project type: pet|work (required)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if *ptype == "" {
+		return fatal(jsonOut, "type is required")
+	}
+	p, err := ps.Update(id, project.ProjectType(*ptype))
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(p)
+	}
+	fmt.Printf("Updated project %s (type: %s)\n", p.ID, p.Type)
 	return 0
 }
 
@@ -523,7 +550,8 @@ Commands:
 
   project list
   project get <id>
-  project create --url <github-url>
+  project create --url <github-url> [--type pet|work]
+  project update <id> --type pet|work
   project delete <id>
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]

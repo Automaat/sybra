@@ -49,10 +49,17 @@ func (s *Store) Get(id string) (Project, error) {
 	return s.readFile(path)
 }
 
-func (s *Store) Create(rawURL string) (Project, error) {
+func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	owner, repo, err := ParseGitHubURL(rawURL)
 	if err != nil {
 		return Project{}, err
+	}
+
+	if ptype == "" {
+		ptype = ProjectTypePet
+	}
+	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
+		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
 	}
 
 	id := owner + "/" + repo
@@ -73,6 +80,7 @@ func (s *Store) Create(rawURL string) (Project, error) {
 		Repo:      repo,
 		URL:       rawURL,
 		ClonePath: clonePath,
+		Type:      ptype,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -81,6 +89,19 @@ func (s *Store) Create(rawURL string) (Project, error) {
 		return Project{}, err
 	}
 	return p, nil
+}
+
+func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
+	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
+		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
+	}
+	p, err := s.Get(id)
+	if err != nil {
+		return p, err
+	}
+	p.Type = ptype
+	p.UpdatedAt = time.Now().UTC()
+	return p, s.writeFile(p)
 }
 
 func (s *Store) Delete(id string) error {
@@ -114,6 +135,9 @@ func (s *Store) readFile(path string) (Project, error) {
 	var p Project
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return Project{}, fmt.Errorf("parse project: %w", err)
+	}
+	if p.Type == "" {
+		p.Type = ProjectTypePet
 	}
 	return p, nil
 }
