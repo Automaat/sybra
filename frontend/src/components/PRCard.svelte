@@ -22,10 +22,13 @@
   }
 </script>
 
-<button
-  type="button"
-  class="w-full rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  role="link"
+  tabindex="0"
+  class="w-full cursor-pointer rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
   onclick={() => BrowserOpenURL(pr.url)}
+  onkeydown={(e) => { if (e.key === 'Enter') BrowserOpenURL(pr.url) }}
 >
   <div class="flex items-start justify-between gap-2">
     <div class="flex items-center gap-2">
@@ -76,4 +79,4 @@
       {actionLabel ?? 'Action'}
     </button>
   {/if}
-</button>
+</div>

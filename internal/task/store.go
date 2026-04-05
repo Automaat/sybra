@@ -8,33 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/synapse/internal/fsutil"
 	"github.com/google/uuid"
 )
 
 type Store struct {
 	dir      string
 	comments *CommentStore
-}
-
-// atomicWrite writes data to path via a temp file + rename to prevent
-// partial reads from concurrent goroutines.
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -49,19 +29,16 @@ func (s *Store) Comments() *CommentStore {
 }
 
 func (s *Store) List() ([]Task, error) {
-	entries, err := os.ReadDir(s.dir)
+	paths, err := fsutil.ListFiles(s.dir, ".md")
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
 	}
 
 	var tasks []Task
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		t, err := Parse(filepath.Join(s.dir, e.Name()))
+	for _, p := range paths {
+		t, err := Parse(p)
 		if err != nil {
-			slog.Default().Warn("task.parse.skip", "file", e.Name(), "err", err)
+			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
 			continue
 		}
 		tasks = append(tasks, t)
@@ -105,7 +82,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 
 	filename := fmt.Sprintf("%s.md", t.ID)
 	t.FilePath = filepath.Join(s.dir, filename)
-	if err := atomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
@@ -184,7 +161,7 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	if err := atomicWrite(t.FilePath, data); err != nil {
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
@@ -200,7 +177,7 @@ func (s *Store) AddRun(taskID string, run AgentRun) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(t.FilePath, d)
+	return fsutil.AtomicWrite(t.FilePath, d)
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error {
@@ -227,5 +204,5 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 	if err != nil {
 		return err
 	}
-	return atomicWrite(t.FilePath, d)
+	return fsutil.AtomicWrite(t.FilePath, d)
 }

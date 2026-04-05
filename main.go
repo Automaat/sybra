@@ -2,6 +2,8 @@ package main
 
 import (
 	"embed"
+	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -32,6 +34,11 @@ func main() {
 		return
 	}
 	defer cleanup()
+
+	// Route Go's default log (used by net/http for idle channel noise)
+	// through slog at DEBUG so it doesn't pollute stderr.
+	log.SetFlags(0)
+	log.SetOutput(slogWriter{logger})
 
 	app := NewApp(logger, cfg)
 
@@ -87,4 +94,12 @@ func main() {
 		logger.Error("app.fatal", "err", err)
 		println("Error:", err.Error())
 	}
+}
+
+// slogWriter routes Go's default log.Print output through slog at DEBUG level.
+type slogWriter struct{ logger *slog.Logger }
+
+func (w slogWriter) Write(p []byte) (int, error) {
+	w.logger.Debug("stdlib.log", "msg", string(p))
+	return len(p), nil
 }

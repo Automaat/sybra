@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/synapse/internal/fsutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,21 +26,18 @@ func NewStore(dir, clonesDir string) (*Store, error) {
 }
 
 func (s *Store) List() ([]Project, error) {
-	entries, err := os.ReadDir(s.dir)
+	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read projects dir: %w", err)
 	}
 
 	var projects []Project
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		p, err := s.readFile(filepath.Join(s.dir, e.Name()))
+	for _, p := range paths {
+		proj, err := s.readFile(p)
 		if err != nil {
 			continue
 		}
-		projects = append(projects, p)
+		projects = append(projects, proj)
 	}
 	return projects, nil
 }
@@ -147,9 +145,5 @@ func (s *Store) writeFile(p Project) error {
 	if err != nil {
 		return fmt.Errorf("marshal project: %w", err)
 	}
-	path := s.filePath(p.ID)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write project file: %w", err)
-	}
-	return nil
+	return fsutil.AtomicWrite(s.filePath(p.ID), data)
 }

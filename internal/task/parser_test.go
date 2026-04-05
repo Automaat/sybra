@@ -343,6 +343,50 @@ func TestMarshalRoundTripAgentRuns(t *testing.T) {
 	}
 }
 
+func TestMarshalRoundTripAgentRunsIndentedResult(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Second)
+	original := Task{
+		ID:        "indent1",
+		Title:     "Indented result roundtrip",
+		Status:    StatusDone,
+		AgentMode: "headless",
+		AgentRuns: []AgentRun{
+			{
+				AgentID:   "a1",
+				Mode:      "headless",
+				State:     "stopped",
+				StartedAt: now,
+				Result:    "    indented line\nnormal line\n- bullet",
+			},
+			{
+				AgentID:   "a2",
+				Mode:      "headless",
+				State:     "stopped",
+				StartedAt: now,
+				Result:    "second run result",
+			},
+		},
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse round-trip failed (this was the |4- bug): %v", err)
+	}
+
+	if len(parsed.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(parsed.AgentRuns))
+	}
+	if parsed.AgentRuns[1].Result != "second run result" {
+		t.Errorf("AgentRuns[1].Result = %q, want %q", parsed.AgentRuns[1].Result, "second run result")
+	}
+}
+
 func TestMarshalUpdatesTimestamp(t *testing.T) {
 	t.Parallel()
 	before := time.Now().UTC().Add(-time.Second)

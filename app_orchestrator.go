@@ -175,7 +175,7 @@ func (a *App) maybeDispatchTasks() {
 				a.logger.Error("auto-dispatch.review.status", "task_id", t.ID, "err", err)
 				continue
 			}
-			if err := a.startReviewAgent(t); err != nil {
+			if err := a.reviewer.startReviewAgent(t); err != nil {
 				a.logger.Error("auto-dispatch.review.failed", "task_id", t.ID, "err", err)
 			}
 			continue

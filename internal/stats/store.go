@@ -3,10 +3,11 @@ package stats
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/Automaat/synapse/internal/fsutil"
 )
 
 // Store persists RunRecords to a JSON file and computes aggregates in memory.
@@ -129,26 +130,7 @@ func (s *Store) flush() error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(s.path, data)
-}
-
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.AtomicWrite(s.path, data)
 }
 
 func summarize(runs []RunRecord) Summary {

@@ -55,7 +55,7 @@ describe('PRCard', () => {
 
   it('opens URL on click', async () => {
     render(PRCard, { props: { pr: makePR() } })
-    await fireEvent.click(screen.getByRole('button'))
+    await fireEvent.click(screen.getByRole('link'))
     expect(mockBrowserOpenURL).toHaveBeenCalledWith('https://github.com/org/repo/pull/42')
   })
 

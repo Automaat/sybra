@@ -2,40 +2,77 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/github"
-	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
-// StartAgent spawns an agent for the given task, preparing a worktree if the
-// task is linked to a project.
-func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
-	t, err := a.tasks.Get(taskID)
+// AgentOrchestrator manages agent lifecycle: worktree setup, project
+// assignment, and agent launching for a task.
+type AgentOrchestrator struct {
+	tasks        *task.Store
+	projects     *project.Store
+	agents       *agent.Manager
+	audit        *audit.Logger
+	logger       *slog.Logger
+	worktreesDir string
+}
+
+func newAgentOrchestrator(
+	tasks *task.Store,
+	projects *project.Store,
+	agents *agent.Manager,
+	al *audit.Logger,
+	logger *slog.Logger,
+	worktreesDir string,
+) *AgentOrchestrator {
+	return &AgentOrchestrator{
+		tasks:        tasks,
+		projects:     projects,
+		agents:       agents,
+		audit:        al,
+		logger:       logger,
+		worktreesDir: worktreesDir,
+	}
+}
+
+func (o *AgentOrchestrator) logAudit(eventType, taskID, agentID string, data map[string]any) {
+	if o.audit == nil {
+		return
+	}
+	if err := o.audit.Log(audit.Event{
+		Type:    eventType,
+		TaskID:  taskID,
+		AgentID: agentID,
+		Data:    data,
+	}); err != nil {
+		o.logger.Error("audit.log", "type", eventType, "err", err)
+	}
+}
+
+func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
+	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return nil, err
 	}
 	if t.Status != task.StatusInProgress {
-		if _, err := a.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
-			a.logger.Error("task.auto-status", "task_id", taskID, "err", err)
+		if _, err := o.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			o.logger.Error("task.auto-status", "task_id", taskID, "err", err)
 		}
 	}
 
-	t = a.autoAssignProject(t)
+	t = o.autoAssignProject(t)
 
 	dir := ""
 	if t.ProjectID != "" {
-		d, wtErr := a.prepareWorktree(t)
+		d, wtErr := o.prepareWorktree(t)
 		if wtErr != nil {
 			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
@@ -43,7 +80,7 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	}
 
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
-	ag, err := a.agents.Run(agent.RunConfig{
+	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:       taskID,
 		Name:         t.Title,
 		Mode:         mode,
@@ -55,52 +92,42 @@ func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": mode, "title": t.Title})
-	if err := a.tasks.AddRun(taskID, task.AgentRun{
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": mode, "title": t.Title})
+	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Mode:      mode,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 	}); err != nil {
-		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
+		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return ag, nil
 }
 
-func (a *App) autoAssignProject(t task.Task) task.Task {
-	if t.ProjectID != "" || a.projects == nil {
+func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
+	if t.ProjectID != "" || o.projects == nil {
 		return t
 	}
-	projects, err := a.projects.List()
+	projects, err := o.projects.List()
 	if err != nil || len(projects) != 1 {
 		return t
 	}
 	t.ProjectID = projects[0].ID
-	if _, err := a.tasks.Update(t.ID, map[string]any{"project_id": t.ProjectID}); err != nil {
-		a.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
+	if _, err := o.tasks.Update(t.ID, map[string]any{"project_id": t.ProjectID}); err != nil {
+		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 	} else {
-		a.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
+		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
 	}
 	return t
 }
 
-// worktreeProject resolves the project for t, fetches origin, and returns
-// the project and the worktree path. Fetch errors are logged and non-fatal.
-func (a *App) worktreeProject(t task.Task) (project.Project, string, error) {
-	proj, err := a.projects.Get(t.ProjectID)
+func (o *AgentOrchestrator) prepareWorktree(t task.Task) (string, error) {
+	proj, err := o.projects.Get(t.ProjectID)
 	if err != nil {
-		return project.Project{}, "", fmt.Errorf("get project: %w", err)
+		return "", fmt.Errorf("get project: %w", err)
 	}
 	if err := project.FetchOrigin(proj.ClonePath); err != nil {
-		a.logger.Warn("worktree.fetch", "project", proj.ID, "err", err)
-	}
-	return proj, filepath.Join(a.worktreesDir, t.DirName()), nil
-}
-
-func (a *App) prepareWorktree(t task.Task) (string, error) {
-	proj, wtPath, err := a.worktreeProject(t)
-	if err != nil {
-		return "", err
+		o.logger.Warn("worktree.fetch", "project", proj.ID, "err", err)
 	}
 
 	branch, err := project.DefaultBranch(proj.ClonePath)
@@ -108,59 +135,56 @@ func (a *App) prepareWorktree(t task.Task) (string, error) {
 		return "", fmt.Errorf("default branch: %w", err)
 	}
 
+	wtPath := filepath.Join(o.worktreesDir, t.DirName())
 	wtBranch := "synapse/" + t.DirName()
 	if _, statErr := os.Stat(wtPath); statErr == nil {
+		if err := project.SanitizeWorktree(wtPath); err != nil {
+			o.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+		}
 		if t.Branch == "" {
-			if _, err := a.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
-				a.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
+			if _, err := o.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
+				o.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
 			}
 		}
 		return wtPath, nil
 	}
-	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "refs/remotes/origin/"+branch); err != nil {
-		// Branch may exist from a previous run — try checkout instead
-		if errRe := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); errRe != nil {
-			return "", fmt.Errorf("create worktree: %w (retry: %w)", err, errRe)
-		}
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "origin/"+branch); err != nil {
+		return "", fmt.Errorf("create worktree: %w", err)
 	}
 
-	a.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
+	o.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
 
 	if err := project.PushUpstream(wtPath, wtBranch); err != nil {
-		a.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
+		o.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
 	}
 
 	if t.Branch == "" {
-		if _, err := a.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
-			a.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
+		if _, err := o.tasks.Update(t.ID, map[string]any{"branch": wtBranch}); err != nil {
+			o.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
 		}
 	}
 
 	return wtPath, nil
 }
 
-func (a *App) cleanupWorktree(taskID string) {
-	if a.agents.HasRunningAgentForTask(taskID) {
-		a.logger.Info("worktree.cleanup.deferred", "task_id", taskID, "reason", "agent_running")
-		return
-	}
-	t, err := a.tasks.Get(taskID)
+func (o *AgentOrchestrator) cleanupWorktree(taskID string) {
+	t, err := o.tasks.Get(taskID)
 	if err != nil || t.ProjectID == "" {
 		return
 	}
-	wtPath := filepath.Join(a.worktreesDir, t.DirName())
+	wtPath := filepath.Join(o.worktreesDir, t.DirName())
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
-	proj, err := a.projects.Get(t.ProjectID)
+	proj, err := o.projects.Get(t.ProjectID)
 	if err != nil {
 		return
 	}
 
 	if err := project.RemoveWorktree(proj.ClonePath, wtPath); err != nil {
-		a.logger.Error("worktree.cleanup", "path", wtPath, "err", err)
+		o.logger.Error("worktree.cleanup", "path", wtPath, "err", err)
 	} else {
-		a.logger.Info("worktree.cleaned", "path", wtPath)
+		o.logger.Info("worktree.cleaned", "path", wtPath)
 	}
 }
 
@@ -214,10 +238,10 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 		return err
 	}
 
-	t = a.autoAssignProject(t)
+	t = a.agentOrch.autoAssignProject(t)
 	dir := ""
 	if t.ProjectID != "" {
-		d, wtErr := a.prepareWorktree(t)
+		d, wtErr := a.agentOrch.prepareWorktree(t)
 		if wtErr != nil {
 			return fmt.Errorf("worktree required: %w", wtErr)
 		}
@@ -227,7 +251,7 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
 	ag, err := a.agents.Run(agent.RunConfig{
 		TaskID:       taskID,
-		Name:         "pr-fix:" + t.Title,
+		Name:         agent.RolePRFix.AgentName(t.Title),
 		Mode:         t.AgentMode,
 		Prompt:       prompt,
 		AllowedTools: t.AllowedTools,
@@ -240,7 +264,7 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 
 	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": t.AgentMode, "title": t.Title, "role": "pr-fix"})
 	if err := a.tasks.AddRun(taskID, task.AgentRun{
-		AgentID: ag.ID, Role: "pr-fix", Mode: t.AgentMode,
+		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: t.AgentMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
@@ -320,201 +344,4 @@ end tell`, label, session)
 		return fmt.Errorf("osascript: %w: %s", err, string(out))
 	}
 	return nil
-}
-
-// GetAgentOutput returns the stream events captured from a headless agent.
-func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
-	ag, err := a.agents.GetAgent(agentID)
-	if err != nil {
-		return nil, err
-	}
-	return ag.Output(), nil
-}
-
-func extractResultContent(ag *agent.Agent) string {
-	var result string
-	for _, ev := range ag.Output() {
-		if ev.Type == "result" {
-			result = ev.Content
-		}
-	}
-	return result
-}
-
-func buildAgentData(ag *agent.Agent) map[string]any {
-	return map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   ag.CostUSD,
-		"duration_s": time.Since(ag.StartedAt).Seconds(),
-		"state":      string(ag.State),
-	}
-}
-
-func (a *App) persistAgentRun(ag *agent.Agent, resultContent string) {
-	truncated := resultContent
-	if len(truncated) > 2000 {
-		truncated = truncated[:2000] + "\n... (truncated)"
-	}
-	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
-		"state":    string(ag.State),
-		"cost_usd": ag.CostUSD,
-		"result":   truncated,
-	}); err != nil {
-		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
-	}
-}
-
-func (a *App) notifyAgentComplete(ag *agent.Agent) {
-	if strings.HasPrefix(ag.Name, "triage:") || strings.HasPrefix(ag.Name, "eval:") {
-		return
-	}
-	level := notification.LevelSuccess
-	title := "Agent completed"
-	if ag.State == agent.StateStopped && !hasResultEvent(ag) {
-		level = notification.LevelError
-		title = "Agent failed"
-	}
-	a.notifier.Send(level, title, ag.Name, ag.TaskID, ag.ID)
-}
-
-func (a *App) handleAgentComplete(ag *agent.Agent) {
-	if ag.TaskID == "" {
-		a.logger.Warn("agent.complete.skip", "agent_id", ag.ID, "reason", "empty task_id")
-		return
-	}
-	resultContent := extractResultContent(ag)
-	agentData := buildAgentData(ag)
-	a.recordStats(ag, time.Since(ag.StartedAt).Seconds())
-	a.persistAgentRun(ag, resultContent)
-	a.notifyAgentComplete(ag)
-
-	switch {
-	case strings.HasPrefix(ag.Name, "triage:"):
-		a.handleTriageComplete(ag, agentData)
-	case strings.HasPrefix(ag.Name, "eval:"):
-		a.handleEvalComplete(ag, agentData)
-	case strings.HasPrefix(ag.Name, "pr-fix:"):
-		a.handlePRFixComplete(ag, resultContent, agentData)
-	case strings.HasPrefix(ag.Name, "plan:"):
-		a.handlePlanComplete(ag, resultContent, agentData)
-	case strings.HasPrefix(ag.Name, "review:"):
-		a.handleReviewComplete(ag, agentData)
-	default:
-		a.handleDefaultComplete(ag, resultContent, agentData)
-	}
-
-	// Cleanup worktree if task is done and no other agent is running.
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
-		go a.cleanupWorktree(ag.TaskID)
-	}
-}
-
-func (a *App) handleTriageComplete(ag *agent.Agent, agentData map[string]any) {
-	a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
-	a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
-}
-
-func (a *App) handleEvalComplete(ag *agent.Agent, agentData map[string]any) {
-	a.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
-	a.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
-}
-
-func (a *App) handlePRFixComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
-	a.logger.Info("pr-fix.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-	a.logAudit(audit.EventPRFixAgentStarted, ag.TaskID, ag.ID, agentData)
-	// Clear debounce so the next poll cycle can re-detect unresolved issues
-	a.prTracker.Clear(ag.TaskID, github.PRIssueConflict)
-	a.prTracker.Clear(ag.TaskID, github.PRIssueCIFailure)
-	go func() {
-		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
-			a.logger.Error("pr-fix.eval", "task_id", ag.TaskID, "err", err)
-		}
-	}()
-}
-
-func (a *App) handlePlanComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
-	a.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-	a.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
-	body := ""
-	if t, err := a.tasks.Get(ag.TaskID); err == nil {
-		body = t.Body
-	}
-	if resultContent != "" {
-		body += "\n\n## Plan\n\n" + resultContent
-	}
-	if _, err := a.tasks.Update(ag.TaskID, map[string]any{
-		"status": string(task.StatusPlanReview),
-		"body":   body,
-	}); err != nil {
-		a.logger.Error("plan.update", "task_id", ag.TaskID, "err", err)
-	}
-}
-
-func (a *App) handleReviewComplete(ag *agent.Agent, agentData map[string]any) {
-	a.logger.Info("review.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
-	a.logAudit(audit.EventReviewStarted, ag.TaskID, ag.ID, agentData)
-	if _, err := a.tasks.Update(ag.TaskID, map[string]any{"reviewed": true}); err != nil {
-		a.logger.Error("review.mark-reviewed", "task_id", ag.TaskID, "err", err)
-	}
-	go a.resolveReviewStatus(ag.TaskID)
-}
-
-func (a *App) handleDefaultComplete(ag *agent.Agent, resultContent string, agentData map[string]any) {
-	eventType := audit.EventAgentCompleted
-	if ag.State != agent.StateStopped {
-		eventType = audit.EventAgentFailed
-	}
-	a.logAudit(eventType, ag.TaskID, ag.ID, agentData)
-
-	a.wg.Go(func() {
-		if err := a.EvaluateTask(ag.TaskID, resultContent); err != nil {
-			a.logger.Error("auto-evaluate.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
-		}
-	})
-}
-
-func hasResultEvent(ag *agent.Agent) bool {
-	for _, ev := range ag.Output() {
-		if ev.Type == "result" {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *App) recordStats(ag *agent.Agent, duration float64) {
-	if a.stats == nil {
-		return
-	}
-	outcome := "completed"
-	if !hasResultEvent(ag) {
-		outcome = "failed"
-	}
-	var projectID string
-	if t, err := a.tasks.Get(ag.TaskID); err == nil {
-		projectID = t.ProjectID
-	}
-	_ = a.stats.Record(stats.RunRecord{
-		ID:           ag.ID,
-		TaskID:       ag.TaskID,
-		ProjectID:    projectID,
-		Mode:         ag.Mode,
-		Role:         deriveRole(ag.Name),
-		Model:        ag.Model,
-		CostUSD:      ag.CostUSD,
-		DurationS:    duration,
-		InputTokens:  ag.InputTokens,
-		OutputTokens: ag.OutputTokens,
-		Outcome:      outcome,
-		Timestamp:    ag.StartedAt,
-	})
-}
-
-func deriveRole(name string) string {
-	for _, prefix := range []string{"triage:", "plan:", "eval:", "pr-fix:", "review:"} {
-		if strings.HasPrefix(name, prefix) {
-			return strings.TrimSuffix(prefix, ":")
-		}
-	}
-	return "implementation"
 }

@@ -508,6 +508,7 @@ export namespace task {
 	    issue: string;
 	    statusReason: string;
 	    reviewed: boolean;
+	    runRole: string;
 	    agentRuns: AgentRun[];
 	    // Go type: time
 	    createdAt: any;
@@ -535,6 +536,7 @@ export namespace task {
 	        this.issue = source["issue"];
 	        this.statusReason = source["statusReason"];
 	        this.reviewed = source["reviewed"];
+	        this.runRole = source["runRole"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);

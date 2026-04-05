@@ -45,6 +45,9 @@ type App struct {
 	logDir       string
 	auditDir     string
 	prTracker    *github.IssueTracker
+	agentOrch    *AgentOrchestrator
+	reviewer     *ReviewHandler
+	workflow     *TaskWorkflow
 }
 
 func NewApp(logger *slog.Logger, cfg *config.Config) *App {
@@ -108,7 +111,15 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.notifier = notification.New(emit)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
-	a.agents.SetOnComplete(a.handleAgentComplete)
+
+	a.prTracker = github.NewIssueTracker(30 * time.Minute)
+
+	// Initialize domain services (dependency order: agentOrch → reviewer, workflow)
+	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktreesDir)
+	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.agentOrch)
+	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
+
+	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -116,7 +127,6 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.Error("watcher.start", "err", err)
 	}
 
-	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 	a.syncSkills()
 	a.reconnectAgents()
 	a.cleanupOrphanedWorktrees()
@@ -247,9 +257,10 @@ func (a *App) restartStaleInProgress() {
 				}
 			})
 		} else {
+			mode := t.AgentMode
 			a.wg.Go(func() {
-				if _, err := a.StartAgent(taskID, "headless", "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
-					a.logger.Error("restart.implement.failed", "task_id", taskID, "err", err)
+				if _, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+					a.logger.Error("restart-stale.failed", "task_id", taskID, "err", err)
 				}
 			})
 		}
@@ -261,6 +272,11 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 		return nil
 	}
 	return &t.AgentRuns[len(t.AgentRuns)-1]
+}
+
+// StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
+func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
+	return a.agentOrch.StartAgent(taskID, mode, prompt)
 }
 
 func (a *App) syncSkills() {
@@ -322,6 +338,43 @@ func (a *App) syncFile(src, dst string) {
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
 }
 
+// TriageTask delegates to TaskWorkflow.
+func (a *App) TriageTask(id string) error {
+	return a.workflow.TriageTask(id)
+}
+
+// PlanTask delegates to TaskWorkflow.
+func (a *App) PlanTask(id string) error {
+	return a.workflow.PlanTask(id)
+}
+
+// ApprovePlan delegates to TaskWorkflow.
+func (a *App) ApprovePlan(id string) (task.Task, error) {
+	return a.workflow.ApprovePlan(id)
+}
+
+// RejectPlan delegates to TaskWorkflow.
+func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
+	return a.workflow.RejectPlan(id, feedback)
+}
+
+// EvaluateTask delegates to TaskWorkflow.
+func (a *App) EvaluateTask(taskID, agentResult string) error {
+	return a.workflow.EvaluateTask(taskID, agentResult)
+}
+
+func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
+	ag, err := a.agents.GetAgent(agentID)
+	if err != nil {
+		return nil, err
+	}
+	return ag.Output(), nil
+}
+
+func (a *App) FetchReviews() (github.ReviewSummary, error) {
+	return github.FetchReviews()
+}
+
 // ListNotifications returns pending in-app notifications.
 func (a *App) ListNotifications() []notification.Notification {
 	return a.notifier.List()
@@ -330,6 +383,10 @@ func (a *App) ListNotifications() []notification.Notification {
 // SetDesktopNotifications enables or disables macOS desktop notifications.
 func (a *App) SetDesktopNotifications(enabled bool) {
 	a.notifier.SetDesktop(enabled)
+}
+
+func (a *App) MarkPRReady(repo string, number int) error {
+	return github.MarkReady(repo, number)
 }
 
 // RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
@@ -363,4 +420,20 @@ func (a *App) RegisterSpotlightHotkey() {
 		return
 	}
 	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+}
+
+func (a *App) prPollLoop(ctx context.Context) {
+	timer := time.NewTimer(10 * time.Second) // initial fetch shortly after startup
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			next := a.reviewer.pollAndMonitorPRs()
+			a.logger.Debug("pr-poll.next", "interval", next)
+			timer.Reset(next)
+		}
+	}
 }

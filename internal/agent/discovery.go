@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Automaat/synapse/internal/fsutil"
 )
 
 type claudeSession struct {
@@ -215,18 +217,14 @@ func readClaudeSessions() []claudeSession {
 	}
 
 	dir := filepath.Join(home, ".claude", "sessions")
-	entries, err := os.ReadDir(dir)
+	paths, err := fsutil.ListFiles(dir, ".json")
 	if err != nil {
 		return nil
 	}
 
 	var sessions []claudeSession
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
