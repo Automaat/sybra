@@ -130,6 +130,12 @@ func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
 	return executil.Run(barePath, "git", "worktree", "add", worktreePath, branch)
 }
 
+// BranchExists reports whether a local branch exists in the repo.
+func BranchExists(barePath, branch string) bool {
+	err := executil.Run(barePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
 // CreateWorktreeDetached creates a worktree in detached HEAD mode from a remote ref.
 // Used for read-only checkouts like code reviews.
 func CreateWorktreeDetached(barePath, worktreePath, ref string) error {

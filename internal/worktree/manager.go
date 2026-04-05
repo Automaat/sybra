@@ -108,6 +108,23 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 
+	// Branch may survive a prior worktree removal — check out existing branch
+	// and rebase onto base instead of failing with "branch already exists".
+	if project.BranchExists(proj.ClonePath, wtBranch) {
+		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); err != nil {
+			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
+		}
+		if err := project.SanitizeWorktree(wtPath); err != nil {
+			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+		}
+		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
+			return "", fmt.Errorf("rebase worktree onto %s: %w", baseRef, err)
+		}
+		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+		m.ensureBranch(t, wtBranch)
+		return wtPath, nil
+	}
+
 	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, baseRef); err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
