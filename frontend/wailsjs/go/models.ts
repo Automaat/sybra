@@ -12,9 +12,6 @@ export namespace agent {
 	    outputTokens?: number;
 	    // Go type: time
 	    startedAt: any;
-	    // Go type: time
-	    lastEventAt: any;
-	    logPath?: string;
 	    external: boolean;
 	    pid?: number;
 	    command?: string;
@@ -38,8 +35,6 @@ export namespace agent {
 	        this.inputTokens = source["inputTokens"];
 	        this.outputTokens = source["outputTokens"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
-	        this.lastEventAt = this.convertValues(source["lastEventAt"], null);
-	        this.logPath = source["logPath"];
 	        this.external = source["external"];
 	        this.pid = source["pid"];
 	        this.command = source["command"];
@@ -521,7 +516,6 @@ export namespace task {
 	    slug: string;
 	    title: string;
 	    status: string;
-	    taskType: string;
 	    agentMode: string;
 	    allowedTools: string[];
 	    tags: string[];
@@ -550,7 +544,6 @@ export namespace task {
 	        this.slug = source["slug"];
 	        this.title = source["title"];
 	        this.status = source["status"];
-	        this.taskType = source["taskType"];
 	        this.agentMode = source["agentMode"];
 	        this.allowedTools = source["allowedTools"];
 	        this.tags = source["tags"];
