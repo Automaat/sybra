@@ -16,7 +16,7 @@ import (
 // AgentOrchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
 type AgentOrchestrator struct {
-	tasks     *task.Store
+	tasks     *task.Manager
 	projects  *project.Store
 	agents    *agent.Manager
 	audit     *audit.Logger
@@ -25,7 +25,7 @@ type AgentOrchestrator struct {
 }
 
 func newAgentOrchestrator(
-	tasks *task.Store,
+	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
 	al *audit.Logger,

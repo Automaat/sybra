@@ -22,7 +22,7 @@ type AgentChecker func(taskID string) bool
 type Config struct {
 	WorktreesDir     string
 	Projects         *project.Store
-	Tasks            *task.Store
+	Tasks            *task.Manager
 	Logger           *slog.Logger
 	PRBranchResolver PRBranchResolver
 	AgentChecker     AgentChecker
@@ -31,7 +31,7 @@ type Config struct {
 type Manager struct {
 	dir      string
 	projects *project.Store
-	tasks    *task.Store
+	tasks    *task.Manager
 	logger   *slog.Logger
 	prBranch PRBranchResolver
 	hasAgent AgentChecker

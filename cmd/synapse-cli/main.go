@@ -47,10 +47,11 @@ func run(args []string) int {
 		return fatal(jsonOut, "load config: %v", err)
 	}
 
-	store, err := task.NewStore(cfg.TasksDir)
+	rawStore, err := task.NewStore(cfg.TasksDir)
 	if err != nil {
 		return fatal(jsonOut, "open store: %v", err)
 	}
+	store := task.NewManager(rawStore, nil)
 
 	projStore, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
 	if err != nil {
@@ -78,7 +79,7 @@ func run(args []string) int {
 	}
 }
 
-func cmdList(s *task.Store, args []string, jsonOut bool) int {
+func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status")
 	tag := fs.String("tag", "", "filter by tag")
@@ -121,7 +122,7 @@ func cmdList(s *task.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s *task.Store, args []string, jsonOut bool) int {
+func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: get <id>")
 	}
@@ -162,7 +163,7 @@ func cmdGet(s *task.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdCreate(s *task.Store, args []string, jsonOut bool) int {
+func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -218,7 +219,7 @@ func cmdCreate(s *task.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
+func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: update <id> [flags]")
 	}
@@ -291,7 +292,7 @@ func cmdUpdate(s *task.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdDelete(s *task.Store, args []string, jsonOut bool) int {
+func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}

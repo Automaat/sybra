@@ -33,6 +33,7 @@ func setupApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
+	taskMgr := task.NewManager(store, nil)
 
 	logger := discardLogger()
 	emit := func(string, any) {}
@@ -43,15 +44,15 @@ func setupApp(t *testing.T) *App {
 	notifier := notification.New(emit)
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
-		Tasks:        store,
+		Tasks:        taskMgr,
 		Logger:       logger,
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(store, nil, mgr, nil, logger, wm)
-	workflow := newTaskWorkflow(store, mgr, nil, logger, notifier, agentOrch)
+	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm)
+	workflow := newTaskWorkflow(taskMgr, mgr, nil, logger, notifier, agentOrch)
 
 	return &App{
-		tasks:     store,
+		tasks:     taskMgr,
 		agents:    mgr,
 		tasksDir:  dir,
 		logger:    logger,

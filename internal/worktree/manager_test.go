@@ -83,6 +83,7 @@ func TestCleanupOrphaned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	taskMgr := task.NewManager(store, nil)
 
 	tk, err := store.Create("test task", "", "headless")
 	if err != nil {
@@ -100,7 +101,7 @@ func TestCleanupOrphaned(t *testing.T) {
 
 	m := New(Config{
 		WorktreesDir: dir,
-		Tasks:        store,
+		Tasks:        taskMgr,
 		Logger:       discardLogger(),
 	})
 
