@@ -337,14 +337,9 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 	case github.PRIssueCIFailure:
 		prompt = fmt.Sprintf(
 			"Fix failing CI on branch `%s` (PR #%d). "+
-				"Do NOT investigate git state — go straight to the failure.\n\n"+
-				"```bash\n"+
-				"gh run list --branch %s --limit 3\n"+
-				"gh run view <FAILED_RUN_ID> --log-failed\n"+
-				"```\n\n"+
-				"Read the failure, fix the code, commit and push. No unrelated changes.",
+				"Check the failing run with `gh run view --log-failed`, "+
+				"fix the code, commit and push. No unrelated changes.",
 			issue.PR.HeadRefName, issue.PR.Number,
-			issue.PR.HeadRefName,
 		)
 		r.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
