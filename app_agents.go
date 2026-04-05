@@ -78,12 +78,6 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agen
 	if err != nil {
 		return nil, err
 	}
-	if t.Status != task.StatusInProgress {
-		if _, err := o.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
-			o.logger.Error("task.auto-status", "task_id", taskID, "err", err)
-		}
-	}
-
 	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode)
 	if !skipWT {
 		t = o.autoAssignProject(t)
@@ -93,6 +87,15 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agen
 				return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
 			}
 			dir = d
+		}
+	}
+
+	// Flip status only after worktree prep succeeds — otherwise a failed
+	// prep leaves the task stuck at in-progress with no running agent,
+	// which triggers restart-stale respawn loops on every app restart.
+	if t.Status != task.StatusInProgress {
+		if _, err := o.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			o.logger.Error("task.auto-status", "task_id", taskID, "err", err)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -17,12 +18,13 @@ import (
 
 // TaskWorkflow handles triage, planning, evaluation, and agent completion callbacks.
 type TaskWorkflow struct {
-	tasks     *task.Manager
-	agents    *agent.Manager
-	audit     *audit.Logger
-	logger    *slog.Logger
-	notifier  *notification.Emitter
-	agentOrch *AgentOrchestrator
+	tasks         *task.Manager
+	agents        *agent.Manager
+	audit         *audit.Logger
+	logger        *slog.Logger
+	notifier      *notification.Emitter
+	agentOrch     *AgentOrchestrator
+	evalsInFlight sync.Map // taskID -> struct{}
 }
 
 func newTaskWorkflow(
@@ -280,6 +282,14 @@ func (w *TaskWorkflow) EvaluateTask(taskID, agentResult string) error {
 		return nil
 	}
 
+	// Prevent racing evals when multiple agents complete back-to-back for the
+	// same task (happens on dev-reload spawn duplicates). The flag is cleared
+	// by completeEvalAgent when the eval agent finishes.
+	if _, loaded := w.evalsInFlight.LoadOrStore(taskID, struct{}{}); loaded {
+		w.logger.Info("eval.skip", "task_id", t.ID, "reason", "eval_in_flight")
+		return nil
+	}
+
 	dir := config.HomeDir()
 
 	truncated := agentResult
@@ -316,6 +326,7 @@ func (w *TaskWorkflow) EvaluateTask(taskID, agentResult string) error {
 		Model:        "sonnet",
 	})
 	if err != nil {
+		w.evalsInFlight.Delete(taskID)
 		return err
 	}
 	if err := w.tasks.AddRun(t.ID, task.AgentRun{
@@ -441,6 +452,7 @@ func (w *TaskWorkflow) completePlanAgent(ag *agent.Agent, resultContent string, 
 }
 
 func (w *TaskWorkflow) completeEvalAgent(ag *agent.Agent, agentData map[string]any) {
+	w.evalsInFlight.Delete(ag.TaskID)
 	w.logger.Info("eval.done", "agent_id", ag.ID, "name", ag.Name)
 	w.logAudit(audit.EventEvalCompleted, ag.TaskID, ag.ID, agentData)
 	t, err := w.tasks.Get(ag.TaskID)

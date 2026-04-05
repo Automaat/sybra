@@ -319,13 +319,6 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		return
 	}
 
-	if _, err := r.tasks.Update(t.ID, map[string]any{
-		"status": string(task.StatusInProgress),
-	}); err != nil {
-		r.logger.Error("pr-monitor.status-update", "task_id", t.ID, "err", err)
-		return
-	}
-
 	var prompt string
 	switch issue.Kind {
 	case github.PRIssueConflict:
@@ -360,6 +353,15 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 			return
 		}
 		dir = d
+	}
+
+	// Worktree ready — now flip status. Doing this earlier would leave the
+	// task stranded at in-progress if worktree prep failed.
+	if _, err := r.tasks.Update(t.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+	}); err != nil {
+		r.logger.Error("pr-monitor.status-update", "task_id", t.ID, "err", err)
+		return
 	}
 
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s", t.Title, prompt)

@@ -39,12 +39,9 @@ func (a *App) CreateTask(title, body, mode string) (task.Task, error) {
 // auto-implementation based on the resulting status.
 func (a *App) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	var prevStatus string
-	if newStatus, ok := updates["status"].(string); ok {
+	if _, ok := updates["status"].(string); ok {
 		if prev, getErr := a.tasks.Get(id); getErr == nil {
 			prevStatus = string(prev.Status)
-			if prevStatus != newStatus {
-				a.logAudit(audit.EventTaskStatusChanged, id, "", map[string]any{"from": prevStatus, "to": newStatus})
-			}
 		}
 	}
 	t, err := a.tasks.Update(id, updates)

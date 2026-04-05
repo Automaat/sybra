@@ -23,13 +23,23 @@ func (noopEmitter) Emit(string, any) {}
 // NoopEmitter returns an EventEmitter that discards events.
 func NoopEmitter() EventEmitter { return noopEmitter{} }
 
+// StatusChangeHook is invoked synchronously on every status transition
+// that happens through Manager.Update. Empty `from` means previous state
+// could not be read.
+type StatusChangeHook func(taskID, from, to string)
+
 // Manager is the single entrypoint for task mutations. It wraps Store with
 // per-task mutual exclusion and emits events on mutations.
 type Manager struct {
-	store   *Store
-	emitter EventEmitter
-	locks   sync.Map // string -> *sync.Mutex
+	store        *Store
+	emitter      EventEmitter
+	locks        sync.Map // string -> *sync.Mutex
+	onStatusHook StatusChangeHook
 }
+
+// SetStatusChangeHook registers a callback fired on every status transition.
+// Passing nil disables the hook.
+func (m *Manager) SetStatusChangeHook(h StatusChangeHook) { m.onStatusHook = h }
 
 // NewManager constructs a Manager over the given Store. If emitter is nil,
 // events are discarded.
@@ -74,11 +84,26 @@ func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
 	defer mu.Unlock()
+
+	var prevStatus string
+	_, wantsStatus := updates["status"].(string)
+	if wantsStatus {
+		if prev, getErr := m.store.Get(id); getErr == nil {
+			prevStatus = string(prev.Status)
+		}
+	}
+
 	t, err := m.store.Update(id, updates)
 	if err != nil {
 		return t, err
 	}
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	if wantsStatus && m.onStatusHook != nil {
+		newStatus := string(t.Status)
+		if newStatus != prevStatus {
+			m.onStatusHook(id, prevStatus, newStatus)
+		}
+	}
 	return t, nil
 }
 

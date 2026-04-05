@@ -119,6 +119,9 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
+	})
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
@@ -231,6 +234,11 @@ func (a *App) cleanStaleRuns() {
 	}
 }
 
+// restartStaleMinAge is the minimum age of the latest agent run before a
+// stale in-progress task is eligible for respawn. Protects against dev-mode
+// hot-reload loops spawning parallel agents onto the same task.
+const restartStaleMinAge = 5 * time.Minute
+
 // restartStaleInProgress re-dispatches headless in-progress tasks that lost
 // their agent due to a crash or restart. Interactive tasks are handled by
 // reconnectAgents (tmux sessions survive restarts).
@@ -251,6 +259,15 @@ func (a *App) restartStaleInProgress() {
 			continue
 		}
 		if slices.Contains(t.Tags, "review") {
+			continue
+		}
+		// Debounce respawn when a previous run started recently. Covers the
+		// dev-reload case: app restarts every few seconds, but a headless
+		// subprocess from the prior lifecycle is still alive.
+		if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge {
+			a.logger.Info("restart-stale.skip",
+				"task_id", t.ID, "reason", "recent_run",
+				"last_run_age_s", time.Since(lr.StartedAt).Seconds())
 			continue
 		}
 		// Tasks whose last agent was a pr-fix should not be re-implemented.

@@ -79,6 +79,47 @@ func TestManagerUpdateEmitsEvent(t *testing.T) {
 	}
 }
 
+func TestManagerUpdateInvokesStatusHook(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	type change struct {
+		id, from, to string
+	}
+	var got []change
+	m.SetStatusChangeHook(func(id, from, to string) {
+		got = append(got, change{id, from, to})
+	})
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No status in updates → hook must not fire.
+	if _, err := m.Update(task.ID, map[string]any{"title": "X"}); err != nil {
+		t.Fatalf("Update title: %v", err)
+	}
+	// Status change → hook fires.
+	if _, err := m.Update(task.ID, map[string]any{"status": "in-progress"}); err != nil {
+		t.Fatalf("Update status: %v", err)
+	}
+	// Same status again → hook skipped (from==to).
+	if _, err := m.Update(task.ID, map[string]any{"status": "in-progress"}); err != nil {
+		t.Fatalf("Update status no-op: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("hook fired %d times, want 1: %+v", len(got), got)
+	}
+	if got[0].to != "in-progress" {
+		t.Errorf("to = %q, want in-progress", got[0].to)
+	}
+	if got[0].id != task.ID {
+		t.Errorf("id = %q, want %q", got[0].id, task.ID)
+	}
+}
+
 func TestManagerDeleteEmitsEvent(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)
