@@ -336,20 +336,10 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	case github.PRIssueCIFailure:
 		prompt = fmt.Sprintf(
-			"Fix the failing CI job on branch `%s` (PR #%d).\n\n"+
-				"To find the failure, run ONCE:\n"+
-				"```bash\n"+
-				"gh run list --branch %s --limit 3\n"+
-				"gh run view <FAILED_RUN_ID> --log-failed\n"+
-				"```\n\n"+
-				"Do NOT fetch logs again. Do NOT re-run `gh run view` with different flags.\n\n"+
-				"Rules:\n"+
-				"- Identify the failing test/file from that log. Read at most 3 files before editing.\n"+
-				"- Touch only the files required to fix the failure. No refactors, no unrelated changes, no doc updates.\n"+
-				"- After editing: commit and push. One commit, tight scope.\n"+
-				"- If 2 edit attempts don't fix the test, stop and leave for human review.",
+			"Fix failing CI on branch `%s` (PR #%d). "+
+				"Check the failing run with `gh run view --log-failed`, "+
+				"fix the code, commit and push. No unrelated changes.",
 			issue.PR.HeadRefName, issue.PR.Number,
-			issue.PR.HeadRefName,
 		)
 		r.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -443,8 +433,7 @@ func conflictPrompt(pr github.PullRequest) string {
 			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- If rebase produces more than 3 conflicting files, run `git rebase --abort` and stop — the task needs human review\n"+
-			"- One force-push only. No refactors, no extra commits, no unrelated changes, no doc updates\n"+
-			"- If 2 rebase attempts don't succeed, stop and leave for human review"+
+			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
 		pr.HeadRefName, pr.Number, filesCtx,
 	)
