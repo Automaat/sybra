@@ -46,6 +46,8 @@ export function GetStats():Promise<stats.StatsResponse>;
 
 export function GetTask(arg1:string):Promise<task.Task>;
 
+export function HasLivePlanAgent(arg1:string):Promise<boolean>;
+
 export function IsOrchestratorRunning():Promise<boolean>;
 
 export function KillTmuxSession(arg1:string):Promise<void>;
@@ -77,6 +79,8 @@ export function RegisterSpotlightHotkey():Promise<void>;
 export function RejectPlan(arg1:string,arg2:string):Promise<task.Task>;
 
 export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
+
+export function SendPlanMessage(arg1:string,arg2:string):Promise<void>;
 
 export function SetDesktopNotifications(arg1:boolean):Promise<void>;
 

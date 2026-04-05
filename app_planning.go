@@ -108,8 +108,14 @@ func (w *TaskWorkflow) PlanTask(id string) error {
 
 	prompt := fmt.Sprintf(
 		"Plan task %s using /synapse-plan skill. Get the task with synapse-cli, "+
-			"analyze the codebase, and produce a detailed implementation plan. "+
-			"Do NOT implement anything.", t.ID)
+			"analyze the codebase, and produce a detailed implementation plan.\n\n"+
+			"When the plan is ready:\n"+
+			"  1. synapse-cli update %s --body \"<full plan markdown>\"\n"+
+			"  2. synapse-cli update %s --status plan-review\n\n"+
+			"Then STOP and wait. Do NOT exit. Do NOT implement.\n\n"+
+			"If you receive feedback from the user, address it, update the body again "+
+			"with the revised plan, set status back to plan-review, and wait again.",
+		t.ID, t.ID, t.ID)
 
 	w.logger.Info("plan.start", "task_id", t.ID, "title", t.Title)
 
@@ -118,19 +124,18 @@ func (w *TaskWorkflow) PlanTask(id string) error {
 		planDir = config.HomeDir()
 	}
 	ag, err := w.agents.Run(agent.RunConfig{
-		TaskID:       t.ID,
-		Name:         agent.RolePlan.AgentName(t.Title),
-		Mode:         "headless",
-		Prompt:       prompt,
-		AllowedTools: []string{"Bash", "Read", "Glob", "Grep"},
-		Dir:          planDir,
-		Model:        "opus",
+		TaskID: t.ID,
+		Name:   agent.RolePlan.AgentName(t.Title),
+		Mode:   "interactive",
+		Prompt: prompt,
+		Dir:    planDir,
+		Model:  "opus",
 	})
 	if err != nil {
 		return err
 	}
 	if err := w.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RolePlan), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		AgentID: ag.ID, Role: string(agent.RolePlan), Mode: "interactive", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		w.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
@@ -148,6 +153,11 @@ func (w *TaskWorkflow) ApprovePlan(id string) (task.Task, error) {
 	}
 	w.logger.Info("plan.approve", "task_id", id, "title", t.Title)
 	w.logAudit(audit.EventPlanApproved, id, "", map[string]any{"title": t.Title})
+	if planAg := w.agents.FindRunningAgentForTask(id, agent.RolePlan); planAg != nil {
+		if stopErr := w.agents.StopAgent(planAg.ID); stopErr != nil {
+			w.logger.Warn("plan.approve.stop-agent", "task_id", id, "agent_id", planAg.ID, "err", stopErr)
+		}
+	}
 	updated, err := w.tasks.Update(id, map[string]any{
 		"status": string(task.StatusInProgress),
 	})
@@ -184,7 +194,6 @@ func (w *TaskWorkflow) RejectPlan(id, feedback string) (task.Task, error) {
 		}
 	}
 
-	body := t.Body
 	combinedFeedback := feedback
 	if len(unresolvedLines) > 0 {
 		commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
@@ -194,6 +203,29 @@ func (w *TaskWorkflow) RejectPlan(id, feedback string) (task.Task, error) {
 			combinedFeedback = commentSection
 		}
 	}
+
+	// Fast path: a live interactive plan agent exists — send feedback to it,
+	// preserving its conversation context. Flip status to 'planning' so the
+	// UI shows the agent is working.
+	if planAg := w.agents.FindRunningAgentForTask(id, agent.RolePlan); planAg != nil && planAg.Mode == "interactive" {
+		msg := "Plan rejected. Feedback:\n\n" + combinedFeedback +
+			"\n\nRevise the plan to address these points. Update the task body and set status back to plan-review when done."
+		if sendErr := w.agents.SendPromptToAgent(planAg.ID, msg); sendErr != nil {
+			w.logger.Error("plan.reject.send", "task_id", id, "agent_id", planAg.ID, "err", sendErr)
+		} else {
+			updated, updErr := w.tasks.Update(id, map[string]any{
+				"status": string(task.StatusPlanning),
+			})
+			if updErr != nil {
+				return updated, updErr
+			}
+			return updated, nil
+		}
+	}
+
+	// Fallback: no live plan agent (died/stopped) — append feedback to body
+	// and spawn a fresh plan agent.
+	body := t.Body
 	if combinedFeedback != "" {
 		body += "\n\n## Plan Feedback\n\n" + combinedFeedback
 	}
@@ -210,6 +242,31 @@ func (w *TaskWorkflow) RejectPlan(id, feedback string) (task.Task, error) {
 		}
 	}()
 	return updated, nil
+}
+
+// SendPlanMessage sends an arbitrary message to a live interactive plan agent
+// for the given task. Does not change task status or body — use to guide the
+// agent beyond formal approve/reject.
+func (w *TaskWorkflow) SendPlanMessage(id, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("message is empty")
+	}
+	t, err := w.tasks.Get(id)
+	if err != nil {
+		return err
+	}
+	if t.Status != task.StatusPlanReview && t.Status != task.StatusPlanning {
+		return fmt.Errorf("task %s status is %q, expected 'plan-review' or 'planning'", id, t.Status)
+	}
+	planAg := w.agents.FindRunningAgentForTask(id, agent.RolePlan)
+	if planAg == nil || planAg.Mode != "interactive" {
+		return fmt.Errorf("no live interactive plan agent for task %s", id)
+	}
+	if err := w.agents.SendPromptToAgent(planAg.ID, message); err != nil {
+		return fmt.Errorf("send prompt: %w", err)
+	}
+	w.logger.Info("plan.send-message", "task_id", id, "agent_id", planAg.ID)
+	return nil
 }
 
 func (w *TaskWorkflow) EvaluateTask(taskID, agentResult string) error {
@@ -363,6 +420,11 @@ func (w *TaskWorkflow) handleAgentComplete(ag *agent.Agent) {
 func (w *TaskWorkflow) completePlanAgent(ag *agent.Agent, resultContent string, agentData map[string]any) {
 	w.logger.Info("plan.complete", "agent_id", ag.ID, "task_id", ag.TaskID)
 	w.logAudit(audit.EventPlanCompleted, ag.TaskID, ag.ID, agentData)
+	// Interactive plan agents drive body/status updates themselves via
+	// synapse-cli. Nothing to persist here.
+	if ag.Mode == "interactive" {
+		return
+	}
 	body := ""
 	if t, err := w.tasks.Get(ag.TaskID); err == nil {
 		body = t.Body

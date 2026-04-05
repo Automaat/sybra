@@ -369,6 +369,18 @@ func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
 	return a.workflow.RejectPlan(id, feedback)
 }
 
+// SendPlanMessage delegates to TaskWorkflow.
+func (a *App) SendPlanMessage(id, message string) error {
+	return a.workflow.SendPlanMessage(id, message)
+}
+
+// HasLivePlanAgent reports whether a live interactive plan agent exists
+// for the given task — used by the UI to enable/disable the send-message
+// button.
+func (a *App) HasLivePlanAgent(id string) bool {
+	return a.agents.FindRunningAgentForTask(id, agent.RolePlan) != nil
+}
+
 // EvaluateTask delegates to TaskWorkflow.
 func (a *App) EvaluateTask(taskID, agentResult string) error {
 	return a.workflow.EvaluateTask(taskID, agentResult)

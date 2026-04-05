@@ -181,6 +181,47 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 	}
 }
 
+// SendPromptToAgent pastes text into an interactive agent's tmux session
+// and submits it. Assumes the agent is idle (at its chat prompt).
+func (m *Manager) SendPromptToAgent(agentID, text string) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	if a.Mode != "interactive" || a.TmuxSession == "" {
+		return fmt.Errorf("agent %s is not an interactive tmux agent", agentID)
+	}
+	if !m.tmux.SessionExists(a.TmuxSession) {
+		return fmt.Errorf("tmux session %s does not exist", a.TmuxSession)
+	}
+	if err := m.tmux.SendKeys(a.TmuxSession, text); err != nil {
+		return fmt.Errorf("send keys: %w", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := m.tmux.SendRawKeys(a.TmuxSession, "Enter"); err != nil {
+		return fmt.Errorf("send enter: %w", err)
+	}
+	m.logger.Info("agent.interactive.message_sent", "id", a.ID)
+	return nil
+}
+
+// FindRunningAgentForTask returns the first running agent for the given task
+// matching the provided role. Returns nil if none found.
+func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.State != StateRunning {
+			continue
+		}
+		if RoleFromName(a.Name) != role {
+			continue
+		}
+		return a
+	}
+	return nil
+}
+
 func (m *Manager) StopAgent(agentID string) error {
 	m.mu.Lock()
 	a, ok := m.agents[agentID]
@@ -306,6 +347,11 @@ func (m *Manager) CheckInteractiveSessions() {
 		if !m.tmux.SessionExists(a.TmuxSession) {
 			m.logger.Warn("agent.tmux.gone", "id", a.ID, "session", a.TmuxSession)
 			m.markStopped(a)
+			continue
+		}
+		// Plan agents deliberately sit idle between review rounds — don't
+		// auto-stop them; only the dead-session check above applies.
+		if RoleFromName(a.Name) == RolePlan {
 			continue
 		}
 		// Resolve claude session via tmux pane PID → ~/.claude/sessions/{pid}.json

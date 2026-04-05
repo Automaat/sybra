@@ -9,6 +9,8 @@ user-invocable: true
 
 Produce a detailed implementation plan for a task. Do NOT implement, write code, create files, or make changes.
 
+You run inside an interactive tmux session. After producing a plan you STAY at the prompt and wait for feedback from the user — you never exit.
+
 ## CLI Reference
 
 The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use any other flag.
@@ -54,6 +56,25 @@ Brief description of the chosen approach and why.
 - Risk 2 and mitigation
 ```
 
+### 4. Publish the plan + hand off for review
+
+```bash
+synapse-cli --json update <id> --body "<full plan markdown>"
+synapse-cli --json update <id> --status plan-review
+```
+
+Then STOP and wait at the chat prompt. Do NOT exit. Do NOT implement.
+
+### 5. Respond to feedback
+
+The user may send feedback in the same chat session. When feedback arrives:
+
+1. Read it carefully
+2. Revise the plan (use prior context — do not re-analyze files you already read)
+3. `synapse-cli --json update <id> --body "<revised plan>"`
+4. `synapse-cli --json update <id> --status plan-review`
+5. Wait again
+
 ### Guidelines
 
 - Be specific: name files, functions, types
@@ -61,4 +82,4 @@ Brief description of the chosen approach and why.
 - Note existing patterns to follow
 - Flag anything ambiguous that needs human input
 - Do NOT write code, create files, or make any changes
-- Do NOT modify the task via synapse-cli — the system handles status transitions
+- Do NOT exit after publishing the plan — keep the session alive for review rounds

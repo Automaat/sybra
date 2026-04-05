@@ -9,6 +9,7 @@
   let rejectFeedback = $state('')
   let actionLoading = $state(false)
   let errorMsg = $state('')
+  let hasLiveAgent = $state(false)
 
   const planReviewTasks = $derived(taskStore.byStatus('plan-review'))
 
@@ -19,14 +20,24 @@
   $effect(() => {
     if (selectedId) {
       commentStore.load(selectedId)
+      void refreshLiveAgent(selectedId)
     }
   })
+
+  async function refreshLiveAgent(id: string) {
+    try {
+      hasLiveAgent = await taskStore.hasLivePlanAgent(id)
+    } catch {
+      hasLiveAgent = false
+    }
+  }
 
   async function selectTask(id: string) {
     selectedId = id
     rejectFeedback = ''
     errorMsg = ''
     await commentStore.load(id)
+    await refreshLiveAgent(id)
   }
 
   async function approvePlan() {
@@ -51,6 +62,20 @@
       await taskStore.rejectPlan(selectedId, rejectFeedback)
       rejectFeedback = ''
       selectedId = null
+    } catch (e) {
+      errorMsg = String(e)
+    } finally {
+      actionLoading = false
+    }
+  }
+
+  async function sendMessage() {
+    if (!selectedId || !rejectFeedback.trim()) return
+    actionLoading = true
+    errorMsg = ''
+    try {
+      await taskStore.sendPlanMessage(selectedId, rejectFeedback)
+      rejectFeedback = ''
     } catch (e) {
       errorMsg = String(e)
     } finally {
@@ -179,6 +204,13 @@
               onclick={rejectPlan}
               disabled={actionLoading}
             >Reject Plan</button>
+            <button
+              type="button"
+              class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+              onclick={sendMessage}
+              disabled={actionLoading || !rejectFeedback.trim() || !hasLiveAgent}
+              title={hasLiveAgent ? 'Send message to live plan agent' : 'No live plan agent'}
+            >Send Message</button>
           </div>
         </div>
       </div>

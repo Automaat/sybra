@@ -78,6 +78,10 @@ export function GetTask(arg1) {
   return window['go']['main']['App']['GetTask'](arg1);
 }
 
+export function HasLivePlanAgent(arg1) {
+  return window['go']['main']['App']['HasLivePlanAgent'](arg1);
+}
+
 export function IsOrchestratorRunning() {
   return window['go']['main']['App']['IsOrchestratorRunning']();
 }
@@ -140,6 +144,10 @@ export function RejectPlan(arg1, arg2) {
 
 export function ResolveReviewComment(arg1, arg2) {
   return window['go']['main']['App']['ResolveReviewComment'](arg1, arg2);
+}
+
+export function SendPlanMessage(arg1, arg2) {
+  return window['go']['main']['App']['SendPlanMessage'](arg1, arg2);
 }
 
 export function SetDesktopNotifications(arg1) {

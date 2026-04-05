@@ -6,6 +6,8 @@ import {
   DeleteTask,
   ApprovePlan,
   RejectPlan,
+  SendPlanMessage,
+  HasLivePlanAgent,
 } from '../../wailsjs/go/main/App.js'
 import { task } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
@@ -67,6 +69,14 @@ class TaskStore extends EntityStore<task.Task> {
     const result = await RejectPlan(id, feedback)
     this.set(result.id, result)
     return result
+  }
+
+  async sendPlanMessage(id: string, message: string): Promise<void> {
+    await SendPlanMessage(id, message)
+  }
+
+  async hasLivePlanAgent(id: string): Promise<boolean> {
+    return HasLivePlanAgent(id)
   }
 }
 
