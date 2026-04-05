@@ -82,7 +82,14 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		go m.runHeadless(ctx, a, cfg.Prompt, cfg.AllowedTools)
 	case "interactive":
 		a.TmuxSession = fmt.Sprintf("synapse-%s-%s", sanitizeSessionName(cfg.Name), id)
-		claudeCmd := m.buildClaudeCmd(cfg)
+		claudeCmd, buildErr := m.buildClaudeCmd(cfg)
+		if buildErr != nil {
+			cancel()
+			m.mu.Lock()
+			delete(m.agents, id)
+			m.mu.Unlock()
+			return nil, buildErr
+		}
 		var createErr error
 		if cfg.Dir != "" {
 			createErr = m.tmux.CreateSessionInDir(a.TmuxSession, claudeCmd, cfg.Dir)
@@ -109,7 +116,16 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	return a, nil
 }
 
-func (m *Manager) buildClaudeCmd(cfg RunConfig) string {
+func (m *Manager) buildClaudeCmd(cfg RunConfig) (string, error) {
+	if cfg.Model != "" && !safeArgRe.MatchString(cfg.Model) {
+		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
+	}
+	for _, tool := range cfg.AllowedTools {
+		if !safeArgRe.MatchString(tool) {
+			return "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
+		}
+	}
+
 	parts := []string{"claude"}
 	if len(cfg.AllowedTools) > 0 {
 		parts = append(parts, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
@@ -119,7 +135,7 @@ func (m *Manager) buildClaudeCmd(cfg RunConfig) string {
 	if cfg.Model != "" {
 		parts = append(parts, "--model", cfg.Model)
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " "), nil
 }
 
 func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt string) {
@@ -412,6 +428,10 @@ type TaskInfo struct {
 }
 
 var sessionNameRe = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// safeArgRe matches only characters safe to embed in a tmux shell command
+// without quoting: alphanumerics, dot, underscore, hyphen, forward-slash.
+var safeArgRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 func sanitizeSessionName(title string) string {
 	s := strings.ToLower(strings.TrimSpace(title))

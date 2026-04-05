@@ -497,6 +497,101 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeCmd(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantCmd string
+		wantErr bool
+	}{
+		{
+			name:    "no model no tools",
+			cfg:     RunConfig{},
+			wantCmd: "claude --dangerously-skip-permissions",
+		},
+		{
+			name:    "valid model",
+			cfg:     RunConfig{Model: "claude-opus-4-6"},
+			wantCmd: "claude --dangerously-skip-permissions --model claude-opus-4-6",
+		},
+		{
+			name:    "valid tools",
+			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
+			wantCmd: "claude --allowedTools Read,Write,Bash",
+		},
+		{
+			name:    "valid model and tools",
+			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
+			wantCmd: "claude --allowedTools Read --model claude-sonnet-4-6",
+		},
+		{
+			name:    "model with shell metachar semicolon",
+			cfg:     RunConfig{Model: "claude;rm -rf /"},
+			wantErr: true,
+		},
+		{
+			name:    "model with shell metachar backtick",
+			cfg:     RunConfig{Model: "claude`whoami`"},
+			wantErr: true,
+		},
+		{
+			name:    "model with shell metachar dollar",
+			cfg:     RunConfig{Model: "claude$(id)"},
+			wantErr: true,
+		},
+		{
+			name:    "model with shell metachar pipe",
+			cfg:     RunConfig{Model: "claude|cat /etc/passwd"},
+			wantErr: true,
+		},
+		{
+			name:    "model with shell metachar space",
+			cfg:     RunConfig{Model: "claude sonnet"},
+			wantErr: true,
+		},
+		{
+			name:    "tool with shell metachar semicolon",
+			cfg:     RunConfig{AllowedTools: []string{"Read", "Bash;rm -rf /"}},
+			wantErr: true,
+		},
+		{
+			name:    "tool with shell metachar ampersand",
+			cfg:     RunConfig{AllowedTools: []string{"Read&&whoami"}},
+			wantErr: true,
+		},
+		{
+			name:    "tool with shell metachar newline",
+			cfg:     RunConfig{AllowedTools: []string{"Read\nrm -rf /"}},
+			wantErr: true,
+		},
+		{
+			name:    "valid model with slash and dot",
+			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
+			wantCmd: "claude --dangerously-skip-permissions --model anthropic/claude-3.5-sonnet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.buildClaudeCmd(tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got cmd=%q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
+			}
+		})
+	}
+}
+
 func TestShutdown(t *testing.T) {
 	m, _ := newTestManager(t)
 
