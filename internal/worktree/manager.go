@@ -103,7 +103,7 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 
-	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "origin/"+branch); err != nil {
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, "refs/remotes/origin/"+branch); err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
