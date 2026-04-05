@@ -100,10 +100,30 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		if err := project.SanitizeWorktree(wtPath); err != nil {
 			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 		}
+		// Rebase is best-effort — conflicts with main shouldn't block agent
+		// start on a branch that already has committed work.
 		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-			return "", fmt.Errorf("rebase worktree onto %s: %w", baseRef, err)
+			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
+		} else {
+			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 		}
-		m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+		m.ensureBranch(t, wtBranch)
+		return wtPath, nil
+	}
+
+	// Branch may survive a prior worktree removal — check out existing branch
+	// and rebase onto base instead of failing with "branch already exists".
+	if project.BranchExists(proj.ClonePath, wtBranch) {
+		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); err != nil {
+			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
+		}
+		if err := project.SanitizeWorktree(wtPath); err != nil {
+			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+		}
+		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
+			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
+		}
+		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
 	}

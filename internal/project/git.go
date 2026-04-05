@@ -43,7 +43,13 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 }
 
 func CloneBare(repoURL, destPath string) error {
-	return executil.Run("", "git", "clone", "--bare", repoURL, destPath)
+	if err := executil.Run("", "git", "clone", "--bare", repoURL, destPath); err != nil {
+		return err
+	}
+	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
+	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
+	// standard refspec so fetches actually update tracking refs.
+	return executil.Run(destPath, "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 func DefaultBranch(barePath string) (string, error) {
@@ -56,7 +62,10 @@ func DefaultBranch(barePath string) (string, error) {
 }
 
 func FetchOrigin(barePath string) error {
-	return executil.Run(barePath, "git", "fetch", "origin")
+	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
+	// configured, where `git fetch origin` silently skipped updating
+	// refs/remotes/origin/*.
+	return executil.Run(barePath, "git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
@@ -80,6 +89,15 @@ func SanitizeWorktree(wtPath string) error {
 			_ = abort.Run()
 		}
 	}
+
+	// Discard uncommitted changes so rebase can proceed. Committed work on the
+	// branch is preserved; only working-tree/index dirt is dropped.
+	reset := exec.Command("git", "reset", "--hard", "HEAD")
+	reset.Dir = wtPath
+	_ = reset.Run()
+	clean := exec.Command("git", "clean", "-fd")
+	clean.Dir = wtPath
+	_ = clean.Run()
 
 	// Delete local branches that shadow remote tracking refs.
 	// A local branch named "origin/foo" shadows "refs/remotes/origin/foo".
@@ -128,6 +146,12 @@ func CreateWorktree(barePath, worktreePath, branch, baseBranch string) error {
 // CreateWorktreeExisting checks out an existing branch into a new worktree.
 func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
 	return executil.Run(barePath, "git", "worktree", "add", worktreePath, branch)
+}
+
+// BranchExists reports whether a local branch exists in the repo.
+func BranchExists(barePath, branch string) bool {
+	err := executil.Run(barePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
 }
 
 // CreateWorktreeDetached creates a worktree in detached HEAD mode from a remote ref.
