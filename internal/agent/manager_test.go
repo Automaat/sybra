@@ -501,10 +501,10 @@ func TestBuildClaudeCmd(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	tests := []struct {
-		name      string
-		cfg       RunConfig
-		wantCmd   string
-		wantErr   bool
+		name    string
+		cfg     RunConfig
+		wantCmd string
+		wantErr bool
 	}{
 		{
 			name:    "no model no tools",
