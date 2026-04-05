@@ -30,7 +30,7 @@ class CommentStore {
     const existing = this.byTask.get(taskID) ?? []
     this.byTask.set(
       taskID,
-      existing.map((c) => (c.id === commentID ? { ...c, resolved: true } : c)),
+      existing.map((c) => (c.id === commentID ? task.ReviewComment.createFrom({ ...c, resolved: true }) : c)),
     )
   }
 
