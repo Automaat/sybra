@@ -43,7 +43,13 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 }
 
 func CloneBare(repoURL, destPath string) error {
-	return executil.Run("", "git", "clone", "--bare", repoURL, destPath)
+	if err := executil.Run("", "git", "clone", "--bare", repoURL, destPath); err != nil {
+		return err
+	}
+	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
+	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
+	// standard refspec so fetches actually update tracking refs.
+	return executil.Run(destPath, "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 func DefaultBranch(barePath string) (string, error) {
@@ -56,7 +62,10 @@ func DefaultBranch(barePath string) (string, error) {
 }
 
 func FetchOrigin(barePath string) error {
-	return executil.Run(barePath, "git", "fetch", "origin")
+	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
+	// configured, where `git fetch origin` silently skipped updating
+	// refs/remotes/origin/*.
+	return executil.Run(barePath, "git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 // SanitizeWorktree cleans up worktree state that would confuse agents:
