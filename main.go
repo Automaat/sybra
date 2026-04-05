@@ -28,7 +28,7 @@ func main() {
 		return
 	}
 
-	logger, cleanup, err := logging.New(cfg.Logging)
+	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
 		println("Error initializing logger:", err.Error())
 		return
@@ -40,7 +40,7 @@ func main() {
 	log.SetFlags(0)
 	log.SetOutput(slogWriter{logger})
 
-	app := NewApp(logger, cfg)
+	app := NewApp(logger, levelVar, cfg)
 
 	var (
 		quitArmed bool

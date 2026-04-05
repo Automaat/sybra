@@ -177,3 +177,11 @@ export function UpdateProject(arg1, arg2) {
 export function UpdateTask(arg1, arg2) {
   return window['go']['main']['App']['UpdateTask'](arg1, arg2);
 }
+
+export function GetSettings() {
+  return window['go']['main']['App']['GetSettings']();
+}
+
+export function UpdateSettings(arg1) {
+  return window['go']['main']['App']['UpdateSettings'](arg1);
+}

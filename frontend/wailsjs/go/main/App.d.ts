@@ -95,3 +95,7 @@ export function TriageTask(arg1:string):Promise<void>;
 export function UpdateProject(arg1:string,arg2:string):Promise<project.Project>;
 
 export function UpdateTask(arg1:string,arg2:Record<string, any>):Promise<task.Task>;
+
+export function GetSettings():Promise<any>;
+
+export function UpdateSettings(arg1:any):Promise<void>;

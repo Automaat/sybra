@@ -76,7 +76,7 @@ func testConfig(t *testing.T) *config.Config {
 
 func TestNewApp(t *testing.T) {
 	cfg := testConfig(t)
-	a := NewApp(discardLogger(), cfg)
+	a := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
 	if a == nil {
 		t.Fatal("NewApp returned nil")
 	}
@@ -371,7 +371,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestStartup(t *testing.T) {
-	a := NewApp(discardLogger(), testConfig(t))
+	a := NewApp(discardLogger(), &slog.LevelVar{}, testConfig(t))
 	if a.tasksDir == "" {
 		t.Error("tasksDir should not be empty")
 	}

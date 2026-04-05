@@ -9,26 +9,44 @@ import (
 )
 
 type Config struct {
-	Logging      LoggingConfig `yaml:"logging"`
-	Audit        AuditConfig   `yaml:"audit"`
-	TasksDir     string        `yaml:"tasks_dir"`
-	SkillsDir    string        `yaml:"skills_dir"`
-	RepoDir      string        `yaml:"repo_dir"`
-	ProjectsDir  string        `yaml:"projects_dir"`
-	ClonesDir    string        `yaml:"clones_dir"`
-	WorktreesDir string        `yaml:"worktrees_dir"`
+	Logging      LoggingConfig      `yaml:"logging" json:"logging"`
+	Audit        AuditConfig        `yaml:"audit" json:"audit"`
+	Agent        AgentDefaults      `yaml:"agent" json:"agent"`
+	Notification NotificationConfig `yaml:"notification" json:"notification"`
+	Orchestrator OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
+	TasksDir     string             `yaml:"tasks_dir" json:"tasksDir"`
+	SkillsDir    string             `yaml:"skills_dir" json:"skillsDir"`
+	RepoDir      string             `yaml:"repo_dir" json:"repoDir"`
+	ProjectsDir  string             `yaml:"projects_dir" json:"projectsDir"`
+	ClonesDir    string             `yaml:"clones_dir" json:"clonesDir"`
+	WorktreesDir string             `yaml:"worktrees_dir" json:"worktreesDir"`
 }
 
 type AuditConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	RetentionDays int  `yaml:"retention_days"`
+	Enabled       bool `yaml:"enabled" json:"enabled"`
+	RetentionDays int  `yaml:"retention_days" json:"retentionDays"`
 }
 
 type LoggingConfig struct {
-	Level     string `yaml:"level"`
-	Dir       string `yaml:"dir"`
-	MaxSizeMB int    `yaml:"max_size_mb"`
-	MaxFiles  int    `yaml:"max_files"`
+	Level     string `yaml:"level" json:"level"`
+	Dir       string `yaml:"dir" json:"dir"`
+	MaxSizeMB int    `yaml:"max_size_mb" json:"maxSizeMB"`
+	MaxFiles  int    `yaml:"max_files" json:"maxFiles"`
+}
+
+type AgentDefaults struct {
+	Model         string `yaml:"model" json:"model"`
+	Mode          string `yaml:"mode" json:"mode"`
+	MaxConcurrent int    `yaml:"max_concurrent" json:"maxConcurrent"`
+}
+
+type NotificationConfig struct {
+	Desktop bool `yaml:"desktop" json:"desktop"`
+}
+
+type OrchestratorConfig struct {
+	AutoTriage bool `yaml:"auto_triage" json:"autoTriage"`
+	AutoPlan   bool `yaml:"auto_plan" json:"autoPlan"`
 }
 
 func HomeDir() string {
@@ -51,12 +69,44 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			RetentionDays: 30,
 		},
+		Agent: AgentDefaults{
+			MaxConcurrent: 3,
+		},
+		Notification: NotificationConfig{
+			Desktop: true,
+		},
 		TasksDir: defaultTasksDir(),
 	}
 }
 
 func (c *Config) AuditDir() string {
 	return filepath.Join(c.Logging.Dir, "audit")
+}
+
+// Save writes the current config to disk.
+func (c *Config) Save() error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// Directories returns the resolved paths for all synapse data directories.
+func (c *Config) Directories() map[string]string {
+	return map[string]string{
+		"tasks":     c.TasksDir,
+		"skills":    c.SkillsDir,
+		"projects":  c.ProjectsDir,
+		"clones":    c.ClonesDir,
+		"worktrees": c.WorktreesDir,
+		"logs":      c.Logging.Dir,
+		"audit":     c.AuditDir(),
+	}
 }
 
 func Load() (*Config, error) {

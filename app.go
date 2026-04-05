@@ -50,9 +50,11 @@ type App struct {
 	agentOrch    *AgentOrchestrator
 	reviewer     *ReviewHandler
 	workflow     *TaskWorkflow
+	cfg          *config.Config
+	logLevel     *slog.LevelVar
 }
 
-func NewApp(logger *slog.Logger, cfg *config.Config) *App {
+func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
 	return &App{
 		tasksDir:     cfg.TasksDir,
 		skillsDir:    cfg.SkillsDir,
@@ -61,6 +63,8 @@ func NewApp(logger *slog.Logger, cfg *config.Config) *App {
 		logger:       logger,
 		logDir:       cfg.Logging.Dir,
 		auditDir:     cfg.AuditDir(),
+		cfg:          cfg,
+		logLevel:     logLevel,
 	}
 }
 
@@ -74,7 +78,11 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.Error("audit.init", "err", err)
 	}
 	a.audit = al
-	if err := audit.Cleanup(a.auditDir, 30); err != nil {
+	retentionDays := a.cfg.Audit.RetentionDays
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Error("audit.cleanup", "err", err)
 	}
 
@@ -112,6 +120,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.notifier = notification.New(emit)
+	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
@@ -129,6 +138,7 @@ func (a *App) startup(ctx context.Context) {
 	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees)
 	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
 
+	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)

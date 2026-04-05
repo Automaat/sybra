@@ -8,9 +8,9 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 )
 
-func New(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
+func New(cfg config.LoggingConfig) (*slog.Logger, *slog.LevelVar, func(), error) {
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	path := filepath.Join(cfg.Dir, "synapse.log")
@@ -25,11 +25,14 @@ func New(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
 
 	w, err := NewRotatingWriter(path, maxBytes, maxFiles)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(cfg.SlogLevel())
+
 	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level: cfg.SlogLevel(),
+		Level: levelVar,
 	})
 	logger := slog.New(handler)
 
@@ -37,5 +40,5 @@ func New(cfg config.LoggingConfig) (*slog.Logger, func(), error) {
 		_ = w.Close()
 	}
 
-	return logger, cleanup, nil
+	return logger, levelVar, cleanup, nil
 }

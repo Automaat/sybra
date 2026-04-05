@@ -19,7 +19,7 @@ func TestNew(t *testing.T) {
 		MaxFiles:  2,
 	}
 
-	logger, cleanup, err := New(cfg)
+	logger, _, cleanup, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestNewDefaultLimits(t *testing.T) {
 		MaxFiles:  0,
 	}
 
-	logger, cleanup, err := New(cfg)
+	logger, _, cleanup, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestNewInvalidDir(t *testing.T) {
 		MaxFiles:  2,
 	}
 
-	_, _, err := New(cfg)
+	_, _, _, err := New(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid dir")
 	}

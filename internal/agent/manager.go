@@ -17,14 +17,15 @@ import (
 type EmitFunc func(event string, data any)
 
 type Manager struct {
-	agents     map[string]*Agent
-	mu         sync.RWMutex
-	ctx        context.Context
-	tmux       *tmux.Manager
-	emit       EmitFunc
-	onComplete func(ag *Agent)
-	logger     *slog.Logger
-	logDir     string
+	agents        map[string]*Agent
+	mu            sync.RWMutex
+	ctx           context.Context
+	tmux          *tmux.Manager
+	emit          EmitFunc
+	onComplete    func(ag *Agent)
+	logger        *slog.Logger
+	logDir        string
+	maxConcurrent int
 }
 
 func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -40,6 +41,37 @@ func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *sl
 
 func (m *Manager) SetOnComplete(fn func(ag *Agent)) {
 	m.onComplete = fn
+}
+
+// SetMaxConcurrent sets the maximum number of concurrently running agents.
+// A value of 0 means unlimited.
+func (m *Manager) SetMaxConcurrent(n int) {
+	m.mu.Lock()
+	m.maxConcurrent = n
+	m.mu.Unlock()
+}
+
+// RunningCount returns the number of currently running agents.
+func (m *Manager) RunningCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.runningCountLocked()
+}
+
+func (m *Manager) runningCountLocked() int {
+	count := 0
+	for _, a := range m.agents {
+		if a.done != nil {
+			select {
+			case <-a.done:
+			default:
+				count++
+			}
+		} else if a.State == StateRunning {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt string, allowedTools []string) (*Agent, error) {
@@ -72,6 +104,11 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 
 	m.mu.Lock()
+	if m.maxConcurrent > 0 && m.runningCountLocked() >= m.maxConcurrent {
+		m.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+	}
 	m.agents[id] = a
 	m.mu.Unlock()
 
