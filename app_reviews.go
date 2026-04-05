@@ -27,7 +27,7 @@ const (
 
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
 type ReviewHandler struct {
-	tasks     *task.Store
+	tasks     *task.Manager
 	projects  *project.Store
 	agents    *agent.Manager
 	audit     *audit.Logger
@@ -38,7 +38,7 @@ type ReviewHandler struct {
 }
 
 func newReviewHandler(
-	tasks *task.Store,
+	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
 	al *audit.Logger,

@@ -17,7 +17,7 @@ import (
 
 // TaskWorkflow handles triage, planning, evaluation, and agent completion callbacks.
 type TaskWorkflow struct {
-	tasks     *task.Store
+	tasks     *task.Manager
 	agents    *agent.Manager
 	audit     *audit.Logger
 	logger    *slog.Logger
@@ -26,7 +26,7 @@ type TaskWorkflow struct {
 }
 
 func newTaskWorkflow(
-	tasks *task.Store,
+	tasks *task.Manager,
 	agents *agent.Manager,
 	al *audit.Logger,
 	logger *slog.Logger,

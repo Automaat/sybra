@@ -30,7 +30,7 @@ type App struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
-	tasks        *task.Store
+	tasks        *task.Manager
 	projects     *project.Store
 	agents       *agent.Manager
 	tmux         *tmux.Manager
@@ -94,7 +94,6 @@ func (a *App) startup(ctx context.Context) {
 		runtime.Quit(ctx)
 		return
 	}
-	a.tasks = store
 
 	projStore, err := project.NewStore(
 		filepath.Join(config.HomeDir(), "projects"),
@@ -111,6 +110,7 @@ func (a *App) startup(ctx context.Context) {
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
+	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.notifier = notification.New(emit)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
 
