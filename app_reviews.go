@@ -207,6 +207,42 @@ func (r *ReviewHandler) prepareReviewWorktree(t task.Task) (string, error) {
 	return wtPath, nil
 }
 
+// prepareFixWorktree checks out the PR's head branch so the agent can rebase and push.
+func (r *ReviewHandler) prepareFixWorktree(t task.Task, prNumber int) (string, error) {
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+
+	if err := project.FetchOrigin(proj.ClonePath); err != nil {
+		r.logger.Warn("fix.worktree.fetch", "project", proj.ID, "err", err)
+	}
+
+	branch, err := github.FetchPRBranch(t.ProjectID, prNumber)
+	if err != nil {
+		return "", fmt.Errorf("fetch pr branch: %w", err)
+	}
+
+	wtPath := filepath.Join(r.agentOrch.worktreesDir, t.DirName())
+
+	// Remove stale worktree — previous agent may have left dirty state.
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		_ = project.RemoveWorktree(proj.ClonePath, wtPath)
+	}
+
+	ref := "refs/remotes/origin/" + branch
+	if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, ref); err != nil {
+		return "", fmt.Errorf("create fix worktree: %w", err)
+	}
+
+	if err := project.SanitizeWorktree(wtPath); err != nil {
+		r.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+
+	r.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
+	return wtPath, nil
+}
+
 func (r *ReviewHandler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
 	projects, err := r.projects.List()
 	if err != nil || len(projects) == 0 {
@@ -359,18 +395,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 	var prompt string
 	switch issue.Kind {
 	case github.PRIssueConflict:
-		prompt = fmt.Sprintf(
-			"Fix merge conflicts on branch `%s` (PR #%d). "+
-				"Do NOT investigate — go straight to fixing.\n\n"+
-				"```bash\n"+
-				"git fetch origin main\n"+
-				"git rebase origin/main\n"+
-				"# resolve each conflict, git add, git rebase --continue\n"+
-				"git push --force-with-lease\n"+
-				"```\n\n"+
-				"Resolve conflicts to keep BOTH sides' changes. Push when done.",
-			issue.PR.HeadRefName, issue.PR.Number,
-		)
+		prompt = conflictPrompt(issue.PR)
 		r.logAudit(audit.EventPRConflictDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
 		})
@@ -394,7 +419,13 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	dir := ""
 	if t.ProjectID != "" {
-		d, wtErr := r.agentOrch.prepareWorktree(t)
+		var d string
+		var wtErr error
+		if issue.Kind == github.PRIssueConflict {
+			d, wtErr = r.prepareFixWorktree(t, issue.PR.Number)
+		} else {
+			d, wtErr = r.agentOrch.prepareWorktree(t)
+		}
 		if wtErr != nil {
 			r.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)
 			return
@@ -448,6 +479,35 @@ func (a *App) ResolveReviewComment(taskID, commentID string) error {
 
 func (a *App) DeleteReviewComment(taskID, commentID string) error {
 	return a.tasks.Comments().Delete(taskID, commentID)
+}
+
+func conflictPrompt(pr github.PullRequest) string {
+	filesCtx := ""
+	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
+		filesCtx = "\n\nFiles changed in this PR:\n"
+		for _, f := range files {
+			filesCtx += "- " + f + "\n"
+		}
+	}
+
+	return fmt.Sprintf(
+		"Fix merge conflicts on branch `%s` (PR #%d). "+
+			"Do NOT investigate git state — go straight to rebasing.\n\n"+
+			"Steps:\n"+
+			"```bash\n"+
+			"git fetch origin\n"+
+			"git rebase refs/remotes/origin/main\n"+
+			"# resolve each conflict, git add, git rebase --continue\n"+
+			"git push --force-with-lease\n"+
+			"```\n\n"+
+			"Rules:\n"+
+			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
+			"- Resolve conflicts keeping BOTH sides' intent\n"+
+			"- If rebase produces more than 3 conflicting files, run `git rebase --abort` and stop — the task needs human review\n"+
+			"- No investigation, no extra commits, no unrelated changes"+
+			"%s",
+		pr.HeadRefName, pr.Number, filesCtx,
+	)
 }
 
 func prNeedsAttention(prs []github.PullRequest) bool {

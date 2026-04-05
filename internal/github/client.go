@@ -315,6 +315,35 @@ func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
 	return s, nil
 }
 
+// PRFiles holds the list of files changed by a PR.
+type PRFiles struct {
+	Files []struct {
+		Path string `json:"path"`
+	} `json:"files"`
+}
+
+// FetchPRFiles returns the paths of files changed by a PR.
+func FetchPRFiles(repo string, number int) ([]string, error) {
+	return fetchPRFilesWith(defaultExecer, repo, number)
+}
+
+func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
+	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "files")
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view %d files: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var f PRFiles
+	if err := json.Unmarshal(out, &f); err != nil {
+		return nil, fmt.Errorf("parse pr files: %w", err)
+	}
+	paths := make([]string, len(f.Files))
+	for i := range f.Files {
+		paths[i] = f.Files[i].Path
+	}
+	return paths, nil
+}
+
 // PRBranch holds the head branch name of a PR.
 type PRBranch struct {
 	HeadRefName string `json:"headRefName"`

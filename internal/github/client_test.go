@@ -682,6 +682,66 @@ func TestParseGQLResponse_botFiltered(t *testing.T) {
 	}
 }
 
+func TestFetchPRFilesWith(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		output  string
+		execErr error
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:   "multiple files",
+			output: `{"files":[{"path":"app.go"},{"path":"internal/task/store.go"},{"path":"main.go"}]}`,
+			want:   []string{"app.go", "internal/task/store.go", "main.go"},
+		},
+		{
+			name:   "single file",
+			output: `{"files":[{"path":"README.md"}]}`,
+			want:   []string{"README.md"},
+		},
+		{
+			name:   "no files",
+			output: `{"files":[]}`,
+			want:   []string{},
+		},
+		{
+			name:    "exec error",
+			output:  "gh: not found",
+			execErr: fmt.Errorf("exit 1"),
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON",
+			output:  "not json",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
+			got, err := fetchPRFilesWith(fe, "o/r", 42)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d files, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("file[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestHasPendingReview_pending(t *testing.T) {
 	t.Parallel()
 	fe := &fakeExecer{output: []byte(`[{"state":"COMMENTED"},{"state":"PENDING"}]`)}
