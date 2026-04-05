@@ -8,6 +8,8 @@ import {stats} from '../models';
 import {notification} from '../models';
 import {tmux} from '../models';
 
+export function AddReviewComment(arg1:string,arg2:number,arg3:string):Promise<task.ReviewComment>;
+
 export function ApprovePlan(arg1:string):Promise<task.Task>;
 
 export function AttachAgent(arg1:string):Promise<void>;
@@ -25,6 +27,8 @@ export function CreateProject(arg1:string,arg2:string):Promise<project.Project>;
 export function CreateTask(arg1:string,arg2:string,arg3:string):Promise<task.Task>;
 
 export function DeleteProject(arg1:string):Promise<void>;
+
+export function DeleteReviewComment(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteTask(arg1:string):Promise<void>;
 
@@ -68,7 +72,11 @@ export function PlanTask(arg1:string):Promise<void>;
 
 export function RegisterSpotlightHotkey():Promise<void>;
 
+export function ListReviewComments(arg1:string):Promise<task.ReviewComment[]>;
+
 export function RejectPlan(arg1:string,arg2:string):Promise<task.Task>;
+
+export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
 
 export function SetDesktopNotifications(arg1:boolean):Promise<void>;
 

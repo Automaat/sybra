@@ -465,6 +465,22 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 	)
 }
 
+func (a *App) ListReviewComments(taskID string) ([]task.ReviewComment, error) {
+	return a.tasks.Comments().List(taskID)
+}
+
+func (a *App) AddReviewComment(taskID string, line int, body string) (task.ReviewComment, error) {
+	return a.tasks.Comments().Add(taskID, line, body)
+}
+
+func (a *App) ResolveReviewComment(taskID, commentID string) error {
+	return a.tasks.Comments().Resolve(taskID, commentID)
+}
+
+func (a *App) DeleteReviewComment(taskID, commentID string) error {
+	return a.tasks.Comments().Delete(taskID, commentID)
+}
+
 func conflictPrompt(pr github.PullRequest) string {
 	filesCtx := ""
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {

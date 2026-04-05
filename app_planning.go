@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -173,9 +174,28 @@ func (w *TaskWorkflow) RejectPlan(id, feedback string) (task.Task, error) {
 	}
 	w.logger.Info("plan.reject", "task_id", id, "title", t.Title, "has_feedback", feedback != "")
 	w.logAudit(audit.EventPlanRejected, id, "", map[string]any{"title": t.Title, "has_feedback": feedback != ""})
+
+	// Append unresolved inline comments to feedback.
+	comments, _ := w.tasks.Comments().List(id)
+	var unresolvedLines []string
+	for _, c := range comments {
+		if !c.Resolved {
+			unresolvedLines = append(unresolvedLines, fmt.Sprintf("- Line %d: %s", c.Line, c.Body))
+		}
+	}
+
 	body := t.Body
-	if feedback != "" {
-		body += "\n\n## Plan Feedback\n\n" + feedback
+	combinedFeedback := feedback
+	if len(unresolvedLines) > 0 {
+		commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
+		if combinedFeedback != "" {
+			combinedFeedback += "\n\n" + commentSection
+		} else {
+			combinedFeedback = commentSection
+		}
+	}
+	if combinedFeedback != "" {
+		body += "\n\n## Plan Feedback\n\n" + combinedFeedback
 	}
 	updated, err := w.tasks.Update(id, map[string]any{
 		"status": string(task.StatusPlanning),
