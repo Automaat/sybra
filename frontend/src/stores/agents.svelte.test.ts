@@ -220,35 +220,35 @@ describe('AgentStore', () => {
   })
 
   describe('polling', () => {
-    it('starts and stops interval', () => {
+    it('starts and stops interval', async () => {
       vi.useFakeTimers()
       mockDiscoverAgents.mockResolvedValue([])
       mockListAgents.mockResolvedValue([])
 
-      agentStore.startPolling()
+      agentStore.startPolling(5000)
 
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(mockDiscoverAgents).toHaveBeenCalledTimes(1)
 
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(mockDiscoverAgents).toHaveBeenCalledTimes(2)
 
       agentStore.stopPolling()
-      vi.advanceTimersByTime(10000)
+      await vi.advanceTimersByTimeAsync(10000)
       expect(mockDiscoverAgents).toHaveBeenCalledTimes(2)
 
       vi.useRealTimers()
     })
 
-    it('replaces existing timer on restart', () => {
+    it('replaces existing timer on restart', async () => {
       vi.useFakeTimers()
       mockDiscoverAgents.mockResolvedValue([])
       mockListAgents.mockResolvedValue([])
 
-      agentStore.startPolling()
-      agentStore.startPolling() // should not double up
+      agentStore.startPolling(5000)
+      agentStore.startPolling(5000) // should not double up
 
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(mockDiscoverAgents).toHaveBeenCalledTimes(1) // not 2
 
       agentStore.stopPolling()

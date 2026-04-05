@@ -32,18 +32,36 @@ func (m *Manager) DiscoverAgents() []*Agent {
 }
 
 // refreshTracked updates state of already-tracked external agents.
+// I/O (process checks, session file reads) happens outside the mutex to
+// avoid blocking concurrent callers behind disk reads.
 func (m *Manager) refreshTracked() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	type snap struct {
+		a         *Agent
+		pid       int
+		cwd       string
+		sessionID string
+	}
+
+	m.mu.RLock()
+	snaps := make([]snap, 0, len(m.agents))
 	for _, a := range m.agents {
 		if !a.External {
 			continue
 		}
-		if !processAlive(a.PID) {
-			a.State = StateStopped
+		snaps = append(snaps, snap{a: a, pid: a.PID, cwd: a.sessionCWD, sessionID: a.SessionID})
+	}
+	m.mu.RUnlock()
+
+	for _, s := range snaps {
+		var next State
+		if !processAlive(s.pid) {
+			next = StateStopped
 		} else {
-			a.State = inferState(a.sessionCWD, a.SessionID)
+			next = inferState(s.cwd, s.sessionID)
 		}
+		m.mu.Lock()
+		s.a.State = next
+		m.mu.Unlock()
 	}
 }
 

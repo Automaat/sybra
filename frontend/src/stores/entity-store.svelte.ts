@@ -3,6 +3,8 @@ export class EntityStore<T extends { id: string }> {
   loading = $state(false)
   error = $state('')
   private pollTimer: ReturnType<typeof setInterval> | null = null
+  private inFlight: Promise<void> | null = null
+  private lastLoadAt = 0
 
   constructor(
     private readonly loadFn: () => Promise<T[]>,
@@ -24,24 +26,34 @@ export class EntityStore<T extends { id: string }> {
   }
 
   async load(): Promise<void> {
-    // Only flip loading for the initial load so background refreshes
-    // (polling + fsnotify events) don't blank out the UI.
+    // Coalesce concurrent callers and throttle to at most one fetch per 500ms.
+    // Initial loads (empty items) bypass the throttle so first render always fetches.
+    if (this.inFlight) return this.inFlight
     const isInitial = this.items.size === 0
+    if (!isInitial) {
+      const sinceLast = Date.now() - this.lastLoadAt
+      if (sinceLast < 500) return
+    }
     if (isInitial) this.loading = true
     this.error = ''
-    try {
-      const result = await this.loadFn()
-      const map = new Map<string, T>()
-      for (const item of result ?? []) map.set(item.id, item)
-      this.items = map
-    } catch (e) {
-      this.error = String(e)
-    } finally {
-      if (isInitial) this.loading = false
-    }
+    this.inFlight = (async () => {
+      try {
+        const result = await this.loadFn()
+        const map = new Map<string, T>()
+        for (const item of result ?? []) map.set(item.id, item)
+        this.items = map
+      } catch (e) {
+        this.error = String(e)
+      } finally {
+        if (isInitial) this.loading = false
+        this.lastLoadAt = Date.now()
+        this.inFlight = null
+      }
+    })()
+    return this.inFlight
   }
 
-  startPolling(interval = 5000): void {
+  startPolling(interval = 30000): void {
     this.stopPolling()
     this.pollTimer = setInterval(() => this.load(), interval)
   }

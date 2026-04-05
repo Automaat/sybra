@@ -8,10 +8,17 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
 )
+
+// headlessEmitInterval caps per-agent stream event emission rate.
+// Result events always emit immediately (terminal signal). Frontend
+// subscribers may miss intermediate events but can recover via
+// GetAgentOutput which reads from outputBuffer.
+const headlessEmitInterval = 50 * time.Millisecond
 
 func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allowedTools []string) {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
@@ -62,6 +69,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	var lastEmit time.Time
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -80,7 +88,10 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 		}
 
 		a.outputBuffer = append(a.outputBuffer, event)
-		m.emit(events.AgentOutput(a.ID), event)
+		if event.Type == "result" || time.Since(lastEmit) >= headlessEmitInterval {
+			m.emit(events.AgentOutput(a.ID), event)
+			lastEmit = time.Now()
+		}
 
 		if event.Type == "result" {
 			a.SessionID = event.SessionID
