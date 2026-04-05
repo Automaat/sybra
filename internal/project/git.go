@@ -81,6 +81,15 @@ func SanitizeWorktree(wtPath string) error {
 		}
 	}
 
+	// Discard uncommitted changes so rebase can proceed. Committed work on the
+	// branch is preserved; only working-tree/index dirt is dropped.
+	reset := exec.Command("git", "reset", "--hard", "HEAD")
+	reset.Dir = wtPath
+	_ = reset.Run()
+	clean := exec.Command("git", "clean", "-fd")
+	clean.Dir = wtPath
+	_ = clean.Run()
+
 	// Delete local branches that shadow remote tracking refs.
 	// A local branch named "origin/foo" shadows "refs/remotes/origin/foo".
 	listCmd := exec.Command("git", "branch", "--format=%(refname:short)")
