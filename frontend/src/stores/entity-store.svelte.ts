@@ -24,7 +24,10 @@ export class EntityStore<T extends { id: string }> {
   }
 
   async load(): Promise<void> {
-    this.loading = true
+    // Only flip loading for the initial load so background refreshes
+    // (polling + fsnotify events) don't blank out the UI.
+    const isInitial = this.items.size === 0
+    if (isInitial) this.loading = true
     this.error = ''
     try {
       const result = await this.loadFn()
@@ -34,7 +37,7 @@ export class EntityStore<T extends { id: string }> {
     } catch (e) {
       this.error = String(e)
     } finally {
-      this.loading = false
+      if (isInitial) this.loading = false
     }
   }
 
