@@ -8,7 +8,6 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { STATUS_OPTIONS } from '../lib/statuses.js'
-  import StatusBadge from '../components/StatusBadge.svelte'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
 
@@ -272,7 +271,15 @@
           >{t.title}</h1>
         {/if}
         <div class="flex items-center gap-2">
-          <StatusBadge status={t.status} />
+          <select
+            class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
+            value={t.status}
+            onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
+          >
+            {#each statusOptions as s}
+              <option value={s.value}>{s.label}</option>
+            {/each}
+          </select>
           {#if triaging}
             <span class="inline-flex items-center gap-1 rounded-full bg-primary-200 px-2 py-0.5 text-xs font-medium text-primary-800 dark:bg-primary-700 dark:text-primary-200">
               <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
@@ -320,24 +327,6 @@
           >
             {deleting ? 'Deleting...' : 'Delete'}
           </button>
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-1">
-        <span class="text-sm font-medium text-surface-500">Status</span>
-        <div class="relative w-fit">
-          <select
-            class="w-fit appearance-none rounded-lg border border-surface-300 bg-surface-50 py-2 pr-9 pl-3 text-sm font-medium transition-colors hover:border-primary-400 focus:border-primary-500 focus:outline-none dark:border-surface-600 dark:bg-surface-800 dark:hover:border-primary-500"
-            value={t.status}
-            onchange={(e) => updateStatus(e.currentTarget.value)}
-          >
-            {#each statusOptions as s}
-              <option value={s.value}>{s.label}</option>
-            {/each}
-          </select>
-          <svg class="pointer-events-none absolute top-1/2 right-2.5 h-4 w-4 -translate-y-1/2 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
         </div>
       </div>
 
