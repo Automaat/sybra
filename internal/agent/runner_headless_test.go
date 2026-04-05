@@ -68,7 +68,7 @@ func TestRunHeadlessFailsToStart(t *testing.T) {
 		State: StateRunning,
 	}
 
-	m.runHeadless(t.Context(), a, "test prompt", nil)
+	m.runHeadless(t.Context(), a, "test prompt", nil, false)
 
 	if a.State != StateStopped {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
@@ -87,7 +87,7 @@ func TestRunHeadlessWithAllowedTools(t *testing.T) {
 		State: StateRunning,
 	}
 
-	m.runHeadless(t.Context(), a, "test prompt", []string{"Read", "Write"})
+	m.runHeadless(t.Context(), a, "test prompt", []string{"Read", "Write"}, false)
 
 	if a.State != StateStopped {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
@@ -103,7 +103,7 @@ func TestRunHeadlessWithResume(t *testing.T) {
 		SessionID: "prev-session-id",
 	}
 
-	m.runHeadless(t.Context(), a, "test prompt", nil)
+	m.runHeadless(t.Context(), a, "test prompt", nil, false)
 
 	if a.State != StateStopped {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
@@ -122,7 +122,7 @@ func TestRunHeadlessCancelledContext(t *testing.T) {
 		State: StateRunning,
 	}
 
-	m.runHeadless(ctx, a, "test prompt", nil)
+	m.runHeadless(ctx, a, "test prompt", nil, false)
 
 	if a.State != StateStopped {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)

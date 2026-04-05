@@ -51,13 +51,14 @@ func (a *Agent) Output() []StreamEvent {
 
 // RunConfig is the single entry point for starting any agent.
 type RunConfig struct {
-	TaskID       string
-	Name         string
-	Mode         string // "headless" or "interactive"
-	Prompt       string
-	AllowedTools []string
-	Dir          string
-	Model        string // "opus", "sonnet", or full model ID
+	TaskID             string
+	Name               string
+	Mode               string // "headless" or "interactive"
+	Prompt             string
+	AllowedTools       []string
+	Dir                string
+	Model              string // "opus", "sonnet", or full model ID
+	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 }
 
 type StreamEvent struct {

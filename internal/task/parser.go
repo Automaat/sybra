@@ -41,6 +41,9 @@ func ParseBytes(data []byte) (Task, error) {
 	}
 
 	t.Body = string(bytes.TrimSpace(data[locs[1][1]:]))
+	if t.TaskType == "" {
+		t.TaskType = TaskTypeNormal
+	}
 	return t, nil
 }
 

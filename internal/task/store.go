@@ -69,6 +69,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Slug:      Slugify(title),
 		Title:     title,
 		Status:    StatusTodo,
+		TaskType:  TaskTypeNormal,
 		AgentMode: mode,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -125,6 +126,13 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	}
 	if v, ok := updates["agent_mode"].(string); ok {
 		t.AgentMode = v
+	}
+	if v, ok := updates["task_type"].(string); ok {
+		tt, vErr := ValidateTaskType(v)
+		if vErr != nil {
+			return Task{}, vErr
+		}
+		t.TaskType = tt
 	}
 	if v, ok := updates["body"].(string); ok {
 		t.Body = v

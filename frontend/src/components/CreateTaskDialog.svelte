@@ -14,6 +14,7 @@
   let title = $state('')
   let body = $state('')
   let headless = $state(false)
+  let taskType = $state('normal')
   let selectedProject = $state('')
   let projectSearch = $state('')
   let projectDropdownOpen = $state(false)
@@ -48,6 +49,7 @@
     title = ''
     body = ''
     headless = false
+    taskType = 'normal'
     selectedProject = ''
     projectSearch = ''
     projectDropdownOpen = false
@@ -65,9 +67,17 @@
     submitting = true
     error = ''
     try {
-      let t = await taskStore.create(title.trim(), body, headless ? 'headless' : 'interactive')
-      if (selectedProject) {
-        t = await taskStore.update(t.id, { project_id: selectedProject })
+      // debug/research task types force the agent mode; ignore checkbox.
+      const effectiveMode =
+        taskType === 'debug' ? 'interactive'
+        : taskType === 'research' ? 'headless'
+        : (headless ? 'headless' : 'interactive')
+      let t = await taskStore.create(title.trim(), body, effectiveMode)
+      const updates: Record<string, unknown> = {}
+      if (taskType !== 'normal') updates.task_type = taskType
+      if (selectedProject) updates.project_id = selectedProject
+      if (Object.keys(updates).length > 0) {
+        t = await taskStore.update(t.id, updates)
       }
       reset()
       onOpenChange(false)
@@ -164,14 +174,28 @@
           </div>
         {/if}
 
-        <label class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            bind:checked={headless}
-            class="rounded border-surface-300 dark:border-surface-600"
-          />
-          <span class="text-sm font-medium">Headless</span>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm font-medium">Type</span>
+          <select
+            bind:value={taskType}
+            class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+          >
+            <option value="normal">normal</option>
+            <option value="debug">debug (interactive, per-tool perms)</option>
+            <option value="research">research (headless, research-machine)</option>
+          </select>
         </label>
+
+        {#if taskType === 'normal'}
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              bind:checked={headless}
+              class="rounded border-surface-300 dark:border-surface-600"
+            />
+            <span class="text-sm font-medium">Headless</span>
+          </label>
+        {/if}
 
         <label class="flex flex-col gap-1">
           <span class="text-sm font-medium">Description</span>

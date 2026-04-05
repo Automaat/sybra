@@ -40,6 +40,31 @@ func ValidateStatus(s string) (Status, error) {
 	return st, nil
 }
 
+type TaskType string
+
+const (
+	TaskTypeNormal   TaskType = "normal"
+	TaskTypeDebug    TaskType = "debug"
+	TaskTypeResearch TaskType = "research"
+)
+
+var validTaskTypes = map[TaskType]bool{
+	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
+}
+
+// AllTaskTypes returns every valid task type in display order.
+func AllTaskTypes() []TaskType {
+	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch}
+}
+
+func ValidateTaskType(s string) (TaskType, error) {
+	tt := TaskType(s)
+	if !validTaskTypes[tt] {
+		return "", fmt.Errorf("invalid task_type %q (valid: %v)", s, AllTaskTypes())
+	}
+	return tt, nil
+}
+
 type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
@@ -56,6 +81,7 @@ type Task struct {
 	Slug         string     `yaml:"slug,omitempty" json:"slug"`
 	Title        string     `yaml:"title" json:"title"`
 	Status       Status     `yaml:"status" json:"status"`
+	TaskType     TaskType   `yaml:"task_type,omitempty" json:"taskType"`
 	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
 	AllowedTools []string   `yaml:"allowed_tools" json:"allowedTools"`
 	Tags         []string   `yaml:"tags" json:"tags"`

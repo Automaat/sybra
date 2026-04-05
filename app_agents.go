@@ -13,6 +13,23 @@ import (
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
+// ResearchMachineDir is the fixed working directory for research tasks.
+const ResearchMachineDir = "/Users/marcin.skalski/sideprojects/research-machine"
+
+// resolveExecution derives the effective mode, directory, permission mode, and
+// whether project worktree setup should be skipped based on the task's type.
+// hintMode is used when the task type does not force a specific mode.
+func resolveExecution(t task.Task, hintMode string) (mode, dir string, requirePerm, skipWorktree bool) {
+	switch t.TaskType {
+	case task.TaskTypeDebug:
+		return "interactive", "", true, false
+	case task.TaskTypeResearch:
+		return "headless", ResearchMachineDir, false, true
+	default:
+		return hintMode, "", false, false
+	}
+}
+
 // AgentOrchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
 type AgentOrchestrator struct {
@@ -67,34 +84,36 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agen
 		}
 	}
 
-	t = o.autoAssignProject(t)
-
-	dir := ""
-	if t.ProjectID != "" {
-		d, wtErr := o.worktrees.PrepareForTask(t)
-		if wtErr != nil {
-			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode)
+	if !skipWT {
+		t = o.autoAssignProject(t)
+		if t.ProjectID != "" {
+			d, wtErr := o.worktrees.PrepareForTask(t)
+			if wtErr != nil {
+				return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
+			}
+			dir = d
 		}
-		dir = d
 	}
 
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
 	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:       taskID,
-		Name:         t.Title,
-		Mode:         mode,
-		Prompt:       fullPrompt,
-		AllowedTools: t.AllowedTools,
-		Dir:          dir,
-		Model:        "sonnet",
+		TaskID:             taskID,
+		Name:               t.Title,
+		Mode:               effMode,
+		Prompt:             fullPrompt,
+		AllowedTools:       t.AllowedTools,
+		Dir:                dir,
+		Model:              "sonnet",
+		RequirePermissions: requirePerm,
 	})
 	if err != nil {
 		return nil, err
 	}
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": mode, "title": t.Title})
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "task_type": string(t.TaskType)})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:   ag.ID,
-		Mode:      mode,
+		Mode:      effMode,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 	}); err != nil {
@@ -128,33 +147,36 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 		return err
 	}
 
-	t = a.agentOrch.autoAssignProject(t)
-	dir := ""
-	if t.ProjectID != "" {
-		d, wtErr := a.worktrees.PrepareForTask(t)
-		if wtErr != nil {
-			return fmt.Errorf("worktree required: %w", wtErr)
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode)
+	if !skipWT {
+		t = a.agentOrch.autoAssignProject(t)
+		if t.ProjectID != "" {
+			d, wtErr := a.worktrees.PrepareForTask(t)
+			if wtErr != nil {
+				return fmt.Errorf("worktree required: %w", wtErr)
+			}
+			dir = d
 		}
-		dir = d
 	}
 
 	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
 	ag, err := a.agents.Run(agent.RunConfig{
-		TaskID:       taskID,
-		Name:         agent.RolePRFix.AgentName(t.Title),
-		Mode:         t.AgentMode,
-		Prompt:       prompt,
-		AllowedTools: t.AllowedTools,
-		Dir:          dir,
-		Model:        "sonnet",
+		TaskID:             taskID,
+		Name:               agent.RolePRFix.AgentName(t.Title),
+		Mode:               effMode,
+		Prompt:             prompt,
+		AllowedTools:       t.AllowedTools,
+		Dir:                dir,
+		Model:              "sonnet",
+		RequirePermissions: requirePerm,
 	})
 	if err != nil {
 		return err
 	}
 
-	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": t.AgentMode, "title": t.Title, "role": "pr-fix"})
+	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType)})
 	if err := a.tasks.AddRun(taskID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: t.AgentMode,
+		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
 		a.logger.Error("task.add-run", "task_id", taskID, "err", err)

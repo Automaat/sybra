@@ -21,7 +21,7 @@ import (
 // GetAgentOutput which reads from outputBuffer.
 const headlessEmitInterval = 50 * time.Millisecond
 
-func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allowedTools []string) {
+func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allowedTools []string, requirePermissions bool) {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 
 	if a.SessionID != "" {
@@ -30,7 +30,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 
 	if len(allowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
-	} else {
+	} else if !requirePermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 

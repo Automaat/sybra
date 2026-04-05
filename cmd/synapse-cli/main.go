@@ -140,6 +140,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	fmt.Printf("Title:  %s\n", t.Title)
 	fmt.Printf("Status: %s\n", t.Status)
 	fmt.Printf("Mode:   %s\n", t.AgentMode)
+	if t.TaskType != "" {
+		fmt.Printf("Type:   %s\n", t.TaskType)
+	}
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:   %s\n", strings.Join(t.Tags, ", "))
 	}
@@ -168,6 +171,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
+	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -179,6 +183,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
 	}
+	if _, err := task.ValidateTaskType(*ttype); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
 
 	t, err := s.Create(*title, *body, *mode)
 	if err != nil {
@@ -186,6 +193,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 
 	updates := map[string]any{}
+	if *ttype != "" && *ttype != string(task.TaskTypeNormal) {
+		updates["task_type"] = *ttype
+	}
 	if *tags != "" {
 		tagList := strings.Split(*tags, ",")
 		for i := range tagList {
@@ -230,6 +240,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	status := fs.String("status", "", "new status")
 	body := fs.String("body", "", "new body")
 	mode := fs.String("mode", "", "new agent mode")
+	ttype := fs.String("type", "", "new task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
 	proj := fs.String("project", "", "project id (owner/repo)")
 	branch := fs.String("branch", "", "Git branch name")
@@ -255,6 +266,12 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *mode != "" {
 		updates["agent_mode"] = *mode
+	}
+	if *ttype != "" {
+		if _, err := task.ValidateTaskType(*ttype); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		updates["task_type"] = *ttype
 	}
 	if *tags != "" {
 		tagList := strings.Split(*tags, ",")
@@ -564,8 +581,9 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|human-required|done
   get      <id>
-  create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--mode M] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
+  create   --title TITLE [--body BODY] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
+           TYPE: normal|debug|research
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
   delete   <id>
 
   project list

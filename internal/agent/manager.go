@@ -79,7 +79,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 
 	switch cfg.Mode {
 	case "headless":
-		go m.runHeadless(ctx, a, cfg.Prompt, cfg.AllowedTools)
+		go m.runHeadless(ctx, a, cfg.Prompt, cfg.AllowedTools, cfg.RequirePermissions)
 	case "interactive":
 		a.TmuxSession = fmt.Sprintf("synapse-%s-%s", sanitizeSessionName(cfg.Name), id)
 		claudeCmd, buildErr := m.buildClaudeCmd(cfg)
@@ -129,7 +129,7 @@ func (m *Manager) buildClaudeCmd(cfg RunConfig) (string, error) {
 	parts := []string{"claude"}
 	if len(cfg.AllowedTools) > 0 {
 		parts = append(parts, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
-	} else {
+	} else if !cfg.RequirePermissions {
 		parts = append(parts, "--dangerously-skip-permissions")
 	}
 	if cfg.Model != "" {
