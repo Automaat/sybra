@@ -11,6 +11,7 @@ export const AgentErrorPrefix = 'agent:error:'
 export const OrchestratorState = 'orchestrator:state'
 export const ReviewsUpdated = 'reviews:updated'
 export const RenovateUpdated = 'renovate:updated'
+export const IssuesUpdated = 'issues:updated'
 export const Notification = 'notification'
 export const AppQuitConfirm = 'app:quit-confirm'
 

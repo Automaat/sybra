@@ -204,6 +204,34 @@ export namespace github {
 	        this.conclusion = source["conclusion"];
 	    }
 	}
+	export class Issue {
+	    number: number;
+	    title: string;
+	    url: string;
+	    repository: string;
+	    repoName: string;
+	    labels: string[];
+	    author: string;
+	    createdAt: string;
+	    updatedAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Issue(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.repository = source["repository"];
+	        this.repoName = source["repoName"];
+	        this.labels = source["labels"];
+	        this.author = source["author"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class PullRequest {
 	    number: number;
 	    title: string;
@@ -218,13 +246,14 @@ export namespace github {
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
+	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PullRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -240,6 +269,7 @@ export namespace github {
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
+	        this.viewerHasApproved = source["viewerHasApproved"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
@@ -258,14 +288,15 @@ export namespace github {
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
+	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
 	    checkRuns: CheckRunInfo[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RenovatePR(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -281,6 +312,7 @@ export namespace github {
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
+	        this.viewerHasApproved = source["viewerHasApproved"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	        this.checkRuns = this.convertValues(source["checkRuns"], CheckRunInfo);

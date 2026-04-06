@@ -62,8 +62,16 @@ export function EvaluateTask(arg1, arg2) {
   return window['go']['main']['App']['EvaluateTask'](arg1, arg2);
 }
 
+export function FetchAssignedIssues() {
+  return window['go']['main']['App']['FetchAssignedIssues']();
+}
+
 export function FetchRenovatePRs() {
   return window['go']['main']['App']['FetchRenovatePRs']();
+}
+
+export function FixRenovateCI(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['FixRenovateCI'](arg1, arg2, arg3, arg4);
 }
 
 export function FetchReviews() {

@@ -47,13 +47,33 @@ vi.mock('../stores/renovate.svelte.js', () => ({
   renovateStore: mockRenovateStore,
 }))
 
+const mockIssueStore = {
+  issues: [] as any[],
+  loading: false,
+  error: '',
+  get count() {
+    return this.issues.length
+  },
+  load: vi.fn(),
+  listen: vi.fn(),
+  stopListening: vi.fn(),
+  startPolling: vi.fn(),
+  stopPolling: vi.fn(),
+}
+
+vi.mock('../stores/issues.svelte.js', () => ({
+  issueStore: mockIssueStore,
+}))
+
 vi.mock('../components/PRCard.svelte', () => ({ default: () => {} }))
 vi.mock('../components/RenovatePRCard.svelte', () => ({ default: () => {} }))
+vi.mock('../components/IssueCard.svelte', () => ({ default: () => {} }))
 vi.mock('../components/PRDetailView.svelte', () => ({ default: () => {} }))
 vi.mock('../../wailsjs/go/main/App.js', () => ({
   ApproveRenovatePR: vi.fn(),
   MergeRenovatePR: vi.fn(),
   RerunRenovateChecks: vi.fn(),
+  FixRenovateCI: vi.fn(),
 }))
 
 const GitHub = (await import('./GitHub.svelte')).default
@@ -68,17 +88,21 @@ describe('GitHub', () => {
     mockRenovateStore.prs = []
     mockRenovateStore.loading = false
     mockRenovateStore.error = ''
+    mockIssueStore.issues = []
+    mockIssueStore.loading = false
+    mockIssueStore.error = ''
   })
 
   afterEach(() => {
     cleanup()
   })
 
-  it('renders tab bar with My PRs, Reviews, Renovate', () => {
+  it('renders tab bar with My PRs, Reviews, Renovate, Issues', () => {
     render(GitHub, { props: {} })
     expect(screen.getByText('My PRs')).toBeDefined()
     expect(screen.getByText('Reviews')).toBeDefined()
     expect(screen.getByText('Renovate')).toBeDefined()
+    expect(screen.getByText('Issues')).toBeDefined()
   })
 
   it('shows empty my PRs message on default tab', () => {

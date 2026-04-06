@@ -9,9 +9,10 @@
     onapprove?: () => void
     onmerge?: () => void
     onrerun?: () => void
+    onfix?: () => void
   }
 
-  const { pr, checkRuns, onback, onapprove, onmerge, onrerun }: Props = $props()
+  const { pr, checkRuns, onback, onapprove, onmerge, onrerun, onfix }: Props = $props()
 
   function timeAgo(date: string): string {
     if (!date) return ''
@@ -27,7 +28,8 @@
   const isEligible = $derived(
     !pr.isDraft &&
     pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '')
+    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+    (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
   )
 
   const hasFailed = $derived(pr.ciStatus === 'FAILURE')
@@ -132,7 +134,7 @@
       Open in Browser
     </button>
 
-    {#if onapprove && pr.reviewDecision !== 'APPROVED'}
+    {#if onapprove && !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
       <button
         type="button"
         class="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700"
@@ -159,6 +161,16 @@
         onclick={onrerun}
       >
         Rerun Failed
+      </button>
+    {/if}
+
+    {#if onfix && hasFailed}
+      <button
+        type="button"
+        class="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+        onclick={onfix}
+      >
+        Fix
       </button>
     {/if}
   </div>

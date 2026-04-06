@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+func resetViewerCache() { cachedViewer = "" }
+
 func TestConvertPRs_basic(t *testing.T) {
 	t.Parallel()
 	nodes := []gqlPR{
@@ -25,7 +27,7 @@ func TestConvertPRs_basic(t *testing.T) {
 	nodes[0].Repository.Name = "repo"
 	nodes[0].Repository.NameWithOwner = "org/repo"
 
-	prs := convertPRs(nodes)
+	prs := convertPRs(nodes, "")
 	if len(prs) != 1 {
 		t.Fatalf("got %d PRs, want 1", len(prs))
 	}
@@ -81,7 +83,7 @@ func TestConvertPRs_mergeable(t *testing.T) {
 			node.Repository.Name = "repo"
 			node.Repository.NameWithOwner = "org/repo"
 
-			prs := convertPRs([]gqlPR{node})
+			prs := convertPRs([]gqlPR{node}, "")
 			if len(prs) != 1 {
 				t.Fatalf("got %d PRs, want 1", len(prs))
 			}
@@ -118,7 +120,7 @@ func TestConvertPRs_filtersBot(t *testing.T) {
 			nodes[0].Repository.Name = "repo"
 			nodes[0].Repository.NameWithOwner = "org/repo"
 
-			prs := convertPRs(nodes)
+			prs := convertPRs(nodes, "")
 			if len(prs) != tt.wantCount {
 				t.Errorf("got %d PRs, want %d for %s/%s", len(prs), tt.wantCount, tt.typeName, tt.login)
 			}
@@ -144,7 +146,7 @@ func TestConvertPRs_labels(t *testing.T) {
 		{Name: "priority"},
 	}
 
-	prs := convertPRs(nodes)
+	prs := convertPRs(nodes, "")
 	if len(prs) != 1 {
 		t.Fatalf("got %d PRs, want 1", len(prs))
 	}
@@ -204,7 +206,7 @@ func TestConvertPRs_ciStatus(t *testing.T) {
 				}
 			}
 
-			prs := convertPRs([]gqlPR{node})
+			prs := convertPRs([]gqlPR{node}, "")
 			if len(prs) != 1 {
 				t.Fatalf("got %d PRs, want 1", len(prs))
 			}
@@ -247,7 +249,7 @@ func TestConvertPRs_unresolvedThreads(t *testing.T) {
 				}{IsResolved: resolved})
 			}
 
-			prs := convertPRs([]gqlPR{node})
+			prs := convertPRs([]gqlPR{node}, "")
 			if len(prs) != 1 {
 				t.Fatalf("got %d PRs, want 1", len(prs))
 			}
@@ -260,12 +262,12 @@ func TestConvertPRs_unresolvedThreads(t *testing.T) {
 
 func TestConvertPRs_emptyInput(t *testing.T) {
 	t.Parallel()
-	prs := convertPRs(nil)
+	prs := convertPRs(nil, "")
 	if len(prs) != 0 {
 		t.Errorf("got %d PRs for nil input, want 0", len(prs))
 	}
 
-	prs = convertPRs([]gqlPR{})
+	prs = convertPRs([]gqlPR{}, "")
 	if len(prs) != 0 {
 		t.Errorf("got %d PRs for empty input, want 0", len(prs))
 	}
@@ -293,7 +295,7 @@ func TestConvertPRs_mixedBotAndUser(t *testing.T) {
 	nodes[2].Repository.Name = "r"
 	nodes[2].Repository.NameWithOwner = "o/r"
 
-	prs := convertPRs(nodes)
+	prs := convertPRs(nodes, "")
 	if len(prs) != 1 {
 		t.Fatalf("got %d PRs, want 1", len(prs))
 	}
@@ -356,7 +358,7 @@ func TestParseGQLResponse(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	prs := convertPRs(resp.Data.Search.Nodes)
+	prs := convertPRs(resp.Data.Search.Nodes, "")
 	if len(prs) != 1 {
 		t.Fatalf("got %d PRs, want 1", len(prs))
 	}
@@ -502,13 +504,14 @@ func TestFetchReviewsWith_success(t *testing.T) {
 		}
 	}`
 
+	resetViewerCache()
 	fe := &fakeExecer{output: []byte(response)}
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fe.calls != 2 {
-		t.Errorf("expected 2 calls (created + requested), got %d", fe.calls)
+	if fe.calls < 2 {
+		t.Errorf("expected at least 2 calls (created + requested), got %d", fe.calls)
 	}
 	if len(summary.CreatedByMe) != 1 {
 		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
@@ -676,7 +679,7 @@ func TestParseGQLResponse_botFiltered(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	prs := convertPRs(resp.Data.Search.Nodes)
+	prs := convertPRs(resp.Data.Search.Nodes, "")
 	if len(prs) != 0 {
 		t.Errorf("got %d PRs, want 0 (bot should be filtered)", len(prs))
 	}

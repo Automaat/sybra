@@ -4,6 +4,7 @@
     MergeRenovatePR,
     ApproveRenovatePR,
     RerunRenovateChecks,
+    FixRenovateCI,
   } from '../../wailsjs/go/main/App.js'
   import { renovateStore } from '../stores/renovate.svelte.js'
 
@@ -29,7 +30,8 @@
   const isEligible = $derived(
     !pr.isDraft &&
     pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '')
+    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+    (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
   )
 
   async function approve(e: Event) {
@@ -59,6 +61,17 @@
     busy = 'rerun'
     try {
       await RerunRenovateChecks(pr.repository, pr.number)
+      await renovateStore.load()
+    } finally {
+      busy = ''
+    }
+  }
+
+  async function fix(e: Event) {
+    e.stopPropagation()
+    busy = 'fix'
+    try {
+      await FixRenovateCI(pr.repository, pr.number, pr.headRefName, pr.title)
       await renovateStore.load()
     } finally {
       busy = ''
@@ -107,7 +120,7 @@
   </div>
 
   <div class="mt-2 flex gap-1.5">
-    {#if pr.reviewDecision !== 'APPROVED'}
+    {#if !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
       <button
         type="button"
         class="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
@@ -137,6 +150,14 @@
         disabled={busy !== ''}
       >
         {busy === 'rerun' ? '...' : 'Rerun'}
+      </button>
+      <button
+        type="button"
+        class="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+        onclick={fix}
+        disabled={busy !== ''}
+      >
+        {busy === 'fix' ? '...' : 'Fix'}
       </button>
     {/if}
   </div>

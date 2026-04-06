@@ -25,6 +25,9 @@ const (
 	// Todoist integration events.
 	TodoistSynced = "todoist:synced"
 
+	// GitHub issues events.
+	IssuesUpdated = "issues:updated"
+
 	// App lifecycle events.
 	AppQuitConfirm = "app:quit-confirm"
 )

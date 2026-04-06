@@ -26,6 +26,7 @@ const (
 	EventReviewPublished     = "review.published"
 	EventTodoistImported     = "todoist.imported"
 	EventTodoistCompleted    = "todoist.completed"
+	EventRenovateCIFix       = "renovate.ci_fix_started"
 )
 
 type Event struct {
