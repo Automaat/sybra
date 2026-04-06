@@ -4,18 +4,25 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCleanupRemovesOldFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
+	now := time.Now().UTC()
+	today := now.Format(time.DateOnly)
+	yesterday := now.AddDate(0, 0, -1).Format(time.DateOnly)
+	old5 := now.AddDate(0, 0, -5).Format(time.DateOnly)
+	old30 := now.AddDate(0, 0, -30).Format(time.DateOnly)
+
 	files := []string{
-		"2026-03-01.ndjson", // old — should be removed
-		"2026-03-30.ndjson", // old — should be removed
-		"2026-04-02.ndjson", // recent — keep
-		"2026-04-03.ndjson", // today — keep
-		"notes.txt",         // not ndjson — keep
+		old30 + ".ndjson",     // old — should be removed
+		old5 + ".ndjson",      // old — should be removed
+		yesterday + ".ndjson", // recent — keep
+		today + ".ndjson",     // today — keep
+		"notes.txt",           // not ndjson — keep
 	}
 	for _, f := range files {
 		_ = os.WriteFile(filepath.Join(dir, f), []byte("{}"), 0o644)
@@ -31,17 +38,17 @@ func TestCleanupRemovesOldFiles(t *testing.T) {
 		names[e.Name()] = true
 	}
 
-	if names["2026-03-01.ndjson"] {
-		t.Error("old file 2026-03-01 not removed")
+	if names[old30+".ndjson"] {
+		t.Error("old file not removed:", old30)
 	}
-	if names["2026-03-30.ndjson"] {
-		t.Error("old file 2026-03-30 not removed")
+	if names[old5+".ndjson"] {
+		t.Error("old file not removed:", old5)
 	}
-	if !names["2026-04-02.ndjson"] {
-		t.Error("recent file 2026-04-02 removed")
+	if !names[yesterday+".ndjson"] {
+		t.Error("recent file removed:", yesterday)
 	}
-	if !names["2026-04-03.ndjson"] {
-		t.Error("today file removed")
+	if !names[today+".ndjson"] {
+		t.Error("today file removed:", today)
 	}
 	if !names["notes.txt"] {
 		t.Error("non-ndjson file removed")
