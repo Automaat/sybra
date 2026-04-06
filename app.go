@@ -169,6 +169,7 @@ func (a *App) startup(ctx context.Context) {
 	if a.renovateHandler != nil {
 		a.wg.Go(func() { a.renovatePollLoop(ctx) })
 	}
+	a.wg.Go(func() { a.issuesPollLoop(ctx) })
 	a.logger.Info("app.started")
 }
 

@@ -602,3 +602,110 @@ func fetchPRBranchWith(e execer, repo string, number int) (string, error) {
 	}
 	return b.HeadRefName, nil
 }
+
+const issueQuery = `query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on Issue {
+        number
+        title
+        url
+        state
+        createdAt
+        updatedAt
+        author { login }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+      }
+    }
+  }
+}`
+
+type gqlIssueResponse struct {
+	Data struct {
+		Search struct {
+			Nodes []gqlIssue `json:"nodes"`
+		} `json:"search"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type gqlIssue struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	State     string `json:"state"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+	Author    struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Repository struct {
+		Name          string `json:"name"`
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
+	Labels struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+}
+
+// FetchAssignedIssues returns open issues assigned to the authenticated user.
+func FetchAssignedIssues() ([]Issue, error) {
+	return fetchAssignedIssuesWith(defaultExecer)
+}
+
+func fetchAssignedIssuesWith(e execer) ([]Issue, error) {
+	return searchIssuesWith(e, "is:issue is:open assignee:@me sort:updated-desc")
+}
+
+func searchIssuesWith(e execer, query string) ([]Issue, error) {
+	out, err := e.run("api", "graphql",
+		"-f", "query="+issueQuery,
+		"-f", "q="+query)
+	if err != nil {
+		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	var resp gqlIssueResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	}
+
+	return convertIssues(resp.Data.Search.Nodes), nil
+}
+
+func convertIssues(nodes []gqlIssue) []Issue {
+	issues := make([]Issue, 0, len(nodes))
+	for i := range nodes {
+		n := &nodes[i]
+		// Skip PRs that sneak in (they are technically issues).
+		if n.URL == "" || n.Number == 0 {
+			continue
+		}
+
+		labels := make([]string, 0, len(n.Labels.Nodes))
+		for _, l := range n.Labels.Nodes {
+			labels = append(labels, l.Name)
+		}
+
+		issues = append(issues, Issue{
+			Number:     n.Number,
+			Title:      n.Title,
+			URL:        n.URL,
+			Repository: n.Repository.NameWithOwner,
+			RepoName:   n.Repository.Name,
+			Labels:     labels,
+			Author:     n.Author.Login,
+			CreatedAt:  n.CreatedAt,
+			UpdatedAt:  n.UpdatedAt,
+		})
+	}
+	return issues
+}

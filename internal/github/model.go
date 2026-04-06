@@ -37,3 +37,16 @@ type RenovatePR struct {
 	PullRequest
 	CheckRuns []CheckRunInfo `json:"checkRuns"`
 }
+
+// Issue represents a GitHub issue for display.
+type Issue struct {
+	Number     int      `json:"number"`
+	Title      string   `json:"title"`
+	URL        string   `json:"url"`
+	Repository string   `json:"repository"`
+	RepoName   string   `json:"repoName"`
+	Labels     []string `json:"labels"`
+	Author     string   `json:"author"`
+	CreatedAt  string   `json:"createdAt"`
+	UpdatedAt  string   `json:"updatedAt"`
+}

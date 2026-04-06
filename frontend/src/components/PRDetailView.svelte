@@ -9,9 +9,10 @@
     onapprove?: () => void
     onmerge?: () => void
     onrerun?: () => void
+    onfix?: () => void
   }
 
-  const { pr, checkRuns, onback, onapprove, onmerge, onrerun }: Props = $props()
+  const { pr, checkRuns, onback, onapprove, onmerge, onrerun, onfix }: Props = $props()
 
   function timeAgo(date: string): string {
     if (!date) return ''
@@ -159,6 +160,16 @@
         onclick={onrerun}
       >
         Rerun Failed
+      </button>
+    {/if}
+
+    {#if onfix && hasFailed}
+      <button
+        type="button"
+        class="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+        onclick={onfix}
+      >
+        Fix
       </button>
     {/if}
   </div>

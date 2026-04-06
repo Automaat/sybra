@@ -1,17 +1,20 @@
 <script lang="ts">
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { renovateStore } from '../stores/renovate.svelte.js'
+  import { issueStore } from '../stores/issues.svelte.js'
   import PRCard from '../components/PRCard.svelte'
   import RenovatePRCard from '../components/RenovatePRCard.svelte'
+  import IssueCard from '../components/IssueCard.svelte'
   import PRDetailView from '../components/PRDetailView.svelte'
   import {
     ApproveRenovatePR,
     MergeRenovatePR,
     RerunRenovateChecks,
+    FixRenovateCI,
   } from '../../wailsjs/go/main/App.js'
   import type { github } from '../../wailsjs/go/models.js'
 
-  type Tab = 'my-prs' | 'reviews' | 'renovate'
+  type Tab = 'my-prs' | 'reviews' | 'renovate' | 'issues'
 
   let activeTab = $state<Tab>('my-prs')
   let selectedPR = $state<{ pr: github.PullRequest; checkRuns?: github.CheckRunInfo[]; source: Tab } | null>(null)
@@ -22,10 +25,15 @@
     renovateStore.load()
     renovateStore.startPolling()
     renovateStore.listen()
+    issueStore.load()
+    issueStore.startPolling()
+    issueStore.listen()
     return () => {
       reviewStore.stopPolling()
       renovateStore.stopPolling()
       renovateStore.stopListening()
+      issueStore.stopPolling()
+      issueStore.stopListening()
     }
   })
 
@@ -41,6 +49,7 @@
     { id: 'my-prs', label: 'My PRs', count: () => reviewStore.createdByMe.length },
     { id: 'reviews', label: 'Reviews', count: () => reviewStore.reviewRequested.length },
     { id: 'renovate', label: 'Renovate', count: () => renovateStore.count },
+    { id: 'issues', label: 'Issues', count: () => issueStore.count },
   ]
 </script>
 
@@ -61,6 +70,11 @@
     } : undefined}
     onrerun={selectedPR.source === 'renovate' ? async () => {
       await RerunRenovateChecks(selectedPR!.pr.repository, selectedPR!.pr.number)
+      await renovateStore.load()
+      clearSelection()
+    } : undefined}
+    onfix={selectedPR.source === 'renovate' ? async () => {
+      await FixRenovateCI(selectedPR!.pr.repository, selectedPR!.pr.number, selectedPR!.pr.headRefName, selectedPR!.pr.title)
       await renovateStore.load()
       clearSelection()
     } : undefined}
@@ -93,6 +107,7 @@
         class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
         onclick={() => {
           if (activeTab === 'renovate') renovateStore.load()
+          else if (activeTab === 'issues') issueStore.load()
           else reviewStore.load()
         }}
       >
@@ -137,6 +152,21 @@
         <div class="flex flex-col gap-2">
           {#each renovateStore.prs as pr (pr.url)}
             <RenovatePRCard {pr} onselect={() => selectPR(pr, pr.checkRuns)} />
+          {/each}
+        </div>
+      {/if}
+
+    {:else if activeTab === 'issues'}
+      {#if issueStore.loading && issueStore.count === 0}
+        <p class="text-center text-sm opacity-60">Loading...</p>
+      {:else if issueStore.error}
+        <p class="text-center text-sm text-error-500">{issueStore.error}</p>
+      {:else if issueStore.count === 0}
+        <p class="py-8 text-center text-sm opacity-50">No assigned issues</p>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each issueStore.issues as issue (issue.url)}
+            <IssueCard {issue} />
           {/each}
         </div>
       {/if}

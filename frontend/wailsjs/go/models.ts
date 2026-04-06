@@ -204,6 +204,34 @@ export namespace github {
 	        this.conclusion = source["conclusion"];
 	    }
 	}
+	export class Issue {
+	    number: number;
+	    title: string;
+	    url: string;
+	    repository: string;
+	    repoName: string;
+	    labels: string[];
+	    author: string;
+	    createdAt: string;
+	    updatedAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Issue(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.repository = source["repository"];
+	        this.repoName = source["repoName"];
+	        this.labels = source["labels"];
+	        this.author = source["author"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class PullRequest {
 	    number: number;
 	    title: string;

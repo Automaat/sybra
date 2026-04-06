@@ -40,7 +40,11 @@ export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
 export function EvaluateTask(arg1:string,arg2:string):Promise<void>;
 
+export function FetchAssignedIssues():Promise<Array<github.Issue>>;
+
 export function FetchRenovatePRs():Promise<Array<github.RenovatePR>>;
+
+export function FixRenovateCI(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
 
 export function FetchReviews():Promise<github.ReviewSummary>;
 
