@@ -43,6 +43,7 @@ type RenovatePR struct {
 type Issue struct {
 	Number     int      `json:"number"`
 	Title      string   `json:"title"`
+	Body       string   `json:"body"`
 	URL        string   `json:"url"`
 	Repository string   `json:"repository"`
 	RepoName   string   `json:"repoName"`

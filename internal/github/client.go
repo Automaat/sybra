@@ -659,6 +659,7 @@ const issueQuery = `query($q: String!) {
       ... on Issue {
         number
         title
+        body
         url
         state
         createdAt
@@ -685,6 +686,7 @@ type gqlIssueResponse struct {
 type gqlIssue struct {
 	Number    int    `json:"number"`
 	Title     string `json:"title"`
+	Body      string `json:"body"`
 	URL       string `json:"url"`
 	State     string `json:"state"`
 	CreatedAt string `json:"createdAt"`
@@ -748,6 +750,7 @@ func convertIssues(nodes []gqlIssue) []Issue {
 		issues = append(issues, Issue{
 			Number:     n.Number,
 			Title:      n.Title,
+			Body:       n.Body,
 			URL:        n.URL,
 			Repository: n.Repository.NameWithOwner,
 			RepoName:   n.Repository.Name,
