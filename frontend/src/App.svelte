@@ -7,7 +7,7 @@
   import { projectStore } from './stores/projects.svelte.js'
   import TaskList from './pages/TaskList.svelte'
   import TaskDetail from './pages/TaskDetail.svelte'
-  import AgentList from './pages/AgentList.svelte'
+  import Agents from './pages/Agents.svelte'
   import AgentDetail from './pages/AgentDetail.svelte'
   import ProjectList from './pages/ProjectList.svelte'
   import ProjectDetail from './pages/ProjectDetail.svelte'
@@ -17,8 +17,6 @@
   import ToastContainer from './components/ToastContainer.svelte'
   import { notificationStore } from './stores/notifications.svelte.js'
   import Dashboard from './pages/Dashboard.svelte'
-  import TmuxSessions from './pages/TmuxSessions.svelte'
-  import Orchestrator from './pages/Orchestrator.svelte'
   import GitHub from './pages/GitHub.svelte'
   import Stats from './pages/Stats.svelte'
   import PlanReviews from './pages/PlanReviews.svelte'
@@ -30,10 +28,8 @@
     | { kind: 'task-detail'; taskId: string }
     | { kind: 'project-list' }
     | { kind: 'project-detail'; projectId: string }
-    | { kind: 'agent-list' }
+    | { kind: 'agents'; tab?: string }
     | { kind: 'agent-detail'; agentId: string }
-    | { kind: 'orchestrator' }
-    | { kind: 'tmux' }
     | { kind: 'github' }
     | { kind: 'stats' }
     | { kind: 'plan-reviews' }
@@ -52,9 +48,7 @@
     page.kind === 'task-detail' ? 'Task Detail' :
     page.kind === 'project-list' ? 'Projects' :
     page.kind === 'project-detail' ? 'Project Detail' :
-    page.kind === 'agent-list' ? 'Agents' :
-    page.kind === 'orchestrator' ? 'Orchestrator' :
-    page.kind === 'tmux' ? 'Tmux Sessions' :
+    page.kind === 'agents' ? 'Agents' :
     page.kind === 'github' ? 'GitHub' :
     page.kind === 'stats' ? 'Stats' :
     page.kind === 'plan-reviews' ? 'Plan Reviews' :
@@ -116,25 +110,17 @@
       }
       if (e.metaKey && e.key === '4') {
         e.preventDefault()
-        page = { kind: 'agent-list' }
+        page = { kind: 'agents' }
       }
       if (e.metaKey && e.key === '5') {
         e.preventDefault()
-        page = { kind: 'orchestrator' }
+        page = { kind: 'github' }
       }
       if (e.metaKey && e.key === '6') {
         e.preventDefault()
-        page = { kind: 'tmux' }
-      }
-      if (e.metaKey && e.key === '7') {
-        e.preventDefault()
-        page = { kind: 'github' }
-      }
-      if (e.metaKey && e.key === '8') {
-        e.preventDefault()
         page = { kind: 'plan-reviews' }
       }
-      if (e.metaKey && e.key === '9') {
+      if (e.metaKey && e.key === '7') {
         e.preventDefault()
         page = { kind: 'stats' }
       }
@@ -192,31 +178,13 @@
         <Navigation.TriggerText>Projects</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
-        onclick={() => (page = { kind: 'agent-list' })}
-        data-active={page.kind === 'agent-list' || page.kind === 'agent-detail' || undefined}
+        onclick={() => (page = { kind: 'agents' })}
+        data-active={page.kind === 'agents' || page.kind === 'agent-detail' || undefined}
       >
         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
         </svg>
         <Navigation.TriggerText>Agents</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'orchestrator' })}
-        data-active={page.kind === 'orchestrator' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-        </svg>
-        <Navigation.TriggerText>Orchestrator</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'tmux' })}
-        data-active={page.kind === 'tmux' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-        <Navigation.TriggerText>Tmux</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
         onclick={() => (page = { kind: 'github' })}
@@ -309,18 +277,17 @@
           onback={() => (page = { kind: 'project-list' })}
           onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
         />
-      {:else if page.kind === 'agent-list'}
-        <AgentList onselect={(id) => (page = { kind: 'agent-detail', agentId: id })} />
+      {:else if page.kind === 'agents'}
+        <Agents
+          initialTab={page.tab}
+          onselect={(id) => (page = { kind: 'agent-detail', agentId: id })}
+        />
       {:else if page.kind === 'agent-detail'}
         <AgentDetail
           agentId={page.agentId}
-          onback={() => (page = { kind: 'agent-list' })}
+          onback={() => (page = { kind: 'agents' })}
           onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
         />
-      {:else if page.kind === 'orchestrator'}
-        <Orchestrator />
-      {:else if page.kind === 'tmux'}
-        <TmuxSessions />
       {:else if page.kind === 'github'}
         <GitHub />
       {:else if page.kind === 'plan-reviews'}
