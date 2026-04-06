@@ -14,6 +14,7 @@ type Config struct {
 	Agent        AgentDefaults      `yaml:"agent" json:"agent"`
 	Notification NotificationConfig `yaml:"notification" json:"notification"`
 	Orchestrator OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
+	Todoist      TodoistConfig      `yaml:"todoist" json:"todoist"`
 	TasksDir     string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir    string             `yaml:"skills_dir" json:"skillsDir"`
 	RepoDir      string             `yaml:"repo_dir" json:"repoDir"`
@@ -47,6 +48,13 @@ type NotificationConfig struct {
 type OrchestratorConfig struct {
 	AutoTriage bool `yaml:"auto_triage" json:"autoTriage"`
 	AutoPlan   bool `yaml:"auto_plan" json:"autoPlan"`
+}
+
+type TodoistConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	APIToken    string `yaml:"api_token" json:"apiToken"`
+	ProjectID   string `yaml:"project_id" json:"projectId"`
+	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
 }
 
 func HomeDir() string {
@@ -152,6 +160,13 @@ func Load() (*Config, error) {
 	}
 	if cfg.WorktreesDir == "" {
 		cfg.WorktreesDir = defaultWorktreesDir()
+	}
+
+	if v := os.Getenv("SYNAPSE_TODOIST_TOKEN"); v != "" {
+		cfg.Todoist.APIToken = v
+	}
+	if cfg.Todoist.PollSeconds <= 0 {
+		cfg.Todoist.PollSeconds = 120
 	}
 
 	return cfg, nil

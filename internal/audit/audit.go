@@ -24,6 +24,8 @@ const (
 	EventPRAutoMerged        = "pr_monitor.auto_merged"
 	EventReviewStarted       = "review.agent_started"
 	EventReviewPublished     = "review.published"
+	EventTodoistImported     = "todoist.imported"
+	EventTodoistCompleted    = "todoist.completed"
 )
 
 type Event struct {

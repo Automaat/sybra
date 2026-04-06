@@ -20,6 +20,7 @@ type AppSettings struct {
 	Orchestrator config.OrchestratorConfig `json:"orchestrator"`
 	Logging      LoggingSettings           `json:"logging"`
 	Audit        config.AuditConfig        `json:"audit"`
+	Todoist      config.TodoistConfig      `json:"todoist"`
 	Directories  map[string]string         `json:"directories"`
 }
 
@@ -36,6 +37,7 @@ func (a *App) GetSettings() AppSettings {
 			MaxFiles:  c.Logging.MaxFiles,
 		},
 		Audit:       c.Audit,
+		Todoist:     c.Todoist,
 		Directories: c.Directories(),
 	}
 }
@@ -66,6 +68,12 @@ func (a *App) UpdateSettings(s AppSettings) error {
 	if s.Audit.RetentionDays < 1 || s.Audit.RetentionDays > 365 {
 		return fmt.Errorf("retentionDays must be 1–365")
 	}
+	if s.Todoist.Enabled && s.Todoist.APIToken == "" {
+		return fmt.Errorf("todoist API token required when enabled")
+	}
+	if s.Todoist.PollSeconds < 30 || s.Todoist.PollSeconds > 3600 {
+		s.Todoist.PollSeconds = 120
+	}
 
 	a.cfg.Agent = s.Agent
 	a.cfg.Notification = s.Notification
@@ -74,6 +82,7 @@ func (a *App) UpdateSettings(s AppSettings) error {
 	a.cfg.Logging.MaxSizeMB = s.Logging.MaxSizeMB
 	a.cfg.Logging.MaxFiles = s.Logging.MaxFiles
 	a.cfg.Audit = s.Audit
+	a.cfg.Todoist = s.Todoist
 
 	// Hot-reload side effects
 	a.notifier.SetDesktop(s.Notification.Desktop)
