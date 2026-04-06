@@ -51,6 +51,33 @@
     { id: 'renovate', label: 'Renovate', count: () => renovateStore.count },
     { id: 'issues', label: 'Issues', count: () => issueStore.count },
   ]
+
+  function prPriority(pr: github.PullRequest): number {
+    const ready = !pr.isDraft && pr.mergeable === 'MERGEABLE' &&
+      (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+      (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
+    if (ready) return 0 // ready to merge
+    if (!pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED') return 1 // to approve
+    if (pr.ciStatus === 'FAILURE' || pr.mergeable === 'CONFLICTING') return 2 // to fix
+    return 3
+  }
+
+  type GroupedPRs<T extends github.PullRequest> = { repo: string; prs: T[] }[]
+
+  function groupByRepo<T extends github.PullRequest>(prs: T[]): GroupedPRs<T> {
+    const sorted = [...prs].sort((a, b) => prPriority(a) - prPriority(b))
+    const groups = new Map<string, T[]>()
+    for (const pr of sorted) {
+      const list = groups.get(pr.repository)
+      if (list) list.push(pr)
+      else groups.set(pr.repository, [pr])
+    }
+    return Array.from(groups, ([repo, prs]) => ({ repo, prs }))
+  }
+
+  const groupedMyPRs = $derived(groupByRepo(reviewStore.createdByMe))
+  const groupedReviews = $derived(groupByRepo(reviewStore.reviewRequested))
+  const groupedRenovate = $derived(groupByRepo(renovateStore.prs))
 </script>
 
 {#if selectedPR}
@@ -121,11 +148,14 @@
       {:else if reviewStore.createdByMe.length === 0}
         <p class="py-8 text-center text-sm opacity-50">No open pull requests</p>
       {:else}
-        <div class="flex flex-col gap-2">
-          {#each reviewStore.createdByMe as pr (pr.url)}
-            <PRCard {pr} onselect={() => selectPR(pr)} />
-          {/each}
-        </div>
+        {#each groupedMyPRs as group (group.repo)}
+          <div class="flex flex-col gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-surface-400">{group.repo}</h3>
+            {#each group.prs as pr (pr.url)}
+              <PRCard {pr} onselect={() => selectPR(pr)} />
+            {/each}
+          </div>
+        {/each}
       {/if}
 
     {:else if activeTab === 'reviews'}
@@ -134,11 +164,14 @@
       {:else if reviewStore.reviewRequested.length === 0}
         <p class="py-8 text-center text-sm opacity-50">No pending review requests</p>
       {:else}
-        <div class="flex flex-col gap-2">
-          {#each reviewStore.reviewRequested as pr (pr.url)}
-            <PRCard {pr} onselect={() => selectPR(pr)} />
-          {/each}
-        </div>
+        {#each groupedReviews as group (group.repo)}
+          <div class="flex flex-col gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-surface-400">{group.repo}</h3>
+            {#each group.prs as pr (pr.url)}
+              <PRCard {pr} onselect={() => selectPR(pr)} />
+            {/each}
+          </div>
+        {/each}
       {/if}
 
     {:else if activeTab === 'renovate'}
@@ -149,11 +182,14 @@
       {:else if renovateStore.count === 0}
         <p class="py-8 text-center text-sm opacity-50">No Renovate PRs</p>
       {:else}
-        <div class="flex flex-col gap-2">
-          {#each renovateStore.prs as pr (pr.url)}
-            <RenovatePRCard {pr} onselect={() => selectPR(pr, pr.checkRuns)} />
-          {/each}
-        </div>
+        {#each groupedRenovate as group (group.repo)}
+          <div class="flex flex-col gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-surface-400">{group.repo}</h3>
+            {#each group.prs as pr (pr.url)}
+              <RenovatePRCard {pr} onselect={() => selectPR(pr, pr.checkRuns)} />
+            {/each}
+          </div>
+        {/each}
       {/if}
 
     {:else if activeTab === 'issues'}

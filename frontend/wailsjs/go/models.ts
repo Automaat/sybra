@@ -246,13 +246,14 @@ export namespace github {
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
+	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PullRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -268,6 +269,7 @@ export namespace github {
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
+	        this.viewerHasApproved = source["viewerHasApproved"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
@@ -286,14 +288,15 @@ export namespace github {
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
+	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
 	    checkRuns: CheckRunInfo[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RenovatePR(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -309,6 +312,7 @@ export namespace github {
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
+	        this.viewerHasApproved = source["viewerHasApproved"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	        this.checkRuns = this.convertValues(source["checkRuns"], CheckRunInfo);

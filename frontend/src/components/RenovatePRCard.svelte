@@ -30,7 +30,8 @@
   const isEligible = $derived(
     !pr.isDraft &&
     pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '')
+    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+    (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
   )
 
   async function approve(e: Event) {
@@ -119,7 +120,7 @@
   </div>
 
   <div class="mt-2 flex gap-1.5">
-    {#if pr.reviewDecision !== 'APPROVED'}
+    {#if !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
       <button
         type="button"
         class="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"

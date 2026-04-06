@@ -21,6 +21,20 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 
 var defaultExecer execer = ghExecer{}
 
+var cachedViewer string
+
+func viewerLogin(e execer) string {
+	if cachedViewer != "" {
+		return cachedViewer
+	}
+	out, err := e.run("api", "user", "-q", ".login")
+	if err != nil {
+		return ""
+	}
+	cachedViewer = strings.TrimSpace(string(out))
+	return cachedViewer
+}
+
 const prQuery = `query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes {
@@ -46,6 +60,9 @@ const prQuery = `query($q: String!) {
         }
         reviewThreads(first: 100) {
           nodes { isResolved }
+        }
+        latestReviews(first: 20) {
+          nodes { state author { login } }
         }
       }
     }
@@ -100,6 +117,14 @@ type gqlPR struct {
 			IsResolved bool `json:"isResolved"`
 		} `json:"nodes"`
 	} `json:"reviewThreads"`
+	LatestReviews struct {
+		Nodes []struct {
+			State  string `json:"state"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"latestReviews"`
 }
 
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
@@ -141,10 +166,10 @@ func searchPRsWith(e execer, query string) ([]PullRequest, error) {
 		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
 	}
 
-	return convertPRs(resp.Data.Search.Nodes), nil
+	return convertPRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
 }
 
-func convertPRs(nodes []gqlPR) []PullRequest {
+func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	prs := make([]PullRequest, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
@@ -171,22 +196,33 @@ func convertPRs(nodes []gqlPR) []PullRequest {
 			}
 		}
 
+		var viewerApproved bool
+		if viewer != "" {
+			for _, r := range n.LatestReviews.Nodes {
+				if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
+					viewerApproved = true
+					break
+				}
+			}
+		}
+
 		prs = append(prs, PullRequest{
-			Number:          n.Number,
-			Title:           n.Title,
-			URL:             n.URL,
-			HeadRefName:     n.HeadRefName,
-			Repository:      n.Repository.NameWithOwner,
-			RepoName:        n.Repository.Name,
-			Author:          n.Author.Login,
-			IsDraft:         n.IsDraft,
-			Mergeable:       n.Mergeable,
-			Labels:          labels,
-			CIStatus:        ciStatus,
-			ReviewDecision:  n.ReviewDecision,
-			UnresolvedCount: unresolved,
-			CreatedAt:       n.CreatedAt,
-			UpdatedAt:       n.UpdatedAt,
+			Number:            n.Number,
+			Title:             n.Title,
+			URL:               n.URL,
+			HeadRefName:       n.HeadRefName,
+			Repository:        n.Repository.NameWithOwner,
+			RepoName:          n.Repository.Name,
+			Author:            n.Author.Login,
+			IsDraft:           n.IsDraft,
+			Mergeable:         n.Mergeable,
+			Labels:            labels,
+			CIStatus:          ciStatus,
+			ReviewDecision:    n.ReviewDecision,
+			UnresolvedCount:   unresolved,
+			ViewerHasApproved: viewerApproved,
+			CreatedAt:         n.CreatedAt,
+			UpdatedAt:         n.UpdatedAt,
 		})
 	}
 	return prs
@@ -260,6 +296,9 @@ const renovatePRQuery = `query($q: String!) {
         }
         reviewThreads(first: 100) {
           nodes { isResolved }
+        }
+        latestReviews(first: 20) {
+          nodes { state author { login } }
         }
       }
     }
@@ -350,10 +389,10 @@ func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
 		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
 	}
 
-	return convertRenovatePRs(resp.Data.Search.Nodes), nil
+	return convertRenovatePRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
 }
 
-func convertRenovatePRs(nodes []gqlRenovatePR) []RenovatePR {
+func convertRenovatePRs(nodes []gqlRenovatePR, viewer string) []RenovatePR {
 	prs := make([]RenovatePR, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
@@ -388,23 +427,34 @@ func convertRenovatePRs(nodes []gqlRenovatePR) []RenovatePR {
 			}
 		}
 
+		var viewerApproved bool
+		if viewer != "" {
+			for _, r := range n.LatestReviews.Nodes {
+				if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
+					viewerApproved = true
+					break
+				}
+			}
+		}
+
 		prs = append(prs, RenovatePR{
 			PullRequest: PullRequest{
-				Number:          n.Number,
-				Title:           n.Title,
-				URL:             n.URL,
-				HeadRefName:     n.HeadRefName,
-				Repository:      n.Repository.NameWithOwner,
-				RepoName:        n.Repository.Name,
-				Author:          n.Author.Login,
-				IsDraft:         n.IsDraft,
-				Mergeable:       n.Mergeable,
-				Labels:          labels,
-				CIStatus:        ciStatus,
-				ReviewDecision:  n.ReviewDecision,
-				UnresolvedCount: unresolved,
-				CreatedAt:       n.CreatedAt,
-				UpdatedAt:       n.UpdatedAt,
+				Number:            n.Number,
+				Title:             n.Title,
+				URL:               n.URL,
+				HeadRefName:       n.HeadRefName,
+				Repository:        n.Repository.NameWithOwner,
+				RepoName:          n.Repository.Name,
+				Author:            n.Author.Login,
+				IsDraft:           n.IsDraft,
+				Mergeable:         n.Mergeable,
+				Labels:            labels,
+				CIStatus:          ciStatus,
+				ReviewDecision:    n.ReviewDecision,
+				UnresolvedCount:   unresolved,
+				ViewerHasApproved: viewerApproved,
+				CreatedAt:         n.CreatedAt,
+				UpdatedAt:         n.UpdatedAt,
 			},
 			CheckRuns: checks,
 		})
