@@ -92,6 +92,7 @@ type Task struct {
 	StatusReason string     `yaml:"status_reason,omitempty" json:"statusReason"`
 	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
 	RunRole      string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
 	AgentRuns    []AgentRun `yaml:"agent_runs,omitempty" json:"agentRuns"`
 	CreatedAt    time.Time  `yaml:"created_at" json:"createdAt"`
 	UpdatedAt    time.Time  `yaml:"updated_at" json:"updatedAt"`

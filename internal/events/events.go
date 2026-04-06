@@ -22,6 +22,9 @@ const (
 	// Notification events.
 	Notification = "notification"
 
+	// Todoist integration events.
+	TodoistSynced = "todoist:synced"
+
 	// App lifecycle events.
 	AppQuitConfirm = "app:quit-confirm"
 )
