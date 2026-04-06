@@ -267,24 +267,19 @@ func (m *Manager) StopAgent(agentID string) error {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
 
-	if a.cancel != nil {
-		a.cancel()
-	}
-	a.State = StateStopped
-
 	m.logger.Info("agent.stop", "id", agentID)
-	m.emit(events.AgentState(agentID), a)
 
 	if a.Mode == "interactive" {
-		if a.TmuxSession != "" {
-			_ = m.tmux.KillSession(a.TmuxSession)
+		m.markStopped(a)
+	} else {
+		// Headless: cancel context; goroutine calls onComplete and closes done
+		// after the process exits.
+		if a.cancel != nil {
+			a.cancel()
 		}
-		// Interactive agents have no goroutine — call onComplete here.
-		if m.onComplete != nil {
-			m.onComplete(a)
-		}
+		a.State = StateStopped
+		m.emit(events.AgentState(agentID), a)
 	}
-	// Headless: goroutine calls onComplete and closes done after process exits.
 	return nil
 }
 
@@ -356,11 +351,15 @@ func (m *Manager) CapturePane(agentID string) (string, error) {
 	return out, captureErr
 }
 
-// markStopped transitions an agent to stopped and emits the state event.
+// markStopped transitions an agent to stopped, kills its tmux session if any,
+// and emits the state event.
 func (m *Manager) markStopped(a *Agent) {
 	a.State = StateStopped
 	if a.cancel != nil {
 		a.cancel()
+	}
+	if a.Mode == "interactive" && a.TmuxSession != "" {
+		_ = m.tmux.KillSession(a.TmuxSession)
 	}
 	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
@@ -481,7 +480,8 @@ func (m *Manager) ReconnectSessions(tasks []TaskInfo) int {
 
 		t, hasTask := taskBySession[s.Name]
 		if !hasTask {
-			m.logger.Debug("reconnect.skip-orphan", "session", s.Name)
+			m.logger.Info("reconnect.kill-orphan", "session", s.Name)
+			_ = m.tmux.KillSession(s.Name)
 			continue
 		}
 
