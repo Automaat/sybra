@@ -44,9 +44,9 @@ export function FetchAssignedIssues():Promise<Array<github.Issue>>;
 
 export function FetchRenovatePRs():Promise<Array<github.RenovatePR>>;
 
-export function FixRenovateCI(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
-
 export function FetchReviews():Promise<github.ReviewSummary>;
+
+export function FixRenovateCI(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
 
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 

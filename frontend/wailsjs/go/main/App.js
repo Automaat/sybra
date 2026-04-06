@@ -70,12 +70,12 @@ export function FetchRenovatePRs() {
   return window['go']['main']['App']['FetchRenovatePRs']();
 }
 
-export function FixRenovateCI(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['FixRenovateCI'](arg1, arg2, arg3, arg4);
-}
-
 export function FetchReviews() {
   return window['go']['main']['App']['FetchReviews']();
+}
+
+export function FixRenovateCI(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['FixRenovateCI'](arg1, arg2, arg3, arg4);
 }
 
 export function GetAgentOutput(arg1) {

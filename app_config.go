@@ -93,6 +93,7 @@ func (a *App) UpdateSettings(s AppSettings) error {
 	if a.logLevel != nil {
 		a.logLevel.Set(a.cfg.Logging.SlogLevel())
 	}
+	a.reloadTodoist()
 
 	return a.cfg.Save()
 }

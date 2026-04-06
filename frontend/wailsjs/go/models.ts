@@ -214,11 +214,11 @@ export namespace github {
 	    author: string;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Issue(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -249,11 +249,11 @@ export namespace github {
 	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PullRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
@@ -292,11 +292,11 @@ export namespace github {
 	    createdAt: string;
 	    updatedAt: string;
 	    checkRuns: CheckRunInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RenovatePR(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.number = source["number"];
