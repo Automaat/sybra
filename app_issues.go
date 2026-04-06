@@ -60,7 +60,7 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 			continue
 		}
 
-		t, err := a.tasks.Create(issue.Title, issue.URL, "headless")
+		t, err := a.tasks.Create(issue.Title, issue.Body, "headless")
 		if err != nil {
 			a.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
 			continue
