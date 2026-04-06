@@ -22,6 +22,8 @@ const mockTask = {
   updatedAt: '2026-04-01T00:00:00Z',
   body: '',
   filePath: '',
+  taskType: '',
+  todoistId: '',
   convertValues: () => {},
 }
 

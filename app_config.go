@@ -21,6 +21,7 @@ type AppSettings struct {
 	Logging      LoggingSettings           `json:"logging"`
 	Audit        config.AuditConfig        `json:"audit"`
 	Todoist      config.TodoistConfig      `json:"todoist"`
+	Renovate     config.RenovateConfig     `json:"renovate"`
 	Directories  map[string]string         `json:"directories"`
 }
 
@@ -38,6 +39,7 @@ func (a *App) GetSettings() AppSettings {
 		},
 		Audit:       c.Audit,
 		Todoist:     c.Todoist,
+		Renovate:    c.Renovate,
 		Directories: c.Directories(),
 	}
 }
@@ -83,6 +85,7 @@ func (a *App) UpdateSettings(s AppSettings) error {
 	a.cfg.Logging.MaxFiles = s.Logging.MaxFiles
 	a.cfg.Audit = s.Audit
 	a.cfg.Todoist = s.Todoist
+	a.cfg.Renovate = s.Renovate
 
 	// Hot-reload side effects
 	a.notifier.SetDesktop(s.Notification.Desktop)

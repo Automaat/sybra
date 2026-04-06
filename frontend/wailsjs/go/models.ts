@@ -12,6 +12,9 @@ export namespace agent {
 	    outputTokens?: number;
 	    // Go type: time
 	    startedAt: any;
+	    // Go type: time
+	    lastEventAt: any;
+	    logPath?: string;
 	    external: boolean;
 	    pid?: number;
 	    command?: string;
@@ -35,6 +38,8 @@ export namespace agent {
 	        this.inputTokens = source["inputTokens"];
 	        this.outputTokens = source["outputTokens"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.lastEventAt = this.convertValues(source["lastEventAt"], null);
+	        this.logPath = source["logPath"];
 	        this.external = source["external"];
 	        this.pid = source["pid"];
 	        this.command = source["command"];
@@ -88,8 +93,117 @@ export namespace agent {
 
 }
 
+export namespace config {
+	
+	export class AgentDefaults {
+	    model: string;
+	    mode: string;
+	    maxConcurrent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentDefaults(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.mode = source["mode"];
+	        this.maxConcurrent = source["maxConcurrent"];
+	    }
+	}
+	export class AuditConfig {
+	    enabled: boolean;
+	    retentionDays: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AuditConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.retentionDays = source["retentionDays"];
+	    }
+	}
+	export class NotificationConfig {
+	    desktop: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NotificationConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.desktop = source["desktop"];
+	    }
+	}
+	export class OrchestratorConfig {
+	    autoTriage: boolean;
+	    autoPlan: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new OrchestratorConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.autoTriage = source["autoTriage"];
+	        this.autoPlan = source["autoPlan"];
+	    }
+	}
+	export class RenovateConfig {
+	    enabled: boolean;
+	    author: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RenovateConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.author = source["author"];
+	    }
+	}
+	export class TodoistConfig {
+	    enabled: boolean;
+	    apiToken: string;
+	    projectId: string;
+	    pollSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TodoistConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.apiToken = source["apiToken"];
+	        this.projectId = source["projectId"];
+	        this.pollSeconds = source["pollSeconds"];
+	    }
+	}
+
+}
+
 export namespace github {
 	
+	export class CheckRunInfo {
+	    name: string;
+	    status: string;
+	    conclusion: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CheckRunInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.conclusion = source["conclusion"];
+	    }
+	}
 	export class PullRequest {
 	    number: number;
 	    title: string;
@@ -130,6 +244,66 @@ export namespace github {
 	        this.updatedAt = source["updatedAt"];
 	    }
 	}
+	export class RenovatePR {
+	    number: number;
+	    title: string;
+	    url: string;
+	    repository: string;
+	    repoName: string;
+	    author: string;
+	    isDraft: boolean;
+	    labels: string[];
+	    headRefName: string;
+	    ciStatus: string;
+	    reviewDecision: string;
+	    mergeable: string;
+	    unresolvedCount: number;
+	    createdAt: string;
+	    updatedAt: string;
+	    checkRuns: CheckRunInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RenovatePR(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.repository = source["repository"];
+	        this.repoName = source["repoName"];
+	        this.author = source["author"];
+	        this.isDraft = source["isDraft"];
+	        this.labels = source["labels"];
+	        this.headRefName = source["headRefName"];
+	        this.ciStatus = source["ciStatus"];
+	        this.reviewDecision = source["reviewDecision"];
+	        this.mergeable = source["mergeable"];
+	        this.unresolvedCount = source["unresolvedCount"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	        this.checkRuns = this.convertValues(source["checkRuns"], CheckRunInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ReviewSummary {
 	    createdByMe: PullRequest[];
 	    reviewRequested: PullRequest[];
@@ -142,6 +316,71 @@ export namespace github {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.createdByMe = this.convertValues(source["createdByMe"], PullRequest);
 	        this.reviewRequested = this.convertValues(source["reviewRequested"], PullRequest);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace main {
+	
+	export class LoggingSettings {
+	    level: string;
+	    maxSizeMB: number;
+	    maxFiles: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LoggingSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.level = source["level"];
+	        this.maxSizeMB = source["maxSizeMB"];
+	        this.maxFiles = source["maxFiles"];
+	    }
+	}
+	export class AppSettings {
+	    agent: config.AgentDefaults;
+	    notification: config.NotificationConfig;
+	    orchestrator: config.OrchestratorConfig;
+	    logging: LoggingSettings;
+	    audit: config.AuditConfig;
+	    todoist: config.TodoistConfig;
+	    renovate: config.RenovateConfig;
+	    directories: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new AppSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agent = this.convertValues(source["agent"], config.AgentDefaults);
+	        this.notification = this.convertValues(source["notification"], config.NotificationConfig);
+	        this.orchestrator = this.convertValues(source["orchestrator"], config.OrchestratorConfig);
+	        this.logging = this.convertValues(source["logging"], LoggingSettings);
+	        this.audit = this.convertValues(source["audit"], config.AuditConfig);
+	        this.todoist = this.convertValues(source["todoist"], config.TodoistConfig);
+	        this.renovate = this.convertValues(source["renovate"], config.RenovateConfig);
+	        this.directories = source["directories"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -516,6 +755,7 @@ export namespace task {
 	    slug: string;
 	    title: string;
 	    status: string;
+	    taskType: string;
 	    agentMode: string;
 	    allowedTools: string[];
 	    tags: string[];
@@ -526,6 +766,7 @@ export namespace task {
 	    statusReason: string;
 	    reviewed: boolean;
 	    runRole: string;
+	    todoistId: string;
 	    agentRuns: AgentRun[];
 	    // Go type: time
 	    createdAt: any;
@@ -544,6 +785,7 @@ export namespace task {
 	        this.slug = source["slug"];
 	        this.title = source["title"];
 	        this.status = source["status"];
+	        this.taskType = source["taskType"];
 	        this.agentMode = source["agentMode"];
 	        this.allowedTools = source["allowedTools"];
 	        this.tags = source["tags"];
@@ -554,6 +796,7 @@ export namespace task {
 	        this.statusReason = source["statusReason"];
 	        this.reviewed = source["reviewed"];
 	        this.runRole = source["runRole"];
+	        this.todoistId = source["todoistId"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
@@ -596,6 +839,25 @@ export namespace tmux {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.created = source["created"];
+	    }
+	}
+
+}
+
+export namespace todoist {
+	
+	export class Project {
+	    id: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Project(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
 	    }
 	}
 

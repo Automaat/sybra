@@ -189,6 +189,15 @@ func mapPriorityTag(priority int) []string {
 	}
 }
 
+func (a *App) initTodoist(emit func(string, any)) {
+	if !a.cfg.Todoist.Enabled || a.cfg.Todoist.APIToken == "" {
+		return
+	}
+	tc := todoist.NewClient(a.cfg.Todoist.APIToken)
+	a.todoistHandler = newTodoistHandler(a.tasks, tc, a.audit, a.logger, emit, a.cfg.Todoist)
+	a.logger.Info("todoist.enabled", "project_id", a.cfg.Todoist.ProjectID)
+}
+
 // todoistPollLoop runs the Todoist sync on a timer.
 func (a *App) todoistPollLoop(ctx context.Context) {
 	timer := time.NewTimer(15 * time.Second)

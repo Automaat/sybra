@@ -1,48 +1,8 @@
 <script lang="ts">
   import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/App.js'
+  import type { main } from '../../wailsjs/go/models.js'
 
-  interface LoggingSettings {
-    level: string
-    maxSizeMB: number
-    maxFiles: number
-  }
-
-  interface AuditConfig {
-    enabled: boolean
-    retentionDays: number
-  }
-
-  interface AgentDefaults {
-    model: string
-    mode: string
-    maxConcurrent: number
-  }
-
-  interface NotificationConfig {
-    desktop: boolean
-  }
-
-  interface OrchestratorConfig {
-    autoTriage: boolean
-    autoPlan: boolean
-  }
-
-  interface TodoistConfig {
-    enabled: boolean
-    apiToken: string
-    projectId: string
-    pollSeconds: number
-  }
-
-  interface AppSettings {
-    agent: AgentDefaults
-    notification: NotificationConfig
-    orchestrator: OrchestratorConfig
-    logging: LoggingSettings
-    audit: AuditConfig
-    todoist: TodoistConfig
-    directories: Record<string, string>
-  }
+  type AppSettings = main.AppSettings
 
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')
@@ -325,6 +285,37 @@
               />
               <span class="text-xs text-surface-400">30–3600 seconds</span>
             </div>
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Renovate -->
+    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Renovate</h2>
+      <div class="flex flex-col gap-4">
+        <label class="flex cursor-pointer items-center gap-3">
+          <input
+            type="checkbox"
+            class="h-4 w-4 cursor-pointer rounded border-surface-300"
+            bind:checked={settings.renovate.enabled}
+          />
+          <div>
+            <span class="text-sm font-medium">Enable Renovate PR tracking</span>
+            <p class="text-xs text-surface-400">Show Renovate bot PRs for registered projects</p>
+          </div>
+        </label>
+        {#if settings.renovate.enabled}
+          <div class="flex flex-col gap-1 sm:max-w-sm">
+            <label class="text-sm font-medium" for="renovate-author">PR Author</label>
+            <input
+              id="renovate-author"
+              type="text"
+              placeholder="app/renovate"
+              class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+              bind:value={settings.renovate.author}
+            />
+            <span class="text-xs text-surface-400">GitHub author filter (default: app/renovate)</span>
           </div>
         {/if}
       </div>

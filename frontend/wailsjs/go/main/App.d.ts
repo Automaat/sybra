@@ -4,13 +4,17 @@ import {task} from '../models';
 import {project} from '../models';
 import {agent} from '../models';
 import {github} from '../models';
+import {main} from '../models';
 import {stats} from '../models';
+import {todoist} from '../models';
 import {notification} from '../models';
 import {tmux} from '../models';
 
 export function AddReviewComment(arg1:string,arg2:number,arg3:string):Promise<task.ReviewComment>;
 
 export function ApprovePlan(arg1:string):Promise<task.Task>;
+
+export function ApproveRenovatePR(arg1:string,arg2:number):Promise<void>;
 
 export function AttachAgent(arg1:string):Promise<void>;
 
@@ -36,15 +40,21 @@ export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
 export function EvaluateTask(arg1:string,arg2:string):Promise<void>;
 
+export function FetchRenovatePRs():Promise<Array<github.RenovatePR>>;
+
 export function FetchReviews():Promise<github.ReviewSummary>;
 
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 
 export function GetProject(arg1:string):Promise<project.Project>;
 
+export function GetSettings():Promise<main.AppSettings>;
+
 export function GetStats():Promise<stats.StatsResponse>;
 
 export function GetTask(arg1:string):Promise<task.Task>;
+
+export function GetTodoistProjects():Promise<Array<todoist.Project>>;
 
 export function HasLivePlanAgent(arg1:string):Promise<boolean>;
 
@@ -68,6 +78,8 @@ export function ListWorktrees(arg1:string):Promise<Array<project.Worktree>>;
 
 export function MarkPRReady(arg1:string,arg2:number):Promise<void>;
 
+export function MergeRenovatePR(arg1:string,arg2:number):Promise<void>;
+
 export function OpenInEditor(arg1:string):Promise<void>;
 
 export function OpenInTerminal(arg1:string):Promise<void>;
@@ -77,6 +89,8 @@ export function PlanTask(arg1:string):Promise<void>;
 export function RegisterSpotlightHotkey():Promise<void>;
 
 export function RejectPlan(arg1:string,arg2:string):Promise<task.Task>;
+
+export function RerunRenovateChecks(arg1:string,arg2:number):Promise<void>;
 
 export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
 
@@ -94,12 +108,14 @@ export function StopAgent(arg1:string):Promise<void>;
 
 export function StopOrchestrator():Promise<void>;
 
+export function SyncTodoist():Promise<void>;
+
+export function TodoistEnabled():Promise<boolean>;
+
 export function TriageTask(arg1:string):Promise<void>;
 
 export function UpdateProject(arg1:string,arg2:string):Promise<project.Project>;
 
+export function UpdateSettings(arg1:main.AppSettings):Promise<void>;
+
 export function UpdateTask(arg1:string,arg2:Record<string, any>):Promise<task.Task>;
-
-export function GetSettings():Promise<any>;
-
-export function UpdateSettings(arg1:any):Promise<void>;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/svelte'
+import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 const mockLoad = vi.fn()
 const mockStartPolling = vi.fn()
@@ -18,11 +18,43 @@ const mockReviewStore = {
   stopPolling: (...args: unknown[]) => mockStopPolling(...args),
 }
 
+const mockRenovateLoad = vi.fn()
+const mockRenovateStore = {
+  prs: [] as any[],
+  loading: false,
+  error: '',
+  get count() {
+    return this.prs.length
+  },
+  get eligible() {
+    return []
+  },
+  get failing() {
+    return []
+  },
+  load: (...args: unknown[]) => mockRenovateLoad(...args),
+  listen: vi.fn(),
+  stopListening: vi.fn(),
+  startPolling: vi.fn(),
+  stopPolling: vi.fn(),
+}
+
 vi.mock('../stores/reviews.svelte.js', () => ({
   reviewStore: mockReviewStore,
 }))
 
+vi.mock('../stores/renovate.svelte.js', () => ({
+  renovateStore: mockRenovateStore,
+}))
+
 vi.mock('../components/PRCard.svelte', () => ({ default: () => {} }))
+vi.mock('../components/RenovatePRCard.svelte', () => ({ default: () => {} }))
+vi.mock('../components/PRDetailView.svelte', () => ({ default: () => {} }))
+vi.mock('../../wailsjs/go/main/App.js', () => ({
+  ApproveRenovatePR: vi.fn(),
+  MergeRenovatePR: vi.fn(),
+  RerunRenovateChecks: vi.fn(),
+}))
 
 const GitHub = (await import('./GitHub.svelte')).default
 
@@ -33,53 +65,25 @@ describe('GitHub', () => {
     mockReviewStore.error = ''
     mockReviewStore.reviewRequested = []
     mockReviewStore.createdByMe = []
+    mockRenovateStore.prs = []
+    mockRenovateStore.loading = false
+    mockRenovateStore.error = ''
   })
 
   afterEach(() => {
     cleanup()
   })
 
-  it('renders Review Requested section', () => {
-    render(GitHub, { props: {} })
-    expect(screen.getByText('Review Requested')).toBeDefined()
-  })
-
-  it('renders My PRs section', () => {
+  it('renders tab bar with My PRs, Reviews, Renovate', () => {
     render(GitHub, { props: {} })
     expect(screen.getByText('My PRs')).toBeDefined()
+    expect(screen.getByText('Reviews')).toBeDefined()
+    expect(screen.getByText('Renovate')).toBeDefined()
   })
 
-  it('shows PR count', () => {
-    render(GitHub, { props: {} })
-    expect(screen.getByText('0 pull requests')).toBeDefined()
-  })
-
-  it('shows singular pull request text', () => {
-    mockReviewStore.createdByMe = [{ url: 'https://github.com/o/r/pull/1', number: 1, repository: 'o/r' }]
-    render(GitHub, { props: {} })
-    expect(screen.getByText('1 pull request')).toBeDefined()
-  })
-
-  it('shows empty review requested message', () => {
-    render(GitHub, { props: {} })
-    expect(screen.getByText('No pending review requests')).toBeDefined()
-  })
-
-  it('shows empty my PRs message', () => {
+  it('shows empty my PRs message on default tab', () => {
     render(GitHub, { props: {} })
     expect(screen.getByText('No open pull requests')).toBeDefined()
-  })
-
-  it('shows loading when loading with no items', () => {
-    mockReviewStore.loading = true
-    render(GitHub, { props: {} })
-    expect(screen.getByText('Loading pull requests...')).toBeDefined()
-  })
-
-  it('shows error message', () => {
-    mockReviewStore.error = 'API error'
-    render(GitHub, { props: {} })
-    expect(screen.getByText('API error')).toBeDefined()
   })
 
   it('shows Refresh button', () => {
@@ -90,5 +94,18 @@ describe('GitHub', () => {
   it('calls load on mount', () => {
     render(GitHub, { props: {} })
     expect(mockLoad).toHaveBeenCalled()
+    expect(mockRenovateLoad).toHaveBeenCalled()
+  })
+
+  it('switches to Reviews tab', async () => {
+    render(GitHub, { props: {} })
+    await fireEvent.click(screen.getByText('Reviews'))
+    expect(screen.getByText('No pending review requests')).toBeDefined()
+  })
+
+  it('switches to Renovate tab', async () => {
+    render(GitHub, { props: {} })
+    await fireEvent.click(screen.getByText('Renovate'))
+    expect(screen.getByText('No Renovate PRs')).toBeDefined()
   })
 })

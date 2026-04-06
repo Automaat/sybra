@@ -17,6 +17,7 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     command: '',
     name: 'test-agent',
     project: 'synapse',
+    lastEventAt: '',
     convertValues: () => {},
     ...overrides,
   }

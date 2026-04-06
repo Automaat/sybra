@@ -53,10 +53,11 @@ describe('PRCard', () => {
     expect(screen.getByText('by dev')).toBeDefined()
   })
 
-  it('opens URL on click', async () => {
-    render(PRCard, { props: { pr: makePR() } })
+  it('calls onselect on click', async () => {
+    const handler = vi.fn()
+    render(PRCard, { props: { pr: makePR(), onselect: handler } })
     await fireEvent.click(screen.getByRole('link'))
-    expect(mockBrowserOpenURL).toHaveBeenCalledWith('https://github.com/org/repo/pull/42')
+    expect(handler).toHaveBeenCalledOnce()
   })
 
   it('shows Draft badge when draft', () => {
