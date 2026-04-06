@@ -1,54 +1,8 @@
 <script lang="ts">
   import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/App.js'
+  import type { main } from '../../wailsjs/go/models.js'
 
-  interface LoggingSettings {
-    level: string
-    maxSizeMB: number
-    maxFiles: number
-  }
-
-  interface AuditConfig {
-    enabled: boolean
-    retentionDays: number
-  }
-
-  interface AgentDefaults {
-    model: string
-    mode: string
-    maxConcurrent: number
-  }
-
-  interface NotificationConfig {
-    desktop: boolean
-  }
-
-  interface OrchestratorConfig {
-    autoTriage: boolean
-    autoPlan: boolean
-  }
-
-  interface TodoistConfig {
-    enabled: boolean
-    apiToken: string
-    projectId: string
-    pollSeconds: number
-  }
-
-  interface RenovateConfig {
-    enabled: boolean
-    author: string
-  }
-
-  interface AppSettings {
-    agent: AgentDefaults
-    notification: NotificationConfig
-    orchestrator: OrchestratorConfig
-    logging: LoggingSettings
-    audit: AuditConfig
-    todoist: TodoistConfig
-    renovate: RenovateConfig
-    directories: Record<string, string>
-  }
+  type AppSettings = main.AppSettings
 
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')
