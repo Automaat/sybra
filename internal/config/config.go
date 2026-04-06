@@ -15,6 +15,7 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification" json:"notification"`
 	Orchestrator OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
 	Todoist      TodoistConfig      `yaml:"todoist" json:"todoist"`
+	Renovate     RenovateConfig     `yaml:"renovate" json:"renovate"`
 	TasksDir     string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir    string             `yaml:"skills_dir" json:"skillsDir"`
 	RepoDir      string             `yaml:"repo_dir" json:"repoDir"`
@@ -57,6 +58,11 @@ type TodoistConfig struct {
 	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
 }
 
+type RenovateConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Author  string `yaml:"author" json:"author"`
+}
+
 func HomeDir() string {
 	if dir := os.Getenv("SYNAPSE_HOME"); dir != "" {
 		return dir
@@ -82,6 +88,10 @@ func DefaultConfig() *Config {
 		},
 		Notification: NotificationConfig{
 			Desktop: true,
+		},
+		Renovate: RenovateConfig{
+			Enabled: true,
+			Author:  "app/renovate",
 		},
 		TasksDir: defaultTasksDir(),
 	}
@@ -167,6 +177,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.Todoist.PollSeconds <= 0 {
 		cfg.Todoist.PollSeconds = 120
+	}
+
+	if cfg.Renovate.Author == "" {
+		cfg.Renovate.Author = "app/renovate"
 	}
 
 	return cfg, nil

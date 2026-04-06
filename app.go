@@ -21,39 +21,39 @@ import (
 	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
-	"github.com/Automaat/synapse/internal/todoist"
 	"github.com/Automaat/synapse/internal/watcher"
 	"github.com/Automaat/synapse/internal/worktree"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	tasks          *task.Manager
-	projects       *project.Store
-	agents         *agent.Manager
-	tmux           *tmux.Manager
-	watcher        *watcher.Watcher
-	notifier       *notification.Emitter
-	audit          *audit.Logger
-	stats          *stats.Store
-	tasksDir       string
-	skillsDir      string
-	repoDir        string
-	worktreesDir   string
-	logger         *slog.Logger
-	logDir         string
-	auditDir       string
-	prTracker      *github.IssueTracker
-	worktrees      *worktree.Manager
-	agentOrch      *AgentOrchestrator
-	reviewer       *ReviewHandler
-	workflow       *TaskWorkflow
-	todoistHandler *TodoistHandler
-	cfg            *config.Config
-	logLevel       *slog.LevelVar
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	tasks           *task.Manager
+	projects        *project.Store
+	agents          *agent.Manager
+	tmux            *tmux.Manager
+	watcher         *watcher.Watcher
+	notifier        *notification.Emitter
+	audit           *audit.Logger
+	stats           *stats.Store
+	tasksDir        string
+	skillsDir       string
+	repoDir         string
+	worktreesDir    string
+	logger          *slog.Logger
+	logDir          string
+	auditDir        string
+	prTracker       *github.IssueTracker
+	worktrees       *worktree.Manager
+	agentOrch       *AgentOrchestrator
+	reviewer        *ReviewHandler
+	workflow        *TaskWorkflow
+	todoistHandler  *TodoistHandler
+	renovateHandler *RenovateHandler
+	cfg             *config.Config
+	logLevel        *slog.LevelVar
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
@@ -152,12 +152,8 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.Error("watcher.start", "err", err)
 	}
 
-	if a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "" {
-		tc := todoist.NewClient(a.cfg.Todoist.APIToken)
-		a.todoistHandler = newTodoistHandler(a.tasks, tc, a.audit, a.logger, emit, a.cfg.Todoist)
-		a.logger.Info("todoist.enabled", "project_id", a.cfg.Todoist.ProjectID)
-	}
-
+	a.initTodoist(emit)
+	a.initRenovate(emit)
 	a.syncSkills()
 	a.reconnectAgents()
 	a.worktrees.CleanupOrphaned()
@@ -169,6 +165,9 @@ func (a *App) startup(ctx context.Context) {
 	a.wg.Go(func() { a.agentWatchdogLoop(ctx) })
 	if a.todoistHandler != nil {
 		a.wg.Go(func() { a.todoistPollLoop(ctx) })
+	}
+	if a.renovateHandler != nil {
+		a.wg.Go(func() { a.renovatePollLoop(ctx) })
 	}
 	a.logger.Info("app.started")
 }

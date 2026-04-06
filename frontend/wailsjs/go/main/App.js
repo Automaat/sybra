@@ -10,6 +10,10 @@ export function ApprovePlan(arg1) {
   return window['go']['main']['App']['ApprovePlan'](arg1);
 }
 
+export function ApproveRenovatePR(arg1, arg2) {
+  return window['go']['main']['App']['ApproveRenovatePR'](arg1, arg2);
+}
+
 export function AttachAgent(arg1) {
   return window['go']['main']['App']['AttachAgent'](arg1);
 }
@@ -58,6 +62,10 @@ export function EvaluateTask(arg1, arg2) {
   return window['go']['main']['App']['EvaluateTask'](arg1, arg2);
 }
 
+export function FetchRenovatePRs() {
+  return window['go']['main']['App']['FetchRenovatePRs']();
+}
+
 export function FetchReviews() {
   return window['go']['main']['App']['FetchReviews']();
 }
@@ -70,12 +78,20 @@ export function GetProject(arg1) {
   return window['go']['main']['App']['GetProject'](arg1);
 }
 
+export function GetSettings() {
+  return window['go']['main']['App']['GetSettings']();
+}
+
 export function GetStats() {
   return window['go']['main']['App']['GetStats']();
 }
 
 export function GetTask(arg1) {
   return window['go']['main']['App']['GetTask'](arg1);
+}
+
+export function GetTodoistProjects() {
+  return window['go']['main']['App']['GetTodoistProjects']();
 }
 
 export function HasLivePlanAgent(arg1) {
@@ -122,6 +138,10 @@ export function MarkPRReady(arg1, arg2) {
   return window['go']['main']['App']['MarkPRReady'](arg1, arg2);
 }
 
+export function MergeRenovatePR(arg1, arg2) {
+  return window['go']['main']['App']['MergeRenovatePR'](arg1, arg2);
+}
+
 export function OpenInEditor(arg1) {
   return window['go']['main']['App']['OpenInEditor'](arg1);
 }
@@ -140,6 +160,10 @@ export function RegisterSpotlightHotkey() {
 
 export function RejectPlan(arg1, arg2) {
   return window['go']['main']['App']['RejectPlan'](arg1, arg2);
+}
+
+export function RerunRenovateChecks(arg1, arg2) {
+  return window['go']['main']['App']['RerunRenovateChecks'](arg1, arg2);
 }
 
 export function ResolveReviewComment(arg1, arg2) {
@@ -174,6 +198,14 @@ export function StopOrchestrator() {
   return window['go']['main']['App']['StopOrchestrator']();
 }
 
+export function SyncTodoist() {
+  return window['go']['main']['App']['SyncTodoist']();
+}
+
+export function TodoistEnabled() {
+  return window['go']['main']['App']['TodoistEnabled']();
+}
+
 export function TriageTask(arg1) {
   return window['go']['main']['App']['TriageTask'](arg1);
 }
@@ -182,14 +214,10 @@ export function UpdateProject(arg1, arg2) {
   return window['go']['main']['App']['UpdateProject'](arg1, arg2);
 }
 
-export function UpdateTask(arg1, arg2) {
-  return window['go']['main']['App']['UpdateTask'](arg1, arg2);
-}
-
-export function GetSettings() {
-  return window['go']['main']['App']['GetSettings']();
-}
-
 export function UpdateSettings(arg1) {
   return window['go']['main']['App']['UpdateSettings'](arg1);
+}
+
+export function UpdateTask(arg1, arg2) {
+  return window['go']['main']['App']['UpdateTask'](arg1, arg2);
 }

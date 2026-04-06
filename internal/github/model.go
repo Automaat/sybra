@@ -24,3 +24,16 @@ type ReviewSummary struct {
 	CreatedByMe     []PullRequest `json:"createdByMe"`
 	ReviewRequested []PullRequest `json:"reviewRequested"`
 }
+
+// CheckRunInfo represents a single CI check run.
+type CheckRunInfo struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`     // COMPLETED, IN_PROGRESS, QUEUED
+	Conclusion string `json:"conclusion"` // SUCCESS, FAILURE, NEUTRAL, CANCELLED, TIMED_OUT
+}
+
+// RenovatePR extends PullRequest with individual check run details.
+type RenovatePR struct {
+	PullRequest
+	CheckRuns []CheckRunInfo `json:"checkRuns"`
+}

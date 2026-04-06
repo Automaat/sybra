@@ -1,14 +1,14 @@
 <script lang="ts">
   import type { github } from '../../wailsjs/go/models.js'
-  import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
 
   interface Props {
     pr: github.PullRequest
     actionLabel?: string
     onaction?: () => void
+    onselect?: () => void
   }
 
-  const { pr, actionLabel, onaction }: Props = $props()
+  const { pr, actionLabel, onaction, onselect }: Props = $props()
 
   function timeAgo(date: string): string {
     if (!date) return ''
@@ -27,8 +27,8 @@
   role="link"
   tabindex="0"
   class="w-full cursor-pointer rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
-  onclick={() => BrowserOpenURL(pr.url)}
-  onkeydown={(e) => { if (e.key === 'Enter') BrowserOpenURL(pr.url) }}
+  onclick={() => onselect?.()}
+  onkeydown={(e) => { if (e.key === 'Enter') onselect?.() }}
 >
   <div class="flex items-start justify-between gap-2">
     <div class="flex items-center gap-2">

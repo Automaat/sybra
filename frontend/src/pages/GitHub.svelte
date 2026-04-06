@@ -1,63 +1,145 @@
 <script lang="ts">
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { renovateStore } from '../stores/renovate.svelte.js'
   import PRCard from '../components/PRCard.svelte'
+  import RenovatePRCard from '../components/RenovatePRCard.svelte'
+  import PRDetailView from '../components/PRDetailView.svelte'
+  import {
+    ApproveRenovatePR,
+    MergeRenovatePR,
+    RerunRenovateChecks,
+  } from '../../wailsjs/go/main/App.js'
+  import type { github } from '../../wailsjs/go/models.js'
+
+  type Tab = 'my-prs' | 'reviews' | 'renovate'
+
+  let activeTab = $state<Tab>('my-prs')
+  let selectedPR = $state<{ pr: github.PullRequest; checkRuns?: github.CheckRunInfo[]; source: Tab } | null>(null)
 
   $effect(() => {
     reviewStore.load()
     reviewStore.startPolling()
-    return () => reviewStore.stopPolling()
+    renovateStore.load()
+    renovateStore.startPolling()
+    renovateStore.listen()
+    return () => {
+      reviewStore.stopPolling()
+      renovateStore.stopPolling()
+      renovateStore.stopListening()
+    }
   })
+
+  function selectPR(pr: github.PullRequest, checkRuns?: github.CheckRunInfo[]) {
+    selectedPR = { pr, checkRuns, source: activeTab }
+  }
+
+  function clearSelection() {
+    selectedPR = null
+  }
+
+  const tabs: { id: Tab; label: string; count: () => number }[] = [
+    { id: 'my-prs', label: 'My PRs', count: () => reviewStore.createdByMe.length },
+    { id: 'reviews', label: 'Reviews', count: () => reviewStore.reviewRequested.length },
+    { id: 'renovate', label: 'Renovate', count: () => renovateStore.count },
+  ]
 </script>
 
-<div class="flex flex-col gap-6 p-6">
-  <div class="flex items-center justify-between">
-    <p class="text-sm opacity-60">
-      {reviewStore.totalCount} pull request{reviewStore.totalCount !== 1 ? 's' : ''}
-    </p>
-    <button
-      type="button"
-      class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
-      onclick={() => reviewStore.load()}
-    >
-      Refresh
-    </button>
+{#if selectedPR}
+  <PRDetailView
+    pr={selectedPR.pr}
+    checkRuns={selectedPR.checkRuns}
+    onback={clearSelection}
+    onapprove={selectedPR.source === 'renovate' ? async () => {
+      await ApproveRenovatePR(selectedPR!.pr.repository, selectedPR!.pr.number)
+      await renovateStore.load()
+      clearSelection()
+    } : undefined}
+    onmerge={selectedPR.source === 'renovate' ? async () => {
+      await MergeRenovatePR(selectedPR!.pr.repository, selectedPR!.pr.number)
+      await renovateStore.load()
+      clearSelection()
+    } : undefined}
+    onrerun={selectedPR.source === 'renovate' ? async () => {
+      await RerunRenovateChecks(selectedPR!.pr.repository, selectedPR!.pr.number)
+      await renovateStore.load()
+      clearSelection()
+    } : undefined}
+  />
+{:else}
+  <div class="flex flex-col gap-4 p-6">
+    <div class="flex items-center justify-between">
+      <div class="flex gap-1 rounded-lg bg-surface-200 p-1 dark:bg-surface-700">
+        {#each tabs as tab (tab.id)}
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors
+              {activeTab === tab.id
+                ? 'bg-white text-surface-900 shadow-sm dark:bg-surface-600 dark:text-white'
+                : 'text-surface-500 hover:text-surface-700 dark:hover:text-surface-300'}"
+            onclick={() => (activeTab = tab.id)}
+          >
+            {tab.label}
+            {#if tab.count() > 0}
+              <span class="ml-1 rounded-full bg-surface-300 px-1.5 py-0.5 text-xs dark:bg-surface-500">
+                {tab.count()}
+              </span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+
+      <button
+        type="button"
+        class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
+        onclick={() => {
+          if (activeTab === 'renovate') renovateStore.load()
+          else reviewStore.load()
+        }}
+      >
+        Refresh
+      </button>
+    </div>
+
+    {#if activeTab === 'my-prs'}
+      {#if reviewStore.loading && reviewStore.createdByMe.length === 0}
+        <p class="text-center text-sm opacity-60">Loading...</p>
+      {:else if reviewStore.createdByMe.length === 0}
+        <p class="py-8 text-center text-sm opacity-50">No open pull requests</p>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each reviewStore.createdByMe as pr (pr.url)}
+            <PRCard {pr} onselect={() => selectPR(pr)} />
+          {/each}
+        </div>
+      {/if}
+
+    {:else if activeTab === 'reviews'}
+      {#if reviewStore.loading && reviewStore.reviewRequested.length === 0}
+        <p class="text-center text-sm opacity-60">Loading...</p>
+      {:else if reviewStore.reviewRequested.length === 0}
+        <p class="py-8 text-center text-sm opacity-50">No pending review requests</p>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each reviewStore.reviewRequested as pr (pr.url)}
+            <PRCard {pr} onselect={() => selectPR(pr)} />
+          {/each}
+        </div>
+      {/if}
+
+    {:else if activeTab === 'renovate'}
+      {#if renovateStore.loading && renovateStore.count === 0}
+        <p class="text-center text-sm opacity-60">Loading...</p>
+      {:else if renovateStore.error}
+        <p class="text-center text-sm text-error-500">{renovateStore.error}</p>
+      {:else if renovateStore.count === 0}
+        <p class="py-8 text-center text-sm opacity-50">No Renovate PRs</p>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each renovateStore.prs as pr (pr.url)}
+            <RenovatePRCard {pr} onselect={() => selectPR(pr, pr.checkRuns)} />
+          {/each}
+        </div>
+      {/if}
+    {/if}
   </div>
-
-  {#if reviewStore.loading && reviewStore.totalCount === 0}
-    <p class="text-center text-sm opacity-60">Loading pull requests...</p>
-  {:else if reviewStore.error}
-    <p class="text-center text-sm text-error-500">{reviewStore.error}</p>
-  {:else}
-    <section class="flex flex-col gap-2">
-      <h2 class="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide opacity-70">
-        Review Requested
-        <span class="rounded-full bg-primary-500 px-2 py-0.5 text-xs font-bold text-white">
-          {reviewStore.reviewRequested.length}
-        </span>
-      </h2>
-      {#if reviewStore.reviewRequested.length === 0}
-        <p class="py-4 text-center text-sm opacity-50">No pending review requests</p>
-      {:else}
-        {#each reviewStore.reviewRequested as pr (pr.url)}
-          <PRCard {pr} />
-        {/each}
-      {/if}
-    </section>
-
-    <section class="flex flex-col gap-2">
-      <h2 class="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide opacity-70">
-        My PRs
-        <span class="rounded-full bg-surface-400 px-2 py-0.5 text-xs font-bold text-white dark:bg-surface-500">
-          {reviewStore.createdByMe.length}
-        </span>
-      </h2>
-      {#if reviewStore.createdByMe.length === 0}
-        <p class="py-4 text-center text-sm opacity-50">No open pull requests</p>
-      {:else}
-        {#each reviewStore.createdByMe as pr (pr.url)}
-          <PRCard {pr} />
-        {/each}
-      {/if}
-    </section>
-  {/if}
-</div>
+{/if}

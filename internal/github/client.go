@@ -223,6 +223,228 @@ func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
 }
 
+// renovatePRQuery includes individual check run contexts for rerun support.
+const renovatePRQuery = `query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        headRefName
+        isDraft
+        mergeable
+        createdAt
+        updatedAt
+        reviewDecision
+        author { login type: __typename }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 50) {
+                  nodes {
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        reviewThreads(first: 100) {
+          nodes { isResolved }
+        }
+      }
+    }
+  }
+}`
+
+type gqlRenovateResponse struct {
+	Data struct {
+		Search struct {
+			Nodes []gqlRenovatePR `json:"nodes"`
+		} `json:"search"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type gqlRenovatePR struct {
+	gqlPR
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					State    string `json:"state"`
+					Contexts struct {
+						Nodes []struct {
+							Name       string `json:"name"`
+							Status     string `json:"status"`
+							Conclusion string `json:"conclusion"`
+						} `json:"nodes"`
+					} `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+// FetchRenovatePRs returns Renovate bot PRs for the given repositories.
+func FetchRenovatePRs(author string, repos []string) ([]RenovatePR, error) {
+	return fetchRenovatePRsWith(defaultExecer, author, repos)
+}
+
+func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR, error) {
+	if len(repos) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{})
+	var all []RenovatePR
+
+	authors := []string{author}
+	if author == "app/renovate" {
+		authors = append(authors, "renovate[bot]")
+	}
+
+	for _, repo := range repos {
+		for _, a := range authors {
+			query := fmt.Sprintf("is:pr is:open author:%s repo:%s", a, repo)
+			prs, err := searchRenovatePRsWith(e, query)
+			if err != nil {
+				return nil, fmt.Errorf("fetch renovate PRs for %s: %w", repo, err)
+			}
+			for i := range prs {
+				key := fmt.Sprintf("%s#%d", prs[i].Repository, prs[i].Number)
+				if _, dup := seen[key]; !dup {
+					seen[key] = struct{}{}
+					all = append(all, prs[i])
+				}
+			}
+		}
+	}
+	return all, nil
+}
+
+func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
+	out, err := e.run("api", "graphql",
+		"-f", "query="+renovatePRQuery,
+		"-f", "q="+query)
+	if err != nil {
+		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	var resp gqlRenovateResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	}
+
+	return convertRenovatePRs(resp.Data.Search.Nodes), nil
+}
+
+func convertRenovatePRs(nodes []gqlRenovatePR) []RenovatePR {
+	prs := make([]RenovatePR, 0, len(nodes))
+	for i := range nodes {
+		n := &nodes[i]
+
+		labels := make([]string, 0, len(n.Labels.Nodes))
+		for _, l := range n.Labels.Nodes {
+			labels = append(labels, l.Name)
+		}
+
+		var ciStatus string
+		var checks []CheckRunInfo
+		if len(n.Commits.Nodes) > 0 {
+			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
+				ciStatus = rollup.State
+				for _, ctx := range rollup.Contexts.Nodes {
+					if ctx.Name == "" {
+						continue
+					}
+					checks = append(checks, CheckRunInfo{
+						Name:       ctx.Name,
+						Status:     ctx.Status,
+						Conclusion: ctx.Conclusion,
+					})
+				}
+			}
+		}
+
+		var unresolved int
+		for _, t := range n.ReviewThreads.Nodes {
+			if !t.IsResolved {
+				unresolved++
+			}
+		}
+
+		prs = append(prs, RenovatePR{
+			PullRequest: PullRequest{
+				Number:          n.Number,
+				Title:           n.Title,
+				URL:             n.URL,
+				HeadRefName:     n.HeadRefName,
+				Repository:      n.Repository.NameWithOwner,
+				RepoName:        n.Repository.Name,
+				Author:          n.Author.Login,
+				IsDraft:         n.IsDraft,
+				Mergeable:       n.Mergeable,
+				Labels:          labels,
+				CIStatus:        ciStatus,
+				ReviewDecision:  n.ReviewDecision,
+				UnresolvedCount: unresolved,
+				CreatedAt:       n.CreatedAt,
+				UpdatedAt:       n.UpdatedAt,
+			},
+			CheckRuns: checks,
+		})
+	}
+	return prs
+}
+
+// ApprovePR approves a pull request.
+func ApprovePR(repo string, number int) error {
+	return approvePRWith(defaultExecer, repo, number)
+}
+
+func approvePRWith(e execer, repo string, number int) error {
+	out, err := e.run("pr", "review", "--approve",
+		fmt.Sprintf("%d", number), "-R", repo)
+	if err != nil {
+		return fmt.Errorf("gh pr review --approve %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// RerunFailedChecks reruns the latest failed workflow run for a PR.
+func RerunFailedChecks(repo string, number int) error {
+	return rerunFailedChecksWith(defaultExecer, repo, number)
+}
+
+func rerunFailedChecksWith(e execer, repo string, number int) error {
+	// Get the PR branch to find the latest run
+	branch, err := fetchPRBranchWith(e, repo, number)
+	if err != nil {
+		return err
+	}
+	out, err := e.run("run", "rerun", "--failed",
+		"--repo", repo, "--branch", branch)
+	if err != nil {
+		return fmt.Errorf("gh run rerun --failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // HasPendingReview checks if the authenticated user has a pending (draft) review on a PR.
 // Pending reviews are only visible to their author via the REST API.
 func HasPendingReview(repo string, number int) (bool, error) {
