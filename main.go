@@ -89,9 +89,9 @@ func main() {
 				FullscreenEnabled: mac.Enabled,
 			},
 		},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		Menu:             appMenu,
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
+		Menu:       appMenu,
 		Bind: []any{
 			app,
 		},
