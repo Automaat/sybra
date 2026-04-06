@@ -51,9 +51,11 @@ type App struct {
 	reviewer        *ReviewHandler
 	workflow        *TaskWorkflow
 	todoistHandler  *TodoistHandler
+	todoistCancel   context.CancelFunc
 	renovateHandler *RenovateHandler
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
+	emit            func(string, any)
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
@@ -120,6 +122,7 @@ func (a *App) startup(ctx context.Context) {
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
+	a.emit = emit
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
@@ -163,9 +166,7 @@ func (a *App) startup(ctx context.Context) {
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 	a.wg.Go(func() { a.prPollLoop(ctx) })
 	a.wg.Go(func() { a.agentWatchdogLoop(ctx) })
-	if a.todoistHandler != nil {
-		a.wg.Go(func() { a.todoistPollLoop(ctx) })
-	}
+	a.startTodoistLoop(ctx)
 	if a.renovateHandler != nil {
 		a.wg.Go(func() { a.renovatePollLoop(ctx) })
 	}

@@ -151,20 +151,6 @@ export namespace config {
 	        this.autoPlan = source["autoPlan"];
 	    }
 	}
-	export class RenovateConfig {
-	    enabled: boolean;
-	    author: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new RenovateConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.author = source["author"];
-	    }
-	}
 	export class TodoistConfig {
 	    enabled: boolean;
 	    apiToken: string;
@@ -188,50 +174,6 @@ export namespace config {
 
 export namespace github {
 	
-	export class CheckRunInfo {
-	    name: string;
-	    status: string;
-	    conclusion: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CheckRunInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.status = source["status"];
-	        this.conclusion = source["conclusion"];
-	    }
-	}
-	export class Issue {
-	    number: number;
-	    title: string;
-	    url: string;
-	    repository: string;
-	    repoName: string;
-	    labels: string[];
-	    author: string;
-	    createdAt: string;
-	    updatedAt: string;
-
-	    static createFrom(source: any = {}) {
-	        return new Issue(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.title = source["title"];
-	        this.url = source["url"];
-	        this.repository = source["repository"];
-	        this.repoName = source["repoName"];
-	        this.labels = source["labels"];
-	        this.author = source["author"];
-	        this.createdAt = source["createdAt"];
-	        this.updatedAt = source["updatedAt"];
-	    }
-	}
 	export class PullRequest {
 	    number: number;
 	    title: string;
@@ -246,95 +188,31 @@ export namespace github {
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
-	    viewerHasApproved: boolean;
 	    createdAt: string;
 	    updatedAt: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PullRequest(source);
 	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.title = source["title"];
-	        this.url = source["url"];
-	        this.repository = source["repository"];
-	        this.repoName = source["repoName"];
-	        this.author = source["author"];
-	        this.isDraft = source["isDraft"];
-	        this.labels = source["labels"];
-	        this.headRefName = source["headRefName"];
-	        this.ciStatus = source["ciStatus"];
-	        this.reviewDecision = source["reviewDecision"];
-	        this.mergeable = source["mergeable"];
-	        this.unresolvedCount = source["unresolvedCount"];
-	        this.viewerHasApproved = source["viewerHasApproved"];
-	        this.createdAt = source["createdAt"];
-	        this.updatedAt = source["updatedAt"];
-	    }
-	}
-	export class RenovatePR {
-	    number: number;
-	    title: string;
-	    url: string;
-	    repository: string;
-	    repoName: string;
-	    author: string;
-	    isDraft: boolean;
-	    labels: string[];
-	    headRefName: string;
-	    ciStatus: string;
-	    reviewDecision: string;
-	    mergeable: string;
-	    unresolvedCount: number;
-	    viewerHasApproved: boolean;
-	    createdAt: string;
-	    updatedAt: string;
-	    checkRuns: CheckRunInfo[];
-
-	    static createFrom(source: any = {}) {
-	        return new RenovatePR(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.title = source["title"];
-	        this.url = source["url"];
-	        this.repository = source["repository"];
-	        this.repoName = source["repoName"];
-	        this.author = source["author"];
-	        this.isDraft = source["isDraft"];
-	        this.labels = source["labels"];
-	        this.headRefName = source["headRefName"];
-	        this.ciStatus = source["ciStatus"];
-	        this.reviewDecision = source["reviewDecision"];
-	        this.mergeable = source["mergeable"];
-	        this.unresolvedCount = source["unresolvedCount"];
-	        this.viewerHasApproved = source["viewerHasApproved"];
-	        this.createdAt = source["createdAt"];
-	        this.updatedAt = source["updatedAt"];
-	        this.checkRuns = this.convertValues(source["checkRuns"], CheckRunInfo);
-	    }
 	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.title = source["title"];
+	        this.url = source["url"];
+	        this.repository = source["repository"];
+	        this.repoName = source["repoName"];
+	        this.author = source["author"];
+	        this.isDraft = source["isDraft"];
+	        this.labels = source["labels"];
+	        this.headRefName = source["headRefName"];
+	        this.ciStatus = source["ciStatus"];
+	        this.reviewDecision = source["reviewDecision"];
+	        this.mergeable = source["mergeable"];
+	        this.unresolvedCount = source["unresolvedCount"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
 	}
 	export class ReviewSummary {
 	    createdByMe: PullRequest[];
@@ -396,7 +274,6 @@ export namespace main {
 	    logging: LoggingSettings;
 	    audit: config.AuditConfig;
 	    todoist: config.TodoistConfig;
-	    renovate: config.RenovateConfig;
 	    directories: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
@@ -411,7 +288,6 @@ export namespace main {
 	        this.logging = this.convertValues(source["logging"], LoggingSettings);
 	        this.audit = this.convertValues(source["audit"], config.AuditConfig);
 	        this.todoist = this.convertValues(source["todoist"], config.TodoistConfig);
-	        this.renovate = this.convertValues(source["renovate"], config.RenovateConfig);
 	        this.directories = source["directories"];
 	    }
 	

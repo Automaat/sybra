@@ -237,3 +237,29 @@ func (a *App) GetTodoistProjects() ([]todoist.Project, error) {
 func (a *App) TodoistEnabled() bool {
 	return a.todoistHandler != nil
 }
+
+// startTodoistLoop launches the poll goroutine if the handler is initialized.
+func (a *App) startTodoistLoop(parent context.Context) {
+	if a.todoistHandler == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	a.todoistCancel = cancel
+	a.wg.Go(func() { a.todoistPollLoop(ctx) })
+}
+
+// stopTodoistLoop cancels the running poll goroutine if any.
+func (a *App) stopTodoistLoop() {
+	if a.todoistCancel != nil {
+		a.todoistCancel()
+		a.todoistCancel = nil
+	}
+	a.todoistHandler = nil
+}
+
+// reloadTodoist tears down and (if enabled) re-creates the Todoist handler + poll loop.
+func (a *App) reloadTodoist() {
+	a.stopTodoistLoop()
+	a.initTodoist(a.emit)
+	a.startTodoistLoop(a.ctx)
+}
