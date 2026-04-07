@@ -26,6 +26,7 @@ type Manager struct {
 	logger        *slog.Logger
 	logDir        string
 	maxConcurrent int
+	approvalAddr  string // localhost:port for the HTTP tool approval server
 }
 
 func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -41,6 +42,11 @@ func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *sl
 
 func (m *Manager) SetOnComplete(fn func(ag *Agent)) {
 	m.onComplete = fn
+}
+
+// SetApprovalAddr sets the HTTP address for the tool approval server.
+func (m *Manager) SetApprovalAddr(addr string) {
+	m.approvalAddr = addr
 }
 
 // SetMaxConcurrent sets the maximum number of concurrently running agents.
@@ -99,7 +105,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cancel:      cancel,
 		sessionCWD:  cfg.Dir,
 	}
-	if cfg.Mode == "headless" {
+	if cfg.Mode == "headless" || cfg.Mode == "interactive" {
 		a.done = make(chan struct{})
 	}
 
@@ -118,32 +124,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	case "headless":
 		go m.runHeadless(ctx, a, cfg.Prompt, cfg.AllowedTools, cfg.RequirePermissions)
 	case "interactive":
-		a.TmuxSession = fmt.Sprintf("synapse-%s-%s", sanitizeSessionName(cfg.Name), id)
-		claudeCmd, buildErr := m.buildClaudeCmd(cfg)
-		if buildErr != nil {
-			cancel()
-			m.mu.Lock()
-			delete(m.agents, id)
-			m.mu.Unlock()
-			return nil, buildErr
-		}
-		var createErr error
-		if cfg.Dir != "" {
-			createErr = m.tmux.CreateSessionInDir(a.TmuxSession, claudeCmd, cfg.Dir)
-		} else {
-			createErr = m.tmux.CreateSession(a.TmuxSession, claudeCmd)
-		}
-		if createErr != nil {
-			cancel()
-			m.mu.Lock()
-			delete(m.agents, id)
-			m.mu.Unlock()
-			m.logger.Error("agent.tmux.create", "id", id, "err", createErr)
-			return nil, fmt.Errorf("create tmux session: %w", createErr)
-		}
-		if cfg.Prompt != "" {
-			go m.sendInteractivePrompt(ctx, a, cfg.Prompt)
-		}
+		a.approvalCh = make(chan ApprovalResponse, 1)
+		go m.runConversational(ctx, a, cfg)
 	default:
 		cancel()
 		return nil, fmt.Errorf("unknown mode: %s", cfg.Mode)
@@ -287,17 +269,20 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	m.logger.Info("agent.stop", "id", agentID)
 
-	if a.Mode == "interactive" {
-		m.markStopped(a)
-	} else {
-		// Headless: cancel context; goroutine calls onComplete and closes done
-		// after the process exits.
-		if a.cancel != nil {
-			a.cancel()
-		}
-		a.State = StateStopped
-		m.emit(events.AgentState(agentID), a)
+	// Both headless and interactive (conversational) agents run in goroutines.
+	// Cancel context; goroutine calls onComplete and closes done after process exits.
+	if a.cancel != nil {
+		a.cancel()
 	}
+	a.State = StateStopped
+	// Close stdin to signal the claude process to exit.
+	a.stdinMu.Lock()
+	if a.stdinPipe != nil {
+		_ = a.stdinPipe.Close()
+		a.stdinPipe = nil
+	}
+	a.stdinMu.Unlock()
+	m.emit(events.AgentState(agentID), a)
 	return nil
 }
 
@@ -376,9 +361,16 @@ func (m *Manager) markStopped(a *Agent) {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	if a.Mode == "interactive" && a.TmuxSession != "" {
+	if a.TmuxSession != "" {
 		_ = m.tmux.KillSession(a.TmuxSession)
 	}
+	// Close conversational stdin to signal process exit.
+	a.stdinMu.Lock()
+	if a.stdinPipe != nil {
+		_ = a.stdinPipe.Close()
+		a.stdinPipe = nil
+	}
+	a.stdinMu.Unlock()
 	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
 		m.onComplete(a)
@@ -445,8 +437,7 @@ func (m *Manager) Shutdown() {
 	defer m.mu.RUnlock()
 	m.logger.Info("agent.shutdown", "count", len(m.agents))
 	for _, a := range m.agents {
-		// Only cancel headless agents — interactive tmux sessions survive restarts
-		if a.Mode == "headless" && a.cancel != nil {
+		if a.cancel != nil {
 			a.cancel()
 		}
 	}

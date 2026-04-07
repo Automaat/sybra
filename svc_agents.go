@@ -10,9 +10,10 @@ import (
 
 // AgentService exposes agent and tmux session operations as Wails-bound methods.
 type AgentService struct {
-	agents *agent.Manager
-	tmux   *tmux.Manager
-	logger *slog.Logger
+	agents   *agent.Manager
+	tmux     *tmux.Manager
+	logger   *slog.Logger
+	approval *agent.ApprovalServer
 }
 
 // StopAgent sends a stop signal to the given agent.
@@ -74,4 +75,22 @@ func (s *AgentService) KillTmuxSession(name string) error {
 // AttachTmuxSession opens the named tmux session in Ghostty.
 func (s *AgentService) AttachTmuxSession(name string) error {
 	return openTmuxInGhostty(name, name)
+}
+
+// SendMessage sends a follow-up message to a conversational agent.
+func (s *AgentService) SendMessage(agentID, text string) error {
+	return s.agents.SendMessage(agentID, text)
+}
+
+// RespondApproval sends a tool approval decision from the frontend.
+func (s *AgentService) RespondApproval(toolUseID string, approved bool) error {
+	if s.approval == nil {
+		return fmt.Errorf("approval server not initialized")
+	}
+	return s.approval.RespondApproval(toolUseID, approved)
+}
+
+// GetConvoOutput returns the full conversation event buffer for an agent.
+func (s *AgentService) GetConvoOutput(agentID string) ([]agent.ConvoEvent, error) {
+	return s.agents.GetConvoOutput(agentID)
 }

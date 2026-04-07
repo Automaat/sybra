@@ -10,6 +10,7 @@
   import { STATUS_OPTIONS } from '../lib/statuses.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
+  import ChatView from '../components/ChatView.svelte'
 
   interface Props {
     taskId: string
@@ -552,7 +553,9 @@
               </button>
             {/if}
           </div>
-          {#if runningAgent.mode === 'interactive' && runningAgent.tmuxSession}
+          {#if runningAgent.mode === 'interactive' && !runningAgent.tmuxSession}
+            <ChatView agentId={runningAgent.id} agentState={runningAgent.state} costUsd={runningAgent.costUsd} inputTokens={runningAgent.inputTokens ?? 0} outputTokens={runningAgent.outputTokens ?? 0} />
+          {:else if runningAgent.mode === 'interactive' && runningAgent.tmuxSession}
             <TerminalView agentId={runningAgent.id} />
           {:else}
             <StreamOutput agentId={runningAgent.id} />
@@ -561,15 +564,17 @@
       {:else}
         <div class="flex flex-col gap-3">
           <span class="text-sm font-medium text-surface-500">Run Agent</span>
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={agentMode === 'headless'}
-              onchange={(e) => { agentMode = e.currentTarget.checked ? 'headless' : 'interactive' }}
-              class="rounded border-surface-300 dark:border-surface-600"
-            />
-            <span class="text-sm">Headless</span>
-          </label>
+          <div class="flex flex-wrap items-center gap-4">
+            <label class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={agentMode === 'headless'}
+                onchange={(e) => { agentMode = e.currentTarget.checked ? 'headless' : 'interactive' }}
+                class="rounded border-surface-300 dark:border-surface-600"
+              />
+              <span class="text-sm">Headless</span>
+            </label>
+          </div>
           <textarea
             class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
             rows="3"

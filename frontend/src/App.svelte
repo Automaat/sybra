@@ -21,6 +21,8 @@
   import Stats from './pages/Stats.svelte'
   import PlanReviews from './pages/PlanReviews.svelte'
   import Settings from './pages/Settings.svelte'
+  import ChatList from './pages/ChatList.svelte'
+  import ChatDetail from './pages/ChatDetail.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -28,6 +30,8 @@
     | { kind: 'task-detail'; taskId: string }
     | { kind: 'project-list' }
     | { kind: 'project-detail'; projectId: string }
+    | { kind: 'chats' }
+    | { kind: 'chat-detail'; agentId: string }
     | { kind: 'agents'; tab?: string }
     | { kind: 'agent-detail'; agentId: string }
     | { kind: 'github' }
@@ -42,12 +46,18 @@
   let quitConfirmVisible = $state(false)
   let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
+  const interactiveAgentCount = $derived(
+    agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
+  )
+
   const pageTitle = $derived(
     page.kind === 'dashboard' ? 'Dashboard' :
     page.kind === 'task-list' ? 'Tasks' :
     page.kind === 'task-detail' ? 'Task Detail' :
     page.kind === 'project-list' ? 'Projects' :
     page.kind === 'project-detail' ? 'Project Detail' :
+    page.kind === 'chats' ? 'Chats' :
+    page.kind === 'chat-detail' ? 'Chat' :
     page.kind === 'agents' ? 'Agents' :
     page.kind === 'github' ? 'GitHub' :
     page.kind === 'stats' ? 'Stats' :
@@ -178,6 +188,20 @@
         <Navigation.TriggerText>Projects</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
+        onclick={() => (page = { kind: 'chats' })}
+        data-active={page.kind === 'chats' || page.kind === 'chat-detail' || undefined}
+      >
+        <div class="relative">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          </svg>
+          {#if interactiveAgentCount > 0}
+            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary-500 text-[9px] font-bold text-white">{interactiveAgentCount}</span>
+          {/if}
+        </div>
+        <Navigation.TriggerText>Chats</Navigation.TriggerText>
+      </Navigation.Trigger>
+      <Navigation.Trigger
         onclick={() => (page = { kind: 'agents' })}
         data-active={page.kind === 'agents' || page.kind === 'agent-detail' || undefined}
       >
@@ -275,6 +299,16 @@
         <ProjectDetail
           projectId={page.projectId}
           onback={() => (page = { kind: 'project-list' })}
+          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
+        />
+      {:else if page.kind === 'chats'}
+        <ChatList
+          onselect={(id) => (page = { kind: 'chat-detail', agentId: id })}
+        />
+      {:else if page.kind === 'chat-detail'}
+        <ChatDetail
+          agentId={page.agentId}
+          onback={() => (page = { kind: 'chats' })}
           onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
         />
       {:else if page.kind === 'agents'}

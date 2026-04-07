@@ -3,16 +3,16 @@
 import {task} from '../models';
 import {github} from '../models';
 
-export function StartReview(arg1:string):Promise<void>;
-
-export function ListReviewComments(arg1:string):Promise<Array<task.ReviewComment>>;
-
 export function AddReviewComment(arg1:string,arg2:number,arg3:string):Promise<task.ReviewComment>;
-
-export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteReviewComment(arg1:string,arg2:string):Promise<void>;
 
 export function FetchReviews():Promise<github.ReviewSummary>;
 
+export function ListReviewComments(arg1:string):Promise<Array<task.ReviewComment>>;
+
 export function MarkPRReady(arg1:string,arg2:number):Promise<void>;
+
+export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
+
+export function StartReview(arg1:string):Promise<void>;

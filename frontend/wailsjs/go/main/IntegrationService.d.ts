@@ -3,20 +3,20 @@
 import {github} from '../models';
 import {todoist} from '../models';
 
-export function SyncTodoist():Promise<void>;
+export function ApproveRenovatePR(arg1:string,arg2:number):Promise<void>;
 
-export function GetTodoistProjects():Promise<Array<todoist.Project>>;
-
-export function TodoistEnabled():Promise<boolean>;
+export function FetchAssignedIssues():Promise<Array<github.Issue>>;
 
 export function FetchRenovatePRs():Promise<Array<github.RenovatePR>>;
 
-export function MergeRenovatePR(arg1:string,arg2:number):Promise<void>;
+export function FixRenovateCI(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
 
-export function ApproveRenovatePR(arg1:string,arg2:number):Promise<void>;
+export function GetTodoistProjects():Promise<Array<todoist.Project>>;
+
+export function MergeRenovatePR(arg1:string,arg2:number):Promise<void>;
 
 export function RerunRenovateChecks(arg1:string,arg2:number):Promise<void>;
 
-export function FixRenovateCI(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+export function SyncTodoist():Promise<void>;
 
-export function FetchAssignedIssues():Promise<Array<github.Issue>>;
+export function TodoistEnabled():Promise<boolean>;
