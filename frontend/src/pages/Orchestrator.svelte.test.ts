@@ -10,7 +10,7 @@ const mockEventsOn = vi.fn().mockReturnValue(vi.fn())
 
 const mockAgentList: any[] = []
 
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/OrchestratorService.js', () => ({
   IsOrchestratorRunning: (...args: unknown[]) => mockIsOrchestratorRunning(...args),
   StartOrchestrator: (...args: unknown[]) => mockStartOrchestrator(...args),
   StopOrchestrator: (...args: unknown[]) => mockStopOrchestrator(...args),

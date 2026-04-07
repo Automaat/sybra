@@ -3,17 +3,34 @@ import { render, screen, cleanup } from '@testing-library/svelte'
 import { agent, task } from '../../wailsjs/go/models.js'
 
 vi.mock('../../wailsjs/go/main/App.js', () => ({
-  ListAgents: vi.fn().mockResolvedValue([]),
   StartAgent: vi.fn(),
+}))
+
+vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
+  ListAgents: vi.fn().mockResolvedValue([]),
   StopAgent: vi.fn(),
   GetAgentOutput: vi.fn().mockResolvedValue([]),
   DiscoverAgents: vi.fn().mockResolvedValue([]),
+  CaptureAgentPane: vi.fn().mockResolvedValue(''),
+  AttachAgent: vi.fn(),
+}))
+
+vi.mock('../../wailsjs/go/main/TaskService.js', () => ({
   ListTasks: vi.fn().mockResolvedValue([]),
   GetTask: vi.fn(),
   CreateTask: vi.fn(),
   UpdateTask: vi.fn(),
-  CaptureAgentPane: vi.fn().mockResolvedValue(''),
-  AttachAgent: vi.fn(),
+}))
+
+vi.mock('../../wailsjs/go/main/PlanningService.js', () => ({
+  ApprovePlan: vi.fn(),
+  RejectPlan: vi.fn(),
+  SendPlanMessage: vi.fn(),
+  HasLivePlanAgent: vi.fn(),
+}))
+
+vi.mock('../../wailsjs/go/main/ReviewService.js', () => ({
+  MarkPRReady: vi.fn(),
 }))
 
 vi.mock('../../wailsjs/runtime/runtime.js', () => ({

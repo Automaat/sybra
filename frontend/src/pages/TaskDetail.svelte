@@ -3,7 +3,7 @@
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentState } from '../lib/events.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
-  import { StartReview } from '../../wailsjs/go/main/App.js'
+  import { StartReview } from '../../wailsjs/go/main/ReviewService.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'

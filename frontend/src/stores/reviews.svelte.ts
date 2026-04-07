@@ -1,4 +1,4 @@
-import { FetchReviews } from '../../wailsjs/go/main/App.js'
+import { FetchReviews } from '../../wailsjs/go/main/ReviewService.js'
 import { EventsOn } from '../../wailsjs/runtime/runtime.js'
 import { ReviewsUpdated } from '../lib/events.js'
 import type { github } from '../../wailsjs/go/models.js'

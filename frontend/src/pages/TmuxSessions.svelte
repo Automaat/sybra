@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ListTmuxSessions, KillTmuxSession, AttachTmuxSession } from '../../wailsjs/go/main/App.js'
+  import { ListTmuxSessions, KillTmuxSession, AttachTmuxSession } from '../../wailsjs/go/main/AgentService.js'
   import type { tmux } from '../../wailsjs/go/models.js'
 
   let sessions = $state<tmux.SessionInfo[]>([])

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CaptureAgentPane, AttachAgent } from '../../wailsjs/go/main/App.js'
+  import { CaptureAgentPane, AttachAgent } from '../../wailsjs/go/main/AgentService.js'
   import { agentStore } from '../stores/agents.svelte.js'
 
   interface Props {

@@ -70,7 +70,7 @@ vi.mock('../components/PRCard.svelte', () => ({ default: () => {} }))
 vi.mock('../components/RenovatePRCard.svelte', () => ({ default: () => {} }))
 vi.mock('../components/IssueCard.svelte', () => ({ default: () => {} }))
 vi.mock('../components/PRDetailView.svelte', () => ({ default: () => {} }))
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/IntegrationService.js', () => ({
   ApproveRenovatePR: vi.fn(),
   MergeRenovatePR: vi.fn(),
   RerunRenovateChecks: vi.fn(),

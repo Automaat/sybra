@@ -214,30 +214,6 @@ func (a *App) todoistPollLoop(ctx context.Context) {
 	}
 }
 
-// SyncTodoist triggers an immediate Todoist sync (bound to frontend).
-func (a *App) SyncTodoist() error {
-	if a.todoistHandler == nil {
-		return fmt.Errorf("todoist integration not enabled")
-	}
-	a.todoistHandler.pollAndSync()
-	return nil
-}
-
-// GetTodoistProjects returns Todoist projects for the settings UI.
-func (a *App) GetTodoistProjects() ([]todoist.Project, error) {
-	token := a.cfg.Todoist.APIToken
-	if token == "" {
-		return nil, fmt.Errorf("todoist API token not configured")
-	}
-	c := todoist.NewClient(token)
-	return c.ListProjects()
-}
-
-// TodoistEnabled returns whether the todoist handler is active.
-func (a *App) TodoistEnabled() bool {
-	return a.todoistHandler != nil
-}
-
 // startTodoistLoop launches the poll goroutine if the handler is initialized.
 func (a *App) startTodoistLoop(parent context.Context) {
 	if a.todoistHandler == nil {

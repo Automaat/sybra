@@ -131,18 +131,6 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	}
 }
 
-// StartReview is exposed as a Wails-bound method.
-func (a *App) StartReview(taskID string) error {
-	t, err := a.tasks.Get(taskID)
-	if err != nil {
-		return err
-	}
-	if t.ProjectID == "" || t.PRNumber == 0 {
-		return fmt.Errorf("task %s has no linked PR", taskID)
-	}
-	return a.reviewer.startReviewAgent(t)
-}
-
 func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 	dir := config.HomeDir()
 	if t.ProjectID != "" {
@@ -425,22 +413,6 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		"task_id", t.ID, "issue", string(issue.Kind),
 		"pr", issue.PR.Number, "agent_id", ag.ID,
 	)
-}
-
-func (a *App) ListReviewComments(taskID string) ([]task.ReviewComment, error) {
-	return a.tasks.Comments().List(taskID)
-}
-
-func (a *App) AddReviewComment(taskID string, line int, body string) (task.ReviewComment, error) {
-	return a.tasks.Comments().Add(taskID, line, body)
-}
-
-func (a *App) ResolveReviewComment(taskID, commentID string) error {
-	return a.tasks.Comments().Resolve(taskID, commentID)
-}
-
-func (a *App) DeleteReviewComment(taskID, commentID string) error {
-	return a.tasks.Comments().Delete(taskID, commentID)
 }
 
 func conflictPrompt(pr github.PullRequest) string {

@@ -5,14 +5,17 @@ import { agent } from '../../wailsjs/go/models.js'
 const mockCaptureAgentPane = vi.fn()
 const mockAttachAgent = vi.fn()
 
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
   CaptureAgentPane: (...args: unknown[]) => mockCaptureAgentPane(...args),
   AttachAgent: (...args: unknown[]) => mockAttachAgent(...args),
   ListAgents: vi.fn().mockResolvedValue([]),
-  StartAgent: vi.fn(),
   StopAgent: vi.fn(),
   GetAgentOutput: vi.fn().mockResolvedValue([]),
   DiscoverAgents: vi.fn().mockResolvedValue([]),
+}))
+
+vi.mock('../../wailsjs/go/main/App.js', () => ({
+  StartAgent: vi.fn(),
 }))
 
 vi.mock('../../wailsjs/runtime/runtime.js', () => ({

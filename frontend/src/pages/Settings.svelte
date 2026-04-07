@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/App.js'
+  import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/ConfigService.js'
   import type { main } from '../../wailsjs/go/models.js'
 
   type AppSettings = main.AppSettings

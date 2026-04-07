@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { project } from '../../wailsjs/go/models.js'
-  import { ListWorktrees, OpenInTerminal, OpenInEditor } from '../../wailsjs/go/main/App.js'
+  import { ListWorktrees, OpenInTerminal, OpenInEditor } from '../../wailsjs/go/main/ProjectService.js'
 
   interface Props {
     projectId: string
