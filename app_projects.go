@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/Automaat/synapse/internal/executil"
 	"github.com/Automaat/synapse/internal/project"
 )
 
@@ -83,7 +84,7 @@ func openDirInGhostty(dir string) error {
 	else
 		new window with configuration cfg
 	end if
-end tell`, dir)
+end tell`, executil.EscapeAppleScript(dir))
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("osascript: %w: %s", err, string(out))

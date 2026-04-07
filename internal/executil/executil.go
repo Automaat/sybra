@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// EscapeAppleScript escapes a string for safe embedding inside an AppleScript
+// double-quoted string literal. It escapes backslashes first, then double quotes.
+func EscapeAppleScript(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
 // Run executes a command in dir, returning a formatted error with stderr on failure.
 func Run(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
