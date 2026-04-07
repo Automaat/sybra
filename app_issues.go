@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/Automaat/synapse/internal/github"
@@ -48,15 +49,41 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 	}
 
 	issueURLs := make(map[string]struct{})
+	// Map URL-titled tasks so we can enrich them instead of creating duplicates.
+	urlTitleTasks := make(map[string]string) // issue URL → task ID
 	for i := range tasks {
 		if tasks[i].Issue != "" {
 			issueURLs[tasks[i].Issue] = struct{}{}
+		}
+		if strings.HasPrefix(tasks[i].Title, "https://github.com/") {
+			urlTitleTasks[tasks[i].Title] = tasks[i].ID
 		}
 	}
 
 	for i := range issues {
 		issue := &issues[i]
 		if _, exists := issueURLs[issue.URL]; exists {
+			continue
+		}
+
+		// Task already exists with the issue URL as title (manually created).
+		// Enrich it with the real title and link instead of creating a duplicate.
+		if taskID, exists := urlTitleTasks[issue.URL]; exists {
+			updates := map[string]any{
+				"title": issue.Title,
+				"issue": issue.URL,
+			}
+			if issue.Body != "" {
+				updates["body"] = issue.Body
+			}
+			if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
+				updates["project_id"] = issue.Repository
+			}
+			if _, err := a.tasks.Update(taskID, updates); err != nil {
+				a.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
+			} else {
+				a.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
+			}
 			continue
 		}
 
