@@ -14,6 +14,12 @@ import (
 	"github.com/Automaat/synapse/internal/fsutil"
 )
 
+const (
+	tailReadBytes     = 8192
+	scannerInitialBuf = 64 * 1024
+	scannerMaxBuf     = 256 * 1024
+)
+
 type claudeSession struct {
 	PID       int    `json:"pid"`
 	SessionID string `json:"sessionId"`
@@ -166,14 +172,14 @@ func readLastJSONL(path string) sessionState {
 	stale := time.Since(info.ModTime()) > staleThreshold
 
 	// Read last 8KB — enough for the last JSONL entry
-	offset := max(info.Size()-8192, 0)
+	offset := max(info.Size()-tailReadBytes, 0)
 	if _, err := f.Seek(offset, 0); err != nil {
 		return sessionState{}
 	}
 
 	var lastLine string
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) != "" {

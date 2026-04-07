@@ -16,6 +16,11 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 )
 
+const (
+	maxPromptLen = 4000
+	maxResultLen = 2000
+)
+
 // TaskWorkflow handles triage, planning, evaluation, and agent completion callbacks.
 type TaskWorkflow struct {
 	tasks         *task.Manager
@@ -293,8 +298,8 @@ func (w *TaskWorkflow) EvaluateTask(taskID, agentResult string) error {
 	dir := config.HomeDir()
 
 	truncated := agentResult
-	if len(truncated) > 4000 {
-		truncated = truncated[:4000] + "\n... (truncated)"
+	if len(truncated) > maxPromptLen {
+		truncated = truncated[:maxPromptLen] + "\n... (truncated)"
 	}
 
 	prompt := fmt.Sprintf(
@@ -356,8 +361,8 @@ func (w *TaskWorkflow) handleAgentComplete(ag *agent.Agent) {
 
 	// Persist run result to task file
 	truncatedResult := resultContent
-	if len(truncatedResult) > 2000 {
-		truncatedResult = truncatedResult[:2000] + "\n... (truncated)"
+	if len(truncatedResult) > maxResultLen {
+		truncatedResult = truncatedResult[:maxResultLen] + "\n... (truncated)"
 	}
 	if err := w.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
 		"state":    string(ag.State),
