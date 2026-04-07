@@ -370,6 +370,61 @@ func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }
 
+func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(bare)
+	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// Configure git identity so commit works.
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	// Simulate agent leaving uncommitted work.
+	if err := os.WriteFile(filepath.Join(wtPath, "new_file.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SanitizeWorktree(wtPath); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+
+	// Uncommitted file should now be in a commit, not lost.
+	out, err := exec.Command("git", "-C", wtPath, "log", "--oneline", "-1").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "wip:") {
+		t.Errorf("expected wip commit, got: %s", out)
+	}
+
+	// Working tree should be clean after sanitize.
+	statusOut, _ := exec.Command("git", "-C", wtPath, "status", "--porcelain").Output()
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Errorf("expected clean working tree, got: %s", statusOut)
+	}
+}
+
 func TestCreateWorktreeInvalidBase(t *testing.T) {
 	t.Parallel()
 	if !hasGit() {

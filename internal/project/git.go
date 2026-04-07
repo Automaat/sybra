@@ -90,8 +90,24 @@ func SanitizeWorktree(wtPath string) error {
 		}
 	}
 
-	// Discard uncommitted changes so rebase can proceed. Committed work on the
-	// branch is preserved; only working-tree/index dirt is dropped.
+	// Auto-commit any uncommitted changes before resetting. Agents are expected
+	// to commit before finishing, but if they forget this preserves their work
+	// on the branch rather than destroying it.
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = wtPath
+	if statusOut, err := statusCmd.Output(); err == nil && len(strings.TrimSpace(string(statusOut))) > 0 {
+		add := exec.Command("git", "add", "-A")
+		add.Dir = wtPath
+		if _ = add.Run(); true {
+			commit := exec.Command("git", "commit", "--no-gpg-sign", "-m", "wip: auto-commit uncommitted agent work\n\nSanitizeWorktree preserved uncommitted changes before reset.")
+			commit.Dir = wtPath
+			_ = commit.Run()
+		}
+	}
+
+	// Discard any remaining working-tree dirt (e.g. ignored files, failed
+	// commit) so the rebase can proceed cleanly. Committed work on the branch
+	// is preserved.
 	reset := exec.Command("git", "reset", "--hard", "HEAD")
 	reset.Dir = wtPath
 	_ = reset.Run()
