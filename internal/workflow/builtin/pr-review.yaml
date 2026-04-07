@@ -1,0 +1,30 @@
+id: pr-review
+name: PR Review
+description: Run code review agent on a pull request
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: review
+steps:
+  - id: review
+    name: Review PR
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: opus
+      prompt: >-
+        Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
+    next:
+      - goto: set_in_review
+
+  - id: set_in_review
+    name: Set In Review
+    type: set_status
+    config:
+      status: in-review
+    next:
+      - goto: ""

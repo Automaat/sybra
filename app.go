@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watcher"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -50,6 +51,8 @@ type App struct {
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
 	workflow        *TaskWorkflow
+	workflowEngine  *workflow.Engine
+	workflowStore   *workflow.Store
 	todoistHandler  *TodoistHandler
 	todoistCancel   context.CancelFunc
 	renovateHandler *RenovateHandler
@@ -58,15 +61,16 @@ type App struct {
 	emit            func(string, any)
 
 	// Wails-bound services (created in startup)
-	taskSvc    *TaskService
-	planSvc    *PlanningService
-	agentSvc   *AgentService
-	orchSvc    *OrchestratorService
-	projectSvc *ProjectService
-	configSvc  *ConfigService
-	intgSvc    *IntegrationService
-	statsSvc   *StatsService
-	reviewSvc  *ReviewService
+	taskSvc     *TaskService
+	planSvc     *PlanningService
+	agentSvc    *AgentService
+	orchSvc     *OrchestratorService
+	projectSvc  *ProjectService
+	configSvc   *ConfigService
+	intgSvc     *IntegrationService
+	statsSvc    *StatsService
+	reviewSvc   *ReviewService
+	workflowSvc *WorkflowService
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
@@ -92,6 +96,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *A
 	a.intgSvc = &IntegrationService{}
 	a.statsSvc = &StatsService{}
 	a.reviewSvc = &ReviewService{}
+	a.workflowSvc = &WorkflowService{}
 	return a
 }
 
@@ -158,9 +163,11 @@ func (a *App) startup(ctx context.Context) {
 	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees)
 	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
 
+	a.initWorkflowEngine()
+
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.initApprovalServer(emit)
-	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
+	a.agents.SetOnComplete(a.onAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -204,6 +211,37 @@ func (a *App) initAudit() {
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Error("audit.cleanup", "err", err)
 	}
+}
+
+func (a *App) onAgentComplete(ag *agent.Agent) {
+	a.workflow.handleAgentComplete(ag)
+	if a.workflowEngine != nil {
+		var result string
+		for _, ev := range ag.Output() {
+			if ev.Type == "result" {
+				result = ev.Content
+			}
+		}
+		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, result)
+	}
+}
+
+func (a *App) initWorkflowEngine() {
+	wfStore, err := workflow.NewStore(config.WorkflowsDir())
+	if err != nil {
+		a.logger.Error("workflow.store.init", "err", err)
+		return
+	}
+	a.workflowStore = wfStore
+	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
+		a.logger.Error("workflow.sync-builtins", "err", syncErr)
+	}
+	a.workflowEngine = workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: a.tasks},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch},
+		a.logger,
+	)
 }
 
 func (a *App) initApprovalServer(emit func(string, any)) {
@@ -256,6 +294,8 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.intgSvc.todoistHandler = a.todoistHandler
 	a.intgSvc.renovateHandler = a.renovateHandler
 	a.statsSvc.stats = a.stats
+	a.workflowSvc.engine = a.workflowEngine
+	a.workflowSvc.store = a.workflowStore
 }
 
 func (a *App) shutdown(_ context.Context) {

@@ -1,0 +1,53 @@
+id: pr-fix
+name: PR Fix
+description: Fix CI failures or merge conflicts on a PR
+builtin: true
+trigger:
+  on: pr.event
+  conditions:
+    - field: pr.issue_kind
+      operator: contains
+      value: conflict,ci_failure
+steps:
+  - id: fix
+    name: Fix PR Issue
+    type: run_agent
+    config:
+      role: pr-fix
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      prompt: >-
+        Fix the issues raised in the PR review. Push the changes when done.
+    next:
+      - goto: evaluate
+
+  - id: evaluate
+    name: Evaluate Fix
+    type: run_agent
+    config:
+      role: eval
+      mode: headless
+      model: sonnet
+      prompt: >-
+        Evaluate task {{.Task.ID}}. Do NOT read source code or review diffs.
+
+        1. Run: synapse-cli --json get {{.Task.ID}}
+        2. Find the PR number:
+           a. Check task's pr_number field from step 1
+           b. Check agent result below for PR URLs (github.com/.../pull/N)
+           c. If neither found AND task has a branch, run: gh pr list --repo <project_id> --head <branch> --json number
+           If PR found by any method, link: synapse-cli --json update {{.Task.ID}} --pr <number>
+        3. Set status based on findings:
+           - PR exists → in-review
+           - Work done but no PR → human-required
+           - Failed/errors/incomplete → human-required (MUST include --status-reason)
+           Run: synapse-cli --json update {{.Task.ID}} --status <status> [--status-reason "reason"]
+
+        ## Agent Result
+
+        {{.Prev.Output}}
+      allowed_tools:
+        - Bash
+    next:
+      - goto: ""

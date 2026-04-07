@@ -1,0 +1,39 @@
+package workflow
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+	"text/template"
+)
+
+// TemplateContext provides data available in prompt templates and shell commands.
+type TemplateContext struct {
+	Task    TaskInfo
+	Step    Step
+	Prev    *StepRecord
+	Vars    map[string]string
+	Project any // *project.Project or nil
+}
+
+// RenderTemplate renders a Go text/template string with the given context.
+func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
+	t, err := template.New("step").Funcs(templateFuncs).Option("missingkey=error").Parse(tmpl)
+	if err != nil {
+		return "", fmt.Errorf("parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, ctx); err != nil {
+		return "", fmt.Errorf("execute template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+var templateFuncs = template.FuncMap{
+	"shellquote": shellQuote,
+}
+
+// shellQuote wraps a string in single quotes with proper escaping for bash.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}

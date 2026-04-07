@@ -235,6 +235,10 @@ func defaultWorktreesDir() string {
 	return filepath.Join(HomeDir(), "worktrees")
 }
 
+func WorkflowsDir() string {
+	return filepath.Join(HomeDir(), "workflows")
+}
+
 func StatsFile() string {
 	return filepath.Join(HomeDir(), "stats.json")
 }

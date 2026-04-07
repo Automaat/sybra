@@ -3,6 +3,8 @@ package task
 import (
 	"fmt"
 	"time"
+
+	"github.com/Automaat/synapse/internal/workflow"
 )
 
 type Status string
@@ -77,25 +79,26 @@ type AgentRun struct {
 }
 
 type Task struct {
-	ID           string     `yaml:"id" json:"id"`
-	Slug         string     `yaml:"slug,omitempty" json:"slug"`
-	Title        string     `yaml:"title" json:"title"`
-	Status       Status     `yaml:"status" json:"status"`
-	TaskType     TaskType   `yaml:"task_type,omitempty" json:"taskType"`
-	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
-	AllowedTools []string   `yaml:"allowed_tools" json:"allowedTools"`
-	Tags         []string   `yaml:"tags" json:"tags"`
-	ProjectID    string     `yaml:"project_id,omitempty" json:"projectId"`
-	Branch       string     `yaml:"branch,omitempty" json:"branch"`
-	PRNumber     int        `yaml:"pr_number,omitempty" json:"prNumber"`
-	Issue        string     `yaml:"issue,omitempty" json:"issue"`
-	StatusReason string     `yaml:"status_reason,omitempty" json:"statusReason"`
-	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole      string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
-	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
-	AgentRuns    []AgentRun `yaml:"agent_runs,omitempty" json:"agentRuns"`
-	CreatedAt    time.Time  `yaml:"created_at" json:"createdAt"`
-	UpdatedAt    time.Time  `yaml:"updated_at" json:"updatedAt"`
+	ID           string              `yaml:"id" json:"id"`
+	Slug         string              `yaml:"slug,omitempty" json:"slug"`
+	Title        string              `yaml:"title" json:"title"`
+	Status       Status              `yaml:"status" json:"status"`
+	TaskType     TaskType            `yaml:"task_type,omitempty" json:"taskType"`
+	AgentMode    string              `yaml:"agent_mode" json:"agentMode"`
+	AllowedTools []string            `yaml:"allowed_tools" json:"allowedTools"`
+	Tags         []string            `yaml:"tags" json:"tags"`
+	ProjectID    string              `yaml:"project_id,omitempty" json:"projectId"`
+	Branch       string              `yaml:"branch,omitempty" json:"branch"`
+	PRNumber     int                 `yaml:"pr_number,omitempty" json:"prNumber"`
+	Issue        string              `yaml:"issue,omitempty" json:"issue"`
+	StatusReason string              `yaml:"status_reason,omitempty" json:"statusReason"`
+	Reviewed     bool                `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole      string              `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	TodoistID    string              `yaml:"todoist_id,omitempty" json:"todoistId"`
+	AgentRuns    []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
+	Workflow     *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
+	CreatedAt    time.Time           `yaml:"created_at" json:"createdAt"`
+	UpdatedAt    time.Time           `yaml:"updated_at" json:"updatedAt"`
 
 	Body     string `yaml:"-" json:"body"`
 	FilePath string `yaml:"-" json:"filePath"`

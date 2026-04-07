@@ -1,0 +1,29 @@
+id: auto-merge
+name: Auto Merge
+description: Merge PR when CI passes and PR is mergeable (pet projects only)
+builtin: true
+trigger:
+  on: pr.event
+  conditions:
+    - field: pr.issue_kind
+      operator: equals
+      value: ready_to_merge
+    - field: project.type
+      operator: equals
+      value: pet
+steps:
+  - id: merge
+    name: Merge PR
+    type: shell
+    config:
+      command: gh pr merge {{.Task.PRNumber}} --repo {{.Task.ProjectID}} --merge
+    next:
+      - goto: set_done
+
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
