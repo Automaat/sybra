@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { task } from '../../wailsjs/go/models.js'
 
 const mockListTasks = vi.fn()
 const mockGetTask = vi.fn()
@@ -14,19 +15,31 @@ vi.mock('../../wailsjs/go/main/App.js', () => ({
 
 const { taskStore } = await import('./tasks.svelte.js')
 
-function makeTask(overrides: Record<string, unknown> = {}) {
-  return {
+function makeTask(overrides: Partial<task.Task> = {}): task.Task {
+  return task.Task.createFrom({
     id: 'task-1',
+    slug: '',
     title: 'Test task',
     status: 'todo',
+    taskType: '',
     agentMode: 'headless',
     allowedTools: [],
     tags: [],
+    projectId: '',
+    branch: '',
+    prNumber: 0,
+    issue: '',
+    statusReason: '',
+    reviewed: false,
+    runRole: '',
+    todoistId: '',
+    agentRuns: [],
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
     body: '## Description\nTest',
+    filePath: '',
     ...overrides,
-  }
+  })
 }
 
 describe('TaskStore', () => {
@@ -113,7 +126,7 @@ describe('TaskStore', () => {
 
   describe('update', () => {
     it('updates task and refreshes map', async () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }) as any)
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }))
       const updated = makeTask({ id: 't1', status: 'in-progress' })
       mockUpdateTask.mockResolvedValue(updated)
 
@@ -130,11 +143,11 @@ describe('TaskStore', () => {
       taskStore.tasks.set('old', makeTask({
         id: 'old',
         updatedAt: '2026-01-01T00:00:00Z',
-      }) as any)
+      }))
       taskStore.tasks.set('new', makeTask({
         id: 'new',
         updatedAt: '2026-04-01T00:00:00Z',
-      }) as any)
+      }))
 
       const list = taskStore.list
       expect(list[0].id).toBe('new')
@@ -145,11 +158,11 @@ describe('TaskStore', () => {
       taskStore.tasks.set('a', makeTask({
         id: 'a',
         updatedAt: undefined,
-      }) as any)
+      }))
       taskStore.tasks.set('b', makeTask({
         id: 'b',
         updatedAt: '2026-04-01T00:00:00Z',
-      }) as any)
+      }))
 
       const list = taskStore.list
       expect(list[0].id).toBe('b')
@@ -158,9 +171,9 @@ describe('TaskStore', () => {
 
   describe('byStatus', () => {
     it('filters by status', () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }) as any)
-      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'done' }) as any)
-      taskStore.tasks.set('t3', makeTask({ id: 't3', status: 'todo' }) as any)
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }))
+      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'done' }))
+      taskStore.tasks.set('t3', makeTask({ id: 't3', status: 'todo' }))
 
       expect(taskStore.byStatus('todo')).toHaveLength(2)
       expect(taskStore.byStatus('done')).toHaveLength(1)
@@ -168,16 +181,16 @@ describe('TaskStore', () => {
     })
 
     it('filters human-required status', () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required' }) as any)
-      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'todo' }) as any)
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required' }))
+      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'todo' }))
 
       expect(taskStore.byStatus('human-required')).toHaveLength(1)
       expect(taskStore.byStatus('human-required')[0].id).toBe('t1')
     })
 
     it('returns all for "all" filter', () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1' }) as any)
-      taskStore.tasks.set('t2', makeTask({ id: 't2' }) as any)
+      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
+      taskStore.tasks.set('t2', makeTask({ id: 't2' }))
 
       expect(taskStore.byStatus('all')).toHaveLength(2)
     })

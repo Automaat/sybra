@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ReviewsUpdated } from '../lib/events.js'
+import { github } from '../../wailsjs/go/models.js'
 
 const mockFetchReviews = vi.fn()
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
@@ -17,8 +18,8 @@ vi.mock('../../wailsjs/runtime/runtime.js', () => ({
 
 const { reviewStore } = await import('./reviews.svelte.js')
 
-function makePR(overrides: Record<string, unknown> = {}) {
-  return {
+function makePR(overrides: Partial<github.PullRequest> = {}): github.PullRequest {
+  return github.PullRequest.createFrom({
     number: 1,
     title: 'Test PR',
     url: 'https://github.com/org/repo/pull/1',
@@ -27,6 +28,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     author: 'user',
     isDraft: false,
     labels: [],
+    headRefName: '',
     ciStatus: '',
     reviewDecision: '',
     mergeable: '',
@@ -35,7 +37,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
     ...overrides,
-  }
+  })
 }
 
 describe('ReviewStore', () => {
@@ -101,8 +103,8 @@ describe('ReviewStore', () => {
 
   describe('totalCount', () => {
     it('sums both lists', () => {
-      reviewStore.createdByMe = [makePR({ number: 1 }), makePR({ number: 2 })] as any
-      reviewStore.reviewRequested = [makePR({ number: 3 })] as any
+      reviewStore.createdByMe = [makePR({ number: 1 }), makePR({ number: 2 })]
+      reviewStore.reviewRequested = [makePR({ number: 3 })]
 
       expect(reviewStore.totalCount).toBe(3)
     })

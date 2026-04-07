@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
+import { agent, task } from '../../wailsjs/go/models.js'
 
 vi.mock('../../wailsjs/go/main/App.js', () => ({
   ListAgents: vi.fn().mockResolvedValue([]),
@@ -26,8 +27,8 @@ const { agentStore } = await import('../stores/agents.svelte.js')
 
 import Dashboard from './Dashboard.svelte'
 
-function makeAgent(overrides: Record<string, unknown> = {}) {
-  return {
+function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
+  return agent.Agent.createFrom({
     id: 'a1',
     taskId: 'task-1',
     mode: 'headless',
@@ -38,23 +39,34 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     startedAt: new Date().toISOString(),
     external: false,
     ...overrides,
-  }
+  })
 }
 
-function makeTask(overrides: Record<string, unknown> = {}) {
-  return {
+function makeTask(overrides: Partial<task.Task> = {}): task.Task {
+  return task.Task.createFrom({
     id: 't1',
+    slug: '',
     title: 'Test Task',
     status: 'todo',
+    taskType: '',
     agentMode: 'headless',
     allowedTools: [],
     tags: [],
+    projectId: '',
+    branch: '',
+    prNumber: 0,
+    issue: '',
+    statusReason: '',
+    reviewed: false,
+    runRole: '',
+    todoistId: '',
+    agentRuns: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     body: '',
     filePath: '',
     ...overrides,
-  }
+  })
 }
 
 describe('Dashboard', () => {
@@ -78,11 +90,11 @@ describe('Dashboard', () => {
   })
 
   it('shows stat cards with correct counts', () => {
-    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }) as any)
-    agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'paused' }) as any)
-    agentStore.agents.set('a3', makeAgent({ id: 'a3', state: 'stopped' }) as any)
-    taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }) as any)
-    taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'done' }) as any)
+    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }))
+    agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'paused' }))
+    agentStore.agents.set('a3', makeAgent({ id: 'a3', state: 'stopped' }))
+    taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }))
+    taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'done' }))
 
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 
@@ -93,8 +105,8 @@ describe('Dashboard', () => {
   })
 
   it('shows total cost rounded to 2 decimals', () => {
-    agentStore.agents.set('a1', makeAgent({ id: 'a1', costUsd: 1.555 }) as any)
-    agentStore.agents.set('a2', makeAgent({ id: 'a2', costUsd: 2.445 }) as any)
+    agentStore.agents.set('a1', makeAgent({ id: 'a1', costUsd: 1.555 }))
+    agentStore.agents.set('a2', makeAgent({ id: 'a2', costUsd: 2.445 }))
 
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 
@@ -102,9 +114,9 @@ describe('Dashboard', () => {
   })
 
   it('shows task status breakdown', () => {
-    taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }) as any)
-    taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'in-progress' }) as any)
-    taskStore.tasks.set('t3', makeTask({ id: 't3', status: 'done' }) as any)
+    taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'todo' }))
+    taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'in-progress' }))
+    taskStore.tasks.set('t3', makeTask({ id: 't3', status: 'done' }))
 
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 
@@ -112,8 +124,8 @@ describe('Dashboard', () => {
   })
 
   it('shows active agents section when running/paused agents exist', () => {
-    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }) as any)
-    agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'paused' }) as any)
+    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }))
+    agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'paused' }))
 
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 
@@ -121,7 +133,7 @@ describe('Dashboard', () => {
   })
 
   it('hides active agents section when none running/paused', () => {
-    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'stopped' }) as any)
+    agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'stopped' }))
 
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 

@@ -80,6 +80,6 @@ class ReviewStore {
 }
 
 export const reviewStore = new ReviewStore()
-if (typeof window !== 'undefined' && (window as any).runtime) {
+if (typeof window !== 'undefined' && window.runtime) {
   reviewStore.listen()
 }

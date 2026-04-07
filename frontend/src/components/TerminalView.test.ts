@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
+import { agent } from '../../wailsjs/go/models.js'
 
 const mockCaptureAgentPane = vi.fn()
 const mockAttachAgent = vi.fn()
@@ -24,8 +25,8 @@ const { agentStore } = await import('../stores/agents.svelte.js')
 
 import TerminalView from './TerminalView.svelte'
 
-function makeAgent(overrides: Record<string, unknown> = {}) {
-  return {
+function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
+  return agent.Agent.createFrom({
     id: 'agent-1',
     taskId: 'task-1',
     mode: 'interactive',
@@ -36,7 +37,7 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     startedAt: new Date().toISOString(),
     external: false,
     ...overrides,
-  }
+  })
 }
 
 describe('TerminalView', () => {
@@ -56,7 +57,7 @@ describe('TerminalView', () => {
 
   it('renders waiting message when no output', async () => {
     mockCaptureAgentPane.mockResolvedValue('')
-    agentStore.agents.set('agent-1', makeAgent() as any)
+    agentStore.agents.set('agent-1', makeAgent())
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -66,7 +67,7 @@ describe('TerminalView', () => {
 
   it('displays captured pane output', async () => {
     mockCaptureAgentPane.mockResolvedValue('Hello world')
-    agentStore.agents.set('agent-1', makeAgent() as any)
+    agentStore.agents.set('agent-1', makeAgent())
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -76,7 +77,7 @@ describe('TerminalView', () => {
 
   it('shows attach button when agent is running', async () => {
     mockCaptureAgentPane.mockResolvedValue('output')
-    agentStore.agents.set('agent-1', makeAgent({ state: 'running' }) as any)
+    agentStore.agents.set('agent-1', makeAgent({ state: 'running' }))
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -86,7 +87,7 @@ describe('TerminalView', () => {
 
   it('hides attach button when agent is stopped', async () => {
     mockCaptureAgentPane.mockResolvedValue('output')
-    agentStore.agents.set('agent-1', makeAgent({ state: 'stopped' }) as any)
+    agentStore.agents.set('agent-1', makeAgent({ state: 'stopped' }))
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -96,7 +97,7 @@ describe('TerminalView', () => {
 
   it('polls capture-pane on interval', async () => {
     mockCaptureAgentPane.mockResolvedValue('line1')
-    agentStore.agents.set('agent-1', makeAgent() as any)
+    agentStore.agents.set('agent-1', makeAgent())
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -112,7 +113,7 @@ describe('TerminalView', () => {
 
   it('shows error on capture failure', async () => {
     mockCaptureAgentPane.mockRejectedValue(new Error('tmux not running'))
-    agentStore.agents.set('agent-1', makeAgent() as any)
+    agentStore.agents.set('agent-1', makeAgent())
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
@@ -122,7 +123,7 @@ describe('TerminalView', () => {
 
   it('shows label text', async () => {
     mockCaptureAgentPane.mockResolvedValue('')
-    agentStore.agents.set('agent-1', makeAgent() as any)
+    agentStore.agents.set('agent-1', makeAgent())
 
     render(TerminalView, { props: { agentId: 'agent-1' } })
 
