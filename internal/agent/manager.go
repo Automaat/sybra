@@ -259,6 +259,24 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 	return nil
 }
 
+// FindAllRunningAgentsForTask returns all running agents for the given task
+// matching the provided role.
+func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []*Agent
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.State != StateRunning {
+			continue
+		}
+		if RoleFromName(a.Name) != role {
+			continue
+		}
+		result = append(result, a)
+	}
+	return result
+}
+
 func (m *Manager) StopAgent(agentID string) error {
 	m.mu.Lock()
 	a, ok := m.agents[agentID]

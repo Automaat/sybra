@@ -30,6 +30,7 @@ type TaskWorkflow struct {
 	notifier      *notification.Emitter
 	agentOrch     *AgentOrchestrator
 	evalsInFlight sync.Map // taskID -> struct{}
+	plansInFlight sync.Map // taskID -> struct{}
 }
 
 func newTaskWorkflow(
@@ -136,6 +137,12 @@ func (w *TaskWorkflow) postTriage(taskID string) {
 }
 
 func (w *TaskWorkflow) PlanTask(id string) error {
+	if _, loaded := w.plansInFlight.LoadOrStore(id, struct{}{}); loaded {
+		w.logger.Info("plan.skip", "task_id", id, "reason", "plan_in_flight")
+		return nil
+	}
+	defer w.plansInFlight.Delete(id)
+
 	t, err := w.tasks.Get(id)
 	if err != nil {
 		return err
@@ -199,7 +206,7 @@ func (w *TaskWorkflow) ApprovePlan(id string) (task.Task, error) {
 	}
 	w.logger.Info("plan.approve", "task_id", id, "title", t.Title)
 	w.logAudit(audit.EventPlanApproved, id, "", map[string]any{"title": t.Title})
-	if planAg := w.agents.FindRunningAgentForTask(id, agent.RolePlan); planAg != nil {
+	for _, planAg := range w.agents.FindAllRunningAgentsForTask(id, agent.RolePlan) {
 		if stopErr := w.agents.StopAgent(planAg.ID); stopErr != nil {
 			w.logger.Warn("plan.approve.stop-agent", "task_id", id, "agent_id", planAg.ID, "err", stopErr)
 		}
