@@ -191,7 +191,7 @@ test.describe('Create Task', () => {
     // Go back — new task should appear in list
     await page.getByText('Back to tasks').click()
     await waitForTasks(page)
-    await expect(page.getByText('E2E Test Task')).toBeVisible()
+    await expect(page.getByText('E2E Test Task').first()).toBeVisible()
   })
 
   test('create button is disabled without title', async ({ page }) => {

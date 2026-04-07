@@ -8,10 +8,12 @@ const (
 	TaskDeleted = "task:deleted"
 
 	// Agent events — prefix only; append ":"+agentID to form full event name.
-	AgentStatePrefix  = "agent:state:"
-	AgentOutputPrefix = "agent:output:"
-	AgentErrorPrefix  = "agent:error:"
-	AgentStuckPrefix  = "agent:stuck:"
+	AgentStatePrefix    = "agent:state:"
+	AgentOutputPrefix   = "agent:output:"
+	AgentErrorPrefix    = "agent:error:"
+	AgentStuckPrefix    = "agent:stuck:"
+	AgentConvoPrefix    = "agent:convo:"
+	AgentApprovalPrefix = "agent:approval:"
 
 	// Orchestrator events.
 	OrchestratorState = "orchestrator:state"
@@ -43,3 +45,9 @@ func AgentError(id string) string { return AgentErrorPrefix + id }
 
 // AgentStuck returns the agent stuck event name for the given agent ID.
 func AgentStuck(id string) string { return AgentStuckPrefix + id }
+
+// AgentConvo returns the conversational output event name for the given agent ID.
+func AgentConvo(id string) string { return AgentConvoPrefix + id }
+
+// AgentApproval returns the tool approval event name for the given agent ID.
+func AgentApproval(id string) string { return AgentApprovalPrefix + id }

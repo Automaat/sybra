@@ -100,18 +100,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.logger.Info("app.starting")
 
-	al, err := audit.NewLogger(a.auditDir)
-	if err != nil {
-		a.logger.Error("audit.init", "err", err)
-	}
-	a.audit = al
-	retentionDays := a.cfg.Audit.RetentionDays
-	if retentionDays <= 0 {
-		retentionDays = 30
-	}
-	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
-		a.logger.Error("audit.cleanup", "err", err)
-	}
+	a.initAudit()
 
 	statsStore, err := stats.NewStore(config.StatsFile())
 	if err != nil {
@@ -170,6 +159,7 @@ func (a *App) startup(ctx context.Context) {
 	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
 
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
+	a.initApprovalServer(emit)
 	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
@@ -201,6 +191,32 @@ func (a *App) startup(ctx context.Context) {
 
 // wireServices populates the Wails-bound service structs that were pre-allocated
 // in NewApp(). Must be called after all dependencies are initialized.
+func (a *App) initAudit() {
+	al, err := audit.NewLogger(a.auditDir)
+	if err != nil {
+		a.logger.Error("audit.init", "err", err)
+	}
+	a.audit = al
+	retentionDays := a.cfg.Audit.RetentionDays
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
+		a.logger.Error("audit.cleanup", "err", err)
+	}
+}
+
+func (a *App) initApprovalServer(emit func(string, any)) {
+	srv, err := agent.NewApprovalServer(emit, a.logger)
+	if err != nil {
+		a.logger.Error("approval-server.init", "err", err)
+		return
+	}
+	srv.SetManager(a.agents)
+	a.agents.SetApprovalAddr(srv.Addr())
+	a.agentSvc.approval = srv
+}
+
 func (a *App) wireServices(emit func(string, any)) {
 	a.reviewSvc.reviewer = a.reviewer
 	a.reviewSvc.tasks = a.tasks

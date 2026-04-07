@@ -3,20 +3,26 @@
 import {agent} from '../models';
 import {tmux} from '../models';
 
-export function StopAgent(arg1:string):Promise<void>;
+export function AttachAgent(arg1:string):Promise<void>;
 
-export function ListAgents():Promise<Array<agent.Agent>>;
+export function AttachTmuxSession(arg1:string):Promise<void>;
+
+export function CaptureAgentPane(arg1:string):Promise<string>;
 
 export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 
-export function CaptureAgentPane(arg1:string):Promise<string>;
-
-export function AttachAgent(arg1:string):Promise<void>;
-
-export function ListTmuxSessions():Promise<Array<tmux.SessionInfo>>;
+export function GetConvoOutput(arg1:string):Promise<Array<agent.ConvoEvent>>;
 
 export function KillTmuxSession(arg1:string):Promise<void>;
 
-export function AttachTmuxSession(arg1:string):Promise<void>;
+export function ListAgents():Promise<Array<agent.Agent>>;
+
+export function ListTmuxSessions():Promise<Array<tmux.SessionInfo>>;
+
+export function RespondApproval(arg1:string,arg2:boolean):Promise<void>;
+
+export function SendMessage(arg1:string,arg2:string):Promise<void>;
+
+export function StopAgent(arg1:string):Promise<void>;

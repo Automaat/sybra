@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
@@ -275,9 +274,7 @@ func TestSanitizeSessionName(t *testing.T) {
 	}
 }
 
-func TestStartAgentInteractiveSessionName(t *testing.T) {
-	requireTmux(t)
-
+func TestStartAgentInteractiveConversational(t *testing.T) {
 	m, _ := newTestManager(t)
 	a, err := m.StartAgent("task-1", "Auth Middleware", "interactive", "build it", nil)
 	if err != nil {
@@ -285,11 +282,14 @@ func TestStartAgentInteractiveSessionName(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
 
-	if !strings.Contains(a.TmuxSession, "auth-middleware") {
-		t.Errorf("TmuxSession = %q, want it to contain %q", a.TmuxSession, "auth-middleware")
-	}
 	if a.Name != "Auth Middleware" {
 		t.Errorf("Name = %q, want %q", a.Name, "Auth Middleware")
+	}
+	if a.Mode != "interactive" {
+		t.Errorf("Mode = %q, want %q", a.Mode, "interactive")
+	}
+	if a.done == nil {
+		t.Error("interactive agent should have done channel (conversational)")
 	}
 }
 
@@ -419,10 +419,20 @@ func newInteractiveAgent(t *testing.T, m *Manager) *Agent {
 }
 
 func TestStopInteractiveAgent(t *testing.T) {
-	requireTmux(t)
-
 	m, _ := newTestManager(t)
-	a := newInteractiveAgent(t, m)
+
+	// Create a conversational-style interactive agent (no tmux).
+	a := &Agent{
+		ID:     "test-stop",
+		TaskID: "task-1",
+		Mode:   "interactive",
+		State:  StateRunning,
+		done:   make(chan struct{}),
+		cancel: func() {},
+	}
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.mu.Unlock()
 
 	if err := m.StopAgent(a.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
@@ -430,11 +440,6 @@ func TestStopInteractiveAgent(t *testing.T) {
 
 	if a.State != StateStopped {
 		t.Errorf("State = %q, want %q", a.State, StateStopped)
-	}
-
-	tm := tmux.NewManager()
-	if tm.SessionExists(a.TmuxSession) {
-		t.Error("tmux session should not exist after stop")
 	}
 }
 

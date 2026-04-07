@@ -5,6 +5,7 @@
   import { agentState } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
+  import ChatView from '../components/ChatView.svelte'
 
   interface Props {
     agentId: string
@@ -162,9 +163,11 @@
         </div>
       </div>
 
-      <div class="flex flex-col gap-2">
+      <div class="flex min-h-0 flex-1 flex-col gap-2">
         <span class="text-sm font-medium text-surface-500">Output</span>
-        {#if a.mode === 'interactive' && a.tmuxSession}
+        {#if a.mode === 'interactive' && !a.tmuxSession}
+          <ChatView agentId={agentId} agentState={a.state} costUsd={a.costUsd} inputTokens={a.inputTokens ?? 0} outputTokens={a.outputTokens ?? 0} />
+        {:else if a.mode === 'interactive' && a.tmuxSession}
           <TerminalView agentId={agentId} />
         {:else}
           <StreamOutput agentId={agentId} />
