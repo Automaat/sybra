@@ -58,7 +58,10 @@ func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
 
 func (m *Manager) lockFor(id string) *sync.Mutex {
 	existing, _ := m.locks.LoadOrStore(id, &sync.Mutex{})
-	mu, _ := existing.(*sync.Mutex)
+	mu, ok := existing.(*sync.Mutex)
+	if !ok {
+		mu = &sync.Mutex{}
+	}
 	return mu
 }
 

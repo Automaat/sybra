@@ -269,6 +269,24 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	}
 }
 
+func TestLockForTypeMismatchNoPanic(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	// Manually store a non-*sync.Mutex value to simulate type mismatch.
+	m.locks.Store("bad-id", "not-a-mutex")
+
+	// Must not panic; returned mutex must be usable.
+	mu := m.lockFor("bad-id")
+	if mu == nil {
+		t.Fatal("lockFor returned nil on type mismatch")
+	}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+	}()
+}
+
 func TestNoopEmitter(t *testing.T) {
 	t.Parallel()
 	m := NewManager(nil, nil)
