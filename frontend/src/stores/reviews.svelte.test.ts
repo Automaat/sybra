@@ -5,7 +5,7 @@ import { github } from '../../wailsjs/go/models.js'
 const mockFetchReviews = vi.fn()
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
 
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/ReviewService.js', () => ({
   FetchReviews: (...args: unknown[]) => mockFetchReviews(...args),
 }))
 

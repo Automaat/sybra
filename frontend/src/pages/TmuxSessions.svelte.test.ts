@@ -5,7 +5,7 @@ const mockListTmuxSessions = vi.fn()
 const mockKillTmuxSession = vi.fn()
 const mockAttachTmuxSession = vi.fn()
 
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
   ListTmuxSessions: (...args: unknown[]) => mockListTmuxSessions(...args),
   KillTmuxSession: (...args: unknown[]) => mockKillTmuxSession(...args),
   AttachTmuxSession: (...args: unknown[]) => mockAttachTmuxSession(...args),

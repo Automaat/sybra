@@ -94,6 +94,15 @@ func main() {
 		Menu:       appMenu,
 		Bind: []any{
 			app,
+			app.taskSvc,
+			app.planSvc,
+			app.agentSvc,
+			app.orchSvc,
+			app.projectSvc,
+			app.configSvc,
+			app.intgSvc,
+			app.statsSvc,
+			app.reviewSvc,
 		},
 	})
 

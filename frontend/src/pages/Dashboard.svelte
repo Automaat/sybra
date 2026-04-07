@@ -3,7 +3,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { ALL_STATUSES } from '../lib/statuses.js'
-  import { MarkPRReady } from '../../wailsjs/go/main/App.js'
+  import { MarkPRReady } from '../../wailsjs/go/main/ReviewService.js'
   import AgentCard from '../components/AgentCard.svelte'
   import PRCard from '../components/PRCard.svelte'
 

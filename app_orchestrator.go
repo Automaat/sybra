@@ -2,67 +2,16 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const orchestratorSession = "synapse-orchestrator"
 const maxConcurrentAgents = 3
-
-// StartOrchestrator creates the orchestrator tmux session running claude.
-func (a *App) StartOrchestrator() error {
-	if a.tmux.SessionExists(orchestratorSession) {
-		return fmt.Errorf("orchestrator already running")
-	}
-	if err := a.tmux.CreateSessionInDir(orchestratorSession, "claude", config.HomeDir()); err != nil {
-		return fmt.Errorf("create orchestrator session: %w", err)
-	}
-	a.logger.Info("orchestrator.started")
-	a.logAudit(audit.EventOrchestratorStart, "", "", nil)
-	runtime.EventsEmit(a.ctx, events.OrchestratorState, "running")
-	return nil
-}
-
-// StopOrchestrator kills the orchestrator tmux session.
-func (a *App) StopOrchestrator() error {
-	if err := a.tmux.KillSession(orchestratorSession); err != nil {
-		return fmt.Errorf("stop orchestrator: %w", err)
-	}
-	a.logger.Info("orchestrator.stopped")
-	a.logAudit(audit.EventOrchestratorStop, "", "", nil)
-	runtime.EventsEmit(a.ctx, events.OrchestratorState, "stopped")
-	return nil
-}
-
-// IsOrchestratorRunning reports whether the orchestrator tmux session exists.
-func (a *App) IsOrchestratorRunning() bool {
-	return a.tmux.SessionExists(orchestratorSession)
-}
-
-// CaptureOrchestratorPane returns the current terminal output of the orchestrator.
-func (a *App) CaptureOrchestratorPane() (string, error) {
-	if !a.tmux.SessionExists(orchestratorSession) {
-		return "", fmt.Errorf("orchestrator not running")
-	}
-	return a.tmux.CapturePaneOutput(orchestratorSession)
-}
-
-// AttachOrchestrator opens the orchestrator tmux session in Ghostty.
-func (a *App) AttachOrchestrator() error {
-	if !a.tmux.SessionExists(orchestratorSession) {
-		return fmt.Errorf("orchestrator not running")
-	}
-	return openTmuxInGhostty(orchestratorSession, "Orchestrator")
-}
 
 func (a *App) orchestratorLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
@@ -108,7 +57,7 @@ func (a *App) maybeStartOrchestrator() {
 	}
 
 	a.logger.Info("orchestrator.auto-start", "reason", "active tasks detected")
-	if err := a.StartOrchestrator(); err != nil {
+	if err := a.orchSvc.StartOrchestrator(); err != nil {
 		a.logger.Error("orchestrator.auto-start.failed", "err", err)
 	}
 }
@@ -180,7 +129,7 @@ func (a *App) maybeDispatchTasks() {
 			}
 			continue
 		}
-		if _, err := a.UpdateTask(t.ID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+		if _, err := a.taskSvc.UpdateTask(t.ID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
 			a.logger.Error("auto-dispatch.failed", "task_id", t.ID, "err", err)
 		}
 	}
@@ -200,7 +149,7 @@ func (a *App) maybeResumePlanning() {
 		}
 		a.logger.Info("plan.resume", "task_id", tasks[i].ID, "title", tasks[i].Title)
 		go func(id string) {
-			if err := a.PlanTask(id); err != nil {
+			if err := a.planSvc.PlanTask(id); err != nil {
 				a.logger.Error("plan.resume.failed", "task_id", id, "err", err)
 			}
 		}(tasks[i].ID)

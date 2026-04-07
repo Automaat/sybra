@@ -4,11 +4,13 @@ import {
   CreateTask,
   UpdateTask,
   DeleteTask,
+} from '../../wailsjs/go/main/TaskService.js'
+import {
   ApprovePlan,
   RejectPlan,
   SendPlanMessage,
   HasLivePlanAgent,
-} from '../../wailsjs/go/main/App.js'
+} from '../../wailsjs/go/main/PlanningService.js'
 import { task } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 

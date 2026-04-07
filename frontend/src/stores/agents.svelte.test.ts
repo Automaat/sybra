@@ -9,8 +9,11 @@ const mockGetAgentOutput = vi.fn()
 const mockDiscoverAgents = vi.fn()
 
 vi.mock('../../wailsjs/go/main/App.js', () => ({
-  ListAgents: (...args: unknown[]) => mockListAgents(...args),
   StartAgent: (...args: unknown[]) => mockStartAgent(...args),
+}))
+
+vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
+  ListAgents: (...args: unknown[]) => mockListAgents(...args),
   StopAgent: (...args: unknown[]) => mockStopAgent(...args),
   GetAgentOutput: (...args: unknown[]) => mockGetAgentOutput(...args),
   DiscoverAgents: (...args: unknown[]) => mockDiscoverAgents(...args),

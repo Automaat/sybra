@@ -56,10 +56,21 @@ type App struct {
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
+
+	// Wails-bound services (created in startup)
+	taskSvc    *TaskService
+	planSvc    *PlanningService
+	agentSvc   *AgentService
+	orchSvc    *OrchestratorService
+	projectSvc *ProjectService
+	configSvc  *ConfigService
+	intgSvc    *IntegrationService
+	statsSvc   *StatsService
+	reviewSvc  *ReviewService
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
-	return &App{
+	a := &App{
 		tasksDir:     cfg.TasksDir,
 		skillsDir:    cfg.SkillsDir,
 		repoDir:      cfg.RepoDir,
@@ -70,6 +81,18 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *A
 		cfg:          cfg,
 		logLevel:     logLevel,
 	}
+	// Pre-allocate service structs so Wails can bind them before startup().
+	// Fields are populated in startup() once dependencies are initialized.
+	a.taskSvc = &TaskService{}
+	a.planSvc = &PlanningService{}
+	a.agentSvc = &AgentService{}
+	a.orchSvc = &OrchestratorService{}
+	a.projectSvc = &ProjectService{}
+	a.configSvc = &ConfigService{}
+	a.intgSvc = &IntegrationService{}
+	a.statsSvc = &StatsService{}
+	a.reviewSvc = &ReviewService{}
+	return a
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -157,6 +180,8 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initTodoist(emit)
 	a.initRenovate(emit)
+	a.wireServices(emit)
+
 	a.syncSkills()
 	a.reconnectAgents()
 	a.worktrees.CleanupOrphaned()
@@ -172,6 +197,49 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.wg.Go(func() { a.issuesPollLoop(ctx) })
 	a.logger.Info("app.started")
+}
+
+// wireServices populates the Wails-bound service structs that were pre-allocated
+// in NewApp(). Must be called after all dependencies are initialized.
+func (a *App) wireServices(emit func(string, any)) {
+	a.reviewSvc.reviewer = a.reviewer
+	a.reviewSvc.tasks = a.tasks
+	a.taskSvc.tasks = a.tasks
+	a.taskSvc.agents = a.agents
+	a.taskSvc.agentOrch = a.agentOrch
+	a.taskSvc.workflow = a.workflow
+	a.taskSvc.worktrees = a.worktrees
+	a.taskSvc.reviewer = a.reviewer
+	a.taskSvc.wg = &a.wg
+	a.taskSvc.logger = a.logger
+	a.taskSvc.audit = a.audit
+	a.planSvc.workflow = a.workflow
+	a.planSvc.agents = a.agents
+	a.agentSvc.agents = a.agents
+	a.agentSvc.tmux = a.tmux
+	a.agentSvc.logger = a.logger
+	a.orchSvc.tmux = a.tmux
+	a.orchSvc.audit = a.audit
+	a.orchSvc.logger = a.logger
+	a.orchSvc.emit = emit
+	a.projectSvc.projects = a.projects
+	a.projectSvc.worktrees = a.worktrees
+	a.projectSvc.logger = a.logger
+	a.configSvc.cfg = a.cfg
+	a.configSvc.logLevel = a.logLevel
+	a.configSvc.notifier = a.notifier
+	a.configSvc.agents = a.agents
+	a.configSvc.reloadHook = a.reloadTodoist
+	a.intgSvc.tasks = a.tasks
+	a.intgSvc.projects = a.projects
+	a.intgSvc.agents = a.agents
+	a.intgSvc.worktrees = a.worktrees
+	a.intgSvc.audit = a.audit
+	a.intgSvc.cfg = a.cfg
+	a.intgSvc.logger = a.logger
+	a.intgSvc.todoistHandler = a.todoistHandler
+	a.intgSvc.renovateHandler = a.renovateHandler
+	a.statsSvc.stats = a.stats
 }
 
 func (a *App) shutdown(_ context.Context) {
@@ -302,7 +370,7 @@ func (a *App) restartStaleInProgress() {
 		runRole := t.RunRole
 		if runRole == "pr-fix" {
 			a.wg.Go(func() {
-				if err := a.startPRFixReviewAgent(taskID); err != nil {
+				if err := a.agentOrch.StartPRFixAgent(taskID); err != nil {
 					a.logger.Error("restart.pr-fix.failed", "task_id", taskID, "err", err)
 				}
 			})
@@ -388,55 +456,6 @@ func (a *App) syncFile(src, dst string) {
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
 }
 
-// TriageTask delegates to TaskWorkflow.
-func (a *App) TriageTask(id string) error {
-	return a.workflow.TriageTask(id)
-}
-
-// PlanTask delegates to TaskWorkflow.
-func (a *App) PlanTask(id string) error {
-	return a.workflow.PlanTask(id)
-}
-
-// ApprovePlan delegates to TaskWorkflow.
-func (a *App) ApprovePlan(id string) (task.Task, error) {
-	return a.workflow.ApprovePlan(id)
-}
-
-// RejectPlan delegates to TaskWorkflow.
-func (a *App) RejectPlan(id, feedback string) (task.Task, error) {
-	return a.workflow.RejectPlan(id, feedback)
-}
-
-// SendPlanMessage delegates to TaskWorkflow.
-func (a *App) SendPlanMessage(id, message string) error {
-	return a.workflow.SendPlanMessage(id, message)
-}
-
-// HasLivePlanAgent reports whether a live interactive plan agent exists
-// for the given task — used by the UI to enable/disable the send-message
-// button.
-func (a *App) HasLivePlanAgent(id string) bool {
-	return a.agents.FindRunningAgentForTask(id, agent.RolePlan) != nil
-}
-
-// EvaluateTask delegates to TaskWorkflow.
-func (a *App) EvaluateTask(taskID, agentResult string) error {
-	return a.workflow.EvaluateTask(taskID, agentResult)
-}
-
-func (a *App) GetAgentOutput(agentID string) ([]agent.StreamEvent, error) {
-	ag, err := a.agents.GetAgent(agentID)
-	if err != nil {
-		return nil, err
-	}
-	return ag.Output(), nil
-}
-
-func (a *App) FetchReviews() (github.ReviewSummary, error) {
-	return github.FetchReviews()
-}
-
 // ListNotifications returns pending in-app notifications.
 func (a *App) ListNotifications() []notification.Notification {
 	return a.notifier.List()
@@ -447,22 +466,18 @@ func (a *App) SetDesktopNotifications(enabled bool) {
 	a.notifier.SetDesktop(enabled)
 }
 
-func (a *App) MarkPRReady(repo string, number int) error {
-	return github.MarkReady(repo, number)
-}
-
 // RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
 func (a *App) RegisterSpotlightHotkey() {
 	spotlight.OnSubmit(func(title, projectID string) {
 		a.logger.Info("spotlight.submit", "title", title, "project", projectID)
 		go func() {
-			t, err := a.CreateTask(title, "", "headless")
+			t, err := a.taskSvc.CreateTask(title, "", "headless")
 			if err != nil {
 				a.logger.Error("spotlight.create", "err", err)
 				return
 			}
 			if projectID != "" {
-				if _, err := a.UpdateTask(t.ID, map[string]any{"project_id": projectID}); err != nil {
+				if _, err := a.taskSvc.UpdateTask(t.ID, map[string]any{"project_id": projectID}); err != nil {
 					a.logger.Error("spotlight.project", "err", err)
 				}
 			}
@@ -471,7 +486,7 @@ func (a *App) RegisterSpotlightHotkey() {
 
 	if err := spotlight.Register(func() {
 		projectsJSON := "[]"
-		if projects, err := a.ListProjects(); err == nil {
+		if projects, err := a.projectSvc.ListProjects(); err == nil {
 			if data, err := json.Marshal(projects); err == nil {
 				projectsJSON = string(data)
 			}

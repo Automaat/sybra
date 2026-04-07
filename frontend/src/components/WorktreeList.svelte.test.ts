@@ -5,7 +5,7 @@ const mockListWorktrees = vi.fn()
 const mockOpenInTerminal = vi.fn()
 const mockOpenInEditor = vi.fn()
 
-vi.mock('../../wailsjs/go/main/App.js', () => ({
+vi.mock('../../wailsjs/go/main/ProjectService.js', () => ({
   ListWorktrees: (...args: unknown[]) => mockListWorktrees(...args),
   OpenInTerminal: (...args: unknown[]) => mockOpenInTerminal(...args),
   OpenInEditor: (...args: unknown[]) => mockOpenInEditor(...args),

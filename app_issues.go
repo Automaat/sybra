@@ -15,11 +15,6 @@ const issuesPollInterval = 5 * time.Minute
 // synapseIssueLabel is the GitHub label that triggers auto-creation of Synapse tasks.
 const synapseIssueLabel = "synapse"
 
-// FetchAssignedIssues is exposed as a Wails-bound method for manual refresh.
-func (a *App) FetchAssignedIssues() ([]github.Issue, error) {
-	return github.FetchAssignedIssues()
-}
-
 func (a *App) issuesPollLoop(ctx context.Context) {
 	timer := time.NewTimer(20 * time.Second)
 	defer timer.Stop()

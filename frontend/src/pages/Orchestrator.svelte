@@ -5,7 +5,7 @@
     IsOrchestratorRunning,
     CaptureOrchestratorPane,
     AttachOrchestrator,
-  } from '../../wailsjs/go/main/App.js'
+  } from '../../wailsjs/go/main/OrchestratorService.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { OrchestratorState } from '../lib/events.js'

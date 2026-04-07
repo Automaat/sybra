@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -54,12 +55,40 @@ func setupApp(t *testing.T) *App {
 	return &App{
 		tasks:     taskMgr,
 		agents:    mgr,
+		tmux:      tm,
 		tasksDir:  dir,
 		logger:    logger,
 		worktrees: wm,
 		agentOrch: agentOrch,
 		workflow:  workflow,
 	}
+}
+
+func setupTaskService(t *testing.T) (*TaskService, *App) {
+	t.Helper()
+	a := setupApp(t)
+	var wg sync.WaitGroup
+	svc := &TaskService{
+		tasks:     a.tasks,
+		agents:    a.agents,
+		agentOrch: a.agentOrch,
+		workflow:  a.workflow,
+		worktrees: a.worktrees,
+		wg:        &wg,
+		logger:    a.logger,
+	}
+	return svc, a
+}
+
+func setupAgentService(t *testing.T) (*AgentService, *App) {
+	t.Helper()
+	a := setupApp(t)
+	svc := &AgentService{
+		agents: a.agents,
+		tmux:   a.tmux,
+		logger: a.logger,
+	}
+	return svc, a
 }
 
 func testConfig(t *testing.T) *config.Config {
@@ -86,8 +115,8 @@ func TestNewApp(t *testing.T) {
 }
 
 func TestListTasksEmpty(t *testing.T) {
-	a := setupApp(t)
-	tasks, err := a.ListTasks()
+	svc, _ := setupTaskService(t)
+	tasks, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,9 +126,9 @@ func TestListTasksEmpty(t *testing.T) {
 }
 
 func TestCreateAndGetTask(t *testing.T) {
-	a := setupApp(t)
+	svc, _ := setupTaskService(t)
 
-	created, err := a.CreateTask("test title", "body", "headless")
+	created, err := svc.CreateTask("test title", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +136,7 @@ func TestCreateAndGetTask(t *testing.T) {
 		t.Errorf("Title = %q, want %q", created.Title, "test title")
 	}
 
-	got, err := a.GetTask(created.ID)
+	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +146,14 @@ func TestCreateAndGetTask(t *testing.T) {
 }
 
 func TestUpdateTask(t *testing.T) {
-	a := setupApp(t)
+	svc, _ := setupTaskService(t)
 
-	created, err := a.CreateTask("update me", "", "headless")
+	created, err := svc.CreateTask("update me", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	updated, err := a.UpdateTask(created.ID, map[string]any{"status": "done"})
+	updated, err := svc.UpdateTask(created.ID, map[string]any{"status": "done"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,15 +163,15 @@ func TestUpdateTask(t *testing.T) {
 }
 
 func TestListTasksAfterCreate(t *testing.T) {
-	a := setupApp(t)
+	svc, _ := setupTaskService(t)
 
 	for _, title := range []string{"one", "two", "three"} {
-		if _, err := a.CreateTask(title, "", "headless"); err != nil {
+		if _, err := svc.CreateTask(title, "", "headless"); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	tasks, err := a.ListTasks()
+	tasks, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,17 +181,17 @@ func TestListTasksAfterCreate(t *testing.T) {
 }
 
 func TestGetTaskNotFound(t *testing.T) {
-	a := setupApp(t)
-	_, err := a.GetTask("nonexistent")
+	svc, _ := setupTaskService(t)
+	_, err := svc.GetTask("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
 }
 
 func TestStartAgentHeadless(t *testing.T) {
-	a := setupApp(t)
+	taskSvc, a := setupTaskService(t)
 
-	created, err := a.CreateTask("agent task", "", "headless")
+	created, err := taskSvc.CreateTask("agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,9 +214,10 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 }
 
 func TestStopAgent(t *testing.T) {
-	a := setupApp(t)
+	taskSvc, a := setupTaskService(t)
+	agentSvc := &AgentService{agents: a.agents, tmux: a.tmux, logger: a.logger}
 
-	created, err := a.CreateTask("stop task", "", "headless")
+	created, err := taskSvc.CreateTask("stop task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,37 +227,38 @@ func TestStopAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.StopAgent(ag.ID); err != nil {
+	if err := agentSvc.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestStopAgentNotFound(t *testing.T) {
-	a := setupApp(t)
-	err := a.StopAgent("nonexistent")
+	svc, _ := setupAgentService(t)
+	err := svc.StopAgent("nonexistent")
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestListAgentsEmpty(t *testing.T) {
-	a := setupApp(t)
-	agents := a.ListAgents()
+	svc, _ := setupAgentService(t)
+	agents := svc.ListAgents()
 	if len(agents) != 0 {
 		t.Errorf("got %d agents, want 0", len(agents))
 	}
 }
 
 func TestDiscoverAgents(t *testing.T) {
-	a := setupApp(t)
-	agents := a.DiscoverAgents()
+	svc, _ := setupAgentService(t)
+	agents := svc.DiscoverAgents()
 	_ = agents
 }
 
 func TestGetAgentOutput(t *testing.T) {
-	a := setupApp(t)
+	taskSvc, a := setupTaskService(t)
+	agentSvc := &AgentService{agents: a.agents, tmux: a.tmux, logger: a.logger}
 
-	created, err := a.CreateTask("output task", "", "headless")
+	created, err := taskSvc.CreateTask("output task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +268,7 @@ func TestGetAgentOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err := a.GetAgentOutput(ag.ID)
+	events, err := agentSvc.GetAgentOutput(ag.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +279,8 @@ func TestGetAgentOutput(t *testing.T) {
 }
 
 func TestGetAgentOutputNotFound(t *testing.T) {
-	a := setupApp(t)
-	_, err := a.GetAgentOutput("nonexistent")
+	svc, _ := setupAgentService(t)
+	_, err := svc.GetAgentOutput("nonexistent")
 	if err == nil {
 		t.Fatal("expected error")
 	}

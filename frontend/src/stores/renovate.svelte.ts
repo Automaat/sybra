@@ -1,4 +1,4 @@
-import { FetchRenovatePRs } from '../../wailsjs/go/main/App.js'
+import { FetchRenovatePRs } from '../../wailsjs/go/main/IntegrationService.js'
 import { EventsOn } from '../../wailsjs/runtime/runtime.js'
 import { RenovateUpdated } from '../lib/events.js'
 import type { github } from '../../wailsjs/go/models.js'

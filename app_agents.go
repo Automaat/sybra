@@ -11,7 +11,6 @@ import (
 	"github.com/Automaat/synapse/internal/executil"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
@@ -148,23 +147,23 @@ func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
 	return t
 }
 
-// startPRFixReviewAgent starts a headless agent to address review comments on
+// StartPRFixAgent starts a headless agent to address review comments on
 // the task's PR. Named "pr-fix:" so handleAgentComplete routes it correctly.
-func (a *App) startPRFixReviewAgent(taskID string) error {
-	t, err := a.tasks.Get(taskID)
+func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
+	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return err
 	}
 
 	researchDir := ""
-	if a.agentOrch.cfg != nil {
-		researchDir = a.agentOrch.cfg.Agent.ResearchMachineDir
+	if o.cfg != nil {
+		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir)
 	if !skipWT {
-		t = a.agentOrch.autoAssignProject(t)
+		t = o.autoAssignProject(t)
 		if t.ProjectID != "" {
-			d, wtErr := a.worktrees.PrepareForTask(t)
+			d, wtErr := o.worktrees.PrepareForTask(t)
 			if wtErr != nil {
 				return fmt.Errorf("worktree required: %w", wtErr)
 			}
@@ -173,7 +172,7 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 	}
 
 	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
-	ag, err := a.agents.Run(agent.RunConfig{
+	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
 		Name:               agent.RolePRFix.AgentName(t.Title),
 		Mode:               effMode,
@@ -187,67 +186,14 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 		return err
 	}
 
-	a.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType)})
-	if err := a.tasks.AddRun(taskID, task.AgentRun{
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType)})
+	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 	}); err != nil {
-		a.logger.Error("task.add-run", "task_id", taskID, "err", err)
+		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
-}
-
-// StopAgent sends a stop signal to the given agent.
-func (a *App) StopAgent(agentID string) error {
-	return a.agents.StopAgent(agentID)
-}
-
-// ListAgents returns all in-memory agents (managed and external).
-func (a *App) ListAgents() []*agent.Agent {
-	return a.agents.ListAgents()
-}
-
-// DiscoverAgents scans running Claude processes, registers new external agents,
-// and refreshes state of already-tracked ones.
-func (a *App) DiscoverAgents() []*agent.Agent {
-	return a.agents.DiscoverAgents()
-}
-
-// CaptureAgentPane captures the current tmux pane output for an interactive agent.
-func (a *App) CaptureAgentPane(agentID string) (string, error) {
-	return a.agents.CapturePane(agentID)
-}
-
-// AttachAgent opens the tmux session for an interactive agent in Ghostty.
-func (a *App) AttachAgent(agentID string) error {
-	ag, err := a.agents.GetAgent(agentID)
-	if err != nil {
-		return err
-	}
-	if ag.TmuxSession == "" {
-		return fmt.Errorf("agent %s has no tmux session", agentID)
-	}
-	title := ag.Name
-	if title == "" {
-		title = ag.TaskID
-	}
-	return openTmuxInGhostty(ag.TmuxSession, title)
-}
-
-// ListTmuxSessions returns all active tmux sessions.
-func (a *App) ListTmuxSessions() ([]tmux.SessionInfo, error) {
-	return a.tmux.ListSessions()
-}
-
-// KillTmuxSession terminates the named tmux session.
-func (a *App) KillTmuxSession(name string) error {
-	a.logger.Info("tmux.kill", "session", name)
-	return a.tmux.KillSession(name)
-}
-
-// AttachTmuxSession opens the named tmux session in Ghostty.
-func (a *App) AttachTmuxSession(name string) error {
-	return openTmuxInGhostty(name, name)
 }
 
 func openTmuxInGhostty(session, tabTitle string) error {
