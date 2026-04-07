@@ -214,3 +214,35 @@ Run audit analysis during the monitor phase of the core loop. Suggested cadence:
 - Add context to task body when triaging (gathered from URLs, repos)
 - Never start work without first checking current task board state
 - Keep task titles concise (<80 chars), put details in body
+
+## Agent Commit Requirement
+
+Every headless implementation agent **must commit its work before finishing**. This is critical — uncommitted changes are destroyed when the worktree is reused for a subsequent agent run.
+
+### Required final steps in every headless agent prompt
+
+Include this block verbatim at the end of every implementation prompt:
+
+```
+## Required: Commit Your Work
+
+Before marking this task complete, you MUST commit all changes:
+
+```bash
+git add -A
+git commit -s -S -m "type(scope): description"
+```
+
+Do NOT finish without committing. Uncommitted work will be lost.
+```
+
+### Eval agent verification
+
+When an eval agent checks implementation results, it **must verify** a commit exists before accepting the claim:
+
+```bash
+# Confirm at least one commit beyond the base branch exists
+git log --oneline origin/main..HEAD
+```
+
+If the output is empty, the implementation was not committed — mark `human-required` immediately regardless of quality gate results.
