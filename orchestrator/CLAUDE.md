@@ -142,6 +142,18 @@ Periodically review running agents:
 synapse-cli --json list --status in-progress
 ```
 
+### PR Gap Detection
+
+During monitoring, check for tasks with committed work but no open PR:
+
+```bash
+# For each in-review or human-required task with a project_id:
+git -C <worktree_path> log --oneline origin/main..HEAD   # non-empty = commits exist
+gh pr list --head <branch_name> --json number,url        # empty = no PR
+```
+
+If commits exist and no PR → create PR as described in "Eval agent verification" above. Do not wait for human — this is recoverable automatically.
+
 ### Failure Detection
 
 Signs an agent is stuck or failed:
@@ -238,11 +250,38 @@ Do NOT finish without committing. Uncommitted work will be lost.
 
 ### Eval agent verification
 
-When an eval agent checks implementation results, it **must verify** a commit exists before accepting the claim:
+When an eval agent checks implementation results, it **must**:
 
+1. Verify commits exist:
 ```bash
-# Confirm at least one commit beyond the base branch exists
 git log --oneline origin/main..HEAD
 ```
+If empty → implementation was not committed. Mark `human-required`, do not accept quality gate claims.
 
-If the output is empty, the implementation was not committed — mark `human-required` immediately regardless of quality gate results.
+2. Verify a PR exists for the branch:
+```bash
+gh pr list --head "$(git branch --show-current)" --json number,url
+```
+
+3. If commits exist but no PR → **create one immediately**:
+```bash
+# Push branch first
+git push -u origin HEAD
+
+# Create PR (use task title + body for content)
+gh pr create \
+  --title "type(scope): task title" \
+  --base main \
+  --body "$(cat <<'EOF'
+## Motivation
+<why from task description>
+
+## Implementation information
+<what was changed and how>
+
+> Changelog: type(scope): description
+EOF
+)"
+```
+
+Only mark `in-review` after confirming a PR URL exists.
