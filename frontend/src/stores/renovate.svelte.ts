@@ -58,6 +58,6 @@ class RenovateStore {
 }
 
 export const renovateStore = new RenovateStore()
-if (typeof window !== 'undefined' && (window as any).runtime) {
+if (typeof window !== 'undefined' && window.runtime) {
   renovateStore.listen()
 }

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
+import { stats } from '../../wailsjs/go/models.js'
 
 const mockLoad = vi.fn()
 
 const mockStatsStore = {
-  data: null as any,
+  data: null as stats.StatsResponse | null,
   loading: false,
   error: '',
   load: (...args: unknown[]) => mockLoad(...args),
@@ -16,21 +17,22 @@ vi.mock('../stores/stats.svelte.js', () => ({
 
 const Stats = (await import('./Stats.svelte')).default
 
-function makeSummary(overrides: Record<string, unknown> = {}) {
-  return {
+function makeSummary(overrides: Partial<stats.Summary> = {}): stats.Summary {
+  return stats.Summary.createFrom({
     totalCostUsd: 1.5,
     totalRuns: 10,
     avgCostPerRun: 0.15,
+    avgDurationS: 360,
     totalDurationS: 3600,
     totalInputTokens: 5000,
     totalOutputTokens: 2000,
     ...overrides,
-  }
+  })
 }
 
-function makeStatsData() {
+function makeStatsData(): stats.StatsResponse {
   const s = makeSummary()
-  return {
+  return stats.StatsResponse.createFrom({
     today: s,
     thisWeek: s,
     thisMonth: s,
@@ -40,7 +42,7 @@ function makeStatsData() {
     byMode: [],
     byModel: [],
     recentRuns: [],
-  }
+  })
 }
 
 describe('Stats', () => {

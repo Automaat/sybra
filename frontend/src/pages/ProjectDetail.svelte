@@ -46,7 +46,7 @@
     BOARD_COLUMNS.map(col => ({
       ...col,
       tasks: col.includes.length > 0
-        ? projectTasks.filter(t => col.includes.includes(t.status as any))
+        ? projectTasks.filter(t => (col.includes as string[]).includes(t.status))
         : projectTasks.filter(t => t.status === col.status),
     }))
   )

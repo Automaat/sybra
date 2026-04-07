@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { agent } from '../../wailsjs/go/models.js'
 
 // Mock Wails bindings
 const mockListAgents = vi.fn()
@@ -18,8 +19,8 @@ vi.mock('../../wailsjs/go/main/App.js', () => ({
 // Must import after mock setup
 const { agentStore } = await import('./agents.svelte.js')
 
-function makeAgent(overrides: Record<string, unknown> = {}) {
-  return {
+function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
+  return agent.Agent.createFrom({
     id: 'test-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -30,7 +31,7 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     startedAt: new Date().toISOString(),
     external: false,
     ...overrides,
-  }
+  })
 }
 
 describe('AgentStore', () => {
@@ -109,7 +110,7 @@ describe('AgentStore', () => {
 
   describe('stop', () => {
     it('calls StopAgent and updates state', async () => {
-      agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }) as any)
+      agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }))
       mockStopAgent.mockResolvedValue(undefined)
 
       await agentStore.stop('a1')
@@ -142,8 +143,8 @@ describe('AgentStore', () => {
 
   describe('appendEvent', () => {
     it('appends to existing output', () => {
-      agentStore.outputs.set('a1', [{ type: 'init', content: 'start' } as any])
-      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' } as any)
+      agentStore.outputs.set('a1', [{ type: 'init', content: 'start' }])
+      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' })
 
       const events = agentStore.outputs.get('a1')!
       expect(events).toHaveLength(2)
@@ -151,7 +152,7 @@ describe('AgentStore', () => {
     })
 
     it('creates new array if none exists', () => {
-      agentStore.appendEvent('a1', { type: 'init', content: '' } as any)
+      agentStore.appendEvent('a1', { type: 'init', content: '' })
 
       expect(agentStore.outputs.get('a1')).toHaveLength(1)
     })
@@ -160,10 +161,10 @@ describe('AgentStore', () => {
   describe('updateAgent', () => {
     it('updates agent in map', () => {
       const agent = makeAgent({ id: 'a1', state: 'running' })
-      agentStore.agents.set('a1', agent as any)
+      agentStore.agents.set('a1', agent)
 
       const updated = makeAgent({ id: 'a1', state: 'stopped' })
-      agentStore.updateAgent('a1', updated as any)
+      agentStore.updateAgent('a1', updated)
 
       expect(agentStore.agents.get('a1')!.state).toBe('stopped')
     })
@@ -174,11 +175,11 @@ describe('AgentStore', () => {
       agentStore.agents.set('old', makeAgent({
         id: 'old',
         startedAt: '2026-01-01T00:00:00Z',
-      }) as any)
+      }))
       agentStore.agents.set('new', makeAgent({
         id: 'new',
         startedAt: '2026-04-01T00:00:00Z',
-      }) as any)
+      }))
 
       const list = agentStore.list
       expect(list[0].id).toBe('new')
@@ -188,8 +189,8 @@ describe('AgentStore', () => {
 
   describe('byTask', () => {
     it('finds agent by task ID', () => {
-      agentStore.agents.set('a1', makeAgent({ id: 'a1', taskId: 'task-42' }) as any)
-      agentStore.agents.set('a2', makeAgent({ id: 'a2', taskId: 'task-99' }) as any)
+      agentStore.agents.set('a1', makeAgent({ id: 'a1', taskId: 'task-42' }))
+      agentStore.agents.set('a2', makeAgent({ id: 'a2', taskId: 'task-99' }))
 
       const found = agentStore.byTask('task-42')
       expect(found?.id).toBe('a1')
@@ -202,9 +203,9 @@ describe('AgentStore', () => {
 
   describe('byState', () => {
     it('filters by state', () => {
-      agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }) as any)
-      agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'idle' }) as any)
-      agentStore.agents.set('a3', makeAgent({ id: 'a3', state: 'running' }) as any)
+      agentStore.agents.set('a1', makeAgent({ id: 'a1', state: 'running' }))
+      agentStore.agents.set('a2', makeAgent({ id: 'a2', state: 'idle' }))
+      agentStore.agents.set('a3', makeAgent({ id: 'a3', state: 'running' }))
 
       expect(agentStore.byState('running')).toHaveLength(2)
       expect(agentStore.byState('idle')).toHaveLength(1)
@@ -212,8 +213,8 @@ describe('AgentStore', () => {
     })
 
     it('returns all for "all" filter', () => {
-      agentStore.agents.set('a1', makeAgent({ id: 'a1' }) as any)
-      agentStore.agents.set('a2', makeAgent({ id: 'a2' }) as any)
+      agentStore.agents.set('a1', makeAgent({ id: 'a1' }))
+      agentStore.agents.set('a2', makeAgent({ id: 'a2' }))
 
       expect(agentStore.byState('all')).toHaveLength(2)
     })

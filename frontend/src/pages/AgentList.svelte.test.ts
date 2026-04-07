@@ -2,14 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
 
 const mockByState = vi.fn()
+const mockAgentStoreData = {
+  loading: false,
+  error: '',
+  byState: (...args: unknown[]) => mockByState(...args),
+  list: [],
+}
 
 vi.mock('../stores/agents.svelte.js', () => ({
-  agentStore: {
-    loading: false,
-    error: '',
-    byState: (...args: unknown[]) => mockByState(...args),
-    list: [],
-  },
+  agentStore: mockAgentStoreData,
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
@@ -23,7 +24,6 @@ vi.mock('@skeletonlabs/skeleton-svelte', () => ({
   }),
 }))
 
-const { agentStore } = await import('../stores/agents.svelte.js')
 const AgentList = (await import('./AgentList.svelte')).default
 
 function makeAgent(overrides: Record<string, unknown> = {}) {
@@ -48,8 +48,8 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
 describe('AgentList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    ;(agentStore as any).loading = false
-    ;(agentStore as any).error = ''
+    mockAgentStoreData.loading = false
+    mockAgentStoreData.error = ''
     mockByState.mockReturnValue([])
   })
 
@@ -58,13 +58,13 @@ describe('AgentList', () => {
   })
 
   it('shows loading message when loading', () => {
-    ;(agentStore as any).loading = true
+    mockAgentStoreData.loading = true
     render(AgentList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('Loading agents...')).toBeDefined()
   })
 
   it('shows error message when error is set', () => {
-    ;(agentStore as any).error = 'Failed to fetch agents'
+    mockAgentStoreData.error = 'Failed to fetch agents'
     render(AgentList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('Failed to fetch agents')).toBeDefined()
   })

@@ -45,6 +45,6 @@ class IssueStore {
 }
 
 export const issueStore = new IssueStore()
-if (typeof window !== 'undefined' && (window as any).runtime) {
+if (typeof window !== 'undefined' && window.runtime) {
   issueStore.listen()
 }

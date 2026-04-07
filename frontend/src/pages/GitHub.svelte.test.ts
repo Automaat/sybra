@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import type { github } from '../../wailsjs/go/models.js'
 
 const mockLoad = vi.fn()
 const mockStartPolling = vi.fn()
@@ -8,8 +9,8 @@ const mockStopPolling = vi.fn()
 const mockReviewStore = {
   loading: false,
   error: '',
-  reviewRequested: [] as any[],
-  createdByMe: [] as any[],
+  reviewRequested: [] as github.PullRequest[],
+  createdByMe: [] as github.PullRequest[],
   get totalCount() {
     return this.reviewRequested.length + this.createdByMe.length
   },
@@ -20,7 +21,7 @@ const mockReviewStore = {
 
 const mockRenovateLoad = vi.fn()
 const mockRenovateStore = {
-  prs: [] as any[],
+  prs: [] as github.RenovatePR[],
   loading: false,
   error: '',
   get count() {
@@ -48,7 +49,7 @@ vi.mock('../stores/renovate.svelte.js', () => ({
 }))
 
 const mockIssueStore = {
-  issues: [] as any[],
+  issues: [] as github.Issue[],
   loading: false,
   error: '',
   get count() {
