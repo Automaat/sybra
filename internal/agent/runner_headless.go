@@ -140,6 +140,7 @@ func parseStreamEvent(line []byte) (StreamEvent, error) {
 		return StreamEvent{}, fmt.Errorf("unmarshal stream event: %w", err)
 	}
 
+	// ok intentionally discarded: missing/non-string type yields "" which is handled by the default case.
 	eventType, _ := raw["type"].(string)
 	event := StreamEvent{
 		Type:    eventType,
@@ -148,6 +149,7 @@ func parseStreamEvent(line []byte) (StreamEvent, error) {
 
 	switch eventType {
 	case "system":
+		// ok intentionally discarded: zero-value "" is safe when session_id is absent.
 		event.SessionID, _ = raw["session_id"].(string)
 
 	case "assistant":
@@ -157,6 +159,7 @@ func parseStreamEvent(line []byte) (StreamEvent, error) {
 		event.Content = extractToolResult(raw)
 
 	case "result":
+		// ok intentionally discarded on string assertions: zero-value "" is acceptable when field is absent.
 		event.Content, _ = raw["result"].(string)
 		event.SessionID, _ = raw["session_id"].(string)
 		if cost, ok := raw["total_cost_usd"].(float64); ok {
