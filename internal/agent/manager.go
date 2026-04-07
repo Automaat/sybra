@@ -510,6 +510,8 @@ type TaskInfo struct {
 	Title string
 }
 
+const maxSessionNameLen = 30
+
 var sessionNameRe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // safeArgRe matches only characters safe to embed in a tmux shell command
@@ -521,8 +523,8 @@ func sanitizeSessionName(title string) string {
 	s = strings.ReplaceAll(s, " ", "-")
 	s = sessionNameRe.ReplaceAllString(s, "")
 	s = strings.Trim(s, "-")
-	if len(s) > 30 {
-		s = s[:30]
+	if len(s) > maxSessionNameLen {
+		s = s[:maxSessionNameLen]
 		s = strings.TrimRight(s, "-")
 	}
 	if s == "" {
