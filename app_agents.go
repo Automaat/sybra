@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/executil"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
@@ -262,7 +263,7 @@ func openTmuxInGhostty(session, tabTitle string) error {
 	else
 		new window with configuration cfg
 	end if
-end tell`, label, session)
+end tell`, executil.EscapeAppleScript(label), executil.EscapeAppleScript(session))
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("osascript: %w: %s", err, string(out))
