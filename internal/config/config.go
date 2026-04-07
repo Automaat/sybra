@@ -37,10 +37,10 @@ type LoggingConfig struct {
 }
 
 type AgentDefaults struct {
-	Model               string `yaml:"model" json:"model"`
-	Mode                string `yaml:"mode" json:"mode"`
-	MaxConcurrent       int    `yaml:"max_concurrent" json:"maxConcurrent"`
-	ResearchMachineDir  string `yaml:"research_machine_dir" json:"researchMachineDir"`
+	Model              string `yaml:"model" json:"model"`
+	Mode               string `yaml:"mode" json:"mode"`
+	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
+	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
 }
 
 type NotificationConfig struct {
