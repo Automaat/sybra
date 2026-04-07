@@ -6,10 +6,14 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/project"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const issuesPollInterval = 5 * time.Minute
+
+// synapseIssueLabel is the GitHub label that triggers auto-creation of Synapse tasks.
+const synapseIssueLabel = "synapse"
 
 // FetchAssignedIssues is exposed as a Wails-bound method for manual refresh.
 func (a *App) FetchAssignedIssues() ([]github.Issue, error) {
@@ -36,9 +40,38 @@ func (a *App) issuesPollLoop(ctx context.Context) {
 			a.logger.Debug("issues.poll", "count", len(issues))
 
 			a.syncIssuesToTasks(issues)
+			a.syncLabeledIssuesToTasks()
 			timer.Reset(issuesPollInterval)
 		}
 	}
+}
+
+// syncLabeledIssuesToTasks fetches issues labeled 'synapse' across all registered
+// pet projects and creates tasks for any not yet tracked.
+func (a *App) syncLabeledIssuesToTasks() {
+	projects, err := a.projects.List()
+	if err != nil {
+		a.logger.Error("labeled-issues.list-projects", "err", err)
+		return
+	}
+
+	var repos []string
+	for i := range projects {
+		if projects[i].Type == project.ProjectTypePet {
+			repos = append(repos, projects[i].ID)
+		}
+	}
+	if len(repos) == 0 {
+		return
+	}
+
+	labeled, err := github.FetchLabeledIssuesForRepos(repos, synapseIssueLabel)
+	if err != nil {
+		a.logger.Warn("labeled-issues.fetch", "err", err)
+		return
+	}
+	a.logger.Debug("labeled-issues.poll", "count", len(labeled))
+	a.syncIssuesToTasks(labeled)
 }
 
 func (a *App) syncIssuesToTasks(issues []github.Issue) {
@@ -100,6 +133,10 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 
 		if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
 			updates["project_id"] = issue.Repository
+		}
+
+		if len(issue.Labels) > 0 {
+			updates["tags"] = issue.Labels
 		}
 
 		if _, err := a.tasks.Update(t.ID, updates); err != nil {

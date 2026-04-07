@@ -714,6 +714,23 @@ func fetchAssignedIssuesWith(e execer) ([]Issue, error) {
 	return searchIssuesWith(e, "is:issue is:open assignee:@me sort:updated-desc")
 }
 
+// FetchLabeledIssuesForRepos returns open issues with the given label across the specified repos.
+func FetchLabeledIssuesForRepos(repos []string, label string) ([]Issue, error) {
+	return fetchLabeledIssuesForReposWith(defaultExecer, repos, label)
+}
+
+func fetchLabeledIssuesForReposWith(e execer, repos []string, label string) ([]Issue, error) {
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	parts := make([]string, len(repos))
+	for i, r := range repos {
+		parts[i] = "repo:" + r
+	}
+	query := fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(parts, " "))
+	return searchIssuesWith(e, query)
+}
+
 func searchIssuesWith(e execer, query string) ([]Issue, error) {
 	out, err := e.run("api", "graphql",
 		"-f", "query="+issueQuery,
