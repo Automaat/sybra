@@ -66,7 +66,7 @@ func (w *TaskWorkflow) TriageTask(id string) error {
 	}
 
 	dir := config.HomeDir()
-	prompt := fmt.Sprintf("Triage task %s using /synapse-triage skill. Get the task with synapse-cli, analyze it, assign tags, mode, and update status.", t.ID)
+	prompt := fmt.Sprintf("Triage task %s using /synapse-triage skill. Get the task with synapse-cli, analyze it, assign tags, mode, and update status. IMPORTANT: if the task title is a URL (e.g. a GitHub issue/PR link), you MUST fetch the real title from that URL using gh and update the task title to a human-readable summary. Never leave a raw URL as the task title.", t.ID)
 
 	w.logger.Info("triage.start", "task_id", t.ID, "title", t.Title, "dir", dir)
 
@@ -89,6 +89,45 @@ func (w *TaskWorkflow) TriageTask(id string) error {
 	}
 	w.logger.Info("triage.agent_started", "task_id", t.ID, "agent_id", ag.ID)
 	return nil
+}
+
+// postTriage re-reads the task after triage completes and triggers the
+// appropriate next step based on the status the triage agent set.
+// The triage agent updates status via the CLI (store-level), which bypasses
+// UpdateTask's auto-dispatch logic, so we replicate it here.
+func (w *TaskWorkflow) postTriage(taskID string) {
+	t, err := w.tasks.Get(taskID)
+	if err != nil {
+		w.logger.Error("post-triage.get", "task_id", taskID, "err", err)
+		return
+	}
+
+	switch t.Status {
+	case task.StatusTodo:
+		if slices.Contains(t.Tags, "review") {
+			return
+		}
+		if _, err := w.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+			w.logger.Error("post-triage.start", "task_id", taskID, "err", err)
+			return
+		}
+		go func() {
+			if _, err := w.agentOrch.StartAgent(taskID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+				w.logger.Error("post-triage.implement", "task_id", taskID, "err", err)
+			}
+		}()
+
+	case task.StatusPlanning:
+		go func() {
+			if err := w.PlanTask(taskID); err != nil {
+				w.logger.Error("post-triage.plan", "task_id", taskID, "err", err)
+			}
+		}()
+
+	case task.StatusNew, task.StatusInProgress, task.StatusInReview,
+		task.StatusPlanReview, task.StatusHumanRequired, task.StatusDone:
+		w.logger.Debug("post-triage.noop", "task_id", taskID, "status", string(t.Status))
+	}
 }
 
 func (w *TaskWorkflow) PlanTask(id string) error {
@@ -382,8 +421,9 @@ func (w *TaskWorkflow) handleAgentComplete(ag *agent.Agent) {
 
 	switch role {
 	case agent.RoleTriage:
-		w.logger.Info("eval.skip", "agent_id", ag.ID, "name", ag.Name, "reason", "system_agent")
+		w.logger.Info("triage.complete", "agent_id", ag.ID, "name", ag.Name)
 		w.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
+		w.postTriage(ag.TaskID)
 
 	case agent.RoleEval:
 		w.completeEvalAgent(ag, agentData)
