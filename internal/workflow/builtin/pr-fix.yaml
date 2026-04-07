@@ -16,6 +16,7 @@ steps:
       role: pr-fix
       mode: headless
       model: sonnet
+      needs_worktree: true
       prompt: >-
         Fix the issues raised in the PR review. Push the changes when done.
     next:

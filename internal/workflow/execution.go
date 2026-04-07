@@ -31,6 +31,14 @@ func (e *Execution) SetVar(key, value string) {
 	e.Variables[key] = value
 }
 
+// RecordStep appends a step record and trims history to maxStepHistory.
+func (e *Execution) RecordStep(r StepRecord) {
+	e.StepHistory = append(e.StepHistory, r)
+	if len(e.StepHistory) > maxStepHistory {
+		e.StepHistory = e.StepHistory[len(e.StepHistory)-maxStepHistory:]
+	}
+}
+
 // LastRecord returns the most recent step record, or nil.
 func (e *Execution) LastRecord() *StepRecord {
 	if len(e.StepHistory) == 0 {

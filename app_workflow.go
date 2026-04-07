@@ -60,7 +60,7 @@ type agentAdapter struct {
 	agentOrch *AgentOrchestrator
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allowedTools []string) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (string, error) {
 	// For implementation agents, use the full orchestrator (handles worktree, project assignment).
 	if role == "" || role == string(agent.RoleImplementation) {
 		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt)
@@ -86,8 +86,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allo
 		Model:        model,
 	}
 
-	// Plan and pr-fix agents need worktree.
-	if r == agent.RolePlan || r == agent.RolePRFix {
+	if needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
 		if t.ProjectID != "" {
 			dir, wtErr := a.agentOrch.worktrees.PrepareForTask(t)

@@ -1,12 +1,19 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	maxSyncSteps   = 100 // depth limit for synchronous step chains
+	maxStepHistory = 50  // max step records kept per execution
+	shellTimeout   = 30 * time.Second
 )
 
 // TaskInfo is the subset of task data the engine needs.
@@ -32,7 +39,7 @@ type TaskProvider interface {
 
 // AgentLauncher starts agents and queries running state.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, prompt string, allowedTools []string) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error
@@ -87,7 +94,7 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 	}
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", first.ID)
-	return e.executeStep(taskID, &def, first, wfExec)
+	return e.executeSteps(taskID, &def, first, wfExec)
 }
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.
@@ -110,7 +117,7 @@ func (e *Engine) MatchWorkflow(t TaskInfo, event string) *Definition {
 	return nil
 }
 
-// AdvanceStep is called when a step completes. It records the result,
+// AdvanceStep is called when an async step completes. It records the result,
 // evaluates transitions, and executes the next step.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.mu.Lock()
@@ -144,16 +151,15 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 
 	// Record step completion.
 	now := time.Now().UTC()
-	wfExec.StepHistory = append(wfExec.StepHistory, StepRecord{
+	wfExec.RecordStep(StepRecord{
 		StepID:    output.StepID,
 		Status:    output.Status,
 		Output:    truncate(output.Output, 4000),
 		AgentID:   output.AgentID,
-		StartedAt: now, // approximate
+		StartedAt: now,
 		EndedAt:   now,
 	})
 
-	// Store output in variables for template access.
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
 	}
@@ -163,49 +169,23 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return fmt.Errorf("step %s not found in workflow %s", output.StepID, def.ID)
 	}
 
-	// Re-read task for latest state (triage agent may have changed tags/status).
+	// Re-read task for latest state (agent may have changed tags/status).
 	t, err = e.tasks.GetTask(taskID)
 	if err != nil {
 		return err
 	}
-	// Restore execution (re-read may have stale copy).
 	t.Workflow = wfExec
 
-	fields := taskFields(t)
-	for k, v := range wfExec.Variables {
-		fields["vars."+k] = v
-	}
-
-	nextID, tErr := ResolveTransition(currentStep.Next, fields)
-	if tErr != nil {
-		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", output.StepID, "err", tErr)
-		wfExec.State = ExecFailed
-		return e.tasks.SetWorkflow(taskID, wfExec)
-	}
-
-	if nextID == "" {
-		// End of workflow.
-		wfExec.State = ExecCompleted
-		completedAt := now
-		wfExec.CompletedAt = &completedAt
-		wfExec.CurrentStep = ""
-		e.logger.Info("workflow.completed", "task_id", taskID, "workflow", def.ID)
-		return e.tasks.SetWorkflow(taskID, wfExec)
-	}
-
-	nextStep := def.StepByID(nextID)
-	if nextStep == nil {
-		return fmt.Errorf("next step %s not found in workflow %s", nextID, def.ID)
-	}
-
-	wfExec.CurrentStep = nextStep.ID
-	wfExec.State = ExecRunning
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	nextStep, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
+	if err != nil {
 		return err
+	}
+	if nextStep == nil {
+		return nil // workflow completed
 	}
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
-	return e.executeStep(taskID, &def, nextStep, wfExec)
+	return e.executeSteps(taskID, &def, nextStep, wfExec)
 }
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -266,36 +246,127 @@ func (e *Engine) ResumeStalled() {
 	// Implementation deferred to Phase 2 when we wire the engine into the app.
 }
 
-func (e *Engine) executeStep(taskID string, def *Definition, step *Step, wfExec *Execution) error {
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil {
-		return err
-	}
+// executeSteps iterates through synchronous steps until it hits an async step
+// (run_agent, wait_human) or the workflow ends. This avoids recursive calls
+// between executeStep/AdvanceStep that caused inflight guard deadlocks.
+func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
+	for range maxSyncSteps {
+		t, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			return err
+		}
 
-	ctx := TemplateContext{
-		Task:    t,
-		Step:    *step,
-		Prev:    wfExec.LastRecord(),
-		Vars:    wfExec.Variables,
-		Project: nil,
-	}
+		ctx := TemplateContext{
+			Task:    t,
+			Step:    *step,
+			Prev:    wfExec.LastRecord(),
+			Vars:    wfExec.Variables,
+			Project: nil,
+		}
 
+		// Async steps: execute and return. Callback (HandleAgentComplete/HandleHumanAction)
+		// will call AdvanceStep later.
+		switch step.Type {
+		case StepRunAgent:
+			return e.execRunAgent(taskID, step, wfExec, ctx)
+		case StepWaitHuman:
+			return e.execWaitHuman(taskID, step, wfExec)
+		case StepParallel:
+			return e.execParallel(taskID, step, wfExec)
+		case StepSetStatus, StepCondition, StepShell:
+			// handled below as sync steps
+		default:
+			return fmt.Errorf("unknown step type %q", step.Type)
+		}
+
+		// Sync steps: execute, record result, resolve next, loop.
+		output, execErr := e.execSyncStep(taskID, step, wfExec, ctx, t)
+		if execErr != nil {
+			return execErr
+		}
+
+		now := time.Now().UTC()
+		wfExec.RecordStep(StepRecord{
+			StepID:    step.ID,
+			Status:    output.Status,
+			Output:    truncate(output.Output, 4000),
+			StartedAt: now,
+			EndedAt:   now,
+		})
+		if output.Output != "" {
+			wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
+		}
+
+		// Re-read task for latest state (set_status changes task).
+		t, err = e.tasks.GetTask(taskID)
+		if err != nil {
+			return err
+		}
+		t.Workflow = wfExec
+
+		nextStep, nErr := e.resolveNext(taskID, def, step, wfExec, t)
+		if nErr != nil {
+			return nErr
+		}
+		if nextStep == nil {
+			return nil // workflow completed
+		}
+
+		e.logger.Info("workflow.advance", "task_id", taskID, "from", step.ID, "to", nextStep.ID)
+		step = nextStep
+	}
+	return fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
+}
+
+// execSyncStep dispatches to a synchronous step handler and returns its output.
+func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, t TaskInfo) (StepOutput, error) {
 	switch step.Type {
-	case StepRunAgent:
-		return e.execRunAgent(taskID, step, wfExec, ctx)
-	case StepWaitHuman:
-		return e.execWaitHuman(taskID, step, wfExec)
 	case StepSetStatus:
-		return e.execSetStatus(taskID, step, wfExec)
+		return e.execSetStatus(taskID, step)
 	case StepCondition:
-		return e.execCondition(taskID, def, step, wfExec, t)
+		return e.execCondition(step, wfExec, t)
 	case StepShell:
-		return e.execShell(taskID, step, wfExec, ctx)
-	case StepParallel:
-		return e.execParallel(taskID, step, wfExec)
+		return e.execShell(step, ctx)
 	default:
-		return fmt.Errorf("unknown step type %q", step.Type)
+		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
+}
+
+// resolveNext evaluates transitions and returns the next step, or nil if workflow ends.
+func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, error) {
+	fields := taskFields(t)
+	for k, v := range wfExec.Variables {
+		fields["vars."+k] = v
+	}
+
+	nextID, tErr := ResolveTransition(current.Next, fields)
+	if tErr != nil {
+		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", current.ID, "err", tErr)
+		wfExec.State = ExecFailed
+		_ = e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, tErr
+	}
+
+	if nextID == "" {
+		now := time.Now().UTC()
+		wfExec.State = ExecCompleted
+		wfExec.CompletedAt = &now
+		wfExec.CurrentStep = ""
+		e.logger.Info("workflow.completed", "task_id", taskID, "workflow", def.ID)
+		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+	}
+
+	nextStep := def.StepByID(nextID)
+	if nextStep == nil {
+		return nil, fmt.Errorf("next step %s not found in workflow %s", nextID, def.ID)
+	}
+
+	wfExec.CurrentStep = nextStep.ID
+	wfExec.State = ExecRunning
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return nil, err
+	}
+	return nextStep, nil
 }
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
@@ -320,19 +391,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		model = "sonnet"
 	}
 
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, step.Config.AllowedTools)
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, step.Config.AllowedTools, step.Config.NeedsWorktree)
 	if err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}
 
 	wfExec.State = ExecWaiting
-	wfExec.StepHistory = append(wfExec.StepHistory, StepRecord{
-		StepID:    step.ID,
-		Status:    "running",
-		AgentID:   agentID,
-		StartedAt: time.Now().UTC(),
-	})
-
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID)
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
@@ -349,77 +413,58 @@ func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) err
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
-func (e *Engine) execSetStatus(taskID string, step *Step, wfExec *Execution) error {
+func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {
 	if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
-		return err
+		return StepOutput{}, err
 	}
 
 	e.logger.Info("workflow.set-status", "task_id", taskID, "step", step.ID, "status", step.Config.Status)
-
-	return e.AdvanceStep(taskID, StepOutput{
-		StepID: step.ID,
-		Status: "completed",
-	})
+	return StepOutput{StepID: step.ID, Status: "completed"}, nil
 }
 
-func (e *Engine) execCondition(taskID string, def *Definition, step *Step, wfExec *Execution, t TaskInfo) error {
-	fields := taskFields(t)
-	for k, v := range wfExec.Variables {
-		fields["vars."+k] = v
-	}
-
-	nextID, err := ResolveTransition(step.Next, fields)
-	if err != nil {
-		return err
-	}
-
-	wfExec.StepHistory = append(wfExec.StepHistory, StepRecord{
-		StepID:    step.ID,
-		Status:    "completed",
-		StartedAt: time.Now().UTC(),
-		EndedAt:   time.Now().UTC(),
-	})
-
-	if nextID == "" {
-		wfExec.State = ExecCompleted
-		now := time.Now().UTC()
-		wfExec.CompletedAt = &now
-		wfExec.CurrentStep = ""
-		return e.tasks.SetWorkflow(taskID, wfExec)
-	}
-
-	nextStep := def.StepByID(nextID)
-	if nextStep == nil {
-		return fmt.Errorf("step %s not found", nextID)
-	}
-
-	wfExec.CurrentStep = nextStep.ID
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return err
-	}
-
-	return e.executeStep(taskID, def, nextStep, wfExec)
+func (e *Engine) execCondition(step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	// Condition is a no-op execution; transition resolution in the caller handles branching.
+	_ = t
+	_ = wfExec
+	return StepOutput{StepID: step.ID, Status: "completed"}, nil
 }
 
-func (e *Engine) execShell(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) {
 	command, err := RenderTemplate(step.Config.Command, ctx)
 	if err != nil {
-		return fmt.Errorf("render command: %w", err)
+		return StepOutput{}, fmt.Errorf("render command: %w", err)
 	}
 
-	args := []string{"-c", command}
-	cmd := exec.Command("bash", args...)
+	shellCtx, cancel := context.WithTimeout(context.Background(), shellTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(shellCtx, "bash", "-c", command)
+	if step.Config.Dir != "" {
+		cmd.Dir = step.Config.Dir
+	}
+
+	// Expose task fields as env vars to avoid shell injection via template interpolation.
+	ti := ctx.Task
+	cmd.Env = append(cmd.Environ(),
+		"SYNAPSE_TASK_ID="+ti.ID,
+		"SYNAPSE_TASK_TITLE="+ti.Title,
+		"SYNAPSE_TASK_STATUS="+ti.Status,
+		"SYNAPSE_TASK_PROJECT="+ti.ProjectID,
+		"SYNAPSE_TASK_BRANCH="+ti.Branch,
+		fmt.Sprintf("SYNAPSE_TASK_PR=%d", ti.PRNumber),
+	)
+
 	output, runErr := cmd.CombinedOutput()
 	status := "completed"
 	if runErr != nil {
 		status = "failed"
 	}
 
-	return e.AdvanceStep(taskID, StepOutput{
+	return StepOutput{
 		StepID: step.ID,
 		Status: status,
 		Output: string(output),
-	})
+	}, nil
 }
 
 func (e *Engine) execParallel(_ string, _ *Step, _ *Execution) error {

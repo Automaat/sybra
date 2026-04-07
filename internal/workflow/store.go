@@ -49,7 +49,10 @@ func (s *Store) List() ([]Definition, error) {
 
 // Get returns a workflow definition by ID.
 func (s *Store) Get(id string) (Definition, error) {
-	path := filepath.Join(s.dir, id+".yaml")
+	path, err := s.safePath(id)
+	if err != nil {
+		return Definition{}, err
+	}
 	return s.parseFile(path)
 }
 
@@ -58,24 +61,30 @@ func (s *Store) Save(def Definition) error {
 	if def.ID == "" {
 		return fmt.Errorf("workflow ID is required")
 	}
+	path, err := s.safePath(def.ID)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now().UTC()
 	if def.CreatedAt.IsZero() {
 		def.CreatedAt = now
 	}
 	def.UpdatedAt = now
 
-	data, err := yaml.Marshal(def)
-	if err != nil {
-		return fmt.Errorf("marshal workflow: %w", err)
+	data, mErr := yaml.Marshal(def)
+	if mErr != nil {
+		return fmt.Errorf("marshal workflow: %w", mErr)
 	}
-
-	path := filepath.Join(s.dir, def.ID+".yaml")
 	return fsutil.AtomicWrite(path, data)
 }
 
 // Delete removes a workflow definition file.
 func (s *Store) Delete(id string) error {
-	path := filepath.Join(s.dir, id+".yaml")
+	path, err := s.safePath(id)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("workflow %s not found", id)
@@ -83,6 +92,15 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("delete workflow: %w", err)
 	}
 	return nil
+}
+
+// safePath validates that the resolved path stays under the store directory.
+func (s *Store) safePath(id string) (string, error) {
+	path := filepath.Clean(filepath.Join(s.dir, id+".yaml"))
+	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid workflow ID %q", id)
+	}
+	return path, nil
 }
 
 func (s *Store) parseFile(path string) (Definition, error) {

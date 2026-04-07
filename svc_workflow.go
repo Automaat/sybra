@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/Automaat/synapse/internal/workflow"
 )
 
@@ -41,7 +43,7 @@ func (s *WorkflowService) ResetBuiltin(id string) error {
 			return s.store.Save(defs[i])
 		}
 	}
-	return nil
+	return fmt.Errorf("builtin workflow %s not found", id)
 }
 
 // StartWorkflow assigns and starts a workflow on a task.

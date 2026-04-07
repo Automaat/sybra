@@ -41,6 +41,7 @@ steps:
       role: plan
       mode: interactive
       model: opus
+      needs_worktree: true
       prompt: >-
         Plan task {{.Task.ID}} using /synapse-plan skill.
         Get the task with synapse-cli, analyze the codebase,

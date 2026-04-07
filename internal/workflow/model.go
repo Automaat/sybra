@@ -88,11 +88,12 @@ type Position struct {
 // Only fields relevant to the step type are populated.
 type StepConfig struct {
 	// run_agent
-	Role         string   `yaml:"role,omitempty" json:"role"`
-	Mode         string   `yaml:"mode,omitempty" json:"mode"`
-	Model        string   `yaml:"model,omitempty" json:"model"`
-	Prompt       string   `yaml:"prompt,omitempty" json:"prompt"`
-	AllowedTools []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
+	Role          string   `yaml:"role,omitempty" json:"role"`
+	Mode          string   `yaml:"mode,omitempty" json:"mode"`
+	Model         string   `yaml:"model,omitempty" json:"model"`
+	Prompt        string   `yaml:"prompt,omitempty" json:"prompt"`
+	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
+	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`
 
 	// wait_human
 	HumanActions []string `yaml:"human_actions,omitempty" json:"humanActions"`

@@ -167,7 +167,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.initApprovalServer(emit)
-	a.agents.SetOnComplete(a.workflow.handleAgentComplete)
+	a.agents.SetOnComplete(a.onAgentComplete)
 
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
@@ -210,6 +210,19 @@ func (a *App) initAudit() {
 	}
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
 		a.logger.Error("audit.cleanup", "err", err)
+	}
+}
+
+func (a *App) onAgentComplete(ag *agent.Agent) {
+	a.workflow.handleAgentComplete(ag)
+	if a.workflowEngine != nil {
+		var result string
+		for _, ev := range ag.Output() {
+			if ev.Type == "result" {
+				result = ev.Content
+			}
+		}
+		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, result)
 	}
 }
 
