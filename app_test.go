@@ -48,7 +48,7 @@ func setupApp(t *testing.T) *App {
 		Logger:       logger,
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm)
+	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm, nil)
 	workflow := newTaskWorkflow(taskMgr, mgr, nil, logger, notifier, agentOrch)
 
 	return &App{

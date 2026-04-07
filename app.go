@@ -142,7 +142,7 @@ func (a *App) startup(ctx context.Context) {
 		PRBranchResolver: github.FetchPRBranch,
 		AgentChecker:     a.agents.HasRunningAgentForTask,
 	})
-	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees)
+	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees)
 	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
 

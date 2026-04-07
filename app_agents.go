@@ -7,24 +7,22 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
-// ResearchMachineDir is the fixed working directory for research tasks.
-const ResearchMachineDir = "/Users/marcin.skalski/sideprojects/research-machine"
-
 // resolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped based on the task's type.
 // hintMode is used when the task type does not force a specific mode.
-func resolveExecution(t task.Task, hintMode string) (mode, dir string, requirePerm, skipWorktree bool) {
+func resolveExecution(t task.Task, hintMode, researchMachineDir string) (mode, dir string, requirePerm, skipWorktree bool) {
 	switch t.TaskType {
 	case task.TaskTypeDebug:
 		return "interactive", "", true, false
 	case task.TaskTypeResearch:
-		return "headless", ResearchMachineDir, false, true
+		return "headless", researchMachineDir, false, true
 	default:
 		return hintMode, "", false, false
 	}
@@ -39,6 +37,7 @@ type AgentOrchestrator struct {
 	audit     *audit.Logger
 	logger    *slog.Logger
 	worktrees *worktree.Manager
+	cfg       *config.Config
 }
 
 func newAgentOrchestrator(
@@ -48,6 +47,7 @@ func newAgentOrchestrator(
 	al *audit.Logger,
 	logger *slog.Logger,
 	worktrees *worktree.Manager,
+	cfg *config.Config,
 ) *AgentOrchestrator {
 	return &AgentOrchestrator{
 		tasks:     tasks,
@@ -56,6 +56,7 @@ func newAgentOrchestrator(
 		audit:     al,
 		logger:    logger,
 		worktrees: worktrees,
+		cfg:       cfg,
 	}
 }
 
@@ -78,7 +79,11 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agen
 	if err != nil {
 		return nil, err
 	}
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode)
+	researchDir := ""
+	if o.cfg != nil {
+		researchDir = o.cfg.Agent.ResearchMachineDir
+	}
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode, researchDir)
 	if !skipWT {
 		t = o.autoAssignProject(t)
 		if t.ProjectID != "" {
@@ -150,7 +155,11 @@ func (a *App) startPRFixReviewAgent(taskID string) error {
 		return err
 	}
 
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode)
+	researchDir := ""
+	if a.agentOrch.cfg != nil {
+		researchDir = a.agentOrch.cfg.Agent.ResearchMachineDir
+	}
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir)
 	if !skipWT {
 		t = a.agentOrch.autoAssignProject(t)
 		if t.ProjectID != "" {
