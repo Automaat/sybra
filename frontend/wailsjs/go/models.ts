@@ -890,6 +890,7 @@ export namespace task {
 	    runRole: string;
 	    todoistId: string;
 	    agentRuns: AgentRun[];
+	    workflow?: workflow.Execution;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -920,6 +921,7 @@ export namespace task {
 	        this.runRole = source["runRole"];
 	        this.todoistId = source["todoistId"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
+	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	        this.body = source["body"];
@@ -982,6 +984,334 @@ export namespace todoist {
 	        this.name = source["name"];
 	    }
 	}
+
+}
+
+export namespace workflow {
+	
+	export class Condition {
+	    field: string;
+	    operator: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Condition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.field = source["field"];
+	        this.operator = source["operator"];
+	        this.value = source["value"];
+	    }
+	}
+	export class Position {
+	    x: number;
+	    y: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Position(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	    }
+	}
+	export class Transition {
+	    when?: Condition;
+	    goto: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Transition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.when = this.convertValues(source["when"], Condition);
+	        this.goto = source["goto"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class StepConfig {
+	    role: string;
+	    mode: string;
+	    model: string;
+	    prompt: string;
+	    allowedTools: string[];
+	    humanActions: string[];
+	    status: string;
+	    statusReason: string;
+	    check?: Condition;
+	    command: string;
+	    dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StepConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.role = source["role"];
+	        this.mode = source["mode"];
+	        this.model = source["model"];
+	        this.prompt = source["prompt"];
+	        this.allowedTools = source["allowedTools"];
+	        this.humanActions = source["humanActions"];
+	        this.status = source["status"];
+	        this.statusReason = source["statusReason"];
+	        this.check = this.convertValues(source["check"], Condition);
+	        this.command = source["command"];
+	        this.dir = source["dir"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Step {
+	    id: string;
+	    name: string;
+	    type: string;
+	    config: StepConfig;
+	    next: Transition[];
+	    parallel: Step[];
+	    position?: Position;
+	
+	    static createFrom(source: any = {}) {
+	        return new Step(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.config = this.convertValues(source["config"], StepConfig);
+	        this.next = this.convertValues(source["next"], Transition);
+	        this.parallel = this.convertValues(source["parallel"], Step);
+	        this.position = this.convertValues(source["position"], Position);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Trigger {
+	    on: string;
+	    conditions: Condition[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Trigger(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.on = source["on"];
+	        this.conditions = this.convertValues(source["conditions"], Condition);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Definition {
+	    id: string;
+	    name: string;
+	    description: string;
+	    trigger: Trigger;
+	    steps: Step[];
+	    builtin: boolean;
+	    // Go type: time
+	    createdAt: any;
+	    // Go type: time
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Definition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.trigger = this.convertValues(source["trigger"], Trigger);
+	        this.steps = this.convertValues(source["steps"], Step);
+	        this.builtin = source["builtin"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class StepRecord {
+	    stepId: string;
+	    status: string;
+	    output: string;
+	    agentId: string;
+	    // Go type: time
+	    startedAt: any;
+	    // Go type: time
+	    endedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new StepRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.stepId = source["stepId"];
+	        this.status = source["status"];
+	        this.output = source["output"];
+	        this.agentId = source["agentId"];
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.endedAt = this.convertValues(source["endedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Execution {
+	    workflowId: string;
+	    currentStep: string;
+	    state: string;
+	    stepHistory: StepRecord[];
+	    variables: Record<string, string>;
+	    // Go type: time
+	    startedAt: any;
+	    // Go type: time
+	    completedAt?: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Execution(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.workflowId = source["workflowId"];
+	        this.currentStep = source["currentStep"];
+	        this.state = source["state"];
+	        this.stepHistory = this.convertValues(source["stepHistory"], StepRecord);
+	        this.variables = source["variables"];
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.completedAt = this.convertValues(source["completedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
+	
 
 }
 

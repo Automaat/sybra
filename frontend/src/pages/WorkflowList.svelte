@@ -1,0 +1,60 @@
+<script lang="ts">
+  import { workflowStore } from '../stores/workflows.svelte.js'
+
+  interface Props {
+    onselect: (id: string) => void
+  }
+
+  const { onselect }: Props = $props()
+
+  $effect(() => {
+    workflowStore.load()
+    return () => {}
+  })
+</script>
+
+<div class="flex flex-col gap-4 p-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-lg font-semibold">Workflows</h2>
+  </div>
+
+  {#if workflowStore.loading && workflowStore.list.length === 0}
+    <p class="text-sm opacity-60">Loading workflows...</p>
+  {:else if workflowStore.error}
+    <p class="text-sm text-error-500">{workflowStore.error}</p>
+  {:else if workflowStore.list.length === 0}
+    <div class="flex flex-col items-center gap-3 py-16 text-center">
+      <svg class="h-12 w-12 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+      </svg>
+      <p class="text-sm text-surface-500">No workflows found</p>
+    </div>
+  {:else}
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {#each workflowStore.list as wf (wf.id)}
+        <button
+          type="button"
+          class="flex flex-col gap-2 rounded-lg border border-surface-300 bg-surface-50 p-4 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+          onclick={() => onselect(wf.id)}
+        >
+          <div class="flex items-center gap-2">
+            <svg class="h-5 w-5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+            </svg>
+            <span class="text-sm font-semibold">{wf.name}</span>
+            {#if wf.builtin}
+              <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">built-in</span>
+            {/if}
+          </div>
+          {#if wf.description}
+            <p class="text-xs text-surface-500 dark:text-surface-400">{wf.description}</p>
+          {/if}
+          <div class="flex items-center gap-2 text-xs text-surface-400">
+            <span>{wf.steps?.length ?? 0} steps</span>
+            <span>trigger: {wf.trigger?.on ?? 'none'}</span>
+          </div>
+        </button>
+      {/each}
+    </div>
+  {/if}
+</div>

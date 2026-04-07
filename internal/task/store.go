@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -166,6 +167,9 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	}
 	if v, ok := updates["todoist_id"].(string); ok {
 		t.TodoistID = v
+	}
+	if v, ok := updates["workflow"].(*workflow.Execution); ok {
+		t.Workflow = v
 	}
 
 	data, err := Marshal(t)

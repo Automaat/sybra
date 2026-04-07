@@ -23,6 +23,8 @@
   import Settings from './pages/Settings.svelte'
   import ChatList from './pages/ChatList.svelte'
   import ChatDetail from './pages/ChatDetail.svelte'
+  import WorkflowList from './pages/WorkflowList.svelte'
+  import WorkflowDetail from './pages/WorkflowDetail.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -38,6 +40,8 @@
     | { kind: 'stats' }
     | { kind: 'plan-reviews' }
     | { kind: 'settings' }
+    | { kind: 'workflows' }
+    | { kind: 'workflow-detail'; workflowId: string }
 
   let page = $state<Page>({ kind: 'dashboard' })
   let dialogOpen = $state(false)
@@ -63,6 +67,8 @@
     page.kind === 'stats' ? 'Stats' :
     page.kind === 'plan-reviews' ? 'Plan Reviews' :
     page.kind === 'settings' ? 'Settings' :
+    page.kind === 'workflows' ? 'Workflows' :
+    page.kind === 'workflow-detail' ? 'Workflow Editor' :
     'Agent Detail'
   )
 
@@ -234,6 +240,15 @@
         <Navigation.TriggerText>Reviews</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
+        onclick={() => (page = { kind: 'workflows' })}
+        data-active={page.kind === 'workflows' || page.kind === 'workflow-detail' || undefined}
+      >
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+        </svg>
+        <Navigation.TriggerText>Workflows</Navigation.TriggerText>
+      </Navigation.Trigger>
+      <Navigation.Trigger
         onclick={() => (page = { kind: 'stats' })}
         data-active={page.kind === 'stats' || undefined}
       >
@@ -328,6 +343,13 @@
         <PlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
       {:else if page.kind === 'stats'}
         <Stats />
+      {:else if page.kind === 'workflows'}
+        <WorkflowList onselect={(id) => (page = { kind: 'workflow-detail', workflowId: id })} />
+      {:else if page.kind === 'workflow-detail'}
+        <WorkflowDetail
+          workflowId={page.workflowId}
+          onback={() => (page = { kind: 'workflows' })}
+        />
       {:else if page.kind === 'settings'}
         <Settings />
       {/if}

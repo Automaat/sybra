@@ -103,6 +103,7 @@ func main() {
 			app.intgSvc,
 			app.statsSvc,
 			app.reviewSvc,
+			app.workflowSvc,
 		},
 	})
 
