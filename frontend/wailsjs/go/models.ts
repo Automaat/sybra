@@ -1057,6 +1057,7 @@ export namespace workflow {
 	    model: string;
 	    prompt: string;
 	    allowedTools: string[];
+	    needsWorktree: boolean;
 	    humanActions: string[];
 	    status: string;
 	    statusReason: string;
@@ -1075,6 +1076,7 @@ export namespace workflow {
 	        this.model = source["model"];
 	        this.prompt = source["prompt"];
 	        this.allowedTools = source["allowedTools"];
+	        this.needsWorktree = source["needsWorktree"];
 	        this.humanActions = source["humanActions"];
 	        this.status = source["status"];
 	        this.statusReason = source["statusReason"];
