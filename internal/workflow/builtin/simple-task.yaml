@@ -45,6 +45,15 @@ steps:
       needs_worktree: true
       reuse_agent: true
       prompt: >-
+        {{- $feedback := getvar .Vars "human.feedback" }}
+        {{- if $feedback }}
+        Plan rejected. Feedback:
+
+        {{ $feedback }}
+
+        Revise the plan for task {{.Task.ID}} to address these points.
+        Update the task body and set status back to plan-review when done.
+        {{- else }}
         Plan task {{.Task.ID}} using /synapse-plan skill.
         Get the task with synapse-cli, analyze the codebase,
         and produce a detailed implementation plan.
@@ -57,6 +66,7 @@ steps:
 
         If you receive feedback from the user, address it, update the body again
         with the revised plan, set status back to plan-review, and wait again.
+        {{- end }}
     next:
       - goto: review_plan
 

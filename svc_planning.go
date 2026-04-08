@@ -89,9 +89,3 @@ func (s *PlanningService) SendPlanMessage(id, message string) error {
 func (s *PlanningService) HasLivePlanAgent(id string) bool {
 	return s.agents.FindRunningAgentForTask(id, agent.RolePlan) != nil
 }
-
-// EvaluateTask is deprecated — the workflow engine handles evaluation
-// as a step in the workflow.
-func (s *PlanningService) EvaluateTask(_, _ string) error {
-	return fmt.Errorf("deprecated: workflow engine handles evaluation automatically")
-}

@@ -33,7 +33,11 @@ steps:
       mode: interactive
       model: opus
       reuse_agent: true
-      prompt: "Plan {{.Task.ID}}"
+      prompt: >-
+        {{- $feedback := getvar .Vars "human.feedback" }}
+        {{- if $feedback }}Plan rejected. Feedback: {{ $feedback }}
+        {{- else }}Plan {{.Task.ID}}
+        {{- end }}
     next:
       - goto: review_plan
 

@@ -1,6 +1,9 @@
 package workflow
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Definition is a declarative workflow stored as YAML.
 type Definition struct {
@@ -112,6 +115,25 @@ type StepConfig struct {
 	// shell
 	Command string `yaml:"command,omitempty" json:"command"`
 	Dir     string `yaml:"dir,omitempty" json:"dir"`
+}
+
+const maxRetries = 10
+
+// Validate checks the definition for configuration errors.
+func (d *Definition) Validate() error {
+	for i := range d.Steps {
+		s := &d.Steps[i]
+		if s.Config.MaxRetries > maxRetries {
+			return fmt.Errorf("step %q: max_retries %d exceeds limit %d", s.ID, s.Config.MaxRetries, maxRetries)
+		}
+		for j := range s.Parallel {
+			p := &s.Parallel[j]
+			if p.Config.MaxRetries > maxRetries {
+				return fmt.Errorf("step %q/%q: max_retries %d exceeds limit %d", s.ID, p.ID, p.Config.MaxRetries, maxRetries)
+			}
+		}
+	}
+	return nil
 }
 
 // Transition defines an edge from one step to another.

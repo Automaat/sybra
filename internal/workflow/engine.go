@@ -439,14 +439,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// Reuse a live agent if configured and one exists for this role.
 	if step.Config.ReuseAgent {
 		if agentID, found := e.agents.FindRunningAgentForRole(taskID, step.Config.Role); found {
-			feedback := wfExec.Variables["human.feedback"]
-			msg := prompt
-			if feedback != "" {
-				msg = "Plan rejected. Feedback:\n\n" + feedback +
-					"\n\nRevise the plan to address these points. Update the task body and set status back to plan-review when done."
-			}
-			if sendErr := e.agents.SendPrompt(agentID, msg); sendErr != nil {
+			if sendErr := e.agents.SendPrompt(agentID, prompt); sendErr != nil {
 				e.logger.Warn("workflow.reuse-agent.send-failed", "task_id", taskID, "agent_id", agentID, "err", sendErr)
+				e.agents.StopAgentsForTask(taskID, step.Config.Role)
 			} else {
 				wfExec.State = ExecWaiting
 				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
