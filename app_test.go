@@ -10,7 +10,6 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/worktree"
@@ -42,7 +41,6 @@ func setupApp(t *testing.T) *App {
 	logDir := filepath.Join(os.TempDir(), "synapse-test-logs")
 	mgr := agent.NewManager(t.Context(), tm, emit, logger, logDir)
 
-	notifier := notification.New(emit)
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        taskMgr,
@@ -50,7 +48,6 @@ func setupApp(t *testing.T) *App {
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
 	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm, nil)
-	workflow := newTaskWorkflow(taskMgr, mgr, nil, logger, notifier, agentOrch)
 
 	return &App{
 		tasks:     taskMgr,
@@ -60,7 +57,6 @@ func setupApp(t *testing.T) *App {
 		logger:    logger,
 		worktrees: wm,
 		agentOrch: agentOrch,
-		workflow:  workflow,
 	}
 }
 
@@ -70,9 +66,6 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	var wg sync.WaitGroup
 	svc := &TaskService{
 		tasks:     a.tasks,
-		agents:    a.agents,
-		agentOrch: a.agentOrch,
-		workflow:  a.workflow,
 		worktrees: a.worktrees,
 		wg:        &wg,
 		logger:    a.logger,

@@ -16,6 +16,7 @@ steps:
       role: triage
       mode: headless
       model: sonnet
+      max_retries: 3
       prompt: >-
         Triage task {{.Task.ID}} using /synapse-triage skill.
         Get the task with synapse-cli, analyze it, assign tags, mode, and update status.
@@ -42,6 +43,7 @@ steps:
       mode: interactive
       model: opus
       needs_worktree: true
+      reuse_agent: true
       prompt: >-
         Plan task {{.Task.ID}} using /synapse-plan skill.
         Get the task with synapse-cli, analyze the codebase,

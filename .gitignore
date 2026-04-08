@@ -27,3 +27,4 @@ frontend/playwright-report/
 # Binary
 /synapse
 /synapse-cli
+/fake-claude

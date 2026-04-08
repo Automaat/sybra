@@ -25,6 +25,18 @@ func (a *taskAdapter) GetTask(id string) (workflow.TaskInfo, error) {
 	return taskToInfo(t), nil
 }
 
+func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	infos := make([]workflow.TaskInfo, len(tasks))
+	for i := range tasks {
+		infos[i] = taskToInfo(tasks[i])
+	}
+	return infos, nil
+}
+
 func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	updates := map[string]any{"status": status}
 	if reason != "" {
@@ -58,6 +70,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 type agentAdapter struct {
 	agents    *agent.Manager
 	agentOrch *AgentOrchestrator
+	tasks     *task.Manager
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (string, error) {
@@ -101,11 +114,33 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allo
 	if err != nil {
 		return "", err
 	}
+
+	// Record agent run on task (was missing for system roles).
+	if addErr := a.tasks.AddRun(taskID, task.AgentRun{
+		AgentID:   ag.ID,
+		Role:      role,
+		Mode:      mode,
+		State:     string(agent.StateRunning),
+		StartedAt: ag.StartedAt,
+	}); addErr != nil {
+		// Non-fatal — log but don't fail the agent start.
+		_ = addErr
+	}
+
 	return ag.ID, nil
 }
 
 func (a *agentAdapter) HasRunningAgent(taskID string) bool {
 	return a.agents.HasRunningAgentForTask(taskID)
+}
+
+func (a *agentAdapter) FindRunningAgentForRole(taskID, role string) (string, bool) {
+	r := agent.Role(role)
+	ag := a.agents.FindRunningAgentForTask(taskID, r)
+	if ag == nil {
+		return "", false
+	}
+	return ag.ID, true
 }
 
 func (a *agentAdapter) StopAgentsForTask(taskID, role string) {

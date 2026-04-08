@@ -105,6 +105,10 @@ type StepConfig struct {
 	// condition
 	Check *Condition `yaml:"check,omitempty" json:"check"`
 
+	// run_agent: retry + reuse
+	MaxRetries int  `yaml:"max_retries,omitempty" json:"maxRetries"`
+	ReuseAgent bool `yaml:"reuse_agent,omitempty" json:"reuseAgent"`
+
 	// shell
 	Command string `yaml:"command,omitempty" json:"command"`
 	Dir     string `yaml:"dir,omitempty" json:"dir"`

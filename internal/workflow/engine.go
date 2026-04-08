@@ -33,6 +33,7 @@ type TaskInfo struct {
 // TaskProvider reads and updates tasks.
 type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
+	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
 	SetWorkflow(id string, wf *Execution) error
 }
@@ -41,6 +42,7 @@ type TaskProvider interface {
 type AgentLauncher interface {
 	StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
+	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error
 }
@@ -169,6 +171,21 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return fmt.Errorf("step %s not found in workflow %s", output.StepID, def.ID)
 	}
 
+	// Retry failed steps if max_retries configured and not exhausted.
+	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 {
+		retries := wfExec.CountStep(output.StepID)
+		if retries <= currentStep.Config.MaxRetries {
+			e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
+				"attempt", retries, "max", currentStep.Config.MaxRetries)
+			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+				return err
+			}
+			return e.executeSteps(taskID, &def, currentStep, wfExec)
+		}
+		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
+			"attempts", retries)
+	}
+
 	// Re-read task for latest state (agent may have changed tags/status).
 	t, err = e.tasks.GetTask(taskID)
 	if err != nil {
@@ -241,9 +258,46 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result string) {
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
-	// This would need to list all tasks and check their workflow state.
-	// For now, this is a placeholder — the orchestrator loop will call it.
-	// Implementation deferred to Phase 2 when we wire the engine into the app.
+	tasks, err := e.tasks.ListTasks()
+	if err != nil {
+		e.logger.Error("workflow.resume-stalled.list", "err", err)
+		return
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+			continue
+		}
+		switch t.Workflow.State {
+		case ExecCompleted, ExecFailed:
+			continue
+		case ExecRunning, ExecWaiting:
+			// fall through to resume logic
+		}
+
+		def, dErr := e.store.Get(t.Workflow.WorkflowID)
+		if dErr != nil {
+			continue
+		}
+		step := def.StepByID(t.Workflow.CurrentStep)
+		if step == nil {
+			continue
+		}
+
+		// Only resume run_agent steps where no agent is running.
+		if step.Type != StepRunAgent {
+			continue
+		}
+		if e.agents.HasRunningAgent(t.ID) {
+			continue
+		}
+
+		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
+		if rErr := e.executeSteps(t.ID, &def, step, t.Workflow); rErr != nil {
+			e.logger.Error("workflow.resume-stalled.exec", "task_id", t.ID, "err", rErr)
+		}
+	}
 }
 
 // executeSteps iterates through synchronous steps until it hits an async step
@@ -373,6 +427,25 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	prompt, err := RenderTemplate(step.Config.Prompt, ctx)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
+	}
+
+	// Reuse a live agent if configured and one exists for this role.
+	if step.Config.ReuseAgent {
+		if agentID, found := e.agents.FindRunningAgentForRole(taskID, step.Config.Role); found {
+			feedback := wfExec.Variables["human.feedback"]
+			msg := prompt
+			if feedback != "" {
+				msg = "Plan rejected. Feedback:\n\n" + feedback +
+					"\n\nRevise the plan to address these points. Update the task body and set status back to plan-review when done."
+			}
+			if sendErr := e.agents.SendPrompt(agentID, msg); sendErr != nil {
+				e.logger.Warn("workflow.reuse-agent.send-failed", "task_id", taskID, "agent_id", agentID, "err", sendErr)
+			} else {
+				wfExec.State = ExecWaiting
+				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
+				return e.tasks.SetWorkflow(taskID, wfExec)
+			}
+		}
 	}
 
 	mode := step.Config.Mode
