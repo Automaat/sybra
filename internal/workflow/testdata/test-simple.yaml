@@ -1,0 +1,94 @@
+id: test-simple
+name: Test Simple
+description: Minimal workflow for engine tests
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  - id: triage
+    name: Triage
+    type: run_agent
+    config:
+      role: triage
+      mode: headless
+      model: sonnet
+      max_retries: 3
+      prompt: "Triage {{.Task.ID}}"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: planning
+        goto: plan
+      - goto: set_in_progress
+
+  - id: plan
+    name: Plan
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: opus
+      reuse_agent: true
+      prompt: >-
+        {{- $feedback := getvar .Vars "human.feedback" }}
+        {{- if $feedback }}Plan rejected. Feedback: {{ $feedback }}
+        {{- else }}Plan {{.Task.ID}}
+        {{- end }}
+    next:
+      - goto: review_plan
+
+  - id: review_plan
+    name: Review Plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_in_progress
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: plan
+
+  - id: set_in_progress
+    name: Start Implementation
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: implement
+
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: "{{.Task.AgentMode}}"
+      model: sonnet
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: evaluate
+
+  - id: evaluate
+    name: Evaluate
+    type: run_agent
+    config:
+      role: eval
+      mode: headless
+      model: sonnet
+      prompt: "Evaluate {{.Task.ID}}"
+      allowed_tools:
+        - Bash
+    next:
+      - goto: ""

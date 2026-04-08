@@ -10,9 +10,9 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
@@ -42,7 +42,6 @@ func setupApp(t *testing.T) *App {
 	logDir := filepath.Join(os.TempDir(), "synapse-test-logs")
 	mgr := agent.NewManager(t.Context(), tm, emit, logger, logDir)
 
-	notifier := notification.New(emit)
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        taskMgr,
@@ -50,7 +49,6 @@ func setupApp(t *testing.T) *App {
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
 	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm, nil)
-	workflow := newTaskWorkflow(taskMgr, mgr, nil, logger, notifier, agentOrch)
 
 	return &App{
 		tasks:     taskMgr,
@@ -60,7 +58,6 @@ func setupApp(t *testing.T) *App {
 		logger:    logger,
 		worktrees: wm,
 		agentOrch: agentOrch,
-		workflow:  workflow,
 	}
 }
 
@@ -68,16 +65,39 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	t.Helper()
 	a := setupApp(t)
 	var wg sync.WaitGroup
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	ta := &taskAdapter{tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	engine := workflow.NewEngine(wfStore, ta, aa, a.logger)
+
 	svc := &TaskService{
-		tasks:     a.tasks,
-		agents:    a.agents,
-		agentOrch: a.agentOrch,
-		workflow:  a.workflow,
-		worktrees: a.worktrees,
-		wg:        &wg,
-		logger:    a.logger,
+		tasks:          a.tasks,
+		agents:         a.agents,
+		workflowEngine: engine,
+		worktrees:      a.worktrees,
+		wg:             &wg,
+		logger:         a.logger,
 	}
 	return svc, a
+}
+
+func setupPlanningService(t *testing.T) (*PlanningService, *TaskService, *App) {
+	t.Helper()
+	taskSvc, a := setupTaskService(t)
+	planSvc := &PlanningService{
+		engine: taskSvc.workflowEngine,
+		tasks:  a.tasks,
+		agents: a.agents,
+	}
+	return planSvc, taskSvc, a
 }
 
 func setupAgentService(t *testing.T) (*AgentService, *App) {

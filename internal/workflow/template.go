@@ -31,6 +31,12 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 
 var templateFuncs = template.FuncMap{
 	"shellquote": shellQuote,
+	"getvar":     getVar,
+}
+
+// getVar safely retrieves a variable from a map, returning "" if absent.
+func getVar(vars map[string]string, key string) string {
+	return vars[key]
 }
 
 // shellQuote wraps a string in single quotes with proper escaping for bash.

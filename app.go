@@ -27,6 +27,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const maxResultLen = 2000
+
 type App struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -50,7 +52,6 @@ type App struct {
 	worktrees       *worktree.Manager
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
-	workflow        *TaskWorkflow
 	workflowEngine  *workflow.Engine
 	workflowStore   *workflow.Store
 	todoistHandler  *TodoistHandler
@@ -159,7 +160,6 @@ func (a *App) startup(ctx context.Context) {
 	})
 	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees)
-	a.workflow = newTaskWorkflow(a.tasks, a.agents, a.audit, a.logger, a.notifier, a.agentOrch)
 
 	a.initWorkflowEngine()
 
@@ -236,15 +236,48 @@ func (a *App) initAudit() {
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
-	a.workflow.handleAgentComplete(ag)
-	if a.workflowEngine != nil {
-		var result string
-		for _, ev := range ag.Output() {
-			if ev.Type == "result" {
-				result = ev.Content
-			}
+	var resultContent string
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" {
+			resultContent = ev.Content
 		}
-		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, result)
+	}
+
+	// Persist run result to task file.
+	truncated := resultContent
+	if len(truncated) > maxResultLen {
+		truncated = truncated[:maxResultLen] + "\n... (truncated)"
+	}
+	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
+		"state":    string(ag.State),
+		"cost_usd": ag.CostUSD,
+		"result":   truncated,
+	}); err != nil {
+		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+
+	// Audit logging.
+	duration := time.Since(ag.StartedAt).Seconds()
+	a.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
+		"mode":       ag.Mode,
+		"cost_usd":   ag.CostUSD,
+		"duration_s": duration,
+		"state":      string(ag.State),
+		"role":       agent.RoleFromName(ag.Name),
+	})
+
+	// Advance workflow.
+	if a.workflowEngine != nil {
+		agentState := "stopped"
+		if ag.ExitErr != nil {
+			agentState = "failed"
+		}
+		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, resultContent, agentState)
+	}
+
+	// Worktree cleanup for done tasks (after engine advances, so status is final).
+	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+		go a.worktrees.Remove(ag.TaskID)
 	}
 }
 
@@ -261,7 +294,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
 		a.logger,
 	)
 }
@@ -282,14 +315,13 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.reviewSvc.tasks = a.tasks
 	a.taskSvc.tasks = a.tasks
 	a.taskSvc.agents = a.agents
-	a.taskSvc.agentOrch = a.agentOrch
-	a.taskSvc.workflow = a.workflow
+	a.taskSvc.workflowEngine = a.workflowEngine
 	a.taskSvc.worktrees = a.worktrees
-	a.taskSvc.reviewer = a.reviewer
 	a.taskSvc.wg = &a.wg
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
-	a.planSvc.workflow = a.workflow
+	a.planSvc.engine = a.workflowEngine
+	a.planSvc.tasks = a.tasks
 	a.planSvc.agents = a.agents
 	a.agentSvc.agents = a.agents
 	a.agentSvc.tmux = a.tmux

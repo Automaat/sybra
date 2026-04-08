@@ -47,6 +47,17 @@ func (e *Execution) LastRecord() *StepRecord {
 	return &e.StepHistory[len(e.StepHistory)-1]
 }
 
+// CountStep returns the number of records for a given step ID.
+func (e *Execution) CountStep(stepID string) int {
+	n := 0
+	for i := range e.StepHistory {
+		if e.StepHistory[i].StepID == stepID {
+			n++
+		}
+	}
+	return n
+}
+
 // RecordForStep returns the latest record for a given step ID, or nil.
 func (e *Execution) RecordForStep(stepID string) *StepRecord {
 	for i := len(e.StepHistory) - 1; i >= 0; i-- {

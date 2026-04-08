@@ -2,7 +2,6 @@ package main
 
 import (
 	"log/slog"
-	"slices"
 	"sync"
 	"time"
 
@@ -10,20 +9,19 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
 // TaskService exposes task CRUD operations as Wails-bound methods.
 type TaskService struct {
-	tasks     *task.Manager
-	agents    *agent.Manager
-	agentOrch *AgentOrchestrator
-	workflow  *TaskWorkflow
-	worktrees *worktree.Manager
-	reviewer  *ReviewHandler
-	wg        *sync.WaitGroup
-	logger    *slog.Logger
-	audit     *audit.Logger
+	tasks          *task.Manager
+	agents         *agent.Manager
+	workflowEngine *workflow.Engine
+	worktrees      *worktree.Manager
+	wg             *sync.WaitGroup
+	logger         *slog.Logger
+	audit          *audit.Logger
 }
 
 // ListTasks returns all tasks from the store.
@@ -36,7 +34,7 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 	return s.tasks.Get(id)
 }
 
-// CreateTask creates a new task and triggers auto-triage for todo tasks.
+// CreateTask creates a new task and starts a matching workflow.
 // If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	t, err := s.tasks.Create(title, body, mode)
@@ -56,57 +54,27 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 			Data:   map[string]any{"title": title, "mode": mode},
 		})
 	}
-	if t.Status == task.StatusTodo {
-		s.logger.Info("auto-triage.start", "task_id", t.ID, "title", t.Title)
-		s.wg.Go(func() {
-			if triageErr := s.workflow.TriageTask(t.ID); triageErr != nil {
-				s.logger.Error("auto-triage.failed", "task_id", t.ID, "err", triageErr)
-			}
-		})
+	// Match and start a workflow for the new task.
+	if s.workflowEngine != nil && t.Status == task.StatusTodo {
+		info := taskToInfo(t)
+		if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
+			s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
+			s.wg.Go(func() {
+				if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil {
+					s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
+				}
+			})
+		}
 	}
 	return t, nil
 }
 
-// UpdateTask applies field updates to a task and triggers auto-planning or
-// auto-implementation based on the resulting status.
+// UpdateTask applies field updates to a task. The workflow engine drives
+// all status-based transitions; this method only handles cleanup on done.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
-	var prevStatus string
-	if _, ok := updates["status"].(string); ok {
-		if prev, getErr := s.tasks.Get(id); getErr == nil {
-			prevStatus = string(prev.Status)
-		}
-	}
 	t, err := s.tasks.Update(id, updates)
 	if err != nil {
 		return t, err
-	}
-	if t.Status == task.StatusPlanning {
-		s.logger.Info("auto-plan.start", "task_id", t.ID, "title", t.Title)
-		s.wg.Go(func() {
-			if planErr := s.workflow.PlanTask(t.ID); planErr != nil {
-				s.logger.Error("auto-plan.failed", "task_id", t.ID, "err", planErr)
-			}
-		})
-	}
-	if t.Status == task.StatusInProgress && !s.agents.HasRunningAgentForTask(t.ID) && !slices.Contains(t.Tags, "review") {
-		if prevStatus == string(task.StatusInReview) {
-			s.logger.Info("auto-fix-review.start", "task_id", t.ID, "title", t.Title)
-			if _, err := s.tasks.Update(t.ID, map[string]any{"run_role": "pr-fix"}); err != nil {
-				s.logger.Error("auto-fix-review.set-role", "task_id", t.ID, "err", err)
-			}
-			s.wg.Go(func() {
-				if err := s.agentOrch.StartPRFixAgent(t.ID); err != nil {
-					s.logger.Error("auto-fix-review.failed", "task_id", t.ID, "err", err)
-				}
-			})
-		} else {
-			s.logger.Info("auto-implement.start", "task_id", t.ID, "title", t.Title)
-			s.wg.Go(func() {
-				if _, err := s.agentOrch.StartAgent(t.ID, t.AgentMode, "Implement this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
-					s.logger.Error("auto-implement.failed", "task_id", t.ID, "err", err)
-				}
-			})
-		}
 	}
 	if t.Status == task.StatusDone {
 		s.wg.Go(func() { s.worktrees.Remove(t.ID) })

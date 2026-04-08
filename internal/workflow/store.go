@@ -72,6 +72,10 @@ func (s *Store) Save(def Definition) error {
 	}
 	def.UpdatedAt = now
 
+	if vErr := def.Validate(); vErr != nil {
+		return fmt.Errorf("validate workflow: %w", vErr)
+	}
+
 	data, mErr := yaml.Marshal(def)
 	if mErr != nil {
 		return fmt.Errorf("marshal workflow: %w", mErr)
