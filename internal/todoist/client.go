@@ -7,14 +7,14 @@ import (
 	"net/http"
 )
 
-const defaultBaseURL = "https://api.todoist.com/rest/v2"
+const defaultBaseURL = "https://api.todoist.com/api/v1"
 
 // HTTPDoer abstracts HTTP execution for testing.
 type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// Client talks to the Todoist REST API v2.
+// Client talks to the Todoist REST API v1.
 type Client struct {
 	token   string
 	doer    HTTPDoer
@@ -33,29 +33,44 @@ func NewClientWith(token string, doer HTTPDoer, baseURL string) *Client {
 
 // ListActiveTasks returns all active (non-completed) tasks in the given project.
 func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
-	url := fmt.Sprintf("%s/tasks?project_id=%s", c.baseURL, projectID)
-	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	c.setHeaders(req)
+	var all []Task
+	cursor := ""
+	for {
+		rawURL := fmt.Sprintf("%s/tasks?project_id=%s", c.baseURL, projectID)
+		if cursor != "" {
+			rawURL += "&cursor=" + cursor
+		}
+		req, err := http.NewRequest(http.MethodGet, rawURL, http.NoBody)
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		c.setHeaders(req)
 
-	resp, err := c.doer.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("todoist list tasks: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		resp, err := c.doer.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("todoist list tasks: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("todoist list tasks: HTTP %d: %s", resp.StatusCode, body)
-	}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("todoist list tasks: HTTP %d: %s", resp.StatusCode, body)
+		}
 
-	var tasks []Task
-	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
-		return nil, fmt.Errorf("decode tasks: %w", err)
+		var page struct {
+			Results    []Task  `json:"results"`
+			NextCursor *string `json:"next_cursor"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			return nil, fmt.Errorf("decode tasks: %w", err)
+		}
+		all = append(all, page.Results...)
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			break
+		}
+		cursor = *page.NextCursor
 	}
-	return tasks, nil
+	return all, nil
 }
 
 // CloseTask marks a Todoist task as completed.
@@ -82,29 +97,44 @@ func (c *Client) CloseTask(todoistID string) error {
 
 // ListProjects returns all projects visible to the authenticated user.
 func (c *Client) ListProjects() ([]Project, error) {
-	url := fmt.Sprintf("%s/projects", c.baseURL)
-	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	c.setHeaders(req)
+	var all []Project
+	cursor := ""
+	for {
+		rawURL := fmt.Sprintf("%s/projects", c.baseURL)
+		if cursor != "" {
+			rawURL += "?cursor=" + cursor
+		}
+		req, err := http.NewRequest(http.MethodGet, rawURL, http.NoBody)
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		c.setHeaders(req)
 
-	resp, err := c.doer.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("todoist list projects: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		resp, err := c.doer.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("todoist list projects: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("todoist list projects: HTTP %d: %s", resp.StatusCode, body)
-	}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("todoist list projects: HTTP %d: %s", resp.StatusCode, body)
+		}
 
-	var projects []Project
-	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
-		return nil, fmt.Errorf("decode projects: %w", err)
+		var page struct {
+			Results    []Project `json:"results"`
+			NextCursor *string   `json:"next_cursor"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			return nil, fmt.Errorf("decode projects: %w", err)
+		}
+		all = append(all, page.Results...)
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			break
+		}
+		cursor = *page.NextCursor
 	}
-	return projects, nil
+	return all, nil
 }
 
 func (c *Client) setHeaders(req *http.Request) {

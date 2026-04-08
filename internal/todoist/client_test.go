@@ -19,10 +19,10 @@ func TestListActiveTasks(t *testing.T) {
 			t.Errorf("unexpected auth header: %s", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `[
+		_, _ = io.WriteString(w, `{"results":[
 			{"id":"1","content":"Buy milk","priority":1,"labels":["errand"]},
 			{"id":"2","content":"Fix bug","priority":4,"labels":["dev"],"due":{"date":"2026-04-10","is_recurring":true,"string":"every day"}}
-		]`)
+		],"next_cursor":null}`)
 	}))
 	defer srv.Close()
 
@@ -80,7 +80,7 @@ func TestListProjects(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `[{"id":"100","name":"Inbox"},{"id":"200","name":"Work"}]`)
+		_, _ = io.WriteString(w, `{"results":[{"id":"100","name":"Inbox"},{"id":"200","name":"Work"}],"next_cursor":null}`)
 	}))
 	defer srv.Close()
 
