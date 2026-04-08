@@ -3,6 +3,10 @@
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentState } from '../lib/events.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
+  import { marked } from 'marked'
+  import { markedHighlight } from 'marked-highlight'
+  import hljs from 'highlight.js'
+  import 'highlight.js/styles/github-dark.css'
   import { StartReview } from '../../wailsjs/go/main/ReviewService.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -45,6 +49,20 @@
   let runningAgent = $state<agent.Agent | null>(null)
 
   const statusOptions = STATUS_OPTIONS
+
+  marked.use(markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code: string, lang: string) {
+      const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+      return hljs.highlight(code, { language }).value
+    }
+  }))
+  marked.setOptions({ breaks: true, gfm: true })
+
+  const renderedBody = $derived.by(() => {
+    if (!t?.body) return ''
+    return marked.parse(t.body) as string
+  })
 
   $effect(() => {
     loadTask()
@@ -469,7 +487,7 @@
             onclick={startEditingBody}
           >
             {#if t.body}
-              <pre class="whitespace-pre-wrap text-sm">{t.body}</pre>
+              <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedBody}</div>
             {:else}
               <span class="text-sm text-surface-400 italic">Click to add description...</span>
             {/if}
@@ -634,3 +652,27 @@
     <p class="text-sm opacity-60">Loading...</p>
   {/if}
 </div>
+
+<style>
+  :global(.markdown-body p) { margin: 0.25em 0; }
+  :global(.markdown-body pre) {
+    margin: 0.5em 0;
+    border-radius: 0.375rem;
+    overflow-x: auto;
+    font-size: 0.75rem;
+  }
+  :global(.markdown-body pre code.hljs) {
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+  }
+  :global(.markdown-body code:not(.hljs)) {
+    font-size: 0.8em;
+    padding: 0.1em 0.3em;
+    border-radius: 0.25rem;
+    background: rgb(var(--color-surface-800) / 0.5);
+  }
+  :global(.markdown-body ul, .markdown-body ol) { padding-left: 1.5em; margin: 0.25em 0; }
+  :global(.markdown-body h1, .markdown-body h2, .markdown-body h3) { margin: 0.5em 0 0.25em; font-weight: 600; }
+  :global(.markdown-body blockquote) { border-left: 3px solid currentColor; padding-left: 0.75em; opacity: 0.8; margin: 0.25em 0; }
+  :global(.markdown-body a) { text-decoration: underline; }
+</style>
