@@ -38,6 +38,9 @@ type Agent struct {
 	Project      string    `json:"project,omitempty"`
 	Model        string    `json:"model,omitempty"`
 
+	TurnCount        int    `json:"turnCount,omitempty"`
+	EscalationReason string `json:"escalationReason,omitempty"`
+
 	ExitErr      error `json:"-"`
 	outputBuffer []StreamEvent
 	convoBuffer  []ConvoEvent
@@ -47,6 +50,10 @@ type Agent struct {
 	// done is closed when the headless/conversational goroutine has fully exited.
 	// Used by HasRunningAgentForTask to guard worktree cleanup.
 	done chan struct{}
+
+	// escalationCh receives the human's decision when a guardrail is hit.
+	// true = continue, false = kill.
+	escalationCh chan bool
 
 	// Conversational mode fields
 	stdinPipe  io.WriteCloser
@@ -129,4 +136,13 @@ type ApprovalResponse struct {
 // ConvoOutput returns the conversation event buffer.
 func (a *Agent) ConvoOutput() []ConvoEvent {
 	return a.convoBuffer
+}
+
+// EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.
+type EscalationEvent struct {
+	// Reason is "turns" or "cost".
+	Reason    string  `json:"reason"`
+	TurnCount int     `json:"turnCount,omitempty"`
+	CostUSD   float64 `json:"costUsd,omitempty"`
+	Limit     float64 `json:"limit"`
 }

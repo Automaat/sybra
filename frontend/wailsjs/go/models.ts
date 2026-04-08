@@ -21,11 +21,13 @@ export namespace agent {
 	    name?: string;
 	    project?: string;
 	    model?: string;
-	
+	    turnCount?: number;
+	    escalationReason?: string;
+
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -46,6 +48,8 @@ export namespace agent {
 	        this.name = source["name"];
 	        this.project = source["project"];
 	        this.model = source["model"];
+	        this.turnCount = source["turnCount"];
+	        this.escalationReason = source["escalationReason"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -65,6 +69,24 @@ export namespace agent {
 		    }
 		    return a;
 		}
+	}
+	export class EscalationEvent {
+	    reason: string;
+	    turnCount?: number;
+	    costUsd?: number;
+	    limit: number;
+
+	    static createFrom(source: any = {}) {
+	        return new EscalationEvent(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.reason = source["reason"];
+	        this.turnCount = source["turnCount"];
+	        this.costUsd = source["costUsd"];
+	        this.limit = source["limit"];
+	    }
 	}
 	export class ToolResultBlock {
 	    toolUseId: string;
