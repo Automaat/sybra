@@ -27,13 +27,11 @@ const (
 
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
 type ReviewHandler struct {
+	DomainHandler
 	tasks     *task.Manager
 	projects  *project.Store
 	agents    *agent.Manager
-	audit     *audit.Logger
-	logger    *slog.Logger
 	prTracker *github.IssueTracker
-	emit      func(string, any)
 	worktrees *worktree.Manager
 }
 
@@ -48,28 +46,12 @@ func newReviewHandler(
 	worktrees *worktree.Manager,
 ) *ReviewHandler {
 	return &ReviewHandler{
-		tasks:     tasks,
-		projects:  projects,
-		agents:    agents,
-		audit:     al,
-		logger:    logger,
-		prTracker: prTracker,
-		emit:      emit,
-		worktrees: worktrees,
-	}
-}
-
-func (r *ReviewHandler) logAudit(eventType, taskID, agentID string, data map[string]any) {
-	if r.audit == nil {
-		return
-	}
-	if err := r.audit.Log(audit.Event{
-		Type:    eventType,
-		TaskID:  taskID,
-		AgentID: agentID,
-		Data:    data,
-	}); err != nil {
-		r.logger.Error("audit.log", "type", eventType, "err", err)
+		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
+		tasks:         tasks,
+		projects:      projects,
+		agents:        agents,
+		prTracker:     prTracker,
+		worktrees:     worktrees,
 	}
 }
 

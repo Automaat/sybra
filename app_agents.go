@@ -33,11 +33,10 @@ func resolveExecution(t task.Task, hintMode, researchMachineDir string) (mode, d
 // AgentOrchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
 type AgentOrchestrator struct {
+	DomainHandler
 	tasks     *task.Manager
 	projects  *project.Store
 	agents    *agent.Manager
-	audit     *audit.Logger
-	logger    *slog.Logger
 	worktrees *worktree.Manager
 	cfg       *config.Config
 }
@@ -52,27 +51,12 @@ func newAgentOrchestrator(
 	cfg *config.Config,
 ) *AgentOrchestrator {
 	return &AgentOrchestrator{
-		tasks:     tasks,
-		projects:  projects,
-		agents:    agents,
-		audit:     al,
-		logger:    logger,
-		worktrees: worktrees,
-		cfg:       cfg,
-	}
-}
-
-func (o *AgentOrchestrator) logAudit(eventType, taskID, agentID string, data map[string]any) {
-	if o.audit == nil {
-		return
-	}
-	if err := o.audit.Log(audit.Event{
-		Type:    eventType,
-		TaskID:  taskID,
-		AgentID: agentID,
-		Data:    data,
-	}); err != nil {
-		o.logger.Error("audit.log", "type", eventType, "err", err)
+		DomainHandler: DomainHandler{audit: al, logger: logger},
+		tasks:         tasks,
+		projects:      projects,
+		agents:        agents,
+		worktrees:     worktrees,
+		cfg:           cfg,
 	}
 }
 
