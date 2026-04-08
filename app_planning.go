@@ -436,17 +436,6 @@ func (w *TaskWorkflow) handleAgentComplete(ag *agent.Agent) {
 
 	role := agent.RoleFromName(ag.Name)
 
-	// Notify for non-system agents
-	if !role.IsSystem() {
-		level := notification.LevelSuccess
-		title := "Agent completed"
-		if ag.State == agent.StateStopped && !hasResultEvent(ag) {
-			level = notification.LevelError
-			title = "Agent failed"
-		}
-		w.notifier.Send(level, title, ag.Name, ag.TaskID, ag.ID)
-	}
-
 	switch role {
 	case agent.RoleTriage:
 		w.logger.Info("triage.complete", "agent_id", ag.ID, "name", ag.Name)

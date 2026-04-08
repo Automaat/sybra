@@ -143,6 +143,20 @@ func (a *App) startup(ctx context.Context) {
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
+		switch to {
+		case string(task.StatusInReview):
+			msg := taskID
+			if t, err := a.tasks.Get(taskID); err == nil {
+				msg = t.Title
+			}
+			a.notifier.Send(notification.LevelInfo, "Ready for review", msg, taskID, "")
+		case string(task.StatusHumanRequired):
+			msg := taskID
+			if t, err := a.tasks.Get(taskID); err == nil {
+				msg = t.Title
+			}
+			a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
+		}
 	})
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
