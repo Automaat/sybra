@@ -31,13 +31,17 @@ async function ensurePlanFixture() {
 async function goToTaskList(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
-  await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
+  await page.waitForSelector('button:has(h3), :text("No tasks")', {
+    timeout: 10_000,
+  })
 }
 
 async function goToPlanReviews(page: Page) {
   await page.goto('/')
-  await page.locator('[data-part="trigger"]', { hasText: /Plans/ }).click()
-  await page.waitForTimeout(1000) // wait for task list to load
+  await page
+    .locator('[data-part="trigger"]', { hasText: /Reviews/ })
+    .click()
+  await page.waitForSelector('button, :text("No plans")', { timeout: 10_000 })
 }
 
 test.beforeAll(async () => {
@@ -49,15 +53,15 @@ test.afterAll(async () => {
 })
 
 test.describe('Plan Review Workflow', () => {
-  test('plan-review task appears in Plan Reviews column', async ({ page }) => {
+  test('plan-review task appears in Planning column', async ({ page }) => {
     await goToTaskList(page)
 
-    // Plan Review column should show the plan task
-    const planReviewCol = page.locator('div', {
-      has: page.getByRole('heading', { name: 'Plan Review' }),
+    // Planning column includes plan-review status
+    const planningCol = page.locator('div', {
+      has: page.locator('h2', { hasText: 'Planning' }),
     })
     await expect(
-      planReviewCol.getByText('Refactor logging system'),
+      planningCol.getByText('Refactor logging system'),
     ).toBeVisible()
   })
 
@@ -74,8 +78,12 @@ test.describe('Plan Review Workflow', () => {
     ).toBeVisible()
 
     // Plan review actions should be visible
-    await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Reject' })).toBeVisible()
+    await expect(
+      page.getByRole('button', { name: 'Approve Plan' }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('button', { name: 'Reject Plan' }),
+    ).toBeVisible()
   })
 
   test('plan-review task shows plan body markdown', async ({ page }) => {
@@ -97,12 +105,13 @@ test.describe('Plan Review Workflow', () => {
     ).toBeVisible()
   })
 
-  test('plan-review badge shows in navigation', async ({ page }) => {
+  test('reviews nav item is visible', async ({ page }) => {
     await page.goto('/')
 
-    // The Plans nav item should show a badge when there are plan-review tasks
-    const plansNav = page.locator('[data-part="trigger"]', { hasText: /Plans/ })
-    await expect(plansNav).toBeVisible()
+    const reviewsNav = page.locator('[data-part="trigger"]', {
+      hasText: /Reviews/,
+    })
+    await expect(reviewsNav).toBeVisible()
   })
 })
 
@@ -123,15 +132,17 @@ test.describe('Plan Reviews Page', () => {
     await page.waitForTimeout(500)
 
     // Feedback textarea should be visible
-    await expect(page.getByPlaceholder(/feedback/i)).toBeVisible()
+    await expect(
+      page.getByPlaceholder(/rejection feedback/i),
+    ).toBeVisible()
   })
 })
 
 test.describe('Task Status Badge', () => {
-  test('plan-review tasks show review badge on card', async ({ page }) => {
+  test('plan-review tasks show in board', async ({ page }) => {
     await goToTaskList(page)
 
-    // The task card for plan-review should show a review indicator
+    // The task card should be visible in the board
     const card = page.getByRole('button', {
       name: 'Refactor logging system',
     })
