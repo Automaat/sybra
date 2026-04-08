@@ -259,6 +259,48 @@ func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent
 	return result
 }
 
+// KillAgentsForTask stops all running agents for the given task ID and waits
+// for their goroutines to exit (up to timeout). Safe to call from DeleteTask
+// before worktree cleanup.
+func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
+	m.mu.RLock()
+	var targets []*Agent
+	for _, a := range m.agents {
+		if a.TaskID == taskID {
+			targets = append(targets, a)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, a := range targets {
+		m.logger.Info("agent.kill-for-task", "agent_id", a.ID, "task_id", taskID)
+		if a.cancel != nil {
+			a.cancel()
+		}
+		a.State = StateStopped
+		a.stdinMu.Lock()
+		if a.stdinPipe != nil {
+			_ = a.stdinPipe.Close()
+			a.stdinPipe = nil
+		}
+		a.stdinMu.Unlock()
+		m.emit(events.AgentState(a.ID), a)
+	}
+
+	deadline := time.After(timeout)
+	for _, a := range targets {
+		if a.done == nil {
+			continue
+		}
+		select {
+		case <-a.done:
+		case <-deadline:
+			m.logger.Warn("agent.kill-timeout", "agent_id", a.ID, "task_id", taskID)
+			return
+		}
+	}
+}
+
 func (m *Manager) StopAgent(agentID string) error {
 	m.mu.Lock()
 	a, ok := m.agents[agentID]

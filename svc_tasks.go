@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
@@ -116,6 +117,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 // DeleteTask removes a task file from disk and cleans up its worktree.
 func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
+	s.agents.KillAgentsForTask(id, 10*time.Second)
 	s.worktrees.Remove(id)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
