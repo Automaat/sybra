@@ -50,10 +50,10 @@ func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
 		if err != nil {
 			return nil, fmt.Errorf("todoist list tasks: %w", err)
 		}
-		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("todoist list tasks: HTTP %d: %s", resp.StatusCode, body)
 		}
 
@@ -61,8 +61,10 @@ func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
 			Results    []Task  `json:"results"`
 			NextCursor *string `json:"next_cursor"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			return nil, fmt.Errorf("decode tasks: %w", err)
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode tasks: %w", decodeErr)
 		}
 		all = append(all, page.Results...)
 		if page.NextCursor == nil || *page.NextCursor == "" {
@@ -114,10 +116,10 @@ func (c *Client) ListProjects() ([]Project, error) {
 		if err != nil {
 			return nil, fmt.Errorf("todoist list projects: %w", err)
 		}
-		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("todoist list projects: HTTP %d: %s", resp.StatusCode, body)
 		}
 
@@ -125,8 +127,10 @@ func (c *Client) ListProjects() ([]Project, error) {
 			Results    []Project `json:"results"`
 			NextCursor *string   `json:"next_cursor"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			return nil, fmt.Errorf("decode projects: %w", err)
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode projects: %w", decodeErr)
 		}
 		all = append(all, page.Results...)
 		if page.NextCursor == nil || *page.NextCursor == "" {
