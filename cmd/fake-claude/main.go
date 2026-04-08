@@ -1,6 +1,12 @@
 // fake-claude is a test double for the claude CLI. It reads FAKE_CLAUDE_SCENARIO
 // to decide behavior, logs received args, and outputs canned NDJSON.
 //
+// Scenario selection (in priority order):
+//  1. FAKE_CLAUDE_SCENARIO_FILE: path to a file with one scenario per line.
+//     Each invocation pops and uses the first line (for multi-step workflows).
+//  2. FAKE_CLAUDE_SCENARIO: static scenario name for single-step tests.
+//  3. Default: "success"
+//
 // Scenarios:
 //   - success (default): system + assistant + result events
 //   - fail_exit: system event then exit 1
@@ -27,10 +33,7 @@ func main() {
 		_ = os.WriteFile(logFile, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
 	}
 
-	scenario := os.Getenv("FAKE_CLAUDE_SCENARIO")
-	if scenario == "" {
-		scenario = "success"
-	}
+	scenario := popScenario()
 
 	taskID := extractTaskID(os.Args)
 
@@ -132,6 +135,28 @@ func extractTaskID(args []string) string {
 		}
 	}
 	return ""
+}
+
+// popScenario reads the scenario for this invocation. If FAKE_CLAUDE_SCENARIO_FILE
+// is set, it pops the first line from that file (for multi-step workflows).
+// Falls back to FAKE_CLAUDE_SCENARIO, then "success".
+func popScenario() string {
+	if sf := os.Getenv("FAKE_CLAUDE_SCENARIO_FILE"); sf != "" {
+		data, err := os.ReadFile(sf)
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 0 && lines[0] != "" {
+				scenario := strings.TrimSpace(lines[0])
+				remaining := strings.Join(lines[1:], "\n")
+				_ = os.WriteFile(sf, []byte(remaining), 0o644)
+				return scenario
+			}
+		}
+	}
+	if s := os.Getenv("FAKE_CLAUDE_SCENARIO"); s != "" {
+		return s
+	}
+	return "success"
 }
 
 func runCLI(subcmd, taskID string, extra ...string) {

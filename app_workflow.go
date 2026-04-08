@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log/slog"
+
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
@@ -123,8 +125,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt string, allo
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 	}); addErr != nil {
-		// Non-fatal — log but don't fail the agent start.
-		_ = addErr
+		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 
 	return ag.ID, nil

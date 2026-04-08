@@ -21,8 +21,17 @@ func (s *PlanningService) TriageTask(id string) error {
 	return s.engine.StartWorkflow(id, "simple-task")
 }
 
-// PlanTask starts a planning workflow step for the given task.
+// PlanTask starts a workflow for the given task if none is active.
+// If a workflow is already running, this is a no-op — the engine drives
+// plan steps via transitions.
 func (s *PlanningService) PlanTask(id string) error {
+	t, err := s.tasks.Get(id)
+	if err != nil {
+		return err
+	}
+	if t.Workflow != nil && t.Workflow.State != "" {
+		return nil
+	}
 	return s.engine.StartWorkflow(id, "simple-task")
 }
 
@@ -81,8 +90,8 @@ func (s *PlanningService) HasLivePlanAgent(id string) bool {
 	return s.agents.FindRunningAgentForTask(id, agent.RolePlan) != nil
 }
 
-// EvaluateTask is no longer needed — the workflow engine handles evaluation
-// as a step in the workflow. Kept as a no-op for API compatibility.
+// EvaluateTask is deprecated — the workflow engine handles evaluation
+// as a step in the workflow.
 func (s *PlanningService) EvaluateTask(_, _ string) error {
-	return nil
+	return fmt.Errorf("deprecated: workflow engine handles evaluation automatically")
 }

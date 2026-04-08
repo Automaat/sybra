@@ -501,7 +501,7 @@ func TestNoWorkflowField(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"}) // no Workflow
 
 	// Should not panic or error fatally.
-	engine.HandleAgentComplete("t1", "agent-1", "result")
+	engine.HandleAgentComplete("t1", "agent-1", "result", "stopped")
 }
 
 func TestResumeStalled_RunAgent(t *testing.T) {
@@ -852,7 +852,7 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 
 	// Another agent complete on an already-completed workflow should not panic.
 	callsBefore := agents.CallCount()
-	engine.HandleAgentComplete("t1", "stale-agent", "late result")
+	engine.HandleAgentComplete("t1", "stale-agent", "late result", "stopped")
 
 	if agents.CallCount() != callsBefore {
 		t.Error("HandleAgentComplete on completed workflow should not start new agents")

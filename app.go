@@ -262,14 +262,18 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"role":       agent.RoleFromName(ag.Name),
 	})
 
-	// Worktree cleanup for done tasks.
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
-		go a.worktrees.Remove(ag.TaskID)
-	}
-
 	// Advance workflow.
 	if a.workflowEngine != nil {
-		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, resultContent)
+		agentState := "stopped"
+		if ag.ExitErr != nil {
+			agentState = "failed"
+		}
+		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, resultContent, agentState)
+	}
+
+	// Worktree cleanup for done tasks (after engine advances, so status is final).
+	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+		go a.worktrees.Remove(ag.TaskID)
 	}
 }
 

@@ -233,8 +233,10 @@ func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string
 }
 
 // HandleAgentComplete is called when an agent finishes. It maps the agent
-// back to the workflow step and advances.
-func (e *Engine) HandleAgentComplete(taskID, agentID, result string) {
+// back to the workflow step and advances. The agentState parameter should
+// reflect the actual agent exit state (e.g. "stopped" for success, "failed"
+// for crashes) so the retry logic in AdvanceStep can trigger correctly.
+func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
@@ -245,9 +247,14 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result string) {
 		return
 	}
 
+	status := "completed"
+	if agentState != "" && agentState != "stopped" {
+		status = "failed"
+	}
+
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID:  t.Workflow.CurrentStep,
-		Status:  "completed",
+		Status:  status,
 		Output:  result,
 		AgentID: agentID,
 	}); err != nil {
