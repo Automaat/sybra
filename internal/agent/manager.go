@@ -16,6 +16,12 @@ import (
 
 type EmitFunc func(event string, data any)
 
+// Guardrails defines per-agent execution limits.
+type Guardrails struct {
+	MaxCostUSD float64
+	MaxTurns   int
+}
+
 type Manager struct {
 	agents        map[string]*Agent
 	mu            sync.RWMutex
@@ -27,6 +33,7 @@ type Manager struct {
 	logDir        string
 	maxConcurrent int
 	approvalAddr  string // localhost:port for the HTTP tool approval server
+	guardrails    Guardrails
 }
 
 func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -55,6 +62,31 @@ func (m *Manager) SetMaxConcurrent(n int) {
 	m.mu.Lock()
 	m.maxConcurrent = n
 	m.mu.Unlock()
+}
+
+// SetGuardrails configures cost and turn limits applied to all agents.
+func (m *Manager) SetGuardrails(g Guardrails) {
+	m.mu.Lock()
+	m.guardrails = g
+	m.mu.Unlock()
+}
+
+// RespondEscalation sends a human decision to a paused agent.
+// continueRun=true lets the agent keep running; false kills it.
+func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	if a.escalationCh == nil {
+		return fmt.Errorf("agent %s has no pending escalation", agentID)
+	}
+	select {
+	case a.escalationCh <- continueRun:
+	default:
+		return fmt.Errorf("agent %s escalation channel full or closed", agentID)
+	}
+	return nil
 }
 
 // RunningCount returns the number of currently running agents.
@@ -107,6 +139,9 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 	if cfg.Mode == "headless" || cfg.Mode == "interactive" {
 		a.done = make(chan struct{})
+	}
+	if cfg.Mode == "headless" {
+		a.escalationCh = make(chan bool, 1)
 	}
 
 	m.mu.Lock()

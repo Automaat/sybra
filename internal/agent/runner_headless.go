@@ -125,7 +125,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 	}
 
 	prevLen := len(a.outputBuffer)
-	m.streamHeadlessOutput(a, stdout, logWriter)
+	m.streamHeadlessOutput(ctx, a, stdout, logWriter)
 
 	waitErr := cmd.Wait()
 
@@ -161,7 +161,7 @@ func is529Error(stderrOut string, streamEvents []StreamEvent) bool {
 	return false
 }
 
-func (m *Manager) streamHeadlessOutput(a *Agent, stdout io.Reader, outFile io.Writer) {
+func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
@@ -189,12 +189,55 @@ func (m *Manager) streamHeadlessOutput(a *Agent, stdout io.Reader, outFile io.Wr
 			lastEmit = time.Now()
 		}
 
+		if event.Type == "assistant" {
+			a.TurnCount++
+			m.mu.RLock()
+			maxTurns := m.guardrails.MaxTurns
+			m.mu.RUnlock()
+			if maxTurns > 0 && a.TurnCount >= maxTurns {
+				m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", a.TurnCount, "limit", maxTurns)
+				a.EscalationReason = "turns"
+				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+					Reason:    "turns",
+					TurnCount: a.TurnCount,
+					Limit:     float64(maxTurns),
+				})
+				m.emit(events.AgentState(a.ID), a)
+				// Block until human responds or context is cancelled.
+				select {
+				case continueRun := <-a.escalationCh:
+					if !continueRun {
+						a.cancel()
+						return
+					}
+					// Human approved continuation — clear reason and keep going.
+					a.EscalationReason = ""
+					m.emit(events.AgentState(a.ID), a)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
 		if event.Type == "result" {
 			a.SessionID = event.SessionID
 			a.CostUSD += event.CostUSD
 			a.InputTokens += event.InputTokens
 			a.OutputTokens += event.OutputTokens
 			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", a.CostUSD)
+			m.mu.RLock()
+			maxCost := m.guardrails.MaxCostUSD
+			m.mu.RUnlock()
+			if maxCost > 0 && a.CostUSD > maxCost {
+				m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", a.CostUSD, "limit", maxCost)
+				a.EscalationReason = "cost"
+				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+					Reason:  "cost",
+					CostUSD: a.CostUSD,
+					Limit:   maxCost,
+				})
+				m.emit(events.AgentState(a.ID), a)
+			}
 		}
 	}
 }
