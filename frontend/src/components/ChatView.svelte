@@ -23,6 +23,9 @@
   const approvals = $derived(
     [...convoStore.pendingApprovals.values()],
   )
+  const hasApproval = $derived(approvals.length > 0)
+  const isWaitingForApproval = $derived(isPaused && hasApproval)
+  const isWaitingForInput = $derived(isPaused && !hasApproval)
 
   const contextMax = 200_000
   const totalTokens = $derived(inputTokens + outputTokens)
@@ -51,7 +54,9 @@
   })
 
   // Watch conversation changes to update local events + auto-scroll.
+  // Reading eventVersion triggers reactivity on every append without full Map copy.
   $effect(() => {
+    void convoStore.eventVersion
     const current = convoStore.conversations.get(agentId)
     if (current && current.length > events.length) {
       events = current
@@ -73,14 +78,17 @@
   <div class="flex items-center gap-3 border-b border-surface-300 px-4 py-2 dark:border-surface-600">
     <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium
       {isRunning ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
+       isWaitingForApproval ? 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200' :
        isPaused ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
        'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
       {#if isRunning}
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success-500"></span>
+      {:else if isWaitingForApproval}
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-error-500"></span>
       {:else if isPaused}
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
       {/if}
-      {isPaused ? 'Waiting' : agentState}
+      {isWaitingForApproval ? 'Needs approval' : isWaitingForInput ? 'Waiting for input' : agentState}
     </span>
 
     <!-- Context window indicator -->
@@ -132,7 +140,7 @@
 
   <!-- Input -->
   <ChatInput
-    disabled={isRunning}
+    disabled={isRunning || isWaitingForApproval}
     onsend={handleSend}
   />
 </div>

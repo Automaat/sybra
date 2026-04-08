@@ -42,7 +42,10 @@ func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	if m.approvalAddr != "" {
+	// Only wire the approval hook for agents that actually need permission checks.
+	// Agents with --dangerously-skip-permissions should not be blocked by the hook.
+	needsApproval := cfg.RequirePermissions || cfg.PermissionMode != ""
+	if m.approvalAddr != "" && needsApproval {
 		hookSettings := fmt.Sprintf(
 			`{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"http","url":"http://%s/hooks/pre-tool-use","timeout":300}]}]}}`,
 			m.approvalAddr,
@@ -132,6 +135,7 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
+	var pending *ConvoEvent // buffered event waiting for next emit window
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -153,9 +157,25 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 		a.convoBuffer = append(a.convoBuffer, event)
 		a.LastEventAt = time.Now().UTC()
 
-		if event.Type == "result" || time.Since(lastEmit) >= convoEmitInterval {
+		// Always emit result/system events immediately. For others, buffer
+		// the latest and emit at most once per convoEmitInterval so the
+		// frontend still gets every meaningful update.
+		switch {
+		case event.Type == "result" || event.Type == "system":
+			pending = nil
 			m.emit(events.AgentConvo(a.ID), event)
 			lastEmit = time.Now()
+		case time.Since(lastEmit) >= convoEmitInterval:
+			if pending != nil {
+				m.emit(events.AgentConvo(a.ID), *pending)
+				pending = nil
+			}
+			m.emit(events.AgentConvo(a.ID), event)
+			lastEmit = time.Now()
+		default:
+			// Buffer the latest event; it will be emitted on the next window.
+			e := event
+			pending = &e
 		}
 
 		switch event.Type {
@@ -175,6 +195,11 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			a.State = StatePaused
 			m.emit(events.AgentState(a.ID), a)
 		}
+	}
+
+	// Flush any remaining buffered event.
+	if pending != nil {
+		m.emit(events.AgentConvo(a.ID), *pending)
 	}
 }
 

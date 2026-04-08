@@ -17,9 +17,16 @@
 
   marked.setOptions({ breaks: true, gfm: true })
 
-  const renderedText = $derived(
-    event.text ? marked.parse(event.text) as string : '',
-  )
+  // Cache markdown rendering per text value to avoid re-parsing on parent re-renders.
+  const markdownCache = new Map<string, string>()
+  const renderedText = $derived.by(() => {
+    if (!event.text) return ''
+    const cached = markdownCache.get(event.text)
+    if (cached) return cached
+    const html = marked.parse(event.text) as string
+    markdownCache.set(event.text, html)
+    return html
+  })
 
   function truncate(text: string, max: number): string {
     if (text.length <= max) return text
