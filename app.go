@@ -164,6 +164,10 @@ func (a *App) startup(ctx context.Context) {
 	a.initWorkflowEngine()
 
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
+	a.agents.SetGuardrails(agent.Guardrails{
+		MaxCostUSD: a.cfg.Agent.MaxCostUSD,
+		MaxTurns:   a.cfg.Agent.MaxTurns,
+	})
 	a.initApprovalServer(emit)
 	a.agents.SetOnComplete(a.onAgentComplete)
 

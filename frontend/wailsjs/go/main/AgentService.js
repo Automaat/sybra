@@ -42,6 +42,10 @@ export function RespondApproval(arg1, arg2) {
   return window['go']['main']['AgentService']['RespondApproval'](arg1, arg2);
 }
 
+export function RespondEscalation(arg1, arg2) {
+  return window['go']['main']['AgentService']['RespondEscalation'](arg1, arg2);
+}
+
 export function SendMessage(arg1, arg2) {
   return window['go']['main']['AgentService']['SendMessage'](arg1, arg2);
 }

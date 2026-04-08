@@ -23,6 +23,8 @@ export function ListTmuxSessions():Promise<Array<tmux.SessionInfo>>;
 
 export function RespondApproval(arg1:string,arg2:boolean):Promise<void>;
 
+export function RespondEscalation(arg1:string,arg2:boolean):Promise<void>;
+
 export function SendMessage(arg1:string,arg2:string):Promise<void>;
 
 export function StopAgent(arg1:string):Promise<void>;

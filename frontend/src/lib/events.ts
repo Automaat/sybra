@@ -17,9 +17,11 @@ export const AppQuitConfirm = 'app:quit-confirm'
 
 export const AgentConvoPrefix = 'agent:convo:'
 export const AgentApprovalPrefix = 'agent:approval:'
+export const AgentEscalationPrefix = 'agent:escalation:'
 
 export const agentState = (id: string) => `${AgentStatePrefix}${id}`
 export const agentOutput = (id: string) => `${AgentOutputPrefix}${id}`
 export const agentError = (id: string) => `${AgentErrorPrefix}${id}`
 export const agentConvo = (id: string) => `${AgentConvoPrefix}${id}`
 export const agentApproval = (id: string) => `${AgentApprovalPrefix}${id}`
+export const agentEscalation = (id: string) => `${AgentEscalationPrefix}${id}`

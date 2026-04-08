@@ -94,3 +94,9 @@ func (s *AgentService) RespondApproval(toolUseID string, approved bool) error {
 func (s *AgentService) GetConvoOutput(agentID string) ([]agent.ConvoEvent, error) {
 	return s.agents.GetConvoOutput(agentID)
 }
+
+// RespondEscalation sends a human decision to a guardrail-paused agent.
+// continueRun=true lets the agent keep running; false kills it.
+func (s *AgentService) RespondEscalation(agentID string, continueRun bool) error {
+	return s.agents.RespondEscalation(agentID, continueRun)
+}
