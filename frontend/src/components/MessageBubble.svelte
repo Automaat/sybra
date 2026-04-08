@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
   import { marked } from 'marked'
+  import { markedHighlight } from 'marked-highlight'
+  import hljs from 'highlight.js'
+  import 'highlight.js/styles/github-dark.css'
   import DiffViewer from './DiffViewer.svelte'
 
   interface Props {
@@ -15,6 +18,13 @@
   const isResult = $derived(event.type === 'result')
   const isSystem = $derived(event.type === 'system')
 
+  marked.use(markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+      return hljs.highlight(code, { language }).value
+    }
+  }))
   marked.setOptions({ breaks: true, gfm: true })
 
   // Cache markdown rendering per text value to avoid re-parsing on parent re-renders.
@@ -120,17 +130,20 @@
   :global(.markdown-body p) { margin: 0.25em 0; }
   :global(.markdown-body pre) {
     margin: 0.5em 0;
-    padding: 0.5em;
     border-radius: 0.375rem;
     overflow-x: auto;
     font-size: 0.75rem;
   }
-  :global(.markdown-body code) {
+  :global(.markdown-body pre code.hljs) {
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+  }
+  :global(.markdown-body code:not(.hljs)) {
     font-size: 0.8em;
     padding: 0.1em 0.3em;
     border-radius: 0.25rem;
+    background: rgb(var(--color-surface-800) / 0.5);
   }
-  :global(.markdown-body pre code) { padding: 0; }
   :global(.markdown-body ul, .markdown-body ol) { padding-left: 1.5em; margin: 0.25em 0; }
   :global(.markdown-body h1, .markdown-body h2, .markdown-body h3) { margin: 0.5em 0 0.25em; font-weight: 600; }
   :global(.markdown-body blockquote) { border-left: 3px solid currentColor; padding-left: 0.75em; opacity: 0.8; margin: 0.25em 0; }
