@@ -24,9 +24,18 @@ class ConvoStore {
   }
 
   appendEvent(agentId: string, event: agent.ConvoEvent): void {
-    const existing = this.conversations.get(agentId) ?? []
-    this.conversations = new Map(this.conversations).set(agentId, [...existing, event])
+    let arr = this.conversations.get(agentId)
+    if (!arr) {
+      arr = []
+      this.conversations.set(agentId, arr)
+    }
+    arr.push(event)
+    // Trigger Svelte reactivity with a version bump instead of full copy.
+    this.eventVersion++
   }
+
+  // Bump counter to trigger Svelte reactivity without copying the Map.
+  eventVersion = $state(0)
 
   async sendMessage(agentId: string, text: string): Promise<void> {
     await SendMessage(agentId, text)

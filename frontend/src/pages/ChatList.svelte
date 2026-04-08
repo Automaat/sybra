@@ -23,7 +23,7 @@
   function stateLabel(state: string): string {
     switch (state) {
       case 'running': return 'Running'
-      case 'paused': return 'Waiting for input'
+      case 'paused': return 'Idle'
       default: return 'Stopped'
     }
   }

@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	maxPromptLen = 4000
-	maxResultLen = 2000
+	maxPromptLen     = 4000
+	maxResultLen     = 2000
+	maxTriageRetries = 3
 )
 
 // TaskWorkflow handles triage, planning, evaluation, and agent completion callbacks.
@@ -95,6 +96,21 @@ func (w *TaskWorkflow) TriageTask(id string) error {
 	}
 	w.logger.Info("triage.agent_started", "task_id", t.ID, "agent_id", ag.ID)
 	return nil
+}
+
+// shouldRetryTriage checks if a triage can be retried (under maxTriageRetries).
+func (w *TaskWorkflow) shouldRetryTriage(taskID string) bool {
+	t, err := w.tasks.Get(taskID)
+	if err != nil {
+		return false
+	}
+	triageCount := 0
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RoleTriage) {
+			triageCount++
+		}
+	}
+	return triageCount < maxTriageRetries
 }
 
 // postTriage re-reads the task after triage completes and triggers the
@@ -435,6 +451,16 @@ func (w *TaskWorkflow) handleAgentComplete(ag *agent.Agent) {
 	case agent.RoleTriage:
 		w.logger.Info("triage.complete", "agent_id", ag.ID, "name", ag.Name)
 		w.logAudit(audit.EventTriageCompleted, ag.TaskID, ag.ID, agentData)
+		if !hasResultEvent(ag) && w.shouldRetryTriage(ag.TaskID) {
+			w.logger.Warn("triage.failed-retrying", "task_id", ag.TaskID, "agent_id", ag.ID)
+			go func() {
+				time.Sleep(10 * time.Second)
+				if err := w.TriageTask(ag.TaskID); err != nil {
+					w.logger.Error("triage.retry-failed", "task_id", ag.TaskID, "err", err)
+				}
+			}()
+			return
+		}
 		w.postTriage(ag.TaskID)
 
 	case agent.RoleEval:
