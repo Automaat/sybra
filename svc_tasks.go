@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -35,10 +36,17 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 }
 
 // CreateTask creates a new task and triggers auto-triage for todo tasks.
+// If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	t, err := s.tasks.Create(title, body, mode)
 	if err != nil {
 		return t, err
+	}
+	// Enrich from GitHub issue URL if title looks like one.
+	if repo, number := github.ParseIssueURL(title); repo != "" {
+		s.wg.Go(func() {
+			s.enrichFromIssue(t.ID, repo, number)
+		})
 	}
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
@@ -120,4 +128,30 @@ func (s *TaskService) DeleteTask(id string) error {
 		return err
 	}
 	return nil
+}
+
+// enrichFromIssue fetches a GitHub issue and updates the task with real title/body.
+func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
+	issue, err := github.FetchIssue(repo, number)
+	if err != nil {
+		s.logger.Error("enrich-issue.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
+		return
+	}
+	updates := map[string]any{
+		"title":      issue.Title,
+		"issue":      issue.URL,
+		"project_id": repo,
+		"slug":       task.Slugify(issue.Title),
+	}
+	if issue.Body != "" {
+		updates["body"] = issue.Body
+	}
+	if len(issue.Labels) > 0 {
+		updates["tags"] = issue.Labels
+	}
+	if _, err := s.tasks.Update(taskID, updates); err != nil {
+		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
+		return
+	}
+	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
 }

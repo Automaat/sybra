@@ -111,6 +111,9 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	if v, ok := updates["title"].(string); ok {
 		t.Title = v
 	}
+	if v, ok := updates["slug"].(string); ok {
+		t.Slug = v
+	}
 	if v, ok := updates["status"].(string); ok {
 		st, vErr := ValidateStatus(v)
 		if vErr != nil {

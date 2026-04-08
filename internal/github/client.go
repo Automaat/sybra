@@ -779,3 +779,74 @@ func convertIssues(nodes []gqlIssue) []Issue {
 	}
 	return issues
 }
+
+// ParseIssueURL extracts owner/repo and issue number from a GitHub issue URL.
+// Returns ("", 0) if the URL doesn't match.
+func ParseIssueURL(rawURL string) (repo string, number int) {
+	// https://github.com/owner/repo/issues/123
+	if !strings.HasPrefix(rawURL, "https://github.com/") {
+		return "", 0
+	}
+	parts := strings.Split(strings.TrimPrefix(rawURL, "https://github.com/"), "/")
+	if len(parts) < 4 || parts[2] != "issues" {
+		return "", 0
+	}
+	n := 0
+	for _, c := range parts[3] {
+		if c < '0' || c > '9' {
+			return "", 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n == 0 {
+		return "", 0
+	}
+	return parts[0] + "/" + parts[1], n
+}
+
+// FetchIssue fetches a single issue by repo (owner/repo) and number.
+func FetchIssue(repo string, number int) (Issue, error) {
+	return fetchIssueWith(defaultExecer, repo, number)
+}
+
+func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
+	out, err := e.run("issue", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "number,title,body,url,labels,author")
+	if err != nil {
+		return Issue{}, fmt.Errorf("gh issue view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var raw struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+		URL    string `json:"url"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Author struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return Issue{}, fmt.Errorf("parse issue: %w", err)
+	}
+	labels := make([]string, len(raw.Labels))
+	for i, l := range raw.Labels {
+		labels[i] = l.Name
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	repoName := ""
+	if len(parts) == 2 {
+		repoName = parts[1]
+	}
+	return Issue{
+		Number:     raw.Number,
+		Title:      raw.Title,
+		Body:       raw.Body,
+		URL:        raw.URL,
+		Repository: repo,
+		RepoName:   repoName,
+		Labels:     labels,
+		Author:     raw.Author.Login,
+	}, nil
+}
