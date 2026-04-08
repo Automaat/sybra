@@ -67,22 +67,14 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
-      - name: Cache wails binary
-        id: cache-wails
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/go/bin/wails
-          key: wails-${{ runner.os }}-${{ hashFiles('go.sum') }}
-
       - name: Install wails
-        if: steps.cache-wails.outputs.cache-hit != 'true'
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Lint frontend
         run: cd frontend && npm ci && npx oxlint .
 
       - name: Build
-        run: ~/go/bin/wails build
+        run: wails build
 
   security:
     name: Security Audit
@@ -108,15 +100,7 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
-      - name: Cache wails binary
-        id: cache-wails
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/go/bin/wails
-          key: wails-${{ runner.os }}-${{ hashFiles('go.sum') }}
-
       - name: Install wails
-        if: steps.cache-wails.outputs.cache-hit != 'true'
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Install frontend deps
