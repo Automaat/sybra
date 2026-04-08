@@ -485,13 +485,13 @@ func TestE2E_PlanApproveReject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for review_plan (wait_human) step.
+	// Wait for review_plan (wait_human) step with ExecWaiting state.
 	waitFor(t, 20*time.Second, "workflow reaches review_plan", func() bool {
 		tk, err := env.tasks.Get(created.ID)
 		if err != nil {
 			return false
 		}
-		return tk.Workflow != nil && tk.Workflow.CurrentStep == "review_plan"
+		return tk.Workflow != nil && tk.Workflow.CurrentStep == "review_plan" && tk.Workflow.State == workflow.ExecWaiting
 	})
 
 	// Count plan records before reject.
@@ -514,7 +514,7 @@ func TestE2E_PlanApproveReject(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		if tk.Workflow == nil || tk.Workflow.CurrentStep != "review_plan" {
+		if tk.Workflow == nil || tk.Workflow.CurrentStep != "review_plan" || tk.Workflow.State != workflow.ExecWaiting {
 			return false
 		}
 		planCount := 0

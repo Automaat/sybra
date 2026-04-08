@@ -314,6 +314,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.reviewSvc.reviewer = a.reviewer
 	a.reviewSvc.tasks = a.tasks
 	a.taskSvc.tasks = a.tasks
+	a.taskSvc.agents = a.agents
 	a.taskSvc.workflowEngine = a.workflowEngine
 	a.taskSvc.worktrees = a.worktrees
 	a.taskSvc.wg = &a.wg

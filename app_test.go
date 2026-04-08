@@ -66,6 +66,7 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	var wg sync.WaitGroup
 	svc := &TaskService{
 		tasks:     a.tasks,
+		agents:    a.agents,
 		worktrees: a.worktrees,
 		wg:        &wg,
 		logger:    a.logger,

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
@@ -15,6 +16,7 @@ import (
 // TaskService exposes task CRUD operations as Wails-bound methods.
 type TaskService struct {
 	tasks          *task.Manager
+	agents         *agent.Manager
 	workflowEngine *workflow.Engine
 	worktrees      *worktree.Manager
 	wg             *sync.WaitGroup
