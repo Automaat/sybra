@@ -37,10 +37,12 @@ type LoggingConfig struct {
 }
 
 type AgentDefaults struct {
-	Model              string `yaml:"model" json:"model"`
-	Mode               string `yaml:"mode" json:"mode"`
-	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
-	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
+	Model              string  `yaml:"model" json:"model"`
+	Mode               string  `yaml:"mode" json:"mode"`
+	MaxConcurrent      int     `yaml:"max_concurrent" json:"maxConcurrent"`
+	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
+	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
+	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
 }
 
 type NotificationConfig struct {
@@ -86,6 +88,8 @@ func DefaultConfig() *Config {
 		},
 		Agent: AgentDefaults{
 			MaxConcurrent: 3,
+			MaxCostUSD:    5.0,
+			MaxTurns:      150,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,

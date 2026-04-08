@@ -1,11 +1,19 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { RespondEscalation } from '../../wailsjs/go/main/AgentService.js'
   import { agentStore } from '../stores/agents.svelte.js'
-  import { agentState } from '../lib/events.js'
+  import { agentState, agentEscalation } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
   import ChatView from '../components/ChatView.svelte'
+
+  interface EscalationEvent {
+    reason: string
+    turnCount?: number
+    costUsd?: number
+    limit: number
+  }
 
   interface Props {
     agentId: string
@@ -17,6 +25,8 @@
 
   let a = $state<agent.Agent | null>(null)
   let error = $state('')
+  let escalation = $state<EscalationEvent | null>(null)
+  let escalationResponding = $state(false)
 
   const isRunning = $derived(a?.state === 'running')
 
@@ -24,13 +34,19 @@
     const cached = agentStore.agents.get(agentId)
     if (cached) a = cached
 
-    const unsub = EventsOn(agentState(agentId), (data: agent.Agent) => {
+    const unsubState = EventsOn(agentState(agentId), (data: agent.Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
     })
 
+    const unsubEscalation = EventsOn(agentEscalation(agentId), (data: EscalationEvent) => {
+      escalation = data
+      escalationResponding = false
+    })
+
     return () => {
-      unsub()
+      unsubState()
+      unsubEscalation()
     }
   })
 
@@ -39,6 +55,29 @@
       await agentStore.stop(agentId)
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function handleEscalationContinue() {
+    escalationResponding = true
+    try {
+      await RespondEscalation(agentId, true)
+      escalation = null
+    } catch (e) {
+      error = String(e)
+      escalationResponding = false
+    }
+  }
+
+  async function handleEscalationKill() {
+    escalationResponding = true
+    try {
+      await RespondEscalation(agentId, false)
+      escalation = null
+    } catch (e) {
+      // For cost escalation the agent is already stopped — dismiss the banner.
+      escalation = null
+      escalationResponding = false
     }
   }
 
@@ -62,6 +101,45 @@
 
   {#if error}
     <p class="text-sm text-error-500">{error}</p>
+  {/if}
+
+  {#if escalation}
+    <div class="rounded-lg border-2 border-error-400 bg-error-50 p-4 dark:border-error-600 dark:bg-error-950">
+      <div class="mb-3 flex items-center gap-2">
+        <span class="rounded bg-error-200 px-2 py-0.5 text-xs font-bold text-error-800 dark:bg-error-700 dark:text-error-200">
+          GUARDRAIL
+        </span>
+        {#if escalation.reason === 'turns'}
+          <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
+            Turn limit reached — {escalation.turnCount} turns (limit: {escalation.limit})
+          </span>
+        {:else}
+          <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
+            Cost limit exceeded — ${escalation.costUsd?.toFixed(2)} (limit: ${escalation.limit.toFixed(2)})
+          </span>
+        {/if}
+      </div>
+      <div class="flex items-center gap-2">
+        {#if escalation.reason === 'turns'}
+          <button
+            type="button"
+            disabled={escalationResponding}
+            class="flex items-center gap-1.5 rounded-lg bg-success-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-success-700 disabled:opacity-50"
+            onclick={handleEscalationContinue}
+          >
+            Continue
+          </button>
+        {/if}
+        <button
+          type="button"
+          disabled={escalationResponding}
+          class="flex items-center gap-1.5 rounded-lg bg-error-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-error-700 disabled:opacity-50"
+          onclick={handleEscalationKill}
+        >
+          {escalation.reason === 'turns' ? 'Kill' : 'Dismiss'}
+        </button>
+      </div>
+    </div>
   {/if}
 
   {#if a}

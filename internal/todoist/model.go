@@ -1,6 +1,6 @@
 package todoist
 
-// Task represents a task from the Todoist REST API v2.
+// Task represents a task from the Todoist REST API v1.
 type Task struct {
 	ID          string   `json:"id"`
 	Content     string   `json:"content"`
