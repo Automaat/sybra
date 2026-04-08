@@ -94,10 +94,20 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	tm := tmux.NewManager()
-	agentMgr := agent.NewManager(ctx, tm, func(string, any) {}, logger, t.TempDir())
+	logDir, err := os.MkdirTemp("", "synapse-e2e-logs-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
 
-	wfDir := t.TempDir()
+	tm := tmux.NewManager()
+	agentMgr := agent.NewManager(ctx, tm, func(string, any) {}, logger, logDir)
+
+	wfDir, err := os.MkdirTemp("", "synapse-e2e-wf-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wfDir) })
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
@@ -111,8 +121,13 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 		t.Fatal(err)
 	}
 
+	wtDir, err := os.MkdirTemp("", "synapse-e2e-wt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wtDir) })
 	wm := worktree.New(worktree.Config{
-		WorktreesDir: t.TempDir(),
+		WorktreesDir: wtDir,
 		Tasks:        taskMgr,
 		Logger:       logger,
 		AgentChecker: agentMgr.HasRunningAgentForTask,
