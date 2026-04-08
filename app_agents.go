@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/executil"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/worktree"
@@ -171,7 +173,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		}
 	}
 
-	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
+	prompt := buildPRFixPrompt(t, o.logger)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
 		Name:               agent.RolePRFix.AgentName(t.Title),
@@ -194,6 +196,55 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
+}
+
+// buildPRFixPrompt constructs the prompt for a PR fix agent.
+// If the task has an associated PR, it fetches review context (URL, branch,
+// review comments) and includes it so the agent amends the existing PR rather
+// than starting from scratch.
+func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
+	base := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
+	if t.PRNumber == 0 || t.ProjectID == "" {
+		return base
+	}
+
+	prCtx, err := github.FetchPRContext(t.ProjectID, t.PRNumber)
+	if err != nil {
+		logger.Warn("pr-fix.fetch-context", "pr", t.PRNumber, "err", err)
+		// Fall back to minimal context from task fields.
+		branch := t.Branch
+		if branch == "" {
+			branch = "unknown"
+		}
+		return fmt.Sprintf("%s\n\n## PR Context\n- PR: #%d (https://github.com/%s/pull/%d)\n- Branch: `%s`\n\nCheck out the branch and push amended commits to the same branch.", base, t.PRNumber, t.ProjectID, t.PRNumber, branch)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(base)
+	sb.WriteString("\n\n## PR Context\n")
+	fmt.Fprintf(&sb, "- PR: #%d (%s)\n", t.PRNumber, prCtx.URL)
+	fmt.Fprintf(&sb, "- Branch: `%s`\n", prCtx.Branch)
+	sb.WriteString("\nDo NOT open a new PR. Push commits to the existing branch `")
+	sb.WriteString(prCtx.Branch)
+	sb.WriteString("`.\n")
+
+	if len(prCtx.Comments) > 0 {
+		sb.WriteString("\n## Review Comments to Address\n")
+		for i, c := range prCtx.Comments {
+			fmt.Fprintf(&sb, "\n### Comment %d", i+1)
+			if c.Author != "" {
+				fmt.Fprintf(&sb, " (by @%s)", c.Author)
+			}
+			if c.Path != "" {
+				fmt.Fprintf(&sb, " on `%s`", c.Path)
+			}
+			sb.WriteString("\n")
+			sb.WriteString(c.Body)
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
 }
 
 func openTmuxInGhostty(session, tabTitle string) error {

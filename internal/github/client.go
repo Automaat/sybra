@@ -780,6 +780,91 @@ func convertIssues(nodes []gqlIssue) []Issue {
 	return issues
 }
 
+// PRContext holds review context needed when re-dispatching a PR fix agent.
+type PRContext struct {
+	URL      string
+	Branch   string
+	Comments []PRReviewComment
+}
+
+// PRReviewComment represents a single review comment on a PR.
+type PRReviewComment struct {
+	Author string
+	Body   string
+	Path   string // empty for top-level review comments
+}
+
+// FetchPRContext returns the URL, branch, and unresolved review comments for a PR.
+func FetchPRContext(repo string, number int) (PRContext, error) {
+	return fetchPRContextWith(defaultExecer, repo, number)
+}
+
+func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
+	// Fetch PR metadata: url, branch, and review bodies
+	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "url,headRefName,reviews")
+	if err != nil {
+		return PRContext{}, fmt.Errorf("gh pr view %d context: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var meta struct {
+		URL         string `json:"url"`
+		HeadRefName string `json:"headRefName"`
+		Reviews     []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body  string `json:"body"`
+			State string `json:"state"`
+		} `json:"reviews"`
+	}
+	if err := json.Unmarshal(out, &meta); err != nil {
+		return PRContext{}, fmt.Errorf("parse pr context: %w", err)
+	}
+
+	ctx := PRContext{URL: meta.URL, Branch: meta.HeadRefName}
+
+	// Include only CHANGES_REQUESTED review bodies.
+	for _, r := range meta.Reviews {
+		if r.State != "CHANGES_REQUESTED" || strings.TrimSpace(r.Body) == "" {
+			continue
+		}
+		ctx.Comments = append(ctx.Comments, PRReviewComment{
+			Author: r.Author.Login,
+			Body:   strings.TrimSpace(r.Body),
+		})
+	}
+
+	// Fetch inline diff comments (unresolved review thread comments).
+	inlineOut, err := e.run("api",
+		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
+		"-q", `.[] | select(.position != null) | {author: .user.login, body: .body, path: .path}`)
+	if err == nil && len(inlineOut) > 0 {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(inlineOut)), "\n") {
+			if line == "" {
+				continue
+			}
+			var c struct {
+				Author string `json:"author"`
+				Body   string `json:"body"`
+				Path   string `json:"path"`
+			}
+			if jsonErr := json.Unmarshal([]byte(line), &c); jsonErr != nil {
+				continue
+			}
+			if strings.TrimSpace(c.Body) == "" {
+				continue
+			}
+			ctx.Comments = append(ctx.Comments, PRReviewComment{
+				Author: c.Author,
+				Body:   strings.TrimSpace(c.Body),
+				Path:   c.Path,
+			})
+		}
+	}
+
+	return ctx, nil
+}
+
 // ParseIssueURL extracts owner/repo and issue number from a GitHub issue URL.
 // Returns ("", 0) if the URL doesn't match.
 func ParseIssueURL(rawURL string) (repo string, number int) {
