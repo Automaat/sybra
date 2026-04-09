@@ -24,7 +24,7 @@ const headlessEmitInterval = 50 * time.Millisecond
 
 var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
 
-func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allowedTools []string, requirePermissions bool) {
+func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// outFile is opened lazily on first successful cmd.Start and shared across
 	// retry attempts so all output lands in one file. Closed on function exit.
 	var outFile *os.File
@@ -45,7 +45,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 			}
 		}
 
-		retry, fatalErr := m.runHeadlessAttempt(ctx, a, prompt, allowedTools, requirePermissions, &outFile)
+		retry, fatalErr := m.runHeadlessAttempt(ctx, a, cfg, &outFile)
 		if fatalErr != nil {
 			m.handleError(a, fatalErr)
 			return
@@ -70,27 +70,17 @@ done:
 	}
 }
 
-func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt string, allowedTools []string, requirePermissions bool, outFile **os.File) (retry bool, err error) {
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
-
-	if sid := a.GetSessionID(); sid != "" {
-		args = append(args, "--resume", sid)
+func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+	name, args, command, err := buildHeadlessInvocation(a, cfg)
+	if err != nil {
+		return false, err
 	}
 
-	if len(allowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
-	} else if !requirePermissions {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-
-	if a.Model != "" {
-		args = append(args, "--model", a.Model)
-	}
-
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd := exec.CommandContext(ctx, name, args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
+	a.Command = command
 
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
@@ -101,7 +91,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 	cmd.Stderr = &stderrBuf
 
 	if startErr := cmd.Start(); startErr != nil {
-		return false, fmt.Errorf("start claude: %w", startErr)
+		return false, fmt.Errorf("start %s: %w", name, startErr)
 	}
 	a.SetCmd(cmd)
 
@@ -144,7 +134,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 		if prevLen > len(all) {
 			prevLen = len(all)
 		}
-		if is529Error(stderrOut, all[prevLen:]) {
+		if a.Provider == "claude" && is529Error(stderrOut, all[prevLen:]) {
 			return true, nil
 		}
 	}
@@ -180,7 +170,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		event, err := parseStreamEvent(line)
+		event, err := parseStreamEvent(a.Provider, line)
 		if err != nil {
 			m.logger.Warn("agent.headless.parse", "id", a.ID, "err", err, "line", string(line))
 			continue
@@ -245,7 +235,59 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	}
 }
 
-func parseStreamEvent(line []byte) (StreamEvent, error) {
+func buildHeadlessInvocation(a *Agent, cfg RunConfig) (string, []string, string, error) {
+	if a.Provider != "claude" && a.Provider != "codex" {
+		return "", nil, "", fmt.Errorf("unsupported provider: %s", a.Provider)
+	}
+	for _, tool := range cfg.AllowedTools {
+		if !safeArgRe.MatchString(tool) {
+			return "", nil, "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
+		}
+	}
+	if a.Model != "" && !safeArgRe.MatchString(a.Model) {
+		return "", nil, "", fmt.Errorf("invalid model %q: must match %s", a.Model, safeArgRe)
+	}
+
+	if a.Provider == "codex" {
+		args := []string{"exec", "--json", "--skip-git-repo-check"}
+		if !cfg.RequirePermissions {
+			args = append(args, "--full-auto")
+		} else {
+			args = append(args, "--sandbox", "workspace-write")
+		}
+		if a.Model != "" {
+			args = append(args, "--model", a.Model)
+		}
+		if a.sessionCWD != "" {
+			args = append(args, "-C", a.sessionCWD)
+		}
+		args = append(args, cfg.Prompt)
+		return "codex", args, "codex " + strings.Join(args, " "), nil
+	}
+
+	args := []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	if sid := a.GetSessionID(); sid != "" {
+		args = append(args, "--resume", sid)
+	}
+	if len(cfg.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
+	} else if !cfg.RequirePermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
+	return "claude", args, "claude " + strings.Join(args, " "), nil
+}
+
+func parseStreamEvent(provider string, line []byte) (StreamEvent, error) {
+	if normalizeProvider(provider) == "codex" {
+		return parseCodexStreamEvent(line)
+	}
+	return parseClaudeStreamEvent(line)
+}
+
+func parseClaudeStreamEvent(line []byte) (StreamEvent, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return StreamEvent{}, fmt.Errorf("unmarshal stream event: %w", err)
@@ -288,6 +330,72 @@ func parseStreamEvent(line []byte) (StreamEvent, error) {
 	}
 
 	return event, nil
+}
+
+func parseCodexStreamEvent(line []byte) (StreamEvent, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return StreamEvent{}, fmt.Errorf("unmarshal stream event: %w", err)
+	}
+
+	eventType := strVal(raw, "type")
+	switch eventType {
+	case "thread.started":
+		return StreamEvent{Type: "init", SessionID: strVal(raw, "thread_id")}, nil
+	case "turn.started":
+		return StreamEvent{Type: "init", Content: "Turn started."}, nil
+	case "error":
+		return StreamEvent{
+			Type:    "result",
+			Subtype: "error",
+			Content: strVal(raw, "message"),
+		}, nil
+	case "turn.completed":
+		usage, _ := raw["usage"].(map[string]any)
+		return StreamEvent{
+			Type:         "result",
+			Content:      "Completed.",
+			InputTokens:  int(floatVal(usage, "input_tokens")),
+			OutputTokens: int(floatVal(usage, "output_tokens")),
+		}, nil
+	case "item.started", "item.completed":
+		return parseCodexItemEvent(eventType, raw)
+	default:
+		return StreamEvent{Type: eventType}, nil
+	}
+}
+
+func parseCodexItemEvent(eventType string, raw map[string]any) (StreamEvent, error) {
+	item, _ := raw["item"].(map[string]any)
+	itemType := strVal(item, "type")
+	switch itemType {
+	case "agent_message":
+		return StreamEvent{
+			Type:    "assistant",
+			Content: strVal(item, "text"),
+		}, nil
+	case "command_execution":
+		if eventType == "item.started" {
+			return StreamEvent{
+				Type:    "tool_use",
+				Content: strVal(item, "command"),
+			}, nil
+		}
+		output := strVal(item, "aggregated_output")
+		exitCode := int(floatVal(item, "exit_code"))
+		if output == "" {
+			output = fmt.Sprintf("Command exited with code %d.", exitCode)
+		}
+		return StreamEvent{
+			Type:    "tool_result",
+			Content: output,
+		}, nil
+	default:
+		return StreamEvent{
+			Type:    "assistant",
+			Content: strVal(item, "text"),
+		}, nil
+	}
 }
 
 func extractMessageContent(raw map[string]any) string {
@@ -355,7 +463,18 @@ func extractToolResult(raw map[string]any) string {
 }
 
 func strVal(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
 	v, _ := m[key].(string)
+	return v
+}
+
+func floatVal(m map[string]any, key string) float64 {
+	if m == nil {
+		return 0
+	}
+	v, _ := m[key].(float64)
 	return v
 }
 

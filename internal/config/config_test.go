@@ -52,6 +52,32 @@ func TestLoadFromYAML(t *testing.T) {
 	}
 }
 
+func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYNAPSE_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.Provider != "claude" {
+		t.Fatalf("default provider = %q, want claude", cfg.Agent.Provider)
+	}
+
+	cfg.Agent.Provider = "codex"
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Agent.Provider != "codex" {
+		t.Fatalf("reloaded provider = %q, want codex", reloaded.Agent.Provider)
+	}
+}
+
 func TestLoadEnvOverride(t *testing.T) {
 	t.Setenv("SYNAPSE_HOME", t.TempDir())
 	t.Setenv("SYNAPSE_LOG_LEVEL", "error")

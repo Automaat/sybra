@@ -39,7 +39,7 @@
       bind:this={textarea}
       bind:value={text}
       {disabled}
-      placeholder={disabled ? 'Claude is thinking...' : 'Type a message...'}
+      placeholder={disabled ? 'Agent is thinking...' : 'Type a message...'}
       rows="1"
       class="flex-1 resize-none rounded-lg border border-surface-300 bg-surface-50 px-3 py-2 text-sm
         text-surface-900 placeholder:text-surface-400

@@ -47,6 +47,7 @@ type Agent struct {
 	Command      string    `json:"command,omitempty"`
 	Name         string    `json:"name,omitempty"`
 	Project      string    `json:"project,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
 	Model        string    `json:"model,omitempty"`
 
 	TurnCount        int    `json:"turnCount,omitempty"`
@@ -223,6 +224,7 @@ type RunConfig struct {
 	Prompt             string
 	AllowedTools       []string
 	Dir                string
+	Provider           string // "claude" or "codex"
 	Model              string // "opus", "sonnet", or full model ID
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)

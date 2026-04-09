@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,18 +33,20 @@ type Manager struct {
 	logger        *slog.Logger
 	logDir        string
 	maxConcurrent int
+	defaultProv   string
 	approvalAddr  string // localhost:port for the HTTP tool approval server
 	guardrails    Guardrails
 }
 
 func NewManager(ctx context.Context, tm *tmux.Manager, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
 	return &Manager{
-		agents: make(map[string]*Agent),
-		ctx:    ctx,
-		tmux:   tm,
-		emit:   emit,
-		logger: logger,
-		logDir: logDir,
+		agents:      make(map[string]*Agent),
+		ctx:         ctx,
+		tmux:        tm,
+		emit:        emit,
+		logger:      logger,
+		logDir:      logDir,
+		defaultProv: "claude",
 	}
 }
 
@@ -61,6 +64,12 @@ func (m *Manager) SetApprovalAddr(addr string) {
 func (m *Manager) SetMaxConcurrent(n int) {
 	m.mu.Lock()
 	m.maxConcurrent = n
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetDefaultProvider(provider string) {
+	m.mu.Lock()
+	m.defaultProv = normalizeProvider(provider)
 	m.mu.Unlock()
 }
 
@@ -130,7 +139,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		TaskID:      cfg.TaskID,
 		Name:        cfg.Name,
 		Mode:        cfg.Mode,
-		Model:       cfg.Model,
+		Provider:    m.providerForRun(cfg.Provider),
+		Model:       normalizeModel(m.providerForRun(cfg.Provider), cfg.Model),
 		State:       StateRunning,
 		StartedAt:   now,
 		LastEventAt: now,
@@ -153,14 +163,25 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	m.agents[id] = a
 	m.mu.Unlock()
 
-	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "model", cfg.Model)
+	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	switch cfg.Mode {
 	case "headless":
-		go m.runHeadless(ctx, a, cfg.Prompt, cfg.AllowedTools, cfg.RequirePermissions)
+		go m.runHeadless(ctx, a, cfg)
 	case "interactive":
-		a.approvalCh = make(chan ApprovalResponse, 1)
-		go m.runConversational(ctx, a, cfg)
+		if a.Provider == "codex" {
+			a.done = nil
+			if err := m.startInteractiveTmux(a, cfg); err != nil {
+				m.mu.Lock()
+				delete(m.agents, id)
+				m.mu.Unlock()
+				cancel()
+				return nil, err
+			}
+		} else {
+			a.approvalCh = make(chan ApprovalResponse, 1)
+			go m.runConversational(ctx, a, cfg)
+		}
 	default:
 		cancel()
 		return nil, fmt.Errorf("unknown mode: %s", cfg.Mode)
@@ -170,7 +191,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	return a, nil
 }
 
-func (m *Manager) buildClaudeCmd(cfg RunConfig) (string, error) {
+func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
+	provider := m.providerForRun(cfg.Provider)
 	if cfg.Model != "" && !safeArgRe.MatchString(cfg.Model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}
@@ -180,16 +202,101 @@ func (m *Manager) buildClaudeCmd(cfg RunConfig) (string, error) {
 		}
 	}
 
-	parts := []string{"claude"}
-	if len(cfg.AllowedTools) > 0 {
-		parts = append(parts, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
-	} else if !cfg.RequirePermissions {
-		parts = append(parts, "--dangerously-skip-permissions")
+	model := normalizeModel(provider, cfg.Model)
+	switch provider {
+	case "codex":
+		parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
+		if !cfg.RequirePermissions {
+			parts = append(parts, "--full-auto")
+		} else {
+			parts = append(parts, "--sandbox", "workspace-write")
+		}
+		if model != "" {
+			parts = append(parts, "--model", model)
+		}
+		return strings.Join(parts, " "), nil
+	default:
+		parts := []string{"claude"}
+		if len(cfg.AllowedTools) > 0 {
+			parts = append(parts, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
+		} else if !cfg.RequirePermissions {
+			parts = append(parts, "--dangerously-skip-permissions")
+		}
+		if model != "" {
+			parts = append(parts, "--model", model)
+		}
+		return strings.Join(parts, " "), nil
 	}
-	if cfg.Model != "" {
-		parts = append(parts, "--model", cfg.Model)
+}
+
+func (m *Manager) providerForRun(provider string) string {
+	m.mu.RLock()
+	def := m.defaultProv
+	m.mu.RUnlock()
+	if provider == "" {
+		provider = def
 	}
-	return strings.Join(parts, " "), nil
+	return normalizeProvider(provider)
+}
+
+func normalizeProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "claude":
+		return "claude"
+	case "codex":
+		return "codex"
+	default:
+		return "claude"
+	}
+}
+
+func normalizeModel(provider, model string) string {
+	switch normalizeProvider(provider) {
+	case "codex":
+		switch strings.TrimSpace(model) {
+		case "", "sonnet", "opus":
+			return "gpt-5.4"
+		case "haiku":
+			return "gpt-5.4-mini"
+		default:
+			return model
+		}
+	default:
+		if strings.TrimSpace(model) == "" {
+			return "sonnet"
+		}
+		return model
+	}
+}
+
+func (m *Manager) startInteractiveTmux(a *Agent, cfg RunConfig) error {
+	cmdParts := []string{"codex"}
+	if a.Model != "" {
+		cmdParts = append(cmdParts, "--model", a.Model)
+	}
+	if !cfg.RequirePermissions {
+		cmdParts = append(cmdParts, "--full-auto")
+	}
+	if a.sessionCWD != "" {
+		cmdParts = append(cmdParts, "-C", a.sessionCWD)
+	}
+	if cfg.Prompt != "" {
+		cmdParts = append(cmdParts, strconv.Quote(cfg.Prompt))
+	}
+	session := "synapse-" + a.ID
+	cmd := strings.Join(cmdParts, " ")
+	var err error
+	if a.sessionCWD != "" {
+		err = m.tmux.CreateSessionInDir(session, cmd, a.sessionCWD)
+	} else {
+		err = m.tmux.CreateSession(session, cmd)
+	}
+	if err != nil {
+		return fmt.Errorf("create tmux session: %w", err)
+	}
+	a.TmuxSession = session
+	a.Command = cmd
+	return nil
 }
 
 func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt string) {
@@ -372,6 +479,10 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	// Both headless and interactive (conversational) agents run in goroutines.
 	// Cancel context; goroutine calls onComplete and closes done after process exits.
+	if a.TmuxSession != "" {
+		m.markStopped(a)
+		return nil
+	}
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -499,6 +610,9 @@ func (m *Manager) CheckInteractiveSessions() {
 		// Plan agents deliberately sit idle between review rounds — don't
 		// auto-stop them; only the dead-session check above applies.
 		if RoleFromName(a.Name) == RolePlan {
+			continue
+		}
+		if a.Provider != "claude" {
 			continue
 		}
 		// Resolve claude session via tmux pane PID → ~/.claude/sessions/{pid}.json

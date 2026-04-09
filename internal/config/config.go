@@ -37,6 +37,7 @@ type LoggingConfig struct {
 }
 
 type AgentDefaults struct {
+	Provider           string  `yaml:"provider" json:"provider"`
 	Model              string  `yaml:"model" json:"model"`
 	Mode               string  `yaml:"mode" json:"mode"`
 	MaxConcurrent      int     `yaml:"max_concurrent" json:"maxConcurrent"`
@@ -87,6 +88,7 @@ func DefaultConfig() *Config {
 			RetentionDays: 30,
 		},
 		Agent: AgentDefaults{
+			Provider:      "claude",
 			MaxConcurrent: 3,
 			MaxCostUSD:    5.0,
 			MaxTurns:      150,
@@ -186,6 +188,9 @@ func Load() (*Config, error) {
 
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"
+	}
+	if cfg.Agent.Provider == "" {
+		cfg.Agent.Provider = "claude"
 	}
 
 	return cfg, nil

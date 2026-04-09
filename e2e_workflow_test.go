@@ -39,6 +39,10 @@ func buildTestBinaries(t *testing.T) string {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			panic("build fake-claude: " + err.Error() + "\n" + string(out))
 		}
+		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "codex"), "./cmd/fake-codex")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			panic("build fake-codex: " + err.Error() + "\n" + string(out))
+		}
 		// Build real synapse-cli.
 		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "synapse-cli"), "./cmd/synapse-cli")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -61,15 +65,58 @@ type e2eEnv struct {
 	wfStore      *workflow.Store
 	taskDir      string
 	scenarioFile string
+	provider     string
 	cancel       context.CancelFunc
 }
 
+type providerSpec struct {
+	name       string
+	provider   string
+	argsLogEnv string
+}
+
+var providerMatrix = []providerSpec{
+	{name: "claude", provider: "claude", argsLogEnv: "FAKE_CLAUDE_ARGS_LOG"},
+	{name: "codex", provider: "codex", argsLogEnv: "FAKE_CODEX_ARGS_LOG"},
+}
+
+func selectedProviders() []providerSpec {
+	name := strings.TrimSpace(os.Getenv("SYNAPSE_E2E_PROVIDER"))
+	if name == "" {
+		return providerMatrix
+	}
+	var filtered []providerSpec
+	for _, p := range providerMatrix {
+		if p.provider == name {
+			filtered = append(filtered, p)
+		}
+	}
+	if len(filtered) == 0 {
+		return providerMatrix
+	}
+	return filtered
+}
+
+func forEachProvider(t *testing.T, fn func(t *testing.T, p providerSpec)) {
+	t.Helper()
+	for _, p := range selectedProviders() {
+		t.Run(p.name, func(t *testing.T) {
+			fn(t, p)
+		})
+	}
+}
+
 func setupE2E(t *testing.T, scenario string) *e2eEnv {
+	return setupE2EProvider(t, "claude", scenario)
+}
+
+func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	t.Helper()
 
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", scenario)
+	t.Setenv("FAKE_CODEX_SCENARIO", scenario)
 
 	// Use os.MkdirTemp instead of t.TempDir to avoid cleanup races with
 	// background goroutines (agent processes, synapse-cli writes).
@@ -104,6 +151,7 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 
 	tm := tmux.NewManager()
 	agentMgr := agent.NewManager(ctx, tm, func(string, any) {}, logger, logDir)
+	agentMgr.SetDefaultProvider(provider)
 
 	wfDir, err := os.MkdirTemp("", "synapse-e2e-wf-*")
 	if err != nil {
@@ -155,12 +203,13 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 	})
 
 	return &e2eEnv{
-		tasks:   taskMgr,
-		agents:  agentMgr,
-		engine:  engine,
-		wfStore: wfStore,
-		taskDir: taskDir,
-		cancel:  cancel,
+		tasks:    taskMgr,
+		agents:   agentMgr,
+		engine:   engine,
+		wfStore:  wfStore,
+		taskDir:  taskDir,
+		provider: provider,
+		cancel:   cancel,
 	}
 }
 
@@ -209,239 +258,376 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 }
 
 func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
-	argsLog := filepath.Join(t.TempDir(), "args.log")
-	env := setupE2E(t, "success")
-	t.Setenv("FAKE_CLAUDE_ARGS_LOG", argsLog)
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		argsLog := filepath.Join(t.TempDir(), p.name+"-args.log")
+		env := setupE2EProvider(t, p.provider, "success")
+		t.Setenv(p.argsLogEnv, argsLog)
 
-	created, err := env.tasks.Create("test task", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
+		created, err := env.tasks.Create("test task", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
+		}
 
-	// Wait for agent to complete.
-	waitFor(t, 10*time.Second, "args log written", func() bool {
-		_, err := os.Stat(argsLog)
-		return err == nil
+		waitFor(t, 10*time.Second, "args log written", func() bool {
+			_, err := os.Stat(argsLog)
+			return err == nil
+		})
+
+		data, err := os.ReadFile(argsLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := string(data)
+
+		if p.provider == "codex" {
+			for _, want := range []string{
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"--full-auto",
+				"--model\ngpt-5.4",
+			} {
+				if !strings.Contains(args, want) {
+					t.Errorf("expected %q in args:\n%s", want, args)
+				}
+			}
+			return
+		}
+
+		for _, want := range []string{
+			"--output-format\nstream-json",
+			"-p",
+			"--model\nsonnet",
+		} {
+			if !strings.Contains(args, want) {
+				t.Errorf("expected %q in args:\n%s", want, args)
+			}
+		}
 	})
-
-	data, err := os.ReadFile(argsLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := string(data)
-
-	// Verify key flags.
-	if !strings.Contains(args, "--output-format\nstream-json") {
-		t.Errorf("expected --output-format stream-json in args:\n%s", args)
-	}
-	if !strings.Contains(args, "-p") {
-		t.Errorf("expected -p flag in args:\n%s", args)
-	}
-	if !strings.Contains(args, "--model\nsonnet") {
-		t.Errorf("expected --model sonnet in args:\n%s", args)
-	}
 }
 
 func TestE2E_HeadlessAgent_FailExit(t *testing.T) {
-	env := setupE2E(t, "fail_exit")
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EProvider(t, p.provider, "fail_exit")
 
-	created, err := env.tasks.Create("test task", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for the workflow to attempt retries (max_retries: 3 on triage).
-	// Each retry spawns fake claude which exits 1, so eventually retries exhaust.
-	waitFor(t, 30*time.Second, "workflow moves past triage retries", func() bool {
-		tk, err := env.tasks.Get(created.ID)
+		created, err := env.tasks.Create("test task", "", "headless")
 		if err != nil {
-			return false
+			t.Fatal(err)
 		}
-		if tk.Workflow == nil {
-			return false
+
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
 		}
-		// Either advanced past triage or workflow state changed.
-		return tk.Workflow.CurrentStep != "triage" || tk.Workflow.State == workflow.ExecFailed || tk.Workflow.State == workflow.ExecCompleted
+
+		waitFor(t, 30*time.Second, "workflow moves past triage retries", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			if tk.Workflow == nil {
+				return false
+			}
+			return tk.Workflow.CurrentStep != "triage" || tk.Workflow.State == workflow.ExecFailed || tk.Workflow.State == workflow.ExecCompleted
+		})
 	})
 }
 
 func TestE2E_WorkflowWithSynapseCLI(t *testing.T) {
-	env := setupE2E(t, "triage")
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EProvider(t, p.provider, "triage")
 
-	created, err := env.tasks.Create("implement auth", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-
-	// The "triage" scenario runs: synapse-cli update <id> --status todo --tags small
-	// Then engine re-reads task and sees status=todo → advances to set_in_progress → implement.
-	// The implement step spawns another fake claude (success scenario), which also completes,
-	// advancing to evaluate. We just need to verify the engine advanced past triage.
-	waitFor(t, 15*time.Second, "workflow advances past triage", func() bool {
-		tk, err := env.tasks.Get(created.ID)
+		created, err := env.tasks.Create("implement auth", "", "headless")
 		if err != nil {
-			return false
+			t.Fatal(err)
 		}
-		if tk.Workflow == nil {
-			return false
+
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
 		}
-		// Engine should have advanced past triage to any later step.
-		switch tk.Workflow.CurrentStep {
-		case "triage":
-			return false
-		default:
-			return true
+
+		waitFor(t, 15*time.Second, "workflow advances past triage", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			if tk.Workflow == nil {
+				return false
+			}
+			return tk.Workflow.CurrentStep != "triage"
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.Workflow.CurrentStep == "triage" {
+			t.Fatal("expected workflow to advance past triage")
 		}
 	})
-
-	tk, _ := env.tasks.Get(created.ID)
-	// Task should have progressed — either in-progress (at implement) or
-	// further along. The exact status depends on timing.
-	if tk.Workflow.CurrentStep == "triage" {
-		t.Fatal("expected workflow to advance past triage")
-	}
 }
 
 // setupE2EMulti creates an e2e env with a scenario file for multi-step workflows.
 // Each invocation of fake-claude pops the next scenario from the file.
 func setupE2EMulti(t *testing.T, scenarios []string) *e2eEnv {
+	return setupE2EMultiProvider(t, "claude", scenarios)
+}
+
+func setupE2EMultiProvider(t *testing.T, provider string, scenarios []string) *e2eEnv {
 	t.Helper()
 	sf := filepath.Join(t.TempDir(), "scenarios.txt")
 	if err := os.WriteFile(sf, []byte(strings.Join(scenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := setupE2E(t, "")
+	env := setupE2EProvider(t, provider, "")
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", sf)
+	t.Setenv("FAKE_CODEX_SCENARIO_FILE", sf)
 	// Clear static scenario so file takes priority.
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "")
+	t.Setenv("FAKE_CODEX_SCENARIO", "")
 	env.scenarioFile = sf
 	return env
 }
 
 func TestE2E_FullLifecycle_TriageThenImplement(t *testing.T) {
-	// Scenarios: triage (sets status=todo) → implement → evaluate
-	env := setupE2EMulti(t, []string{"triage", "success", "success"})
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success", "success"})
 
-	created, err := env.tasks.Create("full lifecycle task", "", "headless")
+		created, err := env.tasks.Create("full lifecycle task", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
+		}
+
+		waitFor(t, 30*time.Second, "workflow completes", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			return tk.Workflow != nil && (tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed)
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.Workflow.State != workflow.ExecCompleted {
+			t.Fatalf("expected completed, got %q (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
+		}
+		if tk.Status != task.StatusInProgress {
+			t.Logf("note: final status is %q (set_status step sets in-progress, evaluate doesn't change it in success scenario)", tk.Status)
+		}
+
+		stepIDs := map[string]bool{}
+		for _, r := range tk.Workflow.StepHistory {
+			stepIDs[r.StepID] = true
+		}
+		for _, expected := range []string{"triage", "set_in_progress", "implement", "evaluate"} {
+			if !stepIDs[expected] {
+				t.Errorf("expected step %q in history, got %v", expected, stepIDs)
+			}
+		}
+	})
+}
+
+func TestE2E_ProviderMatrix_FullLifecycleSetsReviewStatus(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success", "evaluate"})
+
+		created, err := env.tasks.Create("review lifecycle task", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
+		}
+
+		waitFor(t, 30*time.Second, "workflow completes with in-review status", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusInReview
+		})
+	})
+}
+
+func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		argsLog := filepath.Join(t.TempDir(), p.name+"-model-args.log")
+		env := setupE2EProvider(t, p.provider, "success")
+		t.Setenv(p.argsLogEnv, argsLog)
+
+		_, err := env.agents.Run(agent.RunConfig{
+			TaskID:   "task-model-" + p.name,
+			Name:     "model alias",
+			Mode:     "headless",
+			Provider: p.provider,
+			Model:    "haiku",
+			Prompt:   "Test model alias",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		waitFor(t, 10*time.Second, "model args log written", func() bool {
+			_, err := os.Stat(argsLog)
+			return err == nil
+		})
+
+		data, err := os.ReadFile(argsLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := string(data)
+
+		want := "--model\nhaiku"
+		if p.provider == "codex" {
+			want = "--model\ngpt-5.4-mini"
+		}
+		if !strings.Contains(args, want) {
+			t.Fatalf("expected %q in args:\n%s", want, args)
+		}
+	})
+}
+
+func TestE2E_CodexInteractiveAgent_LaunchesTmuxSession(t *testing.T) {
+	env := setupE2EProvider(t, "codex", "success")
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "task-codex-int",
+		Name:     "codex interactive",
+		Mode:     "interactive",
+		Provider: "codex",
+		Model:    "gpt-5.4-mini",
+		Prompt:   "Inspect repo",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+	waitFor(t, 5*time.Second, "codex tmux session exists", func() bool {
+		return ag.TmuxSession != "" && tmux.NewManager().SessionExists(ag.TmuxSession)
+	})
+
+	if ag.TmuxSession == "" {
+		t.Fatal("expected tmux session name")
+	}
+	if !strings.Contains(ag.Command, "codex") {
+		t.Fatalf("command = %q, want codex", ag.Command)
+	}
+	if !strings.Contains(ag.Command, "--model gpt-5.4-mini") {
+		t.Fatalf("command = %q, want model flag", ag.Command)
+	}
+
+	t.Cleanup(func() {
+		_ = env.agents.StopAgent(ag.ID)
+	})
+}
+
+func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
+	env := setupE2EProvider(t, "codex", "success")
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "task-codex-stop",
+		Name:     "codex interactive stop",
+		Mode:     "interactive",
+		Provider: "codex",
+		Model:    "gpt-5.4-mini",
+		Prompt:   "Inspect repo",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for workflow to complete (all 3 agents finish).
-	waitFor(t, 30*time.Second, "workflow completes", func() bool {
-		tk, err := env.tasks.Get(created.ID)
-		if err != nil {
-			return false
-		}
-		return tk.Workflow != nil && (tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed)
+	waitFor(t, 5*time.Second, "codex tmux session exists", func() bool {
+		return ag.TmuxSession != "" && tmux.NewManager().SessionExists(ag.TmuxSession)
 	})
 
-	tk, _ := env.tasks.Get(created.ID)
-	if tk.Workflow.State != workflow.ExecCompleted {
-		t.Fatalf("expected completed, got %q (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
-	}
-	if tk.Status != task.StatusInProgress {
-		t.Logf("note: final status is %q (set_status step sets in-progress, evaluate doesn't change it in success scenario)", tk.Status)
+	if err := env.agents.StopAgent(ag.ID); err != nil {
+		t.Fatal(err)
 	}
 
-	// Verify step history has records for all 3 agent steps.
-	stepIDs := map[string]bool{}
-	for _, r := range tk.Workflow.StepHistory {
-		stepIDs[r.StepID] = true
+	waitFor(t, 5*time.Second, "codex tmux session gone", func() bool {
+		return !tmux.NewManager().SessionExists(ag.TmuxSession)
+	})
+
+	got, err := env.agents.GetAgent(ag.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, expected := range []string{"triage", "set_in_progress", "implement", "evaluate"} {
-		if !stepIDs[expected] {
-			t.Errorf("expected step %q in history, got %v", expected, stepIDs)
-		}
+	if got.GetState() != agent.StateStopped {
+		t.Fatalf("state = %q, want stopped", got.GetState())
 	}
 }
 
 func TestE2E_RetryCount(t *testing.T) {
-	// 3 failures then 1 success for triage (max_retries: 3 allows 4 total attempts).
-	env := setupE2EMulti(t, []string{"fail_exit", "fail_exit", "fail_exit", "success", "success", "success"})
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"fail_exit", "fail_exit", "fail_exit", "success", "success", "success"})
 
-	created, err := env.tasks.Create("retry task", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for workflow to advance past triage.
-	waitFor(t, 30*time.Second, "workflow advances past triage", func() bool {
-		tk, err := env.tasks.Get(created.ID)
+		created, err := env.tasks.Create("retry task", "", "headless")
 		if err != nil {
-			return false
+			t.Fatal(err)
 		}
-		return tk.Workflow != nil && tk.Workflow.CurrentStep != "triage"
-	})
 
-	tk, _ := env.tasks.Get(created.ID)
-	// Count triage records in step history.
-	triageCount := 0
-	for _, r := range tk.Workflow.StepHistory {
-		if r.StepID == "triage" {
-			triageCount++
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
 		}
-	}
-	// 3 failures + 1 success = 4 triage records.
-	if triageCount != 4 {
-		t.Fatalf("expected 4 triage step records (3 retries + 1 success), got %d", triageCount)
-	}
+
+		waitFor(t, 30*time.Second, "workflow advances past triage", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.CurrentStep != "triage"
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		triageCount := 0
+		for _, r := range tk.Workflow.StepHistory {
+			if r.StepID == "triage" {
+				triageCount++
+			}
+		}
+		if triageCount != 4 {
+			t.Fatalf("expected 4 triage step records (3 retries + 1 success), got %d", triageCount)
+		}
+	})
 }
 
 func TestE2E_AgentFailure_SetsCorrectStatus(t *testing.T) {
-	// Agent exits non-zero → HandleAgentComplete should pass "failed" status
-	// to AdvanceStep, triggering retry logic. This verifies the bug #2 fix.
-	env := setupE2EMulti(t, []string{"fail_exit", "success", "success", "success"})
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"fail_exit", "success", "success", "success"})
 
-	created, err := env.tasks.Create("failure status task", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for workflow to advance past triage (should retry after first failure).
-	waitFor(t, 20*time.Second, "workflow advances past triage after retry", func() bool {
-		tk, err := env.tasks.Get(created.ID)
+		created, err := env.tasks.Create("failure status task", "", "headless")
 		if err != nil {
-			return false
+			t.Fatal(err)
 		}
-		return tk.Workflow != nil && tk.Workflow.CurrentStep != "triage"
-	})
 
-	tk, _ := env.tasks.Get(created.ID)
-	// Should have at least 2 triage records: 1 failed + 1 success.
-	triageCount := 0
-	for _, r := range tk.Workflow.StepHistory {
-		if r.StepID == "triage" {
-			triageCount++
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if triageCount < 2 {
-		t.Fatalf("expected >= 2 triage records (1 failure + retry), got %d", triageCount)
-	}
+
+		waitFor(t, 20*time.Second, "workflow advances past triage after retry", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.CurrentStep != "triage"
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		triageCount := 0
+		for _, r := range tk.Workflow.StepHistory {
+			if r.StepID == "triage" {
+				triageCount++
+			}
+		}
+		if triageCount < 2 {
+			t.Fatalf("expected >= 2 triage records (1 failure + retry), got %d", triageCount)
+		}
+	})
 }
 
 func TestE2E_ResumeStalled(t *testing.T) {
