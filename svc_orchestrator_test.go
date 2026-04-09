@@ -3,9 +3,12 @@ package main
 import (
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/tmux"
@@ -20,6 +23,8 @@ func requireTmuxMain(t *testing.T) {
 
 func TestOrchestratorService_StartOrchestrator_Codex(t *testing.T) {
 	requireTmuxMain(t)
+	binDir := buildTestBinaries(t)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 
 	svc := &OrchestratorService{
 		tmux:   tmux.NewManager(),
@@ -27,6 +32,8 @@ func TestOrchestratorService_StartOrchestrator_Codex(t *testing.T) {
 		emit:   func(string, any) {},
 		cfg:    &config.Config{Agent: config.AgentDefaults{Provider: "codex"}},
 	}
+	argsLog := filepath.Join(t.TempDir(), "codex-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
 	_ = svc.tmux.KillSession(orchestratorSession)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
@@ -41,4 +48,8 @@ func TestOrchestratorService_StartOrchestrator_Codex(t *testing.T) {
 	if !strings.Contains(cmd, "codex") {
 		t.Fatalf("pane command = %q, want command containing codex", cmd)
 	}
+	waitFor(t, 2*time.Second, "fake codex invoked", func() bool {
+		_, err := os.Stat(argsLog)
+		return err == nil
+	})
 }

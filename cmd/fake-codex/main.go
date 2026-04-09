@@ -142,7 +142,7 @@ func popScenario() string {
 	return "success"
 }
 
-func runCLI(taskID string, subcmd string, args ...string) {
+func runCLI(taskID, subcmd string, args ...string) {
 	if taskID == "" {
 		return
 	}

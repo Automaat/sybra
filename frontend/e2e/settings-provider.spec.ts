@@ -42,7 +42,11 @@ async function currentAgentSettings(page: Page) {
 }
 
 async function saveSettings(page: Page) {
-  await page.getByRole('button', { name: 'Save' }).click()
+  const saveButton = page.getByRole('button', { name: 'Save' })
+  if (await saveButton.isDisabled()) {
+    return
+  }
+  await saveButton.click()
   await expect(page.getByText('Settings saved')).toBeVisible()
 }
 

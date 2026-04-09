@@ -235,21 +235,25 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	}
 }
 
-func buildHeadlessInvocation(a *Agent, cfg RunConfig) (string, []string, string, error) {
+func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []string, command string, err error) {
 	if a.Provider != "claude" && a.Provider != "codex" {
-		return "", nil, "", fmt.Errorf("unsupported provider: %s", a.Provider)
+		err = fmt.Errorf("unsupported provider: %s", a.Provider)
+		return
 	}
 	for _, tool := range cfg.AllowedTools {
 		if !safeArgRe.MatchString(tool) {
-			return "", nil, "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
+			err = fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
+			return
 		}
 	}
 	if a.Model != "" && !safeArgRe.MatchString(a.Model) {
-		return "", nil, "", fmt.Errorf("invalid model %q: must match %s", a.Model, safeArgRe)
+		err = fmt.Errorf("invalid model %q: must match %s", a.Model, safeArgRe)
+		return
 	}
 
 	if a.Provider == "codex" {
-		args := []string{"exec", "--json", "--skip-git-repo-check"}
+		name = "codex"
+		args = []string{"exec", "--json", "--skip-git-repo-check"}
 		if !cfg.RequirePermissions {
 			args = append(args, "--full-auto")
 		} else {
@@ -262,10 +266,12 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (string, []string, string,
 			args = append(args, "-C", a.sessionCWD)
 		}
 		args = append(args, cfg.Prompt)
-		return "codex", args, "codex " + strings.Join(args, " "), nil
+		command = "codex " + strings.Join(args, " ")
+		return
 	}
 
-	args := []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	name = "claude"
+	args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}
@@ -277,7 +283,8 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (string, []string, string,
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	return "claude", args, "claude " + strings.Join(args, " "), nil
+	command = "claude " + strings.Join(args, " ")
+	return
 }
 
 func parseStreamEvent(provider string, line []byte) (StreamEvent, error) {
