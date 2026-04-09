@@ -790,6 +790,122 @@ func TestHasPendingReview_error(t *testing.T) {
 	}
 }
 
+func TestParsePRURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		url        string
+		wantRepo   string
+		wantNumber int
+	}{
+		{
+			name:       "valid PR URL",
+			url:        "https://github.com/owner/repo/pull/42",
+			wantRepo:   "owner/repo",
+			wantNumber: 42,
+		},
+		{
+			name:       "valid PR URL large number",
+			url:        "https://github.com/org/project/pull/1234",
+			wantRepo:   "org/project",
+			wantNumber: 1234,
+		},
+		{
+			name: "issue URL not matched",
+			url:  "https://github.com/owner/repo/issues/42",
+		},
+		{
+			name: "not github URL",
+			url:  "https://gitlab.com/owner/repo/pull/42",
+		},
+		{
+			name: "PR number zero",
+			url:  "https://github.com/owner/repo/pull/0",
+		},
+		{
+			name: "non-numeric PR number",
+			url:  "https://github.com/owner/repo/pull/abc",
+		},
+		{
+			name: "missing PR number",
+			url:  "https://github.com/owner/repo/pull/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo, number := ParsePRURL(tt.url)
+			if repo != tt.wantRepo {
+				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+			}
+			if number != tt.wantNumber {
+				t.Errorf("number = %d, want %d", number, tt.wantNumber)
+			}
+		})
+	}
+}
+
+func TestFetchPRWith_success(t *testing.T) {
+	t.Parallel()
+	response := `{
+		"number": 42,
+		"title": "feat: add thing",
+		"body": "description",
+		"url": "https://github.com/owner/repo/pull/42",
+		"headRefName": "feat/add-thing",
+		"author": {"login": "dev"},
+		"labels": [{"name": "backend"}, {"name": "feature"}]
+	}`
+	fe := &fakeExecer{output: []byte(response)}
+	pr, err := fetchPRWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pr.Number != 42 {
+		t.Errorf("Number = %d, want 42", pr.Number)
+	}
+	if pr.Title != "feat: add thing" {
+		t.Errorf("Title = %q, want %q", pr.Title, "feat: add thing")
+	}
+	if pr.HeadRefName != "feat/add-thing" {
+		t.Errorf("HeadRefName = %q, want %q", pr.HeadRefName, "feat/add-thing")
+	}
+	if pr.Author != "dev" {
+		t.Errorf("Author = %q, want %q", pr.Author, "dev")
+	}
+	if pr.Repository != "owner/repo" {
+		t.Errorf("Repository = %q, want %q", pr.Repository, "owner/repo")
+	}
+	if pr.RepoName != "repo" {
+		t.Errorf("RepoName = %q, want %q", pr.RepoName, "repo")
+	}
+	if len(pr.Labels) != 2 || pr.Labels[0] != "backend" || pr.Labels[1] != "feature" {
+		t.Errorf("Labels = %v, want [backend feature]", pr.Labels)
+	}
+}
+
+func TestFetchPRWith_execError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{
+		output: []byte("not found"),
+		err:    fmt.Errorf("exit 1"),
+	}
+	_, err := fetchPRWith(fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestFetchPRWith_invalidJSON(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte("not json")}
+	_, err := fetchPRWith(fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
 func TestMergePRWith(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
