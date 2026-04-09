@@ -163,6 +163,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.Body != "" {
 		fmt.Printf("\n%s\n", t.Body)
 	}
+	if t.Plan != "" {
+		fmt.Printf("\n## Plan\n\n%s\n", t.Plan)
+	}
 	return 0
 }
 
@@ -170,6 +173,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
+	plan := fs.String("plan", "", "plan content markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
@@ -215,6 +219,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	if *issue != "" {
 		updates["issue"] = *issue
 	}
+	if *plan != "" {
+		updates["plan"] = *plan
+	}
 	if len(updates) > 0 {
 		t, err = s.Update(t.ID, updates)
 		if err != nil {
@@ -239,6 +246,8 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	title := fs.String("title", "", "new title")
 	status := fs.String("status", "", "new status")
 	body := fs.String("body", "", "new body")
+	plan := fs.String("plan", "", "plan content markdown (empty string clears plan)")
+	planFile := fs.String("plan-file", "", "path to file with plan content")
 	mode := fs.String("mode", "", "new agent mode")
 	ttype := fs.String("type", "", "new task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
@@ -263,6 +272,23 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *body != "" {
 		updates["body"] = *body
+	}
+	if *planFile != "" {
+		data, readErr := os.ReadFile(*planFile)
+		if readErr != nil {
+			return fatal(jsonOut, "read plan file: %v", readErr)
+		}
+		updates["plan"] = string(data)
+	} else if *plan != "" {
+		updates["plan"] = *plan
+	} else {
+		// Check if --plan was explicitly passed as empty string to clear.
+		// flag.Visit iterates only flags that were explicitly set.
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "plan" {
+				updates["plan"] = ""
+			}
+		})
 	}
 	if *mode != "" {
 		updates["agent_mode"] = *mode
@@ -581,9 +607,9 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done
   get      <id>
-  create   --title TITLE [--body BODY] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
+  create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
            TYPE: normal|debug|research
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
   delete   <id>
 
   project list

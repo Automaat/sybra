@@ -64,6 +64,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PRNumber:  t.PRNumber,
 		Branch:    t.Branch,
 		Body:      t.Body,
+		Plan:      t.Plan,
 		Workflow:  t.Workflow,
 	}
 }

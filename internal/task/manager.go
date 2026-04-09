@@ -56,6 +56,9 @@ func (m *Manager) Store() *Store { return m.store }
 // Comments returns the underlying CommentStore.
 func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
 
+// Plans returns the underlying PlanStore.
+func (m *Manager) Plans() *PlanStore { return m.store.Plans() }
+
 func (m *Manager) lockFor(id string) *sync.Mutex {
 	existing, _ := m.locks.LoadOrStore(id, &sync.Mutex{})
 	mu, ok := existing.(*sync.Mutex)

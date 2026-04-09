@@ -119,7 +119,7 @@ Planning uses dedicated board columns (statuses), not a sub-state:
 |--------|--------|
 | `planning` | Planning agent auto-starts when task enters this status |
 | `plan-review` | **Do NOT dispatch** — wait for human to approve/reject |
-| `todo` | Dispatch implementation agent (plan in body if was planned) |
+| `todo` | Dispatch implementation agent (plan in sidecar if was planned) |
 
 ### Agent Spawn
 
@@ -188,6 +188,12 @@ Chose headless mode because PR is a dependency bump with <50 lines changed.
 
 ## Original Description
 ..."
+```
+
+Plans are stored separately from the body. Use `--plan` for plan content:
+
+```bash
+synapse-cli --json update <id> --plan "<full plan markdown>"
 ```
 
 ## Audit Log Analysis
