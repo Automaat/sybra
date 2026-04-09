@@ -4,8 +4,6 @@ import {task} from '../models';
 
 export function ApprovePlan(arg1:string):Promise<task.Task>;
 
-export function EvaluateTask(arg1:string,arg2:string):Promise<void>;
-
 export function HasLivePlanAgent(arg1:string):Promise<boolean>;
 
 export function PlanTask(arg1:string):Promise<void>;

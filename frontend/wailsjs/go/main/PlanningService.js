@@ -6,10 +6,6 @@ export function ApprovePlan(arg1) {
   return window['go']['main']['PlanningService']['ApprovePlan'](arg1);
 }
 
-export function EvaluateTask(arg1, arg2) {
-  return window['go']['main']['PlanningService']['EvaluateTask'](arg1, arg2);
-}
-
 export function HasLivePlanAgent(arg1) {
   return window['go']['main']['PlanningService']['HasLivePlanAgent'](arg1);
 }

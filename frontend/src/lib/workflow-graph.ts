@@ -81,8 +81,10 @@ export function definitionToGraph(def: workflow.Definition): { nodes: Node[], ed
 export function graphToDefinition(
   original: workflow.Definition,
   nodes: Node[],
-  edges: Edge[],
+  _edges: Edge[],
 ): workflow.Definition {
+  // Transitions are authoritative on step.next (edited via StepConfigPanel).
+  // Edges are a visual projection only; we rebuild them on load via definitionToGraph.
   const steps: workflow.Step[] = []
 
   for (const node of nodes) {
@@ -91,28 +93,10 @@ export function graphToDefinition(
     const data = node.data as StepNodeData
     const src = data.step
 
-    // Rebuild transitions from edges
-    const outEdges = edges.filter(e => e.source === node.id)
-    const nextTransitions = outEdges.map(e => {
-      const target = e.target.startsWith('__end_') ? '' : e.target
-      const t = new workflow.Transition()
-      t.goto = target
-      if (e.label) {
-        const origStep = original.steps?.find(s => s.id === src.id)
-        const origTransition = origStep?.next?.find(
-          ot => ot.goto === target,
-        )
-        if (origTransition?.when) {
-          t.when = origTransition.when
-        }
-      }
-      return t
-    })
-
     steps.push(new workflow.Step({
       ...src,
       position: new workflow.Position({ x: node.position.x, y: node.position.y }),
-      next: nextTransitions,
+      next: src.next ?? [],
     }))
   }
 
