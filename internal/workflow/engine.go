@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"maps"
 	"os/exec"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +33,7 @@ type TaskInfo struct {
 	Body         string
 	Plan         string
 	PlanCritique string
+	Issue        string
 	Workflow     *Execution
 }
 
@@ -40,6 +43,19 @@ type TaskProvider interface {
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
 	SetWorkflow(id string, wf *Execution) error
+}
+
+// PRLinker inspects and updates GitHub pull request metadata for the
+// `ensure_pr_closes_issue` step. Implementations wrap `gh` CLI calls.
+// Engine operates with a nil PRLinker — the step becomes a no-op when
+// unset, so tests don't need to wire one.
+type PRLinker interface {
+	// GetClosingIssues returns issue numbers the PR's body is parsed by
+	// GitHub as closing, scoped to the same repo as the PR. Also returns
+	// the current PR body so callers can edit it without a second fetch.
+	GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error)
+	// EditBody replaces the PR body.
+	EditBody(repo string, prNumber int, body string) error
 }
 
 // AgentLauncher starts agents and queries running state.
@@ -69,6 +85,7 @@ type Engine struct {
 	store    *Store
 	tasks    TaskProvider
 	agents   AgentLauncher
+	prLinker PRLinker
 	logger   *slog.Logger
 	mu       sync.Mutex
 	inflight map[string]struct{} // taskID → step in flight (prevent double-advance)
@@ -87,6 +104,10 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }
+
+// SetPRLinker wires an implementation of PRLinker used by the
+// `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
+func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
@@ -501,7 +522,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execWaitHuman(taskID, step, wfExec)
 		case StepParallel:
 			return e.execParallel(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -555,6 +576,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execCondition(step, wfExec, t)
 	case StepShell:
 		return e.execShell(step, ctx)
+	case StepEnsurePRClosesIssue:
+		return e.execEnsurePRClosesIssue(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -714,6 +737,90 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 		Status: status,
 		Output: string(output),
 	}, nil
+}
+
+// execEnsurePRClosesIssue verifies the task's PR closes its linked
+// GitHub issue. When the closing reference is missing, it appends
+// `Closes <issue-url>` to the PR body via the PRLinker and re-verifies.
+// On verification failure the task is flipped to human-required so a
+// human can fix the linkage manually.
+//
+// The step is a no-op when any of these are missing: task.Issue,
+// task.PRNumber, task.ProjectID, engine.prLinker. It also skips when
+// the issue lives in a different repo than the PR (cross-repo linking
+// needs explicit support GitHub handles but this check does not).
+func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if e.prLinker == nil {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
+	}
+	if t.Issue == "" || t.PRNumber == 0 || t.ProjectID == "" {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing issue, pr, or project"}, nil
+	}
+
+	issueRepo, issueNum := parseIssueURL(t.Issue)
+	if issueNum == 0 {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: unparseable issue url"}, nil
+	}
+	if issueRepo != t.ProjectID {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: cross-repo issue link"}, nil
+	}
+
+	issues, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	if err != nil {
+		e.logger.Error("workflow.pr-close.fetch", "task_id", taskID, "err", err)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
+	}
+	if slices.Contains(issues, issueNum) {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "already linked"}, nil
+	}
+
+	newBody := body
+	if newBody != "" {
+		newBody += "\n\n"
+	}
+	newBody += "Closes " + t.Issue
+	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
+		e.logger.Error("workflow.pr-close.edit", "task_id", taskID, "err", editErr)
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
+			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
+		}
+		return StepOutput{StepID: step.ID, Status: "failed", Output: "edit failed: " + editErr.Error()}, nil
+	}
+
+	verified, _, verifyErr := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	if verifyErr != nil || !slices.Contains(verified, issueNum) {
+		reason := "PR does not close linked issue after auto-fix"
+		if verifyErr != nil {
+			reason += ": " + verifyErr.Error()
+		}
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
+		}
+		return StepOutput{StepID: step.ID, Status: "failed", Output: reason}, nil
+	}
+
+	e.logger.Info("workflow.pr-close.linked", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: fmt.Sprintf("linked issue #%d", issueNum)}, nil
+}
+
+// parseIssueURL extracts owner/repo and issue number from a GitHub
+// issue URL like https://github.com/owner/repo/issues/123. Returns
+// ("", 0) if the URL doesn't match. Duplicated from internal/github
+// to keep the workflow package dependency-free.
+func parseIssueURL(rawURL string) (repo string, number int) {
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(rawURL, prefix) {
+		return "", 0
+	}
+	parts := strings.Split(strings.TrimPrefix(rawURL, prefix), "/")
+	if len(parts) < 4 || parts[2] != "issues" {
+		return "", 0
+	}
+	n, err := strconv.Atoi(parts[3])
+	if err != nil || n == 0 {
+		return "", 0
+	}
+	return parts[0] + "/" + parts[1], n
 }
 
 func (e *Engine) execParallel(_ string, _ *Step, _ *Execution) error {

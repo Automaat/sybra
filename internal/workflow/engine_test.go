@@ -1519,3 +1519,323 @@ func TestPlanReuse_ApproveAdvancesPastReviewPlan(t *testing.T) {
 		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
 	}
 }
+
+// --- ensure_pr_closes_issue step ---
+
+// fakePRLinker is a scripted PRLinker used by executor tests.
+type fakePRLinker struct {
+	// getQueue yields successive GetClosingIssues results.
+	getQueue []getResult
+	getCalls int
+
+	editErr   error
+	editCalls int
+	lastBody  string
+}
+
+type getResult struct {
+	issues []int
+	body   string
+	err    error
+}
+
+func (f *fakePRLinker) GetClosingIssues(_ string, _ int) (issues []int, body string, err error) {
+	idx := f.getCalls
+	f.getCalls++
+	if idx >= len(f.getQueue) {
+		idx = len(f.getQueue) - 1
+	}
+	r := f.getQueue[idx]
+	return r.issues, r.body, r.err
+}
+
+func (f *fakePRLinker) EditBody(_ string, _ int, body string) error {
+	f.editCalls++
+	f.lastBody = body
+	return f.editErr
+}
+
+func newEnsurePRStep() *Step {
+	return &Step{ID: "ensure", Type: StepEnsurePRClosesIssue}
+}
+
+func TestExecEnsurePRClosesIssue_NoLinkerSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5, Issue: "https://github.com/owner/repo/issues/7"}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "no pr linker") {
+		t.Errorf("Output = %q, want 'no pr linker' skip reason", out.Output)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_MissingFieldsSkip(t *testing.T) {
+	tests := []struct {
+		name string
+		ti   TaskInfo
+	}{
+		{"no issue", TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}},
+		{"no pr", TaskInfo{ID: "t1", ProjectID: "owner/repo", Issue: "https://github.com/owner/repo/issues/7"}},
+		{"no project", TaskInfo{ID: "t1", PRNumber: 5, Issue: "https://github.com/owner/repo/issues/7"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine.SetPRLinker(&fakePRLinker{})
+
+			out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), tt.ti)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Status != "completed" {
+				t.Errorf("Status = %q, want completed", out.Status)
+			}
+			if !strings.Contains(out.Output, "skipped") {
+				t.Errorf("Output = %q, want 'skipped' reason", out.Output)
+			}
+		})
+	}
+}
+
+func TestExecEnsurePRClosesIssue_CrossRepoSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{
+		ID:        "t1",
+		ProjectID: "owner/repo",
+		PRNumber:  5,
+		Issue:     "https://github.com/other/elsewhere/issues/7",
+	}
+	out, _ := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "cross-repo") {
+		t.Errorf("Output = %q, want cross-repo skip", out.Output)
+	}
+	if linker.getCalls != 0 {
+		t.Errorf("GetClosingIssues called %d times, want 0 (skip before fetch)", linker.getCalls)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_AlreadyLinkedNoEdit(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{issues: []int{7}, body: "original"}},
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "already linked") {
+		t.Errorf("output = %+v, want completed/already linked", out)
+	}
+	if linker.editCalls != 0 {
+		t.Errorf("EditBody called %d times, want 0", linker.editCalls)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_EditAppendsAndVerifies(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{
+			{issues: nil, body: "Implements the feature."},
+			{issues: []int{7}, body: "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"},
+		},
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if linker.editCalls != 1 {
+		t.Errorf("EditBody called %d times, want 1", linker.editCalls)
+	}
+	wantBody := "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"
+	if linker.lastBody != wantBody {
+		t.Errorf("edit body = %q, want %q", linker.lastBody, wantBody)
+	}
+	// Status must not have been changed on success.
+	after, _ := tasks.GetTask("t1")
+	if after.Status != "in-review" {
+		t.Errorf("Status = %q, want in-review (unchanged)", after.Status)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_EmptyBodyNoLeadingNewlines(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{
+			{issues: nil, body: ""},
+			{issues: []int{7}, body: "Closes https://github.com/owner/repo/issues/7"},
+		},
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	if _, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti); err != nil {
+		t.Fatal(err)
+	}
+	if linker.lastBody != "Closes https://github.com/owner/repo/issues/7" {
+		t.Errorf("edit body = %q, want no leading newlines", linker.lastBody)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_EditFailureFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{issues: nil, body: "body"}},
+		editErr:  fmt.Errorf("403 forbidden"),
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "failed" {
+		t.Errorf("Status = %q, want failed", out.Status)
+	}
+	after, _ := tasks.GetTask("t1")
+	if after.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", after.Status)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_VerifyFailureFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{
+			{issues: nil, body: "body"},
+			// Second fetch still does not contain issue 7 — the edit didn't take.
+			{issues: []int{99}, body: "body"},
+		},
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, _ := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if out.Status != "failed" {
+		t.Errorf("Status = %q, want failed", out.Status)
+	}
+	after, _ := tasks.GetTask("t1")
+	if after.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", after.Status)
+	}
+}
+
+func TestExecEnsurePRClosesIssue_FetchErrorIsSoftFail(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{err: errors.New("network timeout")}},
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fetch failure must not block the workflow or flip status.
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed (fetch errors are soft-fail)", out.Status)
+	}
+	after, _ := tasks.GetTask("t1")
+	if after.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
+	}
+}
+
+func TestParseIssueURL(t *testing.T) {
+	tests := []struct {
+		url      string
+		wantRepo string
+		wantNum  int
+	}{
+		{"https://github.com/owner/repo/issues/42", "owner/repo", 42},
+		{"https://github.com/owner/repo/pull/42", "", 0},
+		{"https://github.com/owner/repo/issues/abc", "", 0},
+		{"https://github.com/owner/repo/issues/0", "", 0},
+		{"not a url", "", 0},
+		{"", "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			gotRepo, gotNum := parseIssueURL(tt.url)
+			if gotRepo != tt.wantRepo || gotNum != tt.wantNum {
+				t.Errorf("parseIssueURL(%q) = %q,%d; want %q,%d",
+					tt.url, gotRepo, gotNum, tt.wantRepo, tt.wantNum)
+			}
+		})
+	}
+}

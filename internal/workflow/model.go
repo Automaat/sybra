@@ -65,12 +65,13 @@ type Condition struct {
 type StepType string
 
 const (
-	StepRunAgent  StepType = "run_agent"
-	StepWaitHuman StepType = "wait_human"
-	StepSetStatus StepType = "set_status"
-	StepCondition StepType = "condition"
-	StepShell     StepType = "shell"
-	StepParallel  StepType = "parallel"
+	StepRunAgent            StepType = "run_agent"
+	StepWaitHuman           StepType = "wait_human"
+	StepSetStatus           StepType = "set_status"
+	StepCondition           StepType = "condition"
+	StepShell               StepType = "shell"
+	StepParallel            StepType = "parallel"
+	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
 )
 
 // Step is one node in the workflow graph.

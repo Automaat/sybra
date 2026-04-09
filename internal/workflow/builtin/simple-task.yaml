@@ -214,4 +214,14 @@ steps:
       allowed_tools:
         - Bash
     next:
+      - goto: ensure_pr_closes_issue
+
+  # Mechanical check (no LLM): if the task is linked to a GitHub issue,
+  # make sure the PR's body carries a `Closes <issue-url>` reference so
+  # merging the PR auto-closes the issue. Auto-appends the reference if
+  # missing; flips to human-required if the edit/verification fails.
+  - id: ensure_pr_closes_issue
+    name: Ensure PR Closes Issue
+    type: ensure_pr_closes_issue
+    next:
       - goto: ""

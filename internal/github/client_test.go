@@ -1014,6 +1014,117 @@ func TestFetchPRWith_invalidJSON(t *testing.T) {
 	}
 }
 
+// recordingExecer captures the args of the most recent run() invocation
+// so tests can assert which command was dispatched.
+type recordingExecer struct {
+	output   []byte
+	err      error
+	lastArgs []string
+	calls    int
+}
+
+func (r *recordingExecer) run(args ...string) ([]byte, error) {
+	r.calls++
+	r.lastArgs = append([]string(nil), args...)
+	return r.output, r.err
+}
+
+func TestFetchPRClosingIssuesWith_sameRepo(t *testing.T) {
+	t.Parallel()
+	response := `{
+		"body": "Initial body",
+		"closingIssuesReferences": [
+			{"number": 7, "repository": {"name": "repo", "owner": {"login": "owner"}}}
+		]
+	}`
+	fe := &fakeExecer{output: []byte(response)}
+	issues, body, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 || issues[0] != 7 {
+		t.Errorf("issues = %v, want [7]", issues)
+	}
+	if body != "Initial body" {
+		t.Errorf("body = %q, want %q", body, "Initial body")
+	}
+}
+
+func TestFetchPRClosingIssuesWith_filtersCrossRepo(t *testing.T) {
+	t.Parallel()
+	response := `{
+		"body": "",
+		"closingIssuesReferences": [
+			{"number": 1, "repository": {"name": "repo", "owner": {"login": "owner"}}},
+			{"number": 99, "repository": {"name": "other", "owner": {"login": "elsewhere"}}}
+		]
+	}`
+	fe := &fakeExecer{output: []byte(response)}
+	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 || issues[0] != 1 {
+		t.Errorf("issues = %v, want [1] (99 belongs to elsewhere/other and must be filtered)", issues)
+	}
+}
+
+func TestFetchPRClosingIssuesWith_empty(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{"body": "", "closingIssuesReferences": []}`)}
+	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Errorf("issues = %v, want empty", issues)
+	}
+}
+
+func TestFetchPRClosingIssuesWith_execError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte("boom"), err: fmt.Errorf("exit 1")}
+	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestFetchPRClosingIssuesWith_invalidJSON(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte("not json")}
+	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestEditPRBodyWith_passesArgs(t *testing.T) {
+	t.Parallel()
+	fe := &recordingExecer{}
+	if err := editPRBodyWith(fe, "owner/repo", 42, "new body with\nnewline"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Args should be: pr edit 42 --repo owner/repo --body <body>
+	want := []string{"pr", "edit", "42", "--repo", "owner/repo", "--body", "new body with\nnewline"}
+	if len(fe.lastArgs) != len(want) {
+		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+	}
+	for i, a := range fe.lastArgs {
+		if a != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+		}
+	}
+}
+
+func TestEditPRBodyWith_execError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte("forbidden"), err: fmt.Errorf("exit 1")}
+	if err := editPRBodyWith(fe, "owner/repo", 42, "body"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestMergePRWith(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
