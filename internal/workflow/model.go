@@ -42,8 +42,12 @@ func (d *Definition) FirstStep() *Step {
 }
 
 // Trigger defines when a workflow activates.
+// Priority breaks ties when multiple definitions match the same event: higher
+// wins, zero is the default. Ties at the same priority fall back to
+// alphabetical order by workflow ID for determinism.
 type Trigger struct {
 	On         string      `yaml:"on" json:"on"` // "task.created", "task.status_changed", "pr.event"
+	Priority   int         `yaml:"priority,omitempty" json:"priority"`
 	Conditions []Condition `yaml:"conditions,omitempty" json:"conditions"`
 
 	// Position stores x,y for the graph editor (not used by engine).

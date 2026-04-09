@@ -6,9 +6,17 @@ trigger:
   on: pr.event
   conditions:
     - field: pr.issue_kind
-      operator: contains
+      operator: in
       value: conflict,ci_failure
 steps:
+  - id: set_in_progress
+    name: Mark In Progress
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: fix
+
   - id: fix
     name: Fix PR Issue
     type: run_agent
@@ -16,9 +24,8 @@ steps:
       role: pr-fix
       mode: headless
       model: sonnet
-      needs_worktree: true
       prompt: >-
-        Fix the issues raised in the PR review. Push the changes when done.
+        {{ getvar .Vars "prompt" }}
     next:
       - goto: evaluate
 

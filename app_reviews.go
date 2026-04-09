@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
@@ -28,11 +30,12 @@ const (
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
 type ReviewHandler struct {
 	DomainHandler
-	tasks     *task.Manager
-	projects  *project.Store
-	agents    *agent.Manager
-	prTracker *github.IssueTracker
-	worktrees *worktree.Manager
+	tasks          *task.Manager
+	projects       *project.Store
+	agents         *agent.Manager
+	prTracker      *github.IssueTracker
+	worktrees      *worktree.Manager
+	workflowEngine *workflow.Engine
 }
 
 func newReviewHandler(
@@ -356,44 +359,44 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		dir = d
 	}
 
-	// Worktree ready — now flip status. Doing this earlier would leave the
-	// task stranded at in-progress if worktree prep failed.
-	if _, err := r.tasks.Update(t.ID, map[string]any{
-		"status": string(task.StatusInProgress),
-	}); err != nil {
-		r.logger.Error("pr-monitor.status-update", "task_id", t.ID, "err", err)
+	if r.workflowEngine == nil {
+		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
 		return
 	}
 
+	// Dispatch pr.event through the engine so trigger conditions in the
+	// workflow YAML stay authoritative. StartWorkflow would bypass them.
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s", t.Title, prompt)
-	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RolePRFix.AgentName(t.Title),
-		Mode:   "headless",
-		Prompt: fullPrompt,
-		Dir:    dir,
-		Model:  "sonnet",
-	})
+	vars := map[string]string{
+		"prompt":                fullPrompt,
+		"pr_issue_kind":         string(issue.Kind),
+		workflow.WorkflowVarDir: dir,
+	}
+	wfID, err := r.workflowEngine.DispatchEvent(t.ID, "pr.event",
+		map[string]string{"pr.issue_kind": string(issue.Kind)}, vars)
 	if err != nil {
-		r.logger.Error("pr-monitor.agent-start", "task_id", t.ID, "err", err)
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			r.logger.Info("pr-monitor.workflow-already-active",
+				"task_id", t.ID, "kind", string(issue.Kind))
+			return
+		}
+		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
+		return
+	}
+	if wfID == "" {
+		r.logger.Warn("pr-monitor.no-matching-workflow",
+			"task_id", t.ID, "kind", string(issue.Kind))
 		return
 	}
 
 	r.prTracker.MarkHandled(t.ID, issue.Kind)
-	r.logAudit(audit.EventPRFixAgentStarted, t.ID, ag.ID, map[string]any{
-		"issue": string(issue.Kind), "pr": issue.PR.Number,
+	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
+		"issue": string(issue.Kind), "pr": issue.PR.Number, "workflow": wfID,
 	})
-
-	if err := r.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: "headless",
-		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-	}); err != nil {
-		r.logger.Error("pr-monitor.add-run", "task_id", t.ID, "err", err)
-	}
 
 	r.logger.Info("pr-monitor.fix-started",
 		"task_id", t.ID, "issue", string(issue.Kind),
-		"pr", issue.PR.Number, "agent_id", ag.ID,
+		"pr", issue.PR.Number, "workflow", wfID,
 	)
 }
 

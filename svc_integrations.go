@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
@@ -27,6 +29,7 @@ type IntegrationService struct {
 	logger          *slog.Logger
 	todoistHandler  *TodoistHandler
 	renovateHandler *RenovateHandler
+	workflowEngine  *workflow.Engine
 }
 
 // SyncTodoist triggers an immediate Todoist sync.
@@ -122,10 +125,8 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		dir = d
 	}
 
-	if _, err := s.tasks.Update(t.ID, map[string]any{
-		"status": string(task.StatusInProgress),
-	}); err != nil {
-		s.logger.Error("renovate-fix.status", "task_id", t.ID, "err", err)
+	if s.workflowEngine == nil {
+		return fmt.Errorf("workflow engine not available")
 	}
 
 	prompt := fmt.Sprintf(
@@ -136,35 +137,33 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		title, branch, number,
 	)
 
-	ag, err := s.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RolePRFix.AgentName(t.Title),
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    dir,
-		Model:  "sonnet",
-	})
-	if err != nil {
-		return fmt.Errorf("start agent: %w", err)
+	vars := map[string]string{
+		"prompt":                prompt,
+		"pr_issue_kind":         "ci_failure",
+		workflow.WorkflowVarDir: dir,
 	}
-
-	if err := s.tasks.AddRun(t.ID, task.AgentRun{
-		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: "headless",
-		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-	}); err != nil {
-		s.logger.Error("renovate-fix.add-run", "task_id", t.ID, "err", err)
+	wfID, err := s.workflowEngine.DispatchEvent(t.ID, "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"}, vars)
+	if err != nil {
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			s.logger.Info("renovate-fix.workflow-already-active", "task_id", t.ID)
+			return nil
+		}
+		return fmt.Errorf("dispatch pr.event: %w", err)
+	}
+	if wfID == "" {
+		return fmt.Errorf("no workflow matched pr.event for ci_failure")
 	}
 
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
-			Type:    audit.EventRenovateCIFix,
-			TaskID:  t.ID,
-			AgentID: ag.ID,
-			Data:    map[string]any{"pr": number, "repo": repo},
+			Type:   audit.EventRenovateCIFix,
+			TaskID: t.ID,
+			Data:   map[string]any{"pr": number, "repo": repo},
 		})
 	}
 
-	s.logger.Info("renovate-fix.started", "task_id", t.ID, "agent_id", ag.ID, "pr", number)
+	s.logger.Info("renovate-fix.started", "task_id", t.ID, "pr", number)
 	return nil
 }
 

@@ -79,6 +79,31 @@ func TestEvalCondition(t *testing.T) {
 			cond: Condition{Field: "missing", Operator: "equals", Value: ""},
 			want: true, // absent field has zero-value ""
 		},
+		{
+			name: "in matches first csv entry",
+			cond: Condition{Field: "task.status", Operator: "in", Value: "in-progress,done"},
+			want: true,
+		},
+		{
+			name: "in matches with surrounding whitespace",
+			cond: Condition{Field: "task.status", Operator: "in", Value: "todo , in-progress , done"},
+			want: true,
+		},
+		{
+			name: "in rejects value not listed",
+			cond: Condition{Field: "task.status", Operator: "in", Value: "todo,done"},
+			want: false,
+		},
+		{
+			name: "not_in passes when value not listed",
+			cond: Condition{Field: "task.status", Operator: "not_in", Value: "todo,done"},
+			want: true,
+		},
+		{
+			name: "not_in rejects when value listed",
+			cond: Condition{Field: "task.status", Operator: "not_in", Value: "in-progress,done"},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
