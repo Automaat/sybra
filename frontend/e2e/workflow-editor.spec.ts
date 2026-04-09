@@ -65,16 +65,16 @@ test.describe('Workflow editor — trigger panel', () => {
   test('renders event and existing condition', async ({ page }) => {
     await openWorkflowEditor(page)
 
-    // Trigger section header + summary
-    const triggerSection = page.locator('div', {
-      has: page.locator('span', { hasText: 'Trigger' }),
-    }).first()
-    await expect(triggerSection).toContainText('task.created')
-    await expect(triggerSection).toContainText('1 condition')
+    // Trigger summary shows "1 condition" from the fixture.
+    await expect(page.getByText(/1 condition/)).toBeVisible()
+    // Event dropdown (first select on the page) reflects the seeded event.
+    await expect(page.locator('select').first()).toHaveValue('task.created')
 
-    // Condition row fields should be present with seeded values
-    await expect(page.locator('input[value="task.tags"]')).toBeVisible()
-    await expect(page.locator('input[value="skip"]')).toBeVisible()
+    // Condition row fields should be present with seeded values.
+    // Use getByDisplayValue — Svelte sets the .value property, not the
+    // HTML attribute, so `input[value="…"]` CSS selectors don't match.
+    await expect(page.getByDisplayValue('task.tags')).toBeVisible()
+    await expect(page.getByDisplayValue('skip')).toBeVisible()
   })
 
   test('can add a new trigger condition', async ({ page }) => {
@@ -104,13 +104,13 @@ test.describe('Workflow editor — add step + transitions', () => {
       page.locator('h3', { hasText: 'Step Config' }),
     ).not.toBeVisible()
 
-    await page.getByRole('button', { name: /\+ Add step/ }).click()
+    await page.getByRole('button', { name: '+ Add step', exact: true }).click()
 
     // Config panel opens with the seeded default name.
     await expect(
       page.locator('h3', { hasText: 'Step Config' }),
     ).toBeVisible()
-    await expect(page.locator('input[value="New step"]')).toBeVisible()
+    await expect(page.getByDisplayValue('New step')).toBeVisible()
 
     // Transitions section is visible and empty by default.
     await expect(
@@ -133,13 +133,9 @@ test.describe('Workflow editor — add step + transitions', () => {
       page.locator('h3', { hasText: 'Step Config' }),
     ).toBeVisible()
 
-    // Transitions section → + Add
-    await page
-      .locator('div', {
-        has: page.locator('span', { hasText: /^Transitions$/ }),
-      })
-      .getByRole('button', { name: '+ Add' })
-      .click()
+    // Transitions section → + Add (exact-match disambiguates from
+    // "+ Add step" and "+ Add condition").
+    await page.getByRole('button', { name: '+ Add', exact: true }).click()
 
     // A new transition row with goto dropdown defaulting to <end workflow>.
     const gotoSelect = page.locator('select').filter({ hasText: /end workflow/ })
@@ -158,10 +154,10 @@ test.describe('Workflow editor — save round-trip', () => {
   test('add step + save persists to disk', async ({ page }) => {
     await openWorkflowEditor(page)
 
-    await page.getByRole('button', { name: /\+ Add step/ }).click()
+    await page.getByRole('button', { name: '+ Add step', exact: true }).click()
 
     // Change the name to something identifiable.
-    const nameInput = page.locator('input[value="New step"]')
+    const nameInput = page.getByDisplayValue('New step')
     await nameInput.fill('e2e-added-step')
     await nameInput.blur()
 
