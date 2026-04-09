@@ -17,6 +17,114 @@
   let newTaskTitle = $state('')
   let inputRef = $state<HTMLInputElement | null>(null)
 
+  // Board keyboard navigation state
+  let focusedColIdx = $state(-1)
+  let focusedRowIdx = $state(-1)
+
+  function getColumnTasks(colIndex: number): task.Task[] {
+    const col = visibleColumns[colIndex]
+    if (!col) return []
+    const statuses = col.includes.length > 0 ? col.includes : [col.status]
+    return filteredByStatuses(statuses)
+  }
+
+  const focusedTaskId = $derived.by((): string | null => {
+    if (focusedColIdx < 0 || focusedRowIdx < 0) return null
+    const tasks = getColumnTasks(focusedColIdx)
+    return tasks[focusedRowIdx]?.id ?? null
+  })
+
+  function focusFirstTask(): void {
+    for (let ci = 0; ci < visibleColumns.length; ci++) {
+      if (getColumnTasks(ci).length > 0) {
+        focusedColIdx = ci
+        focusedRowIdx = 0
+        return
+      }
+    }
+  }
+
+  function scrollFocusedIntoView(): void {
+    requestAnimationFrame(() => {
+      document.querySelector('[data-focused-task]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
+  }
+
+  function handleBoardKeydown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+
+    const key = e.key
+
+    if (key === 'j' || key === 'ArrowDown') {
+      e.preventDefault()
+      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+      const tasks = getColumnTasks(focusedColIdx)
+      focusedRowIdx = Math.min(focusedRowIdx + 1, tasks.length - 1)
+      scrollFocusedIntoView()
+      return
+    }
+
+    if (key === 'k' || key === 'ArrowUp') {
+      e.preventDefault()
+      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+      focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
+      scrollFocusedIntoView()
+      return
+    }
+
+    if (key === 'h' || key === 'ArrowLeft') {
+      e.preventDefault()
+      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+      for (let ci = focusedColIdx - 1; ci >= 0; ci--) {
+        const tasks = getColumnTasks(ci)
+        if (tasks.length > 0) {
+          focusedColIdx = ci
+          focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
+          scrollFocusedIntoView()
+          return
+        }
+      }
+      return
+    }
+
+    if (key === 'l' || key === 'ArrowRight') {
+      e.preventDefault()
+      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+      for (let ci = focusedColIdx + 1; ci < visibleColumns.length; ci++) {
+        const tasks = getColumnTasks(ci)
+        if (tasks.length > 0) {
+          focusedColIdx = ci
+          focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
+          scrollFocusedIntoView()
+          return
+        }
+      }
+      return
+    }
+
+    if (key === 'Enter') {
+      const taskId = focusedTaskId
+      if (taskId) {
+        e.preventDefault()
+        onselect(taskId)
+      }
+      return
+    }
+
+    if (key === 'Escape') {
+      focusedColIdx = -1
+      focusedRowIdx = -1
+      return
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', handleBoardKeydown)
+    return () => window.removeEventListener('keydown', handleBoardKeydown)
+  })
+
   // Filter state
   let searchQuery = $state('')
   let selectedProjectId = $state('')
@@ -309,7 +417,7 @@
           </div>
           <div class="flex flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
             {#each tasks as t (t.id)}
-              <TaskCard task={t} onclick={() => onselect(t.id)} />
+              <TaskCard task={t} onclick={() => onselect(t.id)} focused={focusedTaskId === t.id} />
             {/each}
           </div>
           <div class="px-2 pb-2">

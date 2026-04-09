@@ -26,6 +26,8 @@
   import ChatDetail from './pages/ChatDetail.svelte'
   import WorkflowList from './pages/WorkflowList.svelte'
   import WorkflowDetail from './pages/WorkflowDetail.svelte'
+  import CommandPalette from './components/CommandPalette.svelte'
+  import KeyboardHelp from './components/KeyboardHelp.svelte'
 
   type Page =
     | { kind: 'dashboard' }
@@ -46,9 +48,24 @@
     | { kind: 'workflow-detail'; workflowId: string }
 
   let page = $state<Page>({ kind: 'dashboard' })
+  type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'plan-reviews' | 'test-plan-reviews' | 'stats' | 'settings' | 'workflows'
+
+  function handlePaletteNavigate(kind: string, params?: { taskId?: string; projectId?: string }): void {
+    commandPaletteOpen = false
+    if (kind === 'task-detail' && params?.taskId) {
+      page = { kind: 'task-detail', taskId: params.taskId }
+    } else if (kind === 'project-detail' && params?.projectId) {
+      page = { kind: 'project-detail', projectId: params.projectId }
+    } else {
+      page = { kind: kind as SimplePageKind }
+    }
+  }
+
   let dialogOpen = $state(false)
   let projectDialogOpen = $state(false)
   let quickAddOpen = $state(false)
+  let commandPaletteOpen = $state(false)
+  let helpOpen = $state(false)
   let quitConfirmVisible = $state(false)
   let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -114,6 +131,14 @@
       if (e.metaKey && e.key === 'n') {
         e.preventDefault()
         quickAddOpen = true
+      }
+      if (e.metaKey && e.key === 'k') {
+        e.preventDefault()
+        commandPaletteOpen = true
+      }
+      if (e.metaKey && e.key === '/') {
+        e.preventDefault()
+        helpOpen = true
       }
       if (e.metaKey && e.key === '1') {
         e.preventDefault()
@@ -391,6 +416,17 @@
 <QuickAddTask
   open={quickAddOpen}
   onclose={() => (quickAddOpen = false)}
+/>
+
+<CommandPalette
+  open={commandPaletteOpen}
+  onclose={() => (commandPaletteOpen = false)}
+  onnavigate={handlePaletteNavigate}
+/>
+
+<KeyboardHelp
+  open={helpOpen}
+  onclose={() => (helpOpen = false)}
 />
 
 <ToastContainer onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
