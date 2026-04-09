@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,5 +205,95 @@ func TestDebounce(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// TestDebounceDoesNotDropTrailingWrite demonstrates that the watcher's
+// leading-edge debounce silently drops the FINAL write in a burst when it
+// arrives within the debounce window after an emitted event. The frontend
+// is then never told to re-read the file and is left with stale content
+// from before the trailing write.
+//
+// Sequence:
+//
+//	t=0     write v1            -> debounce empty -> emit, debounce[name]=t0
+//	t=Δms   first event consumed
+//	t=tw    write v2 (final)    -> debounce[name]=t0 set, tw-t0 < 200ms -> DROPPED
+//	(no further events for this file)
+//
+// Expected behaviour: at least one event must arrive AFTER the trailing
+// write so consumers can re-read and observe v2. A trailing-edge debounce
+// (or "emit latest after quiet period") would satisfy this.
+//
+// Fix: instead of dropping events inside the window, schedule a deferred
+// emission of the latest event after the window expires.
+func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu     sync.Mutex
+		events []time.Time
+	)
+	firstSeen := make(chan struct{}, 1)
+	emit := func(event string, _ any) {
+		if event != ev.TaskCreated && event != ev.TaskUpdated {
+			return
+		}
+		mu.Lock()
+		events = append(events, time.Now())
+		mu.Unlock()
+		select {
+		case firstSeen <- struct{}{}:
+		default:
+		}
+	}
+
+	w := New(dir, emit, discardLogger())
+	if err := w.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitReady(t, w)
+
+	mdPath := filepath.Join(dir, "rapid.md")
+
+	// First write — fills the debounce slot for this file.
+	if err := os.WriteFile(mdPath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until the first event has been observed so the debounce slot
+	// is definitely populated. Without this synchronization, the test is
+	// non-deterministic on slow systems.
+	select {
+	case <-firstSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("never observed an event for the first write")
+	}
+
+	// Tiny gap, well inside the 200ms debounce window.
+	time.Sleep(50 * time.Millisecond)
+
+	// Trailing write — this is the one consumers must be told about.
+	secondWriteAt := time.Now()
+	if err := os.WriteFile(mdPath, []byte("v2-final-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Allow plenty of time for any deferred emission. 500ms is well past
+	// the 200ms debounce window so a correctly-implemented trailing-edge
+	// debounce would have fired by now.
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var afterSecond int
+	for _, ts := range events {
+		if ts.After(secondWriteAt) {
+			afterSecond++
+		}
+	}
+	if afterSecond == 0 {
+		t.Errorf("expected at least one event after the trailing write at %v; got %d events total at %v — the final write was silently dropped", secondWriteAt, len(events), events)
 	}
 }

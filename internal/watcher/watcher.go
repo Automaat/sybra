@@ -59,51 +59,85 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 	}()
 	close(w.ready)
 
-	debounce := make(map[string]time.Time)
 	const debounceInterval = 200 * time.Millisecond
+
+	// Trailing-edge debounce: coalesce bursts of events for the same file
+	// and emit a single event after the burst settles. The previous
+	// leading-edge implementation silently dropped the last write in a
+	// burst, leaving consumers with stale content.
+	pending := make(map[string]fsnotify.Op)
+	timers := make(map[string]*time.Timer)
+	flushCh := make(chan string, 64)
+
+	stopAllTimers := func() {
+		for _, t := range timers {
+			t.Stop()
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			stopAllTimers()
 			return
+
+		case name := <-flushCh:
+			op, ok := pending[name]
+			if !ok {
+				continue
+			}
+			delete(pending, name)
+			delete(timers, name)
+			w.emitFor(name, op)
+
 		case event, ok := <-fw.Events:
 			if !ok {
+				stopAllTimers()
 				return
 			}
 			if !strings.HasSuffix(event.Name, ".md") {
 				continue
 			}
-
-			now := time.Now()
-			if last, exists := debounce[event.Name]; exists && now.Sub(last) < debounceInterval {
-				continue
+			// OR ops so a Create+Write burst still surfaces as Create.
+			pending[event.Name] |= event.Op
+			if t, exists := timers[event.Name]; exists {
+				t.Stop()
 			}
-			debounce[event.Name] = now
-
-			switch {
-			case event.Has(fsnotify.Create):
-				w.logger.Info("watcher.event", "op", "created", "file", event.Name)
-				w.emit(events.TaskCreated, event.Name)
-			case event.Has(fsnotify.Write):
-				w.logger.Debug("watcher.event", "op", "updated", "file", event.Name)
-				w.emit(events.TaskUpdated, event.Name)
-			case event.Has(fsnotify.Remove):
-				// Atomic writes (tmp+rename) emit Remove for the old inode.
-				// If the file still exists, treat as update instead of delete.
-				if _, err := os.Stat(event.Name); err == nil {
-					w.logger.Debug("watcher.event", "op", "updated", "file", event.Name)
-					w.emit(events.TaskUpdated, event.Name)
-				} else {
-					w.logger.Info("watcher.event", "op", "deleted", "file", event.Name)
-					w.emit(events.TaskDeleted, event.Name)
+			name := event.Name
+			timers[name] = time.AfterFunc(debounceInterval, func() {
+				select {
+				case flushCh <- name:
+				case <-ctx.Done():
 				}
-			}
+			})
 
 		case err, ok := <-fw.Errors:
 			if !ok {
+				stopAllTimers()
 				return
 			}
 			w.logger.Error("watcher.error", "err", err)
+		}
+	}
+}
+
+func (w *Watcher) emitFor(name string, op fsnotify.Op) {
+	switch {
+	case op.Has(fsnotify.Create):
+		w.logger.Info("watcher.event", "op", "created", "file", name)
+		w.emit(events.TaskCreated, name)
+	case op.Has(fsnotify.Write):
+		w.logger.Debug("watcher.event", "op", "updated", "file", name)
+		w.emit(events.TaskUpdated, name)
+	case op.Has(fsnotify.Remove):
+		// Atomic writes (tmp+rename) emit Remove for the old inode.
+		// If the file still exists, treat as update instead of delete.
+		if _, err := os.Stat(name); err == nil {
+			w.logger.Debug("watcher.event", "op", "updated", "file", name)
+			w.emit(events.TaskUpdated, name)
+		} else {
+			w.logger.Info("watcher.event", "op", "deleted", "file", name)
+			w.emit(events.TaskDeleted, name)
 		}
 	}
 }

@@ -86,3 +86,45 @@ func TestExtractLastJSONObject(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractLastJSONObject_BraceInsideString demonstrates that the
+// brace-counting walker in extractLastJSONObject does not understand JSON
+// string literals — it counts every `{` and `}` byte regardless of whether
+// it sits inside a quoted string. A perfectly valid JSON object whose
+// string value contains a `{` or `}` character is therefore mis-parsed:
+// the walker sees an unbalanced brace and either truncates the result or
+// returns an empty string.
+//
+// This matters because parseInspectorOutput feeds the inspector model's
+// `result` text through this function. If the model writes a reason like
+// `"saw a stray ) {"`, the verdict is silently lost and the watchdog
+// fails to act on a stuck agent.
+//
+// Fix: parse the result as JSON (or use a real tokenizer that knows about
+// string literals) instead of brace counting on raw bytes.
+func TestExtractLastJSONObject_BraceInsideString(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "open brace inside string value",
+			in:   `{"reason": "if (x) {"}`,
+			want: `{"reason": "if (x) {"}`,
+		},
+		{
+			name: "close brace inside string value",
+			in:   `{"reason": "saw }"}`,
+			want: `{"reason": "saw }"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractLastJSONObject(tc.in)
+			if got != tc.want {
+				t.Errorf("extractLastJSONObject(%q) = %q, want %q (brace inside string literal mis-parsed)", tc.in, got, tc.want)
+			}
+		})
+	}
+}
