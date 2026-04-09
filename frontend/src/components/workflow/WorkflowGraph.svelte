@@ -11,6 +11,7 @@
   import '@xyflow/svelte/dist/style.css'
   import StepNode from './nodes/StepNode.svelte'
   import EndNode from './nodes/EndNode.svelte'
+  import TriggerNode from './nodes/TriggerNode.svelte'
 
   interface Props {
     nodes: Node[]
@@ -24,6 +25,7 @@
   const nodeTypes: NodeTypes = {
     stepNode: StepNode,
     endNode: EndNode,
+    triggerNode: TriggerNode,
   } as unknown as NodeTypes
 </script>
 

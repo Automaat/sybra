@@ -4,8 +4,15 @@
   import { workflow } from '../../wailsjs/go/models.js'
   import WorkflowGraph from '../components/workflow/WorkflowGraph.svelte'
   import StepConfigPanel from '../components/workflow/StepConfigPanel.svelte'
-  import TriggerPanel from '../components/workflow/TriggerPanel.svelte'
-  import { definitionToGraph, graphToDefinition, type StepNodeData } from '../lib/workflow-graph.js'
+  import TriggerConfigPanel from '../components/workflow/TriggerConfigPanel.svelte'
+  import {
+    definitionToGraph,
+    graphToDefinition,
+    TRIGGER_NODE_ID,
+    type StepNodeData,
+  } from '../lib/workflow-graph.js'
+
+  type Selection = { kind: 'step'; step: workflow.Step } | { kind: 'trigger' } | null
 
   interface Props {
     workflowId: string
@@ -17,9 +24,11 @@
   let def = $state<workflow.Definition | null>(null)
   let nodes = $state<Node[]>([])
   let edges = $state<Edge[]>([])
-  let selectedStep = $state<workflow.Step | null>(null)
+  let selected = $state<Selection>(null)
   let saving = $state(false)
   let dirty = $state(false)
+
+  const selectedStep = $derived(selected?.kind === 'step' ? selected.step : null)
 
   const allStepIds = $derived(def?.steps?.map((s) => s.id) ?? [])
 
@@ -34,11 +43,15 @@
 
   function handleNodeClick(node: Node) {
     if (node.type === 'endNode') {
-      selectedStep = null
+      selected = null
+      return
+    }
+    if (node.type === 'triggerNode' || node.id === TRIGGER_NODE_ID) {
+      selected = { kind: 'trigger' }
       return
     }
     const data = node.data as StepNodeData
-    selectedStep = data.step
+    selected = { kind: 'step', step: data.step }
   }
 
   function rebuildGraphFrom(updated: workflow.Definition) {
@@ -60,7 +73,7 @@
     const idx = def.steps.findIndex((s) => s.id === selectedStep?.id)
     if (idx < 0) return
     def.steps[idx] = updated
-    selectedStep = updated
+    selected = { kind: 'step', step: updated }
     rebuildGraphFrom(def)
     dirty = true
   }
@@ -75,7 +88,7 @@
       }
     }
     rebuildGraphFrom(def)
-    selectedStep = null
+    selected = null
     dirty = true
   }
 
@@ -93,13 +106,14 @@
     })
     def.steps = [...def.steps, newStep]
     rebuildGraphFrom(def)
-    selectedStep = newStep
+    selected = { kind: 'step', step: newStep }
     dirty = true
   }
 
   function handleTriggerUpdate(trigger: workflow.Trigger) {
     if (!def) return
     def = new workflow.Definition({ ...def, trigger })
+    rebuildGraphFrom(def)
     dirty = true
   }
 
@@ -124,8 +138,8 @@
       save()
     }
     if (e.key === 'Escape') {
-      if (selectedStep) {
-        selectedStep = null
+      if (selected) {
+        selected = null
       } else {
         onback()
       }
@@ -174,10 +188,6 @@
     </button>
   </div>
 
-  {#if def}
-    <TriggerPanel trigger={def.trigger ?? new workflow.Trigger({ on: '', conditions: [] })} onupdate={handleTriggerUpdate} />
-  {/if}
-
   <div class="flex flex-1 overflow-hidden">
     <div class="flex-1">
       {#if def}
@@ -194,11 +204,18 @@
       {/if}
     </div>
 
-    <StepConfigPanel
-      step={selectedStep}
-      {allStepIds}
-      onupdate={handleStepUpdate}
-      ondelete={handleStepDelete}
-    />
+    {#if selected?.kind === 'trigger' && def}
+      <TriggerConfigPanel
+        trigger={def.trigger ?? new workflow.Trigger({ on: '', conditions: [] })}
+        onupdate={handleTriggerUpdate}
+      />
+    {:else}
+      <StepConfigPanel
+        step={selectedStep}
+        {allStepIds}
+        onupdate={handleStepUpdate}
+        ondelete={handleStepDelete}
+      />
+    {/if}
   </div>
 </div>
