@@ -98,23 +98,55 @@ func parseInspectorOutput(raw []byte) (InspectorVerdict, error) {
 }
 
 // extractLastJSONObject returns the last balanced {...} substring in s, or "".
+// It tracks JSON string-literal state so that braces inside string values
+// are not counted toward depth.
 func extractLastJSONObject(s string) string {
 	s = strings.TrimSpace(s)
-	end := strings.LastIndex(s, "}")
-	if end < 0 {
-		return ""
-	}
-	depth := 0
-	for i := end; i >= 0; i-- {
-		switch s[i] {
-		case '}':
-			depth++
+	var (
+		inString  bool
+		escape    bool
+		depth     int
+		objStart  = -1
+		lastStart = -1
+		lastEnd   = -1
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			switch c {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
 		case '{':
-			depth--
 			if depth == 0 {
-				return s[i : end+1]
+				objStart = i
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && objStart >= 0 {
+				lastStart = objStart
+				lastEnd = i
+				objStart = -1
 			}
 		}
 	}
-	return ""
+	if lastStart < 0 {
+		return ""
+	}
+	return s[lastStart : lastEnd+1]
 }
