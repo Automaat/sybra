@@ -1,0 +1,89 @@
+id: testing-task
+name: Manual Testing
+description: Plan and execute manual testing of a feature
+builtin: true
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  - id: plan_test
+    name: Prepare Test Plan
+    type: run_agent
+    config:
+      role: test-plan
+      mode: interactive
+      model: opus
+      needs_worktree: true
+      reuse_agent: true
+      prompt: >-
+        {{- $feedback := getvar .Vars "human.feedback" }}
+        {{- if $feedback }}
+        Test plan rejected. Feedback:
+
+        {{ $feedback }}
+
+        Revise the manual test plan for task {{.Task.ID}} to address these points.
+        Update the task body and set status back to test-plan-review when done.
+        {{- else }}
+        Prepare a manual testing plan for task {{.Task.ID}} using the /test-writer skill.
+
+        1. synapse-cli --json get {{.Task.ID}}
+        2. Inspect the implementation in the worktree to understand what was built.
+        3. Produce a detailed manual testing plan with: setup steps, individual
+           test cases (action + expected outcome), edge cases, and cleanup.
+
+        When the plan is ready:
+          1. synapse-cli update {{.Task.ID}} --body "<full test plan markdown>"
+          2. synapse-cli update {{.Task.ID}} --status test-plan-review
+
+        Then STOP and wait. Do NOT exit. Do NOT execute the tests yet.
+
+        If you receive feedback, address it, update the body again, set status
+        back to test-plan-review, and wait again.
+        {{- end }}
+    next:
+      - goto: review_test_plan
+
+  - id: review_test_plan
+    name: Review Test Plan
+    type: wait_human
+    config:
+      status: test-plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: execute_tests
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: plan_test
+
+  - id: execute_tests
+    name: Execute Manual Testing
+    type: run_agent
+    config:
+      role: test-runner
+      mode: interactive
+      model: sonnet
+      needs_worktree: true
+      prompt: >-
+        Execute the approved manual test plan for task {{.Task.ID}}.
+
+        1. synapse-cli --json get {{.Task.ID}}  (the body contains the approved plan)
+        2. Run each test step. Start the app/CLI as needed, interact with it,
+           capture observed vs expected results.
+        3. Append a "## Test Results" section to the task body documenting
+           pass/fail for each step plus any reproduction notes.
+        4. synapse-cli update {{.Task.ID}} --status human-required
+           --status-reason "manual testing complete - verify results"
+    next:
+      - goto: ""

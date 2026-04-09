@@ -14,6 +14,8 @@ func TestRole_AgentName(t *testing.T) {
 		{RoleEval, "Evaluate", "eval:Evaluate"},
 		{RolePRFix, "Fix PR", "pr-fix:Fix PR"},
 		{RoleReview, "Review Code", "review:Review Code"},
+		{RoleTestPlan, "Plan Tests", "test-plan:Plan Tests"},
+		{RoleTestRunner, "Run Tests", "test-runner:Run Tests"},
 		{RoleImplementation, "Impl", "implementation:Impl"},
 		{RoleTriage, "", "triage:"},
 	}
@@ -40,6 +42,8 @@ func TestRole_IsSystem(t *testing.T) {
 		{RolePlan, false},
 		{RolePRFix, false},
 		{RoleReview, false},
+		{RoleTestPlan, false},
+		{RoleTestRunner, false},
 		{RoleImplementation, false},
 	}
 
@@ -65,6 +69,8 @@ func TestRoleFromName(t *testing.T) {
 		{"eval:Evaluate", RoleEval},
 		{"pr-fix:Fix PR", RolePRFix},
 		{"review:Code Review", RoleReview},
+		{"test-plan:Plan Tests", RoleTestPlan},
+		{"test-runner:Run Tests", RoleTestRunner},
 		{"implementation:Impl", RoleImplementation},
 		{"unknown:something", RoleImplementation},
 		{"no-colon", RoleImplementation},
