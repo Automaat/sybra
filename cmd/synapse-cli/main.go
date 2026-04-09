@@ -273,15 +273,16 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	if *body != "" {
 		updates["body"] = *body
 	}
-	if *planFile != "" {
+	switch {
+	case *planFile != "":
 		data, readErr := os.ReadFile(*planFile)
 		if readErr != nil {
 			return fatal(jsonOut, "read plan file: %v", readErr)
 		}
 		updates["plan"] = string(data)
-	} else if *plan != "" {
+	case *plan != "":
 		updates["plan"] = *plan
-	} else {
+	default:
 		// Check if --plan was explicitly passed as empty string to clear.
 		// flag.Visit iterates only flags that were explicitly set.
 		fs.Visit(func(f *flag.Flag) {
