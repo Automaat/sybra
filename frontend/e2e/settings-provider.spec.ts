@@ -89,7 +89,7 @@ test.describe('Settings provider matrix', () => {
         await saveSettings(page)
 
         await page.reload()
-        await expect(page.locator('h1', { hasText: 'Settings' })).toBeVisible()
+        await goToSettings(page)
         await expect(page.locator('#agent-provider')).toHaveValue(spec.provider)
         await expect(page.locator('#agent-model option').first()).toHaveText(spec.modelLabel)
       } finally {
