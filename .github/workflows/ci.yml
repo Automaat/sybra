@@ -59,6 +59,28 @@ jobs:
         with:
           version: latest
 
+  check-wailsjs:
+    name: Wails Bindings Sync
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build
+
+      - name: Regenerate bindings
+        run: wails generate module
+
+      - name: Check for drift
+        run: |
+          git diff --exit-code frontend/wailsjs/ || \
+            (echo "::error::Wails bindings out of sync. Run 'wails generate module'." && exit 1)
+
   build:
     name: Build
     runs-on: macos-15

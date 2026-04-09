@@ -106,8 +106,8 @@ type Task struct {
 	UpdatedAt    time.Time           `yaml:"updated_at" json:"updatedAt"`
 
 	Body         string `yaml:"-" json:"body"`
-	Plan         string `yaml:"-" json:"plan"`
-	PlanCritique string `yaml:"-" json:"planCritique"`
+	Plan         string `yaml:"-" json:"plan,omitempty"`
+	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
 	FilePath     string `yaml:"-" json:"filePath"`
 }
 
