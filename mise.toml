@@ -6,6 +6,7 @@ node = "24"
 [tasks.dev]
 run = ["go install ./cmd/synapse-cli", "wails dev"]
 description = "Install CLI and run wails dev server"
+env = { SYNAPSE_PPROF = "127.0.0.1:6060" }
 
 [tasks.build]
 run = "wails build"
