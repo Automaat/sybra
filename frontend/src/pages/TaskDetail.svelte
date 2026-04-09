@@ -36,6 +36,15 @@
   })
 
   let deleting = $state(false)
+  let copied = $state(false)
+
+  async function copyTask() {
+    if (!t) return
+    const header = `---\nid: ${t.id}\ntitle: ${t.title}\nstatus: ${t.status}\nagent_mode: ${t.agentMode}\ntags: [${(t.tags ?? []).join(', ')}]\n---\n\n`
+    await navigator.clipboard.writeText(header + (t.body ?? ''))
+    copied = true
+    setTimeout(() => { copied = false }, 1500)
+  }
   let editingBody = $state(false)
   let bodyDraft = $state('')
   let editingTitle = $state(false)
@@ -343,6 +352,13 @@
               {reviewLoading ? 'Starting...' : t.reviewed ? 'Re-run Review' : 'Run Review'}
             </button>
           {/if}
+          <button
+            type="button"
+            class="rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
+            onclick={copyTask}
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
           <button
             type="button"
             class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
