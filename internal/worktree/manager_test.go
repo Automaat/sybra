@@ -75,6 +75,37 @@ func TestValidatePath(t *testing.T) {
 	}
 }
 
+// TestValidatePath_PrefixEscapeBug demonstrates a path-traversal vulnerability
+// in ValidatePath: the containment check uses strings.HasPrefix on the cleaned
+// paths, which incorrectly accepts sibling directories whose name starts with
+// the worktrees dir name (e.g. "/tmp/wt-evil" passes when m.dir is "/tmp/wt").
+//
+// ValidatePath gates ProjectService.OpenInTerminal / OpenInEditor
+// (svc_projects.go), so a frontend caller can use this to open arbitrary
+// directories outside of m.dir as long as the path string shares the prefix.
+//
+// Fix: use filepath.Rel and require the relative path not to start with "..",
+// or compare with a trailing separator appended to m.dir.
+func TestValidatePath_PrefixEscapeBug(t *testing.T) {
+	base := t.TempDir()
+	worktreesDir := filepath.Join(base, "wt")
+	siblingDir := filepath.Join(base, "wt-evil")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(siblingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{dir: worktreesDir}
+
+	// siblingDir is OUTSIDE worktreesDir but starts with the same string
+	// prefix. ValidatePath must reject it; today it returns nil.
+	if err := m.ValidatePath(siblingDir); err == nil {
+		t.Errorf("ValidatePath(%q) returned nil; expected error because it is a sibling of %q, not contained in it", siblingDir, worktreesDir)
+	}
+}
+
 func TestCleanupOrphaned(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()

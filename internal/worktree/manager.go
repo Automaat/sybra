@@ -65,7 +65,9 @@ func (m *Manager) Exists(t task.Task) bool {
 // ValidatePath checks that path is within the worktrees directory and is a directory.
 func (m *Manager) ValidatePath(path string) error {
 	clean := filepath.Clean(path)
-	if !strings.HasPrefix(clean, filepath.Clean(m.dir)) {
+	base := filepath.Clean(m.dir)
+	rel, err := filepath.Rel(base, clean)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path not within worktrees directory")
 	}
 	info, err := os.Stat(clean)
