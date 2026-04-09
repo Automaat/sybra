@@ -3,10 +3,7 @@
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentState } from '../lib/events.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
-  import { marked } from 'marked'
-  import { markedHighlight } from 'marked-highlight'
-  import hljs from 'highlight.js'
-  import 'highlight.js/styles/github-dark.css'
+  import { renderMarkdown } from '../lib/markdown.js'
   import { StartReview } from '../../wailsjs/go/main/ReviewService.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -80,24 +77,8 @@
 
   const statusOptions = STATUS_OPTIONS
 
-  marked.use(markedHighlight({
-    langPrefix: 'hljs language-',
-    highlight(code: string, lang: string) {
-      const language = hljs.getLanguage(lang) ? lang : 'plaintext'
-      return hljs.highlight(code, { language }).value
-    }
-  }))
-  marked.setOptions({ breaks: true, gfm: true })
-
-  const renderedBody = $derived.by(() => {
-    if (!t?.body) return ''
-    return marked.parse(t.body) as string
-  })
-
-  const renderedPlan = $derived.by(() => {
-    if (!t?.plan) return ''
-    return marked.parse(t.plan) as string
-  })
+  const renderedBody = $derived(renderMarkdown(t?.body))
+  const renderedPlan = $derived(renderMarkdown(t?.plan))
 
   $effect(() => {
     loadTask()
