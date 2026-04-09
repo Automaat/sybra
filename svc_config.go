@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"regexp"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
@@ -39,8 +40,11 @@ func (s *ConfigService) GetSettings() AppSettings {
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
 func (s *ConfigService) UpdateSettings(settings AppSettings) error {
-	validModels := map[string]bool{"": true, "opus": true, "sonnet": true, "haiku": true}
-	if !validModels[settings.Agent.Model] {
+	validProviders := map[string]bool{"": true, "claude": true, "codex": true}
+	if !validProviders[settings.Agent.Provider] {
+		return fmt.Errorf("invalid provider: %q", settings.Agent.Provider)
+	}
+	if settings.Agent.Model != "" && !regexp.MustCompile(`^[A-Za-z0-9._/-]+$`).MatchString(settings.Agent.Model) {
 		return fmt.Errorf("invalid model: %q", settings.Agent.Model)
 	}
 	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
@@ -82,6 +86,7 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 
 	s.notifier.SetDesktop(settings.Notification.Desktop)
 	s.agents.SetMaxConcurrent(settings.Agent.MaxConcurrent)
+	s.agents.SetDefaultProvider(settings.Agent.Provider)
 	if s.logLevel != nil {
 		s.logLevel.Set(s.cfg.Logging.SlogLevel())
 	}

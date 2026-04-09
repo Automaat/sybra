@@ -546,7 +546,7 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeCmd(t *testing.T) {
+func TestBuildCommand(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	tests := []struct {
@@ -558,7 +558,7 @@ func TestBuildClaudeCmd(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions",
+			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
 		},
 		{
 			name:    "valid model",
@@ -568,7 +568,7 @@ func TestBuildClaudeCmd(t *testing.T) {
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash",
+			wantCmd: "claude --allowedTools Read,Write,Bash --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
@@ -620,11 +620,21 @@ func TestBuildClaudeCmd(t *testing.T) {
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
 			wantCmd: "claude --dangerously-skip-permissions --model anthropic/claude-3.5-sonnet",
 		},
+		{
+			name:    "codex default model mapping",
+			cfg:     RunConfig{Provider: "codex"},
+			wantCmd: "codex exec --json --skip-git-repo-check --full-auto --model gpt-5.4",
+		},
+		{
+			name:    "codex maps haiku to mini",
+			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
+			wantCmd: "codex exec --json --skip-git-repo-check --full-auto --model gpt-5.4-mini",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := m.buildClaudeCmd(tt.cfg)
+			got, err := m.buildCommand(tt.cfg)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got cmd=%q", got)

@@ -49,6 +49,24 @@
     if (!original) return
     settings = JSON.parse(original)
   }
+
+  const modelOptions = $derived.by(() => {
+    if (!settings) return []
+    if (settings.agent.provider === 'codex') {
+      return [
+        { value: '', label: 'Default (gpt-5.4)' },
+        { value: 'gpt-5.4', label: 'GPT-5.4' },
+        { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+        { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+      ]
+    }
+    return [
+      { value: '', label: 'Default (Sonnet)' },
+      { value: 'opus', label: 'Opus' },
+      { value: 'sonnet', label: 'Sonnet' },
+      { value: 'haiku', label: 'Haiku' },
+    ]
+  })
 </script>
 
 <div class="flex flex-col gap-6 p-6">
@@ -85,7 +103,18 @@
     <!-- Agent Defaults -->
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Agent Defaults</h2>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-4">
+        <div class="flex flex-col gap-1">
+          <label class="text-sm font-medium" for="agent-provider">Agent Type</label>
+          <select
+            id="agent-provider"
+            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+            bind:value={settings.agent.provider}
+          >
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+          </select>
+        </div>
         <div class="flex flex-col gap-1">
           <label class="text-sm font-medium" for="agent-model">Default Model</label>
           <select
@@ -93,10 +122,9 @@
             class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
             bind:value={settings.agent.model}
           >
-            <option value="">— none —</option>
-            <option value="opus">Opus</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="haiku">Haiku</option>
+            {#each modelOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
         </div>
         <div class="flex flex-col gap-1">

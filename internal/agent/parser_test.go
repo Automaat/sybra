@@ -85,7 +85,7 @@ func TestParseStreamEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, _ := parseStreamEvent([]byte(tt.line))
+			got, _ := parseStreamEvent("claude", []byte(tt.line))
 			if got.Type != tt.want.Type {
 				t.Errorf("Type = %q, want %q", got.Type, tt.want.Type)
 			}

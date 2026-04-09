@@ -16,6 +16,7 @@ type OrchestratorService struct {
 	audit  *audit.Logger
 	logger *slog.Logger
 	emit   func(string, any)
+	cfg    *config.Config
 }
 
 // StartOrchestrator creates the orchestrator tmux session running claude.
@@ -23,7 +24,11 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	if s.tmux.SessionExists(orchestratorSession) {
 		return fmt.Errorf("orchestrator already running")
 	}
-	if err := s.tmux.CreateSessionInDir(orchestratorSession, "claude", config.HomeDir()); err != nil {
+	cmd := "claude"
+	if s.cfg != nil && s.cfg.Agent.Provider == "codex" {
+		cmd = "codex"
+	}
+	if err := s.tmux.CreateSessionInDir(orchestratorSession, cmd, config.HomeDir()); err != nil {
 		return fmt.Errorf("create orchestrator session: %w", err)
 	}
 	s.logger.Info("orchestrator.started")

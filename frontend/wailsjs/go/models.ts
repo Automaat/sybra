@@ -20,6 +20,7 @@ export namespace agent {
 	    command?: string;
 	    name?: string;
 	    project?: string;
+	    provider?: string;
 	    model?: string;
 	    turnCount?: number;
 	    escalationReason?: string;
@@ -47,6 +48,7 @@ export namespace agent {
 	        this.command = source["command"];
 	        this.name = source["name"];
 	        this.project = source["project"];
+	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.turnCount = source["turnCount"];
 	        this.escalationReason = source["escalationReason"];
@@ -186,6 +188,7 @@ export namespace agent {
 export namespace config {
 	
 	export class AgentDefaults {
+	    provider: string;
 	    model: string;
 	    mode: string;
 	    maxConcurrent: number;
@@ -199,6 +202,7 @@ export namespace config {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.mode = source["mode"];
 	        this.maxConcurrent = source["maxConcurrent"];
@@ -1338,4 +1342,3 @@ export namespace workflow {
 	
 
 }
-

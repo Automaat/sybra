@@ -146,6 +146,7 @@ func (a *App) startup(ctx context.Context) {
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
+	a.agents.SetDefaultProvider(a.cfg.Agent.Provider)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
@@ -356,6 +357,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger
 	a.orchSvc.emit = emit
+	a.orchSvc.cfg = a.cfg
 	a.projectSvc.projects = a.projects
 	a.projectSvc.worktrees = a.worktrees
 	a.projectSvc.logger = a.logger
@@ -619,6 +621,7 @@ func (a *App) syncSkills() {
 	claudeSrc := filepath.Join(repoDir, "orchestrator", "CLAUDE.md")
 	claudeDst := filepath.Join(config.HomeDir(), "CLAUDE.md")
 	a.syncFile(claudeSrc, claudeDst)
+	a.syncFile(claudeSrc, filepath.Join(config.HomeDir(), "AGENTS.md"))
 
 	a.logger.Info("skills.sync.done")
 }

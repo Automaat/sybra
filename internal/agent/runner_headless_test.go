@@ -1,130 +1,54 @@
 package agent
 
-import (
-	"context"
-	"testing"
-	"time"
+import "testing"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/tmux"
-)
+func TestParseCodexStreamEvent_AgentMessage(t *testing.T) {
+	line := []byte(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi"}}`)
 
-func testManagerWithEmit(t *testing.T, emit EmitFunc) *Manager {
-	t.Helper()
-	return NewManager(t.Context(), tmux.NewManager(), emit, discardLogger(), t.TempDir())
-}
-
-func TestHandleError(t *testing.T) {
-	var emittedEvent string
-	var emittedData any
-	emit := func(event string, data any) {
-		emittedEvent = event
-		emittedData = data
+	got, err := parseStreamEvent("codex", line)
+	if err != nil {
+		t.Fatalf("parseStreamEvent: %v", err)
 	}
-
-	m := testManagerWithEmit(t, emit)
-
-	a := &Agent{
-		ID:    "test-123",
-		State: StateRunning,
+	if got.Type != "assistant" {
+		t.Fatalf("Type = %q, want assistant", got.Type)
 	}
-
-	m.handleError(a, errTestSentinel)
-
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
-	}
-
-	wantEvent := events.AgentError("test-123")
-	if emittedEvent != wantEvent {
-		t.Errorf("event = %q, want %q", emittedEvent, wantEvent)
-	}
-
-	msg, ok := emittedData.(string)
-	if !ok {
-		t.Fatalf("emitted data type = %T, want string", emittedData)
-	}
-	if msg != "test error" {
-		t.Errorf("error message = %q, want %q", msg, "test error")
+	if got.Content != "hi" {
+		t.Fatalf("Content = %q, want hi", got.Content)
 	}
 }
 
-var errTestSentinel = sentinelError("test error")
+func TestParseCodexStreamEvent_CommandExecution(t *testing.T) {
+	started := []byte(`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}`)
+	completed := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"/repo\n","exit_code":0,"status":"completed"}}`)
 
-type sentinelError string
-
-func (e sentinelError) Error() string { return string(e) }
-
-func TestRunHeadlessFailsToStart(t *testing.T) {
-	var lastEvent string
-	emit := func(event string, _ any) {
-		lastEvent = event
+	startEv, err := parseStreamEvent("codex", started)
+	if err != nil {
+		t.Fatalf("parseStreamEvent started: %v", err)
+	}
+	if startEv.Type != "tool_use" || startEv.Content != "pwd" {
+		t.Fatalf("started = %#v, want tool_use pwd", startEv)
 	}
 
-	m := testManagerWithEmit(t, emit)
-
-	a := &Agent{
-		ID:    "test-headless",
-		State: StateRunning,
+	doneEv, err := parseStreamEvent("codex", completed)
+	if err != nil {
+		t.Fatalf("parseStreamEvent completed: %v", err)
 	}
-
-	m.runHeadless(t.Context(), a, "test prompt", nil, false)
-
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
-	}
-
-	if lastEvent != events.AgentError("test-headless") && lastEvent != events.AgentState("test-headless") {
-		t.Errorf("last event = %q, want error or state event", lastEvent)
+	if doneEv.Type != "tool_result" || doneEv.Content != "/repo\n" {
+		t.Fatalf("completed = %#v, want tool_result output", doneEv)
 	}
 }
 
-func TestRunHeadlessWithAllowedTools(t *testing.T) {
-	m := testManagerWithEmit(t, func(string, any) {})
+func TestParseCodexStreamEvent_TurnCompleted(t *testing.T) {
+	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":16012,"cached_input_tokens":2432,"output_tokens":18}}`)
 
-	a := &Agent{
-		ID:    "test-tools",
-		State: StateRunning,
+	got, err := parseStreamEvent("codex", line)
+	if err != nil {
+		t.Fatalf("parseStreamEvent: %v", err)
 	}
-
-	m.runHeadless(t.Context(), a, "test prompt", []string{"Read", "Write"}, false)
-
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
+	if got.Type != "result" {
+		t.Fatalf("Type = %q, want result", got.Type)
 	}
-}
-
-func TestRunHeadlessWithResume(t *testing.T) {
-	m := testManagerWithEmit(t, func(string, any) {})
-
-	a := &Agent{
-		ID:        "test-resume",
-		State:     StateRunning,
-		SessionID: "prev-session-id",
-	}
-
-	m.runHeadless(t.Context(), a, "test prompt", nil, false)
-
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
-	}
-}
-
-func TestRunHeadlessCancelledContext(t *testing.T) {
-	// Use an already-expired deadline to simulate a cancelled context
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-
-	m := NewManager(ctx, tmux.NewManager(), func(string, any) {}, discardLogger(), t.TempDir())
-
-	a := &Agent{
-		ID:    "test-cancelled",
-		State: StateRunning,
-	}
-
-	m.runHeadless(ctx, a, "test prompt", nil, false)
-
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
+	if got.InputTokens != 16012 || got.OutputTokens != 18 {
+		t.Fatalf("tokens = %d/%d, want 16012/18", got.InputTokens, got.OutputTokens)
 	}
 }

@@ -92,9 +92,13 @@ jobs:
         run: cd frontend && npm ci && npm audit --audit-level moderate
 
   e2e:
-    name: E2E Tests
+    name: E2E Tests (${{ matrix.provider }})
     runs-on: macos-15
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [claude, codex]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -113,6 +117,10 @@ jobs:
         run: |
           mkdir -p "$SYNAPSE_HOME/tasks"
           cp frontend/e2e/fixtures/*.md "$SYNAPSE_HOME/tasks/"
+          cat > "$SYNAPSE_HOME/config.yaml" <<EOF
+          agent:
+            provider: ${{ matrix.provider }}
+          EOF
         env:
           SYNAPSE_HOME: /tmp/synapse-e2e
 
@@ -148,6 +156,7 @@ jobs:
         run: cd frontend && npx playwright test --reporter=github
         env:
           SYNAPSE_HOME: /tmp/synapse-e2e
+          SYNAPSE_E2E_PROVIDER: ${{ matrix.provider }}
 
       - name: Dump wails dev log
         if: failure()
@@ -156,6 +165,6 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.provider }}
           path: frontend/test-results/
           retention-days: 7

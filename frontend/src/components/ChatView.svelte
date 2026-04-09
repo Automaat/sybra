@@ -133,7 +133,7 @@
     {#if isRunning && events.length > 0}
       <div class="flex items-center gap-2 text-xs text-surface-500">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
-        Claude is thinking...
+        Agent is thinking...
       </div>
     {/if}
   </div>
