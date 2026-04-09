@@ -20,17 +20,18 @@ const (
 
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
-	ID        string
-	Title     string
-	Status    string
-	Tags      []string
-	AgentMode string
-	ProjectID string
-	PRNumber  int
-	Branch    string
-	Body      string
-	Plan      string
-	Workflow  *Execution
+	ID           string
+	Title        string
+	Status       string
+	Tags         []string
+	AgentMode    string
+	ProjectID    string
+	PRNumber     int
+	Branch       string
+	Body         string
+	Plan         string
+	PlanCritique string
+	Workflow     *Execution
 }
 
 // TaskProvider reads and updates tasks.

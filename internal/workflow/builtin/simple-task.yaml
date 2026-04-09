@@ -73,6 +73,58 @@ steps:
         with the revised plan, set status back to plan-review, and wait again.
         {{- end }}
     next:
+      - goto: maybe_critique
+
+  # Branch around critique_plan when the task is tagged `nocritic`.
+  # Substring match on the comma-joined tag list (see workflow/condition.go).
+  - id: maybe_critique
+    name: Critique Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: nocritic
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+
+  - id: critique_plan
+    name: Critique Plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Critique the plan for task {{.Task.ID}} using the /plan-critic skill.
+
+        Steps:
+          1. Run: synapse-cli --json get {{.Task.ID}}
+          2. Extract the .plan field from the JSON output and write it to
+             /tmp/synapse-plan-{{.Task.ID}}.md
+          3. Invoke: /plan-critic /tmp/synapse-plan-{{.Task.ID}}.md
+          4. Capture the full markdown Plan Review report you produce and
+             write it to /tmp/synapse-critique-{{.Task.ID}}.md
+          5. Save it: synapse-cli update {{.Task.ID}} --plan-critique-file /tmp/synapse-critique-{{.Task.ID}}.md
+
+        Do NOT modify the plan. Do NOT change the task status. Your only
+        side effect is writing the critique sidecar via synapse-cli.
+      allowed_tools:
+        - Bash
+        - Read
+        - Grep
+        - Glob
+        - Write
+        - Skill
+        - Agent
+    next:
       - goto: review_plan
 
   - id: review_plan

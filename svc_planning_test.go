@@ -413,6 +413,13 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Tag the task `nocritic` so the workflow's maybe_critique branch
+	// routes directly to review_plan instead of trying to launch a
+	// plan-critic agent (which would fail in this lightweight test setup).
+	if _, err := app.tasks.Update(created.ID, map[string]any{"tags": []string{"nocritic"}}); err != nil {
+		t.Fatal(err)
+	}
+
 	// Park the workflow in the plan step (the builtin simple-task
 	// plan step declares wait_for_status: plan-review).
 	if _, err := app.tasks.Update(created.ID, map[string]any{

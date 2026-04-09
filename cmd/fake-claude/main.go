@@ -13,6 +13,7 @@
 //   - no_result: system + assistant, exit 0 (no result event)
 //   - triage: runs synapse-cli to set status=todo, tags=small, emits result
 //   - triage_to_planning: runs synapse-cli to set status=planning, tags=large
+//   - triage_to_planning_nocritic: like triage_to_planning but adds nocritic tag
 //   - implement: emits result with "PR created" text
 //   - evaluate: runs synapse-cli to set status=in-review, emits result
 package main
@@ -67,6 +68,14 @@ func main() {
 			runCLI("update", taskID, "--status", "planning", "--tags", "large")
 		}
 		emitResult("Triage complete. Set status=planning, tags=large.")
+
+	case "triage_to_planning_nocritic":
+		emitSystem()
+		emitAssistant("Triaging task...")
+		if taskID != "" {
+			runCLI("update", taskID, "--status", "planning", "--tags", "large,nocritic")
+		}
+		emitResult("Triage complete. Set status=planning, tags=large,nocritic.")
 
 	case "implement":
 		emitSystem()

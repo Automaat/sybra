@@ -55,17 +55,18 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 
 func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
-		ID:        t.ID,
-		Title:     t.Title,
-		Status:    string(t.Status),
-		Tags:      t.Tags,
-		AgentMode: t.AgentMode,
-		ProjectID: t.ProjectID,
-		PRNumber:  t.PRNumber,
-		Branch:    t.Branch,
-		Body:      t.Body,
-		Plan:      t.Plan,
-		Workflow:  t.Workflow,
+		ID:           t.ID,
+		Title:        t.Title,
+		Status:       string(t.Status),
+		Tags:         t.Tags,
+		AgentMode:    t.AgentMode,
+		ProjectID:    t.ProjectID,
+		PRNumber:     t.PRNumber,
+		Branch:       t.Branch,
+		Body:         t.Body,
+		Plan:         t.Plan,
+		PlanCritique: t.PlanCritique,
+		Workflow:     t.Workflow,
 	}
 }
 

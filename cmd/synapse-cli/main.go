@@ -166,6 +166,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.Plan != "" {
 		fmt.Printf("\n## Plan\n\n%s\n", t.Plan)
 	}
+	if t.PlanCritique != "" {
+		fmt.Printf("\n## Plan Critique\n\n%s\n", t.PlanCritique)
+	}
 	return 0
 }
 
@@ -174,6 +177,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
 	plan := fs.String("plan", "", "plan content markdown")
+	planCritique := fs.String("plan-critique", "", "plan critique markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
@@ -222,6 +226,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	if *plan != "" {
 		updates["plan"] = *plan
 	}
+	if *planCritique != "" {
+		updates["plan_critique"] = *planCritique
+	}
 	if len(updates) > 0 {
 		t, err = s.Update(t.ID, updates)
 		if err != nil {
@@ -248,6 +255,8 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	body := fs.String("body", "", "new body")
 	plan := fs.String("plan", "", "plan content markdown (empty string clears plan)")
 	planFile := fs.String("plan-file", "", "path to file with plan content")
+	planCritique := fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)")
+	planCritiqueFile := fs.String("plan-critique-file", "", "path to file with plan critique content")
 	mode := fs.String("mode", "", "new agent mode")
 	ttype := fs.String("type", "", "new task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
@@ -273,23 +282,11 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	if *body != "" {
 		updates["body"] = *body
 	}
-	switch {
-	case *planFile != "":
-		data, readErr := os.ReadFile(*planFile)
-		if readErr != nil {
-			return fatal(jsonOut, "read plan file: %v", readErr)
-		}
-		updates["plan"] = string(data)
-	case *plan != "":
-		updates["plan"] = *plan
-	default:
-		// Check if --plan was explicitly passed as empty string to clear.
-		// flag.Visit iterates only flags that were explicitly set.
-		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "plan" {
-				updates["plan"] = ""
-			}
-		})
+	if err := applyFileOrStringUpdate(fs, updates, "plan", "plan", *plan, *planFile); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if err := applyFileOrStringUpdate(fs, updates, "plan-critique", "plan_critique", *planCritique, *planCritiqueFile); err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
 	if *mode != "" {
 		updates["agent_mode"] = *mode
@@ -350,6 +347,30 @@ func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	fmt.Printf("Deleted task %s\n", args[0])
 	return 0
+}
+
+// applyFileOrStringUpdate populates an updates map from a paired
+// `--<flag>` / `--<flag>-file` flag pair. File takes precedence; an
+// explicitly empty string flag clears the value (matches the existing
+// `--plan` clear-on-empty semantics).
+func applyFileOrStringUpdate(fs *flag.FlagSet, updates map[string]any, flagName, updateKey, strVal, fileVal string) error {
+	switch {
+	case fileVal != "":
+		data, err := os.ReadFile(fileVal)
+		if err != nil {
+			return fmt.Errorf("read %s file: %w", flagName, err)
+		}
+		updates[updateKey] = string(data)
+	case strVal != "":
+		updates[updateKey] = strVal
+	default:
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == flagName {
+				updates[updateKey] = ""
+			}
+		})
+	}
+	return nil
 }
 
 func filterStatus(tasks []task.Task, status string) []task.Task {
