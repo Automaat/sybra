@@ -77,10 +77,10 @@ type agentAdapter struct {
 	tasks     *task.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree bool) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
 	// For implementation agents, use the full orchestrator (handles worktree, project assignment).
 	if role == "" || role == string(agent.RoleImplementation) {
-		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt)
+		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt, oneShot)
 		if err != nil {
 			return "", err
 		}
@@ -102,6 +102,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string,
 		AllowedTools: allowedTools,
 		Model:        model,
 		Dir:          dir,
+		OneShot:      oneShot,
 	}
 
 	// Caller-provided dir takes precedence (e.g. pr-fix flow pre-stages a

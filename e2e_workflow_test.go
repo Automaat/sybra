@@ -563,6 +563,68 @@ func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
 	}
 }
 
+// TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate locks in the fix
+// for interactive implement steps stalling the workflow. Before the fix, a
+// conversational claude agent would emit its result event, flip to
+// StatePaused, and sit forever waiting for more stdin — cmd.Wait() never
+// returned, onComplete never fired, and the workflow was stranded on
+// `implement` with the task pinned at in-progress. Tasks never reached
+// the evaluator, so in-review was unreachable.
+//
+// The fix makes interactive run_agent steps (no reuse_agent, no
+// wait_for_status) one-shot: the runner closes stdin after the first
+// `result` event so the claude process exits naturally, onComplete fires,
+// and the workflow advances to evaluate. The `interactive_implement`
+// scenario in fake-claude blocks on stdin until EOF, faithfully
+// reproducing real conversational behavior.
+func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
+	// triage (sets status=todo) → interactive_implement (conversational,
+	// blocks on stdin) → evaluate (sets status=in-review).
+	env := setupE2EMulti(t, []string{"triage", "interactive_implement", "evaluate"})
+
+	created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the one-shot fix this wait would time out — the implement
+	// agent would sit paused forever and the workflow would never reach
+	// evaluate. 30s is plenty; the full path is < 1s when healthy.
+	waitFor(t, 30*time.Second, "workflow completes after interactive implement", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q (step %q), want completed",
+			tk.Workflow.State, tk.Workflow.CurrentStep)
+	}
+	// Evaluate sets status to in-review — the whole point of the fix is
+	// that interactive tasks can now reach this state automatically.
+	if tk.Status != task.StatusInReview {
+		t.Errorf("task status = %q, want in-review", tk.Status)
+	}
+
+	// Verify both the interactive implement and the headless evaluate ran.
+	seen := map[string]bool{}
+	for _, r := range tk.Workflow.StepHistory {
+		seen[r.StepID] = true
+	}
+	for _, want := range []string{"triage", "implement", "evaluate"} {
+		if !seen[want] {
+			t.Errorf("missing step %q in history, got %v", want, seen)
+		}
+	}
+}
+
 func TestE2E_RetryCount(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EMultiProvider(t, p.provider, []string{"fail_exit", "fail_exit", "fail_exit", "success", "success", "success"})

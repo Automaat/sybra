@@ -15,12 +15,17 @@
 //   - triage_to_planning: runs synapse-cli to set status=planning, tags=large
 //   - triage_to_planning_nocritic: like triage_to_planning but adds nocritic tag
 //   - implement: emits result with "PR created" text
+//   - interactive_implement: emits result then blocks on stdin until EOF,
+//     simulating a real conversational claude agent that stays alive between
+//     turns. Exits when the parent closes stdin — e.g. the one-shot runner
+//     path that closes stdin after the first result event.
 //   - evaluate: runs synapse-cli to set status=in-review, emits result
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -81,6 +86,17 @@ func main() {
 		emitSystem()
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
+
+	case "interactive_implement":
+		emitSystem()
+		emitAssistant("Implementing interactively...")
+		emitResult("Implementation done. PR created")
+		// Block on stdin so we mirror a real conversational claude agent
+		// that waits for more input between turns. The runner with
+		// OneShot=true closes our stdin after reading the result event,
+		// unblocking this read and letting the process exit — which is
+		// exactly the signal path the one-shot fix relies on.
+		_, _ = io.Copy(io.Discard, os.Stdin)
 
 	case "evaluate":
 		emitSystem()

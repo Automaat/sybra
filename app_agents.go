@@ -60,7 +60,7 @@ func newAgentOrchestrator(
 	}
 }
 
-func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
+func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool) (*agent.Agent, error) {
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return nil, err
@@ -100,6 +100,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string) (*agent.Agen
 		Dir:                dir,
 		Model:              "sonnet",
 		RequirePermissions: requirePerm,
+		OneShot:            oneShot,
 	})
 	if err != nil {
 		return nil, err
