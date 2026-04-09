@@ -908,8 +908,8 @@ export namespace task {
 	    // Go type: time
 	    updatedAt: any;
 	    body: string;
-	    plan: string;
-	    planCritique: string;
+	    plan?: string;
+	    planCritique?: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1342,3 +1342,4 @@ export namespace workflow {
 	
 
 }
+
