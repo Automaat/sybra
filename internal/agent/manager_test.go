@@ -732,7 +732,7 @@ func TestFindRunningAgentForTask_FiltersByRoleAndTask(t *testing.T) {
 // exactly what SendPromptToAgent writes to the conversational agent's
 // stdin. Returns the agent (already registered in m) and a channel that
 // receives one line per message written.
-func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (*Agent, <-chan string) {
+func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, stdinLines <-chan string) {
 	t.Helper()
 	r, w := io.Pipe()
 	a := &Agent{
