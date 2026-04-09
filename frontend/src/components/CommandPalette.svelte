@@ -24,7 +24,7 @@
     { type: 'page', id: 'chats', title: 'Chats' },
     { type: 'page', id: 'agents', title: 'Agents' },
     { type: 'page', id: 'github', title: 'GitHub' },
-    { type: 'page', id: 'plan-reviews', title: 'Plan Reviews' },
+    { type: 'page', id: 'reviews', title: 'Reviews' },
     { type: 'page', id: 'stats', title: 'Stats' },
     { type: 'page', id: 'settings', title: 'Settings' },
     { type: 'page', id: 'workflows', title: 'Workflows' },

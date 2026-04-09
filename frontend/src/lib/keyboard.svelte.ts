@@ -40,8 +40,8 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
     ],
   },
   {
-    scope: 'plan-reviews',
-    label: 'Plan Reviews',
+    scope: 'reviews',
+    label: 'Reviews',
     shortcuts: [
       { keys: 'A', description: 'Approve selected plan' },
       { keys: 'R', description: 'Reject selected plan' },

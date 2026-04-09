@@ -19,8 +19,7 @@
   import Dashboard from './pages/Dashboard.svelte'
   import GitHub from './pages/GitHub.svelte'
   import Stats from './pages/Stats.svelte'
-  import PlanReviews from './pages/PlanReviews.svelte'
-  import TestPlanReviews from './pages/TestPlanReviews.svelte'
+  import Reviews from './pages/Reviews.svelte'
   import Settings from './pages/Settings.svelte'
   import ChatList from './pages/ChatList.svelte'
   import ChatDetail from './pages/ChatDetail.svelte'
@@ -41,14 +40,13 @@
     | { kind: 'agent-detail'; agentId: string }
     | { kind: 'github' }
     | { kind: 'stats' }
-    | { kind: 'plan-reviews' }
-    | { kind: 'test-plan-reviews' }
+    | { kind: 'reviews' }
     | { kind: 'settings' }
     | { kind: 'workflows' }
     | { kind: 'workflow-detail'; workflowId: string }
 
   let page = $state<Page>({ kind: 'dashboard' })
-  type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'plan-reviews' | 'test-plan-reviews' | 'stats' | 'settings' | 'workflows'
+  type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'reviews' | 'stats' | 'settings' | 'workflows'
 
   function handlePaletteNavigate(kind: string, params?: { taskId?: string; projectId?: string }): void {
     commandPaletteOpen = false
@@ -84,8 +82,7 @@
     page.kind === 'agents' ? 'Agents' :
     page.kind === 'github' ? 'GitHub' :
     page.kind === 'stats' ? 'Stats' :
-    page.kind === 'plan-reviews' ? 'Plan Reviews' :
-    page.kind === 'test-plan-reviews' ? 'Test Plan Reviews' :
+    page.kind === 'reviews' ? 'Reviews' :
     page.kind === 'settings' ? 'Settings' :
     page.kind === 'workflows' ? 'Workflows' :
     page.kind === 'workflow-detail' ? 'Workflow Editor' :
@@ -192,7 +189,7 @@
       }
       if (e.metaKey && e.key === '6') {
         e.preventDefault()
-        page = { kind: 'plan-reviews' }
+        page = { kind: 'reviews' }
       }
       if (e.metaKey && e.key === '7') {
         e.preventDefault()
@@ -289,32 +286,18 @@
         <Navigation.TriggerText>GitHub</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
-        onclick={() => (page = { kind: 'plan-reviews' })}
-        data-active={page.kind === 'plan-reviews' || undefined}
+        onclick={() => (page = { kind: 'reviews' })}
+        data-active={page.kind === 'reviews' || undefined}
       >
         <div class="relative">
           <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
           </svg>
-          {#if taskStore.byStatus('plan-review').length > 0}
-            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning-500 text-[9px] font-bold text-white">{taskStore.byStatus('plan-review').length}</span>
+          {#if taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length > 0}
+            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning-500 text-[9px] font-bold text-white">{taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length}</span>
           {/if}
         </div>
         <Navigation.TriggerText>Reviews</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'test-plan-reviews' })}
-        data-active={page.kind === 'test-plan-reviews' || undefined}
-      >
-        <div class="relative">
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
-          </svg>
-          {#if taskStore.byStatus('test-plan-review').length > 0}
-            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-secondary-500 text-[9px] font-bold text-white">{taskStore.byStatus('test-plan-review').length}</span>
-          {/if}
-        </div>
-        <Navigation.TriggerText>Test Reviews</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
         onclick={() => (page = { kind: 'workflows' })}
@@ -380,7 +363,7 @@
           onback={() => (page = { kind: 'task-list' })}
           onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
           ondelete={() => (page = { kind: 'task-list' })}
-          onreviewplan={() => (page = { kind: 'plan-reviews' })}
+          onreviewplan={() => (page = { kind: 'reviews' })}
         />
       {:else if page.kind === 'project-list'}
         <ProjectList
@@ -416,10 +399,8 @@
         />
       {:else if page.kind === 'github'}
         <GitHub />
-      {:else if page.kind === 'plan-reviews'}
-        <PlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
-      {:else if page.kind === 'test-plan-reviews'}
-        <TestPlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
+      {:else if page.kind === 'reviews'}
+        <Reviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
       {:else if page.kind === 'stats'}
         <Stats />
       {:else if page.kind === 'workflows'}
