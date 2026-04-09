@@ -39,7 +39,7 @@ async function goToTaskList(page: Page) {
 async function goToPlanReviews(page: Page) {
   await page.goto('/')
   await page
-    .locator('[data-part="trigger"]', { hasText: /Reviews/ })
+    .locator('[data-part="trigger"]', { hasText: /^\d*\s*Reviews$/ })
     .click()
   await page.waitForSelector('button, :text("No plans")', { timeout: 10_000 })
 }
@@ -109,7 +109,7 @@ test.describe('Plan Review Workflow', () => {
     await page.goto('/')
 
     const reviewsNav = page.locator('[data-part="trigger"]', {
-      hasText: /Reviews/,
+      hasText: /^\d*\s*Reviews$/,
     })
     await expect(reviewsNav).toBeVisible()
   })
