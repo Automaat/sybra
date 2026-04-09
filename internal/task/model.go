@@ -10,19 +10,22 @@ import (
 type Status string
 
 const (
-	StatusNew           Status = "new"
-	StatusTodo          Status = "todo"
-	StatusInProgress    Status = "in-progress"
-	StatusInReview      Status = "in-review"
-	StatusPlanning      Status = "planning"
-	StatusPlanReview    Status = "plan-review"
-	StatusHumanRequired Status = "human-required"
-	StatusDone          Status = "done"
+	StatusNew            Status = "new"
+	StatusTodo           Status = "todo"
+	StatusInProgress     Status = "in-progress"
+	StatusInReview       Status = "in-review"
+	StatusPlanning       Status = "planning"
+	StatusPlanReview     Status = "plan-review"
+	StatusTesting        Status = "testing"
+	StatusTestPlanReview Status = "test-plan-review"
+	StatusHumanRequired  Status = "human-required"
+	StatusDone           Status = "done"
 )
 
 var validStatuses = map[Status]bool{
 	StatusNew: true, StatusTodo: true, StatusInProgress: true,
 	StatusInReview: true, StatusPlanning: true, StatusPlanReview: true,
+	StatusTesting: true, StatusTestPlanReview: true,
 	StatusHumanRequired: true, StatusDone: true,
 }
 
@@ -30,7 +33,9 @@ var validStatuses = map[Status]bool{
 func AllStatuses() []Status {
 	return []Status{
 		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
-		StatusInProgress, StatusInReview, StatusHumanRequired, StatusDone,
+		StatusInProgress, StatusInReview,
+		StatusTesting, StatusTestPlanReview,
+		StatusHumanRequired, StatusDone,
 	}
 }
 

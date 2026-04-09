@@ -5,6 +5,8 @@ export type TaskStatus =
   | 'plan-review'
   | 'in-progress'
   | 'in-review'
+  | 'testing'
+  | 'test-plan-review'
   | 'human-required'
   | 'done'
 
@@ -54,6 +56,18 @@ export const ALL_STATUSES: StatusMeta[] = [
     pillClasses: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200',
   },
   {
+    value: 'testing',
+    label: 'Testing',
+    badgeClasses: 'bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200',
+    pillClasses: 'bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200',
+  },
+  {
+    value: 'test-plan-review',
+    label: 'Test Plan Review',
+    badgeClasses: 'bg-secondary-100 text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300',
+    pillClasses: 'bg-secondary-100 text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300',
+  },
+  {
     value: 'human-required',
     label: 'Human Required',
     badgeClasses: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
@@ -91,6 +105,7 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400', includes: ['planning', 'plan-review'] },
   { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400', includes: [] },
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: [] },
+  { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: [] },
   { status: 'done', label: 'Done', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
 ]

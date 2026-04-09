@@ -10,6 +10,10 @@ import {
   RejectPlan,
   SendPlanMessage,
   HasLivePlanAgent,
+  ApproveTestPlan,
+  RejectTestPlan,
+  SendTestPlanMessage,
+  HasLiveTestPlanAgent,
 } from '../../wailsjs/go/main/PlanningService.js'
 import { task } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
@@ -79,6 +83,26 @@ class TaskStore extends EntityStore<task.Task> {
 
   async hasLivePlanAgent(id: string): Promise<boolean> {
     return HasLivePlanAgent(id)
+  }
+
+  async approveTestPlan(id: string): Promise<task.Task> {
+    const result = await ApproveTestPlan(id)
+    this.set(result.id, result)
+    return result
+  }
+
+  async rejectTestPlan(id: string, feedback: string): Promise<task.Task> {
+    const result = await RejectTestPlan(id, feedback)
+    this.set(result.id, result)
+    return result
+  }
+
+  async sendTestPlanMessage(id: string, message: string): Promise<void> {
+    await SendTestPlanMessage(id, message)
+  }
+
+  async hasLiveTestPlanAgent(id: string): Promise<boolean> {
+    return HasLiveTestPlanAgent(id)
   }
 }
 

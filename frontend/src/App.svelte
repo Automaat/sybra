@@ -20,6 +20,7 @@
   import GitHub from './pages/GitHub.svelte'
   import Stats from './pages/Stats.svelte'
   import PlanReviews from './pages/PlanReviews.svelte'
+  import TestPlanReviews from './pages/TestPlanReviews.svelte'
   import Settings from './pages/Settings.svelte'
   import ChatList from './pages/ChatList.svelte'
   import ChatDetail from './pages/ChatDetail.svelte'
@@ -39,6 +40,7 @@
     | { kind: 'github' }
     | { kind: 'stats' }
     | { kind: 'plan-reviews' }
+    | { kind: 'test-plan-reviews' }
     | { kind: 'settings' }
     | { kind: 'workflows' }
     | { kind: 'workflow-detail'; workflowId: string }
@@ -66,6 +68,7 @@
     page.kind === 'github' ? 'GitHub' :
     page.kind === 'stats' ? 'Stats' :
     page.kind === 'plan-reviews' ? 'Plan Reviews' :
+    page.kind === 'test-plan-reviews' ? 'Test Plan Reviews' :
     page.kind === 'settings' ? 'Settings' :
     page.kind === 'workflows' ? 'Workflows' :
     page.kind === 'workflow-detail' ? 'Workflow Editor' :
@@ -240,6 +243,20 @@
         <Navigation.TriggerText>Reviews</Navigation.TriggerText>
       </Navigation.Trigger>
       <Navigation.Trigger
+        onclick={() => (page = { kind: 'test-plan-reviews' })}
+        data-active={page.kind === 'test-plan-reviews' || undefined}
+      >
+        <div class="relative">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+          </svg>
+          {#if taskStore.byStatus('test-plan-review').length > 0}
+            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-secondary-500 text-[9px] font-bold text-white">{taskStore.byStatus('test-plan-review').length}</span>
+          {/if}
+        </div>
+        <Navigation.TriggerText>Test Reviews</Navigation.TriggerText>
+      </Navigation.Trigger>
+      <Navigation.Trigger
         onclick={() => (page = { kind: 'workflows' })}
         data-active={page.kind === 'workflows' || page.kind === 'workflow-detail' || undefined}
       >
@@ -341,6 +358,8 @@
         <GitHub />
       {:else if page.kind === 'plan-reviews'}
         <PlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
+      {:else if page.kind === 'test-plan-reviews'}
+        <TestPlanReviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
       {:else if page.kind === 'stats'}
         <Stats />
       {:else if page.kind === 'workflows'}

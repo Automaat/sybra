@@ -214,6 +214,17 @@ func (a *App) initStatusHook() {
 				msg = t.Title
 			}
 			a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
+		case string(task.StatusTesting):
+			if a.workflowEngine != nil {
+				if _, err := a.workflowEngine.DispatchEvent(
+					taskID,
+					"task.status_changed",
+					map[string]string{"task.status": string(task.StatusTesting)},
+					nil,
+				); err != nil {
+					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
+				}
+			}
 		}
 	})
 }

@@ -11,6 +11,8 @@ const (
 	RoleEval           Role = "eval"
 	RolePRFix          Role = "pr-fix"
 	RoleReview         Role = "review"
+	RoleTestPlan       Role = "test-plan"
+	RoleTestRunner     Role = "test-runner"
 	RoleImplementation Role = "implementation"
 )
 
@@ -31,7 +33,7 @@ func RoleFromName(name string) Role {
 	}
 	r := Role(prefix)
 	switch r {
-	case RoleTriage, RolePlan, RoleEval, RolePRFix, RoleReview:
+	case RoleTriage, RolePlan, RoleEval, RolePRFix, RoleReview, RoleTestPlan, RoleTestRunner:
 		return r
 	default:
 		return RoleImplementation

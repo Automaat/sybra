@@ -6,8 +6,16 @@ export function ApprovePlan(arg1) {
   return window['go']['main']['PlanningService']['ApprovePlan'](arg1);
 }
 
+export function ApproveTestPlan(arg1) {
+  return window['go']['main']['PlanningService']['ApproveTestPlan'](arg1);
+}
+
 export function HasLivePlanAgent(arg1) {
   return window['go']['main']['PlanningService']['HasLivePlanAgent'](arg1);
+}
+
+export function HasLiveTestPlanAgent(arg1) {
+  return window['go']['main']['PlanningService']['HasLiveTestPlanAgent'](arg1);
 }
 
 export function PlanTask(arg1) {
@@ -18,8 +26,16 @@ export function RejectPlan(arg1, arg2) {
   return window['go']['main']['PlanningService']['RejectPlan'](arg1, arg2);
 }
 
+export function RejectTestPlan(arg1, arg2) {
+  return window['go']['main']['PlanningService']['RejectTestPlan'](arg1, arg2);
+}
+
 export function SendPlanMessage(arg1, arg2) {
   return window['go']['main']['PlanningService']['SendPlanMessage'](arg1, arg2);
+}
+
+export function SendTestPlanMessage(arg1, arg2) {
+  return window['go']['main']['PlanningService']['SendTestPlanMessage'](arg1, arg2);
 }
 
 export function TriageTask(arg1) {
