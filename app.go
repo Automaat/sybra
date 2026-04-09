@@ -323,6 +323,7 @@ func (a *App) initWorkflowEngine() {
 		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
 		a.logger,
 	)
+	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 }
 
 func (a *App) initApprovalServer(emit func(string, any)) {

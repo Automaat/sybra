@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
 )
@@ -12,6 +13,7 @@ import (
 var (
 	_ workflow.TaskProvider  = (*taskAdapter)(nil)
 	_ workflow.AgentLauncher = (*agentAdapter)(nil)
+	_ workflow.PRLinker      = (*prLinkerAdapter)(nil)
 )
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
@@ -70,8 +72,21 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Body:         t.Body,
 		Plan:         t.Plan,
 		PlanCritique: t.PlanCritique,
+		Issue:        t.Issue,
 		Workflow:     t.Workflow,
 	}
+}
+
+// prLinkerAdapter wires the workflow engine's PRLinker interface to
+// the github package. Stateless — all state lives in `gh` / GitHub.
+type prLinkerAdapter struct{}
+
+func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error) {
+	return github.FetchPRClosingIssues(repo, prNumber)
+}
+
+func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
+	return github.EditPRBody(repo, prNumber, body)
 }
 
 // agentAdapter bridges agent.Manager + AgentOrchestrator → workflow.AgentLauncher.

@@ -897,6 +897,67 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 	}, nil
 }
 
+// FetchPRClosingIssues returns the issue numbers GitHub parses from
+// the PR body as closing (via keywords like "Closes #N", "Fixes #N"),
+// restricted to same-repo references, plus the current PR body.
+// Cross-repo closing references are ignored by the filter so callers
+// can compare numbers directly against their own repo context.
+func FetchPRClosingIssues(repo string, number int) (issues []int, body string, err error) {
+	return fetchPRClosingIssuesWith(defaultExecer, repo, number)
+}
+
+func fetchPRClosingIssuesWith(e execer, repo string, number int) (issues []int, body string, err error) {
+	out, runErr := e.run("pr", "view", fmt.Sprintf("%d", number),
+		"--repo", repo, "--json", "closingIssuesReferences,body")
+	if runErr != nil {
+		return nil, "", fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), runErr)
+	}
+	var raw struct {
+		Body                    string `json:"body"`
+		ClosingIssuesReferences []struct {
+			Number     int `json:"number"`
+			Repository struct {
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repository"`
+		} `json:"closingIssuesReferences"`
+	}
+	if jsonErr := json.Unmarshal(out, &raw); jsonErr != nil {
+		return nil, "", fmt.Errorf("parse pr closing issues: %w", jsonErr)
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	var wantOwner, wantName string
+	if len(parts) == 2 {
+		wantOwner, wantName = parts[0], parts[1]
+	}
+	for _, ref := range raw.ClosingIssuesReferences {
+		// Accept any ref whose repository matches the PR repo, or refs
+		// with empty repository metadata (older gh versions).
+		refOwner := ref.Repository.Owner.Login
+		refName := ref.Repository.Name
+		if (refOwner == "" && refName == "") || (refOwner == wantOwner && refName == wantName) {
+			issues = append(issues, ref.Number)
+		}
+	}
+	return issues, raw.Body, nil
+}
+
+// EditPRBody replaces the body of a pull request.
+func EditPRBody(repo string, number int, body string) error {
+	return editPRBodyWith(defaultExecer, repo, number, body)
+}
+
+func editPRBodyWith(e execer, repo string, number int, body string) error {
+	out, err := e.run("pr", "edit", fmt.Sprintf("%d", number),
+		"--repo", repo, "--body", body)
+	if err != nil {
+		return fmt.Errorf("gh pr edit %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // ViewerLogin returns the authenticated GitHub user's login.
 func ViewerLogin() string {
 	return viewerLogin(defaultExecer)
