@@ -191,18 +191,12 @@ func TestConvertPRs_ciStatus(t *testing.T) {
 			if tt.hasCI {
 				node.Commits.Nodes = []struct {
 					Commit struct {
-						StatusCheckRollup *struct {
-							State string `json:"state"`
-						} `json:"statusCheckRollup"`
+						StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 					} `json:"commit"`
 				}{
 					{Commit: struct {
-						StatusCheckRollup *struct {
-							State string `json:"state"`
-						} `json:"statusCheckRollup"`
-					}{StatusCheckRollup: &struct {
-						State string `json:"state"`
-					}{State: tt.state}}},
+						StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
+					}{StatusCheckRollup: &gqlStatusCheckRollup{State: tt.state}}},
 				}
 			}
 
@@ -844,6 +838,120 @@ func TestParsePRURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseIssueURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		url        string
+		wantRepo   string
+		wantNumber int
+	}{
+		{
+			name:       "valid issue URL",
+			url:        "https://github.com/owner/repo/issues/42",
+			wantRepo:   "owner/repo",
+			wantNumber: 42,
+		},
+		{
+			name:       "valid issue URL large number",
+			url:        "https://github.com/org/project/issues/1234",
+			wantRepo:   "org/project",
+			wantNumber: 1234,
+		},
+		{
+			name: "PR URL not matched",
+			url:  "https://github.com/owner/repo/pull/42",
+		},
+		{
+			name: "not github URL",
+			url:  "https://gitlab.com/owner/repo/issues/42",
+		},
+		{
+			name: "issue number zero",
+			url:  "https://github.com/owner/repo/issues/0",
+		},
+		{
+			name: "non-numeric issue number",
+			url:  "https://github.com/owner/repo/issues/abc",
+		},
+		{
+			name: "missing issue number",
+			url:  "https://github.com/owner/repo/issues/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo, number := ParseIssueURL(tt.url)
+			if repo != tt.wantRepo {
+				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+			}
+			if number != tt.wantNumber {
+				t.Errorf("number = %d, want %d", number, tt.wantNumber)
+			}
+		})
+	}
+}
+
+func TestConvertRenovatePRs(t *testing.T) {
+	t.Parallel()
+
+	makeNode := func(login, typeName string) gqlPR {
+		n := gqlPR{Number: 1, Title: "chore: update dep", URL: "https://github.com/o/r/pull/1"}
+		n.Author.Login = login
+		n.Author.Type = typeName
+		n.Repository.Name = "r"
+		n.Repository.NameWithOwner = "o/r"
+		return n
+	}
+
+	t.Run("includes renovate bot PR", func(t *testing.T) {
+		t.Parallel()
+		node := makeNode("renovate[bot]", "Bot")
+		prs := convertRenovatePRs([]gqlPR{node}, "")
+		if len(prs) != 1 {
+			t.Fatalf("got %d PRs, want 1", len(prs))
+		}
+		if prs[0].Author != "renovate[bot]" {
+			t.Errorf("Author = %q, want renovate[bot]", prs[0].Author)
+		}
+	})
+
+	t.Run("extracts check runs from contexts", func(t *testing.T) {
+		t.Parallel()
+		node := makeNode("renovate[bot]", "Bot")
+		node.Commits.Nodes = []struct {
+			Commit struct {
+				StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
+			} `json:"commit"`
+		}{{Commit: struct {
+			StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
+		}{StatusCheckRollup: &gqlStatusCheckRollup{
+			State: "FAILURE",
+			Contexts: struct {
+				Nodes []gqlCheckContext `json:"nodes"`
+			}{Nodes: []gqlCheckContext{
+				{Name: "ci/lint", Status: "COMPLETED", Conclusion: "FAILURE"},
+				{Name: "", Status: "COMPLETED", Conclusion: "SUCCESS"}, // empty name skipped
+			}},
+		}}}}
+		prs := convertRenovatePRs([]gqlPR{node}, "")
+		if len(prs) != 1 {
+			t.Fatalf("got %d PRs, want 1", len(prs))
+		}
+		if prs[0].CIStatus != "FAILURE" {
+			t.Errorf("CIStatus = %q, want FAILURE", prs[0].CIStatus)
+		}
+		if len(prs[0].CheckRuns) != 1 {
+			t.Fatalf("CheckRuns len = %d, want 1 (empty name should be skipped)", len(prs[0].CheckRuns))
+		}
+		if prs[0].CheckRuns[0].Name != "ci/lint" {
+			t.Errorf("CheckRuns[0].Name = %q, want ci/lint", prs[0].CheckRuns[0].Name)
+		}
+	})
 }
 
 func TestFetchPRWith_success(t *testing.T) {
