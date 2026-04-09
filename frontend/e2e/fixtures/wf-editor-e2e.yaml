@@ -1,0 +1,19 @@
+id: wf-editor-e2e
+name: E2E Editor Fixture
+description: Workflow used by workflow-editor.spec.ts
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: not_contains
+      value: skip
+steps:
+  - id: first-step
+    name: First Step
+    type: run_agent
+    config:
+      role: triage
+      model: sonnet
+      prompt: seed prompt
+    next:
+      - goto: ""
