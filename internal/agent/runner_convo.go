@@ -204,12 +204,22 @@ func parseConvoEvent(line []byte) (ConvoEvent, error) {
 		return ConvoEvent{}, fmt.Errorf("unmarshal: %w", err)
 	}
 
+	// scanner.Bytes() aliases the scanner's internal buffer which is
+	// overwritten on the next Scan() call. Copy the bytes into the
+	// ConvoEvent so Raw stays valid after the scanner advances and
+	// downstream marshaling (frontend events, log writes) sees the
+	// original line rather than a stale/partial one. Without the copy
+	// callers hit: json: error calling MarshalJSON for type
+	// json.RawMessage: invalid character '{' after top-level value.
+	rawCopy := make([]byte, len(line))
+	copy(rawCopy, line)
+
 	eventType, _ := raw["type"].(string)
 	event := ConvoEvent{
 		Type:      eventType,
 		Subtype:   strVal(raw, "subtype"),
 		Timestamp: time.Now().UTC(),
-		Raw:       json.RawMessage(line),
+		Raw:       rawCopy,
 	}
 
 	switch eventType {
