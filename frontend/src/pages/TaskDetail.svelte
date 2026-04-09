@@ -26,8 +26,30 @@
 
   const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
 
+  let statusSelectRef = $state<HTMLSelectElement | null>(null)
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onback()
+    if (e.key === 'Escape') {
+      if (editingTitle || editingBody) return
+      onback()
+      return
+    }
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'e') {
+      e.preventDefault()
+      startEditingBody()
+      return
+    }
+    if (e.key === 's') {
+      e.preventDefault()
+      statusSelectRef?.focus()
+    }
+    if (e.key === 'd') {
+      e.preventDefault()
+      deleteTask()
+    }
   }
 
   $effect(() => {
@@ -300,6 +322,7 @@
         {/if}
         <div class="flex items-center gap-2">
           <select
+            bind:this={statusSelectRef}
             class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
             value={t.status}
             onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}

@@ -8,6 +8,7 @@
   let selectedId = $state<string | null>(null)
   let rejectFeedback = $state('')
   let actionLoading = $state(false)
+  let feedbackRef = $state<HTMLTextAreaElement | null>(null)
   let errorMsg = $state('')
   let hasLiveAgent = $state(false)
 
@@ -68,6 +69,55 @@
       actionLoading = false
     }
   }
+
+  function handleKeydown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+
+    if (e.key === 'a' && selectedId && !actionLoading) {
+      e.preventDefault()
+      void approvePlan()
+      return
+    }
+
+    if (e.key === 'r' && selectedId && !actionLoading) {
+      e.preventDefault()
+      void rejectPlan()
+      return
+    }
+
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const tasks = planReviewTasks
+      if (tasks.length === 0) return
+      const idx = selectedId ? tasks.findIndex(t => t.id === selectedId) : -1
+      const next = tasks[Math.min(idx + 1, tasks.length - 1)]
+      if (next) void selectTask(next.id)
+      return
+    }
+
+    if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const tasks = planReviewTasks
+      if (tasks.length === 0) return
+      const idx = selectedId ? tasks.findIndex(t => t.id === selectedId) : tasks.length
+      const prev = tasks[Math.max(idx - 1, 0)]
+      if (prev) void selectTask(prev.id)
+      return
+    }
+
+    if (e.key === 'c' && selectedId) {
+      e.preventDefault()
+      feedbackRef?.focus()
+      return
+    }
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
+  })
 
   async function sendMessage() {
     if (!selectedId || !rejectFeedback.trim()) return
@@ -186,6 +236,7 @@
         {/if}
         <div class="flex items-start gap-3">
           <textarea
+            bind:this={feedbackRef}
             class="flex-1 resize-none rounded-lg border border-surface-300 bg-white p-2.5 text-sm dark:border-surface-600 dark:bg-surface-800"
             rows="2"
             placeholder="Rejection feedback (optional) — unresolved comments are included automatically..."

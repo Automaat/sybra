@@ -6,9 +6,10 @@
   interface Props {
     task: task.Task
     onclick: () => void
+    focused?: boolean
   }
 
-  const { task: t, onclick }: Props = $props()
+  const { task: t, onclick, focused = false }: Props = $props()
 
   let dragging = $state(false)
 
@@ -46,7 +47,8 @@
 <button
   type="button"
   draggable="true"
-  class="w-full rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700 {dragging ? 'opacity-40' : ''}"
+  data-focused-task={focused ? '' : undefined}
+  class="w-full rounded-lg border bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:bg-surface-800 dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40' : ''}"
   onclick={onclick}
   ondragstart={(e) => {
     dragging = true
