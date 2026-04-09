@@ -507,9 +507,7 @@ func (a *App) restartStaleInProgress() {
 		// onAgentComplete can't advance the task back to in-review itself.
 		if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
 			a.logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
-			if _, err := a.tasks.Update(t.ID, map[string]any{
-				"status": string(task.StatusInReview),
-			}); err != nil {
+			if _, err := a.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 				a.logger.Error("restart-stale.revert", "task_id", t.ID, "err", err)
 			}
 			continue

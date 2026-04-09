@@ -40,16 +40,20 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 }
 
 func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
-	updates := map[string]any{"status": status}
-	if reason != "" {
-		updates["status_reason"] = reason
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
 	}
-	_, err := a.tasks.Update(id, updates)
+	u := task.Update{Status: &st}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
 	return err
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, map[string]any{"workflow": wf})
+	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
 }
 

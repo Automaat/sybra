@@ -85,7 +85,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	// prep leaves the task stuck at in-progress with no running agent,
 	// which triggers restart-stale respawn loops on every app restart.
 	if t.Status != task.StatusInProgress {
-		if _, err := o.tasks.Update(taskID, map[string]any{"status": string(task.StatusInProgress)}); err != nil {
+		if _, err := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 			o.logger.Error("task.auto-status", "task_id", taskID, "err", err)
 		}
 	}
@@ -126,7 +126,7 @@ func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
 		return t
 	}
 	t.ProjectID = projects[0].ID
-	if _, err := o.tasks.Update(t.ID, map[string]any{"project_id": t.ProjectID}); err != nil {
+	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
 		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 	} else {
 		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)

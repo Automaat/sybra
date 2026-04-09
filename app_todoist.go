@@ -97,14 +97,15 @@ func (h *TodoistHandler) importNewTasks() (int, error) {
 			continue
 		}
 
-		updates := map[string]any{"todoist_id": rt.ID}
+		todoID := rt.ID
+		u := task.Update{TodoistID: &todoID}
 		tags := mapPriorityTag(rt.Priority)
 		tags = append(tags, rt.Labels...)
 		if len(tags) > 0 {
-			updates["tags"] = tags
+			u.Tags = &tags
 		}
 
-		if _, updateErr := h.tasks.Update(t.ID, updates); updateErr != nil {
+		if _, updateErr := h.tasks.Update(t.ID, u); updateErr != nil {
 			h.logger.Error("todoist.update-task", "task_id", t.ID, "err", updateErr)
 		}
 

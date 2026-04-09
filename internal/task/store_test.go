@@ -176,10 +176,10 @@ func TestStoreUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := store.Update(created.ID, map[string]any{
-		"title":  "Updated",
-		"status": "done",
-		"body":   "new body",
+	updated, err := store.Update(created.ID, Update{
+		Title:  Ptr("Updated"),
+		Status: Ptr(StatusDone),
+		Body:   Ptr("new body"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -255,8 +255,8 @@ func TestStoreUpdateTags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := store.Update(created.ID, map[string]any{
-		"tags": []string{"backend", "auth"},
+	updated, err := store.Update(created.ID, Update{
+		Tags: Ptr([]string{"backend", "auth"}),
 	})
 	if err != nil {
 		t.Fatalf("update tags: %v", err)
@@ -291,8 +291,8 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := store.Update(created.ID, map[string]any{
-		"agent_mode": "interactive",
+	updated, err := store.Update(created.ID, Update{
+		AgentMode: Ptr("interactive"),
 	})
 	if err != nil {
 		t.Fatalf("update agent_mode: %v", err)
@@ -314,8 +314,8 @@ func TestStoreUpdateProjectID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := store.Update(created.ID, map[string]any{
-		"project_id": "owner/repo",
+	updated, err := store.Update(created.ID, Update{
+		ProjectID: Ptr("owner/repo"),
 	})
 	if err != nil {
 		t.Fatalf("update project_id: %v", err)
@@ -345,9 +345,9 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := store.Update(created.ID, map[string]any{
-		"status":        "human-required",
-		"status_reason": "agent failed with errors",
+	updated, err := store.Update(created.ID, Update{
+		Status:       Ptr(StatusHumanRequired),
+		StatusReason: Ptr("agent failed with errors"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -371,7 +371,7 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 
 	// Verify reason clears when status changes without explicit reason
-	updated2, err := store.Update(created.ID, map[string]any{"status": "in-progress"})
+	updated2, err := store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update2: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestStoreUpdateNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = store.Update("nonexistent", map[string]any{"title": "x"})
+	_, err = store.Update("nonexistent", Update{Title: Ptr("x")})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}

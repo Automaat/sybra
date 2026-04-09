@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/task"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -97,17 +98,17 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 		// Task already exists with the issue URL as title (manually created).
 		// Enrich it with the real title and link instead of creating a duplicate.
 		if taskID, exists := urlTitleTasks[issue.URL]; exists {
-			updates := map[string]any{
-				"title": issue.Title,
-				"issue": issue.URL,
+			u := task.Update{
+				Title: task.Ptr(issue.Title),
+				Issue: task.Ptr(issue.URL),
 			}
 			if issue.Body != "" {
-				updates["body"] = issue.Body
+				u.Body = task.Ptr(issue.Body)
 			}
 			if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
-				updates["project_id"] = issue.Repository
+				u.ProjectID = task.Ptr(issue.Repository)
 			}
-			if _, err := a.tasks.Update(taskID, updates); err != nil {
+			if _, err := a.tasks.Update(taskID, u); err != nil {
 				a.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
 			} else {
 				a.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
@@ -121,20 +122,21 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 			continue
 		}
 
-		updates := map[string]any{
-			"issue":  issue.URL,
-			"status": "todo",
+		u := task.Update{
+			Issue:  task.Ptr(issue.URL),
+			Status: task.Ptr(task.StatusTodo),
 		}
 
 		if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
-			updates["project_id"] = issue.Repository
+			u.ProjectID = task.Ptr(issue.Repository)
 		}
 
 		if len(issue.Labels) > 0 {
-			updates["tags"] = issue.Labels
+			labels := issue.Labels
+			u.Tags = &labels
 		}
 
-		if _, err := a.tasks.Update(t.ID, updates); err != nil {
+		if _, err := a.tasks.Update(t.ID, u); err != nil {
 			a.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
 		}
 

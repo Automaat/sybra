@@ -38,7 +38,7 @@ func TestPlanningService_PlanTask_NoopWithActiveWorkflow(t *testing.T) {
 	}
 
 	// Set up a workflow manually.
-	if _, err := taskSvc.tasks.Update(created.ID, map[string]any{
+	if _, err := taskSvc.tasks.UpdateMap(created.ID, map[string]any{
 		"workflow": &workflow.Execution{
 			WorkflowID: "simple-task",
 			State:      workflow.ExecRunning,
@@ -282,7 +282,7 @@ type planCommentSpec struct {
 // built-in definitions into the store.
 func stageWaitingPlanReview(t *testing.T, taskSvc *TaskService, taskID string) {
 	t.Helper()
-	if _, err := taskSvc.tasks.Update(taskID, map[string]any{
+	if _, err := taskSvc.tasks.UpdateMap(taskID, map[string]any{
 		"workflow": &workflow.Execution{
 			WorkflowID:  "simple-task",
 			CurrentStep: "review_plan",
@@ -416,13 +416,13 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	// Tag the task `nocritic` so the workflow's maybe_critique branch
 	// routes directly to review_plan instead of trying to launch a
 	// plan-critic agent (which would fail in this lightweight test setup).
-	if _, err := app.tasks.Update(created.ID, map[string]any{"tags": []string{"nocritic"}}); err != nil {
+	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"tags": []string{"nocritic"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Park the workflow in the plan step (the builtin simple-task
 	// plan step declares wait_for_status: plan-review).
-	if _, err := app.tasks.Update(created.ID, map[string]any{
+	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
 		"workflow": &workflow.Execution{
 			WorkflowID:  "simple-task",
@@ -436,7 +436,7 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 
 	// Act — simulate the plan agent flipping task status to
 	// plan-review (this would normally come from `synapse-cli update`).
-	if _, err := app.tasks.Update(created.ID, map[string]any{"status": "plan-review"}); err != nil {
+	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"status": "plan-review"}); err != nil {
 		t.Fatal(err)
 	}
 
