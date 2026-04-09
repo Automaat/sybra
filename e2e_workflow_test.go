@@ -493,8 +493,12 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 	})
 }
 
-func TestE2E_CodexInteractiveAgent_LaunchesTmuxSession(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "success")
+// TestE2E_CodexInteractiveAgent_RunsAsConversational verifies that Codex
+// interactive agents use the goroutine-based conversational runner (like
+// Claude) rather than a tmux session. The agent should produce ConvoEvents,
+// have a done channel, and reach StatePaused after the first turn.
+func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
+	env := setupE2EProvider(t, "codex", "interactive_implement")
 
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "task-codex-int",
@@ -503,32 +507,40 @@ func TestE2E_CodexInteractiveAgent_LaunchesTmuxSession(t *testing.T) {
 		Provider: "codex",
 		Model:    "gpt-5.4-mini",
 		Prompt:   "Inspect repo",
+		OneShot:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 5*time.Second, "codex tmux session exists", func() bool {
-		return ag.TmuxSession != "" && tmux.NewManager().SessionExists(ag.TmuxSession)
+	// One-shot: agent exits after turn.completed → StateStopped.
+	waitFor(t, 10*time.Second, "codex interactive agent stops", func() bool {
+		return ag.GetState() == agent.StateStopped
 	})
 
-	if ag.TmuxSession == "" {
-		t.Fatal("expected tmux session name")
-	}
-	if !strings.Contains(ag.Command, "codex") {
-		t.Fatalf("command = %q, want codex", ag.Command)
-	}
-	if !strings.Contains(ag.Command, "--model gpt-5.4-mini") {
-		t.Fatalf("command = %q, want model flag", ag.Command)
+	if ag.TmuxSession != "" {
+		t.Errorf("expected no tmux session, got %q", ag.TmuxSession)
 	}
 
-	t.Cleanup(func() {
-		_ = env.agents.StopAgent(ag.ID)
-	})
+	out, err := env.agents.GetConvoOutput(ag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasResult := false
+	for _, ev := range out {
+		if ev.Type == "result" {
+			hasResult = true
+		}
+	}
+	if !hasResult {
+		t.Error("expected result ConvoEvent from codex conversational runner")
+	}
 }
 
-func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
-	env := setupE2EProvider(t, "codex", "success")
+// TestE2E_CodexInteractiveAgent_StopTransitionsToStopped verifies that
+// StopAgent correctly terminates a running Codex conversational agent.
+func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
+	env := setupE2EProvider(t, "codex", "interactive_implement")
 
 	ag, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "task-codex-stop",
@@ -537,21 +549,24 @@ func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
 		Provider: "codex",
 		Model:    "gpt-5.4-mini",
 		Prompt:   "Inspect repo",
+		// No OneShot: agent stays paused after first turn, waiting for prompt.
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 5*time.Second, "codex tmux session exists", func() bool {
-		return ag.TmuxSession != "" && tmux.NewManager().SessionExists(ag.TmuxSession)
+	// Wait until the agent is live (running or paused after first turn).
+	waitFor(t, 10*time.Second, "codex agent becomes live", func() bool {
+		s := ag.GetState()
+		return s == agent.StateRunning || s == agent.StatePaused
 	})
 
 	if err := env.agents.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 5*time.Second, "codex tmux session gone", func() bool {
-		return !tmux.NewManager().SessionExists(ag.TmuxSession)
+	waitFor(t, 5*time.Second, "codex agent stopped", func() bool {
+		return ag.GetState() == agent.StateStopped
 	})
 
 	got, err := env.agents.GetAgent(ag.ID)
@@ -560,6 +575,9 @@ func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
 	}
 	if got.GetState() != agent.StateStopped {
 		t.Fatalf("state = %q, want stopped", got.GetState())
+	}
+	if got.TmuxSession != "" {
+		t.Errorf("expected no tmux session, got %q", got.TmuxSession)
 	}
 }
 
@@ -579,50 +597,53 @@ func TestE2E_CodexInteractiveAgent_StopKillsTmuxSession(t *testing.T) {
 // reproducing real conversational behavior.
 func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 	// triage (sets status=todo) → interactive_implement (conversational,
-	// blocks on stdin) → evaluate (sets status=in-review).
-	env := setupE2EMulti(t, []string{"triage", "interactive_implement", "evaluate"})
+	// blocks on stdin for Claude / exits naturally for Codex) → evaluate
+	// (sets status=in-review).
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "interactive_implement", "evaluate"})
 
-	created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Without the one-shot fix this wait would time out — the implement
-	// agent would sit paused forever and the workflow would never reach
-	// evaluate. 30s is plenty; the full path is < 1s when healthy.
-	waitFor(t, 30*time.Second, "workflow completes after interactive implement", func() bool {
-		tk, err := env.tasks.Get(created.ID)
+		created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
 		if err != nil {
-			return false
+			t.Fatal(err)
 		}
-		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+
+		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
+		}
+
+		// Without the one-shot fix this wait would time out — the implement
+		// agent would sit paused forever and the workflow would never reach
+		// evaluate. 30s is plenty; the full path is < 1s when healthy.
+		waitFor(t, 30*time.Second, "workflow completes after interactive implement", func() bool {
+			tk, err := env.tasks.Get(created.ID)
+			if err != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.Workflow.State != workflow.ExecCompleted {
+			t.Fatalf("workflow state = %q (step %q), want completed",
+				tk.Workflow.State, tk.Workflow.CurrentStep)
+		}
+		// Evaluate sets status to in-review — the whole point of the fix is
+		// that interactive tasks can now reach this state automatically.
+		if tk.Status != task.StatusInReview {
+			t.Errorf("task status = %q, want in-review", tk.Status)
+		}
+
+		// Verify both the interactive implement and the headless evaluate ran.
+		seen := map[string]bool{}
+		for _, r := range tk.Workflow.StepHistory {
+			seen[r.StepID] = true
+		}
+		for _, want := range []string{"triage", "implement", "evaluate"} {
+			if !seen[want] {
+				t.Errorf("missing step %q in history, got %v", want, seen)
+			}
+		}
 	})
-
-	tk, _ := env.tasks.Get(created.ID)
-	if tk.Workflow.State != workflow.ExecCompleted {
-		t.Fatalf("workflow state = %q (step %q), want completed",
-			tk.Workflow.State, tk.Workflow.CurrentStep)
-	}
-	// Evaluate sets status to in-review — the whole point of the fix is
-	// that interactive tasks can now reach this state automatically.
-	if tk.Status != task.StatusInReview {
-		t.Errorf("task status = %q, want in-review", tk.Status)
-	}
-
-	// Verify both the interactive implement and the headless evaluate ran.
-	seen := map[string]bool{}
-	for _, r := range tk.Workflow.StepHistory {
-		seen[r.StepID] = true
-	}
-	for _, want := range []string{"triage", "implement", "evaluate"} {
-		if !seen[want] {
-			t.Errorf("missing step %q in history, got %v", want, seen)
-		}
-	}
 }
 
 func TestE2E_RetryCount(t *testing.T) {

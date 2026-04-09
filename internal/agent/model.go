@@ -72,6 +72,11 @@ type Agent struct {
 	stdinMu    sync.Mutex
 	approvalCh chan ApprovalResponse
 
+	// promptCh delivers follow-up prompts to Codex conversational agents.
+	// Each turn spawns a new codex exec process; promptCh signals the next
+	// prompt without a stdin pipe. Guarded by mu.
+	promptCh chan string
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
