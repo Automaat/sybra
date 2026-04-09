@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -91,6 +92,19 @@ const prQuery = `query($q: String!) {
   }
 }`
 
+type gqlCheckContext struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+type gqlStatusCheckRollup struct {
+	State    string `json:"state"`
+	Contexts struct {
+		Nodes []gqlCheckContext `json:"nodes"`
+	} `json:"contexts"`
+}
+
 type gqlResponse struct {
 	Data struct {
 		Search struct {
@@ -128,9 +142,7 @@ type gqlPR struct {
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
-				StatusCheckRollup *struct {
-					State string `json:"state"`
-				} `json:"statusCheckRollup"`
+				StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
@@ -191,6 +203,58 @@ func searchPRsWith(e execer, query string) ([]PullRequest, error) {
 	return convertPRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
 }
 
+// convertCommonPR converts shared gqlPR fields into a PullRequest.
+// It does not apply any bot filtering; callers decide whether to filter.
+func convertCommonPR(n *gqlPR, viewer string) PullRequest {
+	labels := make([]string, 0, len(n.Labels.Nodes))
+	for _, l := range n.Labels.Nodes {
+		labels = append(labels, l.Name)
+	}
+
+	var ciStatus string
+	if len(n.Commits.Nodes) > 0 {
+		if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
+			ciStatus = rollup.State
+		}
+	}
+
+	var unresolved int
+	for _, t := range n.ReviewThreads.Nodes {
+		if !t.IsResolved {
+			unresolved++
+		}
+	}
+
+	var viewerApproved bool
+	if viewer != "" {
+		for _, r := range n.LatestReviews.Nodes {
+			if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
+				viewerApproved = true
+				break
+			}
+		}
+	}
+
+	return PullRequest{
+		Number:            n.Number,
+		Title:             n.Title,
+		URL:               n.URL,
+		HeadRefName:       n.HeadRefName,
+		Repository:        n.Repository.NameWithOwner,
+		RepoName:          n.Repository.Name,
+		Author:            n.Author.Login,
+		IsDraft:           n.IsDraft,
+		Mergeable:         n.Mergeable,
+		Labels:            labels,
+		CIStatus:          ciStatus,
+		ReviewDecision:    n.ReviewDecision,
+		UnresolvedCount:   unresolved,
+		ViewerHasApproved: viewerApproved,
+		CreatedAt:         n.CreatedAt,
+		UpdatedAt:         n.UpdatedAt,
+	}
+}
+
 func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	prs := make([]PullRequest, 0, len(nodes))
 	for i := range nodes {
@@ -198,54 +262,7 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 		if isBot(n.Author.Type, n.Author.Login) {
 			continue
 		}
-
-		labels := make([]string, 0, len(n.Labels.Nodes))
-		for _, l := range n.Labels.Nodes {
-			labels = append(labels, l.Name)
-		}
-
-		var ciStatus string
-		if len(n.Commits.Nodes) > 0 {
-			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
-				ciStatus = rollup.State
-			}
-		}
-
-		var unresolved int
-		for _, t := range n.ReviewThreads.Nodes {
-			if !t.IsResolved {
-				unresolved++
-			}
-		}
-
-		var viewerApproved bool
-		if viewer != "" {
-			for _, r := range n.LatestReviews.Nodes {
-				if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
-					viewerApproved = true
-					break
-				}
-			}
-		}
-
-		prs = append(prs, PullRequest{
-			Number:            n.Number,
-			Title:             n.Title,
-			URL:               n.URL,
-			HeadRefName:       n.HeadRefName,
-			Repository:        n.Repository.NameWithOwner,
-			RepoName:          n.Repository.Name,
-			Author:            n.Author.Login,
-			IsDraft:           n.IsDraft,
-			Mergeable:         n.Mergeable,
-			Labels:            labels,
-			CIStatus:          ciStatus,
-			ReviewDecision:    n.ReviewDecision,
-			UnresolvedCount:   unresolved,
-			ViewerHasApproved: viewerApproved,
-			CreatedAt:         n.CreatedAt,
-			UpdatedAt:         n.UpdatedAt,
-		})
+		prs = append(prs, convertCommonPR(n, viewer))
 	}
 	return prs
 }
@@ -327,37 +344,6 @@ const renovatePRQuery = `query($q: String!) {
   }
 }`
 
-type gqlRenovateResponse struct {
-	Data struct {
-		Search struct {
-			Nodes []gqlRenovatePR `json:"nodes"`
-		} `json:"search"`
-	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
-}
-
-type gqlRenovatePR struct {
-	gqlPR
-	Commits struct {
-		Nodes []struct {
-			Commit struct {
-				StatusCheckRollup *struct {
-					State    string `json:"state"`
-					Contexts struct {
-						Nodes []struct {
-							Name       string `json:"name"`
-							Status     string `json:"status"`
-							Conclusion string `json:"conclusion"`
-						} `json:"nodes"`
-					} `json:"contexts"`
-				} `json:"statusCheckRollup"`
-			} `json:"commit"`
-		} `json:"nodes"`
-	} `json:"commits"`
-}
-
 // FetchRenovatePRs returns Renovate bot PRs for the given repositories.
 func FetchRenovatePRs(author string, repos []string) ([]RenovatePR, error) {
 	return fetchRenovatePRsWith(defaultExecer, author, repos)
@@ -403,7 +389,7 @@ func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
 		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	var resp gqlRenovateResponse
+	var resp gqlResponse
 	if err := json.Unmarshal(out, &resp); err != nil {
 		return nil, fmt.Errorf("parse graphql response: %w", err)
 	}
@@ -414,72 +400,25 @@ func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
 	return convertRenovatePRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
 }
 
-func convertRenovatePRs(nodes []gqlRenovatePR, viewer string) []RenovatePR {
+func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
 	prs := make([]RenovatePR, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
+		pr := convertCommonPR(n, viewer)
 
-		labels := make([]string, 0, len(n.Labels.Nodes))
-		for _, l := range n.Labels.Nodes {
-			labels = append(labels, l.Name)
-		}
-
-		var ciStatus string
 		var checks []CheckRunInfo
 		if len(n.Commits.Nodes) > 0 {
 			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
-				ciStatus = rollup.State
 				for _, ctx := range rollup.Contexts.Nodes {
 					if ctx.Name == "" {
 						continue
 					}
-					checks = append(checks, CheckRunInfo{
-						Name:       ctx.Name,
-						Status:     ctx.Status,
-						Conclusion: ctx.Conclusion,
-					})
+					checks = append(checks, CheckRunInfo(ctx))
 				}
 			}
 		}
 
-		var unresolved int
-		for _, t := range n.ReviewThreads.Nodes {
-			if !t.IsResolved {
-				unresolved++
-			}
-		}
-
-		var viewerApproved bool
-		if viewer != "" {
-			for _, r := range n.LatestReviews.Nodes {
-				if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
-					viewerApproved = true
-					break
-				}
-			}
-		}
-
-		prs = append(prs, RenovatePR{
-			PullRequest: PullRequest{
-				Number:            n.Number,
-				Title:             n.Title,
-				URL:               n.URL,
-				HeadRefName:       n.HeadRefName,
-				Repository:        n.Repository.NameWithOwner,
-				RepoName:          n.Repository.Name,
-				Author:            n.Author.Login,
-				IsDraft:           n.IsDraft,
-				Mergeable:         n.Mergeable,
-				Labels:            labels,
-				CIStatus:          ciStatus,
-				ReviewDecision:    n.ReviewDecision,
-				UnresolvedCount:   unresolved,
-				ViewerHasApproved: viewerApproved,
-				CreatedAt:         n.CreatedAt,
-				UpdatedAt:         n.UpdatedAt,
-			},
-			CheckRuns: checks,
-		})
+		prs = append(prs, RenovatePR{PullRequest: pr, CheckRuns: checks})
 	}
 	return prs
 }
@@ -887,28 +826,27 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 	return ctx, nil
 }
 
-// ParsePRURL extracts owner/repo and PR number from a GitHub pull request URL.
-// Returns ("", 0) if the URL doesn't match.
-func ParsePRURL(rawURL string) (repo string, number int) {
-	// https://github.com/owner/repo/pull/123
+// parseGitHubResourceURL extracts owner/repo and number from a GitHub URL
+// where parts[2] must equal segment (e.g. "pull" or "issues").
+func parseGitHubResourceURL(rawURL, segment string) (repo string, number int) {
 	if !strings.HasPrefix(rawURL, "https://github.com/") {
 		return "", 0
 	}
 	parts := strings.Split(strings.TrimPrefix(rawURL, "https://github.com/"), "/")
-	if len(parts) < 4 || parts[2] != "pull" {
+	if len(parts) < 4 || parts[2] != segment {
 		return "", 0
 	}
-	n := 0
-	for _, c := range parts[3] {
-		if c < '0' || c > '9' {
-			return "", 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	if n == 0 {
+	n, err := strconv.Atoi(parts[3])
+	if err != nil || n == 0 {
 		return "", 0
 	}
 	return parts[0] + "/" + parts[1], n
+}
+
+// ParsePRURL extracts owner/repo and PR number from a GitHub pull request URL.
+// Returns ("", 0) if the URL doesn't match.
+func ParsePRURL(rawURL string) (repo string, number int) {
+	return parseGitHubResourceURL(rawURL, "pull")
 }
 
 // FetchPR fetches a single pull request by repo (owner/repo) and number.
@@ -967,25 +905,7 @@ func ViewerLogin() string {
 // ParseIssueURL extracts owner/repo and issue number from a GitHub issue URL.
 // Returns ("", 0) if the URL doesn't match.
 func ParseIssueURL(rawURL string) (repo string, number int) {
-	// https://github.com/owner/repo/issues/123
-	if !strings.HasPrefix(rawURL, "https://github.com/") {
-		return "", 0
-	}
-	parts := strings.Split(strings.TrimPrefix(rawURL, "https://github.com/"), "/")
-	if len(parts) < 4 || parts[2] != "issues" {
-		return "", 0
-	}
-	n := 0
-	for _, c := range parts[3] {
-		if c < '0' || c > '9' {
-			return "", 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	if n == 0 {
-		return "", 0
-	}
-	return parts[0] + "/" + parts[1], n
+	return parseGitHubResourceURL(rawURL, "issues")
 }
 
 // FetchIssue fetches a single issue by repo (owner/repo) and number.
