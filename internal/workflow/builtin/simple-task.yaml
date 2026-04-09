@@ -44,6 +44,11 @@ steps:
       model: opus
       needs_worktree: true
       reuse_agent: true
+      # Interactive plan agents do not exit — they pause idle between turns.
+      # The workflow advances to review_plan when the agent flips the task
+      # status to "plan-review" via the CLI, which fires the engine status
+      # hook (see engine.HandleStatusChange).
+      wait_for_status: plan-review
       prompt: >-
         {{- $feedback := getvar .Vars "human.feedback" }}
         {{- if $feedback }}
@@ -88,7 +93,19 @@ steps:
           field: vars.human_action
           operator: equals
           value: reject
-        goto: plan
+        goto: start_replan
+
+  # Reset status before re-entering `plan` so the plan-review status-change
+  # hook fires again when the agent delivers a revised plan. Without this
+  # reset the second iteration would already be at plan-review and no
+  # transition event would be emitted to advance the workflow.
+  - id: start_replan
+    name: Prepare Replan
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: plan
 
   - id: set_in_progress
     name: Start Implementation

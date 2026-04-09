@@ -201,6 +201,14 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) initStatusHook() {
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
+
+		// Advance workflows whose current run_agent step declares a
+		// matching wait_for_status. This is how interactive agents (which
+		// never exit between turns) signal step completion.
+		if a.workflowEngine != nil {
+			a.workflowEngine.HandleStatusChange(taskID, to)
+		}
+
 		switch to {
 		case string(task.StatusInReview):
 			msg := taskID
@@ -254,14 +262,20 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		}
 	}
 
+	// Snapshot mutable fields once under the agent's lock so both the
+	// persistence write and the audit entry see a consistent view.
+	state := ag.GetState()
+	cost := ag.GetCostUSD()
+	exitErr := ag.GetExitErr()
+
 	// Persist run result to task file.
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
 	}
 	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
-		"state":    string(ag.State),
-		"cost_usd": ag.CostUSD,
+		"state":    string(state),
+		"cost_usd": cost,
 		"result":   truncated,
 	}); err != nil {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
@@ -271,16 +285,16 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	duration := time.Since(ag.StartedAt).Seconds()
 	a.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
 		"mode":       ag.Mode,
-		"cost_usd":   ag.CostUSD,
+		"cost_usd":   cost,
 		"duration_s": duration,
-		"state":      string(ag.State),
+		"state":      string(state),
 		"role":       agent.RoleFromName(ag.Name),
 	})
 
 	// Advance workflow.
 	if a.workflowEngine != nil {
 		agentState := "stopped"
-		if ag.ExitErr != nil {
+		if exitErr != nil {
 			agentState = "failed"
 		}
 		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, resultContent, agentState)

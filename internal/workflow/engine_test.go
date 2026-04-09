@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,17 +23,27 @@ func discardLogger() *slog.Logger {
 // testdata/test-simple.yaml workflow into it.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
+	return newTestStoreWith(t, "test-simple.yaml")
+}
+
+// newTestStoreWith copies one or more testdata yaml files into a fresh
+// Store. Use this when a test needs a different workflow definition than
+// the default test-simple.yaml.
+func newTestStoreWith(t *testing.T, files ...string) *Store {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	src, err := os.ReadFile(filepath.Join("testdata", "test-simple.yaml"))
-	if err != nil {
-		t.Fatalf("read test workflow: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "test-simple.yaml"), src, 0o644); err != nil {
-		t.Fatal(err)
+	for _, name := range files {
+		src, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatalf("read test workflow %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), src, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return store
 }
@@ -1093,5 +1104,258 @@ func TestAgentModeTemplate(t *testing.T) {
 	// Implement step should have mode resolved from template.
 	if agents.LastCall().Mode != "headless" {
 		t.Fatalf("expected headless mode from template, got %q", agents.LastCall().Mode)
+	}
+}
+
+// --- HandleStatusChange + plan-reuse flow ---
+//
+// These tests cover the fix for interactive plan agents that never exit on
+// their own: the workflow must advance from the run_agent step to the
+// wait_human review step when the task status flips to the step's
+// declared wait_for_status, and reject must re-enter the plan step via a
+// set_status intermediate so the next plan-review transition can fire.
+
+// startPlanReuseAtReviewPlan sets up a test-plan-reuse workflow, starts the
+// plan agent, and drives it to the review_plan waiting state by flipping
+// the task status to plan-review. Returns the configured engine/mocks for
+// further assertions.
+func startPlanReuseAtReviewPlan(t *testing.T) (*Engine, *memTasks, *mockAgents) {
+	t.Helper()
+	store := newTestStoreWith(t, "test-plan-reuse.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
+	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
+		t.Fatalf("start workflow: %v", err)
+	}
+
+	if got := agents.LastCall().Role; got != "plan" {
+		t.Fatalf("expected plan agent started, got %q", got)
+	}
+
+	// Simulate the plan agent flipping the task status — this is what
+	// the agent would do via `synapse-cli update --status plan-review`.
+	tasks.SetStatus("t1", "plan-review")
+	engine.HandleStatusChange("t1", "plan-review")
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("expected review_plan after status advance, got %q", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Fatalf("expected ExecWaiting at review_plan, got %q", ti.Workflow.State)
+	}
+	return engine, tasks, agents
+}
+
+func TestHandleStatusChange_AdvancesRunAgentWhenWaitForStatusMatches(t *testing.T) {
+	store := newTestStoreWith(t, "test-plan-reuse.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
+	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before the status flips, we're still in the plan run_agent step.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "plan" {
+		t.Fatalf("precondition: expected plan step, got %q", ti.Workflow.CurrentStep)
+	}
+
+	// The plan agent flips the task status — engine should advance to
+	// review_plan without the agent process having to exit.
+	tasks.SetStatus("t1", "plan-review")
+	engine.HandleStatusChange("t1", "plan-review")
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("CurrentStep = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
+	}
+}
+
+func TestHandleStatusChange_NoOp(t *testing.T) {
+	tests := []struct {
+		name      string
+		newStatus string
+		// mutate lets each case set up its own pre-state after the
+		// default "workflow started, sitting in plan step" arrangement.
+		mutate func(tasks *memTasks)
+	}{
+		{
+			name:      "status does not match wait_for_status",
+			newStatus: "todo",
+		},
+		{
+			name:      "current step is not a run_agent",
+			newStatus: "plan-review",
+			mutate: func(tasks *memTasks) {
+				ti, _ := tasks.GetTask("t1")
+				ti.Workflow.CurrentStep = "review_plan"
+				_ = tasks.SetWorkflow("t1", ti.Workflow)
+			},
+		},
+		{
+			name:      "workflow already completed",
+			newStatus: "plan-review",
+			mutate: func(tasks *memTasks) {
+				ti, _ := tasks.GetTask("t1")
+				ti.Workflow.State = ExecCompleted
+				_ = tasks.SetWorkflow("t1", ti.Workflow)
+			},
+		},
+		{
+			name:      "task has no workflow",
+			newStatus: "plan-review",
+			mutate: func(tasks *memTasks) {
+				ti, _ := tasks.GetTask("t1")
+				ti.Workflow = nil
+				tasks.Put(ti)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStoreWith(t, "test-plan-reuse.yaml")
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
+			if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
+				t.Fatal(err)
+			}
+
+			if tt.mutate != nil {
+				tt.mutate(tasks)
+			}
+
+			// Snapshot the current step so we can detect any advance.
+			before, _ := tasks.GetTask("t1")
+			wantStep := ""
+			if before.Workflow != nil {
+				wantStep = before.Workflow.CurrentStep
+			}
+
+			engine.HandleStatusChange("t1", tt.newStatus)
+
+			after, _ := tasks.GetTask("t1")
+			gotStep := ""
+			if after.Workflow != nil {
+				gotStep = after.Workflow.CurrentStep
+			}
+			if gotStep != wantStep {
+				t.Errorf("CurrentStep changed to %q, want %q (no advance)", gotStep, wantStep)
+			}
+		})
+	}
+}
+
+func TestHandleStatusChange_UnknownTaskDoesNotPanic(t *testing.T) {
+	store := newTestStoreWith(t, "test-plan-reuse.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Act — must not panic even though the task was never registered.
+	engine.HandleStatusChange("ghost", "plan-review")
+}
+
+func TestPlanReuse_RejectResetsStatusAndReusesAgentWithFeedback(t *testing.T) {
+	engine, tasks, agents := startPlanReuseAtReviewPlan(t)
+
+	// Arrange — the plan agent is still "running" (reuse_agent relies on
+	// FindRunningAgentForRole). Record how many SendPrompt calls we've
+	// seen so we can assert exactly one more is added by the reject.
+	sentBefore := len(agents.SentPrompts())
+
+	// Act — user rejects the plan with free-text feedback. The reject
+	// branch routes review_plan → start_replan (set_status planning) →
+	// plan, which hits the reuse_agent path.
+	if err := engine.HandleHumanAction("t1", "reject", map[string]string{"feedback": "add error handling"}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	// Assert 1 — task status was reset by start_replan, so the next
+	// plan-review transition is observable as a real change event.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "planning" {
+		t.Errorf("Status = %q, want planning (reset by start_replan)", ti.Status)
+	}
+
+	// Assert 2 — the workflow re-entered the plan run_agent step.
+	if ti.Workflow.CurrentStep != "plan" {
+		t.Errorf("CurrentStep = %q, want plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
+	}
+
+	// Assert 3 — the reused agent received exactly one new prompt
+	// carrying the feedback (verbatim, via the rendered template).
+	sent := agents.SentPrompts()
+	if len(sent) != sentBefore+1 {
+		t.Fatalf("SendPrompt count = %d, want %d", len(sent), sentBefore+1)
+	}
+	msg := sent[len(sent)-1].Message
+	if !strings.Contains(msg, "Plan rejected") {
+		t.Errorf("prompt missing rejection header: %q", msg)
+	}
+	if !strings.Contains(msg, "add error handling") {
+		t.Errorf("prompt missing feedback: %q", msg)
+	}
+
+	// Assert 4 — no new agent was spawned (reuse, not restart).
+	if got := agents.CallCount(); got != 1 {
+		t.Errorf("StartAgent called %d times, want 1 (reuse only)", got)
+	}
+}
+
+func TestPlanReuse_RejectThenReplanAdvancesOnStatusChange(t *testing.T) {
+	engine, tasks, _ := startPlanReuseAtReviewPlan(t)
+
+	// Reject — workflow should re-enter plan step waiting for the agent.
+	if err := engine.HandleHumanAction("t1", "reject", map[string]string{"feedback": "needs detail"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the plan agent delivering a revised plan and flipping
+	// the status back to plan-review.
+	tasks.SetStatus("t1", "plan-review")
+	engine.HandleStatusChange("t1", "plan-review")
+
+	// The workflow should be back at review_plan waiting for a fresh
+	// human action. Without the set_status reset, the status would
+	// already be plan-review when the agent ran and no hook would fire.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("CurrentStep = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
+	}
+}
+
+func TestPlanReuse_ApproveAdvancesPastReviewPlan(t *testing.T) {
+	engine, tasks, _ := startPlanReuseAtReviewPlan(t)
+
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("Status = %q, want in-progress (set by done step)", ti.Status)
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
 	}
 }

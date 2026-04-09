@@ -84,27 +84,14 @@ func (s *PlanningService) approve(id string) (task.Task, error) {
 	return s.tasks.Get(id)
 }
 
+// reject forwards an optional human-typed feedback plus any unresolved
+// inline review comments to the workflow engine as the "reject" action.
+// Shared by the plan-review and test-plan-review flows.
 func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	data := map[string]string{}
-	if feedback != "" {
-		data["feedback"] = feedback
-	}
-
-	// Append unresolved inline comments to feedback.
-	comments, _ := s.tasks.Comments().List(id)
-	var unresolvedLines []string
-	for _, c := range comments {
-		if !c.Resolved {
-			unresolvedLines = append(unresolvedLines, fmt.Sprintf("- Line %d: %s", c.Line, c.Body))
-		}
-	}
-	if len(unresolvedLines) > 0 {
-		commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
-		if data["feedback"] != "" {
-			data["feedback"] += "\n\n" + commentSection
-		} else {
-			data["feedback"] = commentSection
-		}
+	combined := s.assembleFeedback(id, feedback)
+	if combined != "" {
+		data["feedback"] = combined
 	}
 
 	if err := s.engine.HandleHumanAction(id, "reject", data); err != nil {
@@ -113,13 +100,47 @@ func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	return s.tasks.Get(id)
 }
 
+// sendMessage delivers a follow-up message to a live interactive agent of
+// the given role. Unresolved inline comments are merged into the message
+// so the two review-page buttons (Reject / Send Message) behave
+// consistently — the UI placeholder promises "comments are included
+// automatically" and that promise applies to both.
 func (s *PlanningService) sendMessage(id, message string, role agent.Role) error {
-	if strings.TrimSpace(message) == "" {
+	combined := s.assembleFeedback(id, message)
+	if strings.TrimSpace(combined) == "" {
 		return fmt.Errorf("message is empty")
 	}
 	ag := s.agents.FindRunningAgentForTask(id, role)
 	if ag == nil || ag.Mode != "interactive" {
 		return fmt.Errorf("no live interactive %s agent for task %s", role, id)
 	}
-	return s.agents.SendPromptToAgent(ag.ID, message)
+	return s.agents.SendPromptToAgent(ag.ID, combined)
+}
+
+// assembleFeedback merges free-text feedback with any unresolved inline
+// review comments into a single prompt body. Returns "" if both inputs
+// are empty. Shared by reject and sendMessage so the two code paths
+// cannot drift in how they format comments.
+func (s *PlanningService) assembleFeedback(taskID, feedback string) string {
+	trimmed := strings.TrimSpace(feedback)
+
+	comments, err := s.tasks.Comments().List(taskID)
+	if err != nil {
+		return trimmed
+	}
+	var unresolvedLines []string
+	for _, c := range comments {
+		if !c.Resolved {
+			unresolvedLines = append(unresolvedLines, fmt.Sprintf("- Line %d: %s", c.Line, c.Body))
+		}
+	}
+	if len(unresolvedLines) == 0 {
+		return trimmed
+	}
+
+	commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
+	if trimmed == "" {
+		return commentSection
+	}
+	return trimmed + "\n\n" + commentSection
 }

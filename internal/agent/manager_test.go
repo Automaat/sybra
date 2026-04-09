@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,14 +25,45 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func newTestManager(t *testing.T) (mgr *Manager, emitted *[]string) {
+// eventRecorder provides concurrency-safe access to the stream of event
+// names produced by the manager under test. Runner goroutines append via
+// the Manager's emit callback while the test goroutine reads via Len /
+// Snapshot — both paths must be synchronized under the race detector.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *eventRecorder) add(event string) {
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
+}
+
+// Len returns the current number of recorded events.
+func (r *eventRecorder) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.events)
+}
+
+// Snapshot returns a copy of the recorded events for safe iteration.
+func (r *eventRecorder) Snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.events))
+	copy(out, r.events)
+	return out
+}
+
+func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	emitted = &[]string{}
+	emitted = &eventRecorder{}
 	emit := func(event string, _ any) {
-		*emitted = append(*emitted, event)
+		emitted.add(event)
 	}
 
 	m := NewManager(ctx, tmux.NewManager(), emit, discardLogger(), t.TempDir())
@@ -78,8 +111,9 @@ func TestStartAgentHeadless(t *testing.T) {
 	}
 	// State may be Running or Stopped depending on whether the claude binary
 	// exists — the headless goroutine exits immediately when it doesn't.
-	if a.State != StateRunning && a.State != StateStopped {
-		t.Errorf("State = %q, want %q or %q", a.State, StateRunning, StateStopped)
+	st := a.GetState()
+	if st != StateRunning && st != StateStopped {
+		t.Errorf("State = %q, want %q or %q", st, StateRunning, StateStopped)
 	}
 
 	agents := m.ListAgents()
@@ -87,7 +121,7 @@ func TestStartAgentHeadless(t *testing.T) {
 		t.Fatalf("got %d agents, want 1", len(agents))
 	}
 
-	if len(*emitted) == 0 {
+	if emitted.Len() == 0 {
 		t.Error("expected at least one emitted event")
 	}
 }
@@ -133,13 +167,13 @@ func TestStopAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != StateStopped {
-		t.Errorf("State = %q, want %q", got.State, StateStopped)
+	if got.GetState() != StateStopped {
+		t.Errorf("State = %q, want %q", got.GetState(), StateStopped)
 	}
 
 	// Should have emitted state events for start and stop
 	hasStop := false
-	for _, e := range *emitted {
+	for _, e := range emitted.Snapshot() {
 		if e == events.AgentState(a.ID) {
 			hasStop = true
 		}
@@ -155,8 +189,18 @@ func TestStopAgent(t *testing.T) {
 func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	completeCalls := 0
-	m.SetOnComplete(func(_ *Agent) { completeCalls++ })
+	// Counter is written from the runner goroutine (onComplete path) and
+	// read from the test goroutine after StopAgent returns — protect
+	// with a mutex for the race detector.
+	var (
+		mu            sync.Mutex
+		completeCalls int
+	)
+	m.SetOnComplete(func(_ *Agent) {
+		mu.Lock()
+		completeCalls++
+		mu.Unlock()
+	})
 
 	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
@@ -168,8 +212,11 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	}
 
 	// StopAgent must not call onComplete for headless — the goroutine does.
-	if completeCalls > 0 {
-		t.Errorf("onComplete called %d time(s) by StopAgent, want 0", completeCalls)
+	mu.Lock()
+	got := completeCalls
+	mu.Unlock()
+	if got > 0 {
+		t.Errorf("onComplete called %d time(s) by StopAgent, want 0", got)
 	}
 }
 
@@ -198,7 +245,7 @@ func TestHasRunningAgentUsesGoroutineLifetime(t *testing.T) {
 	}
 
 	// Simulate StopAgent setting state without goroutine exiting yet.
-	a.State = StateStopped
+	a.SetState(StateStopped)
 
 	if !m.HasRunningAgentForTask("task-1") {
 		t.Fatal("expected HasRunningAgentForTask=true: goroutine still alive even though state=Stopped")
@@ -325,7 +372,7 @@ func TestCapturePaneStoppedAgent(t *testing.T) {
 
 	// Simulate an interactive agent that was stopped
 	a.TmuxSession = "synapse-fake"
-	a.State = StateStopped
+	a.SetState(StateStopped)
 
 	out, err := m.CapturePane(a.ID)
 	if err != nil {
@@ -339,10 +386,7 @@ func TestCapturePaneStoppedAgent(t *testing.T) {
 func TestSendInteractivePromptCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	emitted := &[]string{}
-	emit := func(event string, _ any) {
-		*emitted = append(*emitted, event)
-	}
+	emit := func(string, any) {}
 
 	m := NewManager(ctx, tmux.NewManager(), emit, discardLogger(), t.TempDir())
 
@@ -438,8 +482,8 @@ func TestStopInteractiveAgent(t *testing.T) {
 		t.Fatalf("StopAgent: %v", err)
 	}
 
-	if a.State != StateStopped {
-		t.Errorf("State = %q, want %q", a.State, StateStopped)
+	if st := a.GetState(); st != StateStopped {
+		t.Errorf("State = %q, want %q", st, StateStopped)
 	}
 }
 
@@ -496,7 +540,7 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 
 	// Stopped agent — should return false.
-	running.State = StateStopped
+	running.SetState(StateStopped)
 	if m.HasRunningAgentForTask("task-1") {
 		t.Error("expected false for stopped agent")
 	}
@@ -612,5 +656,178 @@ func TestShutdown(t *testing.T) {
 	// All agents should still be in the map (shutdown doesn't remove them)
 	if len(m.ListAgents()) != 3 {
 		t.Errorf("got %d agents, want 3", len(m.ListAgents()))
+	}
+}
+
+// --- Plan-review fix: paused conversational agents must stay findable ---
+//
+// Interactive (conversational) agents flip to StatePaused after each
+// turn's result event. The plan-review UI relies on FindRunningAgentForTask
+// to locate the paused agent so a follow-up prompt can be delivered
+// without spawning a new session. These tests lock in that behaviour.
+
+// putAgent registers a fully-formed Agent in the manager without running
+// any goroutine — used so tests can arrange arbitrary state fields
+// (State, stdinPipe, TmuxSession) deterministically.
+func putAgent(t *testing.T, m *Manager, a *Agent) {
+	t.Helper()
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.mu.Unlock()
+}
+
+func TestFindRunningAgentForTask_ByState(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    State
+		wantLive bool
+	}{
+		{name: "running agent is live", state: StateRunning, wantLive: true},
+		{name: "paused agent is live", state: StatePaused, wantLive: true},
+		{name: "stopped agent is not live", state: StateStopped, wantLive: false},
+		{name: "idle agent is not live", state: StateIdle, wantLive: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			putAgent(t, m, &Agent{
+				ID:     "a1",
+				TaskID: "task-1",
+				Name:   "plan:Test Task",
+				Mode:   "interactive",
+				State:  tt.state,
+			})
+
+			got := m.FindRunningAgentForTask("task-1", RolePlan)
+
+			if tt.wantLive && got == nil {
+				t.Fatalf("FindRunningAgentForTask returned nil for %s agent, want the agent", tt.state)
+			}
+			if !tt.wantLive && got != nil {
+				t.Fatalf("FindRunningAgentForTask returned agent for %s state, want nil", tt.state)
+			}
+		})
+	}
+}
+
+func TestFindRunningAgentForTask_FiltersByRoleAndTask(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	putAgent(t, m, &Agent{ID: "a1", TaskID: "task-1", Name: "plan:A", State: StatePaused})
+	putAgent(t, m, &Agent{ID: "a2", TaskID: "task-1", Name: "triage:A", State: StatePaused})
+	putAgent(t, m, &Agent{ID: "a3", TaskID: "task-2", Name: "plan:B", State: StatePaused})
+
+	got := m.FindRunningAgentForTask("task-1", RolePlan)
+
+	if got == nil {
+		t.Fatal("expected to find a1")
+	}
+	if got.ID != "a1" {
+		t.Errorf("ID = %q, want a1", got.ID)
+	}
+}
+
+// captureStdinAgent wires up a real io.Pipe so a test can observe
+// exactly what SendPromptToAgent writes to the conversational agent's
+// stdin. Returns the agent (already registered in m) and a channel that
+// receives one line per message written.
+func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, stdinLines <-chan string) {
+	t.Helper()
+	r, w := io.Pipe()
+	a := &Agent{
+		ID:        id,
+		TaskID:    taskID,
+		Name:      "plan:Test",
+		Mode:      "interactive",
+		State:     StatePaused,
+		stdinPipe: w,
+	}
+	putAgent(t, m, a)
+
+	lines := make(chan string, 4)
+	go func() {
+		defer close(lines)
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				lines <- string(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { _ = r.Close() })
+	return a, lines
+}
+
+func TestSendPromptToAgent_WritesToStdinForConversationalAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, lines := captureStdinAgent(t, m, "a1", "task-1")
+
+	err := m.SendPromptToAgent(a.ID, "please revise")
+
+	if err != nil {
+		t.Fatalf("SendPromptToAgent: %v", err)
+	}
+
+	select {
+	case got := <-lines:
+		// SendMessage encodes a JSON user message; verify both the
+		// envelope and the payload without being sensitive to exact
+		// field ordering.
+		if !strings.Contains(got, `"type":"user"`) {
+			t.Errorf("stdin payload missing user envelope: %q", got)
+		}
+		if !strings.Contains(got, `please revise`) {
+			t.Errorf("stdin payload missing message text: %q", got)
+		}
+		if !strings.HasSuffix(got, "\n") {
+			t.Errorf("stdin payload not newline-terminated: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no data written to stdin within 2s")
+	}
+
+	// The agent must have been flipped back to Running so downstream
+	// code treats the next turn as active work.
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want %q after send", st, StateRunning)
+	}
+}
+
+func TestSendPromptToAgent_RejectsStoppedAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+	putAgent(t, m, &Agent{
+		ID:     "dead",
+		TaskID: "task-1",
+		Mode:   "interactive",
+		State:  StateStopped,
+	})
+
+	err := m.SendPromptToAgent("dead", "anything")
+
+	if err == nil {
+		t.Fatal("expected error sending to stopped agent")
+	}
+}
+
+func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
+	m, _ := newTestManager(t)
+	// Interactive but no stdin pipe and no tmux session — neither
+	// transport is available.
+	putAgent(t, m, &Agent{
+		ID:     "orphan",
+		TaskID: "task-1",
+		Mode:   "interactive",
+		State:  StateRunning,
+	})
+
+	err := m.SendPromptToAgent("orphan", "hello")
+
+	if err == nil {
+		t.Fatal("expected error when agent has no transport")
 	}
 }

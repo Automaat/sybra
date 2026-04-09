@@ -83,10 +83,15 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 
 // Update applies field updates to a task and emits task:updated.
 // Serializes with other Update/AddRun/UpdateRun/Delete calls for the same id.
+//
+// Note on hook ordering: the status-change hook is invoked *after* the
+// per-task mutex is released. Hooks commonly call back into the task
+// manager (e.g. the workflow engine advancing a step, which writes the
+// workflow field via taskAdapter.SetWorkflow → Manager.Update). Calling
+// the hook while still holding the lock would deadlock that re-entry.
 func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 
 	var prevStatus string
 	_, wantsStatus := updates["status"].(string)
@@ -98,14 +103,23 @@ func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
 
 	t, err := m.store.Update(id, updates)
 	if err != nil {
+		mu.Unlock()
 		return t, err
 	}
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
+
+	var (
+		fireHook  bool
+		newStatus string
+	)
 	if wantsStatus && m.onStatusHook != nil {
-		newStatus := string(t.Status)
-		if newStatus != prevStatus {
-			m.onStatusHook(id, prevStatus, newStatus)
-		}
+		newStatus = string(t.Status)
+		fireHook = newStatus != prevStatus
+	}
+	mu.Unlock()
+
+	if fireHook {
+		m.onStatusHook(id, prevStatus, newStatus)
 	}
 	return t, nil
 }

@@ -59,11 +59,11 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, prompt string, allo
 	}
 
 done:
-	a.State = StateStopped
+	a.SetState(StateStopped)
 	if a.done != nil {
 		close(a.done)
 	}
-	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.CostUSD)
+	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
 		m.onComplete(a)
@@ -73,8 +73,8 @@ done:
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt string, allowedTools []string, requirePermissions bool, outFile **os.File) (retry bool, err error) {
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
 
-	if a.SessionID != "" {
-		args = append(args, "--resume", a.SessionID)
+	if sid := a.GetSessionID(); sid != "" {
+		args = append(args, "--resume", sid)
 	}
 
 	if len(allowedTools) > 0 {
@@ -91,7 +91,6 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	a.cmd = cmd
 
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
@@ -104,6 +103,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 	if startErr := cmd.Start(); startErr != nil {
 		return false, fmt.Errorf("start claude: %w", startErr)
 	}
+	a.SetCmd(cmd)
 
 	// Open log file on first successful start; subsequent retries append to same file.
 	if *outFile == nil {
@@ -112,7 +112,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 			m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
 		}
 		if f != nil {
-			a.LogPath = f.Name()
+			a.SetLogPath(f.Name())
 			*outFile = f
 		}
 	}
@@ -124,7 +124,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 		logWriter = *outFile
 	}
 
-	prevLen := len(a.outputBuffer)
+	prevLen := len(a.Output())
 	m.streamHeadlessOutput(ctx, a, stdout, logWriter)
 
 	waitErr := cmd.Wait()
@@ -135,11 +135,18 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, prompt strin
 	}
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
-		a.ExitErr = waitErr
+		a.SetExitErr(waitErr)
 	}
 
-	if waitErr != nil && is529Error(stderrOut, a.outputBuffer[prevLen:]) {
-		return true, nil
+	if waitErr != nil {
+		// Only inspect the events produced during this attempt.
+		all := a.Output()
+		if prevLen > len(all) {
+			prevLen = len(all)
+		}
+		if is529Error(stderrOut, all[prevLen:]) {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -182,24 +189,23 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			continue
 		}
 
-		a.outputBuffer = append(a.outputBuffer, event)
-		a.LastEventAt = time.Now().UTC()
+		a.AppendOutput(event)
 		if event.Type == "result" || time.Since(lastEmit) >= headlessEmitInterval {
 			m.emit(events.AgentOutput(a.ID), event)
 			lastEmit = time.Now()
 		}
 
 		if event.Type == "assistant" {
-			a.TurnCount++
+			turns := a.IncTurnCount()
 			m.mu.RLock()
 			maxTurns := m.guardrails.MaxTurns
 			m.mu.RUnlock()
-			if maxTurns > 0 && a.TurnCount >= maxTurns {
-				m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", a.TurnCount, "limit", maxTurns)
-				a.EscalationReason = "turns"
+			if maxTurns > 0 && turns >= maxTurns {
+				m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", turns, "limit", maxTurns)
+				a.SetEscalationReason("turns")
 				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 					Reason:    "turns",
-					TurnCount: a.TurnCount,
+					TurnCount: turns,
 					Limit:     float64(maxTurns),
 				})
 				m.emit(events.AgentState(a.ID), a)
@@ -211,7 +217,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 						return
 					}
 					// Human approved continuation — clear reason and keep going.
-					a.EscalationReason = ""
+					a.SetEscalationReason("")
 					m.emit(events.AgentState(a.ID), a)
 				case <-ctx.Done():
 					return
@@ -220,20 +226,17 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 		}
 
 		if event.Type == "result" {
-			a.SessionID = event.SessionID
-			a.CostUSD += event.CostUSD
-			a.InputTokens += event.InputTokens
-			a.OutputTokens += event.OutputTokens
-			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", a.CostUSD)
+			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)
+			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 			m.mu.RLock()
 			maxCost := m.guardrails.MaxCostUSD
 			m.mu.RUnlock()
-			if maxCost > 0 && a.CostUSD > maxCost {
-				m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", a.CostUSD, "limit", maxCost)
-				a.EscalationReason = "cost"
+			if maxCost > 0 && costNow > maxCost {
+				m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+				a.SetEscalationReason("cost")
 				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 					Reason:  "cost",
-					CostUSD: a.CostUSD,
+					CostUSD: costNow,
 					Limit:   maxCost,
 				})
 				m.emit(events.AgentState(a.ID), a)
@@ -357,7 +360,7 @@ func strVal(m map[string]any, key string) string {
 }
 
 func (m *Manager) handleError(a *Agent, err error) {
-	a.State = StateStopped
+	a.SetState(StateStopped)
 	if a.done != nil {
 		close(a.done)
 	}

@@ -69,14 +69,15 @@ func (a *App) agentWatchdogLoop(ctx context.Context) {
 
 func (a *App) watchdogTick(ctx context.Context, state *watchdogState, now time.Time) {
 	for _, ag := range a.agents.ListAgents() {
-		if ag.State != agent.StateRunning || ag.Mode != "headless" || ag.External {
+		if ag.GetState() != agent.StateRunning || ag.Mode != "headless" || ag.External {
 			continue
 		}
-		if ag.LogPath == "" {
+		logPath := ag.GetLogPath()
+		if logPath == "" {
 			continue
 		}
 
-		stall := now.Sub(ag.LastEventAt)
+		stall := now.Sub(ag.GetLastEventAt())
 		total := now.Sub(ag.StartedAt)
 
 		t, err := a.tasks.Get(ag.TaskID)
@@ -116,7 +117,7 @@ func (a *App) inspectAgent(ctx context.Context, ag *agent.Agent, t task.Task, st
 	verdict, err := agent.Inspect(ictx, agent.InspectInput{
 		AgentID:   ag.ID,
 		TaskTitle: t.Title,
-		LogPath:   ag.LogPath,
+		LogPath:   ag.GetLogPath(),
 		StallSec:  stallSec,
 		TotalSec:  totalSec,
 	})

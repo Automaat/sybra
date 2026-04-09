@@ -25,8 +25,8 @@ func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
 		"--output-format", "stream-json",
 		"--verbose",
 	}
-	if a.SessionID != "" {
-		args = append(args, "--resume", a.SessionID)
+	if sid := a.GetSessionID(); sid != "" {
+		args = append(args, "--resume", sid)
 	}
 	if cfg.PermissionMode != "" {
 		args = append(args, "--permission-mode", cfg.PermissionMode)
@@ -66,7 +66,9 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
+	a.stdinMu.Lock()
 	a.stdinPipe = stdinPipe
+	a.stdinMu.Unlock()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -88,9 +90,8 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		m.handleError(a, err)
 		return
 	}
-	a.cmd = cmd
-	a.PID = cmd.Process.Pid
-	m.logger.Info("agent.convo.start", "id", a.ID, "pid", a.PID, "dir", cmd.Dir)
+	a.SetCmd(cmd)
+	m.logger.Info("agent.convo.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
 
 	// Send initial prompt.
 	if cfg.Prompt != "" {
@@ -104,7 +105,7 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
 	}
 	if outFile != nil {
-		a.LogPath = outFile.Name()
+		a.SetLogPath(outFile.Name())
 		defer func() { _ = outFile.Close() }()
 	}
 
@@ -117,14 +118,14 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	waitErr := cmd.Wait()
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
-		a.ExitErr = waitErr
+		a.SetExitErr(waitErr)
 	}
 
-	a.State = StateStopped
+	a.SetState(StateStopped)
 	if a.done != nil {
 		close(a.done)
 	}
-	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.CostUSD)
+	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	if m.onComplete != nil {
 		m.onComplete(a)
@@ -154,8 +155,7 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			continue
 		}
 
-		a.convoBuffer = append(a.convoBuffer, event)
-		a.LastEventAt = time.Now().UTC()
+		a.AppendConvo(event)
 
 		// Always emit result/system events immediately. For others, buffer
 		// the latest and emit at most once per convoEmitInterval so the
@@ -181,18 +181,13 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 		switch event.Type {
 		case "system":
 			if event.SessionID != "" {
-				a.SessionID = event.SessionID
+				a.SetSessionID(event.SessionID)
 			}
 		case "result":
-			if event.SessionID != "" {
-				a.SessionID = event.SessionID
-			}
-			a.CostUSD += event.CostUSD
-			a.InputTokens += event.InputTokens
-			a.OutputTokens += event.OutputTokens
-			m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", a.CostUSD)
+			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)
+			m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 			// After result, agent is idle waiting for next user message.
-			a.State = StatePaused
+			a.SetState(StatePaused)
 			m.emit(events.AgentState(a.ID), a)
 		}
 	}
@@ -209,12 +204,22 @@ func parseConvoEvent(line []byte) (ConvoEvent, error) {
 		return ConvoEvent{}, fmt.Errorf("unmarshal: %w", err)
 	}
 
+	// scanner.Bytes() aliases the scanner's internal buffer which is
+	// overwritten on the next Scan() call. Copy the bytes into the
+	// ConvoEvent so Raw stays valid after the scanner advances and
+	// downstream marshaling (frontend events, log writes) sees the
+	// original line rather than a stale/partial one. Without the copy
+	// callers hit: json: error calling MarshalJSON for type
+	// json.RawMessage: invalid character '{' after top-level value.
+	rawCopy := make([]byte, len(line))
+	copy(rawCopy, line)
+
 	eventType, _ := raw["type"].(string)
 	event := ConvoEvent{
 		Type:      eventType,
 		Subtype:   strVal(raw, "subtype"),
 		Timestamp: time.Now().UTC(),
-		Raw:       json.RawMessage(line),
+		Raw:       rawCopy,
 	}
 
 	switch eventType {
@@ -365,27 +370,27 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if a.Mode != "interactive" {
 		return fmt.Errorf("agent %s is not in interactive/conversational mode", agentID)
 	}
-	if a.stdinPipe == nil {
+	a.stdinMu.Lock()
+	hasPipe := a.stdinPipe != nil
+	a.stdinMu.Unlock()
+	if !hasPipe {
 		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
 	}
 	if err := m.writeUserMessage(a, text); err != nil {
 		return err
 	}
-	a.State = StateRunning
+	a.SetState(StateRunning)
 	m.emit(events.AgentState(a.ID), a)
 	m.logger.Info("agent.convo.message_sent", "id", a.ID)
 
 	// Add user message to convo buffer.
-	a.convoBuffer = append(a.convoBuffer, ConvoEvent{
+	ev := ConvoEvent{
 		Type:      "user_input",
 		Text:      text,
 		Timestamp: time.Now().UTC(),
-	})
-	m.emit(events.AgentConvo(a.ID), ConvoEvent{
-		Type:      "user_input",
-		Text:      text,
-		Timestamp: time.Now().UTC(),
-	})
+	}
+	a.AppendConvo(ev)
+	m.emit(events.AgentConvo(a.ID), ev)
 	return nil
 }
 

@@ -119,6 +119,12 @@ type StepConfig struct {
 	MaxRetries int  `yaml:"max_retries,omitempty" json:"maxRetries"`
 	ReuseAgent bool `yaml:"reuse_agent,omitempty" json:"reuseAgent"`
 
+	// run_agent: treat the step as complete when the task status transitions
+	// to this value. Required for interactive/conversational agents that
+	// never exit on their own — the workflow advances on status change
+	// instead of process exit.
+	WaitForStatus string `yaml:"wait_for_status,omitempty" json:"waitForStatus"`
+
 	// shell
 	Command string `yaml:"command,omitempty" json:"command"`
 	Dir     string `yaml:"dir,omitempty" json:"dir"`
