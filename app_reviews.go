@@ -218,6 +218,37 @@ func (r *ReviewHandler) detectPublishedReviews(tasks []task.Task) {
 	}
 }
 
+// prMonitorEligible decides whether the PR monitor should consider a task
+// when scanning for CI failures, conflicts, and ready-to-merge state.
+//
+// Historical behavior was "in-review only" — which silently stranded tasks
+// whose workflow exited to `in-progress` with a live PR (e.g. an evaluate
+// step that crashed before flipping to in-review, or a manually-spawned
+// agent that opened a PR outside of any workflow). Those tasks would render
+// a red ✗ in the kanban UI forever and never get picked up for pr-fix.
+//
+// Now we also include in-progress tasks that carry an explicit PR number.
+// Branch-only matching stays gated on in-review to avoid false positives
+// from tasks that pushed a WIP branch without opening a PR yet.
+func prMonitorEligible(t *task.Task) bool {
+	if slices.Contains(t.Tags, "review") {
+		// Review tasks are inbound (reviewing someone else's PR), not tasks
+		// whose own PR is being tracked. They're handled separately.
+		return false
+	}
+	switch t.Status {
+	case task.StatusInReview:
+		return t.PRNumber != 0 || t.Branch != ""
+	case task.StatusInProgress:
+		// Only in-progress tasks that already have a PR — a branch alone
+		// isn't enough, we don't want to treat mid-implementation tasks
+		// as candidates for pr-fix dispatch.
+		return t.PRNumber != 0
+	default:
+		return false
+	}
+}
+
 func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	summary, err := github.FetchReviews()
 	if err != nil {
@@ -234,10 +265,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 	var matchers []github.TaskMatcher
 	for i := range tasks {
-		if tasks[i].Status != task.StatusInReview {
-			continue
-		}
-		if tasks[i].PRNumber == 0 && tasks[i].Branch == "" {
+		if !prMonitorEligible(&tasks[i]) {
 			continue
 		}
 		matchers = append(matchers, github.TaskMatcher{

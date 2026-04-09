@@ -80,6 +80,35 @@
     return () => unsubs.forEach(u => u())
   }
 
+  // Coalesce bursts of backend events into a single handler call. The backend
+  // can fire dozens of task:updated events per second when agents churn
+  // (restart-stale loops, rapid workflow advances, large headless sessions);
+  // a full taskStore.load() on every event re-builds the reactive Map and
+  // forces every kanban card to re-render, which saturates the WebKit main
+  // thread and freezes the UI even though the Go side is idle.
+  //
+  // Leading-edge fire keeps the UI feeling snappy on the first change in a
+  // burst; the trailing flush guarantees the last state is reflected after
+  // the burst quiets down.
+  function debounced(fn: () => void, wait = 150): () => void {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let lastInvoke = 0
+    return () => {
+      const now = Date.now()
+      if (now - lastInvoke >= wait && timer === null) {
+        lastInvoke = now
+        fn()
+        return
+      }
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        lastInvoke = Date.now()
+        timer = null
+        fn()
+      }, wait)
+    }
+  }
+
   $effect(() => {
     taskStore.load()
     taskStore.startPolling()
@@ -88,7 +117,8 @@
     projectStore.load()
     projectStore.startPolling()
 
-    const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], () => taskStore.load())
+    const reloadTasks = debounced(() => taskStore.load(), 150)
+    const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
     notificationStore.load()
     const unsubNotif = notificationStore.listen()
     const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {

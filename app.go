@@ -476,6 +476,19 @@ func (a *App) restartStaleInProgress() {
 		if slices.Contains(t.Tags, "review") {
 			continue
 		}
+		// Skip tasks whose workflow already finished. The workflow engine
+		// is the source of truth for when work is done; re-spawning an
+		// agent here would loop forever because the agent's completion
+		// callback can't advance a terminal workflow. Operators can drive
+		// the task out of this state manually (e.g. flip to in-review so
+		// pr-monitor picks it up, or reset to todo to restart).
+		if t.Workflow != nil &&
+			(t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed) {
+			a.logger.Debug("restart-stale.skip",
+				"task_id", t.ID, "reason", "workflow_terminal",
+				"state", string(t.Workflow.State))
+			continue
+		}
 		// Debounce respawn when a previous run started recently. Covers the
 		// dev-reload case: app restarts every few seconds, but a headless
 		// subprocess from the prior lifecycle is still alive.

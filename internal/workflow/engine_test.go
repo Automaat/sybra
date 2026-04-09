@@ -1052,13 +1052,101 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	if ti.Workflow.State != ExecCompleted {
 		t.Fatalf("precondition: expected completed, got %q", ti.Workflow.State)
 	}
+	if ti.Workflow.CurrentStep != "" {
+		t.Fatalf("precondition: expected empty current step after completion, got %q", ti.Workflow.CurrentStep)
+	}
+	historyBefore := len(ti.Workflow.StepHistory)
 
-	// Another agent complete on an already-completed workflow should not panic.
+	// Another agent complete on an already-completed workflow should not
+	// start new agents, mutate step history, or record an error.
 	callsBefore := agents.CallCount()
 	engine.HandleAgentComplete("t1", "stale-agent", "late result", "stopped")
 
 	if agents.CallCount() != callsBefore {
 		t.Error("HandleAgentComplete on completed workflow should not start new agents")
+	}
+
+	tiAfter, _ := tasks.GetTask("t1")
+	if got := len(tiAfter.Workflow.StepHistory); got != historyBefore {
+		t.Errorf("StepHistory len = %d, want %d — stale completion must not append",
+			got, historyBefore)
+	}
+	if tiAfter.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want ExecCompleted — stale completion must not mutate state",
+			tiAfter.Workflow.State)
+	}
+	if tiAfter.Workflow.CurrentStep != "" {
+		t.Errorf("CurrentStep = %q, want empty — stale completion must not mutate current step",
+			tiAfter.Workflow.CurrentStep)
+	}
+}
+
+// TestAdvanceStep_EmptyStepIDIsNoop covers the direct-call variant: a caller
+// that passes an empty StepID (e.g. because t.Workflow.CurrentStep was reset
+// to "" by a previous completion) used to error with "step not found in
+// workflow", which the agent-complete path would log as ERROR and still
+// persist via RecordStep. The guard must return nil and leave state intact.
+func TestAdvanceStep_EmptyStepIDIsNoop(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+	// Force the workflow into the pathological state observed in prod:
+	// state=completed, current_step="" — mirrors what resolveNext leaves
+	// behind when a terminal step evaluates to goto: "".
+	ti, _ := tasks.GetTask("t1")
+	ti.Workflow.State = ExecCompleted
+	ti.Workflow.CurrentStep = ""
+	if err := tasks.SetWorkflow("t1", ti.Workflow); err != nil {
+		t.Fatal(err)
+	}
+	historyBefore := len(ti.Workflow.StepHistory)
+
+	err := engine.AdvanceStep("t1", StepOutput{StepID: "", Status: "completed"})
+	if err != nil {
+		t.Errorf("AdvanceStep with empty StepID = %v, want nil (no-op)", err)
+	}
+
+	tiAfter, _ := tasks.GetTask("t1")
+	if got := len(tiAfter.Workflow.StepHistory); got != historyBefore {
+		t.Errorf("StepHistory len = %d, want %d — empty-step advance must not append",
+			got, historyBefore)
+	}
+	if tiAfter.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want ExecCompleted", tiAfter.Workflow.State)
+	}
+}
+
+// TestAdvanceStep_FailedWorkflowIsNoop pins the other terminal state:
+// workflows that hit ExecFailed also must refuse further advances.
+func TestAdvanceStep_FailedWorkflowIsNoop(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "triage",
+			State:       ExecFailed,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"})
+	if err != nil {
+		t.Errorf("AdvanceStep on failed workflow = %v, want nil (no-op)", err)
+	}
+	if agents.CallCount() != 0 {
+		t.Errorf("agents.CallCount = %d, want 0 — failed workflow must not spawn", agents.CallCount())
 	}
 }
 
