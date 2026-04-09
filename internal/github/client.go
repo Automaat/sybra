@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // execer abstracts command execution for testing.
@@ -21,18 +22,39 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 
 var defaultExecer execer = ghExecer{}
 
-var cachedViewer string
+var (
+	viewerMu     sync.RWMutex
+	cachedViewer string
+)
 
 func viewerLogin(e execer) string {
-	if cachedViewer != "" {
-		return cachedViewer
+	viewerMu.RLock()
+	cached := cachedViewer
+	viewerMu.RUnlock()
+	if cached != "" {
+		return cached
 	}
 	out, err := e.run("api", "user", "-q", ".login")
 	if err != nil {
 		return ""
 	}
-	cachedViewer = strings.TrimSpace(string(out))
-	return cachedViewer
+	viewerMu.Lock()
+	// Double-checked: another goroutine may have populated the cache
+	// between RUnlock and Lock; keep whichever value is set.
+	if cachedViewer == "" {
+		cachedViewer = strings.TrimSpace(string(out))
+	}
+	result := cachedViewer
+	viewerMu.Unlock()
+	return result
+}
+
+// resetCachedViewerForTest clears the package-level viewer cache. Exported
+// only for use from tests in the same package.
+func resetCachedViewerForTest() {
+	viewerMu.Lock()
+	cachedViewer = ""
+	viewerMu.Unlock()
 }
 
 const prQuery = `query($q: String!) {

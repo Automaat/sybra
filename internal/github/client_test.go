@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func resetViewerCache() { cachedViewer = "" }
+func resetViewerCache() { resetCachedViewerForTest() }
 
 func TestConvertPRs_basic(t *testing.T) {
 	t.Parallel()

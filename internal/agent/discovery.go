@@ -54,7 +54,7 @@ func (m *Manager) refreshTracked() {
 		if !a.External {
 			continue
 		}
-		snaps = append(snaps, snap{a: a, pid: a.PID, cwd: a.sessionCWD, sessionID: a.SessionID})
+		snaps = append(snaps, snap{a: a, pid: a.PID, cwd: a.sessionCWD, sessionID: a.GetSessionID()})
 	}
 	m.mu.RUnlock()
 
@@ -65,9 +65,7 @@ func (m *Manager) refreshTracked() {
 		} else {
 			next = inferState(s.cwd, s.sessionID)
 		}
-		m.mu.Lock()
-		s.a.State = next
-		m.mu.Unlock()
+		s.a.SetState(next)
 	}
 }
 

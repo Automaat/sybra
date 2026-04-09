@@ -44,27 +44,13 @@ func (s *PlanningService) ApprovePlan(id string) (task.Task, error) {
 }
 
 // RejectPlan rejects the plan with optional feedback via the workflow engine.
+// Unresolved inline review comments are appended to the feedback
+// automatically so the plan agent sees them on replan.
 func (s *PlanningService) RejectPlan(id, feedback string) (task.Task, error) {
 	data := map[string]string{}
-	if feedback != "" {
-		data["feedback"] = feedback
-	}
-
-	// Append unresolved inline comments to feedback.
-	comments, _ := s.tasks.Comments().List(id)
-	var unresolvedLines []string
-	for _, c := range comments {
-		if !c.Resolved {
-			unresolvedLines = append(unresolvedLines, fmt.Sprintf("- Line %d: %s", c.Line, c.Body))
-		}
-	}
-	if len(unresolvedLines) > 0 {
-		commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
-		if data["feedback"] != "" {
-			data["feedback"] += "\n\n" + commentSection
-		} else {
-			data["feedback"] = commentSection
-		}
+	combined := s.assembleFeedback(id, feedback)
+	if combined != "" {
+		data["feedback"] = combined
 	}
 
 	if err := s.engine.HandleHumanAction(id, "reject", data); err != nil {
@@ -73,16 +59,48 @@ func (s *PlanningService) RejectPlan(id, feedback string) (task.Task, error) {
 	return s.tasks.Get(id)
 }
 
-// SendPlanMessage sends a message to a live interactive plan agent.
+// SendPlanMessage sends a follow-up message to a live interactive plan
+// agent. Unresolved inline comments are appended to the message so the two
+// plan-review buttons behave consistently — the UI placeholder promises
+// "comments are included automatically" and that promise applies to both.
 func (s *PlanningService) SendPlanMessage(id, message string) error {
-	if strings.TrimSpace(message) == "" {
+	combined := s.assembleFeedback(id, message)
+	if strings.TrimSpace(combined) == "" {
 		return fmt.Errorf("message is empty")
 	}
 	planAg := s.agents.FindRunningAgentForTask(id, agent.RolePlan)
 	if planAg == nil || planAg.Mode != "interactive" {
 		return fmt.Errorf("no live interactive plan agent for task %s", id)
 	}
-	return s.agents.SendPromptToAgent(planAg.ID, message)
+	return s.agents.SendPromptToAgent(planAg.ID, combined)
+}
+
+// assembleFeedback merges free-text feedback with any unresolved inline
+// review comments into a single prompt body. Returns "" if both inputs are
+// empty. Shared between RejectPlan and SendPlanMessage so the two code
+// paths cannot drift in how they format comments.
+func (s *PlanningService) assembleFeedback(taskID, feedback string) string {
+	trimmed := strings.TrimSpace(feedback)
+
+	comments, err := s.tasks.Comments().List(taskID)
+	if err != nil {
+		return trimmed
+	}
+	var unresolvedLines []string
+	for _, c := range comments {
+		if !c.Resolved {
+			unresolvedLines = append(unresolvedLines, fmt.Sprintf("- Line %d: %s", c.Line, c.Body))
+		}
+	}
+	if len(unresolvedLines) == 0 {
+		return trimmed
+	}
+
+	commentSection := "Unresolved review comments:\n" + strings.Join(unresolvedLines, "\n")
+	if trimmed == "" {
+		return commentSection
+	}
+	return trimmed + "\n\n" + commentSection
 }
 
 // HasLivePlanAgent reports whether a live plan agent exists for the task.

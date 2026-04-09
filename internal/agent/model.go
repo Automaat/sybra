@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+// NOTE on concurrency: Agent has two distinct mutexes.
+//   - mu: guards all mutable scalar and slice fields (State, outputBuffer,
+//     convoBuffer, LastEventAt, CostUSD, TurnCount, SessionID, ExitErr,
+//     cmd, PID, LogPath, EscalationReason). Use the helper methods
+//     defined on Agent rather than touching the fields directly from
+//     concurrent code paths.
+//   - stdinMu: guards stdinPipe only. Kept separate because the runner
+//     goroutine may hold it for the duration of a blocking Write, and
+//     we do not want to starve other consumers that only need to read
+//     State or append an event.
+
 type State string
 
 const (
@@ -59,10 +70,149 @@ type Agent struct {
 	stdinPipe  io.WriteCloser
 	stdinMu    sync.Mutex
 	approvalCh chan ApprovalResponse
+
+	// mu guards mutable fields touched from multiple goroutines. See the
+	// package-level note above the Agent type.
+	mu sync.RWMutex
 }
 
+// SetState atomically updates the agent state.
+func (a *Agent) SetState(s State) {
+	a.mu.Lock()
+	a.State = s
+	a.mu.Unlock()
+}
+
+// GetState returns the agent's current state.
+func (a *Agent) GetState() State {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.State
+}
+
+// AppendOutput appends a stream event to the headless output buffer and
+// refreshes LastEventAt.
+func (a *Agent) AppendOutput(ev StreamEvent) {
+	a.mu.Lock()
+	a.outputBuffer = append(a.outputBuffer, ev)
+	a.LastEventAt = time.Now().UTC()
+	a.mu.Unlock()
+}
+
+// AppendConvo appends a conversational event and refreshes LastEventAt.
+func (a *Agent) AppendConvo(ev ConvoEvent) {
+	a.mu.Lock()
+	a.convoBuffer = append(a.convoBuffer, ev)
+	a.LastEventAt = time.Now().UTC()
+	a.mu.Unlock()
+}
+
+// SetCmd records the running process and its PID.
+func (a *Agent) SetCmd(cmd *exec.Cmd) {
+	a.mu.Lock()
+	a.cmd = cmd
+	if cmd != nil && cmd.Process != nil {
+		a.PID = cmd.Process.Pid
+	}
+	a.mu.Unlock()
+}
+
+// SetExitErr records the exit error of the underlying process.
+func (a *Agent) SetExitErr(err error) {
+	a.mu.Lock()
+	a.ExitErr = err
+	a.mu.Unlock()
+}
+
+// GetExitErr returns the recorded exit error, if any.
+func (a *Agent) GetExitErr() error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ExitErr
+}
+
+// SetLogPath records the path of the agent's output log file.
+func (a *Agent) SetLogPath(p string) {
+	a.mu.Lock()
+	a.LogPath = p
+	a.mu.Unlock()
+}
+
+// SetSessionID records the Claude session ID.
+func (a *Agent) SetSessionID(id string) {
+	a.mu.Lock()
+	a.SessionID = id
+	a.mu.Unlock()
+}
+
+// GetSessionID returns the current Claude session ID.
+func (a *Agent) GetSessionID() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.SessionID
+}
+
+// AddResultStats merges a result-event's stats into the running totals
+// and returns the new cumulative CostUSD.
+func (a *Agent) AddResultStats(sessionID string, cost float64, in, out int) float64 {
+	a.mu.Lock()
+	if sessionID != "" {
+		a.SessionID = sessionID
+	}
+	a.CostUSD += cost
+	a.InputTokens += in
+	a.OutputTokens += out
+	result := a.CostUSD
+	a.mu.Unlock()
+	return result
+}
+
+// IncTurnCount increments the turn counter and returns the new value.
+func (a *Agent) IncTurnCount() int {
+	a.mu.Lock()
+	a.TurnCount++
+	n := a.TurnCount
+	a.mu.Unlock()
+	return n
+}
+
+// SetEscalationReason updates the escalation reason string.
+func (a *Agent) SetEscalationReason(reason string) {
+	a.mu.Lock()
+	a.EscalationReason = reason
+	a.mu.Unlock()
+}
+
+// GetCostUSD returns the current cumulative cost.
+func (a *Agent) GetCostUSD() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.CostUSD
+}
+
+// GetLogPath returns the current output log path.
+func (a *Agent) GetLogPath() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.LogPath
+}
+
+// GetLastEventAt returns the most recent event timestamp.
+func (a *Agent) GetLastEventAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.LastEventAt
+}
+
+// Output returns a snapshot of the stream events produced so far. The
+// returned slice is safe to inspect concurrently with the agent's runner
+// goroutine appending more events.
 func (a *Agent) Output() []StreamEvent {
-	return a.outputBuffer
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	snapshot := make([]StreamEvent, len(a.outputBuffer))
+	copy(snapshot, a.outputBuffer)
+	return snapshot
 }
 
 // RunConfig is the single entry point for starting any agent.
@@ -133,9 +283,13 @@ type ApprovalResponse struct {
 	Approved  bool   `json:"approved"`
 }
 
-// ConvoOutput returns the conversation event buffer.
+// ConvoOutput returns a snapshot of the conversation event buffer.
 func (a *Agent) ConvoOutput() []ConvoEvent {
-	return a.convoBuffer
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	snapshot := make([]ConvoEvent, len(a.convoBuffer))
+	copy(snapshot, a.convoBuffer)
+	return snapshot
 }
 
 // EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.

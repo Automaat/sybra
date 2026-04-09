@@ -148,7 +148,7 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 			}
 		}
 		agentState := "stopped"
-		if ag.ExitErr != nil {
+		if ag.GetExitErr() != nil {
 			agentState = "failed"
 		}
 		engine.HandleAgentComplete(ag.TaskID, ag.ID, result, agentState)

@@ -148,7 +148,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	// Update agent state to paused.
 	if s.agents != nil {
 		if a, err := s.agents.GetAgent(agentID); err == nil {
-			a.State = StatePaused
+			a.SetState(StatePaused)
 			s.emit(events.AgentState(agentID), a)
 		}
 	}
@@ -158,7 +158,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	case resp := <-ch:
 		if s.agents != nil {
 			if a, err := s.agents.GetAgent(agentID); err == nil {
-				a.State = StateRunning
+				a.SetState(StateRunning)
 				s.emit(events.AgentState(agentID), a)
 			}
 		}
@@ -217,7 +217,7 @@ func (s *ApprovalServer) findAgentBySession(sessionID string) string {
 		return ""
 	}
 	for _, a := range s.agents.ListAgents() {
-		if a.SessionID == sessionID && a.Mode == "interactive" {
+		if a.GetSessionID() == sessionID && a.Mode == "interactive" {
 			return a.ID
 		}
 	}

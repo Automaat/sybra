@@ -313,6 +313,52 @@ func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string
 	})
 }
 
+// HandleStatusChange is called when a task's status transitions. If the
+// current workflow step is a run_agent configured with a matching
+// wait_for_status, the workflow advances past it. This is how interactive /
+// conversational agents (which don't exit between turns) signal step
+// completion: they update the task status via the CLI, the task manager
+// fires the status-change hook, and the engine advances the workflow.
+//
+// Safe to call for any status change — no-ops when the current step does
+// not declare wait_for_status or when the status does not match.
+func (e *Engine) HandleStatusChange(taskID, newStatus string) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Debug("workflow.status-change.get", "task_id", taskID, "err", err)
+		return
+	}
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return
+	}
+	if t.Workflow.State != ExecWaiting && t.Workflow.State != ExecRunning {
+		return
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		return
+	}
+	if step.Config.WaitForStatus == "" || step.Config.WaitForStatus != newStatus {
+		return
+	}
+
+	e.logger.Info("workflow.status-advance",
+		"task_id", taskID, "step", step.ID, "status", newStatus)
+
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: "status:" + newStatus,
+	}); err != nil {
+		e.logger.Error("workflow.status-advance.err", "task_id", taskID, "err", err)
+	}
+}
+
 // HandleAgentComplete is called when an agent finishes. It maps the agent
 // back to the workflow step and advances. The agentState parameter should
 // reflect the actual agent exit state (e.g. "stopped" for success, "failed"

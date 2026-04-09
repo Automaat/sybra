@@ -105,7 +105,7 @@ func (m *Manager) runningCountLocked() int {
 			default:
 				count++
 			}
-		} else if a.State == StateRunning {
+		} else if a.GetState() == StateRunning {
 			count++
 		}
 	}
@@ -235,15 +235,30 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 	}
 }
 
-// SendPromptToAgent pastes text into an interactive agent's tmux session
-// and submits it. Assumes the agent is idle (at its chat prompt).
+// SendPromptToAgent delivers a follow-up prompt to an interactive agent.
+// It dispatches on transport: conversational agents (stdin stream-json)
+// receive the prompt via SendMessage; legacy tmux agents get the text pasted
+// and submitted. Both transports are valid for Mode == "interactive".
 func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
 	if err != nil {
 		return err
 	}
-	if a.Mode != "interactive" || a.TmuxSession == "" {
-		return fmt.Errorf("agent %s is not an interactive tmux agent", agentID)
+	if a.GetState() == StateStopped {
+		return fmt.Errorf("agent %s is stopped", agentID)
+	}
+
+	// Conversational agents: write to stdin via SendMessage.
+	a.stdinMu.Lock()
+	hasStdin := a.stdinPipe != nil
+	a.stdinMu.Unlock()
+	if hasStdin {
+		return m.SendMessage(agentID, text)
+	}
+
+	// Legacy tmux transport.
+	if a.TmuxSession == "" {
+		return fmt.Errorf("agent %s has no active transport (no stdin pipe or tmux session)", agentID)
 	}
 	if !m.tmux.SessionExists(a.TmuxSession) {
 		return fmt.Errorf("tmux session %s does not exist", a.TmuxSession)
@@ -259,13 +274,22 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	return nil
 }
 
-// FindRunningAgentForTask returns the first running agent for the given task
-// matching the provided role. Returns nil if none found.
+// isLive reports whether an agent is still alive from the user's perspective.
+// Conversational agents switch to StatePaused while idle between turns; they
+// must still be findable so a follow-up prompt can be delivered without
+// spawning a new session.
+func isLive(s State) bool {
+	return s == StateRunning || s == StatePaused
+}
+
+// FindRunningAgentForTask returns the first live agent for the given task
+// matching the provided role. Returns nil if none found. "Live" includes
+// paused conversational agents that are idle-waiting for a follow-up prompt.
 func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, a := range m.agents {
-		if a.TaskID != taskID || a.State != StateRunning {
+		if a.TaskID != taskID || !isLive(a.GetState()) {
 			continue
 		}
 		if RoleFromName(a.Name) != role {
@@ -276,14 +300,14 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 	return nil
 }
 
-// FindAllRunningAgentsForTask returns all running agents for the given task
+// FindAllRunningAgentsForTask returns all live agents for the given task
 // matching the provided role.
 func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var result []*Agent
 	for _, a := range m.agents {
-		if a.TaskID != taskID || a.State != StateRunning {
+		if a.TaskID != taskID || !isLive(a.GetState()) {
 			continue
 		}
 		if RoleFromName(a.Name) != role {
@@ -312,7 +336,7 @@ func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
 		if a.cancel != nil {
 			a.cancel()
 		}
-		a.State = StateStopped
+		a.SetState(StateStopped)
 		a.stdinMu.Lock()
 		if a.stdinPipe != nil {
 			_ = a.stdinPipe.Close()
@@ -351,7 +375,7 @@ func (m *Manager) StopAgent(agentID string) error {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	a.State = StateStopped
+	a.SetState(StateStopped)
 	// Close stdin to signal the claude process to exit.
 	a.stdinMu.Lock()
 	if a.stdinPipe != nil {
@@ -403,7 +427,7 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 			default:
 				return true
 			}
-		} else if a.State == StateRunning {
+		} else if a.GetState() == StateRunning {
 			// interactive: no goroutine, rely on state
 			return true
 		}
@@ -419,7 +443,7 @@ func (m *Manager) CapturePane(agentID string) (string, error) {
 	if a.TmuxSession == "" {
 		return "", fmt.Errorf("agent %s has no tmux session", agentID)
 	}
-	if a.State == StateStopped {
+	if a.GetState() == StateStopped {
 		return "", nil
 	}
 	out, captureErr := m.tmux.CapturePaneOutput(a.TmuxSession)
@@ -434,7 +458,7 @@ func (m *Manager) CapturePane(agentID string) (string, error) {
 // markStopped transitions an agent to stopped, kills its tmux session if any,
 // and emits the state event.
 func (m *Manager) markStopped(a *Agent) {
-	a.State = StateStopped
+	a.SetState(StateStopped)
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -460,7 +484,7 @@ func (m *Manager) CheckInteractiveSessions() {
 	m.mu.RLock()
 	var candidates []*Agent
 	for _, a := range m.agents {
-		if a.Mode == "interactive" && a.State == StateRunning && a.TmuxSession != "" {
+		if a.Mode == "interactive" && a.GetState() == StateRunning && a.TmuxSession != "" {
 			candidates = append(candidates, a)
 		}
 	}
@@ -478,15 +502,16 @@ func (m *Manager) CheckInteractiveSessions() {
 			continue
 		}
 		// Resolve claude session via tmux pane PID → ~/.claude/sessions/{pid}.json
-		if a.SessionID == "" {
+		if a.GetSessionID() == "" {
 			m.resolveInteractiveSession(a)
 		}
-		if a.SessionID == "" {
+		sid := a.GetSessionID()
+		if sid == "" {
 			continue
 		}
-		state := inferState(a.sessionCWD, a.SessionID)
+		state := inferState(a.sessionCWD, sid)
 		if state == StateIdle {
-			m.logger.Info("agent.interactive.idle", "id", a.ID, "session", a.TmuxSession, "claude_session", a.SessionID)
+			m.logger.Info("agent.interactive.idle", "id", a.ID, "session", a.TmuxSession, "claude_session", sid)
 			m.markStopped(a)
 		}
 	}
@@ -502,7 +527,7 @@ func (m *Manager) resolveInteractiveSession(a *Agent) {
 	pidStr = strings.TrimSpace(pidStr)
 	sess := readClaudeSessionByPID(pidStr)
 	if sess.SessionID != "" {
-		a.SessionID = sess.SessionID
+		a.SetSessionID(sess.SessionID)
 		if a.sessionCWD == "" {
 			a.sessionCWD = sess.CWD
 		}
