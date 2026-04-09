@@ -15,5 +15,3 @@ steps:
       role: triage
       model: sonnet
       prompt: seed prompt
-    next:
-      - goto: ""

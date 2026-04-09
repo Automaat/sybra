@@ -70,11 +70,15 @@ test.describe('Workflow editor — trigger panel', () => {
     // Event dropdown (first select on the page) reflects the seeded event.
     await expect(page.locator('select').first()).toHaveValue('task.created')
 
-    // Condition row fields should be present with seeded values.
-    // Use getByDisplayValue — Svelte sets the .value property, not the
-    // HTML attribute, so `input[value="…"]` CSS selectors don't match.
-    await expect(page.getByDisplayValue('task.tags')).toBeVisible()
-    await expect(page.getByDisplayValue('skip')).toBeVisible()
+    // Condition row inputs — target by placeholder attribute (Svelte sets
+    // `value` as a DOM property, not an attribute, so input[value="…"]
+    // won't match; placeholder is a normal attribute and is reliable).
+    await expect(
+      page.locator('input[placeholder="task.tags"]').first(),
+    ).toHaveValue('task.tags')
+    await expect(
+      page.locator('input[placeholder="value"]').first(),
+    ).toHaveValue('skip')
   })
 
   test('can add a new trigger condition', async ({ page }) => {
@@ -110,7 +114,7 @@ test.describe('Workflow editor — add step + transitions', () => {
     await expect(
       page.locator('h3', { hasText: 'Step Config' }),
     ).toBeVisible()
-    await expect(page.getByDisplayValue('New step')).toBeVisible()
+    await expect(page.getByLabel('Name')).toHaveValue('New step')
 
     // Transitions section is visible and empty by default.
     await expect(
@@ -157,7 +161,8 @@ test.describe('Workflow editor — save round-trip', () => {
     await page.getByRole('button', { name: '+ Add step', exact: true }).click()
 
     // Change the name to something identifiable.
-    const nameInput = page.getByDisplayValue('New step')
+    const nameInput = page.getByLabel('Name')
+    await expect(nameInput).toHaveValue('New step')
     await nameInput.fill('e2e-added-step')
     await nameInput.blur()
 
