@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,13 +41,22 @@ type TaskProvider interface {
 }
 
 // AgentLauncher starts agents and queries running state.
+// `dir` overrides the worktree preparation — when non-empty the caller has
+// already staged a directory (e.g. PrepareForFix) and the adapter must reuse
+// it instead of calling PrepareForTask.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error
 }
+
+// WorkflowVarDir is the reserved variable name used to pass a pre-prepared
+// working directory to run_agent steps, bypassing worktree creation inside
+// the engine. Callers set this before StartWorkflowWithVars when they have
+// already prepared the worktree (e.g. PR-fix flow that needs PrepareForFix).
+const WorkflowVarDir = "_dir"
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
@@ -73,6 +84,13 @@ func (e *Engine) Defs() *Store { return e.store }
 
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
+	return e.StartWorkflowWithVars(taskID, workflowID, nil)
+}
+
+// StartWorkflowWithVars assigns a workflow and seeds the execution with
+// initial variables. Use the reserved WorkflowVarDir key to pass a
+// pre-prepared working directory to run_agent steps.
+func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[string]string) error {
 	def, err := e.store.Get(workflowID)
 	if err != nil {
 		return fmt.Errorf("get workflow %s: %w", workflowID, err)
@@ -83,11 +101,14 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 		return fmt.Errorf("workflow %s has no steps", workflowID)
 	}
 
+	variables := make(map[string]string, len(vars))
+	maps.Copy(variables, vars)
+
 	wfExec := &Execution{
 		WorkflowID:  workflowID,
 		CurrentStep: first.ID,
 		State:       ExecRunning,
-		Variables:   make(map[string]string),
+		Variables:   variables,
 		StartedAt:   time.Now().UTC(),
 	}
 
@@ -101,6 +122,15 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.
 func (e *Engine) MatchWorkflow(t TaskInfo, event string) *Definition {
+	return e.matchWorkflow(t, event, nil)
+}
+
+// matchWorkflow evaluates trigger conditions against task fields plus extra
+// event-specific fields (e.g. "pr.issue_kind" for pr.event dispatch) and
+// returns the highest-priority matching definition. When multiple definitions
+// share the same priority, the store's alphabetical order (by filename) is
+// the deterministic tiebreaker.
+func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string) *Definition {
 	defs, err := e.store.List()
 	if err != nil {
 		e.logger.Error("workflow.match.list", "err", err)
@@ -108,15 +138,66 @@ func (e *Engine) MatchWorkflow(t TaskInfo, event string) *Definition {
 	}
 
 	fields := taskFields(t)
+	maps.Copy(fields, extra)
+
+	var matches []*Definition
 	for i := range defs {
 		if defs[i].Trigger.On != event {
 			continue
 		}
 		if EvalConditions(defs[i].Trigger.Conditions, fields) {
-			return &defs[i]
+			matches = append(matches, &defs[i])
 		}
 	}
-	return nil
+	if len(matches) == 0 {
+		return nil
+	}
+	// Stable sort preserves store order (alphabetical) within the same
+	// priority bucket, so tiebreaks stay deterministic across runs.
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].Trigger.Priority > matches[j].Trigger.Priority
+	})
+	if len(matches) > 1 {
+		e.logger.Info("workflow.match.multiple",
+			"event", event, "picked", matches[0].ID,
+			"picked_priority", matches[0].Trigger.Priority,
+			"total", len(matches))
+	}
+	return matches[0]
+}
+
+// ErrWorkflowAlreadyActive is returned by DispatchEvent when the target task
+// already has a non-terminal workflow attached.
+var ErrWorkflowAlreadyActive = fmt.Errorf("task already has an active workflow")
+
+// DispatchEvent finds a workflow whose trigger matches the given event and
+// extraFields, then starts it seeded with vars. Returns the started workflow
+// ID, or "" if no matching definition was found. Use this for external
+// triggers like pr.event so the trigger conditions in the YAML stay
+// authoritative instead of being bypassed by direct StartWorkflow calls.
+//
+// If the task already has a non-terminal workflow running, returns
+// ErrWorkflowAlreadyActive and does not dispatch. Callers that intentionally
+// want to replace an active workflow should use StartWorkflowWithVars.
+func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+	if t.Workflow != nil &&
+		t.Workflow.State != ExecCompleted &&
+		t.Workflow.State != ExecFailed {
+		return "", fmt.Errorf("%w: %s (state=%s)",
+			ErrWorkflowAlreadyActive, t.Workflow.WorkflowID, t.Workflow.State)
+	}
+	def := e.matchWorkflow(t, event, extraFields)
+	if def == nil {
+		return "", nil
+	}
+	if err := e.StartWorkflowWithVars(taskID, def.ID, vars); err != nil {
+		return "", fmt.Errorf("start %s: %w", def.ID, err)
+	}
+	return def.ID, nil
 }
 
 // AdvanceStep is called when an async step completes. It records the result,
@@ -466,7 +547,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		model = "sonnet"
 	}
 
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, step.Config.AllowedTools, step.Config.NeedsWorktree)
+	dir := wfExec.Variables[WorkflowVarDir]
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree)
 	if err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}

@@ -23,6 +23,10 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 			if a.workflowEngine != nil {
 				a.workflowEngine.ResumeStalled()
 			}
+			// Recover in-progress tasks whose agent died — runs continuously,
+			// not just at startup, to catch tmux sessions closed mid-session
+			// and pr-fix agents that finished without advancing the workflow.
+			a.restartStaleInProgress()
 			a.worktrees.CleanupOrphaned()
 		}
 	}

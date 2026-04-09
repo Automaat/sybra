@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -57,6 +58,7 @@ type e2eEnv struct {
 	tasks        *task.Manager
 	agents       *agent.Manager
 	engine       *workflow.Engine
+	wfStore      *workflow.Store
 	taskDir      string
 	scenarioFile string
 	cancel       context.CancelFunc
@@ -156,6 +158,7 @@ func setupE2E(t *testing.T, scenario string) *e2eEnv {
 		tasks:   taskMgr,
 		agents:  agentMgr,
 		engine:  engine,
+		wfStore: wfStore,
 		taskDir: taskDir,
 		cancel:  cancel,
 	}
@@ -607,5 +610,198 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 	tk2, _ := env.tasks.Get(t2.ID)
 	if tk1.Workflow.WorkflowID != "test-simple" || tk2.Workflow.WorkflowID != "test-simple" {
 		t.Fatal("both tasks should have test-simple workflow")
+	}
+}
+
+// TestE2E_RecoverStaleInteractive simulates an interactive agent that
+// finished outside synapse's view (tmux session closed, app restart, etc.).
+// The task file records a waiting `implement` step; the recovery path calls
+// HandleAgentComplete with a marker so the workflow advances through
+// evaluate and reaches ExecCompleted without re-running the interactive
+// implement step.
+func TestE2E_RecoverStaleInteractive(t *testing.T) {
+	// Only evaluate runs for real — implement is "recovered" via marker.
+	env := setupE2EMulti(t, []string{"evaluate"})
+
+	created, err := env.tasks.Create("stale interactive task", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Put the task in the state that recoverStaleInteractive would encounter:
+	// interactive agent run already stopped, workflow waiting at implement.
+	wfExec := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       workflow.ExecWaiting,
+		Variables:   make(map[string]string),
+	}
+	if _, err := env.tasks.Update(created.ID, map[string]any{
+		"status":   "in-progress",
+		"workflow": wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.tasks.AddRun(created.ID, task.AgentRun{
+		AgentID: "stale-agent",
+		Mode:    "interactive",
+		State:   "stopped",
+		Result:  "stale: agent gone, auto-recovered",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the same engine call that recoverStaleInteractive makes.
+	const recoveryMarker = "(recovered stale interactive session — no fresh result)"
+	env.engine.HandleAgentComplete(created.ID, "stale-agent", recoveryMarker, "stopped")
+
+	// Evaluate fires (fake-claude "evaluate" scenario sets status=in-review),
+	// then the workflow reaches ExecCompleted.
+	waitFor(t, 20*time.Second, "workflow completes after stale recovery", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("expected completed, got %q (step=%s)", tk.Workflow.State, tk.Workflow.CurrentStep)
+	}
+
+	var implementRec, evaluateRec *workflow.StepRecord
+	for i := range tk.Workflow.StepHistory {
+		r := &tk.Workflow.StepHistory[i]
+		switch r.StepID {
+		case "implement":
+			implementRec = r
+		case "evaluate":
+			evaluateRec = r
+		}
+	}
+	if implementRec == nil {
+		t.Fatal("expected 'implement' step record after recovery")
+	}
+	if !strings.Contains(implementRec.Output, "recovered stale") {
+		t.Errorf("implement output = %q, want recovery marker", implementRec.Output)
+	}
+	if evaluateRec == nil {
+		t.Fatal("expected 'evaluate' step record — recovery should drive the next step")
+	}
+}
+
+// testPRFixWorkflowYAML is a minimal pr.event triggered workflow used by the
+// dispatch e2e test. Mirrors the real pr-fix.yaml's shape but swaps the
+// evaluate prompt for a fake-claude friendly one.
+const testPRFixWorkflowYAML = `id: test-pr-fix
+name: Test PR Fix
+trigger:
+  on: pr.event
+  conditions:
+    - field: pr.issue_kind
+      operator: in
+      value: conflict,ci_failure
+steps:
+  - id: set_in_progress
+    name: Mark In Progress
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: fix
+
+  - id: fix
+    name: Fix PR Issue
+    type: run_agent
+    config:
+      role: pr-fix
+      mode: headless
+      model: sonnet
+      prompt: '{{ getvar .Vars "prompt" }}'
+    next:
+      - goto: evaluate
+
+  - id: evaluate
+    name: Evaluate Fix
+    type: run_agent
+    config:
+      role: eval
+      mode: headless
+      model: sonnet
+      prompt: "Evaluate {{.Task.ID}}"
+    next:
+      - goto: ""
+`
+
+// TestE2E_DispatchPREvent_FullRun exercises the end-to-end pr.event
+// dispatch path: workflow match by trigger conditions, set_in_progress flip,
+// fix agent via caller-supplied prompt var, evaluate agent, then completion.
+// Also verifies that a repeat DispatchEvent while the first is still running
+// returns ErrWorkflowAlreadyActive instead of launching a second workflow.
+func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
+	// fix (success) → evaluate (sets status=in-review).
+	env := setupE2EMulti(t, []string{"success", "evaluate"})
+
+	// Install the test pr.event workflow alongside test-simple.
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(testPRFixWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("pr dispatch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, map[string]any{
+		"status": "in-review",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wfID, err := env.engine.DispatchEvent(created.ID, "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"prompt": "fix the CI"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "test-pr-fix" {
+		t.Fatalf("wfID = %q, want test-pr-fix", wfID)
+	}
+
+	// Second dispatch while the first is still running must be rejected —
+	// double-dispatch guard prevents competing workflows on the same task.
+	if _, err := env.engine.DispatchEvent(created.ID, "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"}, nil); !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		t.Errorf("re-dispatch err = %v, want ErrWorkflowAlreadyActive", err)
+	}
+
+	waitFor(t, 20*time.Second, "pr-fix workflow completes", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.WorkflowID != "test-pr-fix" {
+		t.Errorf("workflow on task = %q, want test-pr-fix", tk.Workflow.WorkflowID)
+	}
+	// evaluate scenario in fake-claude sets status=in-review via synapse-cli.
+	if tk.Status != task.StatusInReview {
+		t.Errorf("task status = %q, want in-review", tk.Status)
+	}
+	// Step history should record all three steps.
+	steps := map[string]bool{}
+	for _, r := range tk.Workflow.StepHistory {
+		steps[r.StepID] = true
+	}
+	for _, want := range []string{"set_in_progress", "fix", "evaluate"} {
+		if !steps[want] {
+			t.Errorf("missing step %q in history, got %v", want, steps)
+		}
 	}
 }

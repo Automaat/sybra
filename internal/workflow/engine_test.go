@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,9 +108,9 @@ func (m *memTasks) SetStatus(id, status string) {
 // --- Mock AgentLauncher ---
 
 type startCall struct {
-	TaskID, Role, Mode, Model, Prompt string
-	AllowedTools                      []string
-	NeedsWorktree                     bool
+	TaskID, Role, Mode, Model, Prompt, Dir string
+	AllowedTools                           []string
+	NeedsWorktree                          bool
 }
 
 type sentPrompt struct {
@@ -132,14 +133,14 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, prompt string, allowedTools []string, needsWorktree bool) (string, error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter++
 	id := fmt.Sprintf("agent-%d", m.counter)
 	m.calls = append(m.calls, startCall{
 		TaskID: taskID, Role: role, Mode: mode, Model: model,
-		Prompt: prompt, AllowedTools: allowedTools, NeedsWorktree: needsWorktree,
+		Prompt: prompt, Dir: dir, AllowedTools: allowedTools, NeedsWorktree: needsWorktree,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -492,6 +493,197 @@ func TestMatchWorkflow_NoMatch(t *testing.T) {
 	}
 }
 
+// addPREventWorkflow writes a minimal pr.event triggered workflow definition
+// to the store with the given id, priority, and trigger value. All generated
+// workflows share the same single run_agent step that reads its prompt from
+// the "prompt" variable — enough to exercise dispatch and variable plumbing.
+func addPREventWorkflow(t *testing.T, store *Store, id string, priority int, prIssueKind string) {
+	t.Helper()
+	def := Definition{
+		ID:   id,
+		Name: id,
+		Trigger: Trigger{
+			On:       "pr.event",
+			Priority: priority,
+			Conditions: []Condition{
+				{Field: "pr.issue_kind", Operator: "equals", Value: prIssueKind},
+			},
+		},
+		Steps: []Step{
+			{
+				ID:   "fix",
+				Name: "Fix",
+				Type: StepRunAgent,
+				Config: StepConfig{
+					Role:   "pr-fix",
+					Mode:   "headless",
+					Model:  "sonnet",
+					Prompt: `{{ getvar .Vars "prompt" }}`,
+				},
+				Next: []Transition{{GoTo: ""}},
+			},
+		},
+	}
+	if err := store.Save(def); err != nil {
+		t.Fatalf("save %s: %v", id, err)
+	}
+}
+
+func TestDispatchEvent_MatchesAndStarts(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review", AgentMode: "headless"})
+
+	wfID, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"prompt": "fix the thing"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "pr-fix-test" {
+		t.Fatalf("wfID = %q, want pr-fix-test", wfID)
+	}
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent call, got %d", agents.CallCount())
+	}
+	if got := agents.LastCall().Prompt; got != "fix the thing" {
+		t.Errorf("prompt = %q, want 'fix the thing'", got)
+	}
+}
+
+func TestDispatchEvent_NoMatchReturnsEmpty(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	// Extra fields miss the condition (kind=conflict, workflow wants ci_failure).
+	wfID, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "conflict"}, nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "" {
+		t.Fatalf("wfID = %q, want empty", wfID)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected no agent calls, got %d", agents.CallCount())
+	}
+}
+
+func TestDispatchEvent_AlreadyActiveRejected(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+		},
+	})
+
+	_, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"}, nil)
+	if !errors.Is(err, ErrWorkflowAlreadyActive) {
+		t.Fatalf("expected ErrWorkflowAlreadyActive, got %v", err)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected no agent start on rejected dispatch, got %d", agents.CallCount())
+	}
+}
+
+func TestDispatchEvent_TerminalWorkflowReplaced(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-review",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task",
+			CurrentStep: "",
+			State:       ExecCompleted, // terminal — dispatch should replace
+		},
+	})
+
+	wfID, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"prompt": "fix"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "pr-fix-test" {
+		t.Fatalf("wfID = %q, want pr-fix-test", wfID)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.WorkflowID != "pr-fix-test" {
+		t.Errorf("workflow on task = %q, want pr-fix-test", ti.Workflow.WorkflowID)
+	}
+}
+
+func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Two workflows match the same event + field — higher priority wins.
+	addPREventWorkflow(t, store, "pr-fix-generic", 0, "ci_failure")
+	addPREventWorkflow(t, store, "pr-fix-specialized", 10, "ci_failure")
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	wfID, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"prompt": "fix"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "pr-fix-specialized" {
+		t.Errorf("wfID = %q, want pr-fix-specialized (priority 10 should beat 0)", wfID)
+	}
+}
+
+func TestMatchWorkflow_EqualPriorityDeterministic(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Two workflows with equal priority — alphabetical (store order) wins.
+	addPREventWorkflow(t, store, "pr-fix-zebra", 5, "ci_failure")
+	addPREventWorkflow(t, store, "pr-fix-alpha", 5, "ci_failure")
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	wfID, err := engine.DispatchEvent("t1", "pr.event",
+		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"prompt": "fix"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "pr-fix-alpha" {
+		t.Errorf("wfID = %q, want pr-fix-alpha (alphabetical tiebreak)", wfID)
+	}
+}
+
 func TestNoWorkflowField(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -685,7 +877,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	agents.StartAgent("t1", "implementation", "headless", "sonnet", "test", nil, false)
+	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "test", "", nil, false)
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()
