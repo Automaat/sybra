@@ -49,6 +49,9 @@ type Trigger struct {
 	On         string      `yaml:"on" json:"on"` // "task.created", "task.status_changed", "pr.event"
 	Priority   int         `yaml:"priority,omitempty" json:"priority"`
 	Conditions []Condition `yaml:"conditions,omitempty" json:"conditions"`
+
+	// Position stores x,y for the graph editor (not used by engine).
+	Position *Position `yaml:"position,omitempty" json:"position"`
 }
 
 // Condition is a field-operator-value check.

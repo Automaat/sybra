@@ -1160,15 +1160,17 @@ export namespace workflow {
 	export class Trigger {
 	    on: string;
 	    conditions: Condition[];
-	
+	    position?: Position;
+
 	    static createFrom(source: any = {}) {
 	        return new Trigger(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.on = source["on"];
 	        this.conditions = this.convertValues(source["conditions"], Condition);
+	        this.position = this.convertValues(source["position"], Position);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

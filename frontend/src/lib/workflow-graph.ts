@@ -4,10 +4,16 @@ import { workflow } from '../../wailsjs/go/models.js'
 const NODE_SPACING_X = 250
 const NODE_SPACING_Y = 120
 
+export const TRIGGER_NODE_ID = '__trigger'
+
 type StepNodeData = {
   step: workflow.Step
   label: string
   stepType: string
+}
+
+type TriggerNodeData = {
+  trigger: workflow.Trigger
 }
 
 const stepTypeColors: Record<string, string> = {
@@ -23,6 +29,27 @@ export function definitionToGraph(def: workflow.Definition): { nodes: Node[], ed
   const nodes: Node[] = []
   const edges: Edge[] = []
   const steps = def.steps ?? []
+
+  // Synthesize the trigger node — always present, even when empty.
+  const triggerPos = def.trigger?.position
+    ? { x: def.trigger.position.x, y: def.trigger.position.y }
+    : { x: 0, y: -150 }
+  nodes.push({
+    id: TRIGGER_NODE_ID,
+    type: 'triggerNode',
+    position: triggerPos,
+    data: {
+      trigger: def.trigger ?? new workflow.Trigger({ on: '', conditions: [] }),
+    } satisfies TriggerNodeData,
+  })
+  if (steps.length > 0) {
+    edges.push({
+      id: `${TRIGGER_NODE_ID}->${steps[0].id}`,
+      source: TRIGGER_NODE_ID,
+      target: steps[0].id,
+      animated: true,
+    })
+  }
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]
@@ -86,9 +113,17 @@ export function graphToDefinition(
   // Transitions are authoritative on step.next (edited via StepConfigPanel).
   // Edges are a visual projection only; we rebuild them on load via definitionToGraph.
   const steps: workflow.Step[] = []
+  let trigger = original.trigger
 
   for (const node of nodes) {
     if (node.type === 'endNode') continue
+    if (node.type === 'triggerNode' || node.id === TRIGGER_NODE_ID) {
+      trigger = new workflow.Trigger({
+        ...(original.trigger ?? { on: '', conditions: [] }),
+        position: new workflow.Position({ x: node.position.x, y: node.position.y }),
+      })
+      continue
+    }
 
     const data = node.data as StepNodeData
     const src = data.step
@@ -102,6 +137,7 @@ export function graphToDefinition(
 
   return new workflow.Definition({
     ...original,
+    trigger,
     steps,
   })
 }
@@ -113,4 +149,4 @@ function formatCondition(c: workflow.Condition): string {
 }
 
 export { stepTypeColors }
-export type { StepNodeData }
+export type { StepNodeData, TriggerNodeData }
