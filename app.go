@@ -537,7 +537,10 @@ func (a *App) restartStaleInProgress() {
 		} else {
 			mode := t.AgentMode
 			a.wg.Go(func() {
-				if _, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`."); err != nil {
+				// Restart-stale only ever reaches this branch for headless
+				// mode (interactive tasks are handled by recoverStaleInteractive
+				// above), so OneShot is irrelevant here — pass false.
+				if _, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false); err != nil {
 					a.logger.Error("restart-stale.failed", "task_id", taskID, "err", err)
 				}
 			})
@@ -597,8 +600,10 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 }
 
 // StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
+// User-triggered starts are never one-shot — that flag is reserved for workflow
+// steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
-	return a.agentOrch.StartAgent(taskID, mode, prompt)
+	return a.agentOrch.StartAgent(taskID, mode, prompt, false)
 }
 
 func (a *App) syncSkills() {

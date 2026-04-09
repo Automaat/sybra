@@ -113,7 +113,7 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	if outFile != nil {
 		logWriter = outFile
 	}
-	m.streamConvoOutput(a, stdout, logWriter)
+	m.streamConvoOutput(a, stdout, logWriter, cfg.OneShot)
 
 	waitErr := cmd.Wait()
 	if waitErr != nil {
@@ -132,7 +132,7 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	}
 }
 
-func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer) {
+func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer, oneShot bool) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
@@ -189,6 +189,21 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			// After result, agent is idle waiting for next user message.
 			a.SetState(StatePaused)
 			m.emit(events.AgentState(a.ID), a)
+			// One-shot runs (workflow steps that expect a single turn) close
+			// stdin now so the claude process sees EOF and exits. The scanner
+			// loop unwinds on stdout EOF, cmd.Wait() returns, SetState(Stopped)
+			// fires, and onComplete advances the workflow to the next step.
+			// Without this, interactive agents sit paused forever and never
+			// trigger the evaluator.
+			if oneShot {
+				m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
+				a.stdinMu.Lock()
+				if a.stdinPipe != nil {
+					_ = a.stdinPipe.Close()
+					a.stdinPipe = nil
+				}
+				a.stdinMu.Unlock()
+			}
 		}
 	}
 

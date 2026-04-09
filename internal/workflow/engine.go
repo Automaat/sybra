@@ -46,8 +46,12 @@ type TaskProvider interface {
 // `dir` overrides the worktree preparation — when non-empty the caller has
 // already staged a directory (e.g. PrepareForFix) and the adapter must reuse
 // it instead of calling PrepareForTask.
+// `oneShot` asks the runner to close stdin after the first `result` event in
+// conversational mode so the process exits naturally. Required for interactive
+// workflow steps that expect a single turn — otherwise the agent sits paused
+// forever and the workflow never advances to the next step.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree bool) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
 	StopAgentsForTask(taskID string, role string)
@@ -630,7 +634,13 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree)
+	// Interactive agents that aren't meant to persist across turns (no
+	// reuse_agent, no wait_for_status) must signal completion via process
+	// exit. OneShot tells the runner to close stdin after the first result
+	// event so claude exits and onComplete fires, unblocking the next step
+	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
+	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
 	if err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}

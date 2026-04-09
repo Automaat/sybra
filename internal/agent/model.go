@@ -229,6 +229,11 @@ type RunConfig struct {
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
 	Effort             string // "low", "medium", "high", "max" (extended thinking)
+	// OneShot closes stdin after the first `result` event in conversational
+	// mode so the claude process exits naturally. Without this, interactive
+	// agents sit in StatePaused forever and onComplete never fires, stranding
+	// any workflow that expects the agent to "finish". Ignored in headless mode.
+	OneShot bool
 }
 
 type StreamEvent struct {

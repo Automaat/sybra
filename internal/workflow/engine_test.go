@@ -122,6 +122,7 @@ type startCall struct {
 	TaskID, Role, Mode, Model, Prompt, Dir string
 	AllowedTools                           []string
 	NeedsWorktree                          bool
+	OneShot                                bool
 }
 
 type sentPrompt struct {
@@ -144,14 +145,15 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree bool) (string, error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter++
 	id := fmt.Sprintf("agent-%d", m.counter)
 	m.calls = append(m.calls, startCall{
 		TaskID: taskID, Role: role, Mode: mode, Model: model,
-		Prompt: prompt, Dir: dir, AllowedTools: allowedTools, NeedsWorktree: needsWorktree,
+		Prompt: prompt, Dir: dir, AllowedTools: allowedTools,
+		NeedsWorktree: needsWorktree, OneShot: oneShot,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -280,6 +282,76 @@ func TestFullLifecycle_DirectImplement(t *testing.T) {
 	ti, _ = tasks.GetTask("t1")
 	if ti.Workflow.State != ExecCompleted {
 		t.Fatalf("expected completed, got %q", ti.Workflow.State)
+	}
+}
+
+// TestOneShot_ComputedFromStepConfig verifies that the engine asks the launcher
+// for a one-shot run exactly when an interactive step has no reuse_agent and
+// no wait_for_status. Without this flag interactive conversational agents sit
+// in StatePaused forever and the workflow can never reach the evaluator.
+func TestOneShot_ComputedFromStepConfig(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Interactive-mode task forces the templated implement step into
+	// interactive mode via {{.Task.AgentMode}}.
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "interactive"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Triage is headless → never one-shot.
+	triageCall := agents.LastCall()
+	if triageCall.Role != "triage" {
+		t.Fatalf("expected triage, got %q", triageCall.Role)
+	}
+	if triageCall.OneShot {
+		t.Errorf("triage (headless) should not be one-shot")
+	}
+
+	// Advance through triage → planning so plan fires.
+	tasks.SetStatus("t1", "planning")
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed", Output: "plan please"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plan step is interactive + reuse_agent=true → must NOT be one-shot,
+	// otherwise the agent dies between turns and plan-review replanning breaks.
+	planCall := agents.LastCall()
+	if planCall.Role != "plan" {
+		t.Fatalf("expected plan, got %q", planCall.Role)
+	}
+	if planCall.Mode != "interactive" {
+		t.Fatalf("plan mode = %q, want interactive", planCall.Mode)
+	}
+	if planCall.OneShot {
+		t.Errorf("plan step has reuse_agent=true — must not be one-shot")
+	}
+
+	// Approve plan → set_in_progress → implement. The implement step resolves
+	// to interactive via the task's AgentMode. No reuse_agent, no
+	// wait_for_status → this is the case that needs OneShot=true.
+	tasks.SetStatus("t1", "plan-review")
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "plan", Status: "completed", Output: "plan ready"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	implCall := agents.LastCall()
+	if implCall.Role != "implementation" {
+		t.Fatalf("expected implementation, got %q", implCall.Role)
+	}
+	if implCall.Mode != "interactive" {
+		t.Fatalf("impl mode = %q, want interactive", implCall.Mode)
+	}
+	if !implCall.OneShot {
+		t.Errorf("interactive implement without reuse_agent / wait_for_status must be one-shot so the agent exits and evaluate can run")
 	}
 }
 
@@ -888,7 +960,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "test", "", nil, false)
+	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "test", "", nil, false, false)
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()
