@@ -4,6 +4,7 @@
   import { workflow } from '../../wailsjs/go/models.js'
   import WorkflowGraph from '../components/workflow/WorkflowGraph.svelte'
   import StepConfigPanel from '../components/workflow/StepConfigPanel.svelte'
+  import TriggerPanel from '../components/workflow/TriggerPanel.svelte'
   import { definitionToGraph, graphToDefinition, type StepNodeData } from '../lib/workflow-graph.js'
 
   interface Props {
@@ -20,8 +21,10 @@
   let saving = $state(false)
   let dirty = $state(false)
 
+  const allStepIds = $derived(def?.steps?.map((s) => s.id) ?? [])
+
   $effect(() => {
-    workflowStore.get(workflowId).then(d => {
+    workflowStore.get(workflowId).then((d) => {
       def = d
       const graph = definitionToGraph(d)
       nodes = graph.nodes
@@ -38,37 +41,70 @@
     selectedStep = data.step
   }
 
+  function rebuildGraphFrom(updated: workflow.Definition) {
+    const graph = definitionToGraph(updated)
+    // Preserve current node positions from existing nodes where possible
+    const posByKey = new Map<string, { x: number; y: number }>()
+    for (const n of nodes) {
+      posByKey.set(n.id, n.position)
+    }
+    nodes = graph.nodes.map((n) => {
+      const p = posByKey.get(n.id)
+      return p ? { ...n, position: p } : n
+    })
+    edges = graph.edges
+  }
+
   function handleStepUpdate(updated: workflow.Step) {
     if (!def) return
-    // Update in the definition steps
-    const idx = def.steps.findIndex(s => s.id === selectedStep?.id)
-    if (idx >= 0) {
-      def.steps[idx] = updated
-      selectedStep = updated
-
-      // Update node data
-      nodes = nodes.map(n =>
-        n.id === updated.id
-          ? { ...n, data: { step: updated, label: updated.name || updated.id, stepType: updated.type as string } satisfies StepNodeData }
-          : n
-      )
-      dirty = true
-    }
+    const idx = def.steps.findIndex((s) => s.id === selectedStep?.id)
+    if (idx < 0) return
+    def.steps[idx] = updated
+    selectedStep = updated
+    rebuildGraphFrom(def)
+    dirty = true
   }
 
   function handleStepDelete(stepId: string) {
     if (!def) return
-    def.steps = def.steps.filter(s => s.id !== stepId)
-    nodes = nodes.filter(n => n.id !== stepId)
-    edges = edges.filter(e => e.source !== stepId && e.target !== stepId)
+    def.steps = def.steps.filter((s) => s.id !== stepId)
+    // Also strip any transitions that pointed to the deleted step
+    for (const s of def.steps) {
+      if (s.next) {
+        s.next = s.next.filter((t) => t.goto !== stepId)
+      }
+    }
+    rebuildGraphFrom(def)
     selectedStep = null
     dirty = true
   }
 
+  function handleStepAdd() {
+    if (!def) return
+    const id = `step-${crypto.randomUUID().slice(0, 8)}`
+    const newStep = new workflow.Step({
+      id,
+      name: 'New step',
+      type: 'run_agent',
+      config: new workflow.StepConfig({}),
+      next: [],
+      parallel: [],
+      position: new workflow.Position({ x: 100 + def.steps.length * 40, y: 100 + def.steps.length * 40 }),
+    })
+    def.steps = [...def.steps, newStep]
+    rebuildGraphFrom(def)
+    selectedStep = newStep
+    dirty = true
+  }
+
+  function handleTriggerUpdate(trigger: workflow.Trigger) {
+    if (!def) return
+    def = new workflow.Definition({ ...def, trigger })
+    dirty = true
+  }
+
   function handlePositionChange(nodeId: string, x: number, y: number) {
-    nodes = nodes.map(n =>
-      n.id === nodeId ? { ...n, position: { x, y } } : n
-    )
+    nodes = nodes.map((n) => (n.id === nodeId ? { ...n, position: { x, y } } : n))
     dirty = true
   }
 
@@ -106,6 +142,7 @@
       class="rounded p-1 hover:bg-surface-200 dark:hover:bg-surface-700"
       onclick={onback}
       title="Back"
+      aria-label="Back"
     >
       <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
@@ -121,6 +158,14 @@
     {/if}
     <button
       type="button"
+      class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-1.5 text-sm font-medium hover:bg-surface-200 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-700 dark:hover:bg-surface-600"
+      onclick={handleStepAdd}
+      disabled={!def}
+    >
+      + Add step
+    </button>
+    <button
+      type="button"
       class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
       onclick={save}
       disabled={saving || !dirty}
@@ -128,6 +173,10 @@
       {saving ? 'Saving...' : 'Save'}
     </button>
   </div>
+
+  {#if def}
+    <TriggerPanel trigger={def.trigger ?? new workflow.Trigger({ on: '', conditions: [] })} onupdate={handleTriggerUpdate} />
+  {/if}
 
   <div class="flex flex-1 overflow-hidden">
     <div class="flex-1">
@@ -147,6 +196,7 @@
 
     <StepConfigPanel
       step={selectedStep}
+      {allStepIds}
       onupdate={handleStepUpdate}
       ondelete={handleStepDelete}
     />

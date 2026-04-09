@@ -51,7 +51,11 @@
           {/if}
           <div class="flex items-center gap-2 text-xs text-surface-400">
             <span>{wf.steps?.length ?? 0} steps</span>
-            <span>trigger: {wf.trigger?.on ?? 'none'}</span>
+            <span>
+              trigger: {wf.trigger?.on ?? 'none'}{#if wf.trigger?.conditions?.length}
+                ({wf.trigger.conditions.length} cond)
+              {/if}
+            </span>
           </div>
         </button>
       {/each}

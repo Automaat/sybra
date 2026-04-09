@@ -23,11 +23,11 @@ export namespace agent {
 	    model?: string;
 	    turnCount?: number;
 	    escalationReason?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -69,24 +69,6 @@ export namespace agent {
 		    }
 		    return a;
 		}
-	}
-	export class EscalationEvent {
-	    reason: string;
-	    turnCount?: number;
-	    costUsd?: number;
-	    limit: number;
-
-	    static createFrom(source: any = {}) {
-	        return new EscalationEvent(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.reason = source["reason"];
-	        this.turnCount = source["turnCount"];
-	        this.costUsd = source["costUsd"];
-	        this.limit = source["limit"];
-	    }
 	}
 	export class ToolResultBlock {
 	    toolUseId: string;
@@ -208,6 +190,8 @@ export namespace config {
 	    mode: string;
 	    maxConcurrent: number;
 	    researchMachineDir: string;
+	    maxCostUsd: number;
+	    maxTurns: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentDefaults(source);
@@ -219,6 +203,8 @@ export namespace config {
 	        this.mode = source["mode"];
 	        this.maxConcurrent = source["maxConcurrent"];
 	        this.researchMachineDir = source["researchMachineDir"];
+	        this.maxCostUsd = source["maxCostUsd"];
+	        this.maxTurns = source["maxTurns"];
 	    }
 	}
 	export class AuditConfig {
@@ -1084,6 +1070,8 @@ export namespace workflow {
 	    status: string;
 	    statusReason: string;
 	    check?: Condition;
+	    maxRetries: number;
+	    reuseAgent: boolean;
 	    command: string;
 	    dir: string;
 	
@@ -1103,6 +1091,8 @@ export namespace workflow {
 	        this.status = source["status"];
 	        this.statusReason = source["statusReason"];
 	        this.check = this.convertValues(source["check"], Condition);
+	        this.maxRetries = source["maxRetries"];
+	        this.reuseAgent = source["reuseAgent"];
 	        this.command = source["command"];
 	        this.dir = source["dir"];
 	    }
