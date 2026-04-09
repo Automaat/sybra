@@ -62,7 +62,36 @@ Files: N changed (+A/-D)
 <description excerpt, max ~500 chars>"
 ```
 
-### 3. Shorten title if too long
+### 3. Detect and rewrite freeform instruction-style titles
+
+Check if the title looks like natural-language/casual instruction rather than a structured task title. Indicators:
+
+- Starts with "i ", "we ", "maybe ", "i think", "i want", "could we", "let's", "should we", etc.
+- Written as a sentence/thought, not an imperative action
+- Contains filler phrases like "i often", "i feel like", "sometimes", "random stuff"
+- Clearly conversational in tone
+
+If detected, rewrite the title as a concise, imperative, structured task title. Move the original freeform text into the body so context is preserved.
+
+Examples:
+- "in synapse i often write random stuff as task name" → "feat(triage): rewrite freeform titles into structured task titles"
+- "i think we should add auth" → "feat(auth): add authentication"
+- "make the button blue" → "fix(ui): change button color to blue"
+- "we should probably fix the login bug" → "fix(auth): resolve login failure"
+
+Use conventional commit format (`type(scope): description`) when the domain/type is clear. Otherwise use a plain imperative title.
+
+```bash
+synapse-cli --json update <id> \
+  --title "<structured imperative title>" \
+  --body "**Original instruction:** <original freeform title>
+
+<existing body content preserved here>"
+```
+
+Skip if the title is already structured/imperative.
+
+### 4. Shorten title if too long
 
 If the title exceeds 80 characters, rewrite it as a concise ≤80 char summary. Move the original verbose title into the task body so no context is lost.
 
@@ -80,7 +109,7 @@ synapse-cli --json update <id> \
 - If the task already has body content, prepend the original title line above it
 - Skip if title is already ≤80 chars
 
-### 4. Add brief description if missing
+### 5. Add brief description if missing
 
 If the task body is empty or has no meaningful context beyond a URL, add a 2-3 sentence description based on what you know from the title, URL context (if fetched), and general understanding. Do NOT explore the codebase or read source files — just clarify what the task is about and what "done" looks like.
 
@@ -93,7 +122,7 @@ Original context preserved here if any."
 
 Skip if the task already has a clear, descriptive body.
 
-### 5. Assign tags based on analysis
+### 6. Assign tags based on analysis
 
 Common tag categories:
 - **Domain**: `backend`, `frontend`, `infra`, `docs`, `ci`
@@ -104,7 +133,7 @@ Common tag categories:
 synapse-cli --json update <id> --tags "backend,small,review"
 ```
 
-### 6. Set agent mode
+### 7. Set agent mode
 
 - `headless` — automated tasks: code reviews, simple fixes, test writing
 - `interactive` — tasks needing human guidance: architecture decisions, complex debugging
@@ -113,7 +142,7 @@ synapse-cli --json update <id> --tags "backend,small,review"
 synapse-cli --json update <id> --mode headless
 ```
 
-### 7. Assign project (if applicable)
+### 8. Assign project (if applicable)
 
 Check if the task references a known project (GitHub repo). List available projects:
 
@@ -138,7 +167,7 @@ If `type` is `work`, apply these overrides in the next steps:
 - Set mode to `interactive` unless the task is a PR review
 - Add note to body: "Work project — enforcing higher standards"
 
-### 8. Decide: planning or direct implementation
+### 9. Decide: planning or direct implementation
 
 Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
 
