@@ -311,6 +311,7 @@ func (a *App) initApprovalServer(emit func(string, any)) {
 }
 
 func (a *App) wireServices(emit func(string, any)) {
+	a.reviewer.workflowEngine = a.workflowEngine
 	a.reviewSvc.reviewer = a.reviewer
 	a.reviewSvc.tasks = a.tasks
 	a.taskSvc.tasks = a.tasks
@@ -347,6 +348,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.intgSvc.logger = a.logger
 	a.intgSvc.todoistHandler = a.todoistHandler
 	a.intgSvc.renovateHandler = a.renovateHandler
+	a.intgSvc.workflowEngine = a.workflowEngine
 	a.statsSvc.stats = a.stats
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore
@@ -429,9 +431,10 @@ func (a *App) cleanStaleRuns() {
 // hot-reload loops spawning parallel agents onto the same task.
 const restartStaleMinAge = 5 * time.Minute
 
-// restartStaleInProgress re-dispatches headless in-progress tasks that lost
-// their agent due to a crash or restart. Interactive tasks are handled by
-// reconnectAgents (tmux sessions survive restarts).
+// restartStaleInProgress recovers in-progress tasks that lost their agent
+// due to a crash, restart, or tmux session death. Headless tasks are
+// re-dispatched; interactive tasks drive the workflow engine forward via
+// recoverStaleInteractive (no new tmux session is spawned).
 func (a *App) restartStaleInProgress() {
 	tasks, err := a.tasks.List()
 	if err != nil {
@@ -440,9 +443,6 @@ func (a *App) restartStaleInProgress() {
 	for i := range tasks {
 		t := tasks[i]
 		if t.Status != task.StatusInProgress {
-			continue
-		}
-		if t.AgentMode != "headless" {
 			continue
 		}
 		if a.agents.HasRunningAgentForTask(t.ID) {
@@ -462,6 +462,9 @@ func (a *App) restartStaleInProgress() {
 		}
 		// Tasks whose last agent was a pr-fix should not be re-implemented.
 		// Move them back to in-review so prPollLoop can re-detect and fix.
+		// Applies to both headless and interactive modes — handlePRIssue
+		// spawns pr-fix agents directly without registering a workflow, so
+		// onAgentComplete can't advance the task back to in-review itself.
 		if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
 			a.logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
 			if _, err := a.tasks.Update(t.ID, map[string]any{
@@ -469,6 +472,13 @@ func (a *App) restartStaleInProgress() {
 			}); err != nil {
 				a.logger.Error("restart-stale.revert", "task_id", t.ID, "err", err)
 			}
+			continue
+		}
+		// Interactive: don't spawn a new tmux session automatically. Instead
+		// drive the workflow engine to advance the current step using the
+		// stored agent run result — same mechanism as onAgentComplete.
+		if t.AgentMode != "headless" {
+			a.recoverStaleInteractive(&t)
 			continue
 		}
 		if t.ProjectID == "" {
@@ -493,6 +503,50 @@ func (a *App) restartStaleInProgress() {
 			})
 		}
 	}
+}
+
+// recoverStaleInteractive handles interactive in-progress tasks whose tmux
+// session died or disappeared across restarts. Marks the last agent run as
+// stopped (if still claiming running) and drives the workflow engine to
+// advance the current step using the stored result — mirroring the normal
+// onAgentComplete callback so evaluate/next steps fire.
+func (a *App) recoverStaleInteractive(t *task.Task) {
+	lr := lastAgentRun(t)
+	if lr == nil {
+		a.logger.Info("recover-stale.skip", "task_id", t.ID, "reason", "no_agent_runs")
+		return
+	}
+	// Only recover when the dead agent was interactive — headless stragglers
+	// (triage/eval) are managed by their own error paths, and we don't want
+	// to fake-complete a workflow step that needs real agent output.
+	if lr.Mode != "interactive" {
+		return
+	}
+	if lr.State == string(agent.StateRunning) {
+		if err := a.tasks.UpdateRun(t.ID, lr.AgentID, map[string]any{
+			"state":  string(agent.StateStopped),
+			"result": "stale: agent gone, auto-recovered",
+		}); err != nil {
+			a.logger.Error("recover-stale.update-run", "task_id", t.ID, "err", err)
+		}
+	}
+	if a.workflowEngine == nil || t.Workflow == nil {
+		a.logger.Info("recover-stale.no-workflow", "task_id", t.ID)
+		return
+	}
+	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
+		a.logger.Info("recover-stale.workflow-terminal",
+			"task_id", t.ID, "state", string(t.Workflow.State))
+		return
+	}
+	// Feed a recovery marker as the result instead of the stored lr.Result —
+	// templates that embed {{.Prev.Output}} (e.g. the evaluate step) would
+	// otherwise see stale content. Downstream agents should re-inspect the
+	// task state via synapse-cli rather than trust the previous output.
+	const recoveryResult = "(recovered stale interactive session — no fresh agent result; inspect task state directly)"
+	a.logger.Info("recover-stale.advance",
+		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
+	a.workflowEngine.HandleAgentComplete(t.ID, lr.AgentID, recoveryResult, "stopped")
 }
 
 func lastAgentRun(t *task.Task) *task.AgentRun {
