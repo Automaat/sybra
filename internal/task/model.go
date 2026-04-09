@@ -105,9 +105,10 @@ type Task struct {
 	CreatedAt    time.Time           `yaml:"created_at" json:"createdAt"`
 	UpdatedAt    time.Time           `yaml:"updated_at" json:"updatedAt"`
 
-	Body     string `yaml:"-" json:"body"`
-	Plan     string `yaml:"-" json:"plan"`
-	FilePath string `yaml:"-" json:"filePath"`
+	Body         string `yaml:"-" json:"body"`
+	Plan         string `yaml:"-" json:"plan"`
+	PlanCritique string `yaml:"-" json:"planCritique"`
+	FilePath     string `yaml:"-" json:"filePath"`
 }
 
 func (t Task) DirName() string {

@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { marked } from 'marked'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { commentStore } from '../stores/comments.svelte.js'
   import PlanFileView from '../components/PlanFileView.svelte'
+
+  marked.setOptions({ breaks: true, gfm: true })
 
   let { onviewtask }: { onviewtask?: (id: string) => void } = $props()
 
@@ -22,6 +25,12 @@
   )
 
   const isTestPlan = $derived(selectedTask?.status === 'test-plan-review')
+
+  const renderedCritique = $derived.by(() => {
+    const c = selectedTask?.planCritique
+    if (!c) return ''
+    return marked.parse(c) as string
+  })
 
   $effect(() => {
     if (selectedId) {
@@ -246,6 +255,16 @@
 
       <!-- Plan content -->
       <div class="flex-1 overflow-y-auto px-6 py-4">
+        {#if selectedTask.planCritique}
+          <details open class="mb-4 rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
+            <summary class="cursor-pointer px-4 py-2 text-sm font-semibold text-warning-800 dark:text-warning-300">
+              Plan Critique (auto-review)
+            </summary>
+            <div class="markdown-body px-4 pb-4 text-sm text-surface-900 dark:text-surface-100">
+              {@html renderedCritique}
+            </div>
+          </details>
+        {/if}
         <div class="mb-3 flex items-center gap-2">
           <svg class="h-4 w-4 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />

@@ -11,6 +11,7 @@ func TestRole_AgentName(t *testing.T) {
 	}{
 		{RoleTriage, "My Task", "triage:My Task"},
 		{RolePlan, "Plan Something", "plan:Plan Something"},
+		{RolePlanCritic, "Critique Plan", "plan-critic:Critique Plan"},
 		{RoleEval, "Evaluate", "eval:Evaluate"},
 		{RolePRFix, "Fix PR", "pr-fix:Fix PR"},
 		{RoleReview, "Review Code", "review:Review Code"},
@@ -39,6 +40,7 @@ func TestRole_IsSystem(t *testing.T) {
 	}{
 		{RoleTriage, true},
 		{RoleEval, true},
+		{RolePlanCritic, true},
 		{RolePlan, false},
 		{RolePRFix, false},
 		{RoleReview, false},
@@ -66,6 +68,7 @@ func TestRoleFromName(t *testing.T) {
 	}{
 		{"triage:My Task", RoleTriage},
 		{"plan:Plan Task", RolePlan},
+		{"plan-critic:Critique Plan", RolePlanCritic},
 		{"eval:Evaluate", RoleEval},
 		{"pr-fix:Fix PR", RolePRFix},
 		{"review:Code Review", RoleReview},

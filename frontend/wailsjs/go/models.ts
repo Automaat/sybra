@@ -904,7 +904,8 @@ export namespace task {
 	    // Go type: time
 	    updatedAt: any;
 	    body: string;
-	    plan?: string;
+	    plan: string;
+	    planCritique: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -935,6 +936,7 @@ export namespace task {
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	        this.body = source["body"];
 	        this.plan = source["plan"];
+	        this.planCritique = source["planCritique"];
 	        this.filePath = source["filePath"];
 	    }
 	
@@ -1015,20 +1017,6 @@ export namespace workflow {
 	        this.value = source["value"];
 	    }
 	}
-	export class Position {
-	    x: number;
-	    y: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new Position(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.x = source["x"];
-	        this.y = source["y"];
-	    }
-	}
 	export class Transition {
 	    when?: Condition;
 	    goto: string;
@@ -1074,6 +1062,7 @@ export namespace workflow {
 	    check?: Condition;
 	    maxRetries: number;
 	    reuseAgent: boolean;
+	    waitForStatus: string;
 	    command: string;
 	    dir: string;
 	
@@ -1095,6 +1084,7 @@ export namespace workflow {
 	        this.check = this.convertValues(source["check"], Condition);
 	        this.maxRetries = source["maxRetries"];
 	        this.reuseAgent = source["reuseAgent"];
+	        this.waitForStatus = source["waitForStatus"];
 	        this.command = source["command"];
 	        this.dir = source["dir"];
 	    }
@@ -1159,18 +1149,34 @@ export namespace workflow {
 		    return a;
 		}
 	}
+	export class Position {
+	    x: number;
+	    y: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Position(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.x = source["x"];
+	        this.y = source["y"];
+	    }
+	}
 	export class Trigger {
 	    on: string;
+	    priority: number;
 	    conditions: Condition[];
 	    position?: Position;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Trigger(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.on = source["on"];
+	        this.priority = source["priority"];
 	        this.conditions = this.convertValues(source["conditions"], Condition);
 	        this.position = this.convertValues(source["position"], Position);
 	    }

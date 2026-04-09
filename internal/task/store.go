@@ -14,16 +14,22 @@ import (
 )
 
 type Store struct {
-	dir      string
-	comments *CommentStore
-	plans    *PlanStore
+	dir           string
+	comments      *CommentStore
+	plans         *PlanStore
+	planCritiques *PlanCritiqueStore
 }
 
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
 	}
-	return &Store{dir: dir, comments: NewCommentStore(dir), plans: NewPlanStore(dir)}, nil
+	return &Store{
+		dir:           dir,
+		comments:      NewCommentStore(dir),
+		plans:         NewPlanStore(dir),
+		planCritiques: NewPlanCritiqueStore(dir),
+	}, nil
 }
 
 func (s *Store) Comments() *CommentStore {
@@ -32,6 +38,10 @@ func (s *Store) Comments() *CommentStore {
 
 func (s *Store) Plans() *PlanStore {
 	return s.plans
+}
+
+func (s *Store) PlanCritiques() *PlanCritiqueStore {
+	return s.planCritiques
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -48,6 +58,7 @@ func (s *Store) List() ([]Task, error) {
 			continue
 		}
 		t.Plan, _ = s.plans.Read(t.ID)
+		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
@@ -63,6 +74,7 @@ func (s *Store) Get(id string) (Task, error) {
 		return Task{}, err
 	}
 	t.Plan, _ = s.plans.Read(t.ID)
+	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 	return t, nil
 }
 
@@ -107,6 +119,7 @@ func (s *Store) Delete(id string) error {
 	}
 	_ = s.comments.DeleteAll(id)
 	_ = s.plans.Delete(id)
+	_ = s.planCritiques.Delete(id)
 	return nil
 }
 
@@ -187,6 +200,12 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 			return Task{}, fmt.Errorf("write plan: %w", wErr)
 		}
 		t.Plan = v
+	}
+	if v, ok := updates["plan_critique"].(string); ok {
+		if wErr := s.planCritiques.Write(id, v); wErr != nil {
+			return Task{}, fmt.Errorf("write plan critique: %w", wErr)
+		}
+		t.PlanCritique = v
 	}
 
 	data, err := Marshal(t)

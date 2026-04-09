@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1294,5 +1295,153 @@ func TestPRMonitorEligible(t *testing.T) {
 				t.Errorf("prMonitorEligible(%+v) = %v, want %v", tt.tk, got, tt.want)
 			}
 		})
+	}
+}
+
+// loadBuiltinWorkflow installs a workflow YAML from internal/workflow/builtin/
+// into the env's workflow store so tests can drive the real builtin definition
+// (rather than the test-simple.yaml fixture). The store reads YAMLs from disk
+// on demand, so writing the file is enough — no reload needed.
+func loadBuiltinWorkflow(t *testing.T, env *e2eEnv, name string) {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("internal", "workflow", "builtin", name+".yaml"))
+	if err != nil {
+		t.Fatalf("read builtin workflow %s: %v", name, err)
+	}
+	dst := filepath.Join(env.wfStore.Dir(), name+".yaml")
+	if err := os.WriteFile(dst, src, 0o644); err != nil {
+		t.Fatalf("write workflow %s to store: %v", name, err)
+	}
+}
+
+// stepIDsFromHistory extracts the ordered list of step IDs from a workflow
+// execution's step history, used to assert which steps actually ran.
+func stepIDsFromHistory(wf *workflow.Execution) []string {
+	if wf == nil {
+		return nil
+	}
+	ids := make([]string, len(wf.StepHistory))
+	for i := range wf.StepHistory {
+		ids[i] = wf.StepHistory[i].StepID
+	}
+	return ids
+}
+
+// agentRunRoles returns the roles of agent runs recorded against a task,
+// used to assert which agent roles were spawned by the workflow.
+func agentRunRoles(t task.Task) []string {
+	roles := make([]string, len(t.AgentRuns))
+	for i := range t.AgentRuns {
+		roles[i] = t.AgentRuns[i].Role
+	}
+	return roles
+}
+
+// TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview drives the builtin
+// simple-task workflow through the plan stage and asserts the new
+// critique_plan step (added between plan and review_plan) actually executes
+// before the workflow lands at the human review gate. The critic agent runs
+// in headless mode with role "plan-critic"; that role appearing in the task's
+// agent runs is the externally observable proof the step ran.
+func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
+	env := setupE2EMulti(t, []string{
+		"triage_to_planning", // triage flips status=planning, tags=large
+		"success",            // plan agent (interactive) — exits, advances
+		"success",            // critique_plan agent (headless plan-critic)
+	})
+	loadBuiltinWorkflow(t, env, "simple-task")
+
+	created, err := env.tasks.Create("plan critic e2e", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.engine.StartWorkflow(created.ID, "simple-task"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if !slices.Contains(stepIDs, "critique_plan") {
+		t.Errorf("critique_plan missing from step history\nhistory: %v", stepIDs)
+	}
+	if !slices.Contains(stepIDs, "maybe_critique") {
+		t.Errorf("maybe_critique missing from step history\nhistory: %v", stepIDs)
+	}
+
+	// critique_plan must follow plan in execution order. review_plan is the
+	// current waiting step but isn't recorded in history until the human acts.
+	planIdx := slices.Index(stepIDs, "plan")
+	critiqueIdx := slices.Index(stepIDs, "critique_plan")
+	if planIdx < 0 || critiqueIdx <= planIdx {
+		t.Errorf("step order wrong: want plan before critique_plan, got %v (plan=%d critique=%d)",
+			stepIDs, planIdx, critiqueIdx)
+	}
+
+	roles := agentRunRoles(tk)
+	if !slices.Contains(roles, "plan-critic") {
+		t.Errorf("plan-critic agent role missing from task agent runs\nroles: %v", roles)
+	}
+}
+
+// TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique covers the opt-out path:
+// a task tagged "nocritic" must bypass critique_plan via the maybe_critique
+// condition step and reach review_plan with no plan-critic agent ever spawned.
+func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
+	env := setupE2EMulti(t, []string{
+		"triage_to_planning_nocritic", // triage sets status=planning, tags=large,nocritic
+		"success",                     // plan agent only — no critic should run
+	})
+	loadBuiltinWorkflow(t, env, "simple-task")
+
+	created, err := env.tasks.Create("nocritic e2e", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.engine.StartWorkflow(created.ID, "simple-task"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if slices.Contains(stepIDs, "critique_plan") {
+		t.Errorf("critique_plan must be skipped when nocritic tag is present\nhistory: %v", stepIDs)
+	}
+	if !slices.Contains(stepIDs, "maybe_critique") {
+		t.Errorf("maybe_critique missing — branch decision must still execute\nhistory: %v", stepIDs)
+	}
+
+	roles := agentRunRoles(tk)
+	if slices.Contains(roles, "plan-critic") {
+		t.Errorf("no plan-critic agent should be spawned when nocritic tag is set\nroles: %v", roles)
 	}
 }
