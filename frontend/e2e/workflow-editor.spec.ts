@@ -65,8 +65,12 @@ test.describe('Workflow editor — trigger panel', () => {
   test('renders event and existing condition', async ({ page }) => {
     await openWorkflowEditor(page)
 
-    // Trigger summary shows "1 condition" from the fixture.
+    // Trigger summary shows "1 condition" on the TriggerNode graph node.
     await expect(page.getByText(/1 condition/)).toBeVisible()
+
+    // Click the trigger node to open TriggerConfigPanel in the right sidebar.
+    await page.locator('.svelte-flow__node-triggerNode').click()
+
     // Event dropdown (first select on the page) reflects the seeded event.
     await expect(page.locator('select').first()).toHaveValue('task.created')
 
@@ -84,13 +88,15 @@ test.describe('Workflow editor — trigger panel', () => {
   test('can add a new trigger condition', async ({ page }) => {
     await openWorkflowEditor(page)
 
-    const addBtn = page.getByRole('button', { name: /\+ Add condition/ })
+    // Click the trigger node to open TriggerConfigPanel in the right sidebar.
+    await page.locator('.svelte-flow__node-triggerNode').click()
+
+    // Button text changed to '+ Add' (matching other config panels).
+    const addBtn = page.getByRole('button', { name: '+ Add', exact: true })
     await addBtn.click()
 
-    // After adding, summary should reflect 2 conditions
-    await expect(
-      page.locator('span', { hasText: /2 conditions/ }),
-    ).toBeVisible()
+    // After adding, TriggerNode graph node shows updated condition count.
+    await expect(page.getByText(/2 conditions/)).toBeVisible()
 
     // Unsaved badge should appear.
     await expect(page.locator('span', { hasText: 'unsaved' })).toBeVisible()
