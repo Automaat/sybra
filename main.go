@@ -4,6 +4,9 @@ import (
 	"embed"
 	"log"
 	"log/slog"
+	"net/http"
+	"net/http/pprof"
+	"os"
 	"sync"
 	"time"
 
@@ -40,6 +43,8 @@ func main() {
 	// through slog at DEBUG so it doesn't pollute stderr.
 	log.SetFlags(0)
 	log.SetOutput(slogWriter{logger})
+
+	startPprof(logger)
 
 	app := NewApp(logger, levelVar, cfg)
 
@@ -111,6 +116,31 @@ func main() {
 		logger.Error("app.fatal", "err", err)
 		println("Error:", err.Error())
 	}
+}
+
+// startPprof launches a pprof HTTP server when SYNAPSE_PPROF is set.
+// Value "1"/"true" uses 127.0.0.1:6060; any other value is used as-is (host:port).
+func startPprof(logger *slog.Logger) {
+	addr := os.Getenv("SYNAPSE_PPROF")
+	if addr == "" {
+		return
+	}
+	if addr == "1" || addr == "true" {
+		addr = "127.0.0.1:6060"
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	go func() {
+		logger.Info("pprof.listen", "addr", addr)
+		srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		if err := srv.ListenAndServe(); err != nil {
+			logger.Error("pprof.serve", "err", err)
+		}
+	}()
 }
 
 // slogWriter routes Go's default log.Print output through slog at DEBUG level.
