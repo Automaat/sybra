@@ -13,7 +13,7 @@ You run inside an interactive tmux session. After producing a plan you STAY at t
 
 ## CLI Reference
 
-The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use any other flag.
+The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--plan`, `--plan-file`, `--mode`, `--tags`, `--project`. Do NOT use any other flag.
 
 ## Process
 
@@ -59,7 +59,7 @@ Brief description of the chosen approach and why.
 ### 4. Publish the plan + hand off for review
 
 ```bash
-synapse-cli --json update <id> --body "<full plan markdown>"
+synapse-cli --json update <id> --plan "<full plan markdown>"
 synapse-cli --json update <id> --status plan-review
 ```
 
@@ -71,7 +71,7 @@ The user may send feedback in the same chat session. When feedback arrives:
 
 1. Read it carefully
 2. Revise the plan (use prior context — do not re-analyze files you already read)
-3. `synapse-cli --json update <id> --body "<revised plan>"`
+3. `synapse-cli --json update <id> --plan "<revised plan>"`
 4. `synapse-cli --json update <id> --status plan-review`
 5. Wait again
 

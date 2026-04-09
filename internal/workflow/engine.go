@@ -29,6 +29,7 @@ type TaskInfo struct {
 	PRNumber  int
 	Branch    string
 	Body      string
+	Plan      string
 	Workflow  *Execution
 }
 

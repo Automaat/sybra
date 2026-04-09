@@ -57,19 +57,19 @@ steps:
         {{ $feedback }}
 
         Revise the plan for task {{.Task.ID}} to address these points.
-        Update the task body and set status back to plan-review when done.
+        Update the plan and set status back to plan-review when done.
         {{- else }}
         Plan task {{.Task.ID}} using /synapse-plan skill.
         Get the task with synapse-cli, analyze the codebase,
         and produce a detailed implementation plan.
 
         When the plan is ready:
-          1. synapse-cli update {{.Task.ID}} --body "<full plan markdown>"
+          1. synapse-cli update {{.Task.ID}} --plan "<full plan markdown>"
           2. synapse-cli update {{.Task.ID}} --status plan-review
 
         Then STOP and wait. Do NOT exit. Do NOT implement.
 
-        If you receive feedback from the user, address it, update the body again
+        If you receive feedback from the user, address it, update the plan again
         with the revised plan, set status back to plan-review, and wait again.
         {{- end }}
     next:
@@ -124,6 +124,12 @@ steps:
       model: sonnet
       prompt: >-
         Implement this task. When done, create a draft PR with `gh pr create --draft`.
+        {{- if .Task.Plan}}
+
+        ## Plan
+
+        {{.Task.Plan}}
+        {{- end}}
     next:
       - goto: evaluate
 

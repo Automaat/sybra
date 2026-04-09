@@ -16,17 +16,22 @@ import (
 type Store struct {
 	dir      string
 	comments *CommentStore
+	plans    *PlanStore
 }
 
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
 	}
-	return &Store{dir: dir, comments: NewCommentStore(dir)}, nil
+	return &Store{dir: dir, comments: NewCommentStore(dir), plans: NewPlanStore(dir)}, nil
 }
 
 func (s *Store) Comments() *CommentStore {
 	return s.comments
+}
+
+func (s *Store) Plans() *PlanStore {
+	return s.plans
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -42,6 +47,7 @@ func (s *Store) List() ([]Task, error) {
 			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
 			continue
 		}
+		t.Plan, _ = s.plans.Read(t.ID)
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
@@ -56,6 +62,7 @@ func (s *Store) Get(id string) (Task, error) {
 		}
 		return Task{}, err
 	}
+	t.Plan, _ = s.plans.Read(t.ID)
 	return t, nil
 }
 
@@ -99,6 +106,7 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("delete task file: %w", err)
 	}
 	_ = s.comments.DeleteAll(id)
+	_ = s.plans.Delete(id)
 	return nil
 }
 
@@ -173,6 +181,12 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 	}
 	if v, ok := updates["workflow"].(*workflow.Execution); ok {
 		t.Workflow = v
+	}
+	if v, ok := updates["plan"].(string); ok {
+		if wErr := s.plans.Write(id, v); wErr != nil {
+			return Task{}, fmt.Errorf("write plan: %w", wErr)
+		}
+		t.Plan = v
 	}
 
 	data, err := Marshal(t)

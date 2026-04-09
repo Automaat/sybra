@@ -904,6 +904,7 @@ export namespace task {
 	    // Go type: time
 	    updatedAt: any;
 	    body: string;
+	    plan?: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -933,6 +934,7 @@ export namespace task {
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	        this.body = source["body"];
+	        this.plan = source["plan"];
 	        this.filePath = source["filePath"];
 	    }
 	
