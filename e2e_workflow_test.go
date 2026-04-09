@@ -806,15 +806,70 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	}
 }
 
-// installTestingTaskWorkflow copies the real builtin testing-task.yaml into
-// the test's workflow store so the engine can match and run it.
+// testTestingTaskWorkflowYAML mirrors the real builtin testing-task.yaml
+// shape (id, trigger, step graph, transitions, human actions) but uses
+// headless agents so two consecutive run_agent steps are deterministic on CI.
+// The real builtin's YAML is exercised by internal/workflow/builtin_test.go.
+const testTestingTaskWorkflowYAML = `id: testing-task
+name: Test Manual Testing
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  - id: plan_test
+    name: Prepare Test Plan
+    type: run_agent
+    config:
+      role: test-plan
+      mode: headless
+      model: opus
+      prompt: 'Plan test {{.Task.ID}}'
+    next:
+      - goto: review_test_plan
+
+  - id: review_test_plan
+    name: Review Test Plan
+    type: wait_human
+    config:
+      status: test-plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: execute_tests
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: plan_test
+
+  - id: execute_tests
+    name: Execute Manual Testing
+    type: run_agent
+    config:
+      role: test-runner
+      mode: headless
+      model: sonnet
+      prompt: 'Execute test {{.Task.ID}}'
+    next:
+      - goto: ""
+`
+
+// installTestingTaskWorkflow writes the test fixture into the engine's
+// workflow store so DispatchEvent can match it.
 func installTestingTaskWorkflow(t *testing.T, env *e2eEnv) {
 	t.Helper()
-	src, err := os.ReadFile("internal/workflow/builtin/testing-task.yaml")
-	if err != nil {
-		t.Fatalf("read testing-task.yaml: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "testing-task.yaml"), src, 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
+		[]byte(testTestingTaskWorkflowYAML), 0o644,
+	); err != nil {
 		t.Fatalf("write testing-task.yaml: %v", err)
 	}
 }
@@ -840,7 +895,7 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success", "success"})
 	installTestingTaskWorkflow(t, env)
 
-	created, err := env.tasks.Create("manual test happy", "", "interactive")
+	created, err := env.tasks.Create("manual test happy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +959,7 @@ func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success", "success", "success"})
 	installTestingTaskWorkflow(t, env)
 
-	created, err := env.tasks.Create("manual test reject", "", "interactive")
+	created, err := env.tasks.Create("manual test reject", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
