@@ -60,10 +60,9 @@
   let deleting = $state(false)
   let copied = $state(false)
 
-  async function copyTask() {
+  async function copyId() {
     if (!t) return
-    const header = `---\nid: ${t.id}\ntitle: ${t.title}\nstatus: ${t.status}\nagent_mode: ${t.agentMode}\ntags: [${(t.tags ?? []).join(', ')}]\n---\n\n`
-    await navigator.clipboard.writeText(header + (t.body ?? ''))
+    await navigator.clipboard.writeText(t.id)
     copied = true
     setTimeout(() => { copied = false }, 1500)
   }
@@ -378,9 +377,9 @@
           <button
             type="button"
             class="rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
-            onclick={copyTask}
+            onclick={copyId}
           >
-            {copied ? 'Copied!' : 'Copy'}
+            {copied ? 'Copied!' : 'Copy ID'}
           </button>
           <button
             type="button"
