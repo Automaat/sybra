@@ -99,4 +99,30 @@ describe('TmuxSessions', () => {
       expect(screen.getByText('Refresh')).toBeDefined()
     })
   })
+
+  it('filters out non-synapse sessions', async () => {
+    mockListTmuxSessions.mockResolvedValue([
+      mockSession,
+      { name: 'other-session', created: '' },
+      { name: 'my-tmux', created: '' },
+    ])
+    render(TmuxSessions, { props: {} })
+    await vi.waitFor(() => {
+      expect(screen.getByText('synapse-task-1')).toBeDefined()
+      expect(screen.queryByText('other-session')).toBeNull()
+      expect(screen.queryByText('my-tmux')).toBeNull()
+    })
+  })
+
+  it('filters out synapse-orchestrator session', async () => {
+    mockListTmuxSessions.mockResolvedValue([
+      mockSession,
+      { name: 'synapse-orchestrator', created: '' },
+    ])
+    render(TmuxSessions, { props: {} })
+    await vi.waitFor(() => {
+      expect(screen.getByText('synapse-task-1')).toBeDefined()
+      expect(screen.queryByText('synapse-orchestrator')).toBeNull()
+    })
+  })
 })

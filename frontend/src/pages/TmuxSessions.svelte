@@ -11,7 +11,9 @@
       loading = true
       error = ''
       const result = await ListTmuxSessions()
-      sessions = result ?? []
+      sessions = (result ?? []).filter(
+        (s) => s.name.startsWith('synapse-') && s.name !== 'synapse-orchestrator',
+      )
     } catch (e) {
       error = String(e)
       sessions = []
