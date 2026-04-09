@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -170,14 +169,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		go m.runHeadless(ctx, a, cfg)
 	case "interactive":
 		if a.Provider == "codex" {
-			a.done = nil
-			if err := m.startInteractiveTmux(a, cfg); err != nil {
-				m.mu.Lock()
-				delete(m.agents, id)
-				m.mu.Unlock()
-				cancel()
-				return nil, err
-			}
+			a.promptCh = make(chan string, 1)
+			go m.runCodexConversational(ctx, a, cfg)
 		} else {
 			a.approvalCh = make(chan ApprovalResponse, 1)
 			go m.runConversational(ctx, a, cfg)
@@ -269,36 +262,6 @@ func normalizeModel(provider, model string) string {
 	}
 }
 
-func (m *Manager) startInteractiveTmux(a *Agent, cfg RunConfig) error {
-	cmdParts := []string{"codex"}
-	if a.Model != "" {
-		cmdParts = append(cmdParts, "--model", a.Model)
-	}
-	if !cfg.RequirePermissions {
-		cmdParts = append(cmdParts, "--full-auto")
-	}
-	if a.sessionCWD != "" {
-		cmdParts = append(cmdParts, "-C", a.sessionCWD)
-	}
-	if cfg.Prompt != "" {
-		cmdParts = append(cmdParts, strconv.Quote(cfg.Prompt))
-	}
-	session := "synapse-" + a.ID
-	cmd := strings.Join(cmdParts, " ")
-	var err error
-	if a.sessionCWD != "" {
-		err = m.tmux.CreateSessionInDir(session, cmd, a.sessionCWD)
-	} else {
-		err = m.tmux.CreateSession(session, cmd)
-	}
-	if err != nil {
-		return fmt.Errorf("create tmux session: %w", err)
-	}
-	a.TmuxSession = session
-	a.Command = cmd
-	return nil
-}
-
 func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt string) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -361,6 +324,14 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	a.stdinMu.Unlock()
 	if hasStdin {
 		return m.SendMessage(agentID, text)
+	}
+
+	// Codex conversational agents: deliver via promptCh.
+	a.mu.RLock()
+	hasCh := a.promptCh != nil
+	a.mu.RUnlock()
+	if hasCh {
+		return m.sendCodexPrompt(agentID, text)
 	}
 
 	// Legacy tmux transport.
@@ -610,9 +581,6 @@ func (m *Manager) CheckInteractiveSessions() {
 		// Plan agents deliberately sit idle between review rounds — don't
 		// auto-stop them; only the dead-session check above applies.
 		if RoleFromName(a.Name) == RolePlan {
-			continue
-		}
-		if a.Provider != "claude" {
 			continue
 		}
 		// Resolve claude session via tmux pane PID → ~/.claude/sessions/{pid}.json

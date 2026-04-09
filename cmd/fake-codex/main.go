@@ -53,7 +53,7 @@ func runExec() {
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
 		emitTurnCompleted(100, 20)
-	case "implement":
+	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)
 	case "evaluate":
