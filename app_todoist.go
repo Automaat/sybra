@@ -15,11 +15,9 @@ import (
 
 // TodoistHandler syncs tasks between Todoist and Synapse.
 type TodoistHandler struct {
+	DomainHandler
 	tasks  *task.Manager
 	client *todoist.Client
-	audit  *audit.Logger
-	logger *slog.Logger
-	emit   func(string, any)
 	cfg    config.TodoistConfig
 }
 
@@ -32,12 +30,10 @@ func newTodoistHandler(
 	cfg config.TodoistConfig,
 ) *TodoistHandler {
 	return &TodoistHandler{
-		tasks:  tasks,
-		client: client,
-		audit:  al,
-		logger: logger,
-		emit:   emit,
-		cfg:    cfg,
+		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
+		tasks:         tasks,
+		client:        client,
+		cfg:           cfg,
 	}
 }
 
@@ -112,7 +108,7 @@ func (h *TodoistHandler) importNewTasks() (int, error) {
 			h.logger.Error("todoist.update-task", "task_id", t.ID, "err", updateErr)
 		}
 
-		h.logAudit(audit.EventTodoistImported, t.ID, map[string]any{
+		h.logAudit(audit.EventTodoistImported, t.ID, "", map[string]any{
 			"todoist_id": rt.ID,
 			"title":      rt.Content,
 		})
@@ -138,7 +134,7 @@ func (h *TodoistHandler) syncCompletions() (int, error) {
 			h.logger.Error("todoist.close", "task_id", t.ID, "todoist_id", t.TodoistID, "err", closeErr)
 			continue
 		}
-		h.logAudit(audit.EventTodoistCompleted, t.ID, map[string]any{
+		h.logAudit(audit.EventTodoistCompleted, t.ID, "", map[string]any{
 			"todoist_id": t.TodoistID,
 		})
 		completed++
@@ -160,19 +156,6 @@ func (h *TodoistHandler) buildSeenIndex() (map[string]bool, error) {
 		}
 	}
 	return seen, nil
-}
-
-func (h *TodoistHandler) logAudit(eventType, taskID string, data map[string]any) {
-	if h.audit == nil {
-		return
-	}
-	if err := h.audit.Log(audit.Event{
-		Type:   eventType,
-		TaskID: taskID,
-		Data:   data,
-	}); err != nil {
-		h.logger.Error("todoist.audit", "type", eventType, "err", err)
-	}
 }
 
 // mapPriorityTag converts Todoist priority (1=normal, 4=urgent) to tag(s).
