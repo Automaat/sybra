@@ -1,9 +1,6 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
-  import { marked } from 'marked'
-  import { markedHighlight } from 'marked-highlight'
-  import hljs from 'highlight.js'
-  import 'highlight.js/styles/github-dark.css'
+  import { renderMarkdown } from '../lib/markdown.js'
   import DiffViewer from './DiffViewer.svelte'
 
   interface Props {
@@ -18,25 +15,7 @@
   const isResult = $derived(event.type === 'result')
   const isSystem = $derived(event.type === 'system')
 
-  marked.use(markedHighlight({
-    langPrefix: 'hljs language-',
-    highlight(code, lang) {
-      const language = hljs.getLanguage(lang) ? lang : 'plaintext'
-      return hljs.highlight(code, { language }).value
-    }
-  }))
-  marked.setOptions({ breaks: true, gfm: true })
-
-  // Cache markdown rendering per text value to avoid re-parsing on parent re-renders.
-  const markdownCache = new Map<string, string>()
-  const renderedText = $derived.by(() => {
-    if (!event.text) return ''
-    const cached = markdownCache.get(event.text)
-    if (cached) return cached
-    const html = marked.parse(event.text) as string
-    markdownCache.set(event.text, html)
-    return html
-  })
+  const renderedText = $derived(renderMarkdown(event.text))
 
   function truncate(text: string, max: number): string {
     if (text.length <= max) return text

@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { marked } from 'marked'
+  import { renderMarkdown } from '../lib/markdown.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { commentStore } from '../stores/comments.svelte.js'
   import PlanFileView from '../components/PlanFileView.svelte'
-
-  marked.setOptions({ breaks: true, gfm: true })
 
   let { onviewtask }: { onviewtask?: (id: string) => void } = $props()
 
@@ -26,11 +24,7 @@
 
   const isTestPlan = $derived(selectedTask?.status === 'test-plan-review')
 
-  const renderedCritique = $derived.by(() => {
-    const c = selectedTask?.planCritique
-    if (!c) return ''
-    return marked.parse(c) as string
-  })
+  const renderedCritique = $derived(renderMarkdown(selectedTask?.planCritique))
 
   $effect(() => {
     if (selectedId) {
