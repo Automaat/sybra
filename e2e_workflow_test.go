@@ -805,3 +805,281 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 		}
 	}
 }
+
+// testTestingTaskWorkflowYAML mirrors the real builtin testing-task.yaml
+// shape (id, trigger, step graph, transitions, human actions) but uses
+// headless agents so two consecutive run_agent steps are deterministic on CI.
+// The real builtin's YAML is exercised by internal/workflow/builtin_test.go.
+const testTestingTaskWorkflowYAML = `id: testing-task
+name: Test Manual Testing
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  - id: plan_test
+    name: Prepare Test Plan
+    type: run_agent
+    config:
+      role: test-plan
+      mode: headless
+      model: opus
+      prompt: 'Plan test {{.Task.ID}}'
+    next:
+      - goto: review_test_plan
+
+  - id: review_test_plan
+    name: Review Test Plan
+    type: wait_human
+    config:
+      status: test-plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: execute_tests
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: plan_test
+
+  - id: execute_tests
+    name: Execute Manual Testing
+    type: run_agent
+    config:
+      role: test-runner
+      mode: headless
+      model: sonnet
+      prompt: 'Execute test {{.Task.ID}}'
+    next:
+      - goto: ""
+`
+
+// installTestingTaskWorkflow writes the test fixture into the engine's
+// workflow store so DispatchEvent can match it.
+func installTestingTaskWorkflow(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
+		[]byte(testTestingTaskWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatalf("write testing-task.yaml: %v", err)
+	}
+}
+
+func countStepRecords(tk task.Task, stepID string) int {
+	if tk.Workflow == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range tk.Workflow.StepHistory {
+		if r.StepID == stepID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestE2E_TestingTaskWorkflow_HappyPath drives the manual-testing workflow
+// from status→testing dispatch through plan_test, human approve, and
+// execute_tests, ending in ExecCompleted.
+func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
+	// plan_test (success) → wait_human → execute_tests (success).
+	env := setupE2EMulti(t, []string{"success", "success"})
+	installTestingTaskWorkflow(t, env)
+
+	created, err := env.tasks.Create("manual test happy", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfID, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)}, nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "testing-task" {
+		t.Fatalf("dispatched workflow = %q, want testing-task", wfID)
+	}
+
+	waitFor(t, 20*time.Second, "reaches review_test_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_test_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tkWaiting, _ := env.tasks.Get(created.ID)
+	if tkWaiting.Status != task.StatusTestPlanReview {
+		t.Errorf("status at wait_human = %q, want %q", tkWaiting.Status, task.StatusTestPlanReview)
+	}
+
+	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.WorkflowID != "testing-task" {
+		t.Errorf("workflow on task = %q, want testing-task", tk.Workflow.WorkflowID)
+	}
+	steps := map[string]int{}
+	for _, r := range tk.Workflow.StepHistory {
+		steps[r.StepID]++
+	}
+	for _, want := range []string{"plan_test", "review_test_plan", "execute_tests"} {
+		if steps[want] == 0 {
+			t.Errorf("missing step %q in history, got %v", want, steps)
+		}
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan verifies that rejecting
+// the test plan re-runs plan_test with human.feedback set on the workflow
+// vars, then the second plan can be approved and the workflow completes.
+func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
+	// plan_test → wait → reject → plan_test → wait → approve → execute_tests.
+	env := setupE2EMulti(t, []string{"success", "success", "success"})
+	installTestingTaskWorkflow(t, env)
+
+	created, err := env.tasks.Create("manual test reject", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)}, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "first review_test_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_test_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tkBefore, _ := env.tasks.Get(created.ID)
+	planRunsBefore := countStepRecords(tkBefore, "plan_test")
+	if planRunsBefore != 1 {
+		t.Fatalf("plan_test runs before reject = %d, want 1", planRunsBefore)
+	}
+
+	const feedback = "add cleanup steps"
+	if err := env.engine.HandleHumanAction(created.ID, "reject",
+		map[string]string{"feedback": feedback}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "second review_test_plan after reject", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		if tk.Workflow == nil ||
+			tk.Workflow.CurrentStep != "review_test_plan" ||
+			tk.Workflow.State != workflow.ExecWaiting {
+			return false
+		}
+		return countStepRecords(tk, "plan_test") > planRunsBefore
+	})
+
+	tkAfterReject, _ := env.tasks.Get(created.ID)
+	if got := tkAfterReject.Workflow.Variables["human.feedback"]; got != feedback {
+		t.Errorf("human.feedback var = %q, want %q", got, feedback)
+	}
+	if got := countStepRecords(tkAfterReject, "plan_test"); got != 2 {
+		t.Errorf("plan_test runs after reject = %d, want 2", got)
+	}
+
+	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes after approve", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("final state = %q (step=%s), want completed",
+			tk.Workflow.State, tk.Workflow.CurrentStep)
+	}
+	if got := countStepRecords(tk, "execute_tests"); got != 1 {
+		t.Errorf("execute_tests runs = %d, want 1", got)
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive verifies that
+// TaskService.UpdateTask refuses to move a task to "testing" while another
+// non-terminal workflow is attached, and the task status is not changed.
+func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
+	env := setupE2E(t, "success")
+	installTestingTaskWorkflow(t, env)
+
+	created, err := env.tasks.Create("active workflow task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attach a non-terminal workflow as if a simple-task run is mid-flight.
+	wfExec := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{},
+	}
+	if _, err := env.tasks.Update(created.ID, map[string]any{
+		"status":   string(task.StatusInProgress),
+		"workflow": wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &TaskService{
+		tasks:          env.tasks,
+		workflowEngine: env.engine,
+		wg:             &sync.WaitGroup{},
+		logger:         e2eLogger(),
+	}
+
+	_, err = svc.UpdateTask(created.ID, map[string]any{"status": string(task.StatusTesting)})
+	if err == nil {
+		t.Fatal("expected refusal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot move to testing") {
+		t.Errorf("err = %v, want message containing 'cannot move to testing'", err)
+	}
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status == task.StatusTesting {
+		t.Errorf("status = %q, want unchanged (not testing)", tk.Status)
+	}
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status = %q, want %q (unchanged from before)", tk.Status, task.StatusInProgress)
+	}
+}

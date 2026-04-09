@@ -4,12 +4,20 @@ import {task} from '../models';
 
 export function ApprovePlan(arg1:string):Promise<task.Task>;
 
+export function ApproveTestPlan(arg1:string):Promise<task.Task>;
+
 export function HasLivePlanAgent(arg1:string):Promise<boolean>;
+
+export function HasLiveTestPlanAgent(arg1:string):Promise<boolean>;
 
 export function PlanTask(arg1:string):Promise<void>;
 
 export function RejectPlan(arg1:string,arg2:string):Promise<task.Task>;
 
+export function RejectTestPlan(arg1:string,arg2:string):Promise<task.Task>;
+
 export function SendPlanMessage(arg1:string,arg2:string):Promise<void>;
+
+export function SendTestPlanMessage(arg1:string,arg2:string):Promise<void>;
 
 export function TriageTask(arg1:string):Promise<void>;

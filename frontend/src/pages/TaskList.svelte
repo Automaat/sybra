@@ -2,6 +2,7 @@
   import type { task } from '../../wailsjs/go/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
+  import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
   import TaskCard from '../components/TaskCard.svelte'
 
@@ -122,7 +123,11 @@
     if (!taskId) return
     const existing = taskStore.tasks.get(taskId)
     if (!existing || existing.status === targetStatus) return
-    await taskStore.update(taskId, { status: targetStatus })
+    try {
+      await taskStore.update(taskId, { status: targetStatus })
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Move failed', String(err))
+    }
   }
 
   function openInlineAdd(status: string) {

@@ -79,7 +79,20 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 
 // UpdateTask applies field updates to a task. The workflow engine drives
 // all status-based transitions; this method only handles cleanup on done.
+//
+// Moving a task to "testing" is refused if another workflow is still active —
+// the testing workflow needs a clean slate (no in-flight agents or pending
+// human steps) so the user can't accidentally lose context by dragging.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
+	if status, ok := updates["status"].(string); ok && status == string(task.StatusTesting) {
+		cur, gErr := s.tasks.Get(id)
+		if gErr == nil && cur.Workflow != nil &&
+			cur.Workflow.State != workflow.ExecCompleted &&
+			cur.Workflow.State != workflow.ExecFailed {
+			return cur, fmt.Errorf("cannot move to testing: task has active workflow %q (state=%s)",
+				cur.Workflow.WorkflowID, cur.Workflow.State)
+		}
+	}
 	t, err := s.tasks.Update(id, updates)
 	if err != nil {
 		return t, err
