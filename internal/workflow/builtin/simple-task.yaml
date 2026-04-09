@@ -28,6 +28,25 @@ steps:
         - Read
         - Skill
     next:
+      # Short-circuit when triage determined the task is already past
+      # implementation (e.g. PR already open, escalated, or done). Without
+      # these guards the workflow would clobber the status in set_in_progress
+      # and dispatch a duplicate implement step.
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
       - when:
           field: task.status
           operator: equals
