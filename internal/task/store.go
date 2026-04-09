@@ -5,11 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Automaat/synapse/internal/fsutil"
-	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -123,89 +121,75 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-func (s *Store) Update(id string, updates map[string]any) (Task, error) {
+func (s *Store) Update(id string, u Update) (Task, error) {
 	t, err := s.Get(id)
 	if err != nil {
 		return Task{}, err
 	}
 
-	if v, ok := updates["title"].(string); ok {
-		t.Title = v
+	if u.Title != nil {
+		t.Title = *u.Title
 	}
-	if v, ok := updates["slug"].(string); ok {
-		t.Slug = v
+	if u.Slug != nil {
+		t.Slug = *u.Slug
 	}
-	if v, ok := updates["status"].(string); ok {
-		st, vErr := ValidateStatus(v)
-		if vErr != nil {
-			return Task{}, vErr
-		}
-		t.Status = st
-		// Clear reason when status changes unless a new reason is provided
-		if _, hasReason := updates["status_reason"]; !hasReason {
+	if u.Status != nil {
+		t.Status = *u.Status
+		// Clear reason when status changes unless a new reason is also provided.
+		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
 	}
-	if v, ok := updates["status_reason"].(string); ok {
-		t.StatusReason = v
+	if u.StatusReason != nil {
+		t.StatusReason = *u.StatusReason
 	}
-	if v, ok := updates["agent_mode"].(string); ok {
-		t.AgentMode = v
+	if u.AgentMode != nil {
+		t.AgentMode = *u.AgentMode
 	}
-	if v, ok := updates["task_type"].(string); ok {
-		tt, vErr := ValidateTaskType(v)
-		if vErr != nil {
-			return Task{}, vErr
-		}
-		t.TaskType = tt
+	if u.TaskType != nil {
+		t.TaskType = *u.TaskType
 	}
-	if v, ok := updates["body"].(string); ok {
-		t.Body = v
+	if u.Body != nil {
+		t.Body = *u.Body
 	}
-	switch v := updates["tags"].(type) {
-	case []string:
-		t.Tags = v
-	case string:
-		t.Tags = strings.Split(v, ",")
+	if u.Tags != nil {
+		t.Tags = *u.Tags
 	}
-	if v, ok := updates["project_id"].(string); ok {
-		t.ProjectID = v
+	if u.ProjectID != nil {
+		t.ProjectID = *u.ProjectID
 	}
-	if v, ok := updates["branch"].(string); ok {
-		t.Branch = v
+	if u.Branch != nil {
+		t.Branch = *u.Branch
 	}
-	switch v := updates["pr_number"].(type) {
-	case float64:
-		t.PRNumber = int(v)
-	case int:
-		t.PRNumber = v
+	if u.PRNumber != nil {
+		t.PRNumber = *u.PRNumber
 	}
-	if v, ok := updates["issue"].(string); ok {
-		t.Issue = v
+	if u.Issue != nil {
+		t.Issue = *u.Issue
 	}
-	if v, ok := updates["reviewed"].(bool); ok {
-		t.Reviewed = v
+	if u.Reviewed != nil {
+		t.Reviewed = *u.Reviewed
 	}
-	if v, ok := updates["run_role"].(string); ok {
-		t.RunRole = v
+	if u.RunRole != nil {
+		t.RunRole = *u.RunRole
 	}
-	if v, ok := updates["todoist_id"].(string); ok {
-		t.TodoistID = v
+	if u.TodoistID != nil {
+		t.TodoistID = *u.TodoistID
 	}
-	if v, ok := updates["workflow"].(*workflow.Execution); ok {
-		t.Workflow = v
+	if u.Workflow != nil {
+		t.Workflow = *u.Workflow
 	}
-	if v, ok := updates["plan"].(string); ok {
-		if wErr := s.plans.Write(id, v); wErr != nil {
+	if u.Plan != nil {
+		if wErr := s.plans.Write(id, *u.Plan); wErr != nil {
 			return Task{}, fmt.Errorf("write plan: %w", wErr)
 		}
-		t.Plan = v
+		t.Plan = *u.Plan
 	}
-	if v, ok := updates["plan_critique"].(string); ok {
-		if wErr := s.planCritiques.Write(id, v); wErr != nil {
+	if u.PlanCritique != nil {
+		if wErr := s.planCritiques.Write(id, *u.PlanCritique); wErr != nil {
 			return Task{}, fmt.Errorf("write plan critique: %w", wErr)
 		}
-		t.PlanCritique = v
+		t.PlanCritique = *u.PlanCritique
 	}
 
 	data, err := Marshal(t)
@@ -216,6 +200,16 @@ func (s *Store) Update(id string, updates map[string]any) (Task, error) {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	return t, nil
+}
+
+// UpdateMap converts raw to a typed Update and applies it.
+// Returns an error on unknown keys or wrong value types.
+func (s *Store) UpdateMap(id string, raw map[string]any) (Task, error) {
+	u, err := UpdateFromMap(raw)
+	if err != nil {
+		return Task{}, err
+	}
+	return s.Update(id, u)
 }
 
 func (s *Store) AddRun(taskID string, run AgentRun) error {

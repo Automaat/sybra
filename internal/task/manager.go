@@ -92,19 +92,18 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 // manager (e.g. the workflow engine advancing a step, which writes the
 // workflow field via taskAdapter.SetWorkflow → Manager.Update). Calling
 // the hook while still holding the lock would deadlock that re-entry.
-func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
+func (m *Manager) Update(id string, u Update) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
 
 	var prevStatus string
-	_, wantsStatus := updates["status"].(string)
-	if wantsStatus {
+	if u.Status != nil {
 		if prev, getErr := m.store.Get(id); getErr == nil {
 			prevStatus = string(prev.Status)
 		}
 	}
 
-	t, err := m.store.Update(id, updates)
+	t, err := m.store.Update(id, u)
 	if err != nil {
 		mu.Unlock()
 		return t, err
@@ -115,7 +114,7 @@ func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
 		fireHook  bool
 		newStatus string
 	)
-	if wantsStatus && m.onStatusHook != nil {
+	if u.Status != nil && m.onStatusHook != nil {
 		newStatus = string(t.Status)
 		fireHook = newStatus != prevStatus
 	}
@@ -125,6 +124,16 @@ func (m *Manager) Update(id string, updates map[string]any) (Task, error) {
 		m.onStatusHook(id, prevStatus, newStatus)
 	}
 	return t, nil
+}
+
+// UpdateMap converts raw to a typed Update and applies it.
+// Returns an error on unknown keys or wrong value types.
+func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
+	u, err := UpdateFromMap(raw)
+	if err != nil {
+		return Task{}, err
+	}
+	return m.Update(id, u)
 }
 
 // Delete removes a task and emits task:deleted.

@@ -138,13 +138,13 @@ func (a *App) inspectAgent(ctx context.Context, ag *agent.Agent, t task.Task, st
 			a.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 		}
 		if ag.TaskID != "" {
-			if _, err := a.tasks.Update(ag.TaskID, map[string]any{"status": string(task.StatusHumanRequired)}); err != nil {
+			if _, err := a.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
 				a.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
 		}
 	case "escalate":
 		if ag.TaskID != "" {
-			if _, err := a.tasks.Update(ag.TaskID, map[string]any{"status": string(task.StatusHumanRequired)}); err != nil {
+			if _, err := a.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
 				a.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
 		}

@@ -104,11 +104,12 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		return fmt.Errorf("create task: %w", err)
 	}
 
-	if _, err := s.tasks.Update(t.ID, map[string]any{
-		"project_id": repo,
-		"pr_number":  number,
-		"tags":       "renovate-fix",
-		"run_role":   "pr-fix",
+	tags := []string{"renovate-fix"}
+	if _, err := s.tasks.Update(t.ID, task.Update{
+		ProjectID: task.Ptr(repo),
+		PRNumber:  task.Ptr(number),
+		Tags:      &tags,
+		RunRole:   task.Ptr("pr-fix"),
 	}); err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}

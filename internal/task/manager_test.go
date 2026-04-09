@@ -69,7 +69,7 @@ func TestManagerUpdateEmitsEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := m.Update(task.ID, map[string]any{"title": "New"}); err != nil {
+	if _, err := m.Update(task.ID, Update{Title: Ptr("New")}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -97,15 +97,15 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 	}
 
 	// No status in updates → hook must not fire.
-	if _, err := m.Update(task.ID, map[string]any{"title": "X"}); err != nil {
+	if _, err := m.Update(task.ID, Update{Title: Ptr("X")}); err != nil {
 		t.Fatalf("Update title: %v", err)
 	}
 	// Status change → hook fires.
-	if _, err := m.Update(task.ID, map[string]any{"status": "in-progress"}); err != nil {
+	if _, err := m.Update(task.ID, Update{Status: Ptr(StatusInProgress)}); err != nil {
 		t.Fatalf("Update status: %v", err)
 	}
 	// Same status again → hook skipped (from==to).
-	if _, err := m.Update(task.ID, map[string]any{"status": "in-progress"}); err != nil {
+	if _, err := m.Update(task.ID, Update{Status: Ptr(StatusInProgress)}); err != nil {
 		t.Fatalf("Update status no-op: %v", err)
 	}
 
@@ -209,13 +209,13 @@ func TestManagerConcurrentUpdateSerializes(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if _, err := m.Update(task.ID, map[string]any{"title": "AAA"}); err != nil {
+		if _, err := m.Update(task.ID, Update{Title: Ptr("AAA")}); err != nil {
 			t.Errorf("Update title: %v", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if _, err := m.Update(task.ID, map[string]any{"body": "BBB"}); err != nil {
+		if _, err := m.Update(task.ID, Update{Body: Ptr("BBB")}); err != nil {
 			t.Errorf("Update body: %v", err)
 		}
 	}()
@@ -250,13 +250,13 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if _, err := m.Update(t1.ID, map[string]any{"body": "x"}); err != nil {
+		if _, err := m.Update(t1.ID, Update{Body: Ptr("x")}); err != nil {
 			t.Errorf("Update t1: %v", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if _, err := m.Update(t2.ID, map[string]any{"body": "y"}); err != nil {
+		if _, err := m.Update(t2.ID, Update{Body: Ptr("y")}); err != nil {
 			t.Errorf("Update t2: %v", err)
 		}
 	}()

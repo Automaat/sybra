@@ -68,11 +68,12 @@ func (r *ReviewHandler) createReviewTask(pr github.PullRequest, projectID string
 		return
 	}
 
-	if _, err := r.tasks.Update(t.ID, map[string]any{
-		"tags":       "review",
-		"project_id": projectID,
-		"pr_number":  pr.Number,
-		"status":     string(task.StatusTodo),
+	tags := []string{"review"}
+	if _, err := r.tasks.Update(t.ID, task.Update{
+		Tags:      &tags,
+		ProjectID: task.Ptr(projectID),
+		PRNumber:  task.Ptr(pr.Number),
+		Status:    task.Ptr(task.StatusTodo),
 	}); err != nil {
 		r.logger.Error("review.update-task", "task_id", t.ID, "err", err)
 		return
@@ -86,7 +87,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
 		// fallback: start agent when we can't determine size
-		if _, err := r.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInReview)}); err != nil {
+		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
 		if err := r.startReviewAgent(t); err != nil {
@@ -98,9 +99,10 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
 	if stats.Additions < reviewSmallAdditions && stats.ChangedFiles < reviewSmallFiles {
-		if _, err := r.tasks.Update(t.ID, map[string]any{
-			"status":        string(task.StatusHumanRequired),
-			"status_reason": fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles),
+		reason := fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles)
+		if _, err := r.tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: &reason,
 		}); err != nil {
 			r.logger.Error("review.triage.human", "task_id", t.ID, "err", err)
 		}
@@ -108,7 +110,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 		return
 	}
 
-	if _, err := r.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInReview)}); err != nil {
+	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
 	if err := r.startReviewAgent(t); err != nil {
@@ -206,9 +208,7 @@ func (r *ReviewHandler) detectPublishedReviews(tasks []task.Task) {
 			continue
 		}
 		if !pending {
-			if _, err := r.tasks.Update(tasks[i].ID, map[string]any{
-				"status": string(task.StatusInReview),
-			}); err != nil {
+			if _, err := r.tasks.Update(tasks[i].ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 				r.logger.Error("review.published-update", "task_id", tasks[i].ID, "err", err)
 				continue
 			}
@@ -296,7 +296,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 		closedPRs := github.DetectClosedTaskPRs(summary.CreatedByMe, matchers, github.FetchPRState)
 		for _, c := range closedPRs {
-			if _, err := r.tasks.Update(c.TaskID, map[string]any{"status": string(task.StatusDone)}); err != nil {
+			if _, err := r.tasks.Update(c.TaskID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
 				r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
 				continue
 			}

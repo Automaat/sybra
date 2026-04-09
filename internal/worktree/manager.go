@@ -308,7 +308,7 @@ func (m *Manager) ensureBranch(t task.Task, branch string) {
 	if t.Branch != "" {
 		return
 	}
-	if _, err := m.tasks.Update(t.ID, map[string]any{"branch": branch}); err != nil {
+	if _, err := m.tasks.Update(t.ID, task.Update{Branch: task.Ptr(branch)}); err != nil {
 		m.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
 	}
 }

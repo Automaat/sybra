@@ -708,7 +708,7 @@ func TestE2E_ResumeStalled(t *testing.T) {
 		State:       workflow.ExecRunning,
 		Variables:   make(map[string]string),
 	}
-	if _, err := env.tasks.Update(created.ID, map[string]any{
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   "in-progress",
 		"workflow": wfExec,
 	}); err != nil {
@@ -885,7 +885,7 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 		State:       workflow.ExecWaiting,
 		Variables:   make(map[string]string),
 	}
-	if _, err := env.tasks.Update(created.ID, map[string]any{
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   "in-progress",
 		"workflow": wfExec,
 	}); err != nil {
@@ -1004,7 +1004,7 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.tasks.Update(created.ID, map[string]any{
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "in-review",
 	}); err != nil {
 		t.Fatal(err)
@@ -1302,7 +1302,7 @@ func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
 		State:       workflow.ExecWaiting,
 		Variables:   map[string]string{},
 	}
-	if _, err := env.tasks.Update(created.ID, map[string]any{
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   string(task.StatusInProgress),
 		"workflow": wfExec,
 	}); err != nil {
@@ -1434,7 +1434,7 @@ func TestE2E_RestartStaleSkipsTerminalWorkflow(t *testing.T) {
 		State:       workflow.ExecCompleted,
 		Variables:   map[string]string{},
 	}
-	if _, err := env.tasks.Update(created.ID, map[string]any{
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   string(task.StatusInProgress),
 		"workflow": wfExec,
 	}); err != nil {

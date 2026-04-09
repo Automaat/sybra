@@ -98,7 +98,7 @@ func TestStoreUpdateWritesPlanSidecar(t *testing.T) {
 	}
 
 	plan := "## Approach\n\nDo the thing step by step."
-	updated, err := store.Update(created.ID, map[string]any{"plan": plan})
+	updated, err := store.Update(created.ID, Update{Plan: Ptr(plan)})
 	if err != nil {
 		t.Fatalf("Update with plan: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestStoreGetPopulatesPlan(t *testing.T) {
 	}
 
 	plan := "## Plan\n\nstep 1\nstep 2"
-	if _, err := store.Update(created.ID, map[string]any{"plan": plan}); err != nil {
+	if _, err := store.Update(created.ID, Update{Plan: Ptr(plan)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +156,7 @@ func TestStoreDeleteCascadesPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Update(created.ID, map[string]any{"plan": "## Plan\n\nsteps"}); err != nil {
+	if _, err := store.Update(created.ID, Update{Plan: Ptr("## Plan\n\nsteps")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestStoreListPopulatesPlan(t *testing.T) {
 	}
 
 	plan := "## Plan\n\nsteps here"
-	if _, err := store.Update(created.ID, map[string]any{"plan": plan}); err != nil {
+	if _, err := store.Update(created.ID, Update{Plan: Ptr(plan)}); err != nil {
 		t.Fatal(err)
 	}
 

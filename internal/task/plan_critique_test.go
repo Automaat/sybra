@@ -98,7 +98,7 @@ func TestStoreUpdateWritesPlanCritiqueSidecar(t *testing.T) {
 	}
 
 	critique := "# Plan Review\n\n## Verdict: REFINE\n\n- Add edge case handling.\n"
-	updated, err := store.Update(created.ID, map[string]any{"plan_critique": critique})
+	updated, err := store.Update(created.ID, Update{PlanCritique: Ptr(critique)})
 	if err != nil {
 		t.Fatalf("Update with plan_critique: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestStoreGetPopulatesPlanCritique(t *testing.T) {
 	}
 
 	critique := "# Plan Review\n\n## Verdict: APPROVE\n"
-	if _, err := store.Update(created.ID, map[string]any{"plan_critique": critique}); err != nil {
+	if _, err := store.Update(created.ID, Update{PlanCritique: Ptr(critique)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestStoreDeleteCascadesPlanCritique(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Update(created.ID, map[string]any{"plan_critique": "# Plan Review\n"}); err != nil {
+	if _, err := store.Update(created.ID, Update{PlanCritique: Ptr("# Plan Review\n")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,7 +186,7 @@ func TestStoreListPopulatesPlanCritique(t *testing.T) {
 	}
 
 	critique := "# Plan Review\n\n## Verdict: APPROVE\n"
-	if _, err := store.Update(created.ID, map[string]any{"plan_critique": critique}); err != nil {
+	if _, err := store.Update(created.ID, Update{PlanCritique: Ptr(critique)}); err != nil {
 		t.Fatal(err)
 	}
 

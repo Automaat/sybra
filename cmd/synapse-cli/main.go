@@ -230,7 +230,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 		updates["plan_critique"] = *planCritique
 	}
 	if len(updates) > 0 {
-		t, err = s.Update(t.ID, updates)
+		t, err = s.UpdateMap(t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -321,7 +321,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "no updates specified")
 	}
 
-	t, err := s.Update(id, updates)
+	t, err := s.UpdateMap(id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}

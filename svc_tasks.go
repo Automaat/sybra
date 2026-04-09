@@ -93,7 +93,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 				cur.Workflow.WorkflowID, cur.Workflow.State)
 		}
 	}
-	t, err := s.tasks.Update(id, updates)
+	t, err := s.tasks.UpdateMap(id, updates)
 	if err != nil {
 		return t, err
 	}
@@ -132,21 +132,24 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	}
 	viewer := github.ViewerLogin()
 
-	updates := map[string]any{
-		"title":      pr.Title,
-		"project_id": repo,
-		"pr_number":  pr.Number,
-		"branch":     pr.HeadRefName,
-		"slug":       task.Slugify(pr.Title),
+	slug := task.Slugify(pr.Title)
+	u := task.Update{
+		Title:     task.Ptr(pr.Title),
+		ProjectID: task.Ptr(repo),
+		PRNumber:  task.Ptr(pr.Number),
+		Branch:    task.Ptr(pr.HeadRefName),
+		Slug:      task.Ptr(slug),
 	}
+	var labels []string
 	if len(pr.Labels) > 0 {
-		updates["tags"] = pr.Labels
+		labels = pr.Labels
+		u.Tags = &labels
 	}
 
 	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
-		updates["status"] = string(task.StatusInReview)
-		if _, err := s.tasks.Update(taskID, updates); err != nil {
+		u.Status = task.Ptr(task.StatusInReview)
+		if _, err := s.tasks.Update(taskID, u); err != nil {
 			s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 			return
 		}
@@ -155,9 +158,9 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	}
 
 	// Not my PR: add review tag and start review agent.
-	tags, _ := updates["tags"].([]string)
-	updates["tags"] = append(tags, "review")
-	if _, err := s.tasks.Update(taskID, updates); err != nil {
+	labels = append(labels, "review")
+	u.Tags = &labels
+	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 		return
 	}
@@ -204,7 +207,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}); err != nil {
 		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
-	if _, err := s.tasks.Update(t.ID, map[string]any{"status": string(task.StatusInReview)}); err != nil {
+	if _, err := s.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		s.logger.Error("enrich-pr.status", "task_id", t.ID, "err", err)
 	}
 	s.logger.Info("enrich-pr.review-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
@@ -218,19 +221,21 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.logger.Error("enrich-issue.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
 		return
 	}
-	updates := map[string]any{
-		"title":      issue.Title,
-		"issue":      issue.URL,
-		"project_id": repo,
-		"slug":       task.Slugify(issue.Title),
+	slug := task.Slugify(issue.Title)
+	u := task.Update{
+		Title:     task.Ptr(issue.Title),
+		Issue:     task.Ptr(issue.URL),
+		ProjectID: task.Ptr(repo),
+		Slug:      task.Ptr(slug),
 	}
 	if issue.Body != "" {
-		updates["body"] = issue.Body
+		u.Body = task.Ptr(issue.Body)
 	}
 	if len(issue.Labels) > 0 {
-		updates["tags"] = issue.Labels
+		labels := issue.Labels
+		u.Tags = &labels
 	}
-	if _, err := s.tasks.Update(taskID, updates); err != nil {
+	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
 		return
 	}
