@@ -203,6 +203,12 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 
 // AdvanceStep is called when an async step completes. It records the result,
 // evaluates transitions, and executes the next step.
+//
+// No-ops (returns nil) when the workflow is already in a terminal state
+// (completed/failed) or when the current step is empty. This prevents stale
+// agent completions — e.g. agents spawned outside the workflow, or a
+// double-delivered callback — from triggering "step not found" errors that
+// would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.mu.Lock()
 	if _, ok := e.inflight[taskID]; ok {
@@ -224,6 +230,18 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 	if t.Workflow == nil {
 		return fmt.Errorf("task %s has no active workflow", taskID)
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "workflow_terminal",
+			"state", string(t.Workflow.State), "step_id", output.StepID)
+		return nil
+	}
+	if output.StepID == "" {
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "empty_step_id",
+			"state", string(t.Workflow.State))
+		return nil
 	}
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
@@ -364,6 +382,12 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // back to the workflow step and advances. The agentState parameter should
 // reflect the actual agent exit state (e.g. "stopped" for success, "failed"
 // for crashes) so the retry logic in AdvanceStep can trigger correctly.
+//
+// Silently skips (Debug log) when the task's workflow is already terminal or
+// has no current step. Agents that were started outside the workflow engine
+// (e.g. manual pr-fix retries, recovery spawns) land here on completion; the
+// guard avoids the "step not found" error loop that followed workflow
+// completion in older versions.
 func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
@@ -372,6 +396,16 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string)
 	}
 	if t.Workflow == nil {
 		e.logger.Debug("workflow.agent-complete.no-workflow", "task_id", taskID)
+		return
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		e.logger.Debug("workflow.agent-complete.terminal",
+			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
+		return
+	}
+	if t.Workflow.CurrentStep == "" {
+		e.logger.Debug("workflow.agent-complete.no-current-step",
+			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
 		return
 	}
 
