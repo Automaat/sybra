@@ -8,6 +8,7 @@
   let selectedId = $state<string | null>(null)
   let rejectFeedback = $state('')
   let actionLoading = $state(false)
+  let feedbackRef = $state<HTMLTextAreaElement | null>(null)
   let errorMsg = $state('')
   let hasLiveAgent = $state(false)
 
@@ -103,6 +104,12 @@
       const idx = selectedId ? tasks.findIndex(t => t.id === selectedId) : tasks.length
       const prev = tasks[Math.max(idx - 1, 0)]
       if (prev) void selectTask(prev.id)
+      return
+    }
+
+    if (e.key === 'c' && selectedId) {
+      e.preventDefault()
+      feedbackRef?.focus()
       return
     }
   }
@@ -229,6 +236,7 @@
         {/if}
         <div class="flex items-start gap-3">
           <textarea
+            bind:this={feedbackRef}
             class="flex-1 resize-none rounded-lg border border-surface-300 bg-white p-2.5 text-sm dark:border-surface-600 dark:bg-surface-800"
             rows="2"
             placeholder="Rejection feedback (optional) — unresolved comments are included automatically..."

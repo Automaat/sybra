@@ -13,6 +13,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: '⌘N', description: 'New task' },
       { keys: '⌘1 – ⌘7', description: 'Navigate pages' },
       { keys: '⌘,', description: 'Settings' },
+      { keys: '⌘F', description: 'Focus task search' },
       { keys: '⌘=  /  ⌘-  /  ⌘0', description: 'Zoom in / out / reset' },
     ],
   },
@@ -34,6 +35,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
     shortcuts: [
       { keys: 'E', description: 'Edit description' },
       { keys: 'S', description: 'Focus status selector' },
+      { keys: 'D', description: 'Delete task' },
       { keys: 'Esc', description: 'Back to board' },
     ],
   },
@@ -44,6 +46,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: 'A', description: 'Approve selected plan' },
       { keys: 'R', description: 'Reject selected plan' },
       { keys: 'J  /  K', description: 'Navigate between plans' },
+      { keys: 'C', description: 'Focus feedback input' },
     ],
   },
 ]

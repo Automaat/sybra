@@ -172,6 +172,11 @@
         e.preventDefault()
         page = { kind: 'settings' }
       }
+      if (e.metaKey && e.key === 'f') {
+        e.preventDefault()
+        page = { kind: 'task-list' }
+        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
+      }
     }
     window.addEventListener('keydown', handleKeydown)
 

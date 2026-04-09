@@ -46,6 +46,10 @@
       e.preventDefault()
       statusSelectRef?.focus()
     }
+    if (e.key === 'd') {
+      e.preventDefault()
+      deleteTask()
+    }
   }
 
   $effect(() => {
