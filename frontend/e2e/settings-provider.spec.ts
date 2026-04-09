@@ -51,6 +51,9 @@ async function saveSettings(page: Page) {
 }
 
 async function restoreAgentSettings(page: Page, original: { provider: string; model: string; mode: string }) {
+  if ((await page.locator('#agent-provider').count()) === 0) {
+    await goToSettings(page)
+  }
   await page.locator('#agent-provider').selectOption(original.provider)
   await page.locator('#agent-model').selectOption(original.model)
   await page.locator('#agent-mode').selectOption(original.mode)
