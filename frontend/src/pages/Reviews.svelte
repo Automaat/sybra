@@ -267,7 +267,7 @@
           <span class="text-xs text-surface-400">— click <kbd class="rounded bg-surface-200 px-1 dark:bg-surface-700">+</kbd> on any line to comment</span>
         </div>
         <div class="rounded-lg border border-surface-300 bg-white dark:border-surface-700 dark:bg-surface-900">
-          <PlanFileView taskId={selectedTask.id} planBody={isTestPlan ? selectedTask.body : (selectedTask.plan || selectedTask.body)} />
+          <PlanFileView taskId={selectedTask.id} planBody={selectedTask.plan || selectedTask.body} />
         </div>
       </div>
 
