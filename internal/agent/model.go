@@ -145,14 +145,14 @@ func (a *Agent) SetLogPath(p string) {
 	a.mu.Unlock()
 }
 
-// SetSessionID records the Claude session ID.
+// SetSessionID records the provider session ID.
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
 	a.SessionID = id
 	a.mu.Unlock()
 }
 
-// GetSessionID returns the current Claude session ID.
+// GetSessionID returns the current provider session ID.
 func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

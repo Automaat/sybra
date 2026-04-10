@@ -713,6 +713,7 @@ export namespace stats {
 	    mode: string;
 	    role: string;
 	    model?: string;
+	    provider?: string;
 	    costUsd: number;
 	    durationS: number;
 	    inputTokens?: number;
@@ -733,6 +734,7 @@ export namespace stats {
 	        this.mode = source["mode"];
 	        this.role = source["role"];
 	        this.model = source["model"];
+	        this.provider = source["provider"];
 	        this.costUsd = source["costUsd"];
 	        this.durationS = source["durationS"];
 	        this.inputTokens = source["inputTokens"];
@@ -768,6 +770,7 @@ export namespace stats {
 	    byMode: GroupedStat[];
 	    byRole: GroupedStat[];
 	    byModel: GroupedStat[];
+	    byProvider: GroupedStat[];
 	    recentRuns: RunRecord[];
 	
 	    static createFrom(source: any = {}) {
@@ -784,6 +787,7 @@ export namespace stats {
 	        this.byMode = this.convertValues(source["byMode"], GroupedStat);
 	        this.byRole = this.convertValues(source["byRole"], GroupedStat);
 	        this.byModel = this.convertValues(source["byModel"], GroupedStat);
+	        this.byProvider = this.convertValues(source["byProvider"], GroupedStat);
 	        this.recentRuns = this.convertValues(source["recentRuns"], RunRecord);
 	    }
 	

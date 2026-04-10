@@ -290,6 +290,7 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"duration_s": duration,
 		"state":      string(state),
 		"role":       agent.RoleFromName(ag.Name),
+		"provider":   ag.Provider,
 	})
 
 	// Advance workflow.

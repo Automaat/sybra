@@ -64,6 +64,7 @@ func (s *Store) Query() StatsResponse {
 	byMode := map[string][]RunRecord{}
 	byRole := map[string][]RunRecord{}
 	byModel := map[string][]RunRecord{}
+	byProvider := map[string][]RunRecord{}
 
 	for i := range s.runs {
 		r := &s.runs[i]
@@ -98,17 +99,24 @@ func (s *Store) Query() StatsResponse {
 			model = "(unknown)"
 		}
 		byModel[model] = append(byModel[model], *r)
+
+		provider := r.Provider
+		if provider == "" {
+			provider = "(unknown)"
+		}
+		byProvider[provider] = append(byProvider[provider], *r)
 	}
 
 	resp := StatsResponse{
-		Today:     summarize(today),
-		ThisWeek:  summarize(week),
-		ThisMonth: summarize(month),
-		AllTime:   summarize(all),
-		ByProject: groupedStats(byProject),
-		ByMode:    groupedStats(byMode),
-		ByRole:    groupedStats(byRole),
-		ByModel:   groupedStats(byModel),
+		Today:      summarize(today),
+		ThisWeek:   summarize(week),
+		ThisMonth:  summarize(month),
+		AllTime:    summarize(all),
+		ByProject:  groupedStats(byProject),
+		ByMode:     groupedStats(byMode),
+		ByRole:     groupedStats(byRole),
+		ByModel:    groupedStats(byModel),
+		ByProvider: groupedStats(byProvider),
 	}
 
 	// Recent runs: last 50, newest first

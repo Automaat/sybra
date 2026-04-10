@@ -204,32 +204,41 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 			return "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
 		}
 	}
-
 	model := normalizeModel(provider, cfg.Model)
 	switch provider {
 	case "codex":
-		parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
-		if !cfg.RequirePermissions {
-			parts = append(parts, "--full-auto")
-		} else {
-			parts = append(parts, "--sandbox", "workspace-write")
-		}
-		if model != "" {
-			parts = append(parts, "--model", model)
-		}
-		return strings.Join(parts, " "), nil
+		return buildCodexCommand(model, cfg.RequirePermissions), nil
 	default:
-		parts := []string{"claude"}
-		if len(cfg.AllowedTools) > 0 {
-			parts = append(parts, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
-		} else if !cfg.RequirePermissions {
-			parts = append(parts, "--dangerously-skip-permissions")
-		}
-		if model != "" {
-			parts = append(parts, "--model", model)
-		}
-		return strings.Join(parts, " "), nil
+		return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions), nil
 	}
+}
+
+// buildClaudeCommand builds the display command string for a Claude agent.
+func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) string {
+	parts := []string{"claude"}
+	if len(allowedTools) > 0 {
+		parts = append(parts, "--allowedTools", strings.Join(allowedTools, ","))
+	} else if !requirePerms {
+		parts = append(parts, "--dangerously-skip-permissions")
+	}
+	if model != "" {
+		parts = append(parts, "--model", model)
+	}
+	return strings.Join(parts, " ")
+}
+
+// buildCodexCommand builds the display command string for a Codex agent.
+func buildCodexCommand(model string, requirePerms bool) string {
+	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
+	if !requirePerms {
+		parts = append(parts, "--full-auto")
+	} else {
+		parts = append(parts, "--sandbox", "workspace-write")
+	}
+	if model != "" {
+		parts = append(parts, "--model", model)
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m *Manager) providerForRun(provider string) string {
@@ -283,7 +292,7 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 		case <-ctx.Done():
 			return
 		case <-timeout:
-			m.logger.Error("agent.interactive.timeout", "id", a.ID, "msg", "claude did not become ready in 30s")
+			m.logger.Error("agent.interactive.timeout", "id", a.ID, "msg", "agent did not become ready in 30s")
 			return
 		case <-ticker.C:
 			out, err := m.tmux.CapturePaneOutput(a.TmuxSession)
@@ -593,8 +602,9 @@ func (m *Manager) CheckInteractiveSessions() {
 		if RoleFromName(a.Name) == RolePlan {
 			continue
 		}
-		// Resolve claude session via tmux pane PID → ~/.claude/sessions/{pid}.json
-		if a.GetSessionID() == "" {
+		// Resolve Claude session via tmux pane PID → ~/.claude/sessions/{pid}.json.
+		// Codex agents use a different session model and do not have tmux sessions.
+		if a.Provider != "codex" && a.GetSessionID() == "" {
 			m.resolveInteractiveSession(a)
 		}
 		sid := a.GetSessionID()
@@ -610,7 +620,8 @@ func (m *Manager) CheckInteractiveSessions() {
 }
 
 // resolveInteractiveSession reads the tmux pane PID, then looks up
-// ~/.claude/sessions/{pid}.json to find the claude session ID.
+// ~/.claude/sessions/{pid}.json to find the Claude session ID.
+// Only valid for Claude agents; Codex does not use this mechanism.
 func (m *Manager) resolveInteractiveSession(a *Agent) {
 	pidStr, err := m.tmux.PanePID(a.TmuxSession)
 	if err != nil {
