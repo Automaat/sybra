@@ -8,9 +8,9 @@ import (
 
 // ClaudeMessage holds parsed content blocks from assistant or user messages.
 type ClaudeMessage struct {
-	Role        string           // "assistant" or "user"
-	Text        string           // joined text blocks only
-	ToolUses    []ToolUseBlock   // tool_use blocks (structured)
+	Role        string            // "assistant" or "user"
+	Text        string            // joined text blocks only
+	ToolUses    []ToolUseBlock    // tool_use blocks (structured)
 	ToolResults []ToolResultBlock // tool_result blocks (structured, untruncated)
 }
 
@@ -123,7 +123,7 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 
 	case "turn.completed":
 		usage, _ := raw["usage"].(map[string]any)
-		r := ClaudeResult{Text: "Completed."}
+		var r ClaudeResult
 		if usage != nil {
 			r.InputTokens = int(floatVal(usage, "input_tokens"))
 			r.OutputTokens = int(floatVal(usage, "output_tokens"))

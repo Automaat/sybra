@@ -5,10 +5,11 @@ import "testing"
 func TestParseCodexStreamEvent_AgentMessage(t *testing.T) {
 	line := []byte(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi"}}`)
 
-	got, err := parseStreamEvent("codex", line)
+	parsed, err := ParseCodexLine(line)
 	if err != nil {
-		t.Fatalf("parseStreamEvent: %v", err)
+		t.Fatalf("ParseCodexLine: %v", err)
 	}
+	got := codexEventToStreamEvent(parsed)
 	if got.Type != "assistant" {
 		t.Fatalf("Type = %q, want assistant", got.Type)
 	}
@@ -21,18 +22,20 @@ func TestParseCodexStreamEvent_CommandExecution(t *testing.T) {
 	started := []byte(`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}`)
 	completed := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"/repo\n","exit_code":0,"status":"completed"}}`)
 
-	startEv, err := parseStreamEvent("codex", started)
+	startParsed, err := ParseCodexLine(started)
 	if err != nil {
-		t.Fatalf("parseStreamEvent started: %v", err)
+		t.Fatalf("ParseCodexLine started: %v", err)
 	}
+	startEv := codexEventToStreamEvent(startParsed)
 	if startEv.Type != "tool_use" || startEv.Content != "pwd" {
 		t.Fatalf("started = %#v, want tool_use pwd", startEv)
 	}
 
-	doneEv, err := parseStreamEvent("codex", completed)
+	doneParsed, err := ParseCodexLine(completed)
 	if err != nil {
-		t.Fatalf("parseStreamEvent completed: %v", err)
+		t.Fatalf("ParseCodexLine completed: %v", err)
 	}
+	doneEv := codexEventToStreamEvent(doneParsed)
 	if doneEv.Type != "tool_result" || doneEv.Content != "/repo\n" {
 		t.Fatalf("completed = %#v, want tool_result output", doneEv)
 	}
@@ -41,10 +44,11 @@ func TestParseCodexStreamEvent_CommandExecution(t *testing.T) {
 func TestParseCodexStreamEvent_TurnCompleted(t *testing.T) {
 	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":16012,"cached_input_tokens":2432,"output_tokens":18}}`)
 
-	got, err := parseStreamEvent("codex", line)
+	parsed, err := ParseCodexLine(line)
 	if err != nil {
-		t.Fatalf("parseStreamEvent: %v", err)
+		t.Fatalf("ParseCodexLine: %v", err)
 	}
+	got := codexEventToStreamEvent(parsed)
 	if got.Type != "result" {
 		t.Fatalf("Type = %q, want result", got.Type)
 	}
