@@ -118,6 +118,45 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	}
 }
 
+func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		return fmt.Errorf("task %s has no linked PR", t.ID)
+	}
+
+	dir, err := r.worktrees.PrepareForFix(t, t.PRNumber)
+	if err != nil {
+		return fmt.Errorf("prepare worktree: %w", err)
+	}
+
+	prompt := fmt.Sprintf(
+		"Run /fix-review https://github.com/%s/pull/%d --auto\n\n"+
+			"IMPORTANT: when committing, use conventional commit format "+
+			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
+			"Sign the commit with `git commit -s -S`.",
+		t.ProjectID, t.PRNumber,
+	)
+
+	ag, err := r.agents.Run(agent.RunConfig{
+		TaskID: t.ID,
+		Name:   agent.RoleFixReview.AgentName(t.Title),
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+	})
+	if err != nil {
+		return err
+	}
+	if err := r.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID: ag.ID, Role: string(agent.RoleFixReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+	}); err != nil {
+		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
+	}
+	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber})
+	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
+	return nil
+}
+
 func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 	dir := config.HomeDir()
 	if t.ProjectID != "" {
