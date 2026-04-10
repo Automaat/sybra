@@ -2,6 +2,23 @@
   import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/ConfigService.js'
   import type { main } from '../../wailsjs/go/models.js'
 
+  type ColorScheme = 'system' | 'light' | 'dark'
+
+  let colorScheme = $state<ColorScheme>(
+    (localStorage.getItem('colorScheme') ?? 'system') as ColorScheme
+  )
+
+  function applyColorScheme(scheme: ColorScheme) {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    const isDark = scheme === 'dark' || (scheme === 'system' && prefersDark)
+    document.documentElement.classList.toggle('dark', isDark)
+    localStorage.setItem('colorScheme', scheme)
+  }
+
+  $effect(() => {
+    applyColorScheme(colorScheme)
+  })
+
   type AppSettings = main.AppSettings
 
   let settings = $state<AppSettings | null>(null)
@@ -96,6 +113,24 @@
       >
         {saving ? 'Saving…' : 'Save'}
       </button>
+    </div>
+  </div>
+
+  <!-- Appearance (localStorage-backed, no save required) -->
+  <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Appearance</h2>
+    <div class="flex flex-col gap-1 sm:max-w-xs">
+      <label class="text-sm font-medium" for="color-scheme">Color Scheme</label>
+      <select
+        id="color-scheme"
+        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+        bind:value={colorScheme}
+      >
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+      <span class="text-xs text-surface-400">Applied immediately, no save needed</span>
     </div>
   </div>
 
