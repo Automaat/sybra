@@ -7,6 +7,11 @@
   let addingLine = $state<number | null>(null)
   let newCommentBody = $state('')
   let submitting = $state(false)
+  let commentTextareaRef = $state<HTMLTextAreaElement | null>(null)
+
+  $effect(() => {
+    if (addingLine !== null && commentTextareaRef) commentTextareaRef.focus()
+  })
 
   const lines = $derived(planBody ? planBody.split('\n') : [])
 
@@ -85,12 +90,12 @@
       {#if addingLine === lineNum}
         <div class="ml-18 my-1 rounded border border-primary-400 dark:border-primary-600 bg-surface-50 dark:bg-surface-800 p-3">
           <textarea
+            bind:this={commentTextareaRef}
             class="w-full resize-y rounded border border-surface-300 bg-white p-2 text-sm dark:border-surface-600 dark:bg-surface-900"
             rows="3"
             placeholder="Add a comment..."
             bind:value={newCommentBody}
             onkeydown={(e) => { if (e.key === 'Escape') cancelComment() }}
-            autofocus
           ></textarea>
           <div class="mt-2 flex gap-2">
             <button

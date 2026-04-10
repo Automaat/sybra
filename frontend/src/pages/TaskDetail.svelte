@@ -24,6 +24,11 @@
   const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
 
   let statusSelectRef = $state<HTMLSelectElement | null>(null)
+  let titleInputRef = $state<HTMLInputElement | null>(null)
+
+  $effect(() => {
+    if (editingTitle && titleInputRef) titleInputRef.focus()
+  })
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -311,18 +316,21 @@
       <div class="flex items-start justify-between gap-4">
         {#if editingTitle}
           <input
+            bind:this={titleInputRef}
             class="text-2xl font-bold bg-transparent border-b-2 border-primary-500 outline-none w-full"
             bind:value={titleDraft}
             onblur={saveTitle}
             onkeydown={handleTitleKeydown}
-            autofocus
           />
         {:else}
-          <h1
-            class="text-2xl font-bold cursor-pointer hover:text-primary-500 transition-colors"
-            onclick={startEditingTitle}
-            title="Click to edit title"
-          >{t.title}</h1>
+          <h1 class="text-2xl font-bold">
+            <button
+              type="button"
+              class="cursor-pointer hover:text-primary-500 transition-colors"
+              onclick={startEditingTitle}
+              title="Click to edit title"
+            >{t.title}</button>
+          </h1>
         {/if}
         <div class="flex items-center gap-2">
           <select

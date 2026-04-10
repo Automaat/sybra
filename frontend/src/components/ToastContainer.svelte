@@ -38,25 +38,28 @@
 
 <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-80">
   {#each visible as toast (toast.id)}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
     <div
-      class="rounded-lg border px-4 py-3 shadow-lg text-left w-full cursor-pointer {levelClass(toast.level)}"
-      onclick={() => {
-        if (toast.taskId) onviewtask?.(toast.taskId)
-        dismiss(toast.id)
-      }}
+      class="rounded-lg border shadow-lg w-full {levelClass(toast.level)}"
       role="alert"
       transition:fly={{ x: 100, duration: 200 }}
       use:autoDismiss={toast.id}
     >
       <div class="flex justify-between items-start">
-        <div>
+        <button
+          type="button"
+          class="flex-1 px-4 py-3 text-left cursor-pointer"
+          onclick={() => {
+            if (toast.taskId) onviewtask?.(toast.taskId)
+            dismiss(toast.id)
+          }}
+        >
           <div class="font-medium text-sm">{toast.title}</div>
           <div class="text-xs opacity-75 mt-0.5">{toast.message}</div>
-        </div>
+        </button>
         <button
-          class="ml-2 opacity-50 hover:opacity-100 text-xs"
-          onclick={(e: MouseEvent) => { e.stopPropagation(); dismiss(toast.id) }}
+          type="button"
+          class="px-3 py-3 opacity-50 hover:opacity-100 text-xs"
+          onclick={() => dismiss(toast.id)}
           aria-label="Dismiss"
         >
           ✕
