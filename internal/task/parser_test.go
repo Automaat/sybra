@@ -387,6 +387,42 @@ func TestMarshalRoundTripAgentRunsIndentedResult(t *testing.T) {
 	}
 }
 
+func TestMarshalRoundTripAgentRunsLeadingBlankLines(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Second)
+	original := Task{
+		ID:        "blank1",
+		Title:     "Leading blank lines roundtrip",
+		Status:    StatusInReview,
+		AgentMode: "headless",
+		AgentRuns: []AgentRun{
+			{
+				AgentID:   "a1",
+				Mode:      "headless",
+				State:     "stopped",
+				StartedAt: now,
+				Result:    "\n\nThe PR URL is invalid.\n\nPlease provide a valid URL:\n```\nhttps://example.com\n```",
+			},
+		},
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse round-trip failed (leading blank lines triggered |N- bug): %v", err)
+	}
+	if len(parsed.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(parsed.AgentRuns))
+	}
+	if !strings.Contains(parsed.AgentRuns[0].Result, "The PR URL is invalid.") {
+		t.Errorf("AgentRuns[0].Result = %q, missing expected content", parsed.AgentRuns[0].Result)
+	}
+}
+
 func TestMarshalUpdatesTimestamp(t *testing.T) {
 	t.Parallel()
 	before := time.Now().UTC().Add(-time.Second)
