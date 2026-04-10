@@ -166,62 +166,92 @@ func (d *Definition) Validate() error {
 //     while the constant emits "ci_failure" (underscore) — the original
 //     dispatch-mismatch shape.
 func (d *Definition) ValidateFields() error {
-	unknown := map[string]bool{}
-	badValues := map[string][]string{}
+	acc := fieldValidationAcc{
+		unknown:      map[string]bool{},
+		badValues:    map[string][]string{},
+		badOperators: map[string][]string{},
+	}
 	for i := range d.Trigger.Conditions {
-		collectUnknownCondition(&d.Trigger.Conditions[i], unknown, badValues)
+		collectUnknownCondition(&d.Trigger.Conditions[i], &acc)
 	}
 	for i := range d.Steps {
-		collectUnknownStepFields(&d.Steps[i], unknown, badValues)
+		collectUnknownStepFields(&d.Steps[i], &acc)
 	}
-	if len(unknown) == 0 && len(badValues) == 0 {
+	if len(acc.unknown) == 0 && len(acc.badValues) == 0 && len(acc.badOperators) == 0 {
 		return nil
 	}
 	var parts []string
-	if len(unknown) > 0 {
-		names := make([]string, 0, len(unknown))
-		for k := range unknown {
+	if len(acc.unknown) > 0 {
+		names := make([]string, 0, len(acc.unknown))
+		for k := range acc.unknown {
 			names = append(names, k)
 		}
 		sort.Strings(names)
 		parts = append(parts, "unknown field(s): "+strings.Join(names, ", "))
 	}
-	if len(badValues) > 0 {
-		fields := make([]string, 0, len(badValues))
-		for k := range badValues {
+	if len(acc.badValues) > 0 {
+		fields := make([]string, 0, len(acc.badValues))
+		for k := range acc.badValues {
 			fields = append(fields, k)
 		}
 		sort.Strings(fields)
 		for _, f := range fields {
-			vals := badValues[f]
+			vals := acc.badValues[f]
 			sort.Strings(vals)
 			parts = append(parts, fmt.Sprintf("invalid %s value(s): %s", f, strings.Join(vals, ",")))
+		}
+	}
+	if len(acc.badOperators) > 0 {
+		fields := make([]string, 0, len(acc.badOperators))
+		for k := range acc.badOperators {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+		for _, f := range fields {
+			ops := acc.badOperators[f]
+			sort.Strings(ops)
+			parts = append(parts, fmt.Sprintf(
+				"operator %s not allowed on enum field %s (use equals/in)",
+				strings.Join(ops, ","), f))
 		}
 	}
 	return fmt.Errorf("workflow %q: %s", d.ID, strings.Join(parts, "; "))
 }
 
-func collectUnknownCondition(c *Condition, unknown map[string]bool, badValues map[string][]string) {
+// fieldValidationAcc accumulates ValidateFields results while walking the
+// trigger and step tree. Grouped to keep the recursive collectors' signatures
+// from growing a new parameter every time a new class of error gets added.
+type fieldValidationAcc struct {
+	unknown      map[string]bool
+	badValues    map[string][]string
+	badOperators map[string][]string
+}
+
+func collectUnknownCondition(c *Condition, acc *fieldValidationAcc) {
 	if !isKnownField(c.Field) {
-		unknown[c.Field] = true
+		acc.unknown[c.Field] = true
+		return
+	}
+	if checkEnumOperator(c.Field, c.Operator) {
+		acc.badOperators[c.Field] = append(acc.badOperators[c.Field], c.Operator)
 		return
 	}
 	if bad := checkEnumValue(c.Field, c.Operator, c.Value); len(bad) > 0 {
-		badValues[c.Field] = append(badValues[c.Field], bad...)
+		acc.badValues[c.Field] = append(acc.badValues[c.Field], bad...)
 	}
 }
 
-func collectUnknownStepFields(s *Step, unknown map[string]bool, badValues map[string][]string) {
+func collectUnknownStepFields(s *Step, acc *fieldValidationAcc) {
 	if s.Config.Check != nil {
-		collectUnknownCondition(s.Config.Check, unknown, badValues)
+		collectUnknownCondition(s.Config.Check, acc)
 	}
 	for i := range s.Next {
 		if s.Next[i].When != nil {
-			collectUnknownCondition(s.Next[i].When, unknown, badValues)
+			collectUnknownCondition(s.Next[i].When, acc)
 		}
 	}
 	for i := range s.Parallel {
-		collectUnknownStepFields(&s.Parallel[i], unknown, badValues)
+		collectUnknownStepFields(&s.Parallel[i], acc)
 	}
 }
 

@@ -233,21 +233,60 @@ func TestValidateFields_InOperatorChecksEachCSVEntry(t *testing.T) {
 }
 
 // TestValidateFields_ContainsOperatorSkipsEnumCheck ensures substring-style
-// operators (`contains`/`not_contains`) — which are used for tag matching
-// — don't trip enum validation even though the field is a known enum key.
+// operators (`contains`/`not_contains`) on free-form list fields like
+// task.tags still pass validation — they have no enum set registered.
 func TestValidateFields_ContainsOperatorSkipsEnumCheck(t *testing.T) {
 	d := Definition{
 		ID: "contains-skip",
 		Trigger: Trigger{
 			Conditions: []Condition{
-				// Hypothetical contains on a status-ish field: substring
-				// semantics, not equality, so enum set doesn't apply.
 				{Field: "task.tags", Operator: "contains", Value: "review"},
 			},
 		},
 	}
 	if err := d.ValidateFields(); err != nil {
 		t.Errorf("contains on free-form field should pass: %v", err)
+	}
+}
+
+// TestValidateFields_RejectsContainsOnEnumField locks the second half of
+// the pr-fix drift regression: `operator: contains` on a scalar enum field
+// like pr.issue_kind was evaluated as substring matching, and a csv-style
+// value like "conflict,ci_failure" silently never matched the actual runtime
+// value "ci_failure". ValidateFields must reject the operator so the
+// misconfiguration fails loudly at save time instead.
+func TestValidateFields_RejectsContainsOnEnumField(t *testing.T) {
+	d := Definition{
+		ID: "contains-on-enum",
+		Trigger: Trigger{
+			Conditions: []Condition{
+				{Field: "pr.issue_kind", Operator: "contains", Value: "conflict,ci_failure"},
+			},
+		},
+	}
+	err := d.ValidateFields()
+	if err == nil {
+		t.Fatal("expected error for contains on pr.issue_kind")
+	}
+	if !strings.Contains(err.Error(), "pr.issue_kind") ||
+		!strings.Contains(err.Error(), "contains") {
+		t.Errorf("error should mention field and operator, got: %v", err)
+	}
+}
+
+// TestValidateFields_RejectsNotContainsOnEnumField covers the inverse
+// operator — same semantic issue, same rule.
+func TestValidateFields_RejectsNotContainsOnEnumField(t *testing.T) {
+	d := Definition{
+		ID: "not-contains-on-enum",
+		Trigger: Trigger{
+			Conditions: []Condition{
+				{Field: "task.status", Operator: "not_contains", Value: "done"},
+			},
+		},
+	}
+	if err := d.ValidateFields(); err == nil {
+		t.Fatal("expected error for not_contains on task.status")
 	}
 }
 

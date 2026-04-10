@@ -79,8 +79,8 @@ var FieldAllowedValues = map[string]map[string]bool{
 // checkEnumValue returns the unknown values (if any) for a condition that
 // targets an enum-shaped field. For the csv-style operators (in/not_in)
 // the comparison value is split and each entry checked independently.
-// Operators that don't do equality (contains, not_contains, exists) skip
-// enum validation because their value semantics differ.
+// The `exists` operator skips enum validation — it only tests field
+// presence, so the value is irrelevant.
 func checkEnumValue(field, operator, value string) []string {
 	allowed, ok := FieldAllowedValues[field]
 	if !ok {
@@ -105,6 +105,18 @@ func checkEnumValue(field, operator, value string) []string {
 		return bad
 	}
 	return nil
+}
+
+// checkEnumOperator reports whether the operator is semantically wrong for
+// an enum-shaped field. `contains`/`not_contains` do substring matching,
+// which silently fails on scalar enums (e.g. `contains "conflict,ci_failure"`
+// never matches `"ci_failure"`). Only free-form fields like task.tags — which
+// are joined into a single comma-separated string — should use these.
+func checkEnumOperator(field, operator string) bool {
+	if _, ok := FieldAllowedValues[field]; !ok {
+		return false
+	}
+	return operator == "contains" || operator == "not_contains"
 }
 
 // EvalCondition evaluates a condition against a context map of field→value.
