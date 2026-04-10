@@ -89,7 +89,7 @@ function makeTask(overrides: Partial<task.Task> = {}): task.Task {
 describe('Dashboard', () => {
   beforeEach(() => {
     agentStore.agents = new Map()
-    agentStore.outputs = new Map()
+    agentStore.outputs.clear()
     agentStore.error = ''
     agentStore.loading = false
     taskStore.tasks = new Map()

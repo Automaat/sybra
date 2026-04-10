@@ -42,7 +42,7 @@ describe('AgentStore', () => {
     vi.clearAllMocks()
     // Reset store state
     agentStore.agents = new Map()
-    agentStore.outputs = new Map()
+    agentStore.outputs.clear()
     agentStore.error = ''
     agentStore.loading = false
     agentStore.stopPolling()

@@ -48,7 +48,7 @@ describe('TerminalView', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     agentStore.agents = new Map()
-    agentStore.outputs = new Map()
+    agentStore.outputs.clear()
     agentStore.error = ''
     agentStore.loading = false
   })

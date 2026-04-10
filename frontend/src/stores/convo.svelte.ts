@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity'
 import {
   GetConvoOutput,
   SendMessage,
@@ -14,28 +15,19 @@ export interface ApprovalRequest {
 }
 
 class ConvoStore {
-  conversations = $state<Map<string, agent.ConvoEvent[]>>(new Map())
-  pendingApprovals = $state<Map<string, ApprovalRequest>>(new Map())
+  conversations = new SvelteMap<string, agent.ConvoEvent[]>()
+  pendingApprovals = new SvelteMap<string, ApprovalRequest>()
 
   async getOutput(agentId: string): Promise<agent.ConvoEvent[]> {
     const events = (await GetConvoOutput(agentId)) ?? []
-    this.conversations = new Map(this.conversations).set(agentId, events)
+    this.conversations.set(agentId, events)
     return events
   }
 
   appendEvent(agentId: string, event: agent.ConvoEvent): void {
-    let arr = this.conversations.get(agentId)
-    if (!arr) {
-      arr = []
-      this.conversations.set(agentId, arr)
-    }
-    arr.push(event)
-    // Trigger Svelte reactivity with a version bump instead of full copy.
-    this.eventVersion++
+    const existing = this.conversations.get(agentId) ?? []
+    this.conversations.set(agentId, [...existing, event])
   }
-
-  // Bump counter to trigger Svelte reactivity without copying the Map.
-  eventVersion = $state(0)
 
   async sendMessage(agentId: string, text: string): Promise<void> {
     await SendMessage(agentId, text)
@@ -43,9 +35,7 @@ class ConvoStore {
 
   async respondApproval(toolUseId: string, approved: boolean): Promise<void> {
     await RespondApproval(toolUseId, approved)
-    const next = new Map(this.pendingApprovals)
-    next.delete(toolUseId)
-    this.pendingApprovals = next
+    this.pendingApprovals.delete(toolUseId)
   }
 
   subscribe(agentId: string): () => void {
@@ -59,7 +49,7 @@ class ConvoStore {
     const unsubApproval = EventsOn(
       agentApproval(agentId),
       (req: ApprovalRequest) => {
-        this.pendingApprovals = new Map(this.pendingApprovals).set(req.toolUseId, req)
+        this.pendingApprovals.set(req.toolUseId, req)
       },
     )
 
