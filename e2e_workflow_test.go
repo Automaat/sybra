@@ -1435,6 +1435,100 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	}
 }
 
+// TestE2E_StaleAgentCompletionAtWaitHuman reproduces the production cascade
+// that left task 5a5ad276 stuck: a ResumeStalled race spawned a duplicate
+// plan agent; the first completion advanced plan → review_plan (wait_human);
+// the delayed second completion crashed resolveNext against an unset
+// human_action var and set state=ExecFailed, permanently sealing the human
+// review gate. The user's "reject" click then failed with "not waiting for
+// human action".
+//
+// This test drives the real workflow to the review_plan wait_human step and
+// fires a stray HandleAgentComplete at that gate — the defensive wait_human
+// guard must drop it without corrupting the workflow, and a subsequent
+// reject (which is what the user actually wanted to do) must succeed.
+func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
+	// Drive test-simple: triage flips to planning → plan → review_plan (waits).
+	// Third scenario covers the re-plan after reject loops back.
+	env := setupE2EMulti(t, []string{"triage_to_planning", "success", "success"})
+
+	created, err := env.tasks.Create("stale at wait_human", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow reaches review_plan wait_human", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tkBefore, _ := env.tasks.Get(created.ID)
+	historyBefore := len(tkBefore.Workflow.StepHistory)
+
+	// Stray completion lands on the wait_human step. In the pre-fix engine
+	// this would drive resolveNext → ExecFailed; post-fix it's a silent
+	// no-op because output.AgentID != "" and human_action is unset.
+	env.engine.HandleAgentComplete(created.ID, "stray-duplicate-plan-agent", "late plan result", "stopped")
+	time.Sleep(50 * time.Millisecond)
+
+	tkAfter, _ := env.tasks.Get(created.ID)
+	if tkAfter.Workflow.State != workflow.ExecWaiting {
+		t.Errorf("state = %q, want ExecWaiting — stray completion must not fail wait_human",
+			tkAfter.Workflow.State)
+	}
+	if tkAfter.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("current_step = %q, want review_plan", tkAfter.Workflow.CurrentStep)
+	}
+	if got := len(tkAfter.Workflow.StepHistory); got != historyBefore {
+		t.Errorf("step_history len = %d, want %d — stray completion must not append",
+			got, historyBefore)
+	}
+
+	// The user's reject click — the symptom that surfaced the bug — must
+	// now work. Pre-fix, HandleHumanAction would reject with "task X is
+	// not waiting for human action" because State had been flipped to
+	// ExecFailed by the stray completion's transition miss.
+	if err := env.engine.HandleHumanAction(created.ID, "reject",
+		map[string]string{"feedback": "needs more detail"}); err != nil {
+		t.Fatalf("HandleHumanAction reject after stray completion: %v", err)
+	}
+
+	// Reject must have recorded the wait_human step with action=reject and
+	// advanced the workflow past the gate. Either the engine is already
+	// spawning the next plan agent (CurrentStep=plan) or it came back
+	// around to review_plan after the new plan agent ran — both outcomes
+	// are acceptable; the invariant is that the workflow is not stuck in
+	// ExecFailed at review_plan.
+	tkPostReject, _ := env.tasks.Get(created.ID)
+	if tkPostReject.Workflow.State == workflow.ExecFailed {
+		t.Fatalf("workflow state after reject = ExecFailed — the bug reproduced")
+	}
+	if got := tkPostReject.Workflow.Variables["human_action"]; got != "reject" {
+		t.Errorf("human_action var = %q, want reject", got)
+	}
+	// review_plan must appear in step history with the reject as output —
+	// this is the proof that AdvanceStep ran to completion for the human
+	// action rather than being short-circuited by the defensive guard.
+	var reviewRec *workflow.StepRecord
+	for i := range tkPostReject.Workflow.StepHistory {
+		if tkPostReject.Workflow.StepHistory[i].StepID == "review_plan" {
+			reviewRec = &tkPostReject.Workflow.StepHistory[i]
+		}
+	}
+	if reviewRec == nil {
+		t.Fatal("review_plan missing from step history after reject")
+	}
+}
+
 // TestE2E_RestartStaleSkipsTerminalWorkflow verifies that restartStaleInProgress
 // does NOT respawn an agent on a task whose workflow is already terminal
 // (completed or failed). In prod, the absence of this guard produced a 5-min

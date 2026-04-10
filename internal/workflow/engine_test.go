@@ -921,10 +921,26 @@ func TestAdvanceStep_UnknownStepID(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// An advance for a step that does not match the workflow's current step
+	// is a stale completion (e.g. a duplicate agent from a ResumeStalled race,
+	// or a stray callback after the workflow advanced). The engine must
+	// silently no-op instead of crashing or mutating step history — that
+	// guard is what stops a second plan agent from driving review_plan into
+	// ExecFailed when its delayed completion arrives after the human gate.
 	agents.SimulateComplete("t1")
-	err := engine.AdvanceStep("t1", StepOutput{StepID: "nonexistent-step", Status: "completed"})
-	if err == nil {
-		t.Fatal("expected error for unknown step ID")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "nonexistent-step", Status: "completed"}); err != nil {
+		t.Fatalf("stale stepID should be a no-op, got err: %v", err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "triage" {
+		t.Errorf("CurrentStep = %q, want unchanged triage", ti.Workflow.CurrentStep)
+	}
+	if got := len(ti.Workflow.StepHistory); got != 0 {
+		t.Errorf("step history len = %d, want 0 — stale advance must not append", got)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("state = %q, want ExecWaiting (unchanged)", ti.Workflow.State)
 	}
 }
 
@@ -1813,6 +1829,250 @@ func TestExecEnsurePRClosesIssue_FetchErrorIsSoftFail(t *testing.T) {
 	after, _ := tasks.GetTask("t1")
 	if after.Status != "in-review" {
 		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
+	}
+}
+
+// TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman reproduces the
+// production bug that left task 5a5ad276 stuck: a ResumeStalled race spawned
+// two plan agents; the first completed and advanced plan → review_plan
+// (wait_human); the second completed seconds later and the engine credited
+// its completion to the current step (review_plan), ran resolveNext with no
+// human_action var set, failed to match any transition, and set state to
+// ExecFailed. HandleHumanAction then refused the user's reject click with
+// "task X is not waiting for human action".
+//
+// The fix: HandleAgentComplete uses the step the agent was actually spawned
+// for (tracked in engine.agentSteps), and AdvanceStep drops completions whose
+// StepID doesn't match the workflow's current step.
+func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "interactive"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Triage runs → agent flips status to planning → advance into plan step.
+	triageAgent := agents.LastID()
+	tasks.SetStatus("t1", "planning")
+	agents.SimulateComplete("t1")
+	engine.HandleAgentComplete("t1", triageAgent, "triaged", "stopped")
+
+	planAgent1 := agents.LastID()
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "plan" {
+		t.Fatalf("precondition: current_step = %q, want plan", ti.Workflow.CurrentStep)
+	}
+
+	// Inject a duplicate plan agent as if a ResumeStalled ticker fired
+	// during the interactive-spawn window and raced the first agent. The
+	// engine.agentSteps mapping records what execRunAgent would have set.
+	agents.mu.Lock()
+	agents.counter++
+	planAgent2 := fmt.Sprintf("agent-%d", agents.counter)
+	agents.calls = append(agents.calls, startCall{TaskID: "t1", Role: "plan", Mode: "interactive"})
+	agents.running["t1"] = planAgent2
+	agents.roles["t1/plan"] = planAgent2
+	agents.mu.Unlock()
+	engine.mu.Lock()
+	engine.agentSteps[planAgent2] = "plan"
+	engine.mu.Unlock()
+
+	// Agent 1 completes first → workflow advances to review_plan/wait_human.
+	agents.SimulateComplete("t1")
+	engine.HandleAgentComplete("t1", planAgent1, "plan ready", "stopped")
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("after first plan completion: current_step = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Fatalf("after first plan completion: state = %q, want ExecWaiting", ti.Workflow.State)
+	}
+
+	// Agent 2 (the duplicate) finishes seconds later. Old behavior would
+	// drive review_plan into ExecFailed. New behavior: dropped as stale.
+	engine.HandleAgentComplete("t1", planAgent2, "plan ready", "stopped")
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("after stale completion: state = %q, want ExecWaiting", ti.Workflow.State)
+	}
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("after stale completion: current_step = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+
+	// The human's rejection must now succeed — this is the end-to-end
+	// symptom the user reported ("task is not waiting for human action").
+	if err := engine.HandleHumanAction("t1", "reject", map[string]string{"feedback": "try again"}); err != nil {
+		t.Fatalf("HandleHumanAction reject after stale duplicate: %v", err)
+	}
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "plan" {
+		t.Errorf("after reject: current_step = %q, want plan (loop back)", ti.Workflow.CurrentStep)
+	}
+}
+
+// TestHandleAgentComplete_WaitHumanWithoutActionIsNoop is the defense-in-depth
+// guard for the same bug. If a stray agent completion slips past the stale-
+// step check and lands on a wait_human step without a human_action var set
+// (e.g. an untracked legacy agent where HandleAgentComplete falls back to
+// CurrentStep), AdvanceStep must still refuse to run resolveNext. Otherwise
+// the workflow would fail on an unmatched transition and permanently seal
+// the human review gate.
+func TestHandleAgentComplete_WaitHumanWithoutActionIsNoop(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Put a task directly at the wait_human step with no agent tracked.
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "plan-review",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// Agent callback arrives for the current (wait_human) step with no
+	// human_action set. Must be a no-op.
+	engine.HandleAgentComplete("t1", "untracked-legacy-agent", "unexpected result", "stopped")
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("state = %q, want ExecWaiting — stray completion on wait_human must not fail the workflow",
+			ti.Workflow.State)
+	}
+	if ti.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("current_step = %q, want review_plan", ti.Workflow.CurrentStep)
+	}
+	if got := len(ti.Workflow.StepHistory); got != 0 {
+		t.Errorf("step_history len = %d, want 0 — stray wait_human completion must not append", got)
+	}
+
+	// Rejection still works after the defense kicks in.
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction approve: %v", err)
+	}
+}
+
+// TestResumeStalled_SkipsInflightDispatch exercises the ResumeStalled → race
+// that actually produced the duplicate spawn in prod. The ResumeStalled
+// ticker fires during the 1-3s window while an interactive plan step is
+// still preparing its worktree and starting the claude process — at that
+// point no agent is registered yet so HasRunningAgent returns false.
+// Without the inflight guard the ticker would call executeSteps → execRunAgent
+// and spawn a second agent for the same step. With the guard it must skip.
+func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Task sitting at an interactive run_agent step with no running agent —
+	// the shape ResumeStalled normally resumes.
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "planning",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// Simulate the original dispatch being mid-flight inside AdvanceStep —
+	// inflight[t1] is set, no agent registered yet (worktree still being
+	// created in the real system, fake-claude hasn't started).
+	engine.mu.Lock()
+	engine.inflight["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	before := agents.CallCount()
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before {
+		t.Errorf("ResumeStalled spawned a duplicate agent: calls %d → %d (expected no change while inflight)",
+			before, got)
+	}
+
+	// Once the original dispatch finishes and clears inflight, a subsequent
+	// tick is allowed to resume — that's the real recovery path.
+	engine.mu.Lock()
+	delete(engine.inflight, "t1")
+	engine.mu.Unlock()
+
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before+1 {
+		t.Errorf("ResumeStalled after inflight cleared: calls %d → %d (want +1)", before, got)
+	}
+}
+
+// TestExecRunAgent_TracksSpawnedStep verifies that execRunAgent populates
+// the engine.agentSteps map so HandleAgentComplete can route completions
+// back to the right step. Without this mapping, a delayed completion from
+// a duplicate agent would be credited to whatever CurrentStep happens to
+// be at the moment — the exact bug that corrupted review_plan.
+func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
+
+	step := &Step{
+		ID:   "plan",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "plan",
+			Mode:   "interactive",
+			Prompt: "p",
+		},
+	}
+	wfExec := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "plan",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	engine.mu.Lock()
+	gotStep, tracked := engine.agentSteps[agentID]
+	engine.mu.Unlock()
+	if !tracked {
+		t.Fatalf("agentSteps missing entry for agent %s", agentID)
+	}
+	if gotStep != "plan" {
+		t.Errorf("agentSteps[%s] = %q, want plan", agentID, gotStep)
+	}
+
+	// Completing the agent must clear its mapping so the map doesn't grow
+	// unbounded across long-lived sessions.
+	tasks.SetStatus("t1", "plan-review")
+	agents.SimulateComplete("t1")
+	engine.HandleAgentComplete("t1", agentID, "done", "stopped")
+
+	engine.mu.Lock()
+	_, stillThere := engine.agentSteps[agentID]
+	engine.mu.Unlock()
+	if stillThere {
+		t.Errorf("agentSteps still has %s after completion — mapping leaked", agentID)
 	}
 }
 
