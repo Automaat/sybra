@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity'
 import {
   StopAgent,
   ListAgents,
@@ -9,7 +10,7 @@ import { agent } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
 class AgentStore extends EntityStore<agent.Agent> {
-  outputs = $state<Map<string, agent.StreamEvent[]>>(new Map())
+  outputs = new SvelteMap<string, agent.StreamEvent[]>()
 
   constructor() {
     super(

@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity'
 import {
   ListReviewComments,
   AddReviewComment,
@@ -7,7 +8,7 @@ import {
 import { task } from '../../wailsjs/go/models.js'
 
 class CommentStore {
-  private byTask = $state<Map<string, task.ReviewComment[]>>(new Map())
+  private byTask = new SvelteMap<string, task.ReviewComment[]>()
 
   get(taskID: string): task.ReviewComment[] {
     return this.byTask.get(taskID) ?? []
