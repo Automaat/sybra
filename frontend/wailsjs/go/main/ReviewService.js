@@ -26,6 +26,10 @@ export function ResolveReviewComment(arg1, arg2) {
   return window['go']['main']['ReviewService']['ResolveReviewComment'](arg1, arg2);
 }
 
+export function StartFixReview(arg1) {
+  return window['go']['main']['ReviewService']['StartFixReview'](arg1);
+}
+
 export function StartReview(arg1) {
   return window['go']['main']['ReviewService']['StartReview'](arg1);
 }

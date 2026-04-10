@@ -15,4 +15,6 @@ export function MarkPRReady(arg1:string,arg2:number):Promise<void>;
 
 export function ResolveReviewComment(arg1:string,arg2:string):Promise<void>;
 
+export function StartFixReview(arg1:string):Promise<void>;
+
 export function StartReview(arg1:string):Promise<void>;

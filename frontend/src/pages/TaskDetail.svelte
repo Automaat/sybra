@@ -4,7 +4,7 @@
   import { agentState } from '../lib/events.js'
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
   import { renderMarkdown } from '../lib/markdown.js'
-  import { StartReview } from '../../wailsjs/go/main/ReviewService.js'
+  import { StartFixReview, StartReview } from '../../wailsjs/go/main/ReviewService.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
@@ -210,11 +210,16 @@
   const linkedPRs = $derived(t ? reviewStore.byTask(t) : [])
 
   let reviewLoading = $state(false)
+  let fixReviewLoading = $state(false)
 
   const isReviewTask = $derived(t?.tags?.includes('review') ?? false)
 
   const reviewingAgent = $derived(
     (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('review:') && a.state === 'running')
+  )
+
+  const fixingReviewAgent = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('fix-review:') && a.state === 'running')
   )
 
   async function runReview() {
@@ -228,6 +233,20 @@
       error = String(e)
     } finally {
       reviewLoading = false
+    }
+  }
+
+  async function runFixReview() {
+    if (!t) return
+    fixReviewLoading = true
+    error = ''
+    try {
+      await StartFixReview(taskId)
+      await loadTask()
+    } catch (e) {
+      error = String(e)
+    } finally {
+      fixReviewLoading = false
     }
   }
 
@@ -354,6 +373,23 @@
             >
               {reviewLoading ? 'Starting...' : t.reviewed ? 'Re-run Review' : 'Run Review'}
             </button>
+          {/if}
+          {#if t.status === 'in-review' && t.prNumber && t.projectId && !isReviewTask}
+            <button
+              type="button"
+              class="rounded bg-orange-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+              onclick={runFixReview}
+              disabled={fixReviewLoading || fixingReviewAgent}
+              title="Run fix-review skill to apply unresolved PR review comments"
+            >
+              {fixReviewLoading ? 'Starting...' : 'Fix Review Comments'}
+            </button>
+          {/if}
+          {#if fixingReviewAgent}
+            <span class="inline-flex items-center gap-1 rounded-full bg-orange-200 px-2 py-0.5 text-xs font-medium text-orange-800 dark:bg-orange-700 dark:text-orange-200">
+              <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-500"></span>
+              Fixing review
+            </span>
           {/if}
           <button
             type="button"
