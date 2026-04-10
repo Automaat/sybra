@@ -55,3 +55,30 @@ Single task: JSON object with `id`, `title`, `status`, `agentMode`, `tags`, `bod
 List: JSON array of task objects. Empty list returns `[]`.
 Delete: `{"deleted": "<id>"}`.
 Errors: stderr `{"error": "message"}` with non-zero exit.
+
+<example>
+Input: User says "show me all open backend tasks".
+
+Command: `synapse-cli --json list --status todo --tag backend`
+
+Output: JSON array of tasks matching both filters.
+</example>
+
+<example>
+Input: User says "create a task to fix the login bug, tag as auth, headless mode".
+
+Command:
+```bash
+synapse-cli --json create --title "fix login bug" --mode headless --tags "auth,bug"
+```
+
+Output: `{"id": "task-xyz", "title": "fix login bug", "status": "new", ...}`
+</example>
+
+<example>
+Input: User says "mark task-abc as in progress".
+
+Command: `synapse-cli --json update task-abc --status in-progress`
+
+Output: Updated task JSON.
+</example>
