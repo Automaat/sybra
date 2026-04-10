@@ -16,13 +16,15 @@ import (
 // TodoistHandler syncs tasks between Todoist and Synapse.
 type TodoistHandler struct {
 	DomainHandler
-	tasks  *task.Manager
-	client *todoist.Client
-	cfg    config.TodoistConfig
+	tasks   *task.Manager
+	taskSvc *TaskService
+	client  *todoist.Client
+	cfg     config.TodoistConfig
 }
 
 func newTodoistHandler(
 	tasks *task.Manager,
+	taskSvc *TaskService,
 	client *todoist.Client,
 	al *audit.Logger,
 	logger *slog.Logger,
@@ -32,6 +34,7 @@ func newTodoistHandler(
 	return &TodoistHandler{
 		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
 		tasks:         tasks,
+		taskSvc:       taskSvc,
 		client:        client,
 		cfg:           cfg,
 	}
@@ -91,21 +94,14 @@ func (h *TodoistHandler) importNewTasks() (int, error) {
 			body += "Source: " + rt.URL
 		}
 
-		t, createErr := h.tasks.Create(rt.Content, body, "headless")
+		t, createErr := h.taskSvc.CreateTask(rt.Content, body, "headless")
 		if createErr != nil {
 			h.logger.Error("todoist.create-task", "todoist_id", rt.ID, "err", createErr)
 			continue
 		}
 
 		todoID := rt.ID
-		u := task.Update{TodoistID: &todoID}
-		tags := mapPriorityTag(rt.Priority)
-		tags = append(tags, rt.Labels...)
-		if len(tags) > 0 {
-			u.Tags = &tags
-		}
-
-		if _, updateErr := h.tasks.Update(t.ID, u); updateErr != nil {
+		if _, updateErr := h.tasks.Update(t.ID, task.Update{TodoistID: &todoID}); updateErr != nil {
 			h.logger.Error("todoist.update-task", "task_id", t.ID, "err", updateErr)
 		}
 
@@ -159,26 +155,12 @@ func (h *TodoistHandler) buildSeenIndex() (map[string]bool, error) {
 	return seen, nil
 }
 
-// mapPriorityTag converts Todoist priority (1=normal, 4=urgent) to tag(s).
-func mapPriorityTag(priority int) []string {
-	switch priority {
-	case 4:
-		return []string{"p1"}
-	case 3:
-		return []string{"p2"}
-	case 2:
-		return []string{"p3"}
-	default:
-		return nil
-	}
-}
-
 func (a *App) initTodoist(emit func(string, any)) {
 	if !a.cfg.Todoist.Enabled || a.cfg.Todoist.APIToken == "" {
 		return
 	}
 	tc := todoist.NewClient(a.cfg.Todoist.APIToken)
-	a.todoistHandler = newTodoistHandler(a.tasks, tc, a.audit, a.logger, emit, a.cfg.Todoist)
+	a.todoistHandler = newTodoistHandler(a.tasks, a.taskSvc, tc, a.audit, a.logger, emit, a.cfg.Todoist)
 	a.logger.Info("todoist.enabled", "project_id", a.cfg.Todoist.ProjectID)
 }
 
