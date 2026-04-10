@@ -229,7 +229,7 @@ steps:
 
         ## Agent Result
 
-        {{.Prev.Output}}
+        {{recoveredorprev .Workflow .Prev}}
       allowed_tools:
         - Bash
     next:

@@ -597,12 +597,26 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return err
 		}
 
+		// Snapshot the execution for the template context so that clearing
+		// the Recovered flag below doesn't affect what the template sees.
+		execSnap := *wfExec
 		ctx := TemplateContext{
-			Task:    t,
-			Step:    *step,
-			Prev:    wfExec.LastRecord(),
-			Vars:    wfExec.Variables,
-			Project: nil,
+			Task:     t,
+			Step:     *step,
+			Prev:     wfExec.LastRecord(),
+			Vars:     wfExec.Variables,
+			Project:  nil,
+			Workflow: &execSnap,
+		}
+
+		// Consume the recovery flag: it applies only to the step being
+		// dispatched here. Clear and persist before spawning the agent so
+		// subsequent HandleAgentComplete reloads don't see a stale flag.
+		if wfExec.Recovered {
+			wfExec.Recovered = false
+			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+				return err
+			}
 		}
 
 		// Async steps: execute and return. Callback (HandleAgentComplete/HandleHumanAction)
@@ -678,6 +692,9 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	fields := taskFields(t)
 	for k, v := range wfExec.Variables {
 		fields["vars."+k] = v
+	}
+	if wfExec.Recovered {
+		fields["vars.recovered"] = "true"
 	}
 
 	nextID, tErr := ResolveTransition(current.Next, fields)

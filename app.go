@@ -581,14 +581,18 @@ func (a *App) recoverStaleInteractive(t *task.Task) {
 			"task_id", t.ID, "state", string(t.Workflow.State))
 		return
 	}
-	// Feed a recovery marker as the result instead of the stored lr.Result —
-	// templates that embed {{.Prev.Output}} (e.g. the evaluate step) would
-	// otherwise see stale content. Downstream agents should re-inspect the
-	// task state via synapse-cli rather than trust the previous output.
-	const recoveryResult = "(recovered stale interactive session — no fresh agent result; inspect task state directly)"
+	// Mark the execution as recovered so the next step's template context
+	// knows not to trust .Prev.Output (use recoveredOrPrev instead). Persist
+	// before driving HandleAgentComplete so the engine reloads the flag.
+	t.Workflow.Recovered = true
+	wf := t.Workflow
+	if _, err := a.tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+		a.logger.Error("recover-stale.set-recovered", "task_id", t.ID, "err", err)
+		return
+	}
 	a.logger.Info("recover-stale.advance",
 		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
-	a.workflowEngine.HandleAgentComplete(t.ID, lr.AgentID, recoveryResult, "stopped")
+	a.workflowEngine.HandleAgentComplete(t.ID, lr.AgentID, "", "stopped")
 }
 
 func lastAgentRun(t *task.Task) *task.AgentRun {
