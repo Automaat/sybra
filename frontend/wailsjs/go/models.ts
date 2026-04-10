@@ -1127,12 +1127,13 @@ export namespace workflow {
 	    type: string;
 	    config: StepConfig;
 	    next: Transition[];
+	    parallel: Step[];
 	    position?: Position;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Step(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1140,6 +1141,7 @@ export namespace workflow {
 	        this.type = source["type"];
 	        this.config = this.convertValues(source["config"], StepConfig);
 	        this.next = this.convertValues(source["next"], Transition);
+	        this.parallel = this.convertValues(source["parallel"], Step);
 	        this.position = this.convertValues(source["position"], Position);
 	    }
 	

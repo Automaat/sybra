@@ -71,10 +71,10 @@ const (
 
 // Step is one node in the workflow graph.
 type Step struct {
-	ID     string       `yaml:"id" json:"id"`
-	Name   string       `yaml:"name" json:"name"`
-	Type   StepType     `yaml:"type" json:"type"`
-	Config StepConfig   `yaml:"config" json:"config"`
+	ID       string       `yaml:"id" json:"id"`
+	Name     string       `yaml:"name" json:"name"`
+	Type     StepType     `yaml:"type" json:"type"`
+	Config   StepConfig   `yaml:"config" json:"config"`
 	Next     []Transition `yaml:"next,omitempty" json:"next"`
 	Parallel []Step       `yaml:"parallel,omitempty" json:"parallel"`
 
