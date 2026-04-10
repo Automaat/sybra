@@ -249,6 +249,10 @@ type StreamEvent struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
 	Subtype      string  `json:"subtype,omitempty"`
+	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
+	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
+	ErrorType   string `json:"error_type,omitempty"`
+	ErrorStatus int    `json:"error_status,omitempty"`
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool
@@ -266,6 +270,10 @@ type ConvoEvent struct {
 	IsPartial    bool              `json:"isPartial,omitempty"`
 	Timestamp    time.Time         `json:"timestamp"`
 	Raw          json.RawMessage   `json:"raw,omitempty"`
+	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
+	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
+	ErrorType   string `json:"errorType,omitempty"`
+	ErrorStatus int    `json:"errorStatus,omitempty"`
 }
 
 // ToolUseBlock represents a single tool call from the assistant.

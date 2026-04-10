@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
 	return args
 }
 
-func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig) (*exec.Cmd, io.ReadCloser, error) {
+func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig) (*exec.Cmd, io.ReadCloser, *bytes.Buffer, error) {
 	args := m.buildConvoArgs(a, cfg)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	if a.sessionCWD != "" {
@@ -64,7 +65,7 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("stdin pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	a.stdinMu.Lock()
 	a.stdinPipe = stdinPipe
@@ -72,55 +73,51 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	stderrBuf := new(bytes.Buffer)
+	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
-		return nil, nil, fmt.Errorf("start claude: %w", err)
+		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return cmd, stdout, nil
+	return cmd, stdout, stderrBuf, nil
 }
 
 func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig) {
-	cmd, stdout, err := m.startConvoProcess(ctx, a, cfg)
-	if err != nil {
-		m.handleError(a, err)
-		return
-	}
-	a.SetCmd(cmd)
-	m.logger.Info("agent.convo.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
+	var outFile *os.File
+	defer func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	}()
 
-	// Send initial prompt.
-	if cfg.Prompt != "" {
-		if err := m.writeUserMessage(a, cfg.Prompt); err != nil {
-			m.logger.Error("agent.convo.initial-prompt", "id", a.ID, "err", err)
+	for attempt := range len(headlessRetryBackoffs) + 1 {
+		if attempt > 0 {
+			wait := headlessRetryBackoffs[attempt-1]
+			m.logger.Info("agent.convo.retry", "id", a.ID, "attempt", attempt, "backoff", wait)
+			select {
+			case <-ctx.Done():
+				goto done
+			case <-time.After(wait):
+			}
+		}
+
+		retry, fatalErr := m.runConvoAttempt(ctx, a, cfg, &outFile)
+		if fatalErr != nil {
+			m.handleError(a, fatalErr)
+			return
+		}
+		if !retry {
+			break
+		}
+		if attempt == len(headlessRetryBackoffs) {
+			m.logger.Error("agent.convo.retry.exhausted", "id", a.ID, "attempts", len(headlessRetryBackoffs))
 		}
 	}
 
-	outFile, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
-	if fileErr != nil {
-		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
-	}
-	if outFile != nil {
-		a.SetLogPath(outFile.Name())
-		defer func() { _ = outFile.Close() }()
-	}
-
-	var logWriter io.Writer
-	if outFile != nil {
-		logWriter = outFile
-	}
-	m.streamConvoOutput(a, stdout, logWriter, cfg.OneShot)
-
-	waitErr := cmd.Wait()
-	if waitErr != nil {
-		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
-		a.SetExitErr(waitErr)
-	}
-
+done:
 	a.SetState(StateStopped)
 	if a.done != nil {
 		close(a.done)
@@ -130,6 +127,62 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
+}
+
+func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+	cmd, stdout, stderrBuf, startErr := m.startConvoProcess(ctx, a, cfg)
+	if startErr != nil {
+		return false, startErr
+	}
+	a.SetCmd(cmd)
+	m.logger.Info("agent.convo.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
+
+	// Send initial prompt when no session exists yet. On retries with a
+	// session ID, --resume re-establishes the session so re-sending is wrong.
+	if cfg.Prompt != "" && a.GetSessionID() == "" {
+		if err := m.writeUserMessage(a, cfg.Prompt); err != nil {
+			m.logger.Error("agent.convo.initial-prompt", "id", a.ID, "err", err)
+		}
+	}
+
+	// Open log file on first successful start; subsequent retries append.
+	if *outFile == nil {
+		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+		if fileErr != nil {
+			m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
+		}
+		if f != nil {
+			a.SetLogPath(f.Name())
+			*outFile = f
+		}
+	}
+
+	var logWriter io.Writer
+	if *outFile != nil {
+		logWriter = *outFile
+	}
+
+	prevLen := len(a.ConvoOutput())
+	m.streamConvoOutput(a, stdout, logWriter, cfg.OneShot)
+
+	waitErr := cmd.Wait()
+	stderrOut := stderrBuf.String()
+	if stderrOut != "" {
+		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
+	}
+	if waitErr != nil {
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
+		a.SetExitErr(waitErr)
+
+		all := a.ConvoOutput()
+		if prevLen > len(all) {
+			prevLen = len(all)
+		}
+		if shouldRetryConvo(stderrOut, all[prevLen:], m.logger) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer, oneShot bool) {
@@ -265,6 +318,13 @@ func parseConvoEvent(line []byte) (ConvoEvent, error) {
 		}
 		if v, ok := raw["total_output_tokens"].(float64); ok {
 			event.OutputTokens = int(v)
+		}
+		// Parse structured error envelope: {"type":"overloaded_error","status":529,...}
+		if errBlock, ok := raw["error"].(map[string]any); ok {
+			event.ErrorType, _ = errBlock["type"].(string)
+			if status, ok := errBlock["status"].(float64); ok {
+				event.ErrorStatus = int(status)
+			}
 		}
 
 	default:
