@@ -25,6 +25,16 @@ func (s *ReviewService) StartReview(taskID string) error {
 	return s.reviewer.startReviewAgent(t)
 }
 
+// StartFixReview starts a headless fix-review agent that applies unresolved
+// PR review comment fixes for the task's linked PR.
+func (s *ReviewService) StartFixReview(taskID string) error {
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	return s.reviewer.startFixReviewAgent(t)
+}
+
 // ListReviewComments returns all review comments for a task.
 func (s *ReviewService) ListReviewComments(taskID string) ([]task.ReviewComment, error) {
 	return s.tasks.Comments().List(taskID)
