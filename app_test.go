@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -208,7 +209,11 @@ func TestGetTaskNotFound(t *testing.T) {
 	}
 }
 
-func TestStartAgentHeadless(t *testing.T) {
+// TestStartAgentRejectsMissingProject verifies the orchestrator refuses to
+// spawn an agent when the task has no project_id, preventing the agent from
+// mutating Synapse's own working directory (the class of bug that caused
+// branch changes in the main repo).
+func TestStartAgentRejectsMissingProject(t *testing.T) {
 	taskSvc, a := setupTaskService(t)
 
 	created, err := taskSvc.CreateTask("agent task", "", "headless")
@@ -216,12 +221,12 @@ func TestStartAgentHeadless(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ag, err := a.StartAgent(created.ID, "headless", "test prompt")
-	if err != nil {
-		t.Fatal(err)
+	_, err = a.StartAgent(created.ID, "headless", "test prompt")
+	if err == nil {
+		t.Fatal("expected error: task without project_id must be rejected")
 	}
-	if ag.TaskID != created.ID {
-		t.Errorf("TaskID = %q, want %q", ag.TaskID, created.ID)
+	if !strings.Contains(err.Error(), "project_id") {
+		t.Errorf("expected project_id error, got: %v", err)
 	}
 }
 
@@ -233,6 +238,29 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 	}
 }
 
+// runTestAgent bypasses the orchestrator (which requires a project) and spawns
+// an agent directly in a temp dir. Used by lifecycle tests that only care
+// about agent state machinery, not worktree integration.
+func runTestAgent(t *testing.T, a *App, taskID, title string) *agent.Agent {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "synapse-app-agent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID: taskID,
+		Name:   title,
+		Mode:   "headless",
+		Prompt: "test",
+		Dir:    dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ag
+}
+
 func TestStopAgent(t *testing.T) {
 	taskSvc, a := setupTaskService(t)
 	agentSvc := &AgentService{agents: a.agents, tmux: a.tmux, logger: a.logger}
@@ -242,10 +270,7 @@ func TestStopAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ag, err := a.StartAgent(created.ID, "headless", "prompt")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ag := runTestAgent(t, a, created.ID, "stop task")
 
 	if err := agentSvc.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
@@ -283,10 +308,7 @@ func TestGetAgentOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ag, err := a.StartAgent(created.ID, "headless", "prompt")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ag := runTestAgent(t, a, created.ID, "output task")
 
 	events, err := agentSvc.GetAgentOutput(ag.ID)
 	if err != nil {
