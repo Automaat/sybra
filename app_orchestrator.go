@@ -7,8 +7,6 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 )
 
-const orchestratorSession = "synapse-orchestrator"
-
 func (a *App) orchestratorLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -33,7 +31,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 }
 
 func (a *App) maybeStartOrchestrator() {
-	if a.tmux.SessionExists(orchestratorSession) {
+	if a.orchSvc.IsOrchestratorRunning() {
 		return
 	}
 

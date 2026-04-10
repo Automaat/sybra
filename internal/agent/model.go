@@ -254,6 +254,10 @@ type RunConfig struct {
 	// agents sit in StatePaused forever and onComplete never fires, stranding
 	// any workflow that expects the agent to "finish". Ignored in headless mode.
 	OneShot bool
+	// IgnoreConcurrencyLimit lets an agent start even when MaxConcurrent is
+	// saturated. Reserved for system-level long-lived sessions (orchestrator)
+	// that must always be runnable regardless of swarm load.
+	IgnoreConcurrencyLimit bool
 }
 
 type StreamEvent struct {
