@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -210,6 +209,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
+	isCodex := normalizeProvider(a.Provider) == "codex"
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -218,9 +218,23 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		event, err := parseStreamEvent(a.Provider, line)
-		if err != nil {
-			m.logger.Warn("agent.headless.parse", "id", a.ID, "err", err, "line", string(line))
+		var event StreamEvent
+		var parseErr error
+		if isCodex {
+			var ce CodexEvent
+			ce, parseErr = ParseCodexLine(line)
+			if parseErr == nil {
+				event = codexEventToStreamEvent(ce)
+			}
+		} else {
+			var ce ClaudeEvent
+			ce, parseErr = ParseClaudeLine(line)
+			if parseErr == nil {
+				event = claudeEventToStreamEvent(ce)
+			}
+		}
+		if parseErr != nil {
+			m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
 			continue
 		}
 		if event.Type == "" {
@@ -341,209 +355,102 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []strin
 	return
 }
 
-func parseStreamEvent(provider string, line []byte) (StreamEvent, error) {
-	if normalizeProvider(provider) == "codex" {
-		return parseCodexStreamEvent(line)
-	}
-	return parseClaudeStreamEvent(line)
-}
-
-func parseClaudeStreamEvent(line []byte) (StreamEvent, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return StreamEvent{}, fmt.Errorf("unmarshal stream event: %w", err)
-	}
-
-	// ok intentionally discarded: missing/non-string type yields "" which is handled by the default case.
-	eventType, _ := raw["type"].(string)
-	event := StreamEvent{
-		Type:    eventType,
-		Subtype: strVal(raw, "subtype"),
-	}
-
-	switch eventType {
-	case "system":
-		// ok intentionally discarded: zero-value "" is safe when session_id is absent.
-		event.SessionID, _ = raw["session_id"].(string)
-
+// claudeEventToStreamEvent converts a shared ClaudeEvent into a StreamEvent
+// for the headless runner. Tool uses are formatted as "[name] cmd/desc" strings.
+// Tool results are truncated to 500 chars.
+func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	switch e.Type {
 	case "assistant":
-		event.Content = extractMessageContent(raw)
-
+		if e.Message != nil {
+			ev.Content = formatHeadlessAssistant(e.Message)
+		}
 	case "user":
-		event.Content = extractToolResult(raw)
-
+		if e.Message != nil {
+			ev.Content = formatHeadlessToolResults(e.Message.ToolResults)
+		}
 	case "result":
-		// ok intentionally discarded on string assertions: zero-value "" is acceptable when field is absent.
-		event.Content, _ = raw["result"].(string)
-		event.SessionID, _ = raw["session_id"].(string)
-		if cost, ok := raw["total_cost_usd"].(float64); ok {
-			event.CostUSD = cost
-		}
-		if v, ok := raw["total_input_tokens"].(float64); ok {
-			event.InputTokens = int(v)
-		}
-		if v, ok := raw["total_output_tokens"].(float64); ok {
-			event.OutputTokens = int(v)
-		}
-		// Parse structured error envelope: {"type":"overloaded_error","status":529,...}
-		if errBlock, ok := raw["error"].(map[string]any); ok {
-			event.ErrorType, _ = errBlock["type"].(string)
-			if status, ok := errBlock["status"].(float64); ok {
-				event.ErrorStatus = int(status)
-			}
+		if e.Result != nil {
+			ev.Content = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
 		}
 
-	default:
-		// rate_limit_event, etc — keep type, no content
 	}
-
-	return event, nil
+	return ev
 }
 
-func parseCodexStreamEvent(line []byte) (StreamEvent, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return StreamEvent{}, fmt.Errorf("unmarshal stream event: %w", err)
+// codexEventToStreamEvent converts a shared CodexEvent into a StreamEvent
+// for the headless runner.
+func codexEventToStreamEvent(e CodexEvent) StreamEvent {
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Content = e.Message.Text
+		}
+	case "tool_use":
+		if e.Message != nil && len(e.Message.ToolUses) > 0 {
+			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
+			ev.Content = cmd
+		}
+	case "tool_result":
+		if e.Message != nil && len(e.Message.ToolResults) > 0 {
+			ev.Content = e.Message.ToolResults[0].Content
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Content = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+		}
 	}
-
-	eventType := strVal(raw, "type")
-	switch eventType {
-	case "thread.started":
-		return StreamEvent{Type: "init", SessionID: strVal(raw, "thread_id")}, nil
-	case "turn.started":
-		return StreamEvent{Type: "init", Content: "Turn started."}, nil
-	case "error":
-		return StreamEvent{
-			Type:    "result",
-			Subtype: "error",
-			Content: strVal(raw, "message"),
-		}, nil
-	case "turn.completed":
-		usage, _ := raw["usage"].(map[string]any)
-		return StreamEvent{
-			Type:         "result",
-			Content:      "Completed.",
-			InputTokens:  int(floatVal(usage, "input_tokens")),
-			OutputTokens: int(floatVal(usage, "output_tokens")),
-		}, nil
-	case "item.started", "item.completed":
-		return parseCodexItemEvent(eventType, raw)
-	default:
-		return StreamEvent{Type: eventType}, nil
-	}
+	return ev
 }
 
-func parseCodexItemEvent(eventType string, raw map[string]any) (StreamEvent, error) {
-	item, _ := raw["item"].(map[string]any)
-	itemType := strVal(item, "type")
-	switch itemType {
-	case "agent_message":
-		return StreamEvent{
-			Type:    "assistant",
-			Content: strVal(item, "text"),
-		}, nil
-	case "command_execution":
-		if eventType == "item.started" {
-			return StreamEvent{
-				Type:    "tool_use",
-				Content: strVal(item, "command"),
-			}, nil
-		}
-		output := strVal(item, "aggregated_output")
-		exitCode := int(floatVal(item, "exit_code"))
-		if output == "" {
-			output = fmt.Sprintf("Command exited with code %d.", exitCode)
-		}
-		return StreamEvent{
-			Type:    "tool_result",
-			Content: output,
-		}, nil
-	default:
-		return StreamEvent{
-			Type:    "assistant",
-			Content: strVal(item, "text"),
-		}, nil
-	}
-}
-
-func extractMessageContent(raw map[string]any) string {
-	msg, ok := raw["message"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return ""
-	}
+// formatHeadlessAssistant produces the flat content string for headless assistant
+// events: joined text parts followed by "[name] cmd/desc" tool use lines.
+func formatHeadlessAssistant(msg *ClaudeMessage) string {
 	var parts []string
-	for _, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
+	if msg.Text != "" {
+		parts = append(parts, msg.Text)
+	}
+	for _, tu := range msg.ToolUses {
+		if tu.Input == nil {
+			parts = append(parts, fmt.Sprintf("[%s]", tu.Name))
 			continue
 		}
-		switch block["type"] {
-		case "text":
-			if text, ok := block["text"].(string); ok {
-				parts = append(parts, text)
-			}
-		case "tool_use":
-			name, _ := block["name"].(string)
-			input, _ := block["input"].(map[string]any)
-			desc, _ := input["description"].(string)
-			cmd, _ := input["command"].(string)
-			switch {
-			case desc != "":
-				parts = append(parts, fmt.Sprintf("[%s] %s", name, desc))
-			case cmd != "":
-				parts = append(parts, fmt.Sprintf("[%s] %s", name, cmd))
-			default:
-				parts = append(parts, fmt.Sprintf("[%s]", name))
-			}
+		desc, _ := tu.Input["description"].(string)
+		cmd, _ := tu.Input["command"].(string)
+		switch {
+		case desc != "":
+			parts = append(parts, fmt.Sprintf("[%s] %s", tu.Name, desc))
+		case cmd != "":
+			parts = append(parts, fmt.Sprintf("[%s] %s", tu.Name, cmd))
+		default:
+			parts = append(parts, fmt.Sprintf("[%s]", tu.Name))
 		}
 	}
 	return strings.Join(parts, "\n")
 }
 
-func extractToolResult(raw map[string]any) string {
-	msg, ok := raw["message"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return ""
-	}
+// formatHeadlessToolResults joins tool result contents, truncating each to 500 chars.
+func formatHeadlessToolResults(results []ToolResultBlock) string {
 	var parts []string
-	for _, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
-			continue
+	for _, tr := range results {
+		content := tr.Content
+		if len(content) > 500 {
+			content = content[:500] + "..."
 		}
-		if text, ok := block["content"].(string); ok && text != "" {
-			// Truncate long tool results
-			if len(text) > 500 {
-				text = text[:500] + "..."
-			}
-			parts = append(parts, text)
+		if content != "" {
+			parts = append(parts, content)
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-func strVal(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, _ := m[key].(string)
-	return v
-}
-
-func floatVal(m map[string]any, key string) float64 {
-	if m == nil {
-		return 0
-	}
-	v, _ := m[key].(float64)
-	return v
 }
 
 func (m *Manager) handleError(a *Agent, err error) {

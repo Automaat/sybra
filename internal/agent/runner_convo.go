@@ -16,6 +16,45 @@ import (
 	"github.com/Automaat/synapse/internal/logging"
 )
 
+// claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for
+// conversational mode. Tool result content is truncated to 2000 chars.
+func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "user":
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				if len(results[i].Content) > 2000 {
+					results[i].Content = results[i].Content[:2000] + "..."
+				}
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+		}
+	}
+	return ev
+}
+
 // convoEmitInterval caps event emission rate for conversational agents.
 const convoEmitInterval = 50 * time.Millisecond
 
@@ -199,11 +238,12 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		event, err := parseConvoEvent(line)
-		if err != nil {
-			m.logger.Warn("agent.convo.parse", "id", a.ID, "err", err, "line", string(line))
+		parsed, parseErr := ParseClaudeLine(line)
+		if parseErr != nil {
+			m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
 			continue
 		}
+		event := claudeEventToConvoEvent(parsed)
 		if event.Type == "" {
 			continue
 		}
@@ -266,148 +306,6 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 	}
 }
 
-func parseConvoEvent(line []byte) (ConvoEvent, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return ConvoEvent{}, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	// scanner.Bytes() aliases the scanner's internal buffer which is
-	// overwritten on the next Scan() call. Copy the bytes into the
-	// ConvoEvent so Raw stays valid after the scanner advances and
-	// downstream marshaling (frontend events, log writes) sees the
-	// original line rather than a stale/partial one. Without the copy
-	// callers hit: json: error calling MarshalJSON for type
-	// json.RawMessage: invalid character '{' after top-level value.
-	rawCopy := make([]byte, len(line))
-	copy(rawCopy, line)
-
-	eventType, _ := raw["type"].(string)
-	event := ConvoEvent{
-		Type:      eventType,
-		Subtype:   strVal(raw, "subtype"),
-		Timestamp: time.Now().UTC(),
-		Raw:       rawCopy,
-	}
-
-	switch eventType {
-	case "system":
-		event.SessionID, _ = raw["session_id"].(string)
-
-	case "assistant":
-		msg, _ := raw["message"].(map[string]any)
-		if msg != nil {
-			event.Text, event.ToolUses = extractConvoAssistant(msg)
-		}
-		event.SessionID = strVal(raw, "session_id")
-
-	case "user":
-		msg, _ := raw["message"].(map[string]any)
-		if msg != nil {
-			event.ToolResults = extractConvoToolResults(msg)
-		}
-
-	case "result":
-		event.Text, _ = raw["result"].(string)
-		event.SessionID, _ = raw["session_id"].(string)
-		if cost, ok := raw["total_cost_usd"].(float64); ok {
-			event.CostUSD = cost
-		}
-		if v, ok := raw["total_input_tokens"].(float64); ok {
-			event.InputTokens = int(v)
-		}
-		if v, ok := raw["total_output_tokens"].(float64); ok {
-			event.OutputTokens = int(v)
-		}
-		// Parse structured error envelope: {"type":"overloaded_error","status":529,...}
-		if errBlock, ok := raw["error"].(map[string]any); ok {
-			event.ErrorType, _ = errBlock["type"].(string)
-			if status, ok := errBlock["status"].(float64); ok {
-				event.ErrorStatus = int(status)
-			}
-		}
-
-	default:
-		// rate_limit_event etc — preserve type only
-	}
-
-	return event, nil
-}
-
-func extractConvoAssistant(msg map[string]any) (string, []ToolUseBlock) {
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return "", nil
-	}
-	var textParts []string
-	var tools []ToolUseBlock
-
-	for _, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch block["type"] {
-		case "text":
-			if text, ok := block["text"].(string); ok {
-				textParts = append(textParts, text)
-			}
-		case "tool_use":
-			tb := ToolUseBlock{
-				ID:   strVal(block, "id"),
-				Name: strVal(block, "name"),
-			}
-			if input, ok := block["input"].(map[string]any); ok {
-				tb.Input = input
-			}
-			tools = append(tools, tb)
-		}
-	}
-	return strings.Join(textParts, "\n"), tools
-}
-
-func extractConvoToolResults(msg map[string]any) []ToolResultBlock {
-	content, ok := msg["content"].([]any)
-	if !ok {
-		return nil
-	}
-	var results []ToolResultBlock
-	for _, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if block["type"] != "tool_result" {
-			continue
-		}
-		tr := ToolResultBlock{
-			ToolUseID: strVal(block, "tool_use_id"),
-		}
-		if isErr, ok := block["is_error"].(bool); ok {
-			tr.IsError = isErr
-		}
-		// Content can be string or array of blocks.
-		switch v := block["content"].(type) {
-		case string:
-			tr.Content = v
-		case []any:
-			var parts []string
-			for _, item := range v {
-				if m, ok := item.(map[string]any); ok {
-					if text, ok := m["text"].(string); ok {
-						parts = append(parts, text)
-					}
-				}
-			}
-			tr.Content = strings.Join(parts, "\n")
-		}
-		if len(tr.Content) > 2000 {
-			tr.Content = tr.Content[:2000] + "..."
-		}
-		results = append(results, tr)
-	}
-	return results
-}
 
 // writeUserMessage writes a user message to the agent's stdin in stream-json format.
 func (m *Manager) writeUserMessage(a *Agent, text string) error {

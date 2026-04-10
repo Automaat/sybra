@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -13,6 +12,53 @@ import (
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
 )
+
+// codexEventToConvoEvent converts a shared CodexEvent into a ConvoEvent for
+// conversational mode. Tool result content is truncated to 2000 chars.
+// "tool_result" CodexEvent type maps to ConvoEvent type "user" to match the
+// Claude stream-json convention used by the frontend.
+func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "tool_use":
+		if e.Message != nil {
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "tool_result":
+		// Map to "user" to match Claude stream-json convention.
+		ev.Type = "user"
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				if len(results[i].Content) > 2000 {
+					results[i].Content = results[i].Content[:2000] + "..."
+				}
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+		}
+	}
+	return ev
+}
 
 // runCodexConversational runs Codex in interactive conversational mode.
 // Each turn spawns a fresh `codex exec --json` process. After turn.completed
@@ -143,15 +189,13 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		// Copy before the scanner reuses the buffer.
-		lineCopy := make([]byte, len(line))
-		copy(lineCopy, line)
-
-		event, err := parseCodexConvoEvent(lineCopy)
-		if err != nil {
-			m.logger.Warn("agent.codex.convo.parse", "id", a.ID, "err", err, "line", string(lineCopy))
+		// ParseCodexLine copies the scanner buffer internally so no manual copy needed.
+		parsed, parseErr := ParseCodexLine(line)
+		if parseErr != nil {
+			m.logger.Warn("agent.codex.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
 			continue
 		}
+		event := codexEventToConvoEvent(parsed)
 		if event.Type == "" {
 			continue
 		}
@@ -195,84 +239,6 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 		m.emit(events.AgentConvo(a.ID), *pending)
 	}
 	return gotResult
-}
-
-func parseCodexConvoEvent(line []byte) (ConvoEvent, error) {
-	var raw map[string]any
-	if err := json.Unmarshal(line, &raw); err != nil {
-		return ConvoEvent{}, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	eventType := strVal(raw, "type")
-	event := ConvoEvent{
-		Timestamp: time.Now().UTC(),
-		Raw:       line,
-	}
-
-	switch eventType {
-	case "thread.started":
-		event.Type = "system"
-		event.SessionID = strVal(raw, "thread_id")
-	case "turn.started":
-		event.Type = "init"
-	case "turn.completed":
-		usage, _ := raw["usage"].(map[string]any)
-		event.Type = "result"
-		event.Text = "Completed."
-		if usage != nil {
-			event.InputTokens = int(floatVal(usage, "input_tokens"))
-			event.OutputTokens = int(floatVal(usage, "output_tokens"))
-		}
-	case "error":
-		event.Type = "result"
-		event.Subtype = "error"
-		event.Text = strVal(raw, "message")
-	case "item.started", "item.completed":
-		return parseCodexConvoItemEvent(eventType, raw, line)
-	default:
-		event.Type = eventType
-	}
-	return event, nil
-}
-
-func parseCodexConvoItemEvent(eventType string, raw map[string]any, rawLine []byte) (ConvoEvent, error) {
-	item, _ := raw["item"].(map[string]any)
-	itemType := strVal(item, "type")
-
-	event := ConvoEvent{Timestamp: time.Now().UTC(), Raw: rawLine}
-	switch itemType {
-	case "agent_message":
-		event.Type = "assistant"
-		event.Text = strVal(item, "text")
-	case "command_execution":
-		if eventType == "item.started" {
-			event.Type = "tool_use"
-			event.ToolUses = []ToolUseBlock{{
-				ID:    strVal(item, "id"),
-				Name:  "Bash",
-				Input: map[string]any{"command": strVal(item, "command")},
-			}}
-		} else {
-			output := strVal(item, "aggregated_output")
-			exitCode := int(floatVal(item, "exit_code"))
-			if output == "" {
-				output = fmt.Sprintf("Command exited with code %d.", exitCode)
-			}
-			if len(output) > 2000 {
-				output = output[:2000] + "..."
-			}
-			event.Type = "user"
-			event.ToolResults = []ToolResultBlock{{
-				ToolUseID: strVal(item, "id"),
-				Content:   output,
-				IsError:   exitCode != 0,
-			}}
-		}
-	default:
-		event.Type = "assistant"
-		event.Text = strVal(item, "text")
-	}
-	return event, nil
 }
 
 // sendCodexPrompt delivers a follow-up prompt to a Codex conversational agent.
