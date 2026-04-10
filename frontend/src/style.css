@@ -3,6 +3,8 @@
 @import '@skeletonlabs/skeleton-svelte';
 @import '@skeletonlabs/skeleton/themes/vox';
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 html, body {
   margin: 0;
   padding: 0;
@@ -19,9 +21,7 @@ html, body {
   background-color: var(--color-surface-200);
 }
 
-@media (prefers-color-scheme: dark) {
-  [data-active] {
-    background-color: var(--color-surface-700);
-  }
+.dark [data-active] {
+  background-color: var(--color-surface-700);
 }
 
