@@ -25,12 +25,6 @@ func (d *Definition) StepByID(id string) *Step {
 		if d.Steps[i].ID == id {
 			return &d.Steps[i]
 		}
-		// Check parallel sub-steps.
-		for j := range d.Steps[i].Parallel {
-			if d.Steps[i].Parallel[j].ID == id {
-				return &d.Steps[i].Parallel[j]
-			}
-		}
 	}
 	return nil
 }
@@ -72,20 +66,17 @@ const (
 	StepSetStatus           StepType = "set_status"
 	StepCondition           StepType = "condition"
 	StepShell               StepType = "shell"
-	StepParallel            StepType = "parallel"
 	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
 )
 
 // Step is one node in the workflow graph.
 type Step struct {
-	ID     string       `yaml:"id" json:"id"`
-	Name   string       `yaml:"name" json:"name"`
-	Type   StepType     `yaml:"type" json:"type"`
-	Config StepConfig   `yaml:"config" json:"config"`
-	Next   []Transition `yaml:"next,omitempty" json:"next"`
-
-	// Parallel holds sub-steps for StepParallel type.
-	Parallel []Step `yaml:"parallel,omitempty" json:"parallel"`
+	ID       string       `yaml:"id" json:"id"`
+	Name     string       `yaml:"name" json:"name"`
+	Type     StepType     `yaml:"type" json:"type"`
+	Config   StepConfig   `yaml:"config" json:"config"`
+	Next     []Transition `yaml:"next,omitempty" json:"next"`
+	Parallel []Step       `yaml:"parallel,omitempty" json:"parallel"`
 
 	// Position stores x,y for the graph editor (not used by engine).
 	Position *Position `yaml:"position,omitempty" json:"position"`
@@ -141,12 +132,6 @@ func (d *Definition) Validate() error {
 		s := &d.Steps[i]
 		if s.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: max_retries %d exceeds limit %d", s.ID, s.Config.MaxRetries, maxRetries)
-		}
-		for j := range s.Parallel {
-			p := &s.Parallel[j]
-			if p.Config.MaxRetries > maxRetries {
-				return fmt.Errorf("step %q/%q: max_retries %d exceeds limit %d", s.ID, p.ID, p.Config.MaxRetries, maxRetries)
-			}
 		}
 	}
 	if err := d.ValidateFields(); err != nil {

@@ -27,19 +27,6 @@ func TestValidate_MaxRetriesExceedsLimit(t *testing.T) {
 	}
 }
 
-func TestValidate_MaxRetriesExceedsInParallel(t *testing.T) {
-	d := Definition{
-		Steps: []Step{
-			{ID: "s1", Parallel: []Step{
-				{ID: "p1", Config: StepConfig{MaxRetries: 20}},
-			}},
-		},
-	}
-	if err := d.Validate(); err == nil {
-		t.Fatal("expected error for max_retries in parallel step")
-	}
-}
-
 func TestValidate_ZeroMaxRetries(t *testing.T) {
 	d := Definition{
 		Steps: []Step{
@@ -66,15 +53,6 @@ func TestStepByID_NotFound(t *testing.T) {
 	d := Definition{Steps: []Step{{ID: "a"}}}
 	if s := d.StepByID("missing"); s != nil {
 		t.Fatalf("expected nil, got %q", s.ID)
-	}
-}
-
-func TestStepByID_InParallel(t *testing.T) {
-	d := Definition{
-		Steps: []Step{{ID: "a", Parallel: []Step{{ID: "b"}}}},
-	}
-	if s := d.StepByID("b"); s == nil {
-		t.Fatal("expected to find parallel step 'b'")
 	}
 }
 
