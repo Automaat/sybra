@@ -53,10 +53,7 @@
     }
   })
 
-  // Watch conversation changes to update local events + auto-scroll.
-  // Reading eventVersion triggers reactivity on every append without full Map copy.
   $effect(() => {
-    void convoStore.eventVersion
     const current = convoStore.conversations.get(agentId)
     if (current && current.length > events.length) {
       events = current
