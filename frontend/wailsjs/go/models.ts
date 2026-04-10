@@ -721,11 +721,11 @@ export namespace stats {
 	    outcome: string;
 	    // Go type: time
 	    timestamp: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RunRecord(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -772,11 +772,11 @@ export namespace stats {
 	    byModel: GroupedStat[];
 	    byProvider: GroupedStat[];
 	    recentRuns: RunRecord[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StatsResponse(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.today = this.convertValues(source["today"], Summary);
