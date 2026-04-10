@@ -299,7 +299,9 @@ func stageWaitingPlanReview(t *testing.T, taskSvc *TaskService, taskID string) {
 func TestPlanningService_RejectPlan_StoresMergedFeedbackInVars(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
-	created, err := taskSvc.CreateTask("reject merge", "", "headless")
+	// Use tasks.Create directly to avoid the auto-workflow goroutine spawned
+	// by CreateTask racing with stageWaitingPlanReview's direct state write.
+	created, err := taskSvc.tasks.Create("reject merge", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +333,9 @@ func TestPlanningService_RejectPlan_StoresMergedFeedbackInVars(t *testing.T) {
 func TestPlanningService_RejectPlan_WithOnlyUnresolvedCommentsStillStoresFeedback(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
-	created, err := taskSvc.CreateTask("reject comments only", "", "headless")
+	// Use tasks.Create directly to avoid the auto-workflow goroutine spawned
+	// by CreateTask racing with stageWaitingPlanReview's direct state write.
+	created, err := taskSvc.tasks.Create("reject comments only", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
