@@ -1,55 +1,121 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
+	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
-func requireTmuxMain(t *testing.T) {
+func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, context.CancelFunc) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
-}
-
-func TestOrchestratorService_StartOrchestrator_Codex(t *testing.T) {
-	requireTmuxMain(t)
-	binDir := buildTestBinaries(t)
-	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
-
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	emitted := make(chan struct{}, 16)
+	emit := func(string, any) { emitted <- struct{}{} }
+	mgr := agent.NewManager(ctx, tmux.NewManager(), emit, logger, t.TempDir())
 	svc := &OrchestratorService{
-		tmux:   tmux.NewManager(),
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		agents: mgr,
+		logger: logger,
 		emit:   func(string, any) {},
 		cfg:    &config.Config{Agent: config.AgentDefaults{Provider: "codex"}},
 	}
-	argsLog := filepath.Join(t.TempDir(), "codex-args.log")
-	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
-	_ = svc.tmux.KillSession(orchestratorSession)
+	return svc, mgr, cancel
+}
+
+func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
+	binDir := buildTestBinaries(t)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
+	t.Setenv("SYNAPSE_HOME", t.TempDir())
+
+	svc, _, cancel := newOrchSvcForTest(t)
+	defer cancel()
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
 	if err := svc.StartOrchestrator(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("StartOrchestrator: %v", err)
 	}
 
-	waitFor(t, 2*time.Second, "fake codex invoked", func() bool {
-		_, err := os.Stat(argsLog)
-		return err == nil
+	id := svc.GetOrchestratorAgentID()
+	if id == "" {
+		t.Fatal("expected non-empty agent id after start")
+	}
+
+	if !svc.IsOrchestratorRunning() {
+		t.Fatal("expected orchestrator running")
+	}
+
+	a, err := svc.agents.GetAgent(id)
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if a.Name != orchestratorAgentName {
+		t.Errorf("agent name = %q, want %q", a.Name, orchestratorAgentName)
+	}
+	if a.Mode != "interactive" {
+		t.Errorf("agent mode = %q, want interactive", a.Mode)
+	}
+	if a.Provider != "claude" {
+		t.Errorf("agent provider = %q, want claude (orchestrator must pin claude even when cfg=codex)", a.Provider)
+	}
+
+	// Starting again must fail.
+	if err := svc.StartOrchestrator(); err == nil {
+		t.Error("expected second StartOrchestrator to fail")
+	}
+
+	if err := svc.StopOrchestrator(); err != nil {
+		t.Fatalf("StopOrchestrator: %v", err)
+	}
+	if svc.GetOrchestratorAgentID() != "" {
+		t.Error("agent id should be empty after stop")
+	}
+	if svc.IsOrchestratorRunning() {
+		t.Error("IsOrchestratorRunning should be false after stop")
+	}
+}
+
+func TestOrchestratorService_StopWhenNotRunning(t *testing.T) {
+	svc, _, cancel := newOrchSvcForTest(t)
+	defer cancel()
+
+	if err := svc.StopOrchestrator(); err == nil {
+		t.Error("expected error stopping an orchestrator that was never started")
+	}
+}
+
+func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
+	binDir := buildTestBinaries(t)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
+	t.Setenv("SYNAPSE_HOME", t.TempDir())
+
+	svc, mgr, cancel := newOrchSvcForTest(t)
+	defer cancel()
+	mgr.SetMaxConcurrent(1)
+	t.Cleanup(func() { _ = svc.StopOrchestrator() })
+
+	// Fill the single slot with a normal agent.
+	blocker, err := mgr.Run(agent.RunConfig{
+		TaskID: "blocker",
+		Name:   "blocker",
+		Mode:   "interactive",
+		Prompt: "hi",
+		Dir:    t.TempDir(),
 	})
-	waitFor(t, 2*time.Second, "pane command is codex", func() bool {
-		cmd, err := svc.tmux.PaneCommand(orchestratorSession)
-		if err != nil {
-			return false
-		}
-		return strings.Contains(cmd, "codex")
-	})
+	if err != nil {
+		t.Fatalf("start blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.StopAgent(blocker.ID) })
+
+	// Orchestrator must still start despite the saturated limit.
+	if err := svc.StartOrchestrator(); err != nil {
+		t.Fatalf("StartOrchestrator under saturated limit: %v", err)
+	}
 }

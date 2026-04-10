@@ -3,18 +3,22 @@
     StartOrchestrator,
     StopOrchestrator,
     IsOrchestratorRunning,
-    CaptureOrchestratorPane,
-    AttachOrchestrator,
+    GetOrchestratorAgentID,
   } from '../../wailsjs/go/main/OrchestratorService.js'
+  import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { convoStore } from '../stores/convo.svelte.js'
   import { OrchestratorState } from '../lib/events.js'
+  import MessageBubble from '../components/MessageBubble.svelte'
   import StreamOutput from '../components/StreamOutput.svelte'
 
   let running = $state(false)
-  let output = $state('')
+  let orchestratorId = $state('')
+  let events = $state<agent.ConvoEvent[]>([])
   let error = $state('')
-  let container: HTMLPreElement | undefined = $state()
+  let container: HTMLDivElement | undefined = $state()
+  let convoUnsub: (() => void) | undefined
 
   const triageAgents = $derived(
     agentStore.list.filter((a) => a.name?.startsWith('triage:'))
@@ -38,21 +42,26 @@
     }
   }
 
-  async function checkStatus() {
-    running = await IsOrchestratorRunning()
+  async function attachConvo(id: string) {
+    orchestratorId = id
+    events = (await convoStore.getOutput(id)) ?? []
+    requestAnimationFrame(scrollToBottom)
+    convoUnsub?.()
+    convoUnsub = convoStore.subscribe(id)
   }
 
-  async function poll() {
-    if (!running) return
-    try {
-      const text = await CaptureOrchestratorPane()
-      if (text !== output) {
-        output = text
-        requestAnimationFrame(scrollToBottom)
-      }
-      error = ''
-    } catch (e) {
-      error = String(e)
+  function detachConvo() {
+    convoUnsub?.()
+    convoUnsub = undefined
+    orchestratorId = ''
+    events = []
+  }
+
+  async function checkStatus() {
+    running = await IsOrchestratorRunning()
+    if (running) {
+      const id = await GetOrchestratorAgentID()
+      if (id) await attachConvo(id)
     }
   }
 
@@ -61,7 +70,8 @@
       error = ''
       await StartOrchestrator()
       running = true
-      output = ''
+      const id = await GetOrchestratorAgentID()
+      if (id) await attachConvo(id)
     } catch (e) {
       error = String(e)
     }
@@ -72,14 +82,7 @@
       error = ''
       await StopOrchestrator()
       running = false
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
-  async function handleAttach() {
-    try {
-      await AttachOrchestrator()
+      detachConvo()
     } catch (e) {
       error = String(e)
     }
@@ -88,18 +91,29 @@
   $effect(() => {
     checkStatus()
 
-    const unsub = EventsOn(OrchestratorState, (state: string) => {
+    const unsub = EventsOn(OrchestratorState, async (state: string) => {
       running = state === 'running'
-      if (!running) output = ''
+      if (running) {
+        const id = await GetOrchestratorAgentID()
+        if (id) await attachConvo(id)
+      } else {
+        detachConvo()
+      }
     })
-
-    const timer = setInterval(() => {
-      poll()
-    }, 1000)
 
     return () => {
       unsub()
-      clearInterval(timer)
+      convoUnsub?.()
+    }
+  })
+
+  // Pick up new events from the reactive convo store.
+  $effect(() => {
+    if (!orchestratorId) return
+    const current = convoStore.conversations.get(orchestratorId)
+    if (current && current.length > events.length) {
+      events = current
+      requestAnimationFrame(scrollToBottom)
     }
   })
 </script>
@@ -119,13 +133,6 @@
       </div>
       <div class="flex gap-2">
         {#if running}
-          <button
-            type="button"
-            class="rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-primary-600"
-            onclick={handleAttach}
-          >
-            Attach
-          </button>
           <button
             type="button"
             class="rounded-lg bg-error-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-error-600"
@@ -150,10 +157,18 @@
     {/if}
 
     {#if running}
-      <pre
+      <div
         bind:this={container}
-        class="max-h-[300px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-900 p-3 font-mono text-xs text-surface-200 dark:border-surface-600"
-      >{output || 'Waiting for output...'}</pre>
+        class="flex max-h-[400px] flex-col gap-2 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-200 dark:border-surface-600"
+      >
+        {#if events.length === 0}
+          <p class="text-surface-500">Waiting for orchestrator…</p>
+        {:else}
+          {#each events as event, i (i)}
+            <MessageBubble {event} />
+          {/each}
+        {/if}
+      </div>
     {/if}
   </section>
 

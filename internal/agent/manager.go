@@ -164,7 +164,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 
 	m.mu.Lock()
-	if m.maxConcurrent > 0 && m.runningCountLocked() >= m.maxConcurrent {
+	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.runningCountLocked() >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
 		return nil, fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)

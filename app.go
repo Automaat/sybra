@@ -354,7 +354,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.agentSvc.agents = a.agents
 	a.agentSvc.tmux = a.tmux
 	a.agentSvc.logger = a.logger
-	a.orchSvc.tmux = a.tmux
+	a.orchSvc.agents = a.agents
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger
 	a.orchSvc.emit = emit

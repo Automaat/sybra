@@ -4,8 +4,7 @@ import { render, screen, cleanup } from '@testing-library/svelte'
 const mockIsOrchestratorRunning = vi.fn().mockResolvedValue(false)
 const mockStartOrchestrator = vi.fn().mockResolvedValue(undefined)
 const mockStopOrchestrator = vi.fn().mockResolvedValue(undefined)
-const mockCaptureOrchestratorPane = vi.fn().mockResolvedValue('')
-const mockAttachOrchestrator = vi.fn().mockResolvedValue(undefined)
+const mockGetOrchestratorAgentID = vi.fn().mockResolvedValue('')
 const mockEventsOn = vi.fn().mockReturnValue(vi.fn())
 
 const mockAgentList: any[] = []
@@ -14,8 +13,7 @@ vi.mock('../../wailsjs/go/main/OrchestratorService.js', () => ({
   IsOrchestratorRunning: (...args: unknown[]) => mockIsOrchestratorRunning(...args),
   StartOrchestrator: (...args: unknown[]) => mockStartOrchestrator(...args),
   StopOrchestrator: (...args: unknown[]) => mockStopOrchestrator(...args),
-  CaptureOrchestratorPane: (...args: unknown[]) => mockCaptureOrchestratorPane(...args),
-  AttachOrchestrator: (...args: unknown[]) => mockAttachOrchestrator(...args),
+  GetOrchestratorAgentID: (...args: unknown[]) => mockGetOrchestratorAgentID(...args),
 }))
 
 vi.mock('../../wailsjs/runtime/runtime.js', () => ({
@@ -30,7 +28,16 @@ vi.mock('../stores/agents.svelte.js', () => ({
   },
 }))
 
+vi.mock('../stores/convo.svelte.js', () => ({
+  convoStore: {
+    conversations: new Map(),
+    getOutput: vi.fn().mockResolvedValue([]),
+    subscribe: vi.fn().mockReturnValue(() => {}),
+  },
+}))
+
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
+vi.mock('../components/MessageBubble.svelte', () => ({ default: () => {} }))
 
 const Orchestrator = (await import('./Orchestrator.svelte')).default
 
@@ -38,6 +45,7 @@ describe('Orchestrator', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockIsOrchestratorRunning.mockResolvedValue(false)
+    mockGetOrchestratorAgentID.mockResolvedValue('')
     mockEventsOn.mockReturnValue(vi.fn())
     mockAgentList.length = 0
   })
