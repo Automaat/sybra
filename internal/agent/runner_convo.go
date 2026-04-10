@@ -306,7 +306,6 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 	}
 }
 
-
 // writeUserMessage writes a user message to the agent's stdin in stream-json format.
 func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	msg := map[string]any{
