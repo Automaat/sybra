@@ -101,7 +101,12 @@ func (h *TodoistHandler) importNewTasks() (int, error) {
 		}
 
 		todoID := rt.ID
-		if _, updateErr := h.tasks.Update(t.ID, task.Update{TodoistID: &todoID}); updateErr != nil {
+		update := task.Update{TodoistID: &todoID}
+		if h.cfg.DefaultProjectID != "" {
+			projectID := h.cfg.DefaultProjectID
+			update.ProjectID = &projectID
+		}
+		if _, updateErr := h.tasks.Update(t.ID, update); updateErr != nil {
 			h.logger.Error("todoist.update-task", "task_id", t.ID, "err", updateErr)
 		}
 

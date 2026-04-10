@@ -1,4 +1,6 @@
 // Package events defines Wails event name constants shared across the app.
+//
+//go:generate go run ../../cmd/gen-events
 package events
 
 const (
@@ -20,7 +22,8 @@ const (
 	OrchestratorState = "orchestrator:state"
 
 	// Review/PR events.
-	ReviewsUpdated = "reviews:updated"
+	ReviewsUpdated  = "reviews:updated"
+	RenovateUpdated = "renovate:updated"
 
 	// Notification events.
 	Notification = "notification"

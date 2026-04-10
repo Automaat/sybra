@@ -169,3 +169,61 @@ func TestStore_SafePath_Valid(t *testing.T) {
 		t.Error("got path traversal error for valid ID")
 	}
 }
+
+// TestStore_ParseFile_WarnOnInvalidFieldsButReturn confirms the read path
+// stays non-disruptive: a hand-edited user workflow with an unknown field
+// still loads (so the app boots and the user can fix it in the GUI),
+// while the Save path remains strict (enforced by other tests). This
+// split is deliberate — failing Load on any invalid workflow would
+// cascade a single bad file into a crashed app startup.
+func TestStore_ParseFile_WarnOnInvalidFieldsButReturn(t *testing.T) {
+	t.Parallel()
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Write a workflow directly to disk (bypassing Save's validation) that
+	// references an unknown field — mimicking a hand-edited user file.
+	raw := `id: hand-edited
+name: Hand Edited
+trigger:
+  on: pr.event
+  conditions:
+    - field: project.type
+      operator: equals
+      value: pet
+steps:
+  - id: noop
+    name: Noop
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+	path := filepath.Join(s.Dir(), "hand-edited.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write hand-edited: %v", err)
+	}
+
+	// List must still return the def (warn-not-fail on load).
+	defs, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var found *Definition
+	for i := range defs {
+		if defs[i].ID == "hand-edited" {
+			found = &defs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("hand-edited workflow should still load despite invalid field")
+	}
+
+	// But Save must reject the same definition — strict write-path check.
+	if err := s.Save(*found); err == nil {
+		t.Error("Save should reject workflow with unknown field")
+	}
+}
