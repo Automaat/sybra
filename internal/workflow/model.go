@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -147,7 +149,80 @@ func (d *Definition) Validate() error {
 			}
 		}
 	}
+	if err := d.ValidateFields(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ValidateFields returns an error listing any trigger or transition field
+// references that the engine will never populate, plus any enum-value
+// comparisons that pick values outside the known enum set. Catches two
+// classes of dead workflow condition at load/save time:
+//
+//  1. A trigger on "project.type" with no caller supplying that key (the
+//     auto-merge dead-code shape).
+//  2. A trigger on "pr.issue_kind" comparing against "ci-failure" (dash)
+//     while the constant emits "ci_failure" (underscore) — the original
+//     dispatch-mismatch shape.
+func (d *Definition) ValidateFields() error {
+	unknown := map[string]bool{}
+	badValues := map[string][]string{}
+	for i := range d.Trigger.Conditions {
+		collectUnknownCondition(&d.Trigger.Conditions[i], unknown, badValues)
+	}
+	for i := range d.Steps {
+		collectUnknownStepFields(&d.Steps[i], unknown, badValues)
+	}
+	if len(unknown) == 0 && len(badValues) == 0 {
+		return nil
+	}
+	var parts []string
+	if len(unknown) > 0 {
+		names := make([]string, 0, len(unknown))
+		for k := range unknown {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		parts = append(parts, "unknown field(s): "+strings.Join(names, ", "))
+	}
+	if len(badValues) > 0 {
+		fields := make([]string, 0, len(badValues))
+		for k := range badValues {
+			fields = append(fields, k)
+		}
+		sort.Strings(fields)
+		for _, f := range fields {
+			vals := badValues[f]
+			sort.Strings(vals)
+			parts = append(parts, fmt.Sprintf("invalid %s value(s): %s", f, strings.Join(vals, ",")))
+		}
+	}
+	return fmt.Errorf("workflow %q: %s", d.ID, strings.Join(parts, "; "))
+}
+
+func collectUnknownCondition(c *Condition, unknown map[string]bool, badValues map[string][]string) {
+	if !isKnownField(c.Field) {
+		unknown[c.Field] = true
+		return
+	}
+	if bad := checkEnumValue(c.Field, c.Operator, c.Value); len(bad) > 0 {
+		badValues[c.Field] = append(badValues[c.Field], bad...)
+	}
+}
+
+func collectUnknownStepFields(s *Step, unknown map[string]bool, badValues map[string][]string) {
+	if s.Config.Check != nil {
+		collectUnknownCondition(s.Config.Check, unknown, badValues)
+	}
+	for i := range s.Next {
+		if s.Next[i].When != nil {
+			collectUnknownCondition(s.Next[i].When, unknown, badValues)
+		}
+	}
+	for i := range s.Parallel {
+		collectUnknownStepFields(&s.Parallel[i], unknown, badValues)
+	}
 }
 
 // Transition defines an edge from one step to another.
