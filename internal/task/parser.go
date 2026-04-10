@@ -50,11 +50,13 @@ func ParseBytes(data []byte) (Task, error) {
 func Marshal(t Task) ([]byte, error) {
 	t.UpdatedAt = time.Now().UTC()
 
-	// Strip leading whitespace from agent run results so yaml.v3 doesn't
-	// emit |N- block scalars that it fails to parse back (known round-trip
-	// bug with nested sequences containing indented literal blocks).
+	// Strip leading whitespace/newlines from agent run results so yaml.v3
+	// doesn't emit |N- block scalars that it fails to parse back (known
+	// round-trip bug: leading blank lines or indented first line force an
+	// explicit indentation indicator that miscounts columns inside a
+	// nested sequence).
 	for i := range t.AgentRuns {
-		t.AgentRuns[i].Result = stripLineIndent(t.AgentRuns[i].Result)
+		t.AgentRuns[i].Result = strings.TrimLeft(t.AgentRuns[i].Result, " \t\n\r")
 	}
 
 	fm, err := yaml.Marshal(t)
@@ -71,18 +73,4 @@ func Marshal(t Task) ([]byte, error) {
 		buf.WriteString("\n")
 	}
 	return buf.Bytes(), nil
-}
-
-// stripLineIndent removes leading spaces/tabs from each line. This prevents
-// yaml.v3 from emitting |N- block scalars (explicit indent indicator) which
-// it then fails to round-trip when nested inside sequences.
-func stripLineIndent(s string) string {
-	if s == "" {
-		return s
-	}
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimLeft(line, " \t")
-	}
-	return strings.Join(lines, "\n")
 }
