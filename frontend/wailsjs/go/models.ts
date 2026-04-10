@@ -1311,6 +1311,7 @@ export namespace workflow {
 	    startedAt: any;
 	    // Go type: time
 	    completedAt?: any;
+	    recovered?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Execution(source);
@@ -1325,6 +1326,7 @@ export namespace workflow {
 	        this.variables = source["variables"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.completedAt = this.convertValues(source["completedAt"], null);
+	        this.recovered = source["recovered"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
