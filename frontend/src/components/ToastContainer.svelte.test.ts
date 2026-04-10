@@ -72,8 +72,7 @@ describe('ToastContainer', () => {
   it('calls dismiss when toast body clicked', async () => {
     mockNotifications.push(makeNotification({ id: 'notif-1' }))
     render(ToastContainer, { props: {} })
-    const alert = screen.getByRole('alert')
-    await fireEvent.click(alert)
+    await fireEvent.click(screen.getByText('Test Toast'))
     expect(mockDismiss).toHaveBeenCalledWith('notif-1')
   })
 
@@ -81,8 +80,7 @@ describe('ToastContainer', () => {
     mockNotifications.push(makeNotification({ id: 'notif-1', taskId: 'task-42' }))
     const onviewtask = vi.fn()
     render(ToastContainer, { props: { onviewtask } })
-    const alert = screen.getByRole('alert')
-    await fireEvent.click(alert)
+    await fireEvent.click(screen.getByText('Test Toast'))
     expect(onviewtask).toHaveBeenCalledWith('task-42')
   })
 

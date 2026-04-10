@@ -126,6 +126,7 @@
                 <button
                   type="button"
                   class="text-surface-400 hover:text-surface-600 dark:hover:text-surface-300"
+                  aria-label="Clear project"
                   onclick={clearProject}
                 >
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
