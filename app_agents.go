@@ -72,13 +72,17 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode, researchDir)
 	if !skipWT {
 		t = o.autoAssignProject(t)
-		if t.ProjectID != "" {
-			d, wtErr := o.worktrees.PrepareForTask(t)
-			if wtErr != nil {
-				return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
-			}
-			dir = d
+		if t.ProjectID == "" {
+			return nil, fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
 		}
+		d, wtErr := o.worktrees.PrepareForTask(t)
+		if wtErr != nil {
+			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
+		}
+		dir = d
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
 	// Flip status only after worktree prep succeeds — otherwise a failed
@@ -149,13 +153,17 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir)
 	if !skipWT {
 		t = o.autoAssignProject(t)
-		if t.ProjectID != "" {
-			d, wtErr := o.worktrees.PrepareForTask(t)
-			if wtErr != nil {
-				return fmt.Errorf("worktree required: %w", wtErr)
-			}
-			dir = d
+		if t.ProjectID == "" {
+			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree", taskID)
 		}
+		d, wtErr := o.worktrees.PrepareForTask(t)
+		if wtErr != nil {
+			return fmt.Errorf("worktree required: %w", wtErr)
+		}
+		dir = d
+	}
+	if dir == "" {
+		return fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
 	prompt := buildPRFixPrompt(t, o.logger)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -120,15 +121,24 @@ func (m *Manager) runningCountLocked() int {
 	return count
 }
 
-func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt string, allowedTools []string) (*Agent, error) {
-	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools})
-}
-
-func (m *Manager) StartAgentInDir(taskID, taskTitle, mode, prompt string, allowedTools []string, dir string) (*Agent, error) {
+func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowedTools []string) (*Agent, error) {
 	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools, Dir: dir})
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
+	// Hard guard: every agent must run in an explicit, existing directory.
+	// An empty Dir means the spawned process inherits Synapse's cwd, which in
+	// dev mode is the Synapse source repo — agents would then mutate its
+	// branches via git checkout. Reject rather than silently leak.
+	if strings.TrimSpace(cfg.Dir) == "" {
+		return nil, fmt.Errorf("agent.Run: Dir is required (empty Dir would leak agent process into Synapse cwd)")
+	}
+	if info, err := os.Stat(cfg.Dir); err != nil {
+		return nil, fmt.Errorf("agent.Run: Dir %q not accessible: %w", cfg.Dir, err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("agent.Run: Dir %q is not a directory", cfg.Dir)
+	}
+
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(m.ctx)
 
