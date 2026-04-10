@@ -1129,11 +1129,11 @@ export namespace workflow {
 	    next: Transition[];
 	    parallel: Step[];
 	    position?: Position;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Step(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
