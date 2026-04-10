@@ -233,6 +233,12 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			lastEmit = time.Now()
 		}
 
+		if event.Type == "init" && event.SessionID != "" && a.Provider == "codex" {
+			if p := resolveCodexSessionFile(event.SessionID); p != "" {
+				a.SetSessionFilePath(p)
+			}
+		}
+
 		if event.Type == "assistant" {
 			turns := a.IncTurnCount()
 			m.mu.RLock()

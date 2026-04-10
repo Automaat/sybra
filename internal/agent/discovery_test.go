@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -288,5 +289,322 @@ func TestProcessAlive(t *testing.T) {
 	// PID 0 or very high PID should not be alive
 	if processAlive(9999999) {
 		t.Error("PID 9999999 should not be alive")
+	}
+}
+
+func writeCodexSessionFile(t *testing.T, dir, sessionID string, modTime time.Time) string {
+	t.Helper()
+	dateDir := filepath.Join(dir, "2024", "01", "01")
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dateDir, "rollout-"+sessionID+".jsonl")
+	meta := `{"type":"session_meta","timestamp":"2024-01-01T00:00:00Z","payload":{"id":"` + sessionID + `","cwd":"/tmp/project","originator":"codex_exec","git":{"branch":"main"}}}`
+	if err := os.WriteFile(path, []byte(meta+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReadCodexSessions(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	sessionID := "01ABCDEF01ABCDEF01ABCDE"
+	path := writeCodexSessionFile(t, dir, sessionID, now)
+
+	sessions := readCodexSessionsFromDir(dir)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	s := sessions[0]
+	if s.SessionID != sessionID {
+		t.Errorf("SessionID = %q, want %q", s.SessionID, sessionID)
+	}
+	if s.CWD != "/tmp/project" {
+		t.Errorf("CWD = %q, want /tmp/project", s.CWD)
+	}
+	if s.Originator != "codex_exec" {
+		t.Errorf("Originator = %q, want codex_exec", s.Originator)
+	}
+	if s.Branch != "main" {
+		t.Errorf("Branch = %q, want main", s.Branch)
+	}
+	if s.FilePath != path {
+		t.Errorf("FilePath = %q, want %q", s.FilePath, path)
+	}
+}
+
+func TestReadCodexSessionsSkipOld(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-25 * time.Hour)
+	writeCodexSessionFile(t, dir, "OLD0000000000000000000", old)
+
+	recent := time.Now().Add(-1 * time.Hour)
+	writeCodexSessionFile(t, dir, "NEW0000000000000000000", recent)
+
+	sessions := readCodexSessionsFromDir(dir)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1 (old should be skipped)", len(sessions))
+	}
+	if sessions[0].SessionID != "NEW0000000000000000000" {
+		t.Errorf("expected recent session, got %q", sessions[0].SessionID)
+	}
+}
+
+func TestReadLastCodexEvent(t *testing.T) {
+	tests := []struct {
+		name            string
+		lines           []string
+		stale           bool
+		wantEventType   string
+		wantPayloadType string
+	}{
+		{
+			name:          "empty file",
+			lines:         nil,
+			wantEventType: "",
+		},
+		{
+			name:            "task_complete",
+			lines:           []string{`{"type":"event_msg","payload":{"type":"task_complete"}}`},
+			wantEventType:   "event_msg",
+			wantPayloadType: "task_complete",
+		},
+		{
+			name:          "response_item",
+			lines:         []string{`{"type":"response_item","payload":{}}`},
+			wantEventType: "response_item",
+		},
+		{
+			name:            "multiple lines, last wins",
+			lines:           []string{`{"type":"session_meta"}`, `{"type":"event_msg","payload":{"type":"agent_message"}}`},
+			wantEventType:   "event_msg",
+			wantPayloadType: "agent_message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "session.jsonl")
+
+			content := strings.Join(tt.lines, "\n")
+			if content != "" {
+				content += "\n"
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tt.stale {
+				past := time.Now().Add(-30 * time.Second)
+				if err := os.Chtimes(path, past, past); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			ev := readLastCodexEvent(path)
+			if ev.eventType != tt.wantEventType {
+				t.Errorf("eventType = %q, want %q", ev.eventType, tt.wantEventType)
+			}
+			if ev.payloadType != tt.wantPayloadType {
+				t.Errorf("payloadType = %q, want %q", ev.payloadType, tt.wantPayloadType)
+			}
+		})
+	}
+}
+
+func TestInferCodexState(t *testing.T) {
+	tests := []struct {
+		name        string
+		eventType   string
+		payloadType string
+		stale       bool
+		want        State
+	}{
+		{"task_complete → stopped", "event_msg", "task_complete", false, StateStopped},
+		{"task_complete stale → stopped", "event_msg", "task_complete", true, StateStopped},
+		{"turn_aborted → stopped", "event_msg", "turn_aborted", false, StateStopped},
+		{"task_started fresh → running", "event_msg", "task_started", false, StateRunning},
+		{"task_started stale → idle", "event_msg", "task_started", true, StateIdle},
+		{"agent_message fresh → running", "event_msg", "agent_message", false, StateRunning},
+		{"agent_message stale → idle", "event_msg", "agent_message", true, StateIdle},
+		{"token_count → idle", "event_msg", "token_count", true, StateIdle},
+		{"response_item fresh → running", "response_item", "", false, StateRunning},
+		{"response_item stale → paused", "response_item", "", true, StatePaused},
+		{"session_meta only → idle", "session_meta", "", true, StateIdle},
+		{"empty → idle", "", "", true, StateIdle},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "session.jsonl")
+
+			if tt.eventType != "" {
+				line := `{"type":"` + tt.eventType + `","payload":{"type":"` + tt.payloadType + `"}}`
+				if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.stale {
+				past := time.Now().Add(-30 * time.Second)
+				if err := os.Chtimes(path, past, past); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got := inferCodexState(path)
+			if got != tt.want {
+				t.Errorf("inferCodexState = %q, want %q (event=%q payload=%q stale=%v)",
+					got, tt.want, tt.eventType, tt.payloadType, tt.stale)
+			}
+		})
+	}
+}
+
+func TestDiscoverNewCodex(t *testing.T) {
+	m, _ := newTestManager(t)
+	sessDir := t.TempDir()
+
+	sessionID := "01TESTCODEXSESSIONID00"
+	now := time.Now()
+	filePath := writeCodexSessionFile(t, sessDir, sessionID, now)
+
+	sessions := []codexSession{
+		{
+			SessionID:  sessionID,
+			CWD:        "/tmp/project",
+			Originator: "codex_exec",
+			StartedAt:  now,
+			FilePath:   filePath,
+			Branch:     "main",
+		},
+	}
+
+	discovered := m.discoverNewCodex(sessions)
+	if len(discovered) != 1 {
+		t.Fatalf("got %d agents, want 1", len(discovered))
+	}
+	a := discovered[0]
+	if a.Provider != "codex" {
+		t.Errorf("Provider = %q, want codex", a.Provider)
+	}
+	if !a.External {
+		t.Error("External should be true")
+	}
+	if a.Mode != "headless" {
+		t.Errorf("Mode = %q, want headless", a.Mode)
+	}
+	if a.SessionID != sessionID {
+		t.Errorf("SessionID = %q, want %q", a.SessionID, sessionID)
+	}
+	if a.sessionFilePath != filePath {
+		t.Errorf("sessionFilePath = %q, want %q", a.sessionFilePath, filePath)
+	}
+	if !strings.HasPrefix(a.ID, "ext-codex-") {
+		t.Errorf("ID = %q, want ext-codex-* prefix", a.ID)
+	}
+
+	// Second call should not re-discover the same agent.
+	discovered2 := m.discoverNewCodex(sessions)
+	if len(discovered2) != 0 {
+		t.Errorf("re-discovery got %d agents, want 0", len(discovered2))
+	}
+}
+
+func TestDiscoverNewCodexInteractive(t *testing.T) {
+	m, _ := newTestManager(t)
+	dir := t.TempDir()
+
+	sessionID := "01TUISESSIONID000000000"
+	filePath := writeCodexSessionFile(t, dir, sessionID, time.Now())
+
+	sessions := []codexSession{
+		{SessionID: sessionID, CWD: "/home/user/proj", Originator: "codex_tui", FilePath: filePath, StartedAt: time.Now()},
+	}
+
+	discovered := m.discoverNewCodex(sessions)
+	if len(discovered) != 1 {
+		t.Fatalf("got %d agents, want 1", len(discovered))
+	}
+	if discovered[0].Mode != "interactive" {
+		t.Errorf("Mode = %q, want interactive", discovered[0].Mode)
+	}
+}
+
+func TestRefreshTrackedCodex(t *testing.T) {
+	m, _ := newTestManager(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	// Write a stopped event.
+	line := `{"type":"event_msg","payload":{"type":"task_complete"}}`
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{
+		ID:              "ext-codex-test",
+		External:        true,
+		Provider:        "codex",
+		State:           StateRunning,
+		sessionFilePath: path,
+	}
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.mu.Unlock()
+
+	m.refreshTracked()
+
+	if got := a.GetState(); got != StateStopped {
+		t.Errorf("state = %q after task_complete, want stopped", got)
+	}
+
+	// Update to idle event and refresh again.
+	line2 := `{"type":"event_msg","payload":{"type":"token_count"}}`
+	if err := os.WriteFile(path, []byte(line2+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-30 * time.Second)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	m.refreshTracked()
+	if got := a.GetState(); got != StateIdle {
+		t.Errorf("state = %q after token_count stale, want idle", got)
+	}
+}
+
+func TestResolveCodexSessionFileInDir(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "01RESOLVE0000000000000"
+	dateDir := filepath.Join(dir, "2024", "03", "15")
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(dateDir, "rollout-"+sessionID+".jsonl")
+	if err := os.WriteFile(expected, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveCodexSessionFileInDir(dir, sessionID)
+	if got != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+
+	// Non-existent session ID should return empty.
+	got2 := resolveCodexSessionFileInDir(dir, "NOTFOUND000000000000000")
+	if got2 != "" {
+		t.Errorf("expected empty for missing session, got %q", got2)
 	}
 }

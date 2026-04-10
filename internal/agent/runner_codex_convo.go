@@ -180,6 +180,9 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 		case "system":
 			if event.SessionID != "" {
 				a.SetSessionID(event.SessionID)
+				if p := resolveCodexSessionFile(event.SessionID); p != "" {
+					a.SetSessionFilePath(p)
+				}
 			}
 		case "result":
 			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)

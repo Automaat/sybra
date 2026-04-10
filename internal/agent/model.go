@@ -53,12 +53,13 @@ type Agent struct {
 	TurnCount        int    `json:"turnCount,omitempty"`
 	EscalationReason string `json:"escalationReason,omitempty"`
 
-	ExitErr      error `json:"-"`
-	outputBuffer []StreamEvent
-	convoBuffer  []ConvoEvent
-	cmd          *exec.Cmd
-	cancel       context.CancelFunc
-	sessionCWD   string
+	ExitErr         error `json:"-"`
+	outputBuffer    []StreamEvent
+	convoBuffer     []ConvoEvent
+	cmd             *exec.Cmd
+	cancel          context.CancelFunc
+	sessionCWD      string
+	sessionFilePath string // path to provider session file (Codex JSONL)
 	// done is closed when the headless/conversational goroutine has fully exited.
 	// Used by HasRunningAgentForTask to guard worktree cleanup.
 	done chan struct{}
@@ -156,6 +157,20 @@ func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SessionID
+}
+
+// SetSessionFilePath records the path to the provider session file.
+func (a *Agent) SetSessionFilePath(p string) {
+	a.mu.Lock()
+	a.sessionFilePath = p
+	a.mu.Unlock()
+}
+
+// GetSessionFilePath returns the provider session file path.
+func (a *Agent) GetSessionFilePath() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.sessionFilePath
 }
 
 // AddResultStats merges a result-event's stats into the running totals
