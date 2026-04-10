@@ -82,23 +82,25 @@ const WorkflowVarDir = "_dir"
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store    *Store
-	tasks    TaskProvider
-	agents   AgentLauncher
-	prLinker PRLinker
-	logger   *slog.Logger
-	mu       sync.Mutex
-	inflight map[string]struct{} // taskID → step in flight (prevent double-advance)
+	store      *Store
+	tasks      TaskProvider
+	agents     AgentLauncher
+	prLinker   PRLinker
+	logger     *slog.Logger
+	mu         sync.Mutex
+	inflight   map[string]struct{} // taskID → step in flight (prevent double-advance)
+	agentSteps map[string]string   // agentID → stepID it was spawned for
 }
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return &Engine{
-		store:    store,
-		tasks:    tasks,
-		agents:   agents,
-		logger:   logger,
-		inflight: make(map[string]struct{}),
+		store:      store,
+		tasks:      tasks,
+		agents:     agents,
+		logger:     logger,
+		inflight:   make(map[string]struct{}),
+		agentSteps: make(map[string]string),
 	}
 }
 
@@ -236,46 +238,16 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 // double-delivered callback — from triggering "step not found" errors that
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
-	e.mu.Lock()
-	if _, ok := e.inflight[taskID]; ok {
-		e.mu.Unlock()
+	if !e.acquireInflight(taskID) {
 		e.logger.Debug("workflow.advance.skip", "task_id", taskID, "reason", "already_advancing")
 		return nil
 	}
-	e.inflight[taskID] = struct{}{}
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.inflight, taskID)
-		e.mu.Unlock()
-	}()
+	defer e.releaseInflight(taskID)
 
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil {
+	wfExec, def, currentStep, skip, err := e.loadAdvanceContext(taskID, output)
+	if err != nil || skip {
 		return err
 	}
-	if t.Workflow == nil {
-		return fmt.Errorf("task %s has no active workflow", taskID)
-	}
-	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
-		e.logger.Debug("workflow.advance.skip",
-			"task_id", taskID, "reason", "workflow_terminal",
-			"state", string(t.Workflow.State), "step_id", output.StepID)
-		return nil
-	}
-	if output.StepID == "" {
-		e.logger.Debug("workflow.advance.skip",
-			"task_id", taskID, "reason", "empty_step_id",
-			"state", string(t.Workflow.State))
-		return nil
-	}
-
-	def, err := e.store.Get(t.Workflow.WorkflowID)
-	if err != nil {
-		return err
-	}
-
-	wfExec := t.Workflow
 
 	// Record step completion.
 	now := time.Now().UTC()
@@ -287,14 +259,8 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		StartedAt: now,
 		EndedAt:   now,
 	})
-
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
-	}
-
-	currentStep := def.StepByID(output.StepID)
-	if currentStep == nil {
-		return fmt.Errorf("step %s not found in workflow %s", output.StepID, def.ID)
 	}
 
 	// Retry failed steps if max_retries configured and not exhausted.
@@ -313,7 +279,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 
 	// Re-read task for latest state (agent may have changed tags/status).
-	t, err = e.tasks.GetTask(taskID)
+	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		return err
 	}
@@ -329,6 +295,81 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	return e.executeSteps(taskID, &def, nextStep, wfExec)
+}
+
+// acquireInflight attempts to mark a task as actively advancing. Returns
+// false when another AdvanceStep call already owns the slot, in which case
+// the caller must no-op rather than racing.
+func (e *Engine) acquireInflight(taskID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.inflight[taskID]; ok {
+		return false
+	}
+	e.inflight[taskID] = struct{}{}
+	return true
+}
+
+// releaseInflight clears the in-flight marker for a task.
+func (e *Engine) releaseInflight(taskID string) {
+	e.mu.Lock()
+	delete(e.inflight, taskID)
+	e.mu.Unlock()
+}
+
+// loadAdvanceContext validates and resolves the state needed by AdvanceStep.
+// Returns skip=true (with nil error) for every legitimate no-op path: a
+// terminal workflow, an empty step ID, a stale step (the ResumeStalled-race
+// duplicate-agent guard), or an unexpected agent callback hitting a
+// wait_human step without a human_action var set (defense-in-depth).
+func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (*Execution, Definition, *Step, bool, error) {
+	var emptyDef Definition
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return nil, emptyDef, nil, false, err
+	}
+	if t.Workflow == nil {
+		return nil, emptyDef, nil, false, fmt.Errorf("task %s has no active workflow", taskID)
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "workflow_terminal",
+			"state", string(t.Workflow.State), "step_id", output.StepID)
+		return nil, emptyDef, nil, true, nil
+	}
+	if output.StepID == "" {
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "empty_step_id",
+			"state", string(t.Workflow.State))
+		return nil, emptyDef, nil, true, nil
+	}
+	if output.StepID != t.Workflow.CurrentStep {
+		e.logger.Debug("workflow.advance.skip",
+			"task_id", taskID, "reason", "stale_step",
+			"output_step", output.StepID, "current_step", t.Workflow.CurrentStep,
+			"agent_id", output.AgentID)
+		return nil, emptyDef, nil, true, nil
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return nil, emptyDef, nil, false, err
+	}
+	currentStep := def.StepByID(output.StepID)
+	if currentStep == nil {
+		return nil, emptyDef, nil, false, fmt.Errorf("step %s not found in workflow %s", output.StepID, def.ID)
+	}
+
+	if currentStep.Type == StepWaitHuman && output.AgentID != "" {
+		if _, set := t.Workflow.Variables["human_action"]; !set {
+			e.logger.Debug("workflow.advance.skip",
+				"task_id", taskID, "reason", "wait_human_no_action",
+				"step", output.StepID, "agent_id", output.AgentID)
+			return nil, emptyDef, nil, true, nil
+		}
+	}
+
+	return t.Workflow, def, currentStep, false, nil
 }
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -427,12 +468,23 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string)
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
 		e.logger.Debug("workflow.agent-complete.terminal",
 			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(agentID)
 		return
 	}
 	if t.Workflow.CurrentStep == "" {
 		e.logger.Debug("workflow.agent-complete.no-current-step",
 			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(agentID)
 		return
+	}
+
+	// Resolve the step this agent was actually spawned for. Fallback to the
+	// workflow's current step for agents that were never tracked (recovery
+	// flows calling with synthetic IDs). The resolved ID is then checked
+	// against the current step inside AdvanceStep to drop stale completions.
+	spawnedStep, tracked := e.lookupAgentStep(agentID)
+	if !tracked {
+		spawnedStep = t.Workflow.CurrentStep
 	}
 
 	status := "completed"
@@ -441,13 +493,33 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string)
 	}
 
 	if err := e.AdvanceStep(taskID, StepOutput{
-		StepID:  t.Workflow.CurrentStep,
+		StepID:  spawnedStep,
 		Status:  status,
 		Output:  result,
 		AgentID: agentID,
 	}); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 	}
+	e.clearAgentStep(agentID)
+}
+
+// lookupAgentStep returns the stepID an agent was spawned for and whether it
+// was tracked. Untracked agents fall back to the workflow's current step.
+func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	stepID, ok := e.agentSteps[agentID]
+	return stepID, ok
+}
+
+// clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.
+func (e *Engine) clearAgentStep(agentID string) {
+	if agentID == "" {
+		return
+	}
+	e.mu.Lock()
+	delete(e.agentSteps, agentID)
+	e.mu.Unlock()
 }
 
 // ResumeStalled finds tasks with running/waiting workflows where no agent
@@ -485,6 +557,20 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 		if e.agents.HasRunningAgent(t.ID) {
+			continue
+		}
+		// Skip tasks whose step is currently being dispatched. Interactive
+		// spawns (worktree creation, rebase, agent process start) take
+		// several seconds during which no agent is yet registered — without
+		// this guard the ticker would spawn a duplicate and the second
+		// agent's completion would corrupt the workflow at the wait_human
+		// gate.
+		e.mu.Lock()
+		_, dispatching := e.inflight[t.ID]
+		e.mu.Unlock()
+		if dispatching {
+			e.logger.Debug("workflow.resume-stalled.skip",
+				"task_id", t.ID, "reason", "inflight", "step", step.ID)
 			continue
 		}
 
@@ -667,6 +753,13 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}
+
+	// Track which step this agent was spawned for so HandleAgentComplete
+	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
+	// race) rather than blindly crediting the current step.
+	e.mu.Lock()
+	e.agentSteps[agentID] = step.ID
+	e.mu.Unlock()
 
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID)
