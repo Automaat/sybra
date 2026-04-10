@@ -118,6 +118,8 @@ export namespace agent {
 	    // Go type: time
 	    timestamp: any;
 	    raw?: number[];
+	    errorType?: string;
+	    errorStatus?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConvoEvent(source);
@@ -137,6 +139,8 @@ export namespace agent {
 	        this.isPartial = source["isPartial"];
 	        this.timestamp = this.convertValues(source["timestamp"], null);
 	        this.raw = source["raw"];
+	        this.errorType = source["errorType"];
+	        this.errorStatus = source["errorStatus"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -165,6 +169,8 @@ export namespace agent {
 	    input_tokens?: number;
 	    output_tokens?: number;
 	    subtype?: string;
+	    error_type?: string;
+	    error_status?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new StreamEvent(source);
@@ -179,6 +185,8 @@ export namespace agent {
 	        this.input_tokens = source["input_tokens"];
 	        this.output_tokens = source["output_tokens"];
 	        this.subtype = source["subtype"];
+	        this.error_type = source["error_type"];
+	        this.error_status = source["error_status"];
 	    }
 	}
 	

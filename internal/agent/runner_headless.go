@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -134,28 +135,75 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		if prevLen > len(all) {
 			prevLen = len(all)
 		}
-		if a.Provider == "claude" && is529Error(stderrOut, all[prevLen:]) {
+		if a.Provider == "claude" && shouldRetry(stderrOut, all[prevLen:], m.logger) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// is529Error detects Anthropic API 529 (overloaded) from stderr output or stream events.
-func is529Error(stderrOut string, streamEvents []StreamEvent) bool {
-	lower := strings.ToLower(stderrOut)
-	if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
-		return true
-	}
+// shouldRetry returns true when stderrOut or streamEvents indicate an Anthropic
+// 529 (overloaded) transient error that warrants a backoff retry.
+//
+// Structured fields on StreamEvent (ErrorType, ErrorStatus) are checked first.
+// Substring matching is used as a fallback and triggers a Warn log so format
+// regressions surface in logs without silently breaking retries.
+func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logger) bool {
 	for _, e := range streamEvents {
 		if e.Type == "result" && e.Subtype == "error" {
-			c := strings.ToLower(e.Content)
-			if strings.Contains(c, "529") || strings.Contains(c, "overloaded") {
+			if e.ErrorType == "overloaded_error" || e.ErrorStatus == 529 {
 				return true
 			}
 		}
 	}
+	// Substring fallback: keeps working if Anthropic changes the error envelope.
+	if substringMatch529(stderrOut) {
+		warnSubstringFallback(logger)
+		return true
+	}
+	for _, e := range streamEvents {
+		if e.Type == "result" && e.Subtype == "error" && substringMatch529(e.Content) {
+			warnSubstringFallback(logger)
+			return true
+		}
+	}
 	return false
+}
+
+// shouldRetryConvo is the ConvoEvent variant of shouldRetry.
+func shouldRetryConvo(stderrOut string, convoEvents []ConvoEvent, logger *slog.Logger) bool {
+	for i := range convoEvents {
+		e := &convoEvents[i]
+		if e.Type == "result" && e.Subtype == "error" {
+			if e.ErrorType == "overloaded_error" || e.ErrorStatus == 529 {
+				return true
+			}
+		}
+	}
+	if substringMatch529(stderrOut) {
+		warnSubstringFallback(logger)
+		return true
+	}
+	for i := range convoEvents {
+		e := &convoEvents[i]
+		if e.Type == "result" && e.Subtype == "error" && substringMatch529(e.Text) {
+			warnSubstringFallback(logger)
+			return true
+		}
+	}
+	return false
+}
+
+func substringMatch529(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "529") || strings.Contains(lower, "overloaded")
+}
+
+func warnSubstringFallback(logger *slog.Logger) {
+	if logger != nil {
+		logger.Warn("agent.retry.substring-fallback",
+			"hint", "structured error fields absent; check if Anthropic changed error format")
+	}
 }
 
 func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer) {
@@ -336,6 +384,13 @@ func parseClaudeStreamEvent(line []byte) (StreamEvent, error) {
 		}
 		if v, ok := raw["total_output_tokens"].(float64); ok {
 			event.OutputTokens = int(v)
+		}
+		// Parse structured error envelope: {"type":"overloaded_error","status":529,...}
+		if errBlock, ok := raw["error"].(map[string]any); ok {
+			event.ErrorType, _ = errBlock["type"].(string)
+			if status, ok := errBlock["status"].(float64); ok {
+				event.ErrorStatus = int(status)
+			}
 		}
 
 	default:
