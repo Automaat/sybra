@@ -242,6 +242,10 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		e.logger.Debug("workflow.advance.skip", "task_id", taskID, "reason", "already_advancing")
 		return nil
 	}
+	// Released explicitly before executeSteps (below) so the dispatched
+	// agent's completion callback isn't dropped as "already_advancing"
+	// when it races with the outer call. Deferred release is idempotent
+	// and covers every early-return path.
 	defer e.releaseInflight(taskID)
 
 	wfExec, def, currentStep, skip, err := e.loadAdvanceContext(taskID, output)
@@ -272,6 +276,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 				return err
 			}
+			e.releaseInflight(taskID)
 			return e.executeSteps(taskID, &def, currentStep, wfExec)
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
@@ -294,6 +299,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
+	e.releaseInflight(taskID)
 	return e.executeSteps(taskID, &def, nextStep, wfExec)
 }
 

@@ -41,15 +41,15 @@ func TestOrchestratorService_StartOrchestrator_Codex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd, err := svc.tmux.PaneCommand(orchestratorSession)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(cmd, "codex") {
-		t.Fatalf("pane command = %q, want command containing codex", cmd)
-	}
 	waitFor(t, 2*time.Second, "fake codex invoked", func() bool {
 		_, err := os.Stat(argsLog)
 		return err == nil
+	})
+	waitFor(t, 2*time.Second, "pane command is codex", func() bool {
+		cmd, err := svc.tmux.PaneCommand(orchestratorSession)
+		if err != nil {
+			return false
+		}
+		return strings.Contains(cmd, "codex")
 	})
 }
