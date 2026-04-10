@@ -10,6 +10,7 @@ type RunRecord struct {
 	Mode         string    `json:"mode"`
 	Role         string    `json:"role"`
 	Model        string    `json:"model,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
 	CostUSD      float64   `json:"costUsd"`
 	DurationS    float64   `json:"durationS"`
 	InputTokens  int       `json:"inputTokens,omitempty"`
@@ -45,5 +46,6 @@ type StatsResponse struct {
 	ByMode     []GroupedStat `json:"byMode"`
 	ByRole     []GroupedStat `json:"byRole"`
 	ByModel    []GroupedStat `json:"byModel"`
+	ByProvider []GroupedStat `json:"byProvider"`
 	RecentRuns []RunRecord   `json:"recentRuns"`
 }

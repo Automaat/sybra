@@ -109,7 +109,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	if err != nil {
 		return nil, err
 	}
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "task_type": string(t.TaskType)})
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Mode:      effMode,
@@ -181,7 +181,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		return err
 	}
 
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType)})
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,

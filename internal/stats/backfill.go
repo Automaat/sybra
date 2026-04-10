@@ -50,6 +50,9 @@ func (s *Store) Backfill(auditDir string) error {
 		} else {
 			r.Outcome = "failed"
 		}
+		if v, ok := ev.Data["provider"].(string); ok {
+			r.Provider = v
+		}
 
 		s.runs = append(s.runs, r)
 	}
