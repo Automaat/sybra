@@ -3,6 +3,7 @@ name: synapse-evaluate
 description: Evaluate completed Synapse tasks — determine status transition and link PRs. Use when asked to evaluate task completion.
 allowed-tools: Bash
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # Synapse Task Evaluation
@@ -64,3 +65,28 @@ Based ONLY on the agent result text:
 ```bash
 synapse-cli --json update <id> --status <new-status>
 ```
+
+<example>
+Input: Agent result text contains `https://github.com/acme/repo/pull/42` and "Successfully created PR".
+
+Actions:
+```bash
+synapse-cli --json update task-abc --pr 42
+synapse-cli --json update task-abc --status in-review
+```
+</example>
+
+<example>
+Input: Agent result text contains "Error: rate limit exceeded" with no PR reference.
+
+Actions:
+```bash
+synapse-cli --json update task-abc --status human-required
+```
+</example>
+
+<example>
+Input: Agent result says "Refactored auth.go, all tests pass" but no branch/PR reference.
+
+Actions: status=`human-required` (partial work, no push detected).
+</example>

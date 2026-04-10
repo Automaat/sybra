@@ -73,11 +73,20 @@ Check if the title looks like natural-language/casual instruction rather than a 
 
 If detected, rewrite the title as a concise, imperative, structured task title. Move the original freeform text into the body so context is preserved.
 
-Examples:
-- "in synapse i often write random stuff as task name" → "feat(triage): rewrite freeform titles into structured task titles"
-- "i think we should add auth" → "feat(auth): add authentication"
-- "make the button blue" → "fix(ui): change button color to blue"
-- "we should probably fix the login bug" → "fix(auth): resolve login failure"
+<example>
+Input title: "in synapse i often write random stuff as task name"
+Output title: "feat(triage): rewrite freeform titles into structured task titles"
+</example>
+
+<example>
+Input title: "i think we should add auth"
+Output title: "feat(auth): add authentication"
+</example>
+
+<example>
+Input title: "make the button blue"
+Output title: "fix(ui): change button color to blue"
+</example>
 
 Use conventional commit format (`type(scope): description`) when the domain/type is clear. Otherwise use a plain imperative title.
 

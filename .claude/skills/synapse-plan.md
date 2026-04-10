@@ -1,7 +1,7 @@
 ---
 name: synapse-plan
 description: Plan Synapse tasks — analyze scope, explore codebase, produce implementation plan without writing code. Use when asked to plan a task.
-allowed-tools: Bash, Read, Grep, Glob, WebFetch
+allowed-tools: Bash, Read, Glob, WebFetch
 user-invocable: true
 ---
 
@@ -83,3 +83,41 @@ The user may send feedback in the same chat session. When feedback arrives:
 - Flag anything ambiguous that needs human input
 - Do NOT write code, create files, or make any changes
 - Do NOT exit after publishing the plan — keep the session alive for review rounds
+
+<example>
+Input: Task `task-abc` body: "Add rate limiting to /api/login endpoint, 5 req/min per IP".
+
+Output plan:
+```markdown
+## Approach
+Middleware using token bucket keyed by client IP. Reuse existing `internal/middleware` package.
+
+## Files to Change
+- `internal/middleware/ratelimit.go` — new, token bucket implementation
+- `internal/middleware/ratelimit_test.go` — new, table-driven tests
+- `cmd/api/main.go` — wire middleware into `/api/login` route
+
+## Steps
+1. Add `golang.org/x/time/rate` to go.mod
+2. Implement `NewIPLimiter(rps, burst)` returning `func(http.Handler) http.Handler`
+3. Write tests covering allow/deny/reset scenarios
+4. Wire into login route in main.go
+
+## Risks
+- Memory growth from IP map — mitigate with LRU eviction (cap 10k entries)
+- Behind proxy: read `X-Forwarded-For` header, trust only proxy range
+```
+
+Then:
+```bash
+synapse-cli --json update task-abc --plan "<plan above>"
+synapse-cli --json update task-abc --status plan-review
+```
+Stay at prompt, wait for feedback.
+</example>
+
+<example>
+Input: User feedback "also add metrics for blocked requests".
+
+Action: Revise Steps section to add prometheus counter, re-publish plan, set status plan-review, wait again. Do NOT re-read files already explored.
+</example>
