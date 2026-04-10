@@ -612,8 +612,6 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepParallel:
-			return e.execParallel(taskID, step, wfExec)
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue:
 			// handled below as sync steps
 		default:
@@ -920,11 +918,6 @@ func parseIssueURL(rawURL string) (repo string, number int) {
 		return "", 0
 	}
 	return parts[0] + "/" + parts[1], n
-}
-
-func (e *Engine) execParallel(_ string, _ *Step, _ *Execution) error {
-	// Parallel execution is deferred to Phase 2.
-	return fmt.Errorf("parallel steps not yet implemented")
 }
 
 func taskFields(t TaskInfo) map[string]string {
