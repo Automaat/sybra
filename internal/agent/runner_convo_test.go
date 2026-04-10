@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestParseConvoEvent_RawIsIndependentOfScannerBuffer locks in the fix
+// TestParseClaudeLine_ConvoRawIsIndependentOfScannerBuffer locks in the fix
 // for a JSON marshal crash observed in production:
 //
 //	json: error calling MarshalJSON for type json.RawMessage:
@@ -22,10 +22,9 @@ import (
 //
 // The test forces the scanner to refill its buffer (by using a small
 // buffer relative to the total input) so that the first line's memory
-// is overwritten by subsequent reads. Without the fix in
-// parseConvoEvent, the event captured from the first Scan has a Raw
-// whose bytes are now garbage.
-func TestParseConvoEvent_RawIsIndependentOfScannerBuffer(t *testing.T) {
+// is overwritten by subsequent reads. ParseClaudeLine must copy the raw
+// bytes so ClaudeEvent.Raw stays valid after the scanner advances.
+func TestParseClaudeLine_ConvoRawIsIndependentOfScannerBuffer(t *testing.T) {
 	// Each line is large enough that the scanner's tiny buffer (below)
 	// must shift+refill between lines, evicting the previous line's
 	// bytes from the memory region that scanner.Bytes() returned.
@@ -43,11 +42,11 @@ func TestParseConvoEvent_RawIsIndependentOfScannerBuffer(t *testing.T) {
 	// Deliberately smaller than one line to force repeated refills.
 	scanner.Buffer(make([]byte, 0, 64), 4096)
 
-	var events []ConvoEvent
+	var events []ClaudeEvent
 	for scanner.Scan() {
-		ev, err := parseConvoEvent(scanner.Bytes())
+		ev, err := ParseClaudeLine(scanner.Bytes())
 		if err != nil {
-			t.Fatalf("parseConvoEvent: %v", err)
+			t.Fatalf("ParseClaudeLine: %v", err)
 		}
 		events = append(events, ev)
 	}
