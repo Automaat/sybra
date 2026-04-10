@@ -75,7 +75,8 @@ type Step struct {
 	Name   string       `yaml:"name" json:"name"`
 	Type   StepType     `yaml:"type" json:"type"`
 	Config StepConfig   `yaml:"config" json:"config"`
-	Next   []Transition `yaml:"next,omitempty" json:"next"`
+	Next     []Transition `yaml:"next,omitempty" json:"next"`
+	Parallel []Step       `yaml:"parallel,omitempty" json:"parallel"`
 
 	// Position stores x,y for the graph editor (not used by engine).
 	Position *Position `yaml:"position,omitempty" json:"position"`
