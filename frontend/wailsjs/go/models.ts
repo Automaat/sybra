@@ -269,6 +269,7 @@ export namespace config {
 	    enabled: boolean;
 	    apiToken: string;
 	    projectId: string;
+	    defaultProjectId: string;
 	    pollSeconds: number;
 	
 	    static createFrom(source: any = {}) {
@@ -280,6 +281,7 @@ export namespace config {
 	        this.enabled = source["enabled"];
 	        this.apiToken = source["apiToken"];
 	        this.projectId = source["projectId"];
+	        this.defaultProjectId = source["defaultProjectId"];
 	        this.pollSeconds = source["pollSeconds"];
 	    }
 	}

@@ -138,13 +138,14 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		title, branch, number,
 	)
 
+	ciFailure := string(github.PRIssueCIFailure)
 	vars := map[string]string{
 		"prompt":                prompt,
-		"pr_issue_kind":         "ci_failure",
+		"pr_issue_kind":         ciFailure,
 		workflow.WorkflowVarDir: dir,
 	}
 	wfID, err := s.workflowEngine.DispatchEvent(t.ID, "pr.event",
-		map[string]string{"pr.issue_kind": "ci_failure"}, vars)
+		map[string]string{"pr.issue_kind": ciFailure}, vars)
 	if err != nil {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			s.logger.Info("renovate-fix.workflow-already-active", "task_id", t.ID)
@@ -153,7 +154,7 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		return fmt.Errorf("dispatch pr.event: %w", err)
 	}
 	if wfID == "" {
-		return fmt.Errorf("no workflow matched pr.event for ci_failure")
+		return fmt.Errorf("no workflow matched pr.event for %s", ciFailure)
 	}
 
 	if s.audit != nil {

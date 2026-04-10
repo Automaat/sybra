@@ -5,8 +5,8 @@ type PRIssueKind string
 
 const (
 	PRIssueConflict     PRIssueKind = "conflict"
-	PRIssueCIFailure    PRIssueKind = "ci-failure"
-	PRIssueReadyToMerge PRIssueKind = "ready-to-merge"
+	PRIssueCIFailure    PRIssueKind = "ci_failure"
+	PRIssueReadyToMerge PRIssueKind = "ready_to_merge"
 )
 
 // PRIssue represents a detected problem on a PR linked to a task.

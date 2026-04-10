@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 )
@@ -62,7 +63,7 @@ func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 		return renovatePollSlow
 	}
 
-	h.emit("renovate:updated", prs)
+	h.emit(events.RenovateUpdated, prs)
 	h.logger.Debug("renovate.poll", "count", len(prs))
 
 	for i := range prs {

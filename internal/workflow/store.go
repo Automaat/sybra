@@ -121,5 +121,11 @@ func (s *Store) parseFile(path string) (Definition, error) {
 	if err := yaml.Unmarshal(data, &def); err != nil {
 		return Definition{}, fmt.Errorf("unmarshal workflow %s: %w", filepath.Base(path), err)
 	}
+	// Warn-but-return on semantic validation failures so a single broken
+	// hand-edited workflow can't take the whole app offline. Save() still
+	// rejects strictly, so GUI edits get caught at write time.
+	if vErr := def.Validate(); vErr != nil {
+		slog.Default().Warn("workflow.validate", "file", filepath.Base(path), "id", def.ID, "err", vErr)
+	}
 	return def, nil
 }
