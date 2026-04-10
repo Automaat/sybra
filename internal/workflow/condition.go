@@ -5,6 +5,108 @@ import (
 	"strings"
 )
 
+// KnownTriggerFields is the authoritative set of field names that engine
+// callers populate for trigger and transition evaluation. Workflow YAML must
+// reference only these keys (plus the "vars." prefix for step-local variables
+// seeded by DispatchEvent/StartWorkflowWithVars callers).
+//
+// Keep this in lock-step with taskFields() in engine.go and with the extras
+// that DispatchEvent callers inject (e.g. "pr.issue_kind" from app_reviews
+// and svc_integrations). A field referenced in YAML but missing from here
+// will silently never match — exactly the class of bug that left auto-merge
+// dead code, since its "project.type" condition had no populating caller.
+var KnownTriggerFields = map[string]bool{
+	// Populated by engine.taskFields for every dispatch/transition.
+	"task.id":         true,
+	"task.title":      true,
+	"task.status":     true,
+	"task.tags":       true,
+	"task.agent_mode": true,
+	"task.project_id": true,
+	"task.branch":     true,
+	"task.pr_number":  true,
+	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
+	// app_reviews.go and svc_integrations.go.
+	"pr.issue_kind": true,
+}
+
+// isKnownField reports whether a YAML trigger/transition field name refers
+// to a key the engine will actually populate. The "vars." prefix is open-
+// ended because step variables are seeded dynamically by callers.
+func isKnownField(field string) bool {
+	if field == "" {
+		return true
+	}
+	if strings.HasPrefix(field, "vars.") {
+		return true
+	}
+	return KnownTriggerFields[field]
+}
+
+// FieldAllowedValues maps enum-shaped trigger fields to the finite set of
+// values the engine may actually see at runtime. Workflow YAML conditions
+// that compare against an enum must pick a value from this set, otherwise
+// the condition is dead on arrival (the classic ci-failure vs ci_failure
+// shape of bug).
+//
+// Only enum-shaped scalar fields belong here. Free-form fields (task.id,
+// task.title, task.tags, task.branch, task.project_id) and vars.* have no
+// registered set and skip enum validation.
+//
+// Keep this in lock-step with:
+//   - task.AllStatuses() in internal/task/model.go  → "task.status"
+//   - task.AllTaskTypes()                           → "task.task_type"
+//   - github.PRIssueKind constants in internal/github/monitor.go
+//     → "pr.issue_kind"
+//
+// The main-package test TestWorkflowFieldAllowedValues_MatchEnumSources
+// cross-checks this map against those enum sources at build time so any
+// drift (adding a new Status, renaming a kind) fails CI immediately.
+var FieldAllowedValues = map[string]map[string]bool{
+	"task.status": {
+		"new": true, "todo": true, "in-progress": true, "in-review": true,
+		"planning": true, "plan-review": true, "testing": true,
+		"test-plan-review": true, "human-required": true, "done": true,
+	},
+	"task.task_type": {
+		"normal": true, "debug": true, "research": true,
+	},
+	"pr.issue_kind": {
+		"conflict": true, "ci_failure": true, "ready_to_merge": true,
+	},
+}
+
+// checkEnumValue returns the unknown values (if any) for a condition that
+// targets an enum-shaped field. For the csv-style operators (in/not_in)
+// the comparison value is split and each entry checked independently.
+// Operators that don't do equality (contains, not_contains, exists) skip
+// enum validation because their value semantics differ.
+func checkEnumValue(field, operator, value string) []string {
+	allowed, ok := FieldAllowedValues[field]
+	if !ok {
+		return nil
+	}
+	switch operator {
+	case "equals", "not_equals":
+		if value != "" && !allowed[value] {
+			return []string{value}
+		}
+	case "in", "not_in":
+		var bad []string
+		for v := range strings.SplitSeq(value, ",") {
+			trimmed := strings.TrimSpace(v)
+			if trimmed == "" {
+				continue
+			}
+			if !allowed[trimmed] {
+				bad = append(bad, trimmed)
+			}
+		}
+		return bad
+	}
+	return nil
+}
+
 // EvalCondition evaluates a condition against a context map of field→value.
 // Fields use dot notation: "task.status", "task.tags", "vars.human_action".
 //

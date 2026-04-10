@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
+	synapsegithub "github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/workflow"
@@ -1031,8 +1032,13 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Dispatch with the exported PRIssueCIFailure constant (same call shape as
+	// app_reviews.go:handlePRIssue). Using the constant here — instead of a
+	// literal "ci_failure" — is the regression guard: if anyone renames the
+	// constant back to "ci-failure", this dispatch stops matching test-pr-fix
+	// (and, by extension, the real builtin pr-fix.yaml).
 	wfID, err := env.engine.DispatchEvent(created.ID, "pr.event",
-		map[string]string{"pr.issue_kind": "ci_failure"},
+		map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueCIFailure)},
 		map[string]string{"prompt": "fix the CI"})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -1044,7 +1050,7 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	// Second dispatch while the first is still running must be rejected —
 	// double-dispatch guard prevents competing workflows on the same task.
 	if _, err := env.engine.DispatchEvent(created.ID, "pr.event",
-		map[string]string{"pr.issue_kind": "ci_failure"}, nil); !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueCIFailure)}, nil); !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 		t.Errorf("re-dispatch err = %v, want ErrWorkflowAlreadyActive", err)
 	}
 
@@ -1073,6 +1079,132 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 		if !steps[want] {
 			t.Errorf("missing step %q in history, got %v", want, steps)
 		}
+	}
+}
+
+// testAutoMergeWorkflowYAML mirrors the real builtin auto-merge.yaml trigger
+// (value: ready_to_merge) but replaces the shell merge step with a trivial
+// set_status step so the workflow can run to completion in e2e without
+// touching real GitHub. Used to verify dispatch-by-constant for
+// PRIssueReadyToMerge.
+const testAutoMergeWorkflowYAML = `id: test-auto-merge
+name: Test Auto Merge
+trigger:
+  on: pr.event
+  conditions:
+    - field: pr.issue_kind
+      operator: equals
+      value: ready_to_merge
+steps:
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+// TestE2E_DispatchPREvent_ReadyToMerge verifies that dispatching a pr.event
+// with string(PRIssueReadyToMerge) as the issue kind matches a workflow that
+// declares value: ready_to_merge in its trigger. Companion regression test
+// to TestE2E_DispatchPREvent_FullRun — if the constant is renamed back to
+// "ready-to-merge" with a dash, the dispatch stops matching and this test
+// fails.
+func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
+	env := setupE2E(t, "success")
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "test-auto-merge.yaml"),
+		[]byte(testAutoMergeWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("ready-to-merge task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status": "in-review",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wfID, err := env.engine.DispatchEvent(created.ID, "pr.event",
+		map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueReadyToMerge)},
+		nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "test-auto-merge" {
+		t.Fatalf("wfID = %q, want test-auto-merge", wfID)
+	}
+
+	waitFor(t, 10*time.Second, "test-auto-merge completes", func() bool {
+		tk, gerr := env.tasks.Get(created.ID)
+		if gerr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusDone {
+		t.Errorf("task status = %q, want done", tk.Status)
+	}
+}
+
+// TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers locks in the string
+// values of the PR issue kind constants against the real builtin workflow
+// YAMLs they must match. This is the narrowest possible regression guard
+// for the ci-failure vs ci_failure (and ready-to-merge vs ready_to_merge)
+// dispatch-mismatch bugs: if the constants drift from what the YAML triggers
+// expect, dispatch silently stops matching — exactly the bug this test
+// prevents.
+func TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers(t *testing.T) {
+	cases := []struct {
+		kind     synapsegithub.PRIssueKind
+		wantStr  string
+		yamlFile string // empty when no builtin workflow triggers on this kind
+		needle   string
+	}{
+		{
+			kind:     synapsegithub.PRIssueCIFailure,
+			wantStr:  "ci_failure",
+			yamlFile: "internal/workflow/builtin/pr-fix.yaml",
+			needle:   "value: conflict,ci_failure",
+		},
+		{
+			kind:    synapsegithub.PRIssueReadyToMerge,
+			wantStr: "ready_to_merge",
+			// No builtin workflow: auto-merge.yaml was removed because
+			// ready_to_merge short-circuits to app_reviews.handleAutoMerge
+			// direct path and never reaches DispatchEvent. The constant is
+			// still locked here so frontend + any new workflow stays in sync.
+		},
+		{
+			kind:     synapsegithub.PRIssueConflict,
+			wantStr:  "conflict",
+			yamlFile: "internal/workflow/builtin/pr-fix.yaml",
+			needle:   "value: conflict,ci_failure",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			if got := string(tc.kind); got != tc.wantStr {
+				t.Errorf("constant = %q, want %q", got, tc.wantStr)
+			}
+			if tc.yamlFile == "" {
+				return
+			}
+			raw, err := os.ReadFile(tc.yamlFile)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.yamlFile, err)
+			}
+			if !strings.Contains(string(raw), tc.needle) {
+				t.Errorf("%s missing trigger %q — dispatch would not match", tc.yamlFile, tc.needle)
+			}
+		})
 	}
 }
 
