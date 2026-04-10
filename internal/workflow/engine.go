@@ -20,6 +20,16 @@ const (
 	shellTimeout   = 30 * time.Second
 )
 
+// prVerifyBackoffs controls the retry schedule after editing a PR
+// body to add a closing reference. GitHub populates
+// closingIssuesReferences asynchronously, so a verify fetch right
+// after gh pr edit commonly reads stale data; back off and retry.
+// Indirected for tests — test init swaps in zeros to skip real waits.
+var (
+	prVerifyBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 6 * time.Second}
+	prVerifySleep    = time.Sleep
+)
+
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
 	ID           string
@@ -901,20 +911,31 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		return StepOutput{StepID: step.ID, Status: "failed", Output: "edit failed: " + editErr.Error()}, nil
 	}
 
-	verified, _, verifyErr := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
-	if verifyErr != nil || !slices.Contains(verified, issueNum) {
-		reason := "PR does not close linked issue after auto-fix"
-		if verifyErr != nil {
-			reason += ": " + verifyErr.Error()
+	// Verify with retry — GitHub updates closingIssuesReferences
+	// asynchronously after a body edit, so the first fetch can miss
+	// refs that populate seconds later. If every retry still misses,
+	// trust the body: we just wrote "Closes <url>" into it with a
+	// known-good format, so the link will resolve once GitHub catches
+	// up. Only edit failures (above) flip to human-required.
+	var verifyErr error
+	for attempt := 0; attempt <= len(prVerifyBackoffs); attempt++ {
+		if attempt > 0 {
+			prVerifySleep(prVerifyBackoffs[attempt-1])
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
-			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
+		var verified []int
+		verified, _, verifyErr = e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+		if verifyErr == nil && slices.Contains(verified, issueNum) {
+			e.logger.Info("workflow.pr-close.linked", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum, "attempt", attempt)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: fmt.Sprintf("linked issue #%d", issueNum)}, nil
 		}
-		return StepOutput{StepID: step.ID, Status: "failed", Output: reason}, nil
 	}
 
-	e.logger.Info("workflow.pr-close.linked", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum)
-	return StepOutput{StepID: step.ID, Status: "completed", Output: fmt.Sprintf("linked issue #%d", issueNum)}, nil
+	e.logger.Warn("workflow.pr-close.verify-lag", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum, "err", verifyErr)
+	msg := fmt.Sprintf("edited body to close #%d; verification lagged — trusting body contents", issueNum)
+	if verifyErr != nil {
+		msg = fmt.Sprintf("edited body to close #%d; last verify err: %s — trusting body contents", issueNum, verifyErr.Error())
+	}
+	return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 }
 
 // parseIssueURL extracts owner/repo and issue number from a GitHub

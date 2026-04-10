@@ -15,6 +15,13 @@ import (
 
 // --- Test helpers ---
 
+func init() {
+	// Skip real backoff waits in the ensure_pr_closes_issue verify
+	// retry loop — tests drive attempt counts via the linker queue.
+	prVerifySleep = func(time.Duration) {}
+	prVerifyBackoffs = []time.Duration{0, 0, 0}
+}
+
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -1772,16 +1779,23 @@ func TestExecEnsurePRClosesIssue_EditFailureFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEnsurePRClosesIssue_VerifyFailureFlipsHumanRequired(t *testing.T) {
+// Verification lag is a false negative: gh pr edit succeeded, the
+// body contains "Closes <url>", but GitHub hasn't re-parsed
+// closingIssuesReferences yet. The step must trust the body and
+// leave the task status alone instead of flipping to human-required.
+func TestExecEnsurePRClosesIssue_VerifyLagTrustsBody(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
+			// 1 pre-check + 4 verify attempts, all miss.
 			{issues: nil, body: "body"},
-			// Second fetch still does not contain issue 7 — the edit didn't take.
-			{issues: []int{99}, body: "body"},
+			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
 		},
 	}
 	engine.SetPRLinker(linker)
@@ -1792,13 +1806,97 @@ func TestExecEnsurePRClosesIssue_VerifyFailureFlipsHumanRequired(t *testing.T) {
 		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
 		Issue: "https://github.com/owner/repo/issues/7",
 	}
-	out, _ := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if out.Status != "failed" {
-		t.Errorf("Status = %q, want failed", out.Status)
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed (verification lag is soft-fail)", out.Status)
+	}
+	if !strings.Contains(out.Output, "trusting body") {
+		t.Errorf("Output = %q, want 'trusting body' message", out.Output)
 	}
 	after, _ := tasks.GetTask("t1")
-	if after.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", after.Status)
+	if after.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
+	}
+	// 1 pre-check + 1 initial verify + 3 retries = 5 fetches.
+	if linker.getCalls != 5 {
+		t.Errorf("GetClosingIssues calls = %d, want 5 (pre-check + 4 verify attempts)", linker.getCalls)
+	}
+}
+
+// Verification should retry: first post-edit fetch misses (GitHub
+// lagging), second fetch sees the parsed closing reference.
+func TestExecEnsurePRClosesIssue_VerifyRetrySucceeds(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{
+			{issues: nil, body: "body"},                    // pre-check miss → triggers edit
+			{issues: nil, body: "body\n\nCloses ..."},      // verify attempt 0: still stale
+			{issues: []int{7}, body: "body\n\nCloses ..."}, // verify attempt 1: parsed
+		},
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "linked issue #7") {
+		t.Errorf("out = %+v, want completed/linked issue #7", out)
+	}
+	if linker.getCalls != 3 {
+		t.Errorf("GetClosingIssues calls = %d, want 3 (pre-check + 2 verify attempts)", linker.getCalls)
+	}
+}
+
+// Verification fetch that errors on every retry is still a soft-fail:
+// the edit went through, so trust the body we wrote.
+func TestExecEnsurePRClosesIssue_VerifyErrorTrustsBody(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{
+			{issues: nil, body: "body"},
+			{err: errors.New("network timeout")},
+			{err: errors.New("network timeout")},
+			{err: errors.New("network timeout")},
+			{err: errors.New("network timeout")},
+		},
+	}
+	engine.SetPRLinker(linker)
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
+
+	ti := TaskInfo{
+		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+		Issue: "https://github.com/owner/repo/issues/7",
+	}
+	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "trusting body") {
+		t.Errorf("Output = %q, want 'trusting body' message", out.Output)
+	}
+	after, _ := tasks.GetTask("t1")
+	if after.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
 	}
 }
 
