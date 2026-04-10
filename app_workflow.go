@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
@@ -97,8 +99,12 @@ type agentAdapter struct {
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
-	// For implementation agents, use the full orchestrator (handles worktree, project assignment).
-	if role == "" || role == string(agent.RoleImplementation) {
+	// For implementation agents without a pre-staged dir, use the full
+	// orchestrator (handles worktree, project assignment). A workflow that
+	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
+	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
+	// caller-provided dir directly.
+	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
 		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt, oneShot)
 		if err != nil {
 			return "", err
@@ -129,13 +135,22 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string,
 	// dir is provided and the step declared needs_worktree.
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
-		if t.ProjectID != "" {
-			d, wtErr := a.agentOrch.worktrees.PrepareForTask(t)
-			if wtErr != nil {
-				return "", wtErr
-			}
-			cfg.Dir = d
+		if t.ProjectID == "" {
+			return "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
 		}
+		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t)
+		if wtErr != nil {
+			return "", wtErr
+		}
+		cfg.Dir = d
+	}
+	if cfg.Dir == "" {
+		// System-role fallback (triage, plan, eval, …): no worktree required,
+		// but the agent process still needs an existing cwd. Use the synapse
+		// home dir rather than letting the process inherit Synapse's own cwd
+		// (which in dev mode would be the synapse source repo — the bug that
+		// caused branch changes on main).
+		cfg.Dir = config.HomeDir()
 	}
 
 	ag, err := a.agents.Run(cfg)

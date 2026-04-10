@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -70,6 +71,20 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 	return m, emitted
 }
 
+// startTestAgent starts an agent in a fresh working directory, satisfying the
+// Run guard that requires a valid, existing working dir. Uses os.MkdirTemp
+// with a best-effort cleanup (not t.TempDir) because background goroutines
+// spawned by runHeadless may still be touching the dir when the test ends.
+func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string, allowedTools []string) (*Agent, error) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "synapse-agent-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
+}
+
 func TestNewManager(t *testing.T) {
 	m, _ := newTestManager(t)
 	if m == nil {
@@ -82,7 +97,7 @@ func TestNewManager(t *testing.T) {
 
 func TestStartAgentUnknownMode(t *testing.T) {
 	m, _ := newTestManager(t)
-	_, err := m.StartAgent("task-1", "Test Task", "invalid", "prompt", nil)
+	_, err := startTestAgent(t, m, "task-1", "Test Task", "invalid", "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown mode")
 	}
@@ -92,7 +107,7 @@ func TestStartAgentHeadless(t *testing.T) {
 	m, emitted := newTestManager(t)
 
 	// Start headless agent — will fail to run claude but agent entry is created
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test prompt", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test prompt", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,7 +144,7 @@ func TestStartAgentHeadless(t *testing.T) {
 func TestGetAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +169,7 @@ func TestGetAgentNotFound(t *testing.T) {
 func TestStopAgent(t *testing.T) {
 	m, emitted := newTestManager(t)
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +217,7 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 		mu.Unlock()
 	})
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +286,7 @@ func TestListAgentsMultiple(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	for i := range 3 {
-		_, err := m.StartAgent("task-"+string(rune('1'+i)), "Test Task", "headless", "test", nil)
+		_, err := startTestAgent(t, m, "task-"+string(rune('1'+i)), "Test Task", "headless", "test", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -286,7 +301,7 @@ func TestListAgentsMultiple(t *testing.T) {
 func TestAgentOutput(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +338,7 @@ func TestSanitizeSessionName(t *testing.T) {
 
 func TestStartAgentInteractiveConversational(t *testing.T) {
 	m, _ := newTestManager(t)
-	a, err := m.StartAgent("task-1", "Auth Middleware", "interactive", "build it", nil)
+	a, err := startTestAgent(t, m, "task-1", "Auth Middleware", "interactive", "build it", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -351,7 +366,7 @@ func TestCapturePaneNotFound(t *testing.T) {
 func TestCapturePaneNoTmuxSession(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +380,7 @@ func TestCapturePaneNoTmuxSession(t *testing.T) {
 func TestCapturePaneStoppedAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	a, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +670,7 @@ func TestShutdown(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	for range 3 {
-		_, err := m.StartAgent("task-1", "Test Task", "headless", "test", nil)
+		_, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 		if err != nil {
 			t.Fatal(err)
 		}

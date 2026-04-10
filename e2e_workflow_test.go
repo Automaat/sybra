@@ -65,9 +65,19 @@ type e2eEnv struct {
 	engine       *workflow.Engine
 	wfStore      *workflow.Store
 	taskDir      string
+	agentDir     string // pre-staged working dir injected into run_agent steps
 	scenarioFile string
 	provider     string
 	cancel       context.CancelFunc
+}
+
+// startWorkflow seeds the reserved _dir variable so that run_agent steps have
+// a valid working directory, satisfying the agent.Manager.Run guard that
+// rejects empty Dir. Used in place of env.engine.StartWorkflow in tests.
+func (e *e2eEnv) startWorkflow(taskID, workflowID string) error {
+	return e.engine.StartWorkflowWithVars(taskID, workflowID, map[string]string{
+		workflow.WorkflowVarDir: e.agentDir,
+	})
 }
 
 type providerSpec struct {
@@ -203,12 +213,21 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		engine.HandleAgentComplete(ag.TaskID, ag.ID, result, agentState)
 	})
 
+	// Pre-create a working directory so run_agent steps can satisfy the
+	// Manager.Run guard that rejects empty Dir.
+	agentDir, err := os.MkdirTemp("", "synapse-e2e-agent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
+
 	return &e2eEnv{
 		tasks:    taskMgr,
 		agents:   agentMgr,
 		engine:   engine,
 		wfStore:  wfStore,
 		taskDir:  taskDir,
+		agentDir: agentDir,
 		provider: provider,
 		cancel:   cancel,
 	}
@@ -238,7 +257,7 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -269,7 +288,7 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -320,7 +339,7 @@ func TestE2E_HeadlessAgent_FailExit(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -346,7 +365,7 @@ func TestE2E_WorkflowWithSynapseCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -399,7 +418,7 @@ func TestE2E_FullLifecycle_TriageThenImplement(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -440,7 +459,7 @@ func TestE2E_ProviderMatrix_FullLifecycleSetsReviewStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -467,6 +486,7 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 			Provider: p.provider,
 			Model:    "haiku",
 			Prompt:   "Test model alias",
+			Dir:      t.TempDir(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -508,6 +528,7 @@ func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
 		Model:    "gpt-5.4-mini",
 		Prompt:   "Inspect repo",
 		OneShot:  true,
+		Dir:      t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -549,6 +570,7 @@ func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
 		Provider: "codex",
 		Model:    "gpt-5.4-mini",
 		Prompt:   "Inspect repo",
+		Dir:      t.TempDir(),
 		// No OneShot: agent stays paused after first turn, waiting for prompt.
 	})
 	if err != nil {
@@ -607,7 +629,7 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -655,7 +677,7 @@ func TestE2E_RetryCount(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -689,7 +711,7 @@ func TestE2E_AgentFailure_SetsCorrectStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
 		}
 
@@ -727,7 +749,7 @@ func TestE2E_ResumeStalled(t *testing.T) {
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
 		State:       workflow.ExecRunning,
-		Variables:   make(map[string]string),
+		Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   "in-progress",
@@ -769,7 +791,7 @@ func TestE2E_PlanApproveReject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -854,8 +876,8 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 
 	// Start both workflows concurrently.
 	errCh := make(chan error, 2)
-	go func() { errCh <- env.engine.StartWorkflow(t1.ID, "test-simple") }()
-	go func() { errCh <- env.engine.StartWorkflow(t2.ID, "test-simple") }()
+	go func() { errCh <- env.startWorkflow(t1.ID, "test-simple") }()
+	go func() { errCh <- env.startWorkflow(t2.ID, "test-simple") }()
 
 	for range 2 {
 		if err := <-errCh; err != nil {
@@ -904,7 +926,7 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
 		State:       workflow.ExecWaiting,
-		Variables:   make(map[string]string),
+		Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status":   "in-progress",
@@ -1033,7 +1055,7 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 
 	wfID, err := env.engine.DispatchEvent(created.ID, "pr.event",
 		map[string]string{"pr.issue_kind": "ci_failure"},
-		map[string]string{"prompt": "fix the CI"})
+		map[string]string{"prompt": "fix the CI", workflow.WorkflowVarDir: env.agentDir})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -1171,7 +1193,8 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	}
 
 	wfID, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
-		map[string]string{"task.status": string(task.StatusTesting)}, nil)
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -1235,7 +1258,8 @@ func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
 	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
-		map[string]string{"task.status": string(task.StatusTesting)}, nil); err != nil {
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 
@@ -1373,7 +1397,7 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1457,7 +1481,7 @@ func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "test-simple"); err != nil {
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1719,7 +1743,7 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1776,7 +1800,7 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := env.engine.StartWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
 		t.Fatal(err)
 	}
 

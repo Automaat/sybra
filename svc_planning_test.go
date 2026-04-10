@@ -287,7 +287,9 @@ func stageWaitingPlanReview(t *testing.T, taskSvc *TaskService, taskID string) {
 			WorkflowID:  "simple-task",
 			CurrentStep: "review_plan",
 			State:       workflow.ExecWaiting,
-			Variables:   map[string]string{},
+			// Seed _dir so the plan step the engine resumes after reject has a
+			// valid working directory (the Manager.Run guard requires one).
+			Variables: map[string]string{workflow.WorkflowVarDir: t.TempDir()},
 		},
 	}); err != nil {
 		t.Fatal(err)
