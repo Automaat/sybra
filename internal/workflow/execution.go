@@ -21,6 +21,11 @@ type Execution struct {
 	Variables   map[string]string `yaml:"variables,omitempty" json:"variables"`
 	StartedAt   time.Time         `yaml:"started_at" json:"startedAt"`
 	CompletedAt *time.Time        `yaml:"completed_at,omitempty" json:"completedAt"`
+	// Recovered is set when the execution was advanced by a stale-session
+	// recovery path rather than a live agent result. Cleared after the first
+	// step consumes it. Workflow prompts should use recoveredOrPrev instead of
+	// .Prev.Output to guard against stale content.
+	Recovered bool `yaml:"recovered,omitempty" json:"recovered,omitempty"`
 }
 
 // SetVar sets a variable in the execution context.

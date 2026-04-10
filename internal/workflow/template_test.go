@@ -99,6 +99,67 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
+func TestRecoveredOrPrev(t *testing.T) {
+	t.Parallel()
+	prev := &StepRecord{Output: "agent output"}
+	tests := []struct {
+		name string
+		wf   *Execution
+		prev *StepRecord
+		want string
+	}{
+		{"recovered clears output", &Execution{Recovered: true}, prev, ""},
+		{"not recovered returns prev", &Execution{Recovered: false}, prev, "agent output"},
+		{"nil prev returns empty", &Execution{Recovered: false}, nil, ""},
+		{"nil workflow returns prev", nil, prev, "agent output"},
+		{"nil workflow nil prev", nil, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := recoveredOrPrev(tt.wf, tt.prev)
+			if got != tt.want {
+				t.Errorf("recoveredOrPrev = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderTemplate_RecoveredOrPrev(t *testing.T) {
+	t.Parallel()
+	prev := &StepRecord{Output: "real output"}
+
+	t.Run("recovered returns empty", func(t *testing.T) {
+		t.Parallel()
+		ctx := TemplateContext{
+			Workflow: &Execution{Recovered: true},
+			Prev:     prev,
+		}
+		got, err := RenderTemplate("{{recoveredorprev .Workflow .Prev}}", ctx)
+		if err != nil {
+			t.Fatalf("RenderTemplate: %v", err)
+		}
+		if got != "" {
+			t.Errorf("got %q, want empty on recovery", got)
+		}
+	})
+
+	t.Run("not recovered returns prev output", func(t *testing.T) {
+		t.Parallel()
+		ctx := TemplateContext{
+			Workflow: &Execution{Recovered: false},
+			Prev:     prev,
+		}
+		got, err := RenderTemplate("{{recoveredorprev .Workflow .Prev}}", ctx)
+		if err != nil {
+			t.Fatalf("RenderTemplate: %v", err)
+		}
+		if got != "real output" {
+			t.Errorf("got %q, want %q", got, "real output")
+		}
+	})
+}
+
 func TestGetVar(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

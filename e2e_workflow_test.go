@@ -944,9 +944,13 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Drive the same engine call that recoverStaleInteractive makes.
-	const recoveryMarker = "(recovered stale interactive session — no fresh result)"
-	env.engine.HandleAgentComplete(created.ID, "stale-agent", recoveryMarker, "stopped")
+	// Mirror what recoverStaleInteractive does: set Recovered on the execution,
+	// persist, then drive HandleAgentComplete with an empty result.
+	wfExec.Recovered = true
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"workflow": wfExec}); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.HandleAgentComplete(created.ID, "stale-agent", "", "stopped")
 
 	// Evaluate fires (fake-claude "evaluate" scenario sets status=in-review),
 	// then the workflow reaches ExecCompleted.
@@ -976,8 +980,8 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	if implementRec == nil {
 		t.Fatal("expected 'implement' step record after recovery")
 	}
-	if !strings.Contains(implementRec.Output, "recovered stale") {
-		t.Errorf("implement output = %q, want recovery marker", implementRec.Output)
+	if implementRec.Output != "" {
+		t.Errorf("implement output = %q, want empty (structured recovery, no sentinel string)", implementRec.Output)
 	}
 	if evaluateRec == nil {
 		t.Fatal("expected 'evaluate' step record — recovery should drive the next step")
