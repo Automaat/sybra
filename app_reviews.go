@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -286,6 +287,12 @@ func prMonitorEligible(t *task.Task) bool {
 	default:
 		return false
 	}
+}
+
+func (r *ReviewHandler) Name() string { return "reviews" }
+
+func (r *ReviewHandler) Poll(_ context.Context) time.Duration {
+	return r.pollAndMonitorPRs()
 }
 
 func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
