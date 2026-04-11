@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -2220,5 +2221,161 @@ func TestParseIssueURL(t *testing.T) {
 					tt.url, gotRepo, gotNum, tt.wantRepo, tt.wantNum)
 			}
 		})
+	}
+}
+
+// --- verify_commits step ---
+
+// fakeWorktreeGetter is a scripted WorktreeGetter for tests.
+type fakeWorktreeGetter struct {
+	path string
+	ok   bool
+}
+
+func (f *fakeWorktreeGetter) GetWorktreePath(_ string) (string, bool) {
+	return f.path, f.ok
+}
+
+func newVerifyCommitsStep() *Step {
+	return &Step{ID: "verify", Type: StepVerifyCommits}
+}
+
+// makeGitRepo creates a bare-minimum git repo with an initial commit on main
+// and optionally an extra commit on the current HEAD (simulating a task branch
+// that is ahead of origin/main).
+//
+// Returns the worktree directory path.
+func makeGitRepo(t *testing.T, withExtraCommit bool) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+
+	// Create initial commit so origin/main exists.
+	f := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(f, []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-m", "init")
+
+	// Teach git about a local "remote" so origin/main resolves.
+	// We use the repo itself as its own origin (bare clone not needed for tests).
+	run("remote", "add", "origin", dir)
+	run("fetch", "origin")
+
+	if withExtraCommit {
+		f2 := filepath.Join(dir, "change.txt")
+		if err := os.WriteFile(f2, []byte("change\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run("add", "change.txt")
+		run("commit", "-m", "feat: task work")
+	}
+
+	return dir
+}
+
+func TestExecVerifyCommits_NoGetterSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	// worktrees nil by default
+
+	ti := TaskInfo{ID: "t1"}
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want skipped", out.Output)
+	}
+}
+
+func TestExecVerifyCommits_NoWorktreeSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want skipped", out.Output)
+	}
+}
+
+func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	// Task status must not change.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress", ti.Status)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "no commits") {
+		t.Errorf("Output = %q, want 'no commits'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
 }

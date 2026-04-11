@@ -57,6 +57,14 @@ type TaskProvider interface {
 	SetWorkflow(id string, wf *Execution) error
 }
 
+// WorktreeGetter resolves the filesystem path of a task's git worktree.
+// Returns (path, true) when a worktree exists for the task; ("", false) when
+// none is found. Implementations may stat the path to confirm existence.
+// Engine operates with a nil WorktreeGetter — verify_commits becomes a no-op.
+type WorktreeGetter interface {
+	GetWorktreePath(taskID string) (string, bool)
+}
+
 // PRLinker inspects and updates GitHub pull request metadata for the
 // `ensure_pr_closes_issue` step. Implementations wrap `gh` CLI calls.
 // Engine operates with a nil PRLinker — the step becomes a no-op when
@@ -76,6 +84,7 @@ type Engine struct {
 	tasks       TaskProvider
 	agents      AgentLauncher
 	prLinker    PRLinker
+	worktrees   WorktreeGetter
 	logger      *slog.Logger
 	ctx         context.Context
 	mu          sync.Mutex
@@ -109,6 +118,10 @@ func (e *Engine) Defs() *Store { return e.store }
 // SetPRLinker wires an implementation of PRLinker used by the
 // `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
 func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
+
+// SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
+// Leaving it unset makes the step a no-op.
+func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
 
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
@@ -639,7 +652,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -703,6 +716,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execShell(step, ctx)
 	case StepEnsurePRClosesIssue:
 		return e.execEnsurePRClosesIssue(taskID, step, t)
+	case StepVerifyCommits:
+		return e.execVerifyCommits(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -947,6 +962,50 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		msg = fmt.Sprintf("edited body to close #%d; last verify err: %s — trusting body contents", issueNum, verifyErr.Error())
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+}
+
+// execVerifyCommits checks that the task's branch has at least one commit
+// ahead of origin/main. This is a non-LLM mechanical gate that runs before
+// the eval agent to detect incomplete work without giving eval git access.
+//
+// Skip conditions (no-op, returns "completed"):
+//   - No WorktreeGetter configured
+//   - No worktree found for the task
+//   - git command error (e.g. remote unreachable, detached HEAD)
+//
+// When the branch has no commits ahead of origin/main the task is flipped to
+// human-required with reason "no commits pushed to branch" and the step
+// returns "completed" so the workflow can route to end via a task.status
+// transition condition rather than a failed step.
+func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if e.worktrees == nil {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "log", "origin/main..HEAD", "--oneline")
+	cmd.Dir = wtPath
+	output, err := cmd.Output()
+	if err != nil {
+		e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: git error: " + err.Error()}, nil
+	}
+
+	if strings.TrimSpace(string(output)) == "" {
+		reason := "no commits pushed to branch"
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+		}
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}, nil
+	}
+
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
 // parseIssueURL extracts owner/repo and issue number from a GitHub

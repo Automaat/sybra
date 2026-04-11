@@ -3,19 +3,22 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
+	"github.com/Automaat/synapse/internal/worktree"
 )
 
 // Compile-time interface checks.
 var (
-	_ workflow.TaskProvider  = (*taskAdapter)(nil)
-	_ workflow.AgentLauncher = (*agentAdapter)(nil)
-	_ workflow.PRLinker      = (*prLinkerAdapter)(nil)
+	_ workflow.TaskProvider   = (*taskAdapter)(nil)
+	_ workflow.AgentLauncher  = (*agentAdapter)(nil)
+	_ workflow.PRLinker       = (*prLinkerAdapter)(nil)
+	_ workflow.WorktreeGetter = (*worktreeGetterAdapter)(nil)
 )
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
@@ -89,6 +92,24 @@ func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int
 
 func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
 	return github.EditPRBody(repo, prNumber, body)
+}
+
+// worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.
+type worktreeGetterAdapter struct {
+	tasks *task.Manager
+	mgr   *worktree.Manager
+}
+
+func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return "", false
+	}
+	path := a.mgr.PathFor(t)
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	return path, true
 }
 
 // agentAdapter bridges agent.Manager + AgentOrchestrator → workflow.AgentLauncher.
