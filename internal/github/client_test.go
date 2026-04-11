@@ -8,6 +8,33 @@ import (
 
 func resetViewerCache() { resetCachedViewerForTest() }
 
+// fakeExecer is a test double that returns fixed output and error.
+type fakeExecer struct {
+	output []byte
+	err    error
+	calls  int
+}
+
+func (f *fakeExecer) run(_ ...string) ([]byte, error) {
+	f.calls++
+	return f.output, f.err
+}
+
+// recordingExecer captures the args of the most recent run() invocation
+// so tests can assert which command was dispatched.
+type recordingExecer struct {
+	output   []byte
+	err      error
+	lastArgs []string
+	calls    int
+}
+
+func (r *recordingExecer) run(args ...string) ([]byte, error) {
+	r.calls++
+	r.lastArgs = append([]string(nil), args...)
+	return r.output, r.err
+}
+
 func TestConvertPRs_basic(t *testing.T) {
 	t.Parallel()
 	nodes := []gqlPR{
@@ -395,15 +422,36 @@ func TestParseGQLResponse_errors(t *testing.T) {
 	}
 }
 
-type fakeExecer struct {
-	output []byte
-	err    error
-	calls  int
-}
+func TestParseGQLResponse_botFiltered(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"data": {
+			"search": {
+				"nodes": [
+					{
+						"number": 1,
+						"title": "bot PR",
+						"url": "https://example.com",
+						"author": {"login": "renovate", "type": "Bot"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []}
+					}
+				]
+			}
+		}
+	}`
 
-func (f *fakeExecer) run(_ ...string) ([]byte, error) {
-	f.calls++
-	return f.output, f.err
+	var resp gqlResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	prs := convertPRs(resp.Data.Search.Nodes, "")
+	if len(prs) != 0 {
+		t.Errorf("got %d PRs, want 0 (bot should be filtered)", len(prs))
+	}
 }
 
 func TestSearchPRsWith_success(t *testing.T) {
@@ -474,313 +522,6 @@ func TestSearchPRsWith_graphqlError(t *testing.T) {
 	}
 	if got := err.Error(); got != "graphql: rate limited" {
 		t.Errorf("error = %q, want %q", got, "graphql: rate limited")
-	}
-}
-
-func TestFetchReviewsWith_success(t *testing.T) {
-	t.Parallel()
-	response := `{
-		"data": {
-			"search": {
-				"nodes": [
-					{
-						"number": 1,
-						"title": "my PR",
-						"url": "https://github.com/o/r/pull/1",
-						"author": {"login": "me", "type": "User"},
-						"repository": {"name": "r", "nameWithOwner": "o/r"},
-						"labels": {"nodes": []},
-						"commits": {"nodes": []},
-						"reviewThreads": {"nodes": []}
-					}
-				]
-			}
-		}
-	}`
-
-	resetViewerCache()
-	fe := &fakeExecer{output: []byte(response)}
-	summary, err := fetchReviewsWith(fe)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fe.calls < 2 {
-		t.Errorf("expected at least 2 calls (created + requested), got %d", fe.calls)
-	}
-	if len(summary.CreatedByMe) != 1 {
-		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
-	}
-	if len(summary.ReviewRequested) != 1 {
-		t.Errorf("ReviewRequested len = %d, want 1", len(summary.ReviewRequested))
-	}
-}
-
-func TestFetchReviewsWith_firstCallFails(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{
-		output: []byte("auth error"),
-		err:    fmt.Errorf("exit 1"),
-	}
-	_, err := fetchReviewsWith(fe)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestFetchPRStateWith(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		output  string
-		execErr error
-		want    PRState
-		wantErr bool
-	}{
-		{
-			name:   "merged PR",
-			output: `{"state":"MERGED","mergedAt":"2026-04-01T12:00:00Z"}`,
-			want:   PRState{State: "MERGED", MergedAt: "2026-04-01T12:00:00Z"},
-		},
-		{
-			name:   "closed PR",
-			output: `{"state":"CLOSED","mergedAt":""}`,
-			want:   PRState{State: "CLOSED"},
-		},
-		{
-			name:   "open PR",
-			output: `{"state":"OPEN","mergedAt":""}`,
-			want:   PRState{State: "OPEN"},
-		},
-		{
-			name:    "exec error",
-			output:  "gh: not found",
-			execErr: fmt.Errorf("exit 1"),
-			wantErr: true,
-		},
-		{
-			name:    "invalid JSON",
-			output:  "not json",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
-			got, err := fetchPRStateWith(fe, "o/r", 42)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil {
-				return
-			}
-			if got.State != tt.want.State {
-				t.Errorf("State = %q, want %q", got.State, tt.want.State)
-			}
-			if got.MergedAt != tt.want.MergedAt {
-				t.Errorf("MergedAt = %q, want %q", got.MergedAt, tt.want.MergedAt)
-			}
-		})
-	}
-}
-
-func TestPRState_CIStatus(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		checks []struct{ State string }
-		want   string
-	}{
-		{"no checks", nil, ""},
-		{"all success", []struct{ State string }{{"SUCCESS"}, {"NEUTRAL"}}, "SUCCESS"},
-		{"has failure", []struct{ State string }{{"SUCCESS"}, {"FAILURE"}}, "FAILURE"},
-		{"has error", []struct{ State string }{{"ERROR"}}, "FAILURE"},
-		{"has pending", []struct{ State string }{{"SUCCESS"}, {"PENDING"}}, "PENDING"},
-		{"failure beats pending", []struct{ State string }{{"PENDING"}, {"FAILURE"}}, "FAILURE"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			checks := make([]struct {
-				State string `json:"state"`
-			}, len(tt.checks))
-			for i, c := range tt.checks {
-				checks[i].State = c.State
-			}
-			s := PRState{StatusCheckRollup: checks}
-			if got := s.CIStatus(); got != tt.want {
-				t.Errorf("CIStatus() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPRState_ReadyToMerge(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		state     PRState
-		wantReady bool
-	}{
-		{"open mergeable no ci", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
-		{"open mergeable ci success", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"SUCCESS"}}}, true},
-		{"not open", PRState{State: "MERGED", Mergeable: "MERGEABLE"}, false},
-		{"conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
-		{"unknown mergeable", PRState{State: "OPEN", Mergeable: "UNKNOWN"}, false},
-		{"ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"FAILURE"}}}, false},
-		{"ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"PENDING"}}}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := tt.state.ReadyToMerge(); got != tt.wantReady {
-				t.Errorf("ReadyToMerge() = %v, want %v", got, tt.wantReady)
-			}
-		})
-	}
-}
-
-func TestParseGQLResponse_botFiltered(t *testing.T) {
-	t.Parallel()
-	raw := `{
-		"data": {
-			"search": {
-				"nodes": [
-					{
-						"number": 1,
-						"title": "bot PR",
-						"url": "https://example.com",
-						"author": {"login": "renovate", "type": "Bot"},
-						"repository": {"name": "r", "nameWithOwner": "o/r"},
-						"labels": {"nodes": []},
-						"commits": {"nodes": []},
-						"reviewThreads": {"nodes": []}
-					}
-				]
-			}
-		}
-	}`
-
-	var resp gqlResponse
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	prs := convertPRs(resp.Data.Search.Nodes, "")
-	if len(prs) != 0 {
-		t.Errorf("got %d PRs, want 0 (bot should be filtered)", len(prs))
-	}
-}
-
-func TestFetchPRFilesWith(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		output  string
-		execErr error
-		want    []string
-		wantErr bool
-	}{
-		{
-			name:   "multiple files",
-			output: `{"files":[{"path":"app.go"},{"path":"internal/task/store.go"},{"path":"main.go"}]}`,
-			want:   []string{"app.go", "internal/task/store.go", "main.go"},
-		},
-		{
-			name:   "single file",
-			output: `{"files":[{"path":"README.md"}]}`,
-			want:   []string{"README.md"},
-		},
-		{
-			name:   "no files",
-			output: `{"files":[]}`,
-			want:   []string{},
-		},
-		{
-			name:    "exec error",
-			output:  "gh: not found",
-			execErr: fmt.Errorf("exit 1"),
-			wantErr: true,
-		},
-		{
-			name:    "invalid JSON",
-			output:  "not json",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
-			got, err := fetchPRFilesWith(fe, "o/r", 42)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil {
-				return
-			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("got %d files, want %d", len(got), len(tt.want))
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("file[%d] = %q, want %q", i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
-}
-
-func TestHasPendingReview_pending(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte(`[{"state":"COMMENTED"},{"state":"PENDING"}]`)}
-	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !got {
-		t.Error("expected pending review, got false")
-	}
-}
-
-func TestHasPendingReview_noPending(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte(`[{"state":"APPROVED"},{"state":"COMMENTED"}]`)}
-	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Error("expected no pending review, got true")
-	}
-}
-
-func TestHasPendingReview_empty(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte(`[]`)}
-	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got {
-		t.Error("expected no pending review, got true")
-	}
-}
-
-func TestHasPendingReview_error(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte("not found"), err: fmt.Errorf("exit 1")}
-	_, err := hasPendingReviewWith(fe, "owner/repo", 42)
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -891,267 +632,6 @@ func TestParseIssueURL(t *testing.T) {
 			}
 			if number != tt.wantNumber {
 				t.Errorf("number = %d, want %d", number, tt.wantNumber)
-			}
-		})
-	}
-}
-
-func TestConvertRenovatePRs(t *testing.T) {
-	t.Parallel()
-
-	makeNode := func(login, typeName string) gqlPR {
-		n := gqlPR{Number: 1, Title: "chore: update dep", URL: "https://github.com/o/r/pull/1"}
-		n.Author.Login = login
-		n.Author.Type = typeName
-		n.Repository.Name = "r"
-		n.Repository.NameWithOwner = "o/r"
-		return n
-	}
-
-	t.Run("includes renovate bot PR", func(t *testing.T) {
-		t.Parallel()
-		node := makeNode("renovate[bot]", "Bot")
-		prs := convertRenovatePRs([]gqlPR{node}, "")
-		if len(prs) != 1 {
-			t.Fatalf("got %d PRs, want 1", len(prs))
-		}
-		if prs[0].Author != "renovate[bot]" {
-			t.Errorf("Author = %q, want renovate[bot]", prs[0].Author)
-		}
-	})
-
-	t.Run("extracts check runs from contexts", func(t *testing.T) {
-		t.Parallel()
-		node := makeNode("renovate[bot]", "Bot")
-		node.Commits.Nodes = []struct {
-			Commit struct {
-				StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
-			} `json:"commit"`
-		}{{Commit: struct {
-			StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
-		}{StatusCheckRollup: &gqlStatusCheckRollup{
-			State: "FAILURE",
-			Contexts: struct {
-				Nodes []gqlCheckContext `json:"nodes"`
-			}{Nodes: []gqlCheckContext{
-				{Name: "ci/lint", Status: "COMPLETED", Conclusion: "FAILURE"},
-				{Name: "", Status: "COMPLETED", Conclusion: "SUCCESS"}, // empty name skipped
-			}},
-		}}}}
-		prs := convertRenovatePRs([]gqlPR{node}, "")
-		if len(prs) != 1 {
-			t.Fatalf("got %d PRs, want 1", len(prs))
-		}
-		if prs[0].CIStatus != "FAILURE" {
-			t.Errorf("CIStatus = %q, want FAILURE", prs[0].CIStatus)
-		}
-		if len(prs[0].CheckRuns) != 1 {
-			t.Fatalf("CheckRuns len = %d, want 1 (empty name should be skipped)", len(prs[0].CheckRuns))
-		}
-		if prs[0].CheckRuns[0].Name != "ci/lint" {
-			t.Errorf("CheckRuns[0].Name = %q, want ci/lint", prs[0].CheckRuns[0].Name)
-		}
-	})
-}
-
-func TestFetchPRWith_success(t *testing.T) {
-	t.Parallel()
-	response := `{
-		"number": 42,
-		"title": "feat: add thing",
-		"body": "description",
-		"url": "https://github.com/owner/repo/pull/42",
-		"headRefName": "feat/add-thing",
-		"author": {"login": "dev"},
-		"labels": [{"name": "backend"}, {"name": "feature"}]
-	}`
-	fe := &fakeExecer{output: []byte(response)}
-	pr, err := fetchPRWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pr.Number != 42 {
-		t.Errorf("Number = %d, want 42", pr.Number)
-	}
-	if pr.Title != "feat: add thing" {
-		t.Errorf("Title = %q, want %q", pr.Title, "feat: add thing")
-	}
-	if pr.HeadRefName != "feat/add-thing" {
-		t.Errorf("HeadRefName = %q, want %q", pr.HeadRefName, "feat/add-thing")
-	}
-	if pr.Author != "dev" {
-		t.Errorf("Author = %q, want %q", pr.Author, "dev")
-	}
-	if pr.Repository != "owner/repo" {
-		t.Errorf("Repository = %q, want %q", pr.Repository, "owner/repo")
-	}
-	if pr.RepoName != "repo" {
-		t.Errorf("RepoName = %q, want %q", pr.RepoName, "repo")
-	}
-	if len(pr.Labels) != 2 || pr.Labels[0] != "backend" || pr.Labels[1] != "feature" {
-		t.Errorf("Labels = %v, want [backend feature]", pr.Labels)
-	}
-}
-
-func TestFetchPRWith_execError(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{
-		output: []byte("not found"),
-		err:    fmt.Errorf("exit 1"),
-	}
-	_, err := fetchPRWith(fe, "owner/repo", 42)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestFetchPRWith_invalidJSON(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte("not json")}
-	_, err := fetchPRWith(fe, "owner/repo", 42)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-}
-
-// recordingExecer captures the args of the most recent run() invocation
-// so tests can assert which command was dispatched.
-type recordingExecer struct {
-	output   []byte
-	err      error
-	lastArgs []string
-	calls    int
-}
-
-func (r *recordingExecer) run(args ...string) ([]byte, error) {
-	r.calls++
-	r.lastArgs = append([]string(nil), args...)
-	return r.output, r.err
-}
-
-func TestFetchPRClosingIssuesWith_sameRepo(t *testing.T) {
-	t.Parallel()
-	response := `{
-		"body": "Initial body",
-		"closingIssuesReferences": [
-			{"number": 7, "repository": {"name": "repo", "owner": {"login": "owner"}}}
-		]
-	}`
-	fe := &fakeExecer{output: []byte(response)}
-	issues, body, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(issues) != 1 || issues[0] != 7 {
-		t.Errorf("issues = %v, want [7]", issues)
-	}
-	if body != "Initial body" {
-		t.Errorf("body = %q, want %q", body, "Initial body")
-	}
-}
-
-func TestFetchPRClosingIssuesWith_filtersCrossRepo(t *testing.T) {
-	t.Parallel()
-	response := `{
-		"body": "",
-		"closingIssuesReferences": [
-			{"number": 1, "repository": {"name": "repo", "owner": {"login": "owner"}}},
-			{"number": 99, "repository": {"name": "other", "owner": {"login": "elsewhere"}}}
-		]
-	}`
-	fe := &fakeExecer{output: []byte(response)}
-	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(issues) != 1 || issues[0] != 1 {
-		t.Errorf("issues = %v, want [1] (99 belongs to elsewhere/other and must be filtered)", issues)
-	}
-}
-
-func TestFetchPRClosingIssuesWith_empty(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte(`{"body": "", "closingIssuesReferences": []}`)}
-	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(issues) != 0 {
-		t.Errorf("issues = %v, want empty", issues)
-	}
-}
-
-func TestFetchPRClosingIssuesWith_execError(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte("boom"), err: fmt.Errorf("exit 1")}
-	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestFetchPRClosingIssuesWith_invalidJSON(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte("not json")}
-	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestEditPRBodyWith_passesArgs(t *testing.T) {
-	t.Parallel()
-	fe := &recordingExecer{}
-	if err := editPRBodyWith(fe, "owner/repo", 42, "new body with\nnewline"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Args should be: pr edit 42 --repo owner/repo --body <body>
-	want := []string{"pr", "edit", "42", "--repo", "owner/repo", "--body", "new body with\nnewline"}
-	if len(fe.lastArgs) != len(want) {
-		t.Fatalf("args = %v, want %v", fe.lastArgs, want)
-	}
-	for i, a := range fe.lastArgs {
-		if a != want[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
-		}
-	}
-}
-
-func TestEditPRBodyWith_execError(t *testing.T) {
-	t.Parallel()
-	fe := &fakeExecer{output: []byte("forbidden"), err: fmt.Errorf("exit 1")}
-	if err := editPRBodyWith(fe, "owner/repo", 42, "body"); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMergePRWith(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		execErr error
-		output  string
-		wantErr bool
-	}{
-		{
-			name:   "success",
-			output: "",
-		},
-		{
-			name:    "exec error",
-			output:  "gh: not found",
-			execErr: fmt.Errorf("exit 1"),
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
-			err := mergePRWith(fe, "owner/repo", 42)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
