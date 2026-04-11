@@ -344,6 +344,7 @@
         <div class="flex items-center gap-2">
           <select
             bind:this={statusSelectRef}
+            data-testid="task-status-select"
             class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
             value={t.status}
             onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
@@ -353,6 +354,7 @@
             {/each}
           </select>
           <select
+            data-testid="task-type-select"
             class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
             value={t.taskType || 'normal'}
             onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
