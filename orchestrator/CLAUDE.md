@@ -295,40 +295,16 @@ git commit -s -S -m "type(scope): description"
 Do NOT finish without committing. Uncommitted work will be lost.
 ```
 
-### Eval agent verification
+### Eval agent
 
-When an eval agent checks implementation results, it **must**:
+After implementation, an eval agent runs to link the PR and flip status:
 
-1. Verify commits exist:
-```bash
-git log --oneline origin/main..HEAD
-```
-If empty → implementation was not committed. Mark `human-required`, do not accept quality gate claims.
+1. `synapse-cli get <id>` to load the task
+2. Recover PR number from: task.pr_number, agent result text (github.com/.../pull/N), or `gh pr list --head <branch>`
+3. Status transitions:
+   - PR found → `in-review` (link via `--pr`)
+   - Work claimed but no PR → `human-required` with reason
+   - Failure → `human-required` with reason
+4. Eval never sets `done` or `todo`
 
-2. Verify a PR exists for the branch:
-```bash
-gh pr list --head "$(git branch --show-current)" --json number,url
-```
-
-3. If commits exist but no PR → **create one immediately**:
-```bash
-# Push branch first
-git push -u origin HEAD
-
-# Create PR (use task title + body for content)
-gh pr create \
-  --title "type(scope): task title" \
-  --base main \
-  --body "$(cat <<'EOF'
-## Motivation
-<why from task description>
-
-## Implementation information
-<what was changed and how>
-
-> Changelog: type(scope): description
-EOF
-)"
-```
-
-Only mark `in-review` after confirming a PR URL exists.
+Eval runs without a worktree; it cannot inspect the diff. PR creation on behalf of a missing-PR implementation is **not** an eval responsibility — see #355.
