@@ -479,18 +479,20 @@ func TestDiscoverNewCodex(t *testing.T) {
 	now := time.Now()
 	filePath := writeCodexSessionFile(t, sessDir, sessionID, now)
 
-	sessions := []codexSession{
+	sessions := []RawSession{
 		{
-			SessionID:  sessionID,
-			CWD:        "/tmp/project",
-			Originator: "codex_exec",
-			StartedAt:  now,
-			FilePath:   filePath,
-			Branch:     "main",
+			Provider:  "codex",
+			SessionID: sessionID,
+			CWD:       "/tmp/project",
+			Mode:      "headless",
+			FilePath:  filePath,
+			StartedAt: now,
+			State:     StateIdle,
 		},
 	}
 
-	discovered := m.discoverNewCodex(sessions)
+	opts := m.buildFilterOpts()
+	discovered := m.reconcile(filterSessions(sessions, opts))
 	if len(discovered) != 1 {
 		t.Fatalf("got %d agents, want 1", len(discovered))
 	}
@@ -514,8 +516,9 @@ func TestDiscoverNewCodex(t *testing.T) {
 		t.Errorf("ID = %q, want ext-codex-* prefix", a.ID)
 	}
 
-	// Second call should not re-discover the same agent.
-	discovered2 := m.discoverNewCodex(sessions)
+	// Second call: session is now tracked; filterSessions should exclude it.
+	opts2 := m.buildFilterOpts()
+	discovered2 := m.reconcile(filterSessions(sessions, opts2))
 	if len(discovered2) != 0 {
 		t.Errorf("re-discovery got %d agents, want 0", len(discovered2))
 	}
@@ -528,11 +531,20 @@ func TestDiscoverNewCodexInteractive(t *testing.T) {
 	sessionID := "01TUISESSIONID000000000"
 	filePath := writeCodexSessionFile(t, dir, sessionID, time.Now())
 
-	sessions := []codexSession{
-		{SessionID: sessionID, CWD: "/home/user/proj", Originator: "codex_tui", FilePath: filePath, StartedAt: time.Now()},
+	sessions := []RawSession{
+		{
+			Provider:  "codex",
+			SessionID: sessionID,
+			CWD:       "/home/user/proj",
+			Mode:      "interactive",
+			FilePath:  filePath,
+			StartedAt: time.Now(),
+			State:     StateIdle,
+		},
 	}
 
-	discovered := m.discoverNewCodex(sessions)
+	opts := m.buildFilterOpts()
+	discovered := m.reconcile(filterSessions(sessions, opts))
 	if len(discovered) != 1 {
 		t.Fatalf("got %d agents, want 1", len(discovered))
 	}
