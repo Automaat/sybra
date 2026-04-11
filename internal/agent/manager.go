@@ -281,6 +281,29 @@ func normalizeModel(provider, model string) string {
 	}
 }
 
+// waitForTmuxChange polls capture-pane until output differs from snapshot or
+// timeout elapses. Respects ctx cancellation. On timeout the caller proceeds
+// anyway — this is best-effort sync, not a hard gate.
+func (m *Manager) waitForTmuxChange(ctx context.Context, session, snapshot string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		out, err := m.tmux.CapturePaneOutput(session)
+		if err == nil && out != snapshot {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
 func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt string) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -302,7 +325,8 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 			// Handle --dangerously-skip-permissions confirmation dialog
 			if !bypassAccepted && strings.Contains(out, "Yes, I accept") {
 				_ = m.tmux.SendRawKeys(a.TmuxSession, "Down")
-				time.Sleep(200 * time.Millisecond)
+				// Wait for dialog to re-render with cursor moved before Enter.
+				m.waitForTmuxChange(ctx, a.TmuxSession, out, time.Second)
 				_ = m.tmux.SendRawKeys(a.TmuxSession, "Enter")
 				m.logger.Info("agent.interactive.bypass_accepted", "id", a.ID)
 				bypassAccepted = true
@@ -314,8 +338,8 @@ func (m *Manager) sendInteractivePrompt(ctx context.Context, a *Agent, prompt st
 					m.logger.Error("agent.interactive.sendkeys", "id", a.ID, "err", err)
 					return
 				}
-				// Delay so Claude Code processes the paste before submitting
-				time.Sleep(500 * time.Millisecond)
+				// Wait for pane to reflect the pasted text before submitting.
+				m.waitForTmuxChange(ctx, a.TmuxSession, out, time.Second)
 				_ = m.tmux.SendRawKeys(a.TmuxSession, "Enter")
 				m.logger.Info("agent.interactive.prompt_sent", "id", a.ID)
 				return
@@ -360,10 +384,12 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	if !m.tmux.SessionExists(a.TmuxSession) {
 		return fmt.Errorf("tmux session %s does not exist", a.TmuxSession)
 	}
+	before, _ := m.tmux.CapturePaneOutput(a.TmuxSession)
 	if err := m.tmux.SendKeys(a.TmuxSession, text); err != nil {
 		return fmt.Errorf("send keys: %w", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// Wait for pane to reflect pasted text before submitting; context-aware.
+	m.waitForTmuxChange(m.ctx, a.TmuxSession, before, 500*time.Millisecond)
 	if err := m.tmux.SendRawKeys(a.TmuxSession, "Enter"); err != nil {
 		return fmt.Errorf("send enter: %w", err)
 	}
