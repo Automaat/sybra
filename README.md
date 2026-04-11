@@ -32,7 +32,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 
 | Layer | Stack |
 |-------|-------|
-| Backend | Go 1.26.1, Wails v2.12 |
+| Backend | Go 1.26.2, Wails v2.12 |
 | Frontend | Svelte 5, TypeScript 6, Skeleton UI v4, Tailwind v4 |
 | IPC | Wails bound methods + events (no HTTP, no WebSocket) |
 | File format | YAML frontmatter + GFM markdown |
@@ -40,7 +40,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 
 ## Getting started
 
-**Prerequisites:** Go 1.26.1, Node 24, [mise](https://mise.jdx.dev/), [Wails v2](https://wails.io/)
+**Prerequisites:** Go 1.26.2, Node 24, [mise](https://mise.jdx.dev/), [Wails v2](https://wails.io/)
 
 ```bash
 # Install tool versions
