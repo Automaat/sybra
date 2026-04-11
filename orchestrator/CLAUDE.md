@@ -173,11 +173,15 @@ For interactive tasks, just update status — human will attach.
 
 ### Check Agent Health
 
-Periodically review running agents:
+Get a full board snapshot in one call:
 
 ```bash
-synapse-cli --json list --status in-progress
+synapse-cli --json board
 ```
+
+Returns `counts` (all statuses), `in_progress` (with `running_for_s`),
+`plan_review`, and `human_required` task lists. Use this instead of
+`list --status` + inline python aggregation.
 
 ### PR Gap Detection
 

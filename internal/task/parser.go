@@ -44,6 +44,9 @@ func ParseBytes(data []byte) (Task, error) {
 	if t.TaskType == "" {
 		t.TaskType = TaskTypeNormal
 	}
+	if t.AgentRuns == nil {
+		t.AgentRuns = []AgentRun{}
+	}
 	if t.AgentMode != "" {
 		if _, err := ValidateAgentMode(t.AgentMode); err != nil {
 			return Task{}, err
