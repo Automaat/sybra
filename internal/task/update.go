@@ -53,11 +53,13 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
-	case "title", "slug", "status_reason", "agent_mode", "body",
+	case "title", "slug", "status_reason", "body",
 		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique":
 		return applyPlainStringField(u, k, v)
 	case "status":
 		return applyStatusField(u, k, v)
+	case "agent_mode":
+		return applyAgentModeField(u, k, v)
 	case "task_type":
 		return applyTaskTypeField(u, k, v)
 	case "tags":
@@ -94,8 +96,6 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.Slug = &s
 	case "status_reason":
 		u.StatusReason = &s
-	case "agent_mode":
-		u.AgentMode = &s
 	case "body":
 		u.Body = &s
 	case "project_id":
@@ -126,6 +126,19 @@ func applyStatusField(u *Update, k string, v any) error {
 		return err
 	}
 	u.Status = &st
+	return nil
+}
+
+func applyAgentModeField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	mode, err := ValidateAgentMode(s)
+	if err != nil {
+		return err
+	}
+	u.AgentMode = &mode
 	return nil
 }
 

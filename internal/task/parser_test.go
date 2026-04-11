@@ -90,6 +90,16 @@ allowed_tools: [Read, Write, Bash]
 				AllowedTools: []string{"Read", "Write", "Bash"},
 			},
 		},
+		{
+			name: "invalid agent_mode rejected",
+			input: `---
+id: bad1
+title: Bad mode
+status: todo
+agent_mode: supervised
+---`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

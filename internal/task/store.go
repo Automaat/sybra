@@ -78,7 +78,10 @@ func (s *Store) Get(id string) (Task, error) {
 
 func (s *Store) Create(title, body, mode string) (Task, error) {
 	if mode == "" {
-		mode = "interactive"
+		mode = AgentModeInteractive
+	}
+	if _, err := ValidateAgentMode(mode); err != nil {
+		return Task{}, err
 	}
 	now := time.Now().UTC()
 	id := uuid.NewString()[:8]
@@ -144,6 +147,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 		t.StatusReason = *u.StatusReason
 	}
 	if u.AgentMode != nil {
+		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
+			return Task{}, err
+		}
 		t.AgentMode = *u.AgentMode
 	}
 	if u.TaskType != nil {

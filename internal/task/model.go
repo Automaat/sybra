@@ -72,6 +72,30 @@ func ValidateTaskType(s string) (TaskType, error) {
 	return tt, nil
 }
 
+const (
+	AgentModeHeadless    = "headless"
+	AgentModeInteractive = "interactive"
+)
+
+var validAgentModes = map[string]bool{
+	AgentModeHeadless: true, AgentModeInteractive: true,
+}
+
+// AllAgentModes returns every valid agent mode in display order.
+func AllAgentModes() []string {
+	return []string{AgentModeHeadless, AgentModeInteractive}
+}
+
+// ValidateAgentMode rejects unknown agent modes. Empty strings are rejected
+// here; callers that need to allow "unset" (e.g. parser legacy compat) must
+// guard the empty case before calling.
+func ValidateAgentMode(s string) (string, error) {
+	if !validAgentModes[s] {
+		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+	}
+	return s, nil
+}
+
 type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation

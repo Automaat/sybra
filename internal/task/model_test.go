@@ -71,6 +71,50 @@ func TestAllTaskTypes(t *testing.T) {
 	}
 }
 
+func TestValidateAgentMode_Valid(t *testing.T) {
+	t.Parallel()
+	for _, m := range AllAgentModes() {
+		t.Run(m, func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateAgentMode(m)
+			if err != nil {
+				t.Fatalf("ValidateAgentMode(%q): %v", m, err)
+			}
+			if got != m {
+				t.Errorf("got %q, want %q", got, m)
+			}
+		})
+	}
+}
+
+func TestValidateAgentMode_Invalid(t *testing.T) {
+	t.Parallel()
+	cases := []string{"", "supervised", "Headless", "auto", " interactive"}
+	for _, c := range cases {
+		t.Run(c, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateAgentMode(c); err == nil {
+				t.Fatalf("expected error for %q", c)
+			}
+		})
+	}
+}
+
+func TestAllAgentModes(t *testing.T) {
+	t.Parallel()
+	modes := AllAgentModes()
+	if len(modes) != 2 {
+		t.Errorf("got %d modes, want 2", len(modes))
+	}
+	seen := make(map[string]bool)
+	for _, m := range modes {
+		if seen[m] {
+			t.Errorf("duplicate mode %q", m)
+		}
+		seen[m] = true
+	}
+}
+
 func TestTask_DirName_WithSlug(t *testing.T) {
 	t.Parallel()
 	task := Task{ID: "a1b2c3d4", Slug: "my-task"}
