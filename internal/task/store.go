@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Automaat/synapse/internal/fsutil"
@@ -50,6 +51,10 @@ func (s *Store) List() ([]Task, error) {
 
 	var tasks []Task
 	for _, p := range paths {
+		base := filepath.Base(p)
+		if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+			continue
+		}
 		t, err := Parse(p)
 		if err != nil {
 			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
