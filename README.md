@@ -104,6 +104,13 @@ Synapse ships with a Claude Code system prompt (`orchestrator/CLAUDE.md`) that t
 
 Claude Code skills (`synapse-tasks`, `synapse-triage`, `synapse-plan`, `synapse-evaluate`) are auto-installed to `~/.synapse/skills/` on app startup.
 
+## File naming conventions
+
+Files at the repo root follow two prefixes:
+
+- **`svc_*.go`** — stateless service handlers. Each file declares a `*Service` struct that takes one or more internal managers as dependencies and exposes domain operations. No Wails coupling; these can be unit-tested without a running app.
+- **`app_*.go`** — lifecycle methods and adapters on `*App`. These files bind Wails IPC, handle event emission, run background loops, and wire `*Service` objects into the desktop runtime. Methods here call into `svc_*` types rather than duplicating logic.
+
 ## Quality gates
 
 ```bash

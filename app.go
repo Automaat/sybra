@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -678,11 +679,26 @@ func (a *App) syncDir(src, dst string) {
 		a.logger.Error("sync.mkdir", "dst", dst, "err", err)
 		return
 	}
+	cleanSrc := filepath.Clean(src) + string(filepath.Separator)
+	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
 			continue
 		}
-		a.syncFile(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
+		// Reject symlinks — they could point outside the destination directory.
+		if e.Type()&fs.ModeSymlink != 0 {
+			a.logger.Debug("sync.skip.symlink", "name", e.Name())
+			continue
+		}
+		srcPath := filepath.Join(filepath.Clean(src), e.Name())
+		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
+		// Canonicalize and guard against crafted entry names escaping the roots.
+		if !strings.HasPrefix(srcPath+string(filepath.Separator), cleanSrc) ||
+			!strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
+			a.logger.Warn("sync.skip.traversal", "name", e.Name())
+			continue
+		}
+		a.syncFile(srcPath, dstPath)
 	}
 }
 

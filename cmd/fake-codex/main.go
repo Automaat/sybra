@@ -7,13 +7,32 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 )
 
+// cleanEnvPath validates a file path from an env var.
+// Only paths under the system temp directory are accepted to prevent traversal.
+// Returns empty string if the path is empty, unresolvable, or outside tmp.
+func cleanEnvPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(filepath.Clean(p))
+	if err != nil {
+		return ""
+	}
+	tmpRoot := filepath.Clean(os.TempDir()) + string(filepath.Separator)
+	if !strings.HasPrefix(abs+string(filepath.Separator), tmpRoot) {
+		return ""
+	}
+	return abs
+}
+
 func main() {
-	if logFile := os.Getenv("FAKE_CODEX_ARGS_LOG"); logFile != "" {
+	if logFile := cleanEnvPath(os.Getenv("FAKE_CODEX_ARGS_LOG")); logFile != "" {
 		_ = os.WriteFile(logFile, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
 	}
 
@@ -134,7 +153,7 @@ func extractTaskID(args []string) string {
 }
 
 func popScenario() string {
-	if sf := os.Getenv("FAKE_CODEX_SCENARIO_FILE"); sf != "" {
+	if sf := cleanEnvPath(os.Getenv("FAKE_CODEX_SCENARIO_FILE")); sf != "" {
 		data, err := os.ReadFile(sf)
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
