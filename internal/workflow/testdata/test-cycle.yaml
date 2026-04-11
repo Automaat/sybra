@@ -1,0 +1,21 @@
+id: test-cycle
+name: Test Cycle
+description: Workflow with a sync-step cycle for engine tests
+trigger:
+  on: task.created
+steps:
+  - id: step_a
+    name: Step A
+    type: set_status
+    config:
+      status: todo
+    next:
+      - goto: step_b
+
+  - id: step_b
+    name: Step B
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: step_a
