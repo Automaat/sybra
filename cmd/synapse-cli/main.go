@@ -74,6 +74,8 @@ func run(args []string) int {
 		return cmdProject(projStore, rest, jsonOut)
 	case "audit":
 		return cmdAudit(cfg, rest, jsonOut)
+	case "board":
+		return cmdBoard(store, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -539,6 +541,111 @@ func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
+type boardTask struct {
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	AgentID      string    `json:"agent_id,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	RunningForS  int64     `json:"running_for_s,omitempty"`
+	StatusReason string    `json:"status_reason,omitempty"`
+}
+
+type boardSummary struct {
+	Counts        map[string]int `json:"counts"`
+	InProgress    []boardTask    `json:"in_progress"`
+	PlanReview    []boardTask    `json:"plan_review"`
+	HumanRequired []boardTask    `json:"human_required"`
+}
+
+func cmdBoard(s *task.Manager, jsonOut bool) int {
+	tasks, err := s.List()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+
+	counts := make(map[string]int)
+	for _, st := range task.AllStatuses() {
+		counts[string(st)] = 0
+	}
+	for i := range tasks {
+		counts[string(tasks[i].Status)]++
+	}
+
+	now := time.Now()
+	toBoardTask := func(t task.Task) boardTask {
+		bt := boardTask{
+			ID:           t.ID,
+			Title:        t.Title,
+			ProjectID:    t.ProjectID,
+			StatusReason: t.StatusReason,
+		}
+		// Find the latest running agent run.
+		for j := len(t.AgentRuns) - 1; j >= 0; j-- {
+			run := t.AgentRuns[j]
+			if run.State == "running" || (!run.StartedAt.IsZero() && bt.AgentID == "") {
+				bt.AgentID = run.AgentID
+				bt.StartedAt = run.StartedAt
+				bt.RunningForS = int64(now.Sub(run.StartedAt).Seconds())
+				break
+			}
+		}
+		return bt
+	}
+
+	summary := boardSummary{
+		Counts:        counts,
+		InProgress:    []boardTask{},
+		PlanReview:    []boardTask{},
+		HumanRequired: []boardTask{},
+	}
+
+	for i := range tasks {
+		switch tasks[i].Status {
+		case task.StatusInProgress:
+			summary.InProgress = append(summary.InProgress, toBoardTask(tasks[i]))
+		case task.StatusPlanReview:
+			summary.PlanReview = append(summary.PlanReview, toBoardTask(tasks[i]))
+		case task.StatusHumanRequired:
+			summary.HumanRequired = append(summary.HumanRequired, toBoardTask(tasks[i]))
+		default:
+		}
+	}
+
+	if jsonOut {
+		return printJSON(summary)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "STATUS\tCOUNT")
+	for _, st := range task.AllStatuses() {
+		_, _ = fmt.Fprintf(w, "%s\t%d\n", st, counts[string(st)])
+	}
+	_ = w.Flush()
+
+	if len(summary.InProgress) > 0 {
+		fmt.Println("\nIN PROGRESS:")
+		w2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w2, "ID\tAGENT\tRUNNING_FOR\tTITLE")
+		for _, t := range summary.InProgress {
+			_, _ = fmt.Fprintf(w2, "%s\t%s\t%ds\t%s\n", t.ID, t.AgentID, t.RunningForS, t.Title)
+		}
+		_ = w2.Flush()
+	}
+
+	if len(summary.HumanRequired) > 0 {
+		fmt.Println("\nHUMAN REQUIRED:")
+		w3 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintln(w3, "ID\tTITLE\tREASON")
+		for _, t := range summary.HumanRequired {
+			_, _ = fmt.Fprintf(w3, "%s\t%s\t%s\n", t.ID, t.Title, t.StatusReason)
+		}
+		_ = w3.Flush()
+	}
+
+	return 0
+}
+
 func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
@@ -641,6 +748,7 @@ Commands:
   project delete <id>
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
+  board    (status counts + in-progress/plan-review/human-required task lists)
 
 Global flags:
   --json   Output as JSON`)
