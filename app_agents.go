@@ -19,15 +19,25 @@ import (
 // resolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped based on the task's type.
 // hintMode is used when the task type does not force a specific mode.
-func resolveExecution(t task.Task, hintMode, researchMachineDir string) (mode, dir string, requirePerm, skipWorktree bool) {
+// Permission priority: task-level override > TaskType hardcoded > config default > true.
+func resolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
 	switch t.TaskType {
 	case task.TaskTypeDebug:
 		return "interactive", "", true, false
 	case task.TaskTypeResearch:
-		return "headless", researchMachineDir, false, true
+		return "headless", researchMachineDir, resolvePermission(t, cfg), true
 	default:
-		return hintMode, "", false, false
+		return hintMode, "", resolvePermission(t, cfg), false
 	}
+}
+
+// resolvePermission returns the effective require_permissions value for a task.
+// Priority: task field > config default > true (safe default).
+func resolvePermission(t task.Task, cfg *config.Config) bool {
+	if t.RequirePermissions != nil {
+		return *t.RequirePermissions
+	}
+	return cfg.DefaultRequirePermissions()
 }
 
 // AgentOrchestrator manages agent lifecycle: worktree setup, project
@@ -69,7 +79,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode, researchDir)
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode, researchDir, o.cfg)
 	if !skipWT {
 		t = o.autoAssignProject(t)
 		if t.ProjectID == "" {
@@ -109,7 +119,11 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	if err != nil {
 		return nil, err
 	}
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider})
+	skipPerm := !requirePerm && len(t.AllowedTools) == 0
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
+		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
+		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
+	})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Mode:      effMode,
@@ -150,7 +164,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir)
+	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
 		t = o.autoAssignProject(t)
 		if t.ProjectID == "" {
@@ -181,7 +195,11 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		return err
 	}
 
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider})
+	skipPerm := !requirePerm && len(t.AllowedTools) == 0
+	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
+		"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider,
+		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
+	})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,

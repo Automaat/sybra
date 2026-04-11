@@ -44,6 +44,18 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// RequirePermissions sets the default permission requirement for agents.
+	// nil means not configured (falls back to true — safe default).
+	// Set to false in config to opt all tasks into skip-permissions mode.
+	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+}
+
+// DefaultRequirePermissions returns the configured default, or true if unset.
+func (c *Config) DefaultRequirePermissions() bool {
+	if c != nil && c.Agent.RequirePermissions != nil {
+		return *c.Agent.RequirePermissions
+	}
+	return true
 }
 
 type NotificationConfig struct {
