@@ -916,8 +916,8 @@ export namespace task {
 	    statusReason: string;
 	    reviewed: boolean;
 	    runRole: string;
-	    requirePermissions?: boolean;
 	    todoistId: string;
+	    requirePermissions?: boolean;
 	    agentRuns: AgentRun[];
 	    workflow?: workflow.Execution;
 	    // Go type: time
@@ -928,11 +928,11 @@ export namespace task {
 	    plan?: string;
 	    planCritique?: string;
 	    filePath: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -950,8 +950,8 @@ export namespace task {
 	        this.statusReason = source["statusReason"];
 	        this.reviewed = source["reviewed"];
 	        this.runRole = source["runRole"];
-	        this.requirePermissions = source["requirePermissions"];
 	        this.todoistId = source["todoistId"];
+	        this.requirePermissions = source["requirePermissions"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
