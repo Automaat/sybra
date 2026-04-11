@@ -435,6 +435,40 @@ func TestSyncDir(t *testing.T) {
 	}
 }
 
+func TestSyncDirRemovesOrphans(t *testing.T) {
+	a := setupApp(t)
+
+	srcDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "keep.md"), []byte("# keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(t.TempDir(), "dst-skills")
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-populate orphan file that should be removed.
+	if err := os.WriteFile(filepath.Join(dstDir, "orphan.md"), []byte("# orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.syncDir(srcDir, dstDir)
+
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d files, want 1 (orphan removed)", len(entries))
+	}
+	if entries[0].Name() != "keep.md" {
+		t.Errorf("expected keep.md, got %s", entries[0].Name())
+	}
+}
+
 func TestSyncDirMissingSrc(t *testing.T) {
 	a := setupApp(t)
 	dstDir := filepath.Join(t.TempDir(), "should-not-exist")
