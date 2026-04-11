@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watcher"
+	"github.com/Automaat/synapse/internal/watchdog"
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -56,10 +57,9 @@ type App struct {
 	reviewer        *ReviewHandler
 	workflowEngine  *workflow.Engine
 	workflowStore   *workflow.Store
-	todoistHandler  *TodoistHandler
+	todoistHandler  *poll.TodoistHandler
 	todoistCancel   context.CancelFunc
-	renovateHandler *RenovateHandler
-	issuesFetcher   *IssuesFetcher
+	renovateHandler *poll.RenovateHandler
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
@@ -185,7 +185,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initTodoist(emit)
 	a.initRenovate(emit)
-	a.issuesFetcher = newIssuesFetcher(a.tasks, a.projects, emit, a.logger)
+	issuesFetcher := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger)
 	a.wireServices(emit)
 
 	a.syncSkills()
@@ -195,11 +195,13 @@ func (a *App) startup(ctx context.Context) {
 	a.restartStaleInProgress()
 	a.RegisterSpotlightHotkey()
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
-	a.wg.Go(func() { a.agentWatchdogLoop(ctx) })
+
+	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
+	a.wg.Go(func() { wdog.Run(ctx) })
 
 	hub := poll.NewHub()
 	hub.Register(a.reviewer, 10*time.Second)
-	hub.Register(a.issuesFetcher, 20*time.Second)
+	hub.Register(issuesFetcher, 20*time.Second)
 	if a.renovateHandler != nil {
 		hub.Register(a.renovateHandler, 15*time.Second)
 	}
