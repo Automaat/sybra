@@ -1,24 +1,62 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":gitSignOff",
+    ":dependencyDashboard",
+    ":label(dependencies)",
+    ":rebaseStalePrs",
+    ":enableVulnerabilityAlertsWithAdditionalLabel(security)",
+    ":automergeMinor",
+    ":automergeLinters",
+    ":automergeTesters",
+    ":prConcurrentLimit20",
+    "helpers:pinGitHubActionDigests"
+  ],
   "schedule": ["after 10pm every weekday"],
+  "osvVulnerabilityAlerts": true,
+  "automergeStrategy": "squash",
   "packageRules": [
     {
+      "description": "GitHub Actions dependencies",
+      "matchManagers": ["github-actions"],
+      "addLabels": ["area/ci"],
+      "semanticCommitType": "ci",
+      "commitMessageTopic": "{{depName}} action"
+    },
+    {
+      "description": "Group patch updates",
       "matchUpdateTypes": ["patch"],
       "automerge": true,
       "groupName": "patch dependencies"
     },
     {
-      "matchUpdateTypes": ["minor"],
-      "groupName": "minor dependencies"
+      "description": "Group vitest packages",
+      "matchPackageNames": ["vitest", "@vitest/*"],
+      "groupName": "vitest"
     },
     {
-      "matchPackageNames": ["golang.org/x/*"],
+      "description": "Group Playwright packages",
+      "matchPackageNames": ["@playwright/*"],
+      "groupName": "playwright"
+    },
+    {
+      "description": "Group golang.org/x updates",
+      "matchPackageNames": ["/^golang\\.org/x//"],
       "groupName": "golang.org/x updates"
     },
     {
-      "matchPackageNames": ["@testing-library/*", "vitest", "@vitest/*"],
-      "groupName": "testing dependencies"
+      "description": "Enable Go version updates in go.mod",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Group Go version updates across mise and go.mod",
+      "groupName": "Go",
+      "matchPackageNames": ["go"],
+      "matchDatasources": ["golang-version"]
     }
   ]
 }
