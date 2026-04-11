@@ -59,6 +59,9 @@
     }
   }
 
+  type DegradedWarning = { subsystem: string; reason: string }
+  let degradedWarnings = $state<DegradedWarning[]>([])
+
   let dialogOpen = $state(false)
   let projectDialogOpen = $state(false)
   let quickAddOpen = $state(false)
@@ -135,6 +138,9 @@
     const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
     notificationStore.load()
     const unsubNotif = notificationStore.listen()
+    const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
+      degradedWarnings = [...degradedWarnings, w]
+    })
     const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
       quitConfirmVisible = true
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
@@ -210,6 +216,7 @@
     return () => {
       unsubTasks()
       unsubNotif()
+      unsubDegraded()
       unsubQuit()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       taskStore.stopPolling()
@@ -349,6 +356,25 @@
         </AppBar.Trail>
       </AppBar.Toolbar>
     </AppBar>
+
+    {#if degradedWarnings.length > 0}
+      <div class="flex flex-col gap-0.5">
+        {#each degradedWarnings as w, i (w.subsystem)}
+          <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
+            <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>
+            <button
+              type="button"
+              class="ml-auto opacity-60 hover:opacity-100 text-xs"
+              onclick={() => { degradedWarnings = degradedWarnings.filter((_, j) => j !== i) }}
+              aria-label="Dismiss"
+            >✕</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <main class="flex-1 overflow-y-auto">
       {#if page.kind === 'dashboard'}

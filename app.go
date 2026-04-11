@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
@@ -112,11 +113,12 @@ func (a *App) startup(ctx context.Context) {
 
 	statsStore, err := stats.NewStore(config.StatsFile())
 	if err != nil {
-		a.logger.Error("stats.init", "err", err)
+		a.logger.Warn("stats.init.degraded", "err", err)
+		// a.stats remains nil; StatsService.GetStats() guards against nil.
 	} else {
 		a.stats = statsStore
 		if err := statsStore.Backfill(a.auditDir); err != nil {
-			a.logger.Error("stats.backfill", "err", err)
+			a.logger.Warn("stats.backfill", "err", err)
 		}
 	}
 
@@ -143,6 +145,7 @@ func (a *App) startup(ctx context.Context) {
 		runtime.EventsEmit(ctx, event, data)
 	}
 	a.emit = emit
+	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
 	a.notifier = notification.New(emit)
@@ -249,7 +252,9 @@ func (a *App) initStatusHook() {
 func (a *App) initAudit() {
 	al, err := audit.NewLogger(a.auditDir)
 	if err != nil {
-		a.logger.Error("audit.init", "err", err)
+		a.logger.Warn("audit.init.degraded", "err", err)
+		// a.audit remains nil; logAudit() is a no-op when audit is nil.
+		return
 	}
 	a.audit = al
 	retentionDays := a.cfg.Audit.RetentionDays
@@ -257,7 +262,22 @@ func (a *App) initAudit() {
 		retentionDays = 30
 	}
 	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
-		a.logger.Error("audit.cleanup", "err", err)
+		a.logger.Warn("audit.cleanup", "err", err)
+	}
+}
+
+// emitDegradedWarnings fires startup:degraded for any subsystem that failed
+// to initialize. Called after emit is configured so the frontend receives the events.
+func (a *App) emitDegradedWarnings(emit func(string, any)) {
+	type degraded struct {
+		Subsystem string `json:"subsystem"`
+		Reason    string `json:"reason"`
+	}
+	if a.audit == nil {
+		emit(events.StartupDegraded, degraded{"audit", "audit logger failed to initialize; audit trail unavailable"})
+	}
+	if a.stats == nil {
+		emit(events.StartupDegraded, degraded{"stats", "stats store failed to initialize; metrics unavailable"})
 	}
 }
 
