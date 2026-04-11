@@ -51,7 +51,7 @@ synapse/
 
 ### Backend
 
-- **Go 1.26.1** (Wails v2 bound methods)
+- **Go 1.26.2** (Wails v2 bound methods)
 - **Wails v2.12** — desktop app framework, IPC via bound methods + events
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
@@ -65,7 +65,7 @@ synapse/
 
 ### Tooling
 
-- **mise** — tool version management (Go 1.26.1, Node 24)
+- **mise** — tool version management (Go 1.26.2, Node 24)
 - **golangci-lint v2** — Go linting (gocritic, nilerr, nilnesserr, nilnil, nolintlint, modernize)
 - **oxlint** — frontend linting
 - **GitHub Actions** — CI (lint-go, lint-frontend, build)
