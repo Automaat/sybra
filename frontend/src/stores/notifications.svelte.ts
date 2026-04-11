@@ -19,7 +19,7 @@ class NotificationStore {
   /** Push a transient client-side notification (e.g. for failed actions). */
   pushLocal(level: 'info' | 'success' | 'warning' | 'error', title: string, message: string): void {
     const n = new notification.Notification({
-      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `local-${crypto.randomUUID()}`,
       level,
       title,
       message,

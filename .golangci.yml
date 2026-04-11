@@ -35,7 +35,6 @@ linters:
         - G302 # file permissions 0644 — intentional for user-readable data files
         - G304 # file inclusion via variable — intentional in this app
         - G306 # WriteFile permissions 0644 — intentional for user-readable files
-        - G703 # path traversal — intentional in skills sync
 
     gocritic:
       enabled-checks:
