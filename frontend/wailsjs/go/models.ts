@@ -203,6 +203,7 @@ export namespace config {
 	    researchMachineDir: string;
 	    maxCostUsd: number;
 	    maxTurns: number;
+	    requirePermissions?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentDefaults(source);
@@ -217,6 +218,7 @@ export namespace config {
 	        this.researchMachineDir = source["researchMachineDir"];
 	        this.maxCostUsd = source["maxCostUsd"];
 	        this.maxTurns = source["maxTurns"];
+	        this.requirePermissions = source["requirePermissions"];
 	    }
 	}
 	export class AuditConfig {
@@ -914,6 +916,7 @@ export namespace task {
 	    statusReason: string;
 	    reviewed: boolean;
 	    runRole: string;
+	    requirePermissions?: boolean;
 	    todoistId: string;
 	    agentRuns: AgentRun[];
 	    workflow?: workflow.Execution;
@@ -947,6 +950,7 @@ export namespace task {
 	        this.statusReason = source["statusReason"];
 	        this.reviewed = source["reviewed"];
 	        this.runRole = source["runRole"];
+	        this.requirePermissions = source["requirePermissions"];
 	        this.todoistId = source["todoistId"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);

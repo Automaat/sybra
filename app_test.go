@@ -450,8 +450,6 @@ func TestStartup(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 func TestResolvePermission(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -460,10 +458,10 @@ func TestResolvePermission(t *testing.T) {
 		cfgPerm  *bool
 		want     bool
 	}{
-		{"task false overrides config true", boolPtr(false), boolPtr(true), false},
-		{"task true overrides config false", boolPtr(true), boolPtr(false), true},
-		{"task nil falls back to config false", nil, boolPtr(false), false},
-		{"task nil falls back to config true", nil, boolPtr(true), true},
+		{"task false overrides config true", task.Ptr(false), task.Ptr(true), false},
+		{"task true overrides config false", task.Ptr(true), task.Ptr(false), true},
+		{"task nil falls back to config false", nil, task.Ptr(false), false},
+		{"task nil falls back to config true", nil, task.Ptr(true), true},
 		{"task nil config nil defaults true", nil, nil, true},
 	}
 	for _, tt := range tests {
@@ -483,7 +481,7 @@ func TestResolvePermission(t *testing.T) {
 
 func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
 	t.Parallel()
-	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: boolPtr(false)}
+	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
 	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
 	_, _, requirePerm, _ := resolveExecution(tk, "headless", "", nil)
 	if !requirePerm {
