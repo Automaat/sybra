@@ -55,6 +55,8 @@ func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
 		}
 	}
 	return ev
