@@ -2174,6 +2174,31 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	}
 }
 
+func TestExecuteSteps_CycleDetection(t *testing.T) {
+	store := newTestStoreWith(t, "test-cycle.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "cycle1", Status: "todo", AgentMode: "headless"})
+
+	err := engine.StartWorkflow("cycle1", "test-cycle")
+	if err == nil {
+		t.Fatal("expected error for cyclic workflow, got nil")
+	}
+
+	var cycleErr *CycleError
+	if !errors.As(err, &cycleErr) {
+		t.Fatalf("expected *CycleError, got %T: %v", err, err)
+	}
+	if cycleErr.StepID == "" {
+		t.Error("CycleError.StepID is empty")
+	}
+	if cycleErr.At <= cycleErr.FirstAt {
+		t.Errorf("CycleError.At (%d) should be > FirstAt (%d)", cycleErr.At, cycleErr.FirstAt)
+	}
+}
+
 func TestParseIssueURL(t *testing.T) {
 	tests := []struct {
 		url      string

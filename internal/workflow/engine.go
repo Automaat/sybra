@@ -597,11 +597,28 @@ func (e *Engine) ResumeStalled() {
 	}
 }
 
+// CycleError is returned when executeSteps detects a cycle in the synchronous
+// step chain — the same step ID was visited twice without an async step
+// (run_agent, wait_human) breaking the loop.
+type CycleError struct {
+	StepID string
+	// At is the iteration index at which the cycle was detected (0-based).
+	At int
+	// FirstAt is the iteration index at which the step was first visited.
+	FirstAt int
+}
+
+func (e *CycleError) Error() string {
+	return fmt.Sprintf("workflow cycle detected: step %q revisited at iteration %d (first seen at %d)",
+		e.StepID, e.At, e.FirstAt)
+}
+
 // executeSteps iterates through synchronous steps until it hits an async step
 // (run_agent, wait_human) or the workflow ends. This avoids recursive calls
 // between executeStep/AdvanceStep that caused inflight guard deadlocks.
 func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
-	for range maxSyncSteps {
+	visited := make(map[string]int) // stepID → first-seen iteration index
+	for i := range maxSyncSteps {
 		t, err := e.tasks.GetTask(taskID)
 		if err != nil {
 			return err
@@ -641,6 +658,14 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
 		}
+
+		// Detect cycles: a sync step revisited without an async break means
+		// the workflow loops forever. Return a CycleError instead of hitting
+		// the generic maxSyncSteps limit.
+		if firstAt, seen := visited[step.ID]; seen {
+			return &CycleError{StepID: step.ID, At: i, FirstAt: firstAt}
+		}
+		visited[step.ID] = i
 
 		// Sync steps: execute, record result, resolve next, loop.
 		output, execErr := e.execSyncStep(taskID, step, wfExec, ctx, t)

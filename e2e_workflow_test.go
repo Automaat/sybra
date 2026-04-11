@@ -27,31 +27,48 @@ import (
 var (
 	testBinDir    string
 	testBuildOnce sync.Once
+	testBuildErr  string // non-empty if binary build failed
 )
+
+// TestMain tears down the shared binary directory after all tests complete.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if testBinDir != "" {
+		_ = os.RemoveAll(testBinDir)
+	}
+	os.Exit(code)
+}
 
 func buildTestBinaries(t *testing.T) string {
 	t.Helper()
 	testBuildOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "synapse-test-bins-*")
 		if err != nil {
-			panic(err)
+			testBuildErr = err.Error()
+			return
 		}
 		// Build fake claude.
 		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, "claude"), "./cmd/fake-claude")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			panic("build fake-claude: " + err.Error() + "\n" + string(out))
+			testBuildErr = "build fake-claude: " + err.Error() + "\n" + string(out)
+			return
 		}
 		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "codex"), "./cmd/fake-codex")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			panic("build fake-codex: " + err.Error() + "\n" + string(out))
+			testBuildErr = "build fake-codex: " + err.Error() + "\n" + string(out)
+			return
 		}
 		// Build real synapse-cli.
 		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "synapse-cli"), "./cmd/synapse-cli")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			panic("build synapse-cli: " + err.Error() + "\n" + string(out))
+			testBuildErr = "build synapse-cli: " + err.Error() + "\n" + string(out)
+			return
 		}
 		testBinDir = dir
 	})
+	if testBuildErr != "" {
+		t.Fatalf("build test binaries: %s", testBuildErr)
+	}
 	return testBinDir
 }
 
@@ -1604,10 +1621,7 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	// with StepID="". After the fix it is a silent no-op.
 	env.engine.HandleAgentComplete(created.ID, "stray-agent-xyz", "late result", "stopped")
 
-	// Allow any async side effects to land — there should be none, but give
-	// the scheduler a chance so we're not racing a future write.
-	time.Sleep(50 * time.Millisecond)
-
+	// HandleAgentComplete is synchronous; no async side effects to wait for.
 	tkAfter, _ := env.tasks.Get(created.ID)
 	if tkAfter.Workflow.State != workflow.ExecCompleted {
 		t.Errorf("state = %q, want ExecCompleted (stray completion must not mutate)",
@@ -1679,8 +1693,8 @@ func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
 	// this would drive resolveNext → ExecFailed; post-fix it's a silent
 	// no-op because output.AgentID != "" and human_action is unset.
 	env.engine.HandleAgentComplete(created.ID, "stray-duplicate-plan-agent", "late plan result", "stopped")
-	time.Sleep(50 * time.Millisecond)
 
+	// HandleAgentComplete is synchronous; no async side effects to wait for.
 	tkAfter, _ := env.tasks.Get(created.ID)
 	if tkAfter.Workflow.State != workflow.ExecWaiting {
 		t.Errorf("state = %q, want ExecWaiting — stray completion must not fail wait_human",
@@ -1779,7 +1793,7 @@ func TestE2E_RestartStaleSkipsTerminalWorkflow(t *testing.T) {
 	// workflow cannot be re-started on this task without explicit reset —
 	// the engine's state is preserved, not mutated.
 	before := *tk.Workflow
-	time.Sleep(50 * time.Millisecond)
+	// No background activity targets this task; assert state is unchanged immediately.
 	tkAfter, _ := env.tasks.Get(created.ID)
 	if tkAfter.Workflow.State != before.State {
 		t.Errorf("workflow state mutated: %q → %q", before.State, tkAfter.Workflow.State)
