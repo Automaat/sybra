@@ -131,6 +131,33 @@ Planning uses dedicated board columns (statuses), not a sub-state:
 | `plan-review` | **Do NOT dispatch** — wait for human to approve/reject |
 | `todo` | Dispatch implementation agent (plan in sidecar if was planned) |
 
+### Provider Selection
+
+Synapse supports two agent providers: `claude` (default) and `codex`. The active provider is set globally in `~/.synapse/config.yaml` under `agent.provider`. You cannot override it per-task — all dispatched agents use the configured provider.
+
+**When to prefer Codex:**
+
+| Signal | Use Codex |
+|--------|-----------|
+| Task is a self-contained script or shell automation | Yes |
+| Task requires OpenAI-specific models or tooling | Yes |
+| Task needs session resume across runs | No — use Claude (`--resume` not supported in Codex) |
+| Task needs fine-grained tool allowlist | No — Codex only supports `--full-auto` or `--sandbox workspace-write` |
+
+**Codex limitations to keep in mind:**
+
+- No session resume — every headless run starts fresh; multi-turn recovery requires re-stating context in the prompt
+- No `--allowedTools` — use `RequirePermissions=true` to restrict to `workspace-write` sandbox, or accept `--full-auto`
+- Cost not reported in stream — usage visible on OpenAI dashboard, not in Synapse UI
+- Interactive mode spawns a new process per turn (no persistent stdin)
+
+If the provider is `codex`, Synapse calls:
+```bash
+codex exec --json --skip-git-repo-check --full-auto [--model <model>] -C <worktree> "<prompt>"
+```
+
+See `docs/codex-setup.md` for full setup and auth details.
+
 ### Agent Spawn
 
 Headless tasks get a structured prompt:
@@ -245,7 +272,7 @@ Run audit analysis during the monitor phase of the core loop. Suggested cadence:
 
 ## Agent Commit Requirement
 
-Every headless implementation agent **must commit its work before finishing**. This is critical — uncommitted changes are destroyed when the worktree is reused for a subsequent agent run.
+Every headless implementation agent **must commit its work before finishing** — this applies to both `claude` and `codex` providers. Uncommitted changes are destroyed when the worktree is reused for a subsequent agent run.
 
 ### Required final steps in every headless agent prompt
 
