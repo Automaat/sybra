@@ -27,6 +27,21 @@ steps:
       prompt: >-
         {{ getvar .Vars "prompt" }}
     next:
+      - goto: verify_commits
+
+  # Mechanical check (no LLM): verifies the task's branch has at least one
+  # commit ahead of origin/main before running eval. Flips to human-required
+  # with reason "no commits pushed to branch" when the branch is empty.
+  # Skips gracefully when no worktree exists (e.g. task has no project).
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: evaluate
 
   - id: evaluate

@@ -370,6 +370,7 @@ func (a *App) initWorkflowEngine() {
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
+	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetContext(a.ctx)
 }
 
