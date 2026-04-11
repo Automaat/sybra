@@ -97,6 +97,7 @@ type Engine struct {
 	agents     AgentLauncher
 	prLinker   PRLinker
 	logger     *slog.Logger
+	ctx        context.Context
 	mu         sync.Mutex
 	inflight   map[string]struct{} // taskID → step in flight (prevent double-advance)
 	agentSteps map[string]string   // agentID → stepID it was spawned for
@@ -109,10 +110,16 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		tasks:      tasks,
 		agents:     agents,
 		logger:     logger,
+		ctx:        context.Background(),
 		inflight:   make(map[string]struct{}),
 		agentSteps: make(map[string]string),
 	}
 }
+
+// SetContext binds a parent context to the engine. Shell steps use
+// context.WithTimeout(parent, shellTimeout) so they are cancelled when
+// the parent context is cancelled (e.g. on app shutdown).
+func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
 
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }
@@ -856,7 +863,7 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 		return StepOutput{}, fmt.Errorf("render command: %w", err)
 	}
 
-	shellCtx, cancel := context.WithTimeout(context.Background(), shellTimeout)
+	shellCtx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(shellCtx, "bash", "-c", command)

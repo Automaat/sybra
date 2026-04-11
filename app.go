@@ -351,6 +351,7 @@ func (a *App) initWorkflowEngine() {
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
+	a.workflowEngine.SetContext(a.ctx)
 }
 
 func (a *App) initApprovalServer(emit func(string, any)) {
