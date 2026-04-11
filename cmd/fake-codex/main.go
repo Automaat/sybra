@@ -53,6 +53,16 @@ func runExec() {
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
 		emitTurnCompleted(100, 20)
+	case "overloaded_error":
+		emitError("Service overloaded (529)")
+		os.Exit(1)
+	case "overloaded_error_structured":
+		emit(map[string]any{
+			"type":    "error",
+			"message": "Service overloaded",
+			"code":    529,
+		})
+		os.Exit(1)
 	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)

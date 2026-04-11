@@ -22,6 +22,10 @@ type ClaudeResult struct {
 	CostUSD      float64
 	InputTokens  int
 	OutputTokens int
+	// ErrorType and ErrorStatus carry structured error info when Subtype == "error".
+	// Codex: mapped from the "code" field. Claude: reserved for future extraction.
+	ErrorType   string
+	ErrorStatus int
 }
 
 // ClaudeEvent is the shared envelope for all Claude stream-json events.
@@ -114,11 +118,18 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 		return CodexEvent{Type: "init", Raw: rawCopy}, nil
 
 	case "error":
+		errStatus := int(floatVal(raw, "code"))
+		errType, _ := raw["error_type"].(string)
 		return CodexEvent{
 			Type:    "result",
 			Subtype: "error",
 			Raw:     rawCopy,
-			Result:  &ClaudeResult{Subtype: "error", Text: strVal(raw, "message")},
+			Result: &ClaudeResult{
+				Subtype:     "error",
+				Text:        strVal(raw, "message"),
+				ErrorType:   errType,
+				ErrorStatus: errStatus,
+			},
 		}, nil
 
 	case "turn.completed":

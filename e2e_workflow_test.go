@@ -604,6 +604,47 @@ func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
 	}
 }
 
+// TestE2E_Codex_HeadlessRetry_Overloaded verifies that a Codex headless agent
+// retries when the provider emits an overloaded error (substring match on the
+// message). The first invocation returns "overloaded_error" (exits 1 with an
+// error event containing "overloaded" in the message); the second succeeds.
+// Before the provider-guard fix, Codex never retried and the agent stayed
+// failed permanently.
+func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error", "success"})
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "task-codex-retry",
+		Name:     "codex retry overloaded",
+		Mode:     "headless",
+		Provider: "codex",
+		Prompt:   "do work",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The first attempt exits 1 after emitting an overloaded error event.
+	// After backoff the agent retries and the second scenario (success) runs.
+	// First attempt exits 1 after ~0s; retry waits headlessRetryBackoffs[0]=30s;
+	// second attempt succeeds. Budget 90s to accommodate the backoff.
+	waitFor(t, 90*time.Second, "codex agent stops after retry", func() bool {
+		return ag.GetState() == agent.StateStopped
+	})
+
+	// Verify the agent produced a result event from the successful second attempt.
+	hasResult := false
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" && ev.Subtype == "" {
+			hasResult = true
+		}
+	}
+	if !hasResult {
+		t.Error("expected result event from second attempt, got none")
+	}
+}
+
 // TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate locks in the fix
 // for interactive implement steps stalling the workflow. Before the fix, a
 // conversational claude agent would emit its result event, flip to

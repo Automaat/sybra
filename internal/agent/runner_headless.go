@@ -134,7 +134,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		if prevLen > len(all) {
 			prevLen = len(all)
 		}
-		if a.Provider == "claude" && shouldRetry(stderrOut, all[prevLen:], m.logger) {
+		if shouldRetry(stderrOut, all[prevLen:], m.logger) {
 			return true, nil
 		}
 	}
@@ -407,6 +407,8 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
 		}
 	}
 	return ev
