@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
 )
@@ -25,6 +26,7 @@ type TodoistHandler struct {
 	audit      *audit.Logger
 	logger     *slog.Logger
 	emit       func(string, any)
+	throttle   *logging.ErrorThrottle
 }
 
 // NewTodoistHandler creates a TodoistHandler.
@@ -45,6 +47,7 @@ func NewTodoistHandler(
 		audit:      al,
 		logger:     logger,
 		emit:       emit,
+		throttle:   logging.NewErrorThrottle(),
 	}
 }
 
@@ -59,14 +62,10 @@ func (h *TodoistHandler) PollAndSync() time.Duration {
 	interval := time.Duration(h.cfg.PollSeconds) * time.Second
 
 	imported, importErr := h.ImportNewTasks()
-	if importErr != nil {
-		h.logger.Error("todoist.import", "err", importErr)
-	}
+	h.throttle.Log(h.logger, "todoist.import", "import", importErr)
 
 	completed, compErr := h.syncCompletions()
-	if compErr != nil {
-		h.logger.Error("todoist.complete", "err", compErr)
-	}
+	h.throttle.Log(h.logger, "todoist.complete", "complete", compErr)
 
 	if imported > 0 || completed > 0 {
 		h.logger.Info("todoist.synced", "imported", imported, "completed", completed)
@@ -147,8 +146,10 @@ func (h *TodoistHandler) syncCompletions() (int, error) {
 		if t.TodoistID == "" || t.Status != task.StatusDone {
 			continue
 		}
-		if closeErr := h.client.CloseTask(t.TodoistID); closeErr != nil {
-			h.logger.Error("todoist.close", "task_id", t.ID, "todoist_id", t.TodoistID, "err", closeErr)
+		closeErr := h.client.CloseTask(t.TodoistID)
+		h.throttle.Log(h.logger, "todoist.close", "close:"+t.TodoistID, closeErr,
+			"task_id", t.ID, "todoist_id", t.TodoistID)
+		if closeErr != nil {
 			continue
 		}
 		h.logAudit(audit.EventTodoistCompleted, t.ID, "", map[string]any{

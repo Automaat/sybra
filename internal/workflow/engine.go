@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/synapse/internal/logging"
 )
 
 const (
@@ -70,27 +72,29 @@ type PRLinker interface {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store      *Store
-	tasks      TaskProvider
-	agents     AgentLauncher
-	prLinker   PRLinker
-	logger     *slog.Logger
-	ctx        context.Context
-	mu         sync.Mutex
-	inflight   map[string]struct{} // taskID → step in flight (prevent double-advance)
-	agentSteps map[string]string   // agentID → stepID it was spawned for
+	store       *Store
+	tasks       TaskProvider
+	agents      AgentLauncher
+	prLinker    PRLinker
+	logger      *slog.Logger
+	ctx         context.Context
+	mu          sync.Mutex
+	inflight    map[string]struct{} // taskID → step in flight (prevent double-advance)
+	agentSteps  map[string]string   // agentID → stepID it was spawned for
+	resumeError *logging.ErrorThrottle
 }
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return &Engine{
-		store:      store,
-		tasks:      tasks,
-		agents:     agents,
-		logger:     logger,
-		ctx:        context.Background(),
-		inflight:   make(map[string]struct{}),
-		agentSteps: make(map[string]string),
+		store:       store,
+		tasks:       tasks,
+		agents:      agents,
+		logger:      logger,
+		ctx:         context.Background(),
+		inflight:    make(map[string]struct{}),
+		agentSteps:  make(map[string]string),
+		resumeError: logging.NewErrorThrottle(),
 	}
 }
 
@@ -574,9 +578,8 @@ func (e *Engine) ResumeStalled() {
 		}
 
 		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
-		if rErr := e.executeSteps(t.ID, &def, step, t.Workflow); rErr != nil {
-			e.logger.Error("workflow.resume-stalled.exec", "task_id", t.ID, "err", rErr)
-		}
+		rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 	}
 }
 

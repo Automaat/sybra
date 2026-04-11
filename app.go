@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
@@ -64,6 +65,7 @@ type App struct {
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
+	restartStaleErr *logging.ErrorThrottle
 
 	// Wails-bound services (created in startup)
 	taskSvc     *TaskService
@@ -80,15 +82,16 @@ type App struct {
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
 	a := &App{
-		tasksDir:     cfg.TasksDir,
-		skillsDir:    cfg.SkillsDir,
-		repoDir:      cfg.RepoDir,
-		worktreesDir: cfg.WorktreesDir,
-		logger:       logger,
-		logDir:       cfg.Logging.Dir,
-		auditDir:     cfg.AuditDir(),
-		cfg:          cfg,
-		logLevel:     logLevel,
+		tasksDir:        cfg.TasksDir,
+		skillsDir:       cfg.SkillsDir,
+		repoDir:         cfg.RepoDir,
+		worktreesDir:    cfg.WorktreesDir,
+		logger:          logger,
+		logDir:          cfg.Logging.Dir,
+		auditDir:        cfg.AuditDir(),
+		cfg:             cfg,
+		logLevel:        logLevel,
+		restartStaleErr: logging.NewErrorThrottle(),
 	}
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
@@ -302,6 +305,26 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	cost := ag.GetCostUSD()
 	exitErr := ag.GetExitErr()
 
+	// Audit logging always fires — orchestrator brain agents have no parent
+	// task and skip the storage paths below, but their lifecycle still
+	// belongs in the audit trail.
+	duration := time.Since(ag.StartedAt).Seconds()
+	a.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
+		"mode":       ag.Mode,
+		"cost_usd":   cost,
+		"duration_s": duration,
+		"state":      string(state),
+		"role":       agent.RoleFromName(ag.Name),
+		"provider":   ag.Provider,
+	})
+
+	// Orchestrator brain agents run with TaskID="" (rooted at ~/.synapse,
+	// no parent task). Calling UpdateRun / HandleAgentComplete / Get with
+	// an empty ID joins to ".synapse/tasks/.md" and crashes the handler.
+	if ag.TaskID == "" {
+		return
+	}
+
 	// Persist run result to task file.
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
@@ -314,17 +337,6 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	}); err != nil {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
-
-	// Audit logging.
-	duration := time.Since(ag.StartedAt).Seconds()
-	a.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   cost,
-		"duration_s": duration,
-		"state":      string(state),
-		"role":       agent.RoleFromName(ag.Name),
-		"provider":   ag.Provider,
-	})
 
 	// Advance workflow.
 	if a.workflowEngine != nil {
@@ -564,9 +576,8 @@ func (a *App) restartStaleInProgress() {
 		runRole := t.RunRole
 		if runRole == "pr-fix" {
 			a.wg.Go(func() {
-				if err := a.agentOrch.StartPRFixAgent(taskID); err != nil {
-					a.logger.Error("restart.pr-fix.failed", "task_id", taskID, "err", err)
-				}
+				err := a.agentOrch.StartPRFixAgent(taskID)
+				a.restartStaleErr.Log(a.logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 			})
 		} else {
 			mode := t.AgentMode
@@ -574,9 +585,8 @@ func (a *App) restartStaleInProgress() {
 				// Restart-stale only ever reaches this branch for headless
 				// mode (interactive tasks are handled by recoverStaleInteractive
 				// above), so OneShot is irrelevant here — pass false.
-				if _, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false); err != nil {
-					a.logger.Error("restart-stale.failed", "task_id", taskID, "err", err)
-				}
+				_, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false)
+				a.restartStaleErr.Log(a.logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			})
 		}
 	}

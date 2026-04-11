@@ -124,6 +124,48 @@ func testConfig(t *testing.T) *config.Config {
 	}
 }
 
+func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
+	// Orchestrator brain agents run with TaskID="" — feeding that into
+	// UpdateRun/HandleAgentComplete/Get used to crash the handler with
+	// "open .synapse/tasks/.md: no such file or directory" because the
+	// empty ID was joined to the tasks dir. Verify the short-circuit.
+	a := setupApp(t)
+
+	// Pre-existing task that must NOT be touched: an empty-id call must
+	// not accidentally rewrite a task file (the original bug joined "" to
+	// the tasks dir as ".md" — the path it would have hit is here too).
+	other, err := a.tasks.Create("Other task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherStat, err := os.Stat(other.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{
+		ID:        "orch-agent",
+		TaskID:    "",
+		Mode:      "interactive",
+		StartedAt: other.CreatedAt,
+	}
+
+	// Should not panic, and should not touch any task file. The historical
+	// bug created/touched ".md" in tasksDir; assert no such file exists.
+	a.onAgentComplete(ag)
+
+	if _, err := os.Stat(filepath.Join(a.tasksDir, ".md")); !os.IsNotExist(err) {
+		t.Errorf("expected no .md file in tasks dir, got err=%v", err)
+	}
+	otherStat2, err := os.Stat(other.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !otherStat.ModTime().Equal(otherStat2.ModTime()) {
+		t.Errorf("unrelated task file was rewritten: mtime %v -> %v", otherStat.ModTime(), otherStat2.ModTime())
+	}
+}
+
 func TestNewApp(t *testing.T) {
 	cfg := testConfig(t)
 	a := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
