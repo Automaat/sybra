@@ -1,30 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-
-type ProviderSpec = {
-  provider: 'claude' | 'codex'
-  modelLabel: string
-  expectedOptions: string[]
-}
-
-const providerMatrix: ProviderSpec[] = [
-  {
-    provider: 'claude',
-    modelLabel: 'Default (Sonnet)',
-    expectedOptions: ['Default (Sonnet)', 'Opus', 'Sonnet', 'Haiku'],
-  },
-  {
-    provider: 'codex',
-    modelLabel: 'Default (gpt-5.4)',
-    expectedOptions: ['Default (gpt-5.4)', 'GPT-5.4', 'GPT-5.4 Mini', 'GPT-5.3 Codex'],
-  },
-]
-
-function selectedProviders(): ProviderSpec[] {
-  const provider = process.env.SYNAPSE_E2E_PROVIDER?.trim()
-  if (!provider) return providerMatrix
-  const filtered = providerMatrix.filter((spec) => spec.provider === provider)
-  return filtered.length > 0 ? filtered : providerMatrix
-}
+import { selectedProviders } from './lib/providers.js'
 
 async function goToSettings(page: Page) {
   await page.goto('/')

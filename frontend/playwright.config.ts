@@ -19,7 +19,8 @@ export default defineConfig({
   webServer: {
     command: 'cd .. && wails dev',
     url: 'http://localhost:34115',
-    reuseExistingServer: true,
-    timeout: 60_000,
+    // Always start a fresh instance in CI; reuse an existing dev server locally.
+    reuseExistingServer: !process.env.CI,
+    timeout: 150_000,
   },
 })

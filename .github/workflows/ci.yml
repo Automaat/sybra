@@ -116,7 +116,7 @@ jobs:
   e2e:
     name: E2E Tests (${{ matrix.provider }})
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -146,43 +146,13 @@ jobs:
         env:
           SYNAPSE_HOME: /tmp/synapse-e2e
 
-      - name: Start wails dev
-        run: |
-          SYNAPSE_HOME=/tmp/synapse-e2e wails dev > /tmp/wails-dev.log 2>&1 &
-          WAILS_PID=$!
-          echo "WAILS_PID=$WAILS_PID" >> "$GITHUB_ENV"
-          echo "Waiting for wails dev (pid $WAILS_PID)..."
-          for i in $(seq 1 90); do
-            if ! kill -0 $WAILS_PID 2>/dev/null; then
-              echo "::error::wails dev exited prematurely"
-              cat /tmp/wails-dev.log
-              exit 1
-            fi
-            if curl -s http://localhost:34115 > /dev/null 2>&1; then
-              echo "Wails dev ready after $((i*2))s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "::error::wails dev timed out"
-              cat /tmp/wails-dev.log
-              exit 1
-            fi
-            sleep 2
-          done
-          # Extra wait for Go backend binding bridge
-          sleep 5
-          echo "--- wails dev log ---"
-          cat /tmp/wails-dev.log
-
+      # Playwright's webServer config starts wails dev and waits for it to be
+      # ready (reuseExistingServer: false in CI).  No manual start needed.
       - name: Run e2e tests
         run: cd frontend && npx playwright test --reporter=github
         env:
           SYNAPSE_HOME: /tmp/synapse-e2e
           SYNAPSE_E2E_PROVIDER: ${{ matrix.provider }}
-
-      - name: Dump wails dev log
-        if: failure()
-        run: cat /tmp/wails-dev.log || true
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
