@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const issuesPollInterval = 5 * time.Minute
@@ -16,38 +16,44 @@ const issuesPollInterval = 5 * time.Minute
 // synapseIssueLabel is the GitHub label that triggers auto-creation of Synapse tasks.
 const synapseIssueLabel = "synapse"
 
-func (a *App) issuesPollLoop(ctx context.Context) {
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
+// IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
+type IssuesFetcher struct {
+	tasks    *task.Manager
+	projects *project.Store
+	emit     func(string, any)
+	logger   *slog.Logger
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			issues, err := github.FetchAssignedIssues()
-			if err != nil {
-				a.logger.Warn("issues.fetch", "err", err)
-				timer.Reset(issuesPollInterval)
-				continue
-			}
+func newIssuesFetcher(
+	tasks *task.Manager,
+	projects *project.Store,
+	emit func(string, any),
+	logger *slog.Logger,
+) *IssuesFetcher {
+	return &IssuesFetcher{tasks: tasks, projects: projects, emit: emit, logger: logger}
+}
 
-			runtime.EventsEmit(a.ctx, "issues:updated", issues)
-			a.logger.Debug("issues.poll", "count", len(issues))
+func (f *IssuesFetcher) Name() string { return "issues" }
 
-			a.syncIssuesToTasks(issues)
-			a.syncLabeledIssuesToTasks()
-			timer.Reset(issuesPollInterval)
-		}
+func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
+	issues, err := github.FetchAssignedIssues()
+	if err != nil {
+		f.logger.Warn("issues.fetch", "err", err)
+		return issuesPollInterval
 	}
+	f.emit("issues:updated", issues)
+	f.logger.Debug("issues.poll", "count", len(issues))
+	f.syncIssuesToTasks(issues)
+	f.syncLabeledIssuesToTasks()
+	return issuesPollInterval
 }
 
 // syncLabeledIssuesToTasks fetches issues labeled 'synapse' across all registered
 // pet projects and creates tasks for any not yet tracked.
-func (a *App) syncLabeledIssuesToTasks() {
-	projects, err := a.projects.List()
+func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
+	projects, err := f.projects.List()
 	if err != nil {
-		a.logger.Error("labeled-issues.list-projects", "err", err)
+		f.logger.Error("labeled-issues.list-projects", "err", err)
 		return
 	}
 
@@ -63,17 +69,17 @@ func (a *App) syncLabeledIssuesToTasks() {
 
 	labeled, err := github.FetchLabeledIssuesForRepos(repos, synapseIssueLabel)
 	if err != nil {
-		a.logger.Warn("labeled-issues.fetch", "err", err)
+		f.logger.Warn("labeled-issues.fetch", "err", err)
 		return
 	}
-	a.logger.Debug("labeled-issues.poll", "count", len(labeled))
-	a.syncIssuesToTasks(labeled)
+	f.logger.Debug("labeled-issues.poll", "count", len(labeled))
+	f.syncIssuesToTasks(labeled)
 }
 
-func (a *App) syncIssuesToTasks(issues []github.Issue) {
-	tasks, err := a.tasks.List()
+func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
+	tasks, err := f.tasks.List()
 	if err != nil {
-		a.logger.Error("issue-sync.list-tasks", "err", err)
+		f.logger.Error("issue-sync.list-tasks", "err", err)
 		return
 	}
 
@@ -105,20 +111,20 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 			if issue.Body != "" {
 				u.Body = task.Ptr(issue.Body)
 			}
-			if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
+			if _, projErr := f.projects.Get(issue.Repository); projErr == nil {
 				u.ProjectID = task.Ptr(issue.Repository)
 			}
-			if _, err := a.tasks.Update(taskID, u); err != nil {
-				a.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
+			if _, err := f.tasks.Update(taskID, u); err != nil {
+				f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
 			} else {
-				a.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
+				f.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
 			}
 			continue
 		}
 
-		t, err := a.tasks.Create(issue.Title, issue.Body, "headless")
+		t, err := f.tasks.Create(issue.Title, issue.Body, "headless")
 		if err != nil {
-			a.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
+			f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
 			continue
 		}
 
@@ -127,7 +133,7 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 			Status: task.Ptr(task.StatusTodo),
 		}
 
-		if _, projErr := a.projects.Get(issue.Repository); projErr == nil {
+		if _, projErr := f.projects.Get(issue.Repository); projErr == nil {
 			u.ProjectID = task.Ptr(issue.Repository)
 		}
 
@@ -136,10 +142,10 @@ func (a *App) syncIssuesToTasks(issues []github.Issue) {
 			u.Tags = &labels
 		}
 
-		if _, err := a.tasks.Update(t.ID, u); err != nil {
-			a.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
+		if _, err := f.tasks.Update(t.ID, u); err != nil {
+			f.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
 		}
 
-		a.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
+		f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
 	}
 }

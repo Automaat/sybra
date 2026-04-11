@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
 )
@@ -38,6 +39,12 @@ func newTodoistHandler(
 		client:        client,
 		cfg:           cfg,
 	}
+}
+
+func (h *TodoistHandler) Name() string { return "todoist" }
+
+func (h *TodoistHandler) Poll(_ context.Context) time.Duration {
+	return h.pollAndSync()
 }
 
 // pollAndSync runs one import+completion cycle and returns the next poll interval.
@@ -169,22 +176,6 @@ func (a *App) initTodoist(emit func(string, any)) {
 	a.logger.Info("todoist.enabled", "project_id", a.cfg.Todoist.ProjectID)
 }
 
-// todoistPollLoop runs the Todoist sync on a timer.
-func (a *App) todoistPollLoop(ctx context.Context) {
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			next := a.todoistHandler.pollAndSync()
-			timer.Reset(next)
-		}
-	}
-}
-
 // startTodoistLoop launches the poll goroutine if the handler is initialized.
 func (a *App) startTodoistLoop(parent context.Context) {
 	if a.todoistHandler == nil {
@@ -192,7 +183,8 @@ func (a *App) startTodoistLoop(parent context.Context) {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	a.todoistCancel = cancel
-	a.wg.Go(func() { a.todoistPollLoop(ctx) })
+	p := poll.New(a.todoistHandler, 15*time.Second, a.logger)
+	a.wg.Go(func() { p.Run(ctx) })
 }
 
 // stopTodoistLoop cancels the running poll goroutine if any.

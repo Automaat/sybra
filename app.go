@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/notification"
+	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/stats"
@@ -57,6 +58,7 @@ type App struct {
 	todoistHandler  *TodoistHandler
 	todoistCancel   context.CancelFunc
 	renovateHandler *RenovateHandler
+	issuesFetcher   *IssuesFetcher
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
@@ -180,6 +182,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initTodoist(emit)
 	a.initRenovate(emit)
+	a.issuesFetcher = newIssuesFetcher(a.tasks, a.projects, emit, a.logger)
 	a.wireServices(emit)
 
 	a.syncSkills()
@@ -189,13 +192,16 @@ func (a *App) startup(ctx context.Context) {
 	a.restartStaleInProgress()
 	a.RegisterSpotlightHotkey()
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
-	a.wg.Go(func() { a.prPollLoop(ctx) })
 	a.wg.Go(func() { a.agentWatchdogLoop(ctx) })
-	a.startTodoistLoop(ctx)
+
+	hub := poll.NewHub()
+	hub.Register(a.reviewer, 10*time.Second)
+	hub.Register(a.issuesFetcher, 20*time.Second)
 	if a.renovateHandler != nil {
-		a.wg.Go(func() { a.renovatePollLoop(ctx) })
+		hub.Register(a.renovateHandler, 15*time.Second)
 	}
-	a.wg.Go(func() { a.issuesPollLoop(ctx) })
+	hub.Start(ctx, &a.wg, a.logger)
+	a.startTodoistLoop(ctx)
 	a.logger.Info("app.started")
 }
 
@@ -503,7 +509,7 @@ func (a *App) restartStaleInProgress() {
 			continue
 		}
 		// Tasks whose last agent was a pr-fix should not be re-implemented.
-		// Move them back to in-review so prPollLoop can re-detect and fix.
+		// Move them back to in-review so the reviews poller can re-detect and fix.
 		// Applies to both headless and interactive modes — handlePRIssue
 		// spawns pr-fix agents directly without registering a workflow, so
 		// onAgentComplete can't advance the task back to in-review itself.
@@ -711,20 +717,4 @@ func (a *App) RegisterSpotlightHotkey() {
 		return
 	}
 	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
-}
-
-func (a *App) prPollLoop(ctx context.Context) {
-	timer := time.NewTimer(10 * time.Second) // initial fetch shortly after startup
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			next := a.reviewer.pollAndMonitorPRs()
-			a.logger.Debug("pr-poll.next", "interval", next)
-			timer.Reset(next)
-		}
-	}
 }

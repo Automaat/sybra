@@ -51,6 +51,12 @@ func (h *RenovateHandler) repos() []string {
 	return repos
 }
 
+func (h *RenovateHandler) Name() string { return "renovate" }
+
+func (h *RenovateHandler) Poll(_ context.Context) time.Duration {
+	return h.pollRenovatePRs()
+}
+
 func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 	repos := h.repos()
 	if len(repos) == 0 {
@@ -80,20 +86,4 @@ func (a *App) initRenovate(emit func(string, any)) {
 	}
 	a.renovateHandler = newRenovateHandler(a.projects, a.logger, emit, &a.cfg.Renovate)
 	a.logger.Info("renovate.enabled", "author", a.cfg.Renovate.Author)
-}
-
-func (a *App) renovatePollLoop(ctx context.Context) {
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			next := a.renovateHandler.pollRenovatePRs()
-			a.logger.Debug("renovate-poll.next", "interval", next)
-			timer.Reset(next)
-		}
-	}
 }
