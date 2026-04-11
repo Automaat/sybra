@@ -694,6 +694,8 @@ func (a *App) syncDir(src, dst string) {
 	}
 	cleanSrc := filepath.Clean(src) + string(filepath.Separator)
 	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
+
+	srcNames := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
 			continue
@@ -712,6 +714,30 @@ func (a *App) syncDir(src, dst string) {
 			continue
 		}
 		a.syncFile(srcPath, dstPath)
+		srcNames[e.Name()] = struct{}{}
+	}
+
+	// Remove orphan .md files in dst that no longer exist in src.
+	dstEntries, err := os.ReadDir(dst)
+	if err != nil {
+		return
+	}
+	for _, e := range dstEntries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		if _, ok := srcNames[e.Name()]; ok {
+			continue
+		}
+		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
+		if !strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
+			continue
+		}
+		if err := os.Remove(dstPath); err != nil {
+			a.logger.Warn("sync.orphan.remove.fail", "file", e.Name(), "err", err)
+		} else {
+			a.logger.Info("sync.orphan.removed", "file", e.Name())
+		}
 	}
 }
 

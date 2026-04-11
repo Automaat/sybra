@@ -242,7 +242,7 @@ func defaultTasksDir() string {
 }
 
 func defaultSkillsDir() string {
-	return filepath.Join(HomeDir(), "skills")
+	return filepath.Join(HomeDir(), ".claude", "skills")
 }
 
 func defaultProjectsDir() string {
