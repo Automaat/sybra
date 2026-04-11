@@ -1,4 +1,4 @@
-package main
+package poll
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/Automaat/synapse/internal/task"
 )
 
-const issuesPollInterval = 5 * time.Minute
+const IssuesPollInterval = 5 * time.Minute
 
 // synapseIssueLabel is the GitHub label that triggers auto-creation of Synapse tasks.
 const synapseIssueLabel = "synapse"
@@ -24,7 +24,8 @@ type IssuesFetcher struct {
 	logger   *slog.Logger
 }
 
-func newIssuesFetcher(
+// NewIssuesFetcher creates an IssuesFetcher.
+func NewIssuesFetcher(
 	tasks *task.Manager,
 	projects *project.Store,
 	emit func(string, any),
@@ -39,13 +40,13 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	issues, err := github.FetchAssignedIssues()
 	if err != nil {
 		f.logger.Warn("issues.fetch", "err", err)
-		return issuesPollInterval
+		return IssuesPollInterval
 	}
 	f.emit("issues:updated", issues)
 	f.logger.Debug("issues.poll", "count", len(issues))
 	f.syncIssuesToTasks(issues)
 	f.syncLabeledIssuesToTasks()
-	return issuesPollInterval
+	return IssuesPollInterval
 }
 
 // syncLabeledIssuesToTasks fetches issues labeled 'synapse' across all registered

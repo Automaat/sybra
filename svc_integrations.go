@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
@@ -27,8 +28,8 @@ type IntegrationService struct {
 	audit           *audit.Logger
 	cfg             *config.Config
 	logger          *slog.Logger
-	todoistHandler  *TodoistHandler
-	renovateHandler *RenovateHandler
+	todoistHandler  *poll.TodoistHandler
+	renovateHandler *poll.RenovateHandler
 	workflowEngine  *workflow.Engine
 }
 
@@ -37,7 +38,7 @@ func (s *IntegrationService) SyncTodoist() error {
 	if s.todoistHandler == nil {
 		return fmt.Errorf("todoist integration not enabled")
 	}
-	s.todoistHandler.pollAndSync()
+	s.todoistHandler.PollAndSync()
 	return nil
 }
 
@@ -61,7 +62,7 @@ func (s *IntegrationService) FetchRenovatePRs() ([]github.RenovatePR, error) {
 	if s.renovateHandler == nil {
 		return nil, nil
 	}
-	repos := s.renovateHandler.repos()
+	repos := s.renovateHandler.Repos()
 	if len(repos) == 0 {
 		return nil, nil
 	}
