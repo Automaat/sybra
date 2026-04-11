@@ -302,6 +302,35 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 	}
 }
 
+func TestStoreCreate_InvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("Bad mode", "", "supervised"); err == nil {
+		t.Fatal("expected error for invalid agent_mode")
+	}
+}
+
+func TestStoreUpdate_InvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Mode task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(created.ID, Update{AgentMode: Ptr("supervised")}); err == nil {
+		t.Fatal("expected error for invalid agent_mode update")
+	}
+	if _, err := store.UpdateMap(created.ID, map[string]any{"agent_mode": "supervised"}); err == nil {
+		t.Fatal("expected error for invalid agent_mode UpdateMap")
+	}
+}
+
 func TestStoreUpdateProjectID(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
