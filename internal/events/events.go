@@ -35,7 +35,8 @@ const (
 	IssuesUpdated = "issues:updated"
 
 	// App lifecycle events.
-	AppQuitConfirm = "app:quit-confirm"
+	AppQuitConfirm  = "app:quit-confirm"
+	StartupDegraded = "startup:degraded"
 )
 
 // AgentState returns the agent state event name for the given agent ID.
