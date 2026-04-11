@@ -68,28 +68,6 @@ type PRLinker interface {
 	EditBody(repo string, prNumber int, body string) error
 }
 
-// AgentLauncher starts agents and queries running state.
-// `dir` overrides the worktree preparation — when non-empty the caller has
-// already staged a directory (e.g. PrepareForFix) and the adapter must reuse
-// it instead of calling PrepareForTask.
-// `oneShot` asks the runner to close stdin after the first `result` event in
-// conversational mode so the process exits naturally. Required for interactive
-// workflow steps that expect a single turn — otherwise the agent sits paused
-// forever and the workflow never advances to the next step.
-type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
-	HasRunningAgent(taskID string) bool
-	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
-	StopAgentsForTask(taskID string, role string)
-	SendPrompt(agentID, message string) error
-}
-
-// WorkflowVarDir is the reserved variable name used to pass a pre-prepared
-// working directory to run_agent steps, bypassing worktree creation inside
-// the engine. Callers set this before StartWorkflowWithVars when they have
-// already prepared the worktree (e.g. PR-fix flow that needs PrepareForFix).
-const WorkflowVarDir = "_dir"
-
 // Engine executes workflow definitions against tasks.
 type Engine struct {
 	store      *Store
@@ -469,16 +447,14 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 }
 
 // HandleAgentComplete is called when an agent finishes. It maps the agent
-// back to the workflow step and advances. The agentState parameter should
-// reflect the actual agent exit state (e.g. "stopped" for success, "failed"
-// for crashes) so the retry logic in AdvanceStep can trigger correctly.
+// back to the workflow step and advances.
 //
 // Silently skips (Debug log) when the task's workflow is already terminal or
 // has no current step. Agents that were started outside the workflow engine
 // (e.g. manual pr-fix retries, recovery spawns) land here on completion; the
 // guard avoids the "step not found" error loop that followed workflow
 // completion in older versions.
-func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string) {
+func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
@@ -490,14 +466,14 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string)
 	}
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
 		e.logger.Debug("workflow.agent-complete.terminal",
-			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
-		e.clearAgentStep(agentID)
+			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(c.AgentID)
 		return
 	}
 	if t.Workflow.CurrentStep == "" {
 		e.logger.Debug("workflow.agent-complete.no-current-step",
-			"task_id", taskID, "agent_id", agentID, "state", string(t.Workflow.State))
-		e.clearAgentStep(agentID)
+			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(c.AgentID)
 		return
 	}
 
@@ -505,25 +481,25 @@ func (e *Engine) HandleAgentComplete(taskID, agentID, result, agentState string)
 	// workflow's current step for agents that were never tracked (recovery
 	// flows calling with synthetic IDs). The resolved ID is then checked
 	// against the current step inside AdvanceStep to drop stale completions.
-	spawnedStep, tracked := e.lookupAgentStep(agentID)
+	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
 	}
 
 	status := "completed"
-	if agentState != "" && agentState != "stopped" {
+	if !c.Success {
 		status = "failed"
 	}
 
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID:  spawnedStep,
 		Status:  status,
-		Output:  result,
-		AgentID: agentID,
+		Output:  c.Result,
+		AgentID: c.AgentID,
 	}); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 	}
-	e.clearAgentStep(agentID)
+	e.clearAgentStep(c.AgentID)
 }
 
 // lookupAgentStep returns the stepID an agent was spawned for and whether it
