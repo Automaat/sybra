@@ -35,12 +35,85 @@ type claudeSession struct {
 var nonAlphanumDash = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 
 func (m *Manager) DiscoverAgents() []*Agent {
-	claudeSessions := readClaudeSessions()
-	codexSessions := readCodexSessions()
+	sources := []SessionSource{
+		claudeSessionSource{},
+		codexSessionSource{},
+	}
 	m.refreshTracked()
-	discovered := m.discoverNew(claudeSessions)
-	discovered = append(discovered, m.discoverNewCodex(codexSessions)...)
+	opts := m.buildFilterOpts()
+
+	var discovered []*Agent
+	for _, src := range sources {
+		filtered := filterSessions(src.List(), opts)
+		discovered = append(discovered, m.reconcile(filtered)...)
+	}
 	return discovered
+}
+
+// buildFilterOpts collects already-tracked identifiers for deduplication in filterSessions.
+func (m *Manager) buildFilterOpts() FilterOpts {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	opts := FilterOpts{
+		TrackedPIDs:       make(map[int]bool),
+		TrackedPaths:      make(map[string]bool),
+		TrackedSessionIDs: make(map[string]bool),
+	}
+	for _, a := range m.agents {
+		if a.cmd != nil && a.cmd.Process != nil {
+			opts.TrackedPIDs[a.cmd.Process.Pid] = true
+		}
+		if a.PID != 0 {
+			opts.TrackedPIDs[a.PID] = true
+		}
+		if fp := a.GetSessionFilePath(); fp != "" {
+			opts.TrackedPaths[fp] = true
+		}
+		if sid := a.GetSessionID(); sid != "" {
+			opts.TrackedSessionIDs[sid] = true
+		}
+	}
+	return opts
+}
+
+// reconcile registers filtered sessions as external agents and returns newly added ones.
+func (m *Manager) reconcile(sessions []RawSession) []*Agent {
+	var discovered []*Agent
+	for i := range sessions {
+		s := &sessions[i]
+		a := &Agent{
+			ID:              externalAgentID(s),
+			Mode:            s.Mode,
+			State:           s.State,
+			External:        true,
+			PID:             s.PID,
+			SessionID:       s.SessionID,
+			StartedAt:       s.StartedAt,
+			Name:            s.Name,
+			Project:         projectName(s.CWD),
+			Provider:        s.Provider,
+			sessionCWD:      s.CWD,
+			sessionFilePath: s.FilePath,
+		}
+		m.mu.Lock()
+		if _, exists := m.agents[a.ID]; !exists {
+			m.agents[a.ID] = a
+		}
+		m.mu.Unlock()
+		discovered = append(discovered, a)
+	}
+	return discovered
+}
+
+func externalAgentID(s *RawSession) string {
+	if s.Provider == "codex" {
+		shortID := s.SessionID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		return fmt.Sprintf("ext-codex-%s", shortID)
+	}
+	return fmt.Sprintf("ext-%d", s.PID)
 }
 
 // refreshTracked updates state of already-tracked external agents.
@@ -104,53 +177,6 @@ func refreshCodexAgent(pid int, filePath string) State {
 		return inferCodexState(filePath)
 	}
 	return StateIdle
-}
-
-// discoverNew registers and returns external agents not yet tracked.
-func (m *Manager) discoverNew(sessions []claudeSession) []*Agent {
-	m.mu.RLock()
-	trackedPIDs := make(map[int]bool)
-	for _, a := range m.agents {
-		if a.cmd != nil && a.cmd.Process != nil {
-			trackedPIDs[a.cmd.Process.Pid] = true
-		}
-		if a.PID != 0 {
-			trackedPIDs[a.PID] = true
-		}
-	}
-	m.mu.RUnlock()
-
-	var discovered []*Agent
-	for _, s := range sessions {
-		if trackedPIDs[s.PID] {
-			continue
-		}
-		if !processAlive(s.PID) {
-			continue
-		}
-
-		a := &Agent{
-			ID:         fmt.Sprintf("ext-%d", s.PID),
-			Mode:       sessionKind(s.Kind),
-			State:      inferState(s.CWD, s.SessionID),
-			External:   true,
-			PID:        s.PID,
-			SessionID:  s.SessionID,
-			StartedAt:  time.UnixMilli(s.StartedAt).UTC(),
-			Name:       s.Name,
-			Project:    projectName(s.CWD),
-			sessionCWD: s.CWD,
-		}
-
-		m.mu.Lock()
-		if _, exists := m.agents[a.ID]; !exists {
-			m.agents[a.ID] = a
-		}
-		m.mu.Unlock()
-
-		discovered = append(discovered, a)
-	}
-	return discovered
 }
 
 const staleThreshold = 10 * time.Second
@@ -547,71 +573,6 @@ func parseLsofCWD(output string) string {
 		}
 	}
 	return ""
-}
-
-func (m *Manager) discoverNewCodex(sessions []codexSession) []*Agent {
-	m.mu.RLock()
-	trackedPaths := make(map[string]bool)
-	trackedSessionIDs := make(map[string]bool)
-	for _, a := range m.agents {
-		if fp := a.GetSessionFilePath(); fp != "" {
-			trackedPaths[fp] = true
-		}
-		if sid := a.GetSessionID(); sid != "" {
-			trackedSessionIDs[sid] = true
-		}
-	}
-	m.mu.RUnlock()
-
-	pidMap := findCodexPIDs()
-
-	var discovered []*Agent
-	for _, s := range sessions {
-		if trackedPaths[s.FilePath] || trackedSessionIDs[s.SessionID] {
-			continue
-		}
-
-		state := inferCodexState(s.FilePath)
-		pid := pidMap[s.CWD]
-
-		// Skip sessions that are dead with no associated process.
-		if state == StateStopped && pid == 0 {
-			continue
-		}
-
-		mode := "headless"
-		if s.Originator == "codex_tui" {
-			mode = "interactive"
-		}
-
-		shortID := s.SessionID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
-
-		a := &Agent{
-			ID:              fmt.Sprintf("ext-codex-%s", shortID),
-			Mode:            mode,
-			State:           state,
-			External:        true,
-			PID:             pid,
-			SessionID:       s.SessionID,
-			StartedAt:       s.StartedAt,
-			Project:         projectName(s.CWD),
-			Provider:        "codex",
-			sessionCWD:      s.CWD,
-			sessionFilePath: s.FilePath,
-		}
-
-		m.mu.Lock()
-		if _, exists := m.agents[a.ID]; !exists {
-			m.agents[a.ID] = a
-		}
-		m.mu.Unlock()
-
-		discovered = append(discovered, a)
-	}
-	return discovered
 }
 
 // resolveCodexSessionFile returns the JSONL path for a given Codex session ID.
