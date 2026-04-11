@@ -23,8 +23,8 @@ import (
 	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
-	"github.com/Automaat/synapse/internal/watcher"
 	"github.com/Automaat/synapse/internal/watchdog"
+	"github.com/Automaat/synapse/internal/watcher"
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -111,16 +111,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initAudit()
 
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		a.logger.Warn("stats.init.degraded", "err", err)
-		// a.stats remains nil; StatsService.GetStats() guards against nil.
-	} else {
-		a.stats = statsStore
-		if err := statsStore.Backfill(a.auditDir); err != nil {
-			a.logger.Warn("stats.backfill", "err", err)
-		}
-	}
+	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)
 	if err != nil {
@@ -208,6 +199,19 @@ func (a *App) startup(ctx context.Context) {
 	hub.Start(ctx, &a.wg, a.logger)
 	a.startTodoistLoop(ctx)
 	a.logger.Info("app.started")
+}
+
+func (a *App) initStats() {
+	statsStore, err := stats.NewStore(config.StatsFile())
+	if err != nil {
+		a.logger.Warn("stats.init.degraded", "err", err)
+		// a.stats remains nil; StatsService.GetStats() guards against nil.
+		return
+	}
+	a.stats = statsStore
+	if err := statsStore.Backfill(a.auditDir); err != nil {
+		a.logger.Warn("stats.backfill", "err", err)
+	}
 }
 
 func (a *App) initStatusHook() {
