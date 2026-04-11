@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -355,7 +356,7 @@ func readCodexSessionsFromDir(sessDir string) []codexSession {
 		relPath string
 	}
 	var candidates []candidate
-	_ = filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -375,7 +376,9 @@ func readCodexSessionsFromDir(sessDir string) []codexSession {
 		}
 		candidates = append(candidates, candidate{path: path, relPath: relPath})
 		return nil
-	})
+	}); err != nil {
+		slog.Warn("agent.discovery.walk", "dir", sessDir, "err", err)
+	}
 
 	var sessions []codexSession
 	for _, c := range candidates {
@@ -627,7 +630,7 @@ func resolveCodexSessionFile(sessionID string) string {
 func resolveCodexSessionFileInDir(sessDir, sessionID string) string {
 	target := "rollout-" + sessionID + ".jsonl"
 	var result string
-	_ = filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -639,6 +642,8 @@ func resolveCodexSessionFileInDir(sessDir, sessionID string) string {
 			return filepath.SkipAll
 		}
 		return nil
-	})
+	}); err != nil {
+		slog.Warn("agent.discovery.walk", "dir", sessDir, "err", err)
+	}
 	return result
 }
