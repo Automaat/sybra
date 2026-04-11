@@ -783,7 +783,7 @@ func TestNoWorkflowField(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"}) // no Workflow
 
 	// Should not panic or error fatally.
-	engine.HandleAgentComplete("t1", "agent-1", "result", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Result: "result", Success: true})
 }
 
 func TestResumeStalled_RunAgent(t *testing.T) {
@@ -1155,7 +1155,7 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	// Another agent complete on an already-completed workflow should not
 	// start new agents, mutate step history, or record an error.
 	callsBefore := agents.CallCount()
-	engine.HandleAgentComplete("t1", "stale-agent", "late result", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-agent", Result: "late result", Success: true})
 
 	if agents.CallCount() != callsBefore {
 		t.Error("HandleAgentComplete on completed workflow should not start new agents")
@@ -1957,7 +1957,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	triageAgent := agents.LastID()
 	tasks.SetStatus("t1", "planning")
 	agents.SimulateComplete("t1")
-	engine.HandleAgentComplete("t1", triageAgent, "triaged", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: triageAgent, Result: "triaged", Success: true})
 
 	planAgent1 := agents.LastID()
 	ti, _ := tasks.GetTask("t1")
@@ -1981,7 +1981,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 
 	// Agent 1 completes first → workflow advances to review_plan/wait_human.
 	agents.SimulateComplete("t1")
-	engine.HandleAgentComplete("t1", planAgent1, "plan ready", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: planAgent1, Result: "plan ready", Success: true})
 
 	ti, _ = tasks.GetTask("t1")
 	if ti.Workflow.CurrentStep != "review_plan" {
@@ -1993,7 +1993,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 
 	// Agent 2 (the duplicate) finishes seconds later. Old behavior would
 	// drive review_plan into ExecFailed. New behavior: dropped as stale.
-	engine.HandleAgentComplete("t1", planAgent2, "plan ready", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: planAgent2, Result: "plan ready", Success: true})
 
 	ti, _ = tasks.GetTask("t1")
 	if ti.Workflow.State != ExecWaiting {
@@ -2043,7 +2043,7 @@ func TestHandleAgentComplete_WaitHumanWithoutActionIsNoop(t *testing.T) {
 
 	// Agent callback arrives for the current (wait_human) step with no
 	// human_action set. Must be a no-op.
-	engine.HandleAgentComplete("t1", "untracked-legacy-agent", "unexpected result", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "untracked-legacy-agent", Result: "unexpected result", Success: true})
 
 	ti, _ := tasks.GetTask("t1")
 	if ti.Workflow.State != ExecWaiting {
@@ -2164,7 +2164,7 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	// unbounded across long-lived sessions.
 	tasks.SetStatus("t1", "plan-review")
 	agents.SimulateComplete("t1")
-	engine.HandleAgentComplete("t1", agentID, "done", "stopped")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentID, Result: "done", Success: true})
 
 	engine.mu.Lock()
 	_, stillThere := engine.agentSteps[agentID]

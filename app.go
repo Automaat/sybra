@@ -328,11 +328,11 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 
 	// Advance workflow.
 	if a.workflowEngine != nil {
-		agentState := "stopped"
-		if exitErr != nil {
-			agentState = "failed"
-		}
-		a.workflowEngine.HandleAgentComplete(ag.TaskID, ag.ID, resultContent, agentState)
+		a.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+			AgentID: ag.ID,
+			Result:  resultContent,
+			Success: exitErr == nil,
+		})
 	}
 
 	// Worktree cleanup for done tasks (after engine advances, so status is final).
@@ -627,7 +627,10 @@ func (a *App) recoverStaleInteractive(t *task.Task) {
 	}
 	a.logger.Info("recover-stale.advance",
 		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
-	a.workflowEngine.HandleAgentComplete(t.ID, lr.AgentID, "", "stopped")
+	a.workflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
+		AgentID: lr.AgentID,
+		Success: true,
+	})
 }
 
 func lastAgentRun(t *task.Task) *task.AgentRun {
