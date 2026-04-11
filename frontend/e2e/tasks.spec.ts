@@ -29,7 +29,7 @@ async function waitForTasks(page: Page) {
 
 // Select a status value on the task detail status dropdown
 async function selectStatus(page: Page, value: string) {
-  await page.getByRole('main').locator('select').selectOption(value)
+  await page.getByTestId('task-status-select').selectOption(value)
 }
 
 test.afterAll(async () => {

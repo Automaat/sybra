@@ -148,6 +148,15 @@
     }
   }
 
+  async function updateTaskType(value: string) {
+    if (!t || (t.taskType ?? 'normal') === value) return
+    try {
+      t = await taskStore.update(taskId, { task_type: value })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
   async function startAgent() {
     if (!t || !prompt.trim()) return
     starting = true
@@ -335,6 +344,7 @@
         <div class="flex items-center gap-2">
           <select
             bind:this={statusSelectRef}
+            data-testid="task-status-select"
             class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
             value={t.status}
             onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
@@ -342,6 +352,17 @@
             {#each statusOptions as s}
               <option value={s.value}>{s.label}</option>
             {/each}
+          </select>
+          <select
+            data-testid="task-type-select"
+            class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
+            value={t.taskType || 'normal'}
+            onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
+            title="Task type — controls execution mode and worktree behavior"
+          >
+            <option value="normal">normal</option>
+            <option value="debug">debug</option>
+            <option value="research">research</option>
           </select>
           {#if triaging}
             <span class="inline-flex items-center gap-1 rounded-full bg-primary-200 px-2 py-0.5 text-xs font-medium text-primary-800 dark:bg-primary-700 dark:text-primary-200">
