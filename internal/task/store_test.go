@@ -597,6 +597,41 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 	}
 }
 
+func TestStoreListSkipsPlanSidecars(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := store.Create("Real task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write plan and plan-critique sidecars
+	for _, name := range []string{
+		task.ID + ".plan.md",
+		task.ID + ".plan-critique.md",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("# plan content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("got %d tasks, want 1 (sidecars must be skipped)", len(tasks))
+	}
+	if tasks[0].ID != task.ID {
+		t.Errorf("task ID = %q, want %q", tasks[0].ID, task.ID)
+	}
+}
+
 func TestStoreCreateDefaultMode(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
