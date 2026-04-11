@@ -224,11 +224,11 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 				result = ev.Content
 			}
 		}
-		agentState := "stopped"
-		if ag.GetExitErr() != nil {
-			agentState = "failed"
-		}
-		engine.HandleAgentComplete(ag.TaskID, ag.ID, result, agentState)
+		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+			AgentID: ag.ID,
+			Result:  result,
+			Success: ag.GetExitErr() == nil,
+		})
 	})
 
 	// Pre-create a working directory so run_agent steps can satisfy the
@@ -1008,7 +1008,7 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"workflow": wfExec}); err != nil {
 		t.Fatal(err)
 	}
-	env.engine.HandleAgentComplete(created.ID, "stale-agent", "", "stopped")
+	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{AgentID: "stale-agent", Success: true})
 
 	// Evaluate fires (fake-claude "evaluate" scenario sets status=in-review),
 	// then the workflow reaches ExecCompleted.
@@ -1619,7 +1619,7 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	// after the workflow ended) calling back into HandleAgentComplete. Prior
 	// to the fix this fired an ERROR log AND wrote a bogus StepHistory entry
 	// with StepID="". After the fix it is a silent no-op.
-	env.engine.HandleAgentComplete(created.ID, "stray-agent-xyz", "late result", "stopped")
+	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{AgentID: "stray-agent-xyz", Result: "late result", Success: true})
 
 	// HandleAgentComplete is synchronous; no async side effects to wait for.
 	tkAfter, _ := env.tasks.Get(created.ID)
@@ -1692,7 +1692,7 @@ func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
 	// Stray completion lands on the wait_human step. In the pre-fix engine
 	// this would drive resolveNext → ExecFailed; post-fix it's a silent
 	// no-op because output.AgentID != "" and human_action is unset.
-	env.engine.HandleAgentComplete(created.ID, "stray-duplicate-plan-agent", "late plan result", "stopped")
+	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{AgentID: "stray-duplicate-plan-agent", Result: "late plan result", Success: true})
 
 	// HandleAgentComplete is synchronous; no async side effects to wait for.
 	tkAfter, _ := env.tasks.Get(created.ID)
