@@ -141,7 +141,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, st
 	ictx, cancel := context.WithTimeout(ctx, InspectTimeout)
 	defer cancel()
 
-	verdict, err := agent.Inspect(ictx, agent.InspectInput{
+	verdict, err := agent.Inspect(ictx, w.logger, agent.InspectInput{
 		AgentID:   ag.ID,
 		TaskTitle: t.Title,
 		LogPath:   ag.GetLogPath(),

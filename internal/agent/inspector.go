@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -27,7 +28,12 @@ type InspectInput struct {
 // Inspect spawns `claude -p` to analyze a running agent's NDJSON log and return
 // a verdict on whether it appears stuck. The caller must supply a context with
 // a reasonable timeout (e.g. 2 minutes).
-func Inspect(ctx context.Context, in InspectInput) (InspectorVerdict, error) {
+// The inspector always runs with --dangerously-skip-permissions because it is
+// short-lived and read-only; logger receives a warning on each invocation.
+func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (InspectorVerdict, error) {
+	logger.Warn("inspector: running with --dangerously-skip-permissions",
+		"agent_id", in.AgentID, "task_title", in.TaskTitle)
+
 	prompt := buildInspectorPrompt(in)
 
 	cmd := exec.CommandContext(ctx, "claude",

@@ -173,6 +173,30 @@ func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultRequirePermissions(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{Agent: AgentDefaults{RequirePermissions: boolPtr(true)}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{RequirePermissions: boolPtr(false)}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.DefaultRequirePermissions(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHomeDirDefault(t *testing.T) {
 	t.Setenv("SYNAPSE_HOME", "")
 
