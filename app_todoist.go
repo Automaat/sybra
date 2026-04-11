@@ -2,11 +2,28 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/poll"
+	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
 )
+
+// newTodoistHandler constructs a poll.TodoistHandler using a TaskService.
+func newTodoistHandler(
+	tasks *task.Manager,
+	svc *TaskService,
+	client *todoist.Client,
+	al *audit.Logger,
+	logger *slog.Logger,
+	emit func(string, any),
+	cfg config.TodoistConfig,
+) *poll.TodoistHandler {
+	return poll.NewTodoistHandler(tasks, svc.CreateTask, client, al, logger, emit, cfg)
+}
 
 func (a *App) initTodoist(emit func(string, any)) {
 	if !a.cfg.Todoist.Enabled || a.cfg.Todoist.APIToken == "" {

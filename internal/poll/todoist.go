@@ -58,7 +58,7 @@ func (h *TodoistHandler) Poll(_ context.Context) time.Duration {
 func (h *TodoistHandler) PollAndSync() time.Duration {
 	interval := time.Duration(h.cfg.PollSeconds) * time.Second
 
-	imported, importErr := h.importNewTasks()
+	imported, importErr := h.ImportNewTasks()
 	if importErr != nil {
 		h.logger.Error("todoist.import", "err", importErr)
 	}
@@ -79,7 +79,8 @@ func (h *TodoistHandler) PollAndSync() time.Duration {
 	return interval
 }
 
-func (h *TodoistHandler) importNewTasks() (int, error) {
+// ImportNewTasks fetches active Todoist tasks and creates missing ones in Synapse.
+func (h *TodoistHandler) ImportNewTasks() (int, error) {
 	remote, err := h.client.ListActiveTasks(h.cfg.ProjectID)
 	if err != nil {
 		return 0, err

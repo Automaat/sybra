@@ -62,7 +62,7 @@ func TestTodoistImport_SetsDefaultProjectID(t *testing.T) {
 		cfg,
 	)
 
-	imported, err := h.importNewTasks()
+	imported, err := h.ImportNewTasks()
 	if err != nil {
 		t.Fatalf("importNewTasks: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestTodoistImport_EmptyDefaultProjectIDLeavesUnset(t *testing.T) {
 		cfg,
 	)
 
-	if _, err := h.importNewTasks(); err != nil {
+	if _, err := h.ImportNewTasks(); err != nil {
 		t.Fatalf("importNewTasks: %v", err)
 	}
 
