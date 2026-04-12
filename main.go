@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"log"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/synapse/internal/synapse"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
@@ -46,7 +48,13 @@ func main() {
 
 	startPprof(logger)
 
-	app := NewApp(logger, levelVar, cfg)
+	app := synapse.NewApp(logger, levelVar, cfg,
+		synapse.WithEmitFactory(func(ctx context.Context) func(string, any) {
+			return func(event string, data any) {
+				wailsruntime.EventsEmit(ctx, event, data)
+			}
+		}),
+	)
 
 	var (
 		quitArmed bool
@@ -59,19 +67,19 @@ func main() {
 	appMenu.Append(menu.WindowMenu())
 	fileMenu := appMenu.AddSubmenu("File")
 	fileMenu.AddText("Close Window", keys.CmdOrCtrl("w"), func(_ *menu.CallbackData) {
-		wailsruntime.Quit(app.ctx)
+		wailsruntime.Quit(app.Context())
 	})
 	fileMenu.AddText("Quit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
 		quitMu.Lock()
 		defer quitMu.Unlock()
 
 		if quitArmed {
-			wailsruntime.Quit(app.ctx)
+			wailsruntime.Quit(app.Context())
 			return
 		}
 
 		quitArmed = true
-		wailsruntime.EventsEmit(app.ctx, events.AppQuitConfirm)
+		wailsruntime.EventsEmit(app.Context(), events.AppQuitConfirm)
 		quitTimer = time.AfterFunc(3*time.Second, func() {
 			quitMu.Lock()
 			defer quitMu.Unlock()
@@ -94,23 +102,15 @@ func main() {
 				FullscreenEnabled: mac.Enabled,
 			},
 		},
-		OnStartup:  app.startup,
-		OnShutdown: app.shutdown,
-		Menu:       appMenu,
-		Bind: []any{
-			app,
-			app.taskSvc,
-			app.planSvc,
-			app.agentSvc,
-			app.orchSvc,
-			app.projectSvc,
-			app.loopAgentSvc,
-			app.configSvc,
-			app.intgSvc,
-			app.statsSvc,
-			app.reviewSvc,
-			app.workflowSvc,
+		OnStartup: func(ctx context.Context) {
+			if err := app.Startup(ctx); err != nil {
+				logger.Error("app.startup.fatal", "err", err)
+				wailsruntime.Quit(ctx)
+			}
 		},
+		OnShutdown: app.Shutdown,
+		Menu:       appMenu,
+		Bind:       app.BindTargets(),
 	})
 
 	if err != nil {
