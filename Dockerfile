@@ -17,7 +17,17 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-server ./cmd/syn
 # Stage 3: Runtime — node:24-slim for claude CLI (Node.js-based)
 FROM node:24-slim AS runtime
 
-RUN npm install -g @anthropic-ai/claude-code \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git curl gpg \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+         | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code \
     && rm -rf /root/.npm
 
 COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
