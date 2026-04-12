@@ -104,6 +104,17 @@ func (m *memTasks) UpdateTaskStatus(id, status, _ string) error {
 	return nil
 }
 
+func (m *memTasks) UpdateTaskPR(id string, prNumber int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.PRNumber = prNumber
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

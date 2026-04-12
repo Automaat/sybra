@@ -42,6 +42,26 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: link_pr_and_review
+
+  # Non-LLM step: recover PR number from task, agent result history, or
+  # gh pr list. Sets task to in-review and skips the LLM eval when a PR
+  # is unambiguously found. Falls through to evaluate only when all three
+  # sources fail to find a PR.
+  - id: link_pr_and_review
+    name: Link PR and Review
+    type: link_pr_and_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ensure_pr_closes_issue
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: evaluate
 
   - id: evaluate
