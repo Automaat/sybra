@@ -1,6 +1,6 @@
 <script lang="ts">
   import { GetSettings, UpdateSettings } from '$lib/api'
-  import type { main } from '../../wailsjs/go/models.js'
+  import type { synapse } from '../../wailsjs/go/models.js'
 
   type ColorScheme = 'system' | 'light' | 'dark'
 
@@ -19,7 +19,7 @@
     applyColorScheme(colorScheme)
   })
 
-  type AppSettings = main.AppSettings
+  type AppSettings = synapse.AppSettings
 
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')
