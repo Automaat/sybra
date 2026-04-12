@@ -411,6 +411,17 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	}
 }
 
+func (a *App) onWorkflowComplete(info workflow.CompletionInfo) {
+	kind := github.PRIssueKind(info.Variables["pr_issue_kind"])
+	if kind == "" {
+		return
+	}
+	a.prTracker.ClearCooldown(info.TaskID, kind)
+	a.logger.Info("pr-tracker.cooldown-cleared",
+		"task_id", info.TaskID, "kind", string(kind),
+		"retries", a.prTracker.Retries(info.TaskID, kind))
+}
+
 func (a *App) initWorkflowEngine() {
 	wfStore, err := workflow.NewStore(config.WorkflowsDir())
 	if err != nil {
@@ -429,6 +440,7 @@ func (a *App) initWorkflowEngine() {
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.workflowEngine.SetOnComplete(a.onWorkflowComplete)
 	a.workflowEngine.SetContext(a.ctx)
 }
 

@@ -81,6 +81,13 @@ type PRLinker interface {
 	EditBody(repo string, prNumber int, body string) error
 }
 
+// CompletionInfo is passed to the OnComplete callback when a workflow finishes.
+type CompletionInfo struct {
+	TaskID     string
+	WorkflowID string
+	Variables  map[string]string
+}
+
 // Engine executes workflow definitions against tasks.
 type Engine struct {
 	store       *Store
@@ -88,6 +95,7 @@ type Engine struct {
 	agents      AgentLauncher
 	prLinker    PRLinker
 	worktrees   WorktreeGetter
+	onComplete  func(CompletionInfo)
 	logger      *slog.Logger
 	ctx         context.Context
 	mu          sync.Mutex
@@ -125,6 +133,10 @@ func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetOnComplete registers a callback fired when a workflow reaches the
+// completed state. Used to clear external debounce trackers.
+func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
@@ -754,7 +766,15 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		wfExec.CompletedAt = &now
 		wfExec.CurrentStep = ""
 		e.logger.Info("workflow.completed", "task_id", taskID, "workflow", def.ID)
-		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+		err := e.tasks.SetWorkflow(taskID, wfExec)
+		if err == nil && e.onComplete != nil {
+			e.onComplete(CompletionInfo{
+				TaskID:     taskID,
+				WorkflowID: def.ID,
+				Variables:  wfExec.Variables,
+			})
+		}
+		return nil, err
 	}
 
 	nextStep := def.StepByID(nextID)
