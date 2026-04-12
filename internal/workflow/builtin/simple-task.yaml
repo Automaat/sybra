@@ -240,36 +240,14 @@ steps:
         goto: ""
       - goto: evaluate
 
+  # Mechanical fallback (no LLM): reached only when link_pr_and_review failed
+  # to find a PR. Walks step history for the last run_agent record and flips
+  # the task to human-required with a truncated reason.
   - id: evaluate
     name: Evaluate
-    type: run_agent
-    config:
-      role: eval
-      mode: headless
-      model: sonnet
-      prompt: >-
-        Evaluate task {{.Task.ID}}. Do NOT read source code or review diffs.
-
-        1. Run: synapse-cli --json get {{.Task.ID}}
-        2. Find the PR number:
-           a. Check task's pr_number field from step 1
-           b. Check agent result below for PR URLs (github.com/.../pull/N)
-           c. If neither found AND task has a branch, run: gh pr list --repo <project_id> --head <branch> --json number
-           If PR found by any method, link: synapse-cli --json update {{.Task.ID}} --pr <number>
-        3. Set status based on findings:
-           - PR exists → in-review
-           - Work done but no PR → human-required
-           - Failed/errors/incomplete → human-required (MUST include --status-reason)
-           - Never set done or todo
-           Run: synapse-cli --json update {{.Task.ID}} --status <status> [--status-reason "reason"]
-
-        ## Agent Result
-
-        {{recoveredorprev .Workflow .Prev}}
-      allowed_tools:
-        - Bash
+    type: evaluate
     next:
-      - goto: ensure_pr_closes_issue
+      - goto: ""
 
   # Mechanical check (no LLM): if the task is linked to a GitHub issue,
   # make sure the PR's body carries a `Closes <issue-url>` reference so

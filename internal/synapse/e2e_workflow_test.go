@@ -467,11 +467,16 @@ func TestE2E_FullLifecycle_TriageThenImplement(t *testing.T) {
 	})
 }
 
-func TestE2E_ProviderMatrix_FullLifecycleSetsReviewStatus(t *testing.T) {
+// TestE2E_ProviderMatrix_FullLifecycleEvalFlipsHumanRequired verifies that
+// the mechanical evaluate step (no LLM) flips a successful task to
+// human-required when the workflow has no link_pr_and_review chain to find
+// a PR. test-simple.yaml goes implement → evaluate directly, so the eval
+// always reaches the "commits pushed but no PR created" branch.
+func TestE2E_ProviderMatrix_FullLifecycleEvalFlipsHumanRequired(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
-		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success", "evaluate"})
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success"})
 
-		created, err := env.tasks.Create("review lifecycle task", "", "headless")
+		created, err := env.tasks.Create("eval lifecycle task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -480,13 +485,18 @@ func TestE2E_ProviderMatrix_FullLifecycleSetsReviewStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		waitFor(t, 30*time.Second, "workflow completes with in-review status", func() bool {
+		waitFor(t, 30*time.Second, "workflow completes with human-required status", func() bool {
 			tk, err := env.tasks.Get(created.ID)
 			if err != nil {
 				return false
 			}
-			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusInReview
+			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusHumanRequired
 		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.StatusReason != "commits pushed but no PR created" {
+			t.Errorf("status_reason = %q, want %q", tk.StatusReason, "commits pushed but no PR created")
+		}
 	})
 }
 
@@ -671,9 +681,10 @@ func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
 func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 	// triage (sets status=todo) → interactive_implement (conversational,
 	// blocks on stdin for Claude / exits naturally for Codex) → evaluate
-	// (sets status=in-review).
+	// (mechanical, flips to human-required since test-simple.yaml has no
+	// link_pr_and_review chain).
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
-		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "interactive_implement", "evaluate"})
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "interactive_implement"})
 
 		created, err := env.tasks.Create("interactive one-shot task", "", "interactive")
 		if err != nil {
@@ -700,10 +711,13 @@ func TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate(t *testing.T) {
 			t.Fatalf("workflow state = %q (step %q), want completed",
 				tk.Workflow.State, tk.Workflow.CurrentStep)
 		}
-		// Evaluate sets status to in-review — the whole point of the fix is
-		// that interactive tasks can now reach this state automatically.
-		if tk.Status != task.StatusInReview {
-			t.Errorf("task status = %q, want in-review", tk.Status)
+		// Mechanical evaluate flips to human-required ("commits pushed but no
+		// PR created"); the original assertion was in-review when the LLM
+		// eval set the status itself. The point of this test is that
+		// interactive tasks now advance past implement at all — the exact
+		// terminal status is now decided by the mechanical eval.
+		if tk.Status != task.StatusHumanRequired {
+			t.Errorf("task status = %q, want human-required", tk.Status)
 		}
 
 		// Verify both the interactive implement and the headless evaluate ran.
@@ -963,8 +977,9 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 // evaluate and reaches ExecCompleted without re-running the interactive
 // implement step.
 func TestE2E_RecoverStaleInteractive(t *testing.T) {
-	// Only evaluate runs for real — implement is "recovered" via marker.
-	env := setupE2EMulti(t, []string{"evaluate"})
+	// No agent runs for real — implement is "recovered" via marker, and
+	// evaluate is now a mechanical Go step that doesn't invoke fake-claude.
+	env := setupE2EMulti(t, []string{})
 
 	created, err := env.tasks.Create("stale interactive task", "", "interactive")
 	if err != nil {
@@ -1002,8 +1017,8 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	}
 	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{AgentID: "stale-agent", Success: true})
 
-	// Evaluate fires (fake-claude "evaluate" scenario sets status=in-review),
-	// then the workflow reaches ExecCompleted.
+	// Mechanical evaluate fires (no fake-claude invocation), flips the task
+	// to human-required, then the workflow reaches ExecCompleted.
 	waitFor(t, 20*time.Second, "workflow completes after stale recovery", func() bool {
 		tk, err := env.tasks.Get(created.ID)
 		if err != nil {
@@ -1071,12 +1086,7 @@ steps:
 
   - id: evaluate
     name: Evaluate Fix
-    type: run_agent
-    config:
-      role: eval
-      mode: headless
-      model: sonnet
-      prompt: "Evaluate {{.Task.ID}}"
+    type: evaluate
     next:
       - goto: ""
 `
@@ -1087,8 +1097,9 @@ steps:
 // Also verifies that a repeat DispatchEvent while the first is still running
 // returns ErrWorkflowAlreadyActive instead of launching a second workflow.
 func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
-	// fix (success) → evaluate (sets status=in-review).
-	env := setupE2EMulti(t, []string{"success", "evaluate"})
+	// fix (success) → evaluate (mechanical, flips to human-required since
+	// the test workflow has no link_pr_and_review chain).
+	env := setupE2EMulti(t, []string{"success"})
 
 	// Install the test pr.event workflow alongside test-simple.
 	if err := os.WriteFile(
@@ -1142,9 +1153,10 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	if tk.Workflow.WorkflowID != "test-pr-fix" {
 		t.Errorf("workflow on task = %q, want test-pr-fix", tk.Workflow.WorkflowID)
 	}
-	// evaluate scenario in fake-claude sets status=in-review via synapse-cli.
-	if tk.Status != task.StatusInReview {
-		t.Errorf("task status = %q, want in-review", tk.Status)
+	// Mechanical evaluate flips the task to human-required when no PR was
+	// found by the (absent) link_pr_and_review step.
+	if tk.Status != task.StatusHumanRequired {
+		t.Errorf("task status = %q, want human-required", tk.Status)
 	}
 	// Step history should record all three steps.
 	steps := map[string]bool{}
@@ -1154,6 +1166,160 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	for _, want := range []string{"set_in_progress", "fix", "evaluate"} {
 		if !steps[want] {
 			t.Errorf("missing step %q in history, got %v", want, steps)
+		}
+	}
+}
+
+// testEvalChainWorkflowYAML mirrors the real simple-task.yaml mechanical
+// chain (implement → link_pr_and_review → evaluate) used by the e2e tests
+// that exercise the full path from a successful agent through the two
+// mechanical fallback steps. verify_commits is intentionally omitted —
+// it requires a real git worktree and is independently covered by unit
+// tests in internal/workflow/engine_test.go.
+const testEvalChainWorkflowYAML = `id: test-eval-chain
+name: Test Eval Chain
+steps:
+  - id: set_in_progress
+    name: Mark In Progress
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: implement
+
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: link_pr_and_review
+
+  - id: link_pr_and_review
+    name: Link PR and Review
+    type: link_pr_and_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: evaluate
+
+  - id: evaluate
+    name: Evaluate
+    type: evaluate
+    next:
+      - goto: ""
+`
+
+// TestE2E_EvalChain_PRURLInResultGoesInReview exercises the happy path
+// through the mechanical chain: implement emits a PR URL in its result,
+// link_pr_and_review picks it up via the regex path (path 2), flips the
+// task to in-review, and the workflow terminates without ever reaching
+// the mechanical evaluate step.
+func TestE2E_EvalChain_PRURLInResultGoesInReview(t *testing.T) {
+	env := setupE2EMulti(t, []string{"pr_created"})
+
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"),
+		[]byte(testEvalChainWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("eval chain happy", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "eval chain workflow completes", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInReview {
+		t.Errorf("task status = %q, want in-review", tk.Status)
+	}
+	if tk.PRNumber != 42 {
+		t.Errorf("task pr_number = %d, want 42", tk.PRNumber)
+	}
+
+	// link_pr_and_review should have terminated the workflow before
+	// the mechanical evaluate step ran.
+	for _, r := range tk.Workflow.StepHistory {
+		if r.StepID == "evaluate" {
+			t.Errorf("evaluate step recorded — link_pr_and_review should have terminated the workflow")
+		}
+	}
+}
+
+// TestE2E_EvalChain_NoPRFlipsHumanRequired exercises the fallback path:
+// implement emits no PR URL, link_pr_and_review's three discovery paths
+// all miss, the mechanical evaluate step runs and flips the task to
+// human-required with the "commits pushed but no PR created" reason.
+func TestE2E_EvalChain_NoPRFlipsHumanRequired(t *testing.T) {
+	env := setupE2EMulti(t, []string{"success"})
+
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"),
+		[]byte(testEvalChainWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("eval chain fallback", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "eval chain workflow completes", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusHumanRequired {
+		t.Errorf("task status = %q, want human-required", tk.Status)
+	}
+	if tk.StatusReason != "commits pushed but no PR created" {
+		t.Errorf("status_reason = %q, want %q", tk.StatusReason, "commits pushed but no PR created")
+	}
+	if tk.PRNumber != 0 {
+		t.Errorf("task pr_number = %d, want 0", tk.PRNumber)
+	}
+
+	// Both the link_pr_and_review and evaluate steps must have run.
+	seen := map[string]bool{}
+	for _, r := range tk.Workflow.StepHistory {
+		seen[r.StepID] = true
+	}
+	for _, want := range []string{"implement", "link_pr_and_review", "evaluate"} {
+		if !seen[want] {
+			t.Errorf("missing step %q in history, got %v", want, seen)
 		}
 	}
 }

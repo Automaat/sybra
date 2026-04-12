@@ -669,7 +669,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -737,6 +737,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execVerifyCommits(taskID, step, t)
 	case StepLinkPRAndReview:
 		return e.execLinkPRAndReview(taskID, step, wfExec, t)
+	case StepEvaluate:
+		return e.execEvaluate(taskID, step, wfExec)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -1145,6 +1147,41 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 
 	e.logger.Info("workflow.link-pr.no-pr", "task_id", taskID)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "no pr found: falling through to eval"}, nil
+}
+
+// execEvaluate is a non-LLM mechanical step that decides the terminal status
+// after link_pr_and_review has exhausted its PR-discovery paths. It walks step
+// history backwards for the most recent run_agent record (the impl/fix step)
+// and flips the task to human-required with a bounded reason string.
+//
+// This runs only when link_pr_and_review could not find a PR, so the task
+// always ends in human-required here — there is no in-review path.
+func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
+	var last *StepRecord
+	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+		if wfExec.StepHistory[i].AgentID != "" {
+			last = &wfExec.StepHistory[i]
+			break
+		}
+	}
+
+	reason := "no agent result to evaluate"
+	if last != nil {
+		if last.Status == "failed" {
+			reason = truncate(strings.TrimSpace(last.Output), 200)
+			if reason == "" {
+				reason = "agent failed with no output"
+			}
+		} else {
+			reason = "commits pushed but no PR created"
+		}
+	}
+
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		return StepOutput{}, fmt.Errorf("evaluate: set human-required: %w", err)
+	}
+	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 
 // parseIssueURL extracts owner/repo and issue number from a GitHub

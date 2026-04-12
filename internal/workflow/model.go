@@ -69,6 +69,7 @@ const (
 	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
 	StepVerifyCommits       StepType = "verify_commits"
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
+	StepEvaluate            StepType = "evaluate"
 )
 
 // Step is one node in the workflow graph.

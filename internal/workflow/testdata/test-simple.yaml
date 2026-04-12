@@ -82,13 +82,6 @@ steps:
 
   - id: evaluate
     name: Evaluate
-    type: run_agent
-    config:
-      role: eval
-      mode: headless
-      model: sonnet
-      prompt: "Evaluate {{.Task.ID}}"
-      allowed_tools:
-        - Bash
+    type: evaluate
     next:
       - goto: ""
