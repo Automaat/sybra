@@ -4,8 +4,8 @@ import {
   ListAgents,
   GetAgentOutput,
   DiscoverAgents,
-} from '../../wailsjs/go/main/AgentService.js'
-import { StartAgent } from '../../wailsjs/go/main/App.js'
+  StartAgent,
+} from '$lib/api'
 import { agent } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 

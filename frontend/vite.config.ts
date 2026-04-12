@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath, URL } from 'url'
 
 export default defineConfig({
   plugins: [
@@ -9,6 +10,9 @@ export default defineConfig({
   ],
   resolve: {
     conditions: ['browser'],
+    alias: {
+      '$lib': fileURLToPath(new URL('./src/lib', import.meta.url)),
+    },
   },
   test: {
     environment: 'jsdom',

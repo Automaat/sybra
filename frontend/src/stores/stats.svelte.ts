@@ -1,4 +1,4 @@
-import { GetStats } from '../../wailsjs/go/main/StatsService.js'
+import { GetStats } from '$lib/api'
 import type { stats } from '../../wailsjs/go/models.js'
 
 class StatsStore {

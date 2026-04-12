@@ -9,15 +9,13 @@ const mockEventsOn = vi.fn().mockReturnValue(vi.fn())
 
 const mockAgentList: any[] = []
 
-vi.mock('../../wailsjs/go/main/OrchestratorService.js', () => ({
+vi.mock('$lib/api', () => ({
   IsOrchestratorRunning: (...args: unknown[]) => mockIsOrchestratorRunning(...args),
   StartOrchestrator: (...args: unknown[]) => mockStartOrchestrator(...args),
   StopOrchestrator: (...args: unknown[]) => mockStopOrchestrator(...args),
   GetOrchestratorAgentID: (...args: unknown[]) => mockGetOrchestratorAgentID(...args),
-}))
-
-vi.mock('../../wailsjs/runtime/runtime.js', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  BrowserOpenURL: vi.fn(),
 }))
 
 vi.mock('../stores/agents.svelte.js', () => ({

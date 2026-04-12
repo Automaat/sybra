@@ -4,7 +4,7 @@ import {
   CreateProject,
   UpdateProject,
   DeleteProject,
-} from '../../wailsjs/go/main/ProjectService.js'
+} from '$lib/api'
 import { project } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 

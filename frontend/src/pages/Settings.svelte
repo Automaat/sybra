@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetSettings, UpdateSettings } from '../../wailsjs/go/main/ConfigService.js'
+  import { GetSettings, UpdateSettings } from '$lib/api'
   import type { main } from '../../wailsjs/go/models.js'
 
   type ColorScheme = 'system' | 'light' | 'dark'

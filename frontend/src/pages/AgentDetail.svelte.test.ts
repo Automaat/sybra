@@ -16,8 +16,9 @@ vi.mock('../stores/agents.svelte.js', () => ({
   },
 }))
 
-vi.mock('../../wailsjs/runtime/runtime.js', () => ({
+vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  RespondEscalation: vi.fn(),
 }))
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))

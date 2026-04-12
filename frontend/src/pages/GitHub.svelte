@@ -11,7 +11,7 @@
     MergeRenovatePR,
     RerunRenovateChecks,
     FixRenovateCI,
-  } from '../../wailsjs/go/main/IntegrationService.js'
+  } from '$lib/api'
   import type { github } from '../../wailsjs/go/models.js'
 
   type Tab = 'my-prs' | 'reviews' | 'renovate' | 'issues'
