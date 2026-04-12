@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/health"
 	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/loopagent"
 	"github.com/Automaat/synapse/internal/notification"
@@ -241,6 +242,9 @@ func (a *App) Startup(ctx context.Context) error {
 
 	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
 	a.wg.Go(func() { wdog.Run(ctx) })
+
+	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
+	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	hub := poll.NewHub()
 	hub.Register(a.reviewer, 10*time.Second)

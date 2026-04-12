@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -76,6 +77,8 @@ func run(args []string) int {
 		return cmdAudit(cfg, rest, jsonOut)
 	case "board":
 		return cmdBoard(store, jsonOut)
+	case "health":
+		return cmdHealth(cfg, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -661,6 +664,80 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 	return 0
 }
 
+func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("health", flag.ContinueOnError)
+	severity := fs.String("severity", "", "filter by severity (warning|critical)")
+	category := fs.String("category", "", "filter by category")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+
+	path := filepath.Join(config.HomeDir(), "health-report.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fatal(jsonOut, "no health report yet (app must be running)")
+		}
+		return fatal(jsonOut, "read health report: %v", err)
+	}
+
+	var report healthReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return fatal(jsonOut, "parse health report: %v", err)
+	}
+
+	if *severity != "" || *category != "" {
+		var filtered []json.RawMessage
+		for _, raw := range report.Findings {
+			var f struct {
+				Severity string `json:"severity"`
+				Category string `json:"category"`
+			}
+			if err := json.Unmarshal(raw, &f); err != nil {
+				continue
+			}
+			if *severity != "" && f.Severity != *severity {
+				continue
+			}
+			if *category != "" && f.Category != *category {
+				continue
+			}
+			filtered = append(filtered, raw)
+		}
+		report.Findings = filtered
+	}
+
+	if jsonOut {
+		return printJSON(report)
+	}
+
+	fmt.Printf("Health Report (generated %s)\n", report.GeneratedAt)
+	fmt.Printf("Period: %s to %s\n", report.PeriodStart, report.PeriodEnd)
+	fmt.Printf("Findings: %d\n\n", len(report.Findings))
+
+	for _, raw := range report.Findings {
+		var f struct {
+			Severity string `json:"severity"`
+			Category string `json:"category"`
+			Title    string `json:"title"`
+		}
+		if err := json.Unmarshal(raw, &f); err != nil {
+			continue
+		}
+		fmt.Printf("  [%s] %s: %s\n", f.Severity, f.Category, f.Title)
+	}
+	return 0
+}
+
+// healthReport mirrors the JSON structure without importing the health package.
+type healthReport struct {
+	GeneratedAt string            `json:"generatedAt"`
+	PeriodStart string            `json:"periodStart"`
+	PeriodEnd   string            `json:"periodEnd"`
+	Findings    []json.RawMessage `json:"findings"`
+	Stats       json.RawMessage   `json:"stats"`
+}
+
 func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
@@ -764,6 +841,7 @@ Commands:
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
+  health   [--severity warning|critical] [--category CATEGORY]
 
 Global flags:
   --json   Output as JSON`)
