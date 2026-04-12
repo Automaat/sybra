@@ -5,23 +5,16 @@ import { agent } from '../../wailsjs/go/models.js'
 const mockCaptureAgentPane = vi.fn()
 const mockAttachAgent = vi.fn()
 
-vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
+vi.mock('$lib/api', () => ({
   CaptureAgentPane: (...args: unknown[]) => mockCaptureAgentPane(...args),
   AttachAgent: (...args: unknown[]) => mockAttachAgent(...args),
   ListAgents: vi.fn().mockResolvedValue([]),
   StopAgent: vi.fn(),
   GetAgentOutput: vi.fn().mockResolvedValue([]),
   DiscoverAgents: vi.fn().mockResolvedValue([]),
-}))
-
-vi.mock('../../wailsjs/go/main/App.js', () => ({
   StartAgent: vi.fn(),
-}))
-
-vi.mock('../../wailsjs/runtime/runtime.js', () => ({
   EventsOn: vi.fn().mockReturnValue(() => {}),
-  EventsOff: vi.fn(),
-  EventsEmit: vi.fn(),
+  BrowserOpenURL: vi.fn(),
 }))
 
 const { agentStore } = await import('../stores/agents.svelte.js')

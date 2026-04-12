@@ -6,18 +6,20 @@ const mockGetTask = vi.fn()
 const mockCreateTask = vi.fn()
 const mockUpdateTask = vi.fn()
 
-vi.mock('../../wailsjs/go/main/TaskService.js', () => ({
+vi.mock('$lib/api', () => ({
   ListTasks: (...args: unknown[]) => mockListTasks(...args),
   GetTask: (...args: unknown[]) => mockGetTask(...args),
   CreateTask: (...args: unknown[]) => mockCreateTask(...args),
   UpdateTask: (...args: unknown[]) => mockUpdateTask(...args),
-}))
-
-vi.mock('../../wailsjs/go/main/PlanningService.js', () => ({
+  DeleteTask: vi.fn(),
   ApprovePlan: vi.fn(),
   RejectPlan: vi.fn(),
   SendPlanMessage: vi.fn(),
   HasLivePlanAgent: vi.fn(),
+  ApproveTestPlan: vi.fn(),
+  RejectTestPlan: vi.fn(),
+  SendTestPlanMessage: vi.fn(),
+  HasLiveTestPlanAgent: vi.fn(),
 }))
 
 const { taskStore } = await import('./tasks.svelte.js')

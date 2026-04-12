@@ -3,7 +3,7 @@ import { render, fireEvent, screen } from '@testing-library/svelte'
 
 let resolveAdd: ((value: unknown) => void) | null = null
 
-vi.mock('../../wailsjs/go/main/ReviewService.js', () => ({
+vi.mock('$lib/api', () => ({
   ListReviewComments: vi.fn().mockResolvedValue([]),
   AddReviewComment: vi.fn(
     () =>
