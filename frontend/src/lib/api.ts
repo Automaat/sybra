@@ -23,16 +23,11 @@ function pick<T>(desktop: T, web: T): T {
 }
 
 // AgentService
-export const AttachAgent = pick(AgentSvc.AttachAgent, http.AttachAgent)
-export const AttachTmuxSession = pick(AgentSvc.AttachTmuxSession, http.AttachTmuxSession)
-export const CaptureAgentPane = pick(AgentSvc.CaptureAgentPane, http.CaptureAgentPane)
 export const DiscoverAgents = pick(AgentSvc.DiscoverAgents, http.DiscoverAgents)
 export const GetAgentOutput = pick(AgentSvc.GetAgentOutput, http.GetAgentOutput)
 export const GetAgentRunLog = pick(AgentSvc.GetAgentRunLog, http.GetAgentRunLog)
 export const GetConvoOutput = pick(AgentSvc.GetConvoOutput, http.GetConvoOutput)
-export const KillTmuxSession = pick(AgentSvc.KillTmuxSession, http.KillTmuxSession)
 export const ListAgents = pick(AgentSvc.ListAgents, http.ListAgents)
-export const ListTmuxSessions = pick(AgentSvc.ListTmuxSessions, http.ListTmuxSessions)
 export const RespondApproval = pick(AgentSvc.RespondApproval, http.RespondApproval)
 export const RespondEscalation = pick(AgentSvc.RespondEscalation, http.RespondEscalation)
 export const SendMessage = pick(AgentSvc.SendMessage, http.SendMessage)
