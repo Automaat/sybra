@@ -96,7 +96,7 @@ func runExec() {
 }
 
 func runInteractive() {
-	// Keep the process alive in tmux long enough for e2e assertions.
+	// Keep the process alive long enough for e2e assertions.
 	time.Sleep(5 * time.Second)
 }
 

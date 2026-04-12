@@ -19,7 +19,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	synapsegithub "github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/tmux"
+
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -178,8 +178,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
 
-	tm := tmux.NewManager()
-	agentMgr := agent.NewManager(ctx, tm, func(string, any) {}, logger, logDir)
+	agentMgr := agent.NewManager(ctx, func(string, any) {}, logger, logDir)
 	agentMgr.SetDefaultProvider(provider)
 
 	wfDir, err := os.MkdirTemp("", "synapse-e2e-wf-*")
@@ -533,7 +532,7 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 
 // TestE2E_CodexInteractiveAgent_RunsAsConversational verifies that Codex
 // interactive agents use the goroutine-based conversational runner (like
-// Claude) rather than a tmux session. The agent should produce ConvoEvents,
+// Claude) via stdin/stdout. The agent should produce ConvoEvents,
 // have a done channel, and reach StatePaused after the first turn.
 func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
 	env := setupE2EProvider(t, "codex", "interactive_implement")
@@ -556,10 +555,6 @@ func TestE2E_CodexInteractiveAgent_RunsAsConversational(t *testing.T) {
 	waitFor(t, 10*time.Second, "codex interactive agent stops", func() bool {
 		return ag.GetState() == agent.StateStopped
 	})
-
-	if ag.TmuxSession != "" {
-		t.Errorf("expected no tmux session, got %q", ag.TmuxSession)
-	}
 
 	out, err := env.agents.GetConvoOutput(ag.ID)
 	if err != nil {
@@ -615,9 +610,6 @@ func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
 	}
 	if got.GetState() != agent.StateStopped {
 		t.Fatalf("state = %q, want stopped", got.GetState())
-	}
-	if got.TmuxSession != "" {
-		t.Errorf("expected no tmux session, got %q", got.TmuxSession)
 	}
 }
 
@@ -965,7 +957,7 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 }
 
 // TestE2E_RecoverStaleInteractive simulates an interactive agent that
-// finished outside synapse's view (tmux session closed, app restart, etc.).
+// finished outside synapse's view (app restart, process crash, etc.).
 // The task file records a waiting `implement` step; the recovery path calls
 // HandleAgentComplete with a marker so the workflow advances through
 // evaluate and reaches ExecCompleted without re-running the interactive

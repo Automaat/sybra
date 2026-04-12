@@ -3,7 +3,6 @@
 
 import type {
   agent,
-  tmux,
   task,
   project,
   github,
@@ -29,16 +28,11 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
 }
 
 // AgentService
-export function AttachAgent(arg1: string): Promise<void> { return call('AgentService', 'AttachAgent', arg1) }
-export function AttachTmuxSession(arg1: string): Promise<void> { return call('AgentService', 'AttachTmuxSession', arg1) }
-export function CaptureAgentPane(arg1: string): Promise<string> { return call('AgentService', 'CaptureAgentPane', arg1) }
 export function DiscoverAgents(): Promise<Array<agent.Agent>> { return call('AgentService', 'DiscoverAgents') }
 export function GetAgentOutput(arg1: string): Promise<Array<agent.StreamEvent>> { return call('AgentService', 'GetAgentOutput', arg1) }
 export function GetAgentRunLog(arg1: string, arg2: string): Promise<Array<agent.StreamEvent>> { return call('AgentService', 'GetAgentRunLog', arg1, arg2) }
 export function GetConvoOutput(arg1: string): Promise<Array<agent.ConvoEvent>> { return call('AgentService', 'GetConvoOutput', arg1) }
-export function KillTmuxSession(arg1: string): Promise<void> { return call('AgentService', 'KillTmuxSession', arg1) }
 export function ListAgents(): Promise<Array<agent.Agent>> { return call('AgentService', 'ListAgents') }
-export function ListTmuxSessions(): Promise<Array<tmux.SessionInfo>> { return call('AgentService', 'ListTmuxSessions') }
 export function RespondApproval(arg1: string, arg2: boolean): Promise<void> { return call('AgentService', 'RespondApproval', arg1, arg2) }
 export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { return call('AgentService', 'RespondEscalation', arg1, arg2) }
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }

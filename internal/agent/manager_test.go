@@ -5,22 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/tmux"
 )
-
-func requireTmux(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
-}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -67,7 +58,7 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 		emitted.add(event)
 	}
 
-	m := NewManager(ctx, tmux.NewManager(), emit, discardLogger(), t.TempDir())
+	m := NewManager(ctx, emit, discardLogger(), t.TempDir())
 	return m, emitted
 }
 
@@ -312,30 +303,6 @@ func TestAgentOutput(t *testing.T) {
 	}
 }
 
-func TestSanitizeSessionName(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"Implement auth middleware", "implement-auth-middleware"},
-		{"  Hello World  ", "hello-world"},
-		{"UPPERCASE", "uppercase"},
-		{"special!@#chars$%^", "specialchars"},
-		{"a-b-c", "a-b-c"},
-		{"", "task"},
-		{"!!!!", "task"},
-		{"a-very-long-title-that-exceeds-the-thirty-character-limit", "a-very-long-title-that-exceeds"},
-		{"trailing---dashes---at-cutoff-", "trailing---dashes---at-cutoff"},
-	}
-
-	for _, tt := range tests {
-		got := sanitizeSessionName(tt.input)
-		if got != tt.want {
-			t.Errorf("sanitizeSessionName(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestStartAgentInteractiveConversational(t *testing.T) {
 	m, _ := newTestManager(t)
 	a, err := startTestAgent(t, m, "task-1", "Auth Middleware", "interactive", "build it", nil)
@@ -355,132 +322,10 @@ func TestStartAgentInteractiveConversational(t *testing.T) {
 	}
 }
 
-func TestCapturePaneNotFound(t *testing.T) {
-	m, _ := newTestManager(t)
-	_, err := m.CapturePane("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for nonexistent agent")
-	}
-}
-
-func TestCapturePaneNoTmuxSession(t *testing.T) {
-	m, _ := newTestManager(t)
-
-	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = m.CapturePane(a.ID)
-	if err == nil {
-		t.Fatal("expected error for agent without tmux session")
-	}
-}
-
-func TestCapturePaneStoppedAgent(t *testing.T) {
-	m, _ := newTestManager(t)
-
-	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate an interactive agent that was stopped
-	a.TmuxSession = "synapse-fake"
-	a.SetState(StateStopped)
-
-	out, err := m.CapturePane(a.ID)
-	if err != nil {
-		t.Fatalf("expected no error for stopped agent, got: %v", err)
-	}
-	if out != "" {
-		t.Errorf("expected empty output for stopped agent, got: %q", out)
-	}
-}
-
-func TestSendInteractivePromptCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	emit := func(string, any) {}
-
-	m := NewManager(ctx, tmux.NewManager(), emit, discardLogger(), t.TempDir())
-
-	a := &Agent{
-		ID:          "test-cancel",
-		TmuxSession: "synapse-nonexistent",
-	}
-
-	// Cancel immediately so sendInteractivePrompt exits via ctx.Done()
-	cancel()
-	m.sendInteractivePrompt(ctx, a, "test prompt")
-	// Should return without error or hang
-}
-
-func TestSendInteractivePromptDetectsReady(t *testing.T) {
-	requireTmux(t)
-
-	tm := tmux.NewManager()
-	session := "synapse-test-ready"
-	_ = tm.KillSession(session)
-
-	// Start a session that prints ❯ prompt after brief delay
-	err := tm.CreateSession(session, "sh -c 'sleep 0.5 && printf ❯ && sleep 60'")
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	t.Cleanup(func() { _ = tm.KillSession(session) })
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	m := NewManager(ctx, tm, func(string, any) {}, discardLogger(), t.TempDir())
-	a := &Agent{ID: "test-ready", TmuxSession: session}
-
-	done := make(chan struct{})
-	go func() {
-		m.sendInteractivePrompt(ctx, a, "hello world")
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Prompt was sent successfully
-	case <-time.After(10 * time.Second):
-		t.Fatal("sendInteractivePrompt did not complete in time")
-	}
-}
-
-// newInteractiveAgent creates a fake interactive agent backed by a real tmux
-// session running a simple command (no claude dependency).
-func newInteractiveAgent(t *testing.T, m *Manager) *Agent {
-	t.Helper()
-	tm := tmux.NewManager()
-	session := "synapse-test-" + t.Name()
-	_ = tm.KillSession(session)
-
-	if err := tm.CreateSession(session, "sleep 5"); err != nil {
-		t.Fatalf("create tmux session: %v", err)
-	}
-	t.Cleanup(func() { _ = tm.KillSession(session) })
-
-	a := &Agent{
-		ID:          "test-" + t.Name(),
-		TaskID:      "task-1",
-		Mode:        "interactive",
-		State:       StateRunning,
-		TmuxSession: session,
-		cancel:      func() {},
-	}
-	m.mu.Lock()
-	m.agents[a.ID] = a
-	m.mu.Unlock()
-	return a
-}
-
 func TestStopInteractiveAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	// Create a conversational-style interactive agent (no tmux).
+	// Create a conversational-style interactive agent.
 	a := &Agent{
 		ID:     "test-stop",
 		TaskID: "task-1",
@@ -499,37 +344,6 @@ func TestStopInteractiveAgent(t *testing.T) {
 
 	if st := a.GetState(); st != StateStopped {
 		t.Errorf("State = %q, want %q", st, StateStopped)
-	}
-}
-
-func TestCapturePaneInteractiveRunning(t *testing.T) {
-	requireTmux(t)
-
-	m, _ := newTestManager(t)
-	a := newInteractiveAgent(t, m)
-
-	_, err := m.CapturePane(a.ID)
-	if err != nil {
-		t.Fatalf("CapturePane: %v", err)
-	}
-}
-
-func TestCapturePaneAfterStop(t *testing.T) {
-	requireTmux(t)
-
-	m, _ := newTestManager(t)
-	a := newInteractiveAgent(t, m)
-
-	if err := m.StopAgent(a.ID); err != nil {
-		t.Fatalf("StopAgent: %v", err)
-	}
-
-	out, err := m.CapturePane(a.ID)
-	if err != nil {
-		t.Fatalf("expected no error after stop, got: %v", err)
-	}
-	if out != "" {
-		t.Errorf("expected empty output after stop, got: %q", out)
 	}
 }
 
@@ -693,7 +507,7 @@ func TestShutdown(t *testing.T) {
 
 // putAgent registers a fully-formed Agent in the manager without running
 // any goroutine — used so tests can arrange arbitrary state fields
-// (State, stdinPipe, TmuxSession) deterministically.
+// (State, stdinPipe) deterministically.
 func putAgent(t *testing.T, m *Manager, a *Agent) {
 	t.Helper()
 	m.mu.Lock()
@@ -841,8 +655,7 @@ func TestSendPromptToAgent_RejectsStoppedAgent(t *testing.T) {
 
 func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
 	m, _ := newTestManager(t)
-	// Interactive but no stdin pipe and no tmux session — neither
-	// transport is available.
+	// Interactive but no stdin pipe or prompt channel — no transport available.
 	putAgent(t, m, &Agent{
 		ID:     "orphan",
 		TaskID: "task-1",

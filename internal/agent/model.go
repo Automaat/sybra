@@ -35,7 +35,6 @@ type Agent struct {
 	Mode         string    `json:"mode"`
 	State        State     `json:"state"`
 	SessionID    string    `json:"sessionId"`
-	TmuxSession  string    `json:"tmuxSession"`
 	CostUSD      float64   `json:"costUsd"`
 	InputTokens  int       `json:"inputTokens,omitempty"`
 	OutputTokens int       `json:"outputTokens,omitempty"`
