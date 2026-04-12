@@ -73,20 +73,11 @@ From `status_bottlenecks_hours`, any status exceeding these thresholds → flag 
 | `in-progress` | 6h |
 | other | 12h |
 
-## Phase 3 — Compute stuck tasks by size tag
+## Phase 3 — ~~Dwell check~~ (handled in app)
 
-Before this phase, re-read [orchestrator/CLAUDE.md](../../orchestrator/CLAUDE.md) if not already loaded — size-based dispatch thresholds and escalation criteria live there.
-
-For every non-`done` task compute dwell = `now - updatedAt`. Map size tag to max dwell:
-
-| Size tag | Max dwell |
-|---|---|
-| `small` | 90m |
-| `medium` | 6h |
-| `large` | 18h |
-| none | 12h |
-
-Exceeding → flag `dwell_exceeded`.
+Dwell-budget escalation (todo/in-progress tasks exceeding size-tag time limits)
+is now enforced by the Go watchdog (`internal/watchdog/dwell.go`) every 5 min.
+Skip this phase entirely — do not reimplement it here.
 
 ## Phase 4 — Auto-remediate (idempotent actions only)
 
@@ -97,7 +88,6 @@ Apply in order. Each action logs a one-liner for the final summary.
 | `untriaged` | Leave status unchanged. `synapse-cli --json update <id> --status-reason "monitor: awaiting triage"`. Do not dispatch. |
 | `lost_agent` | `synapse-cli --json update <id> --status todo --status-reason "monitor: agent lost, resetting"` |
 | `pr_gap` | Follow the eval-agent verification block in [orchestrator/CLAUDE.md](../../orchestrator/CLAUDE.md): `cd` to the worktree, `git push -u origin HEAD`, `gh pr create --base main --title "..." --body "..."`. On success: `synapse-cli --json update <id> --pr <num> --status-reason "monitor: created missing PR"`. |
-| `dwell_exceeded` | `synapse-cli --json update <id> --status human-required --status-reason "monitor: dwell exceeded size tag budget"` |
 | `stuck_human_blocked` | No status change — escalate via an issue in Phase 5. |
 | `over_dispatch_limit` | No action — escalate via an issue in Phase 5. |
 | `failure_spike` | No auto-retry — escalate via an issue in Phase 5. |
