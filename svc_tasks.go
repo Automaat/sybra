@@ -83,10 +83,15 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 // Moving a task to "testing" is refused if another workflow is still active —
 // the testing workflow needs a clean slate (no in-flight agents or pending
 // human steps) so the user can't accidentally lose context by dragging.
+//
+// Moving a task to "in-progress" when its workflow is terminal (completed or
+// failed) and no agent is running restarts the workflow — allowing the user to
+// retry implementation after a human-required escalation.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
+	cur, _ := s.tasks.Get(id)
+
 	if status, ok := updates["status"].(string); ok && status == string(task.StatusTesting) {
-		cur, gErr := s.tasks.Get(id)
-		if gErr == nil && cur.Workflow != nil &&
+		if cur.Workflow != nil &&
 			cur.Workflow.State != workflow.ExecCompleted &&
 			cur.Workflow.State != workflow.ExecFailed {
 			return cur, fmt.Errorf("cannot move to testing: task has active workflow %q (state=%s)",
@@ -100,6 +105,25 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if t.Status == task.StatusDone {
 		s.wg.Go(func() { s.worktrees.Remove(t.ID) })
 	}
+
+	// When manually moved to in-progress with a terminal workflow and no live
+	// agent, restart the workflow so the user doesn't need to manually dispatch.
+	if s.workflowEngine != nil {
+		if newStatus, ok := updates["status"].(string); ok &&
+			newStatus == string(task.StatusInProgress) &&
+			cur.Workflow != nil &&
+			(cur.Workflow.State == workflow.ExecCompleted || cur.Workflow.State == workflow.ExecFailed) &&
+			!s.agents.HasRunningAgentForTask(id) {
+			wfID := cur.Workflow.WorkflowID
+			s.logger.Info("workflow.restart", "task_id", id, "workflow", wfID)
+			s.wg.Go(func() {
+				if wfErr := s.workflowEngine.StartWorkflow(id, wfID); wfErr != nil {
+					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
+				}
+			})
+		}
+	}
+
 	return t, nil
 }
 
