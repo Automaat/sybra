@@ -20,11 +20,19 @@ description = "Build CLI binary"
 run = ["golangci-lint run ./...", "cd frontend && npx oxlint ."]
 description = "Run all linters"
 
+[tasks."build:frontend:desktop"]
+run = "cd frontend && npm run build:desktop"
+description = "Build frontend for desktop (output: frontend/dist/)"
+
+[tasks."build:frontend:web"]
+run = "cd frontend && npm run build:web"
+description = "Build frontend for web (output: frontend/dist-web/)"
+
 [tasks."build:server"]
-run = "cd frontend && npm run build && go build -o bin/synapse-server ./cmd/synapse-server"
-description = "Build HTTP server binary (builds frontend first)"
+run = "cd frontend && npm run build:web && go build -o bin/synapse-server ./cmd/synapse-server"
+description = "Build HTTP server binary (builds web frontend first)"
 
 [tasks."dev:server"]
-run = "SYNAPSE_STATIC_DIR=frontend/dist go run ./cmd/synapse-server"
-description = "Run HTTP server with frontend static serving"
+run = ["cd frontend && npm run build:web", "SYNAPSE_STATIC_DIR=frontend/dist-web go run ./cmd/synapse-server"]
+description = "Build web frontend then run HTTP server"
 env = { SYNAPSE_PORT = "8080" }
