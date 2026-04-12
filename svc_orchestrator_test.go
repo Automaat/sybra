@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
@@ -23,7 +22,6 @@ func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, cont
 		agents: mgr,
 		logger: logger,
 		emit:   func(string, any) {},
-		cfg:    &config.Config{Agent: config.AgentDefaults{Provider: "codex"}},
 	}
 	return svc, mgr, cancel
 }
