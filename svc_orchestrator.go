@@ -15,27 +15,22 @@ import (
 // so the frontend and tests can identify it in agent listings.
 const orchestratorAgentName = "orchestrator"
 
-// orchestratorInitialPrompt bootstraps the periodic monitor loop. See
-// .claude/skills/synapse-monitor.md and the loop skill.
-const orchestratorInitialPrompt = "/loop 5m /synapse-monitor"
-
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
 	agents *agent.Manager
 	audit  *audit.Logger
 	logger *slog.Logger
 	emit   func(string, any)
-	cfg    *config.Config
 
 	mu      sync.Mutex
 	agentID string
 }
 
 // StartOrchestrator launches the orchestrator as an in-app conversational
-// Claude agent rooted at ~/.synapse (where the brain CLAUDE.md + skills live)
-// and seeds it with /loop 5m /synapse-monitor so the periodic monitor cycle
-// begins immediately. Provider is pinned to claude because /loop and
-// /synapse-monitor are Claude-only skills.
+// Claude agent rooted at ~/.synapse (where the brain CLAUDE.md + skills live).
+// The orchestrator bootstraps its own monitor loop via CronCreate on first
+// turn, as instructed by orchestrator/CLAUDE.md. Provider is pinned to claude
+// because /synapse-monitor is a Claude-only skill.
 func (s *OrchestratorService) StartOrchestrator() error {
 	s.mu.Lock()
 	if id := s.agentID; id != "" {
@@ -50,7 +45,6 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	a, err := s.agents.Run(agent.RunConfig{
 		Name:                   orchestratorAgentName,
 		Mode:                   "interactive",
-		Prompt:                 orchestratorInitialPrompt,
 		Dir:                    config.HomeDir(),
 		Provider:               "claude",
 		IgnoreConcurrencyLimit: true,
