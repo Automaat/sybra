@@ -254,6 +254,9 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["result"].(string); ok {
 			t.AgentRuns[i].Result = v
 		}
+		if v, ok := updates["log_file"].(string); ok {
+			t.AgentRuns[i].LogFile = v
+		}
 		break
 	}
 	d, err := Marshal(t)

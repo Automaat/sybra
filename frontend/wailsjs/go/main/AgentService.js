@@ -22,6 +22,10 @@ export function GetAgentOutput(arg1) {
   return window['go']['main']['AgentService']['GetAgentOutput'](arg1);
 }
 
+export function GetAgentRunLog(arg1, arg2) {
+  return window['go']['main']['AgentService']['GetAgentRunLog'](arg1, arg2);
+}
+
 export function GetConvoOutput(arg1) {
   return window['go']['main']['AgentService']['GetConvoOutput'](arg1);
 }

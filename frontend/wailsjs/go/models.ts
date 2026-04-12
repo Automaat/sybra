@@ -204,6 +204,7 @@ export namespace config {
 	    maxCostUsd: number;
 	    maxTurns: number;
 	    requirePermissions?: boolean;
+	    maxLogEvents: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentDefaults(source);
@@ -219,6 +220,7 @@ export namespace config {
 	        this.maxCostUsd = source["maxCostUsd"];
 	        this.maxTurns = source["maxTurns"];
 	        this.requirePermissions = source["requirePermissions"];
+	        this.maxLogEvents = source["maxLogEvents"];
 	    }
 	}
 	export class AuditConfig {

@@ -351,6 +351,7 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"state":    string(state),
 		"cost_usd": cost,
 		"result":   truncated,
+		"log_file": ag.LogPath,
 	}); err != nil {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
@@ -419,6 +420,9 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.agentSvc.agents = a.agents
 	a.agentSvc.tmux = a.tmux
 	a.agentSvc.logger = a.logger
+	a.agentSvc.tasks = a.tasks
+	a.agentSvc.cfg = a.cfg
+	a.agentSvc.logsDir = a.logDir
 	a.orchSvc.agents = a.agents
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger

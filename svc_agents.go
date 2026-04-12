@@ -5,6 +5,8 @@ import (
 	"log/slog"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/tmux"
 )
 
@@ -14,6 +16,9 @@ type AgentService struct {
 	tmux     *tmux.Manager
 	logger   *slog.Logger
 	approval *agent.ApprovalServer
+	tasks    *task.Manager
+	cfg      *config.Config
+	logsDir  string
 }
 
 // StopAgent sends a stop signal to the given agent.
@@ -93,6 +98,38 @@ func (s *AgentService) RespondApproval(toolUseID string, approved bool) error {
 // GetConvoOutput returns the full conversation event buffer for an agent.
 func (s *AgentService) GetConvoOutput(agentID string) ([]agent.ConvoEvent, error) {
 	return s.agents.GetConvoOutput(agentID)
+}
+
+// GetAgentRunLog returns stream events for a past or running agent.
+// Live agents return the in-memory buffer; completed agents are replayed
+// from the NDJSON log file on disk.
+func (s *AgentService) GetAgentRunLog(taskID, agentID string) ([]agent.StreamEvent, error) {
+	if ag, err := s.agents.GetAgent(agentID); err == nil {
+		return ag.Output(), nil
+	}
+
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("task %s: %w", taskID, err)
+	}
+
+	var logFile string
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			logFile = t.AgentRuns[i].LogFile
+			break
+		}
+	}
+
+	if logFile == "" {
+		var findErr error
+		logFile, findErr = agent.FindLogFile(s.logsDir, agentID)
+		if findErr != nil {
+			return nil, findErr
+		}
+	}
+
+	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents())
 }
 
 // RespondEscalation sends a human decision to a guardrail-paused agent.
