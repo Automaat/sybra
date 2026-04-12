@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Navigation, AppBar } from '@skeletonlabs/skeleton-svelte'
-  import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import { EventsOn } from '$lib/api'
   import * as ev from './lib/events.js'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'

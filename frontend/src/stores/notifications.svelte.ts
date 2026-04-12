@@ -1,5 +1,4 @@
-import { EventsOn } from '../../wailsjs/runtime/runtime.js'
-import { ListNotifications } from '../../wailsjs/go/main/App.js'
+import { EventsOn, ListNotifications } from '$lib/api'
 import { notification } from '../../wailsjs/go/models.js'
 import { Notification as NotificationEvent } from '../lib/events.js'
 

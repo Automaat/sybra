@@ -4,7 +4,7 @@ import {
   AddReviewComment,
   ResolveReviewComment,
   DeleteReviewComment,
-} from '../../wailsjs/go/main/ReviewService.js'
+} from '$lib/api'
 import { task } from '../../wailsjs/go/models.js'
 
 class CommentStore {

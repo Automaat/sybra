@@ -1,7 +1,7 @@
 <script lang="ts">
   import { loopStore } from '../stores/loops.svelte.js'
   import { loopagent } from '../../wailsjs/go/models.js'
-  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { EventsOn } from '$lib/api'
   import { LoopAgentUpdated } from '../lib/events.js'
 
   let showForm = $state(false)

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { github } from '../../wailsjs/go/models.js'
-  import { BrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
+  import { BrowserOpenURL } from '$lib/api'
 
   interface Props {
     issue: github.Issue

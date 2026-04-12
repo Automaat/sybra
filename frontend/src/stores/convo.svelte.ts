@@ -3,9 +3,9 @@ import {
   GetConvoOutput,
   SendMessage,
   RespondApproval,
-} from '../../wailsjs/go/main/AgentService.js'
+  EventsOn,
+} from '$lib/api'
 import type { agent } from '../../wailsjs/go/models.js'
-import { EventsOn } from '../../wailsjs/runtime/runtime.js'
 import { agentConvo, agentApproval } from '../lib/events.js'
 
 export interface ApprovalRequest {

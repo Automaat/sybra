@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { EventsOn } from '$lib/api'
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentOutput } from '../lib/events.js'

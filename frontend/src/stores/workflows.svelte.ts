@@ -4,7 +4,7 @@ import {
   SaveWorkflow,
   DeleteWorkflow,
   ResetBuiltin,
-} from '../../wailsjs/go/main/WorkflowService.js'
+} from '$lib/api'
 import { workflow } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 

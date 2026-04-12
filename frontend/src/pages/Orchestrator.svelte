@@ -4,9 +4,9 @@
     StopOrchestrator,
     IsOrchestratorRunning,
     GetOrchestratorAgentID,
-  } from '../../wailsjs/go/main/OrchestratorService.js'
+    EventsOn,
+  } from '$lib/api'
   import type { agent } from '../../wailsjs/go/models.js'
-  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import { OrchestratorState } from '../lib/events.js'

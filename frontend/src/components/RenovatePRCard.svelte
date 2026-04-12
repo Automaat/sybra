@@ -5,7 +5,7 @@
     ApproveRenovatePR,
     RerunRenovateChecks,
     FixRenovateCI,
-  } from '../../wailsjs/go/main/IntegrationService.js'
+  } from '$lib/api'
   import { renovateStore } from '../stores/renovate.svelte.js'
 
   interface Props {

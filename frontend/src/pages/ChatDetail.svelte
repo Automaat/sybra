@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
-  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+  import { EventsOn } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentState } from '../lib/events.js'
   import ChatView from '../components/ChatView.svelte'
