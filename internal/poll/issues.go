@@ -18,26 +18,43 @@ const synapseIssueLabel = "synapse"
 
 // IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
 type IssuesFetcher struct {
-	tasks    *task.Manager
-	projects *project.Store
-	emit     func(string, any)
-	logger   *slog.Logger
+	tasks         *task.Manager
+	projects      *project.Store
+	emit          func(string, any)
+	logger        *slog.Logger
+	allowsType    func(project.ProjectType) bool
+	fetchAssigned func() ([]github.Issue, error)
+	fetchLabeled  func(repos []string, label string) ([]github.Issue, error)
 }
 
-// NewIssuesFetcher creates an IssuesFetcher.
+// NewIssuesFetcher creates an IssuesFetcher. allowsType filters issues whose
+// repository is registered as a project — if it returns false for that
+// project's type, the issue is skipped. A nil closure means "allow all types".
 func NewIssuesFetcher(
 	tasks *task.Manager,
 	projects *project.Store,
 	emit func(string, any),
 	logger *slog.Logger,
+	allowsType func(project.ProjectType) bool,
 ) *IssuesFetcher {
-	return &IssuesFetcher{tasks: tasks, projects: projects, emit: emit, logger: logger}
+	if allowsType == nil {
+		allowsType = func(project.ProjectType) bool { return true }
+	}
+	return &IssuesFetcher{
+		tasks:         tasks,
+		projects:      projects,
+		emit:          emit,
+		logger:        logger,
+		allowsType:    allowsType,
+		fetchAssigned: github.FetchAssignedIssues,
+		fetchLabeled:  github.FetchLabeledIssuesForRepos,
+	}
 }
 
 func (f *IssuesFetcher) Name() string { return "issues" }
 
 func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
-	issues, err := github.FetchAssignedIssues()
+	issues, err := f.fetchAssigned()
 	if err != nil {
 		f.logger.Warn("issues.fetch", "err", err)
 		return IssuesPollInterval
@@ -60,7 +77,7 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 
 	var repos []string
 	for i := range projects {
-		if projects[i].Type == project.ProjectTypePet {
+		if f.allowsType(projects[i].Type) {
 			repos = append(repos, projects[i].ID)
 		}
 	}
@@ -68,7 +85,7 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 		return
 	}
 
-	labeled, err := github.FetchLabeledIssuesForRepos(repos, synapseIssueLabel)
+	labeled, err := f.fetchLabeled(repos, synapseIssueLabel)
 	if err != nil {
 		f.logger.Warn("labeled-issues.fetch", "err", err)
 		return
@@ -99,6 +116,13 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 	for i := range issues {
 		issue := &issues[i]
 		if _, exists := issueURLs[issue.URL]; exists {
+			continue
+		}
+
+		// Skip issues from registered projects whose type isn't allowed on this
+		// machine. Issues from unregistered repos pass through (caller hasn't
+		// declared a type for them).
+		if proj, err := f.projects.Get(issue.Repository); err == nil && !f.allowsType(proj.Type) {
 			continue
 		}
 

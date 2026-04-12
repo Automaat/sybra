@@ -141,6 +141,41 @@ tmux new-session -d -s synapse-<id> -x 200 -y 50 "claude"
 - GUI polls `tmux capture-pane -t synapse-<id> -p` for preview
 - User attaches via terminal
 
+### Per-Machine Automations
+
+Synapse can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.synapse/` and runs background automations independently. Two routing axes prevent duplicate work:
+
+**1. Per-feature `enabled` toggle** (kill-switch per machine):
+- `todoist.enabled` — Todoist polling (`internal/synapse/app_todoist.go`)
+- `github.enabled` — GitHub Issues fetcher (`internal/synapse/app.go`)
+- `renovate.enabled` — Renovate CI fixer (`internal/synapse/app_renovate.go`)
+- Loop agents are stored per-machine in `~/.synapse/loop-agents/<id>.yaml` with their own `enabled` field — already independent.
+
+**2. Top-level `project_types` allowlist** (per-project-type routing):
+- Declares which `project.ProjectType` values this machine handles. Empty = all types.
+- All project-scoped automations filter via `cfg.AllowsProjectType(...)` (config helper).
+- Example: server handles `pet`, laptop handles `work`.
+
+```yaml
+# server config
+project_types: [pet]
+todoist:  { enabled: true, api_token: ... }
+github:   { enabled: true }
+renovate: { enabled: true }
+```
+
+```yaml
+# laptop config
+project_types: [work]
+todoist:  { enabled: false }
+github:   { enabled: true }
+renovate: { enabled: true }
+```
+
+Startup logs an `app.automations` summary line so you can verify the role of each instance at a glance.
+
+**Out of scope:** the orchestrator brain (`/synapse-monitor` Claude Code cron) is external to Synapse — manage it independently per machine via the Claude Code `schedule` skill.
+
 ## Development Workflow
 
 ### Running Locally
@@ -270,3 +305,4 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
 - ❌ Editing files in `frontend/wailsjs/` — these are auto-generated, changes get overwritten
 - ❌ Using `allowed_tools: []` without understanding it means all tools with `--dangerously-skip-permissions`
+- ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Synapse on multiple machines can route work without duplication

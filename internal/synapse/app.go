@@ -230,7 +230,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initTodoist(emit)
 	a.initRenovate(emit)
-	issuesFetcher := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger)
+	issuesFetcher := a.initIssuesFetcher(emit)
 	a.wireServices(emit)
 
 	a.syncSkills()
@@ -246,16 +246,67 @@ func (a *App) Startup(ctx context.Context) error {
 	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
+	a.startPollHub(ctx, issuesFetcher)
+	a.startTodoistLoop(ctx)
+	a.logAutomationsSummary()
+	a.logger.Info("app.started")
+	return nil
+}
+
+// startPollHub registers all enabled poll handlers and starts the hub.
+func (a *App) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
 	hub := poll.NewHub()
 	hub.Register(a.reviewer, 10*time.Second)
-	hub.Register(issuesFetcher, 20*time.Second)
+	if issuesFetcher != nil {
+		hub.Register(issuesFetcher, 20*time.Second)
+	}
 	if a.renovateHandler != nil {
 		hub.Register(a.renovateHandler, 15*time.Second)
 	}
 	hub.Start(ctx, &a.wg, a.logger)
-	a.startTodoistLoop(ctx)
-	a.logger.Info("app.started")
-	return nil
+}
+
+// allowsProjectType reports whether project-scoped automations on this machine
+// should act on the given project type. Used to route automation work between
+// instances (e.g., pet projects on the server, work projects on the laptop).
+func (a *App) allowsProjectType(t project.ProjectType) bool {
+	return a.cfg.AllowsProjectType(string(t))
+}
+
+// initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
+// nil otherwise. Kept separate so Startup stays under the funlen limit.
+func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
+	if !a.cfg.GitHub.Enabled {
+		a.logger.Info("github.disabled")
+		return nil
+	}
+	return poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
+}
+
+// logAutomationsSummary logs a one-line snapshot of which automations this
+// machine runs. Useful when comparing two instances side by side.
+func (a *App) logAutomationsSummary() {
+	loopAgentsEnabled := 0
+	if a.loopAgents != nil {
+		if las, err := a.loopAgents.List(); err == nil {
+			for i := range las {
+				if las[i].Enabled {
+					loopAgentsEnabled++
+				}
+			}
+		}
+	}
+	projectTypes := a.cfg.ProjectTypes
+	if len(projectTypes) == 0 {
+		projectTypes = []string{"*"}
+	}
+	a.logger.Info("app.automations",
+		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
+		"github", a.cfg.GitHub.Enabled,
+		"renovate", a.cfg.Renovate.Enabled,
+		"project_types", projectTypes,
+		"loop_agents_enabled", loopAgentsEnabled,
+	)
 }
 
 func (a *App) initStats() {

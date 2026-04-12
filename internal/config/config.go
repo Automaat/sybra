@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +17,8 @@ type Config struct {
 	Orchestrator  OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
 	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
+	GitHub        GitHubConfig       `yaml:"github" json:"github"`
+	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
 	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
 	RepoDir       string             `yaml:"repo_dir" json:"repoDir"`
@@ -23,6 +26,15 @@ type Config struct {
 	ClonesDir     string             `yaml:"clones_dir" json:"clonesDir"`
 	WorktreesDir  string             `yaml:"worktrees_dir" json:"worktreesDir"`
 	LoopAgentsDir string             `yaml:"loop_agents_dir" json:"loopAgentsDir"`
+}
+
+// AllowsProjectType reports whether automations on this machine should act on
+// projects of the given type. An empty ProjectTypes list means "all types".
+func (c *Config) AllowsProjectType(t string) bool {
+	if c == nil || len(c.ProjectTypes) == 0 {
+		return true
+	}
+	return slices.Contains(c.ProjectTypes, t)
 }
 
 type AuditConfig struct {
@@ -92,6 +104,10 @@ type RenovateConfig struct {
 	Author  string `yaml:"author" json:"author"`
 }
 
+type GitHubConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
 func HomeDir() string {
 	if dir := os.Getenv("SYNAPSE_HOME"); dir != "" {
 		return dir
@@ -124,6 +140,9 @@ func DefaultConfig() *Config {
 		Renovate: RenovateConfig{
 			Enabled: true,
 			Author:  "app/renovate",
+		},
+		GitHub: GitHubConfig{
+			Enabled: true,
 		},
 		TasksDir: defaultTasksDir(),
 	}
