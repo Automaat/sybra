@@ -36,7 +36,8 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		w.logger.Warn("watchdog.dwell.list", "err", err)
 		return
 	}
-	for _, t := range tasks {
+	for i := range tasks {
+		t := &tasks[i]
 		if t.Status != task.StatusTodo && t.Status != task.StatusInProgress {
 			continue
 		}
@@ -46,7 +47,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		}
 		reason := "dwell exceeded size tag budget"
 		w.logger.Info("watchdog.dwell.escalate",
-			"task_id", t.ID, "status", t.Status,
+			"task_id", t.ID, "status", string(t.Status),
 			"dwell_h", now.Sub(t.UpdatedAt).Hours(), "budget_h", budget.Hours())
 		if _, err := w.tasks.Update(t.ID, task.Update{
 			Status:       task.Ptr(task.StatusHumanRequired),
