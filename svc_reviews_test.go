@@ -13,7 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/tmux"
+
 	"github.com/Automaat/synapse/internal/worktree"
 )
 
@@ -88,8 +88,7 @@ updated_at: 2025-01-01T00:00:00Z
 	logDir := filepath.Join(home, "logs")
 	_ = os.MkdirAll(logDir, 0o755)
 
-	tm := tmux.NewManager()
-	agentMgr := agent.NewManager(t.Context(), tm, func(string, any) {}, logger, logDir)
+	agentMgr := agent.NewManager(t.Context(), func(string, any) {}, logger, logDir)
 	agentMgr.SetDefaultProvider("claude")
 
 	wm := worktree.New(worktree.Config{

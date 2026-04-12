@@ -25,7 +25,6 @@ import (
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/tmux"
 	"github.com/Automaat/synapse/internal/watchdog"
 	"github.com/Automaat/synapse/internal/watcher"
 	"github.com/Automaat/synapse/internal/workflow"
@@ -44,7 +43,6 @@ type App struct {
 	loopAgents      *loopagent.Store
 	loopSched       *loopagent.Scheduler
 	agents          *agent.Manager
-	tmux            *tmux.Manager
 	watcher         *watcher.Watcher
 	notifier        *notification.Emitter
 	audit           *audit.Logger
@@ -144,7 +142,6 @@ func (a *App) startup(ctx context.Context) {
 		runtime.Quit(ctx)
 		return
 	}
-	a.tmux = tmux.NewManager()
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
 	}
@@ -154,7 +151,7 @@ func (a *App) startup(ctx context.Context) {
 	a.initStatusHook()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
-	a.agents = agent.NewManager(ctx, a.tmux, emit, a.logger, a.logDir)
+	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)
 	a.agents.SetDefaultProvider(a.cfg.Agent.Provider)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
@@ -194,7 +191,6 @@ func (a *App) startup(ctx context.Context) {
 	a.wireServices(emit)
 
 	a.syncSkills()
-	a.reconnectAgents()
 	a.worktrees.CleanupOrphaned()
 	a.cleanStaleRuns()
 	a.restartStaleInProgress()
@@ -418,7 +414,6 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.planSvc.tasks = a.tasks
 	a.planSvc.agents = a.agents
 	a.agentSvc.agents = a.agents
-	a.agentSvc.tmux = a.tmux
 	a.agentSvc.logger = a.logger
 	a.agentSvc.tasks = a.tasks
 	a.agentSvc.cfg = a.cfg
@@ -484,26 +479,6 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 	}
 }
 
-func (a *App) reconnectAgents() {
-	tasks, err := a.tasks.List()
-	if err != nil {
-		a.logger.Warn("reconnect.tasks", "err", err)
-		return
-	}
-
-	var infos []agent.TaskInfo
-	for i := range tasks {
-		if tasks[i].Status == task.StatusInProgress {
-			infos = append(infos, agent.TaskInfo{ID: tasks[i].ID, Title: tasks[i].Title})
-		}
-	}
-
-	n := a.agents.ReconnectSessions(infos)
-	if n > 0 {
-		a.logger.Info("reconnect.done", "count", n)
-	}
-}
-
 // cleanStaleRuns marks agent_runs still showing "running" as "stopped" if no
 // matching in-memory agent exists. Fixes leftover state from crashes/restarts.
 func (a *App) cleanStaleRuns() {
@@ -535,9 +510,8 @@ func (a *App) cleanStaleRuns() {
 const restartStaleMinAge = 5 * time.Minute
 
 // restartStaleInProgress recovers in-progress tasks that lost their agent
-// due to a crash, restart, or tmux session death. Headless tasks are
-// re-dispatched; interactive tasks drive the workflow engine forward via
-// recoverStaleInteractive (no new tmux session is spawned).
+// due to a crash or restart. Headless tasks are re-dispatched; interactive
+// tasks drive the workflow engine forward via recoverStaleInteractive.
 func (a *App) restartStaleInProgress() {
 	tasks, err := a.tasks.List()
 	if err != nil {
@@ -592,9 +566,8 @@ func (a *App) restartStaleInProgress() {
 			}
 			continue
 		}
-		// Interactive: don't spawn a new tmux session automatically. Instead
-		// drive the workflow engine to advance the current step using the
-		// stored agent run result — same mechanism as onAgentComplete.
+		// Interactive: drive the workflow engine to advance the current step
+		// using the stored agent run result — same mechanism as onAgentComplete.
 		if t.AgentMode != "headless" {
 			a.recoverStaleInteractive(&t)
 			continue
@@ -624,8 +597,8 @@ func (a *App) restartStaleInProgress() {
 	}
 }
 
-// recoverStaleInteractive handles interactive in-progress tasks whose tmux
-// session died or disappeared across restarts. Marks the last agent run as
+// recoverStaleInteractive handles interactive in-progress tasks whose agent
+// died or disappeared across restarts. Marks the last agent run as
 // stopped (if still claiming running) and drives the workflow engine to
 // advance the current step using the stored result — mirroring the normal
 // onAgentComplete callback so evaluate/next steps fire.

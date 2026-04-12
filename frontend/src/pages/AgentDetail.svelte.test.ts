@@ -30,7 +30,6 @@ const mockAgent = {
   mode: 'headless',
   state: 'running',
   sessionId: 'sess-123',
-  tmuxSession: '',
   costUsd: 0.5678,
   startedAt: '2026-04-01T00:00:00Z',
   external: true,

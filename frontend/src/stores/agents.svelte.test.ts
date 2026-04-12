@@ -29,7 +29,6 @@ function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
     mode: 'headless',
     state: 'running',
     sessionId: '',
-    tmuxSession: '',
     costUsd: 0,
     startedAt: new Date().toISOString(),
     external: false,

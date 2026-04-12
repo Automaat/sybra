@@ -11,7 +11,6 @@
   import { STATUS_OPTIONS } from '../lib/statuses.js'
   import { GetAgentRunLog } from '../../wailsjs/go/main/AgentService.js'
   import StreamOutput from '../components/StreamOutput.svelte'
-  import TerminalView from '../components/TerminalView.svelte'
   import ChatView from '../components/ChatView.svelte'
 
   interface Props {
@@ -695,10 +694,8 @@
               </button>
             {/if}
           </div>
-          {#if runningAgent.mode === 'interactive' && !runningAgent.tmuxSession}
+          {#if runningAgent.mode === 'interactive'}
             <ChatView agentId={runningAgent.id} agentState={runningAgent.state} costUsd={runningAgent.costUsd} inputTokens={runningAgent.inputTokens ?? 0} outputTokens={runningAgent.outputTokens ?? 0} bounded={true} />
-          {:else if runningAgent.mode === 'interactive' && runningAgent.tmuxSession}
-            <TerminalView agentId={runningAgent.id} />
           {:else}
             <StreamOutput agentId={runningAgent.id} />
           {/if}

@@ -16,14 +16,13 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.agents.CheckInteractiveSessions()
 			a.maybeStartOrchestrator()
 			if a.workflowEngine != nil {
 				a.workflowEngine.ResumeStalled()
 			}
 			// Recover in-progress tasks whose agent died — runs continuously,
-			// not just at startup, to catch tmux sessions closed mid-session
-			// and pr-fix agents that finished without advancing the workflow.
+			// not just at startup, to catch agents that finished without
+			// advancing the workflow.
 			a.restartStaleInProgress()
 			a.worktrees.CleanupOrphaned()
 		}

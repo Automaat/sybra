@@ -3,13 +3,11 @@ package main
 import (
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/executil"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
@@ -256,25 +254,4 @@ func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 	}
 
 	return sb.String()
-}
-
-func openTmuxInGhostty(session, tabTitle string) error {
-	label := "Synapse: " + tabTitle
-	script := fmt.Sprintf(`tell application "Ghostty"
-	activate
-	set synapseWins to (every window whose name contains "Synapse:")
-	set winCount to (count of synapseWins)
-	set cfg to new surface configuration
-	set command of cfg to "/bin/zsh -lic 'printf \"\\033]0;%s\\007\"; exec tmux attach -t %s'"
-	if winCount > 0 then
-		new tab in (item 1 of synapseWins) with configuration cfg
-	else
-		new window with configuration cfg
-	end if
-end tell`, executil.EscapeAppleScript(label), executil.EscapeAppleScript(session))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("osascript: %w: %s", err, string(out))
-	}
-	return nil
 }

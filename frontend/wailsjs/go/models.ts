@@ -6,7 +6,6 @@ export namespace agent {
 	    mode: string;
 	    state: string;
 	    sessionId: string;
-	    tmuxSession: string;
 	    costUsd: number;
 	    inputTokens?: number;
 	    outputTokens?: number;
@@ -36,7 +35,6 @@ export namespace agent {
 	        this.mode = source["mode"];
 	        this.state = source["state"];
 	        this.sessionId = source["sessionId"];
-	        this.tmuxSession = source["tmuxSession"];
 	        this.costUsd = source["costUsd"];
 	        this.inputTokens = source["inputTokens"];
 	        this.outputTokens = source["outputTokens"];
@@ -1086,25 +1084,6 @@ export namespace task {
 		    }
 		    return a;
 		}
-	}
-
-}
-
-export namespace tmux {
-	
-	export class SessionInfo {
-	    name: string;
-	    created: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SessionInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.created = source["created"];
-	    }
 	}
 
 }

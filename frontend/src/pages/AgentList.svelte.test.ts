@@ -33,7 +33,6 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     mode: 'headless',
     state: 'running',
     sessionId: '',
-    tmuxSession: '',
     costUsd: 0,
     startedAt: '2026-04-01T00:00:00Z',
     external: false,

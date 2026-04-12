@@ -12,7 +12,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/tmux"
+
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -39,9 +39,8 @@ func setupApp(t *testing.T) *App {
 
 	logger := discardLogger()
 	emit := func(string, any) {}
-	tm := tmux.NewManager()
 	logDir := filepath.Join(os.TempDir(), "synapse-test-logs")
-	mgr := agent.NewManager(t.Context(), tm, emit, logger, logDir)
+	mgr := agent.NewManager(t.Context(), emit, logger, logDir)
 
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
@@ -54,7 +53,6 @@ func setupApp(t *testing.T) *App {
 	return &App{
 		tasks:     taskMgr,
 		agents:    mgr,
-		tmux:      tm,
 		tasksDir:  dir,
 		logger:    logger,
 		worktrees: wm,
@@ -106,7 +104,6 @@ func setupAgentService(t *testing.T) (*AgentService, *App) {
 	a := setupApp(t)
 	svc := &AgentService{
 		agents: a.agents,
-		tmux:   a.tmux,
 		logger: a.logger,
 	}
 	return svc, a
@@ -305,7 +302,7 @@ func runTestAgent(t *testing.T, a *App, taskID, title string) *agent.Agent {
 
 func TestStopAgent(t *testing.T) {
 	taskSvc, a := setupTaskService(t)
-	agentSvc := &AgentService{agents: a.agents, tmux: a.tmux, logger: a.logger}
+	agentSvc := &AgentService{agents: a.agents, logger: a.logger}
 
 	created, err := taskSvc.CreateTask("stop task", "", "headless")
 	if err != nil {
@@ -343,7 +340,7 @@ func TestDiscoverAgents(t *testing.T) {
 
 func TestGetAgentOutput(t *testing.T) {
 	taskSvc, a := setupTaskService(t)
-	agentSvc := &AgentService{agents: a.agents, tmux: a.tmux, logger: a.logger}
+	agentSvc := &AgentService{agents: a.agents, logger: a.logger}
 
 	created, err := taskSvc.CreateTask("output task", "", "headless")
 	if err != nil {

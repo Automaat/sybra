@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/tmux"
 )
 
 func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, context.CancelFunc) {
@@ -17,7 +16,7 @@ func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, cont
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	emitted := make(chan struct{}, 16)
 	emit := func(string, any) { emitted <- struct{}{} }
-	mgr := agent.NewManager(ctx, tmux.NewManager(), emit, logger, t.TempDir())
+	mgr := agent.NewManager(ctx, emit, logger, t.TempDir())
 	svc := &OrchestratorService{
 		agents: mgr,
 		logger: logger,
