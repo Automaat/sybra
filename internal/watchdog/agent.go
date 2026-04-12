@@ -14,7 +14,7 @@ import (
 
 const (
 	TickInterval   = 30 * time.Second
-	StallLimit     = 3 * time.Minute
+	StallLimit     = 15 * time.Minute
 	Debounce       = 5 * time.Minute
 	InspectTimeout = 2 * time.Minute
 )

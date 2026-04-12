@@ -225,6 +225,15 @@ func (a *Agent) GetLastEventAt() time.Time {
 	return a.LastEventAt
 }
 
+// TouchLastEvent refreshes LastEventAt without appending any event.
+// Used by the stdout reader to keep the stall clock alive during
+// extended thinking, where no complete NDJSON lines are emitted.
+func (a *Agent) TouchLastEvent() {
+	a.mu.Lock()
+	a.LastEventAt = time.Now().UTC()
+	a.mu.Unlock()
+}
+
 // Output returns a snapshot of the stream events produced so far. The
 // returned slice is safe to inspect concurrently with the agent's runner
 // goroutine appending more events.
