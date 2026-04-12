@@ -547,114 +547,6 @@ export namespace loopagent {
 
 }
 
-export namespace main {
-	
-	export class LoggingSettings {
-	    level: string;
-	    maxSizeMB: number;
-	    maxFiles: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new LoggingSettings(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.level = source["level"];
-	        this.maxSizeMB = source["maxSizeMB"];
-	        this.maxFiles = source["maxFiles"];
-	    }
-	}
-	export class AppSettings {
-	    agent: config.AgentDefaults;
-	    notification: config.NotificationConfig;
-	    orchestrator: config.OrchestratorConfig;
-	    logging: LoggingSettings;
-	    audit: config.AuditConfig;
-	    todoist: config.TodoistConfig;
-	    renovate: config.RenovateConfig;
-	    directories: Record<string, string>;
-	
-	    static createFrom(source: any = {}) {
-	        return new AppSettings(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.agent = this.convertValues(source["agent"], config.AgentDefaults);
-	        this.notification = this.convertValues(source["notification"], config.NotificationConfig);
-	        this.orchestrator = this.convertValues(source["orchestrator"], config.OrchestratorConfig);
-	        this.logging = this.convertValues(source["logging"], LoggingSettings);
-	        this.audit = this.convertValues(source["audit"], config.AuditConfig);
-	        this.todoist = this.convertValues(source["todoist"], config.TodoistConfig);
-	        this.renovate = this.convertValues(source["renovate"], config.RenovateConfig);
-	        this.directories = source["directories"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
-	export class LoopAgentRun {
-	    agentId: string;
-	    // Go type: time
-	    startedAt: any;
-	    // Go type: time
-	    finishedAt: any;
-	    costUsd: number;
-	    state: string;
-	    durationS: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new LoopAgentRun(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.agentId = source["agentId"];
-	        this.startedAt = this.convertValues(source["startedAt"], null);
-	        this.finishedAt = this.convertValues(source["finishedAt"], null);
-	        this.costUsd = source["costUsd"];
-	        this.state = source["state"];
-	        this.durationS = source["durationS"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-
-}
-
 export namespace notification {
 	
 	export class Notification {
@@ -896,6 +788,114 @@ export namespace stats {
 	        this.byModel = this.convertValues(source["byModel"], GroupedStat);
 	        this.byProvider = this.convertValues(source["byProvider"], GroupedStat);
 	        this.recentRuns = this.convertValues(source["recentRuns"], RunRecord);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace synapse {
+	
+	export class LoggingSettings {
+	    level: string;
+	    maxSizeMB: number;
+	    maxFiles: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LoggingSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.level = source["level"];
+	        this.maxSizeMB = source["maxSizeMB"];
+	        this.maxFiles = source["maxFiles"];
+	    }
+	}
+	export class AppSettings {
+	    agent: config.AgentDefaults;
+	    notification: config.NotificationConfig;
+	    orchestrator: config.OrchestratorConfig;
+	    logging: LoggingSettings;
+	    audit: config.AuditConfig;
+	    todoist: config.TodoistConfig;
+	    renovate: config.RenovateConfig;
+	    directories: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new AppSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agent = this.convertValues(source["agent"], config.AgentDefaults);
+	        this.notification = this.convertValues(source["notification"], config.NotificationConfig);
+	        this.orchestrator = this.convertValues(source["orchestrator"], config.OrchestratorConfig);
+	        this.logging = this.convertValues(source["logging"], LoggingSettings);
+	        this.audit = this.convertValues(source["audit"], config.AuditConfig);
+	        this.todoist = this.convertValues(source["todoist"], config.TodoistConfig);
+	        this.renovate = this.convertValues(source["renovate"], config.RenovateConfig);
+	        this.directories = source["directories"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class LoopAgentRun {
+	    agentId: string;
+	    // Go type: time
+	    startedAt: any;
+	    // Go type: time
+	    finishedAt: any;
+	    costUsd: number;
+	    state: string;
+	    durationS: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LoopAgentRun(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agentId = source["agentId"];
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.finishedAt = this.convertValues(source["finishedAt"], null);
+	        this.costUsd = source["costUsd"];
+	        this.state = source["state"];
+	        this.durationS = source["durationS"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

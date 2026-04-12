@@ -7,7 +7,7 @@ import type {
   project,
   github,
   loopagent,
-  main,
+  synapse,
   notification,
   stats,
   workflow,
@@ -45,8 +45,8 @@ export function SetDesktopNotifications(arg1: boolean): Promise<void> { return c
 export function StartAgent(arg1: string, arg2: string, arg3: string): Promise<agent.Agent> { return call('App', 'StartAgent', arg1, arg2, arg3) }
 
 // ConfigService
-export function GetSettings(): Promise<main.AppSettings> { return call('ConfigService', 'GetSettings') }
-export function UpdateSettings(arg1: main.AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
+export function GetSettings(): Promise<synapse.AppSettings> { return call('ConfigService', 'GetSettings') }
+export function UpdateSettings(arg1: synapse.AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 
 // IntegrationService
 export function ApproveRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'ApproveRenovatePR', arg1, arg2) }
@@ -63,7 +63,7 @@ export function TodoistEnabled(): Promise<boolean> { return call('IntegrationSer
 export function CreateLoopAgent(arg1: loopagent.LoopAgent): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'CreateLoopAgent', arg1) }
 export function DeleteLoopAgent(arg1: string): Promise<void> { return call('LoopAgentService', 'DeleteLoopAgent', arg1) }
 export function GetLoopAgent(arg1: string): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'GetLoopAgent', arg1) }
-export function ListLoopAgentRuns(arg1: string, arg2: number): Promise<Array<main.LoopAgentRun>> { return call('LoopAgentService', 'ListLoopAgentRuns', arg1, arg2) }
+export function ListLoopAgentRuns(arg1: string, arg2: number): Promise<Array<synapse.LoopAgentRun>> { return call('LoopAgentService', 'ListLoopAgentRuns', arg1, arg2) }
 export function ListLoopAgents(): Promise<Array<loopagent.LoopAgent>> { return call('LoopAgentService', 'ListLoopAgents') }
 export function RunLoopAgentNow(arg1: string): Promise<string> { return call('LoopAgentService', 'RunLoopAgentNow', arg1) }
 export function UpdateLoopAgent(arg1: loopagent.LoopAgent): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'UpdateLoopAgent', arg1) }
