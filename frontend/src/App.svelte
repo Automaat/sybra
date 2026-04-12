@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { Navigation, AppBar } from '@skeletonlabs/skeleton-svelte'
   import { EventsOn } from '$lib/api'
   import * as ev from './lib/events.js'
@@ -127,25 +128,34 @@
   }
 
   $effect(() => {
-    taskStore.load()
-    taskStore.startPolling()
-    agentStore.load()
-    agentStore.startPolling()
-    projectStore.load()
-    projectStore.startPolling()
+    // This effect is lifecycle (mount/unmount), not reactive: it must NOT track
+    // any reads from the store loads it kicks off, otherwise the writes those
+    // loads make to $state stores would re-run this effect, which would cancel
+    // every subscription and EventSource connection and re-create them in a
+    // tight loop (~60×/s in the wild — caused full UI flicker on the web build).
+    const cleanup = untrack(() => {
+      taskStore.load()
+      taskStore.startPolling()
+      agentStore.load()
+      agentStore.startPolling()
+      projectStore.load()
+      projectStore.startPolling()
 
-    const reloadTasks = debounced(() => taskStore.load(), 150)
-    const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
-    notificationStore.load()
-    const unsubNotif = notificationStore.listen()
-    const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
-      degradedWarnings = [...degradedWarnings, w]
+      const reloadTasks = debounced(() => taskStore.load(), 150)
+      const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
+      notificationStore.load()
+      const unsubNotif = notificationStore.listen()
+      const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
+        degradedWarnings = [...degradedWarnings, w]
+      })
+      const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
+        quitConfirmVisible = true
+        if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
+        quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
+      })
+      return { unsubTasks, unsubNotif, unsubDegraded, unsubQuit }
     })
-    const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
-      quitConfirmVisible = true
-      if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
-      quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
-    })
+    const { unsubTasks, unsubNotif, unsubDegraded, unsubQuit } = cleanup
     function handleKeydown(e: KeyboardEvent) {
       if (e.metaKey && (e.key === '=' || e.key === '+')) {
         e.preventDefault()
