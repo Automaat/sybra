@@ -925,6 +925,7 @@ export namespace task {
 	    agentId: string;
 	    role: string;
 	    mode: string;
+	    provider?: string;
 	    state: string;
 	    // Go type: time
 	    startedAt: any;
@@ -941,6 +942,7 @@ export namespace task {
 	        this.agentId = source["agentId"];
 	        this.role = source["role"];
 	        this.mode = source["mode"];
+	        this.provider = source["provider"];
 	        this.state = source["state"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.costUsd = source["costUsd"];
@@ -1161,6 +1163,7 @@ export namespace workflow {
 	    role: string;
 	    mode: string;
 	    model: string;
+	    provider: string;
 	    prompt: string;
 	    allowedTools: string[];
 	    needsWorktree: boolean;
@@ -1183,6 +1186,7 @@ export namespace workflow {
 	        this.role = source["role"];
 	        this.mode = source["mode"];
 	        this.model = source["model"];
+	        this.provider = source["provider"];
 	        this.prompt = source["prompt"];
 	        this.allowedTools = source["allowedTools"];
 	        this.needsWorktree = source["needsWorktree"];
@@ -1358,6 +1362,7 @@ export namespace workflow {
 	    status: string;
 	    output: string;
 	    agentId: string;
+	    provider?: string;
 	    // Go type: time
 	    startedAt: any;
 	    // Go type: time
@@ -1373,6 +1378,7 @@ export namespace workflow {
 	        this.status = source["status"];
 	        this.output = source["output"];
 	        this.agentId = source["agentId"];
+	        this.provider = source["provider"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.endedAt = this.convertValues(source["endedAt"], null);
 	    }
