@@ -82,7 +82,9 @@ func New(
 func (w *Watchdog) Run(ctx context.Context) {
 	s := newState()
 	ticker := time.NewTicker(TickInterval)
+	dwellTicker := time.NewTicker(DwellTickInterval)
 	defer ticker.Stop()
+	defer dwellTicker.Stop()
 
 	for {
 		select {
@@ -90,6 +92,8 @@ func (w *Watchdog) Run(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			w.tick(ctx, s, now)
+		case now := <-dwellTicker.C:
+			w.checkDwell(now)
 		}
 	}
 }
