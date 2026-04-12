@@ -11,8 +11,6 @@ vi.mock('../../wailsjs/go/main/AgentService.js', () => ({
   StopAgent: vi.fn(),
   GetAgentOutput: vi.fn().mockResolvedValue([]),
   DiscoverAgents: vi.fn().mockResolvedValue([]),
-  CaptureAgentPane: vi.fn().mockResolvedValue(''),
-  AttachAgent: vi.fn(),
 }))
 
 vi.mock('../../wailsjs/go/main/TaskService.js', () => ({
