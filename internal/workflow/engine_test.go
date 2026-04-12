@@ -59,12 +59,13 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu    sync.Mutex
-	tasks map[string]*TaskInfo
+	mu      sync.Mutex
+	tasks   map[string]*TaskInfo
+	reasons map[string]string
 }
 
 func newMemTasks() *memTasks {
-	return &memTasks{tasks: make(map[string]*TaskInfo)}
+	return &memTasks{tasks: make(map[string]*TaskInfo), reasons: make(map[string]string)}
 }
 
 func (m *memTasks) Put(t TaskInfo) {
@@ -93,7 +94,7 @@ func (m *memTasks) ListTasks() ([]TaskInfo, error) {
 	return out, nil
 }
 
-func (m *memTasks) UpdateTaskStatus(id, status, _ string) error {
+func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -101,7 +102,15 @@ func (m *memTasks) UpdateTaskStatus(id, status, _ string) error {
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Status = status
+	m.reasons[id] = reason
 	return nil
+}
+
+// Reason returns the last status reason recorded for a task.
+func (m *memTasks) Reason(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reasons[id]
 }
 
 func (m *memTasks) UpdateTaskPR(id string, prNumber int) error {
@@ -282,27 +291,26 @@ func TestFullLifecycle_DirectImplement(t *testing.T) {
 		t.Fatalf("expected implementation, got %q", agents.LastCall().Role)
 	}
 
-	// Simulate implement completes.
+	// Simulate implement completes. The mechanical evaluate step runs
+	// inline during AdvanceStep and terminates the workflow without
+	// spawning a new agent.
+	implCallCount := agents.CallCount()
 	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "implement", Status: "completed", Output: "Done."}); err != nil {
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "implement", Status: "completed", Output: "Done.", AgentID: "agent-impl"}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Evaluate step.
-	if agents.LastCall().Role != "eval" {
-		t.Fatalf("expected eval, got %q", agents.LastCall().Role)
+	if got := agents.CallCount(); got != implCallCount {
+		t.Errorf("evaluate spawned an agent (calls before=%d, after=%d) — should be mechanical", implCallCount, got)
 	}
 
-	// Simulate evaluate completes.
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{StepID: "evaluate", Status: "completed", Output: "evaluated"}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Workflow should be completed.
+	// Workflow should be completed; mechanical evaluate flips to human-required.
 	ti, _ = tasks.GetTask("t1")
 	if ti.Workflow.State != ExecCompleted {
-		t.Fatalf("expected completed, got %q", ti.Workflow.State)
+		t.Fatalf("expected completed, got %q (current step %q)", ti.Workflow.State, ti.Workflow.CurrentStep)
+	}
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
 }
 
@@ -2390,5 +2398,145 @@ func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "human-required" {
 		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+}
+
+// --- evaluate step ---
+
+func newEvaluateStep() *Step {
+	return &Step{ID: "evaluate", Type: StepEvaluate}
+}
+
+func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {
+	t.Helper()
+	store := newTestStore(t)
+	agents := newMockAgents()
+	return NewEngine(store, tasks, agents, discardLogger())
+}
+
+func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "failed", AgentID: "a1", Output: "rate limit exceeded"},
+		},
+	}
+
+	out, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("step Status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != "rate limit exceeded" {
+		t.Errorf("reason = %q, want %q", got, "rate limit exceeded")
+	}
+}
+
+func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "failed", AgentID: "a1", Output: long},
+		},
+	}
+
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+		t.Fatal(err)
+	}
+	got := tasks.Reason("t1")
+	if !strings.Contains(got, "(truncated)") {
+		t.Errorf("reason missing truncation marker: %q", got)
+	}
+	if len(got) >= len(long) {
+		t.Errorf("reason not truncated: %d chars", len(got))
+	}
+}
+
+func TestExecEvaluate_LastAgentSucceededFlipsHumanRequiredWithDefault(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "Implementation done."},
+		},
+	}
+
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != "commits pushed but no PR created" {
+		t.Errorf("reason = %q, want %q", got, "commits pushed but no PR created")
+	}
+}
+
+func TestExecEvaluate_SkipsMechanicalStepsInHistory(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "failed", AgentID: "a1", Output: "real error"},
+			{StepID: "verify_commits", Status: "completed"},
+			{StepID: "link_pr_and_review", Status: "completed", Output: "no pr found"},
+		},
+	}
+
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+		t.Fatal(err)
+	}
+	if got := tasks.Reason("t1"); got != "real error" {
+		t.Errorf("reason = %q, want %q (mechanical steps must be skipped)", got, "real error")
+	}
+}
+
+func TestExecEvaluate_EmptyHistory(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{}
+
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != "no agent result to evaluate" {
+		t.Errorf("reason = %q, want %q", got, "no agent result to evaluate")
+	}
+}
+
+func TestExecEvaluate_FailedWithEmptyOutput(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "failed", AgentID: "a1", Output: "   "},
+		},
+	}
+
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+		t.Fatal(err)
+	}
+	if got := tasks.Reason("t1"); got != "agent failed with no output" {
+		t.Errorf("reason = %q, want %q", got, "agent failed with no output")
 	}
 }
