@@ -161,7 +161,7 @@ func scanAuditFileForRuns(path, agentName string) ([]LoopAgentRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []LoopAgentRun
 	scanner := bufio.NewScanner(f)

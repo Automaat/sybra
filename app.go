@@ -144,7 +144,6 @@ func (a *App) startup(ctx context.Context) {
 		runtime.Quit(ctx)
 		return
 	}
-
 	a.tmux = tmux.NewManager()
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
@@ -182,10 +181,7 @@ func (a *App) startup(ctx context.Context) {
 	a.initApprovalServer(emit)
 	a.agents.SetOnComplete(a.onAgentComplete)
 
-	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
-	a.seedDefaultLoopAgents()
-	a.loopSched.Sync()
-
+	a.initLoopScheduler(ctx, emit)
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
 	if err := w.Start(ctx); err != nil {
@@ -698,6 +694,12 @@ func (a *App) initLoopAgents() error {
 	}
 	a.loopAgents = store
 	return nil
+}
+
+func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
+	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
+	a.seedDefaultLoopAgents()
+	a.loopSched.Sync()
 }
 
 func (a *App) seedDefaultLoopAgents() {
