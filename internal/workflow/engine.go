@@ -805,6 +805,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
+
+	// Stop stale agents left over from earlier workflow steps (e.g. an
+	// interactive plan agent with reuse_agent that outlived plan approval).
+	// Empty role = stop all roles for this task.
+	e.agents.StopAgentsForTask(taskID, "")
+
 	// Interactive agents that aren't meant to persist across turns (no
 	// reuse_agent, no wait_for_status) must signal completion via process
 	// exit. OneShot tells the runner to close stdin after the first result

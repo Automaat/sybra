@@ -334,7 +334,7 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 }
 
 // FindAllRunningAgentsForTask returns all live agents for the given task
-// matching the provided role.
+// matching the provided role. An empty role matches all roles.
 func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -343,7 +343,7 @@ func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent
 		if a.TaskID != taskID || !isLive(a.GetState()) {
 			continue
 		}
-		if RoleFromName(a.Name) != role {
+		if role != "" && RoleFromName(a.Name) != role {
 			continue
 		}
 		result = append(result, a)
