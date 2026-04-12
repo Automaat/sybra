@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:desktop": "VITE_MODE=desktop vite build",
+    "build:web": "VITE_MODE=web vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "oxlint .",

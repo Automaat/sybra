@@ -3,11 +3,20 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'url'
 
+const mode = process.env.VITE_MODE ?? 'desktop'
+const outDir = mode === 'web' ? 'dist-web' : 'dist'
+
 export default defineConfig({
   plugins: [
     tailwindcss(),
     svelte(),
   ],
+  build: {
+    outDir,
+  },
+  define: {
+    'import.meta.env.VITE_MODE': JSON.stringify(mode),
+  },
   resolve: {
     conditions: ['browser'],
     alias: {

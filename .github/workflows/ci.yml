@@ -19,7 +19,7 @@ jobs:
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
       - name: Build frontend (needed for go:embed)
-        run: cd frontend && npm ci && npm run build
+        run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go tests
         run: go test ./...
@@ -38,6 +38,12 @@ jobs:
       - name: Type-check
         run: cd frontend && npm run check
 
+      - name: Build desktop variant
+        run: cd frontend && npm run build:desktop
+
+      - name: Build web variant
+        run: cd frontend && npm run build:web
+
       - name: Run unit tests
         run: cd frontend && npx vitest run --passWithNoTests
 
@@ -50,7 +56,7 @@ jobs:
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
       - name: Build frontend (needed for go:embed)
-        run: cd frontend && npm ci && npm run build
+        run: cd frontend && npm ci && npm run build:desktop
 
       - uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
@@ -68,7 +74,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build frontend (needed for go:embed)
-        run: cd frontend && npm ci && npm run build
+        run: cd frontend && npm ci && npm run build:desktop
 
       - name: Regenerate bindings
         run: wails generate module
