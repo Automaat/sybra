@@ -16,4 +16,6 @@ export function OpenInEditor(arg1:string):Promise<void>;
 
 export function OpenInTerminal(arg1:string):Promise<void>;
 
+export function SetProjectSetupCommands(arg1:string,arg2:Array<string>):Promise<project.Project>;
+
 export function UpdateProject(arg1:string,arg2:string):Promise<project.Project>;
