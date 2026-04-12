@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/synapse/internal/loopagent"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
@@ -40,6 +41,8 @@ type App struct {
 	wg              sync.WaitGroup
 	tasks           *task.Manager
 	projects        *project.Store
+	loopAgents      *loopagent.Store
+	loopSched       *loopagent.Scheduler
 	agents          *agent.Manager
 	tmux            *tmux.Manager
 	watcher         *watcher.Watcher
@@ -68,16 +71,17 @@ type App struct {
 	restartStaleErr *logging.ErrorThrottle
 
 	// Wails-bound services (created in startup)
-	taskSvc     *TaskService
-	planSvc     *PlanningService
-	agentSvc    *AgentService
-	orchSvc     *OrchestratorService
-	projectSvc  *ProjectService
-	configSvc   *ConfigService
-	intgSvc     *IntegrationService
-	statsSvc    *StatsService
-	reviewSvc   *ReviewService
-	workflowSvc *WorkflowService
+	taskSvc      *TaskService
+	planSvc      *PlanningService
+	agentSvc     *AgentService
+	orchSvc      *OrchestratorService
+	projectSvc   *ProjectService
+	loopAgentSvc *LoopAgentService
+	configSvc    *ConfigService
+	intgSvc      *IntegrationService
+	statsSvc     *StatsService
+	reviewSvc    *ReviewService
+	workflowSvc  *WorkflowService
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *App {
@@ -100,6 +104,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config) *A
 	a.agentSvc = &AgentService{}
 	a.orchSvc = &OrchestratorService{}
 	a.projectSvc = &ProjectService{}
+	a.loopAgentSvc = &LoopAgentService{}
 	a.configSvc = &ConfigService{}
 	a.intgSvc = &IntegrationService{}
 	a.statsSvc = &StatsService{}
@@ -135,6 +140,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.projects = projStore
 
+	if err := a.initLoopAgents(); err != nil {
+		runtime.Quit(ctx)
+		return
+	}
 	a.tmux = tmux.NewManager()
 	emit := func(event string, data any) {
 		runtime.EventsEmit(ctx, event, data)
@@ -172,6 +181,7 @@ func (a *App) startup(ctx context.Context) {
 	a.initApprovalServer(emit)
 	a.agents.SetOnComplete(a.onAgentComplete)
 
+	a.initLoopScheduler(ctx, emit)
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	a.watcher = w
 	if err := w.Start(ctx); err != nil {
@@ -316,7 +326,14 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"state":      string(state),
 		"role":       agent.RoleFromName(ag.Name),
 		"provider":   ag.Provider,
+		"name":       ag.Name,
 	})
+
+	// Loop agents run without a TaskID — let the scheduler record cost
+	// before the early return below kicks in.
+	if a.loopSched != nil {
+		a.loopSched.OnAgentComplete(ag)
+	}
 
 	// Orchestrator brain agents run with TaskID="" (rooted at ~/.synapse,
 	// no parent task). Calling UpdateRun / HandleAgentComplete / Get with
@@ -410,6 +427,10 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.projectSvc.projects = a.projects
 	a.projectSvc.worktrees = a.worktrees
 	a.projectSvc.logger = a.logger
+	a.loopAgentSvc.store = a.loopAgents
+	a.loopAgentSvc.sched = a.loopSched
+	a.loopAgentSvc.auditDir = a.auditDir
+	a.loopAgentSvc.logger = a.logger
 	a.configSvc.cfg = a.cfg
 	a.configSvc.logLevel = a.logLevel
 	a.configSvc.notifier = a.notifier
@@ -432,6 +453,9 @@ func (a *App) wireServices(emit func(string, any)) {
 
 func (a *App) shutdown(_ context.Context) {
 	a.logger.Info("app.stopping")
+	if a.loopSched != nil {
+		a.loopSched.Stop()
+	}
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -656,6 +680,50 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	return a.agentOrch.StartAgent(taskID, mode, prompt, false)
+}
+
+// seedDefaultLoopAgents creates the built-in synapse-self-monitor loop on
+// first boot only. It is disabled by default so the user can review the
+// configuration in the GUI before enabling. Idempotent: if a record with
+// the same Name already exists this is a no-op.
+func (a *App) initLoopAgents() error {
+	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
+	if err != nil {
+		a.logger.Error("loopagent.store.init", "err", err)
+		return err
+	}
+	a.loopAgents = store
+	return nil
+}
+
+func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
+	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
+	a.seedDefaultLoopAgents()
+	a.loopSched.Sync()
+}
+
+func (a *App) seedDefaultLoopAgents() {
+	if a.loopAgents == nil {
+		return
+	}
+	const name = "synapse-self-monitor"
+	if _, ok := a.loopAgents.FindByName(name); ok {
+		return
+	}
+	created, err := a.loopAgents.Create(loopagent.LoopAgent{
+		Name:         name,
+		Prompt:       "/synapse-self-monitor",
+		IntervalSec:  21600, // 6 hours
+		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
+		Provider:     "claude",
+		Model:        "sonnet",
+		Enabled:      false,
+	})
+	if err != nil {
+		a.logger.Warn("loopagent.seed.failed", "name", name, "err", err)
+		return
+	}
+	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
 }
 
 func (a *App) syncSkills() {

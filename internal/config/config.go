@@ -9,19 +9,20 @@ import (
 )
 
 type Config struct {
-	Logging      LoggingConfig      `yaml:"logging" json:"logging"`
-	Audit        AuditConfig        `yaml:"audit" json:"audit"`
-	Agent        AgentDefaults      `yaml:"agent" json:"agent"`
-	Notification NotificationConfig `yaml:"notification" json:"notification"`
-	Orchestrator OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
-	Todoist      TodoistConfig      `yaml:"todoist" json:"todoist"`
-	Renovate     RenovateConfig     `yaml:"renovate" json:"renovate"`
-	TasksDir     string             `yaml:"tasks_dir" json:"tasksDir"`
-	SkillsDir    string             `yaml:"skills_dir" json:"skillsDir"`
-	RepoDir      string             `yaml:"repo_dir" json:"repoDir"`
-	ProjectsDir  string             `yaml:"projects_dir" json:"projectsDir"`
-	ClonesDir    string             `yaml:"clones_dir" json:"clonesDir"`
-	WorktreesDir string             `yaml:"worktrees_dir" json:"worktreesDir"`
+	Logging       LoggingConfig      `yaml:"logging" json:"logging"`
+	Audit         AuditConfig        `yaml:"audit" json:"audit"`
+	Agent         AgentDefaults      `yaml:"agent" json:"agent"`
+	Notification  NotificationConfig `yaml:"notification" json:"notification"`
+	Orchestrator  OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
+	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
+	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
+	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
+	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
+	RepoDir       string             `yaml:"repo_dir" json:"repoDir"`
+	ProjectsDir   string             `yaml:"projects_dir" json:"projectsDir"`
+	ClonesDir     string             `yaml:"clones_dir" json:"clonesDir"`
+	WorktreesDir  string             `yaml:"worktrees_dir" json:"worktreesDir"`
+	LoopAgentsDir string             `yaml:"loop_agents_dir" json:"loopAgentsDir"`
 }
 
 type AuditConfig struct {
@@ -137,13 +138,14 @@ func (c *Config) Save() error {
 // Directories returns the resolved paths for all synapse data directories.
 func (c *Config) Directories() map[string]string {
 	return map[string]string{
-		"tasks":     c.TasksDir,
-		"skills":    c.SkillsDir,
-		"projects":  c.ProjectsDir,
-		"clones":    c.ClonesDir,
-		"worktrees": c.WorktreesDir,
-		"logs":      c.Logging.Dir,
-		"audit":     c.AuditDir(),
+		"tasks":       c.TasksDir,
+		"skills":      c.SkillsDir,
+		"projects":    c.ProjectsDir,
+		"clones":      c.ClonesDir,
+		"worktrees":   c.WorktreesDir,
+		"logs":        c.Logging.Dir,
+		"audit":       c.AuditDir(),
+		"loop_agents": c.LoopAgentsDir,
 	}
 }
 
@@ -182,6 +184,13 @@ func Load() (*Config, error) {
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = defaultSkillsDir()
 	}
+	// Migration: previous releases defaulted to ~/.synapse/skills which Claude
+	// Code never reads. Silently retarget the old default so users with stale
+	// configs get the fix without manual intervention. cdb6dc5 changed the
+	// default but did not migrate persisted overrides.
+	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
+		cfg.SkillsDir = defaultSkillsDir()
+	}
 	if cfg.ProjectsDir == "" {
 		cfg.ProjectsDir = defaultProjectsDir()
 	}
@@ -190,6 +199,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.WorktreesDir == "" {
 		cfg.WorktreesDir = defaultWorktreesDir()
+	}
+	if cfg.LoopAgentsDir == "" {
+		cfg.LoopAgentsDir = defaultLoopAgentsDir()
 	}
 
 	if v := os.Getenv("SYNAPSE_TODOIST_TOKEN"); v != "" {
@@ -255,6 +267,10 @@ func defaultClonesDir() string {
 
 func defaultWorktreesDir() string {
 	return filepath.Join(HomeDir(), "worktrees")
+}
+
+func defaultLoopAgentsDir() string {
+	return filepath.Join(HomeDir(), "loop-agents")
 }
 
 func WorkflowsDir() string {

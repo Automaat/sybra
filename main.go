@@ -104,6 +104,7 @@ func main() {
 			app.agentSvc,
 			app.orchSvc,
 			app.projectSvc,
+			app.loopAgentSvc,
 			app.configSvc,
 			app.intgSvc,
 			app.statsSvc,

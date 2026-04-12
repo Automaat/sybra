@@ -2,6 +2,7 @@
   import { Tabs } from '@skeletonlabs/skeleton-svelte'
   import AgentList from './AgentList.svelte'
   import Orchestrator from './Orchestrator.svelte'
+  import Loops from './Loops.svelte'
   import TmuxSessions from './TmuxSessions.svelte'
 
   interface Props {
@@ -24,6 +25,7 @@
       <Tabs.List>
         <Tabs.Trigger value="agents">Agents</Tabs.Trigger>
         <Tabs.Trigger value="orchestrator">Orchestrator</Tabs.Trigger>
+        <Tabs.Trigger value="loops">Loops</Tabs.Trigger>
         <Tabs.Trigger value="sessions">Sessions</Tabs.Trigger>
         <Tabs.Indicator />
       </Tabs.List>
@@ -34,6 +36,9 @@
       </Tabs.Content>
       <Tabs.Content value="orchestrator">
         <Orchestrator />
+      </Tabs.Content>
+      <Tabs.Content value="loops">
+        <Loops />
       </Tabs.Content>
       <Tabs.Content value="sessions">
         <TmuxSessions />
