@@ -14,6 +14,7 @@ const (
 	RoleReview         Role = "review"
 	RoleFixReview      Role = "fix-review"
 	RoleTestPlan       Role = "test-plan"
+	RoleTestPlanCritic Role = "test-plan-critic"
 	RoleTestRunner     Role = "test-runner"
 	RoleImplementation Role = "implementation"
 )
@@ -25,7 +26,7 @@ func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 // IsSystem returns true for roles whose agents should not trigger
 // user-facing notifications (triage, eval, plan-critic).
 func (r Role) IsSystem() bool {
-	return r == RoleTriage || r == RoleEval || r == RolePlanCritic
+	return r == RoleTriage || r == RoleEval || r == RolePlanCritic || r == RoleTestPlanCritic
 }
 
 // RoleFromName extracts the Role from a prefixed agent name.
@@ -37,7 +38,7 @@ func RoleFromName(name string) Role {
 	}
 	r := Role(prefix)
 	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestPlan, RoleTestRunner:
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestPlan, RoleTestPlanCritic, RoleTestRunner:
 		return r
 	default:
 		return RoleImplementation

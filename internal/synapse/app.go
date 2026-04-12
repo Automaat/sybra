@@ -398,9 +398,10 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 	// Advance workflow.
 	if a.workflowEngine != nil {
 		a.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-			AgentID: ag.ID,
-			Result:  resultContent,
-			Success: exitErr == nil,
+			AgentID:  ag.ID,
+			Result:   resultContent,
+			Provider: ag.Provider,
+			Success:  exitErr == nil,
 		})
 	}
 
@@ -686,8 +687,9 @@ func (a *App) recoverStaleInteractive(t *task.Task) {
 	a.logger.Info("recover-stale.advance",
 		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
 	a.workflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
-		AgentID: lr.AgentID,
-		Success: true,
+		AgentID:  lr.AgentID,
+		Provider: lr.Provider,
+		Success:  true,
 	})
 }
 

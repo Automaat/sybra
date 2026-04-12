@@ -275,6 +275,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		Status:    output.Status,
 		Output:    truncate(output.Output, 4000),
 		AgentID:   output.AgentID,
+		Provider:  output.Provider,
 		StartedAt: now,
 		EndedAt:   now,
 	})
@@ -512,10 +513,11 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	}
 
 	if err := e.AdvanceStep(taskID, StepOutput{
-		StepID:  spawnedStep,
-		Status:  status,
-		Output:  c.Result,
-		AgentID: c.AgentID,
+		StepID:   spawnedStep,
+		Status:   status,
+		Output:   c.Result,
+		AgentID:  c.AgentID,
+		Provider: c.Provider,
 	}); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 	}
@@ -804,6 +806,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		model = "sonnet"
 	}
 
+	provider := resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider())
+	if provider != "" && !providerAvailable(provider) {
+		e.logger.Warn("workflow.cross-provider.fallback", "wanted", provider, "reason", "CLI not found")
+		provider = ""
+	}
+
 	dir := wfExec.Variables[WorkflowVarDir]
 
 	// Stop stale agents left over from earlier workflow steps (e.g. an
@@ -817,7 +825,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
 	if err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}
@@ -830,8 +838,40 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	e.mu.Unlock()
 
 	wfExec.State = ExecWaiting
-	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID)
+	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
 	return e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+// flipProvider returns the opposite provider.
+func flipProvider(p string) string {
+	if p == "codex" {
+		return "claude"
+	}
+	return "codex"
+}
+
+// resolveProvider resolves the step-level provider string.
+// "cross" flips the last agent step's provider; "" defers to manager default.
+func resolveProvider(stepProv string, wfExec *Execution, defaultProv string) string {
+	switch stepProv {
+	case "cross":
+		for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+			if p := wfExec.StepHistory[i].Provider; p != "" {
+				return flipProvider(p)
+			}
+		}
+		return flipProvider(defaultProv)
+	case "":
+		return ""
+	default:
+		return stepProv
+	}
+}
+
+// providerAvailable reports whether the CLI for a provider is on PATH.
+func providerAvailable(provider string) bool {
+	_, err := exec.LookPath(provider)
+	return err == nil
 }
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {

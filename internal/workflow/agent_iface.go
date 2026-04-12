@@ -4,8 +4,9 @@ package workflow
 // Using a typed struct instead of positional string args makes the
 // success/failure contract explicit and independent of agent package constants.
 type AgentCompletion struct {
-	AgentID string
-	Result  string
+	AgentID  string
+	Result   string
+	Provider string
 	// Success reports whether the agent exited cleanly. false triggers the
 	// step failure/retry path in AdvanceStep.
 	Success bool
@@ -20,11 +21,12 @@ type AgentCompletion struct {
 // workflow steps that expect a single turn — otherwise the agent sits paused
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error
+	DefaultProvider() string
 }
 
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared

@@ -100,6 +100,7 @@ type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
 	Mode      string    `yaml:"mode" json:"mode"`
+	Provider  string    `yaml:"provider,omitempty" json:"provider,omitempty"`
 	State     string    `yaml:"state" json:"state"`
 	StartedAt time.Time `yaml:"started_at" json:"startedAt"`
 	CostUSD   float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
