@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -126,6 +127,7 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+		m.runSetup(wtPath, proj.SetupCommands)
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
 	}
@@ -134,6 +136,7 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
+	m.runSetup(wtPath, proj.SetupCommands)
 
 	if err := project.PushUpstream(wtPath, wtBranch); err != nil {
 		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
@@ -168,6 +171,7 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
+	m.runSetup(wtPath, proj.SetupCommands)
 	return wtPath, nil
 }
 
@@ -202,6 +206,7 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
+	m.runSetup(wtPath, proj.SetupCommands)
 	return wtPath, nil
 }
 
@@ -302,6 +307,21 @@ func (m *Manager) List(projectID string) ([]project.Worktree, error) {
 		return nil, err
 	}
 	return project.ListWorktrees(proj.ClonePath)
+}
+
+// runSetup executes a project's setup commands inside the worktree directory.
+// Failures are logged but do not block worktree preparation.
+func (m *Manager) runSetup(wtPath string, commands []string) {
+	for _, raw := range commands {
+		cmd := exec.Command("sh", "-c", raw)
+		cmd.Dir = wtPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			m.logger.Warn("worktree.setup-cmd", "cmd", raw, "path", wtPath, "err", err, "output", string(out))
+			continue
+		}
+		m.logger.Info("worktree.setup-cmd", "cmd", raw, "path", wtPath)
+	}
 }
 
 func (m *Manager) ensureBranch(t task.Task, branch string) {

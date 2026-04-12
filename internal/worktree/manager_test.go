@@ -106,6 +106,45 @@ func TestValidatePath_PrefixEscapeBug(t *testing.T) {
 	}
 }
 
+func TestRunSetup(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{logger: discardLogger()}
+
+	m.runSetup(dir, []string{
+		"touch setup-marker",
+		"mkdir -p sub/dir",
+	})
+
+	if _, err := os.Stat(filepath.Join(dir, "setup-marker")); err != nil {
+		t.Error("setup-marker should exist after runSetup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "dir")); err != nil {
+		t.Error("sub/dir should exist after runSetup")
+	}
+}
+
+func TestRunSetupFailureNonFatal(t *testing.T) {
+	dir := t.TempDir()
+	m := &Manager{logger: discardLogger()}
+
+	// First command fails, second should still run
+	m.runSetup(dir, []string{
+		"false",
+		"touch after-fail",
+	})
+
+	if _, err := os.Stat(filepath.Join(dir, "after-fail")); err != nil {
+		t.Error("after-fail should exist — failing command must not stop subsequent ones")
+	}
+}
+
+func TestRunSetupEmpty(t *testing.T) {
+	m := &Manager{logger: discardLogger()}
+	// Should not panic with nil/empty commands
+	m.runSetup(t.TempDir(), nil)
+	m.runSetup(t.TempDir(), []string{})
+}
+
 func TestCleanupOrphaned(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()

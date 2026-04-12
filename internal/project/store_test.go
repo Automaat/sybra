@@ -260,6 +260,36 @@ func TestStoreUpdateInvalidType(t *testing.T) {
 	}
 }
 
+func TestStoreSetSetupCommands(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo", Type: ProjectTypePet}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds := []string{"npm install", "mkdir -p dist"}
+	got, err := store.SetSetupCommands("owner/repo", cmds)
+	if err != nil {
+		t.Fatalf("SetSetupCommands: %v", err)
+	}
+	if len(got.SetupCommands) != 2 || got.SetupCommands[0] != "npm install" {
+		t.Errorf("SetupCommands = %v, want %v", got.SetupCommands, cmds)
+	}
+
+	persisted, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.SetupCommands) != 2 {
+		t.Errorf("persisted SetupCommands = %v, want %v", persisted.SetupCommands, cmds)
+	}
+}
+
 func TestStoreDeleteCleansClone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
