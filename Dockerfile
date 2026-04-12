@@ -27,7 +27,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code @openai/codex \
     && rm -rf /root/.npm
 
 COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
