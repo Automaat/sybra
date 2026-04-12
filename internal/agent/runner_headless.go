@@ -205,8 +205,25 @@ func warnSubstringFallback(logger *slog.Logger) {
 	}
 }
 
+// trackingReader wraps an io.Reader and calls touch on every Read, keeping
+// LastEventAt alive during extended thinking where no complete NDJSON lines
+// are emitted for several minutes.
+type trackingReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (t *trackingReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.touch()
+	}
+	return n, err
+}
+
 func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer) {
-	scanner := bufio.NewScanner(stdout)
+	tracked := &trackingReader{r: stdout, touch: a.TouchLastEvent}
+	scanner := bufio.NewScanner(tracked)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
 	isCodex := normalizeProvider(a.Provider) == "codex"
