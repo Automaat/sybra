@@ -28,3 +28,4 @@ frontend/playwright-report/
 /synapse
 /synapse-cli
 /fake-claude
+synapse-server
