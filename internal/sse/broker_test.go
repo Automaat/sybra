@@ -65,6 +65,68 @@ func TestBroker_CancelUnsubscribes(t *testing.T) {
 	b.Emit("cancel.test", "after-cancel")
 }
 
+func TestBroker_ServeAll(t *testing.T) {
+	b := sse.New()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", b.ServeAll)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	type result struct {
+		eventType string
+		data      string
+	}
+	resultCh := make(chan result, 2)
+
+	go func() {
+		resp, err := http.Get(srv.URL + "/events")
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		var pending result
+		received := 0
+		for sc.Scan() {
+			line := sc.Text()
+			if name, ok := strings.CutPrefix(line, "event: "); ok {
+				pending.eventType = name
+			} else if data, ok := strings.CutPrefix(line, "data: "); ok {
+				pending.data = data
+				resultCh <- pending
+				pending = result{}
+				received++
+				if received == 2 {
+					return // close body so srv.Close() doesn't block
+				}
+			}
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	b.Emit("issues:updated", map[string]int{"count": 3})
+	b.Emit("loopagent:updated", nil)
+
+	for range 2 {
+		select {
+		case got := <-resultCh:
+			switch got.eventType {
+			case "issues:updated":
+				if !strings.Contains(got.data, "count") {
+					t.Fatalf("unexpected issues data: %s", got.data)
+				}
+			case "loopagent:updated":
+				// nil marshals to "null"
+			default:
+				t.Fatalf("unexpected event type: %s", got.eventType)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for SSE event")
+		}
+	}
+}
+
 func TestBroker_ServeHTTP(t *testing.T) {
 	b := sse.New()
 

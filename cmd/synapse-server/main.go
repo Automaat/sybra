@@ -66,7 +66,10 @@ func run() error {
 
 	mux := http.NewServeMux()
 
-	// SSE endpoint: GET /api/events/{eventName}
+	// Multiplexed SSE stream: all events over a single connection.
+	mux.HandleFunc("GET /events", broker.ServeAll)
+
+	// Per-event SSE endpoint (kept for debugging / backward compat).
 	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
 
 	// API dispatch: POST /api/{service}/{method}
