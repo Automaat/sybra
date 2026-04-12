@@ -125,13 +125,44 @@ export function ResetBuiltin(arg1: string): Promise<void> { return call('Workflo
 export function SaveWorkflow(arg1: workflow.Definition): Promise<void> { return call('WorkflowService', 'SaveWorkflow', arg1) }
 export function StartWorkflow(arg1: string, arg2: string): Promise<void> { return call('WorkflowService', 'StartWorkflow', arg1, arg2) }
 
-// Runtime: EventsOn via Server-Sent Events
+// Shared EventSource for the multiplexed /events SSE stream.
+// All EventsOn subscriptions funnel through a single connection.
+const EVENTS_URL = (() => {
+  // Strip /api suffix to get server root, then append /events.
+  const base = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
+  return base.replace(/\/api$/, '') + '/events'
+})()
+
+let _sharedES: EventSource | null = null
+let _subCount = 0
+
+function getSharedES(): EventSource {
+  if (!_sharedES) {
+    _sharedES = new EventSource(EVENTS_URL)
+  }
+  return _sharedES
+}
+
+// Runtime: EventsOn via multiplexed SSE stream (GET /events).
+// All subscriptions share a single EventSource connection.
+// The server uses SSE named-event format so each listener only fires for its event.
 export function EventsOn(eventName: string, callback: (...data: any[]) => void): () => void {
-  const es = new EventSource(`${API_BASE}/events/${encodeURIComponent(eventName)}`)
-  es.onmessage = (e: MessageEvent) => {
+  const es = getSharedES()
+  _subCount++
+
+  const handler = (e: MessageEvent) => {
     try { callback(JSON.parse(e.data as string)) } catch { callback(e.data) }
   }
-  return () => es.close()
+  es.addEventListener(eventName, handler)
+
+  return () => {
+    _sharedES?.removeEventListener(eventName, handler)
+    _subCount--
+    if (_subCount === 0) {
+      _sharedES?.close()
+      _sharedES = null
+    }
+  }
 }
 
 // Runtime: BrowserOpenURL via window.open
