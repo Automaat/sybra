@@ -279,4 +279,57 @@ steps:
     name: Ensure PR Closes Issue
     type: ensure_pr_closes_issue
     next:
+      - goto: maybe_review
+
+  # Skip review when tagged noreview (mirrors maybe_critique/nocritic pattern)
+  - id: maybe_review
+    name: Review Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: noreview
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: noreview
+        goto: code_review
+      - goto: ""
+
+  - id: code_review
+    name: Code Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
+
+        Save the full review output to /tmp/synapse-review-{{.Task.ID}}.md
+        Do NOT submit anything to GitHub. Only save to the file.
+    next:
+      - goto: fix_review
+
+  - id: fix_review
+    name: Fix Review Comments
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Read the code review at /tmp/synapse-review-{{.Task.ID}}.md
+
+        For each actionable finding (critical/high/medium severity), fix the code.
+        Skip low-severity nitpicks and style-only comments.
+
+        When done, commit and push. Sign commits with `git commit -s -S`.
+        Use conventional commit format: `fix(review): address review comments`.
+    next:
       - goto: ""
