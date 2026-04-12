@@ -9,6 +9,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { STATUS_OPTIONS } from '../lib/statuses.js'
+  import { GetAgentRunLog } from '../../wailsjs/go/main/AgentService.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import TerminalView from '../components/TerminalView.svelte'
   import ChatView from '../components/ChatView.svelte'
@@ -293,6 +294,28 @@
   }
 
   let expandedRun = $state<string | null>(null)
+  let runLogEvents = $state<Map<string, agent.StreamEvent[]>>(new Map())
+  let runLogLoading = $state<Set<string>>(new Set())
+
+  async function toggleRunLog(agentId: string) {
+    if (expandedRun === agentId) {
+      expandedRun = null
+      return
+    }
+    expandedRun = agentId
+    if (!runLogEvents.has(agentId) && !runLogLoading.has(agentId) && taskId) {
+      runLogLoading = new Set([...runLogLoading, agentId])
+      try {
+        const events = await GetAgentRunLog(taskId, agentId)
+        runLogEvents = new Map([...runLogEvents, [agentId, events ?? []]])
+      } catch {
+        runLogEvents = new Map([...runLogEvents, [agentId, []]])
+      }
+      const next = new Set(runLogLoading)
+      next.delete(agentId)
+      runLogLoading = next
+    }
+  }
 
   const pastRuns = $derived(
     (t?.agentRuns ?? []).slice().reverse()
@@ -673,7 +696,7 @@
             {/if}
           </div>
           {#if runningAgent.mode === 'interactive' && !runningAgent.tmuxSession}
-            <ChatView agentId={runningAgent.id} agentState={runningAgent.state} costUsd={runningAgent.costUsd} inputTokens={runningAgent.inputTokens ?? 0} outputTokens={runningAgent.outputTokens ?? 0} />
+            <ChatView agentId={runningAgent.id} agentState={runningAgent.state} costUsd={runningAgent.costUsd} inputTokens={runningAgent.inputTokens ?? 0} outputTokens={runningAgent.outputTokens ?? 0} bounded={true} />
           {:else if runningAgent.mode === 'interactive' && runningAgent.tmuxSession}
             <TerminalView agentId={runningAgent.id} />
           {:else}
@@ -720,7 +743,7 @@
               <button
                 type="button"
                 class="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
-                onclick={() => { expandedRun = expandedRun === run.agentId ? null : run.agentId }}
+                onclick={() => toggleRunLog(run.agentId)}
               >
                 <div class="flex items-center gap-2">
                   <span class="font-mono text-surface-400">{run.agentId}</span>
@@ -739,9 +762,17 @@
                   </svg>
                 </div>
               </button>
-              {#if expandedRun === run.agentId && run.result}
+              {#if expandedRun === run.agentId}
                 <div class="border-t border-surface-300 px-3 py-2 dark:border-surface-600">
-                  <pre class="whitespace-pre-wrap text-xs text-surface-300">{run.result}</pre>
+                  {#if runLogLoading.has(run.agentId)}
+                    <p class="py-4 text-center text-xs text-surface-500">Loading log...</p>
+                  {:else if (runLogEvents.get(run.agentId)?.length ?? 0) > 0}
+                    <StreamOutput staticEvents={runLogEvents.get(run.agentId)} />
+                  {:else if run.result}
+                    <pre class="max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-300 dark:border-surface-600">{run.result}</pre>
+                  {:else}
+                    <p class="py-4 text-center text-xs text-surface-500">No output available</p>
+                  {/if}
                 </div>
               {/if}
             </div>

@@ -5,10 +5,11 @@
   import { agentOutput } from '../lib/events.js'
 
   interface Props {
-    agentId: string
+    agentId?: string
+    staticEvents?: agent.StreamEvent[]
   }
 
-  const { agentId }: Props = $props()
+  const { agentId, staticEvents }: Props = $props()
 
   let events = $state<agent.StreamEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
@@ -28,6 +29,14 @@
   }
 
   $effect(() => {
+    if (staticEvents) {
+      events = staticEvents
+      requestAnimationFrame(scrollToBottom)
+      return
+    }
+
+    if (!agentId) return
+
     agentStore.getOutput(agentId).then((initial) => {
       events = initial
       scrollToBottom()

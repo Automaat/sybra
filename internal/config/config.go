@@ -49,6 +49,17 @@ type AgentDefaults struct {
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// MaxLogEvents caps how many NDJSON events are returned when replaying
+	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
+	MaxLogEvents int `yaml:"max_log_events" json:"maxLogEvents"`
+}
+
+// DefaultMaxLogEvents returns the configured cap or 500 if unset.
+func (c *Config) DefaultMaxLogEvents() int {
+	if c != nil && c.Agent.MaxLogEvents > 0 {
+		return c.Agent.MaxLogEvents
+	}
+	return 500
 }
 
 // DefaultRequirePermissions returns the configured default, or true if unset.

@@ -11,9 +11,10 @@
     costUsd?: number
     inputTokens?: number
     outputTokens?: number
+    bounded?: boolean
   }
 
-  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0 }: Props = $props()
+  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false }: Props = $props()
 
   let events = $state<agent.ConvoEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
@@ -106,7 +107,7 @@
   <!-- Messages -->
   <div
     bind:this={container}
-    class="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-3"
+    class="flex flex-col gap-3 overflow-y-auto px-4 py-3 {bounded ? 'max-h-[600px]' : 'flex-1'}"
   >
     {#if events.length === 0}
       <p class="py-12 text-center text-sm text-surface-500">Waiting for response...</p>
