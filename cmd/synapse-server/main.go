@@ -66,6 +66,12 @@ func run() error {
 
 	mux := http.NewServeMux()
 
+	// Health check endpoint for container orchestration.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok"}`)
+	})
+
 	// Multiplexed SSE stream: all events over a single connection.
 	mux.HandleFunc("GET /events", broker.ServeAll)
 
