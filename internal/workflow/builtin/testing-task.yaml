@@ -18,6 +18,7 @@ steps:
       model: opus
       needs_worktree: true
       reuse_agent: true
+      wait_for_status: test-plan-review
       prompt: >-
         {{- $feedback := getvar .Vars "human.feedback" }}
         {{- if $feedback }}
@@ -31,18 +32,66 @@ steps:
         {{- else }}
         Prepare a manual test plan for task {{.Task.ID}} using the /synapse-test-plan skill.
 
-        The skill spawns three expert-tester personas (Bach, Kaner, Hendrickson)
-        in parallel, merges their outputs, runs a sanity-check review, and
-        publishes via:
-          1. synapse-cli update {{.Task.ID}} --plan "<merged plan>"
-          2. synapse-cli update {{.Task.ID}} --plan-critique "<review + attribution>"
-          3. synapse-cli update {{.Task.ID}} --status test-plan-review
+        When the plan is ready:
+          1. synapse-cli update {{.Task.ID}} --plan "<full plan markdown>"
+          2. synapse-cli update {{.Task.ID}} --status test-plan-review
 
         Then STOP and wait. Do NOT exit. Do NOT execute the tests yet.
 
         If you receive feedback, address it, update --plan again, set status
         back to test-plan-review, and wait again.
         {{- end }}
+    next:
+      - goto: maybe_critique_test
+
+  - id: maybe_critique_test
+    name: Test Critique Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: nocritic
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_test_plan
+      - goto: review_test_plan
+
+  - id: critique_test_plan
+    name: Critique Test Plan
+    type: run_agent
+    config:
+      role: test-plan-critic
+      mode: headless
+      model: sonnet
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Critique the test plan for task {{.Task.ID}} using the /plan-critic skill.
+
+        Steps:
+          1. Run: synapse-cli --json get {{.Task.ID}}
+          2. Extract the .plan field from the JSON output and write it to
+             /tmp/synapse-plan-{{.Task.ID}}.md
+          3. Invoke: /plan-critic /tmp/synapse-plan-{{.Task.ID}}.md
+          4. Capture the full markdown Plan Review report you produce and
+             write it to /tmp/synapse-critique-{{.Task.ID}}.md
+          5. Save it: synapse-cli update {{.Task.ID}} --plan-critique-file /tmp/synapse-critique-{{.Task.ID}}.md
+
+        Do NOT modify the plan. Do NOT change the task status. Your only
+        side effect is writing the critique sidecar via synapse-cli.
+      allowed_tools:
+        - Bash
+        - Read
+        - Grep
+        - Glob
+        - Write
+        - Skill
+        - Agent
     next:
       - goto: review_test_plan
 
@@ -64,7 +113,15 @@ steps:
           field: vars.human_action
           operator: equals
           value: reject
-        goto: plan_test
+        goto: start_replan_test
+
+  - id: start_replan_test
+    name: Prepare Replan
+    type: set_status
+    config:
+      status: testing
+    next:
+      - goto: plan_test
 
   - id: execute_tests
     name: Execute Manual Testing

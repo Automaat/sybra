@@ -97,6 +97,7 @@ type StepConfig struct {
 	Role          string   `yaml:"role,omitempty" json:"role"`
 	Mode          string   `yaml:"mode,omitempty" json:"mode"`
 	Model         string   `yaml:"model,omitempty" json:"model"`
+	Provider      string   `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "cross"
 	Prompt        string   `yaml:"prompt,omitempty" json:"prompt"`
 	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
 	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`

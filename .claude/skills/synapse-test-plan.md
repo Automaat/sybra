@@ -1,6 +1,6 @@
 ---
 name: synapse-test-plan
-description: Build a manual test plan for a Synapse task in the testing phase — spawns three distinct expert-tester personas (Bach, Kaner, Hendrickson) in parallel, each drafting test cases from their own frame, then merges and reviews before publishing. Covers Kubernetes and GUI app changes. Use whenever a task enters the testing status, when asked to "write a test plan", "plan manual tests", "figure out how to test X", or when reviewing a change that needs manual verification before merge. Prefer this over ad-hoc test ideas — the three-persona approach catches bugs any single frame would miss.
+description: Build a manual test plan for a Synapse task in the testing phase — spawns three distinct expert-tester personas (Bach, Kaner, Hendrickson) in parallel, each drafting test cases from their own frame, then merges before publishing. Critique is handled by a separate cross-provider workflow step. Covers Kubernetes and GUI app changes. Use whenever a task enters the testing status, when asked to "write a test plan", "plan manual tests", "figure out how to test X", or when reviewing a change that needs manual verification before merge.
 allowed-tools: Bash, Read, Agent
 user-invocable: true
 ---
@@ -10,7 +10,7 @@ user-invocable: true
 
 # Synapse Test Plan
 
-Produce a rigorous manual test plan for a task by spawning three expert-tester personas in parallel, merging their outputs, sanity-checking the merged result, and publishing. Plan manual verification only — do not execute tests and do not write automated tests.
+Produce a rigorous manual test plan for a task by spawning three expert-tester personas in parallel, merging their outputs, and publishing. Critique is handled by a separate cross-provider workflow step. Plan manual verification only — do not execute tests and do not write automated tests.
 
 Runs inside an interactive tmux session. After publishing, stay at the prompt and wait for feedback — never exit, so the human can send revisions in the same chat.
 
@@ -161,52 +161,16 @@ Merge in the main context, not a subagent — a merge needs all three outputs he
 5. **Reorganize** into the plan template below, grouped by area not persona (the tester executes by area; persona origin is provenance, not structure).
 6. **Prune** over ~15 cases by dropping weakest oracles / smallest blast radius. Keep at least 6 — below that, one persona's contribution is lost, breaking the three-frame guarantee.
 
-### 5. Consolidated sanity-check review
-
-Spawn **one** final review subagent on the merged plan (not the original drafts) to catch merge-introduced gaps and verify coherence.
-
-```
-Review a merged manual test plan. No prior context — judge on merits.
-
-## The change under test
-<paste change summary + file list>
-
-## The merged plan
-<paste merged plan>
-
-## Your job
-Answer these six questions. Cite test case numbers. Under 400 words. Blunt.
-
-1. **Coverage gaps**: failure modes the plan misses. k8s: probes/RBAC/
-   PDB/rollback/resources/graceful shutdown. GUI: keyboard-only, focus
-   order, resize, error states, state persistence.
-2. **Concreteness**: cases too vague to execute without guessing.
-3. **Scope match**: gold-plating outside the PR surface, or cases that
-   belong in automated tests instead.
-4. **Oracle clarity**: cases where pass/fail is ambiguous.
-5. **Risk ranking**: are the "Risk areas" the actual 3 riskiest spots?
-6. **Verdict**: Approve / Refine / Reject. If Refine, top 3 fixes.
-```
-
-### 6. Act on the review
-
-| Verdict | Action |
-|---------|--------|
-| Approve | Publish plan as-is |
-| Refine | Apply the top-3 fixes, publish revised plan |
-| Reject | Return to step 3 with persona briefs updated to address the gap. Cap at one re-run — publish after the second attempt regardless, because more iterations past that point usually indicate the plan is fine and the review is chasing perfection rather than catching real gaps. |
-
-### 7. Publish and hand off
+### 5. Publish and hand off
 
 ```bash
 synapse-cli --json update <id> --plan "<final plan>"
-synapse-cli --json update <id> --plan-critique "<review verdict + persona attribution summary>"
 synapse-cli --json update <id> --status test-plan-review
 ```
 
 After publishing, stay at the chat prompt. Do not execute tests and do not exit, because the human reviewer will send feedback in the same chat session and needs the agent alive to receive it.
 
-### 8. Respond to human feedback
+### 6. Respond to human feedback
 
 The human may push back. Revise and re-publish. Skip re-running personas for small tweaks — only re-run them if the change's scope fundamentally shifts, because persona re-runs are expensive and rarely add value for wording changes.
 
@@ -306,12 +270,9 @@ Classify as GUI change. Read `TaskDetail.svelte` and `app.go`. Spawn three perso
 
 **Merge:** 18 → 12 cases after dedupe. Bach's "click-then-escape-mid-dialog" dupes Hendrickson's Interruption Tour — keep Hendrickson's framing. Kaner's "audit trail" is unique, keep. Keep all of Hendrickson's tours. Group into sections: Happy path, Keyboard & focus, Error handling, State persistence.
 
-**Review:** sanity-check agent flags that TC-7 ("rollback on task with 0 prior states") doesn't specify expected behavior. Fix: mark button as disabled with tooltip when no prior state exists. Verdict: Refine → applied.
-
 **Publish:**
 ```bash
 synapse-cli --json update task-xyz --plan "<merged plan>"
-synapse-cli --json update task-xyz --plan-critique "<review + attribution>"
 synapse-cli --json update task-xyz --status test-plan-review
 ```
 Stay at prompt.

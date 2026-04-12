@@ -70,6 +70,13 @@ func (m *Manager) SetDefaultProvider(provider string) {
 	m.mu.Unlock()
 }
 
+// DefaultProvider returns the current default provider name.
+func (m *Manager) DefaultProvider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.defaultProv
+}
+
 // SetGuardrails configures cost and turn limits applied to all agents.
 func (m *Manager) SetGuardrails(g Guardrails) {
 	m.mu.Lock()

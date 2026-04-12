@@ -1357,8 +1357,8 @@ func countStepRecords(tk task.Task, stepID string) int {
 		return 0
 	}
 	n := 0
-	for _, r := range tk.Workflow.StepHistory {
-		if r.StepID == stepID {
+	for i := range tk.Workflow.StepHistory {
+		if tk.Workflow.StepHistory[i].StepID == stepID {
 			n++
 		}
 	}

@@ -79,14 +79,16 @@ type StepRecord struct {
 	Status    string    `yaml:"status" json:"status"` // "completed", "failed", "skipped"
 	Output    string    `yaml:"output,omitempty" json:"output"`
 	AgentID   string    `yaml:"agent_id,omitempty" json:"agentId"`
+	Provider  string    `yaml:"provider,omitempty" json:"provider,omitempty"`
 	StartedAt time.Time `yaml:"started_at" json:"startedAt"`
 	EndedAt   time.Time `yaml:"ended_at,omitempty" json:"endedAt"`
 }
 
 // StepOutput is passed to AdvanceStep when a step finishes.
 type StepOutput struct {
-	StepID  string
-	Status  string // "completed", "failed"
-	Output  string
-	AgentID string
+	StepID   string
+	Status   string // "completed", "failed"
+	Output   string
+	AgentID  string
+	Provider string
 }

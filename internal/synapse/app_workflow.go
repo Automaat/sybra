@@ -124,7 +124,7 @@ type agentAdapter struct {
 	tasks     *task.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
@@ -152,6 +152,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string,
 		Prompt:       prompt,
 		AllowedTools: allowedTools,
 		Model:        model,
+		Provider:     provider,
 		Dir:          dir,
 		OneShot:      oneShot,
 	}
@@ -189,6 +190,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, prompt, dir string,
 		AgentID:   ag.ID,
 		Role:      role,
 		Mode:      mode,
+		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 	}); addErr != nil {
@@ -220,4 +222,8 @@ func (a *agentAdapter) StopAgentsForTask(taskID, role string) {
 
 func (a *agentAdapter) SendPrompt(agentID, message string) error {
 	return a.agents.SendPromptToAgent(agentID, message)
+}
+
+func (a *agentAdapter) DefaultProvider() string {
+	return a.agents.DefaultProvider()
 }
