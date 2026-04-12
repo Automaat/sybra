@@ -1,5 +1,4 @@
-import { FetchAssignedIssues } from '../../wailsjs/go/main/IntegrationService.js'
-import { EventsOn } from '../../wailsjs/runtime/runtime.js'
+import { FetchAssignedIssues, EventsOn } from '$lib/api'
 import { IssuesUpdated } from '../lib/events.js'
 import type { github } from '../../wailsjs/go/models.js'
 

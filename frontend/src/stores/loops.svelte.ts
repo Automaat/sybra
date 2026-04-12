@@ -6,7 +6,7 @@ import {
   DeleteLoopAgent,
   RunLoopAgentNow,
   ListLoopAgentRuns,
-} from '../../wailsjs/go/main/LoopAgentService.js'
+} from '$lib/api'
 import { loopagent } from '../../wailsjs/go/models.js'
 import type { main } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'

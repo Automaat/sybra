@@ -8,7 +8,7 @@ const mockStartPolling = vi.fn()
 const mockStopPolling = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
-vi.mock('../wailsjs/runtime/runtime.js', () => ({
+vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
 

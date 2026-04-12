@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
-  import { EventsOn } from '../../wailsjs/runtime/runtime.js'
-  import { RespondEscalation } from '../../wailsjs/go/main/AgentService.js'
+  import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentState, agentEscalation } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'

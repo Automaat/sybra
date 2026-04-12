@@ -27,8 +27,12 @@ vi.mock('../stores/agents.svelte.js', () => ({
   },
 }))
 
-vi.mock('../../wailsjs/runtime/runtime.js', () => ({
+vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
+  BrowserOpenURL: vi.fn(),
+  StartFixReview: vi.fn(),
+  StartReview: vi.fn(),
+  GetAgentRunLog: vi.fn(),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
