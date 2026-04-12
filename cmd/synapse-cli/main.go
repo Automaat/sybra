@@ -505,21 +505,36 @@ func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 
 func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
-		return fatal(jsonOut, "usage: project update <id> --type work|pet")
+		return fatal(jsonOut, "usage: project update <id> [--type work|pet] [--setup-commands cmd1,cmd2]")
 	}
 	id := args[0]
 	fs := flag.NewFlagSet("project update", flag.ContinueOnError)
-	ptype := fs.String("type", "", "project type: pet|work (required)")
+	ptype := fs.String("type", "", "project type: pet|work")
+	setupCmds := fs.String("setup-commands", "", "comma-separated commands to run after worktree creation")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
-	if *ptype == "" {
-		return fatal(jsonOut, "type is required")
+	if *ptype == "" && *setupCmds == "" {
+		return fatal(jsonOut, "at least one of --type or --setup-commands is required")
 	}
-	p, err := ps.Update(id, project.ProjectType(*ptype))
-	if err != nil {
-		return fatal(jsonOut, "%v", err)
+
+	var p project.Project
+	var err error
+
+	if *ptype != "" {
+		p, err = ps.Update(id, project.ProjectType(*ptype))
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
 	}
+	if *setupCmds != "" {
+		cmds := strings.Split(*setupCmds, ",")
+		p, err = ps.SetSetupCommands(id, cmds)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+	}
+
 	if jsonOut {
 		return printJSON(p)
 	}

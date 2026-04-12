@@ -102,6 +102,17 @@ func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 	return p, s.writeFile(p)
 }
 
+// SetSetupCommands replaces the setup commands for a project.
+func (s *Store) SetSetupCommands(id string, cmds []string) (Project, error) {
+	p, err := s.Get(id)
+	if err != nil {
+		return p, err
+	}
+	p.SetupCommands = cmds
+	p.UpdatedAt = time.Now().UTC()
+	return p, s.writeFile(p)
+}
+
 func (s *Store) Delete(id string) error {
 	p, err := s.Get(id)
 	if err != nil {

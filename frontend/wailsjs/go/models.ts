@@ -586,6 +586,7 @@ export namespace project {
 	    url: string;
 	    clonePath: string;
 	    type: string;
+	    setupCommands?: string[];
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -604,6 +605,7 @@ export namespace project {
 	        this.url = source["url"];
 	        this.clonePath = source["clonePath"];
 	        this.type = source["type"];
+	        this.setupCommands = source["setupCommands"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }

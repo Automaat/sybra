@@ -48,6 +48,17 @@ func (s *ProjectService) UpdateProject(id, ptype string) (project.Project, error
 	return p, nil
 }
 
+// SetProjectSetupCommands replaces the setup commands for a project.
+func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (project.Project, error) {
+	s.logger.Info("project.set-setup-commands", "id", id, "count", len(cmds))
+	p, err := s.projects.SetSetupCommands(id, cmds)
+	if err != nil {
+		s.logger.Error("project.set-setup-commands.failed", "id", id, "err", err)
+		return p, err
+	}
+	return p, nil
+}
+
 // DeleteProject removes a project and its bare clone from disk.
 func (s *ProjectService) DeleteProject(id string) error {
 	s.logger.Info("project.delete", "id", id)
