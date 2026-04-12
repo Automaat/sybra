@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os/exec"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -54,6 +56,7 @@ type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
+	UpdateTaskPR(id string, prNumber int) error
 	SetWorkflow(id string, wf *Execution) error
 }
 
@@ -652,7 +655,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -718,6 +721,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execEnsurePRClosesIssue(taskID, step, t)
 	case StepVerifyCommits:
 		return e.execVerifyCommits(taskID, step, t)
+	case StepLinkPRAndReview:
+		return e.execLinkPRAndReview(taskID, step, wfExec, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -1006,6 +1011,74 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	}
 
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
+}
+
+var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
+
+// execLinkPRAndReview is a non-LLM mechanical step that tries to recover the
+// PR number from three sources and flip the task to in-review:
+//
+//  1. task.pr_number already set → set in-review, skip eval
+//  2. regex match on agent result text in step history → link + in-review
+//  3. gh pr list --head <branch> → single result → link + in-review
+//
+// When no PR is found the step returns without touching task status, allowing
+// the workflow to fall through to the LLM eval step.
+func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	setInReview := func(prNumber int, source string) (StepOutput, error) {
+		if err := e.tasks.UpdateTaskPR(taskID, prNumber); err != nil {
+			return StepOutput{}, fmt.Errorf("link pr: %w", err)
+		}
+		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); err != nil {
+			return StepOutput{}, fmt.Errorf("set in-review: %w", err)
+		}
+		msg := fmt.Sprintf("pr #%d found via %s → in-review", prNumber, source)
+		e.logger.Info("workflow.link-pr.linked", "task_id", taskID, "pr", prNumber, "source", source)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+	}
+
+	// Path 1: PR already linked on task.
+	if t.PRNumber > 0 {
+		return setInReview(t.PRNumber, "task.pr_number")
+	}
+
+	// Path 2: Scan step history for a GitHub PR URL in agent output.
+	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+		rec := wfExec.StepHistory[i]
+		if rec.Status != "completed" || rec.Output == "" {
+			continue
+		}
+		if m := prURLRe.FindStringSubmatch(rec.Output); len(m) > 1 {
+			n, err := strconv.Atoi(m[1])
+			if err == nil && n > 0 {
+				return setInReview(n, "agent result")
+			}
+		}
+	}
+
+	// Path 3: Query GitHub when branch is known.
+	// Use bash -c with env vars to keep project/branch out of arg list (gosec G204).
+	if t.ProjectID != "" && t.Branch != "" {
+		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "bash", "-c",
+			"gh pr list --repo \"$_REPO\" --head \"$_BRANCH\" --json number --limit 2")
+		cmd.Env = append(cmd.Environ(), "_REPO="+t.ProjectID, "_BRANCH="+t.Branch)
+		out, err := cmd.Output()
+		if err != nil {
+			e.logger.Warn("workflow.link-pr.gh-list", "task_id", taskID, "err", err)
+		} else {
+			var prs []struct {
+				Number int `json:"number"`
+			}
+			if jsonErr := json.Unmarshal(out, &prs); jsonErr == nil && len(prs) == 1 {
+				return setInReview(prs[0].Number, "gh pr list")
+			}
+		}
+	}
+
+	e.logger.Info("workflow.link-pr.no-pr", "task_id", taskID)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "no pr found: falling through to eval"}, nil
 }
 
 // parseIssueURL extracts owner/repo and issue number from a GitHub

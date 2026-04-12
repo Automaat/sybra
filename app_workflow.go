@@ -59,6 +59,11 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	return err
 }
 
+func (a *taskAdapter) UpdateTaskPR(id string, prNumber int) error {
+	_, err := a.tasks.Update(id, task.Update{PRNumber: &prNumber})
+	return err
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
