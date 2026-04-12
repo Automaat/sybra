@@ -173,6 +173,42 @@ func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestAllowsProjectType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		cfg   *Config
+		ptype string
+		want  bool
+	}{
+		{"nil config allows all", nil, "pet", true},
+		{"empty list allows all", &Config{}, "pet", true},
+		{"empty list allows work", &Config{}, "work", true},
+		{"pet-only allows pet", &Config{ProjectTypes: []string{"pet"}}, "pet", true},
+		{"pet-only blocks work", &Config{ProjectTypes: []string{"pet"}}, "work", false},
+		{"work-only blocks pet", &Config{ProjectTypes: []string{"work"}}, "pet", false},
+		{"both allows pet", &Config{ProjectTypes: []string{"pet", "work"}}, "pet", true},
+		{"both allows work", &Config{ProjectTypes: []string{"pet", "work"}}, "work", true},
+		{"unknown type blocked", &Config{ProjectTypes: []string{"pet"}}, "other", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.AllowsProjectType(tt.ptype); got != tt.want {
+				t.Errorf("AllowsProjectType(%q) = %v, want %v", tt.ptype, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultGitHubEnabled(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	if !cfg.GitHub.Enabled {
+		t.Error("default GitHub.Enabled should be true for backward compat")
+	}
+}
+
 func TestDefaultRequirePermissions(t *testing.T) {
 	t.Parallel()
 	boolPtr := func(b bool) *bool { return &b }

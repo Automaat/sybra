@@ -18,28 +18,36 @@ const (
 
 // RenovateHandler manages Renovate PR polling and actions.
 type RenovateHandler struct {
-	projects *project.Store
-	logger   *slog.Logger
-	emit     func(string, any)
-	cfg      *config.RenovateConfig
+	projects   *project.Store
+	logger     *slog.Logger
+	emit       func(string, any)
+	cfg        *config.RenovateConfig
+	allowsType func(project.ProjectType) bool
 }
 
-// NewRenovateHandler creates a RenovateHandler.
+// NewRenovateHandler creates a RenovateHandler. allowsType filters which
+// project types this machine handles; nil means all types.
 func NewRenovateHandler(
 	projects *project.Store,
 	logger *slog.Logger,
 	emit func(string, any),
 	cfg *config.RenovateConfig,
+	allowsType func(project.ProjectType) bool,
 ) *RenovateHandler {
+	if allowsType == nil {
+		allowsType = func(project.ProjectType) bool { return true }
+	}
 	return &RenovateHandler{
-		projects: projects,
-		logger:   logger,
-		emit:     emit,
-		cfg:      cfg,
+		projects:   projects,
+		logger:     logger,
+		emit:       emit,
+		cfg:        cfg,
+		allowsType: allowsType,
 	}
 }
 
-// Repos returns owner/repo strings for all registered projects.
+// Repos returns owner/repo strings for registered projects whose type is
+// allowed on this machine.
 func (h *RenovateHandler) Repos() []string {
 	projects, err := h.projects.List()
 	if err != nil {
@@ -48,6 +56,9 @@ func (h *RenovateHandler) Repos() []string {
 	}
 	repos := make([]string, 0, len(projects))
 	for i := range projects {
+		if !h.allowsType(projects[i].Type) {
+			continue
+		}
 		repos = append(repos, projects[i].Owner+"/"+projects[i].Repo)
 	}
 	return repos
