@@ -20,6 +20,8 @@
 //     turns. Exits when the parent closes stdin — e.g. the one-shot runner
 //     path that closes stdin after the first result event.
 //   - evaluate: runs synapse-cli to set status=in-review, emits result
+//   - pr_created: emits result with a github.com/.../pull/N URL so the
+//     mechanical link_pr_and_review step can extract the PR number via regex
 package main
 
 import (
@@ -124,6 +126,11 @@ func main() {
 			runCLI("update", taskID, "--status", "in-review")
 		}
 		emitResult("Evaluation complete. Status set to in-review.")
+
+	case "pr_created":
+		emitSystem()
+		emitAssistant("Implementing and pushing PR...")
+		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)

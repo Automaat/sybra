@@ -89,6 +89,9 @@ func runExec() {
 		emitAgentMessage("Evaluating...")
 		runCLI(taskID, "update", taskID, "--status", "in-review")
 		emitTurnCompleted(100, 20)
+	case "pr_created":
+		emitAgentMessage("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
+		emitTurnCompleted(100, 20)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
