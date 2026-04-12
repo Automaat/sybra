@@ -427,7 +427,6 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger
 	a.orchSvc.emit = emit
-	a.orchSvc.cfg = a.cfg
 	a.projectSvc.projects = a.projects
 	a.projectSvc.worktrees = a.worktrees
 	a.projectSvc.logger = a.logger
