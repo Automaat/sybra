@@ -21,6 +21,11 @@ const (
 	// Orchestrator events.
 	OrchestratorState = "orchestrator:state"
 
+	// Loop agent events — emitted whenever the scheduler reconciles or
+	// records a new run on a loop agent. Carries no payload; consumers
+	// re-list LoopAgents on receipt.
+	LoopAgentUpdated = "loopagent:updated"
+
 	// Review/PR events.
 	ReviewsUpdated  = "reviews:updated"
 	RenovateUpdated = "renovate:updated"
