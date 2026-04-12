@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
-const chanBuf = 256
+const (
+	chanBuf           = 256
+	heartbeatInterval = 15 * time.Second
+)
 
 // Event carries a named event with its JSON-encoded payload.
 // Used by ServeAll to multiplex all events over a single SSE stream.
@@ -134,14 +138,21 @@ func (b *Broker) ServeAll(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
 	ch, cancel := b.SubscribeAll()
 	defer cancel()
+
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
 		case ev, open := <-ch:
 			if !open {
 				return
@@ -162,25 +173,32 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(http.StatusOK)
-
-	ch, cancel := b.Subscribe(event)
-	defer cancel()
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ch, cancel := b.Subscribe(event)
+	defer cancel()
+
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
 		case msg, open := <-ch:
 			if !open {
 				return
