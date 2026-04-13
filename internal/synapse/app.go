@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/provider"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
@@ -56,6 +57,7 @@ type App struct {
 	logDir          string
 	auditDir        string
 	prTracker       *github.IssueTracker
+	providerHealth  *provider.Checker
 	worktrees       *worktree.Manager
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
@@ -196,6 +198,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)
 	a.agents.SetDefaultProvider(a.cfg.Agent.Provider)
+	a.initProviderHealth(ctx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
@@ -380,6 +383,28 @@ func (a *App) initAudit() {
 	}
 }
 
+// initProviderHealth constructs the provider health checker, wires it into
+// the agent manager as a gate, and starts its background probe loop. When
+// providers.health_check.enabled=false the checker is skipped entirely and
+// the manager runs with a nil gate (no blocking).
+func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
+	if !a.cfg.Providers.HealthCheck.Enabled {
+		a.logger.Info("provider.health.disabled")
+		return
+	}
+	pc := provider.New(provider.Config{
+		Interval:         time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
+		ClaudeEnabled:    a.cfg.Providers.Claude.Enabled,
+		CodexEnabled:     a.cfg.Providers.Codex.Enabled,
+		AutoFailover:     a.cfg.Providers.AutoFailover,
+		ClaudeRLCooldown: time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
+		CodexRLCooldown:  time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+	}, emit, a.logger)
+	a.providerHealth = pc
+	a.agents.SetHealthGate(pc)
+	a.wg.Go(func() { pc.Run(ctx) })
+}
+
 // emitDegradedWarnings fires startup:degraded for any subsystem that failed
 // to initialize. Called after emit is configured so the frontend receives the events.
 func (a *App) emitDegradedWarnings(emit func(string, any)) {
@@ -555,6 +580,8 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.intgSvc.todoistHandler = a.todoistHandler
 	a.intgSvc.renovateHandler = a.renovateHandler
 	a.intgSvc.workflowEngine = a.workflowEngine
+	a.intgSvc.providerHealth = a.providerHealth
+	a.intgSvc.saveConfig = func() error { return a.cfg.Save() }
 	a.statsSvc.stats = a.stats
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore

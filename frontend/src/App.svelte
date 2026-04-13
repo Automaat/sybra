@@ -3,6 +3,7 @@
   import { Navigation, AppBar } from '@skeletonlabs/skeleton-svelte'
   import { EventsOn } from '$lib/api'
   import * as ev from './lib/events.js'
+  import { GetProviderHealth, ProviderHealthEnabled } from '../wailsjs/go/synapse/IntegrationService'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'
   import { projectStore } from './stores/projects.svelte.js'
@@ -62,6 +63,20 @@
 
   type DegradedWarning = { subsystem: string; reason: string }
   let degradedWarnings = $state<DegradedWarning[]>([])
+
+  type ProviderHealth = {
+    provider: string
+    healthy: boolean
+    reason: string
+    detail?: string
+    lastCheck?: string
+    ratelimitedUntil?: string
+    failoverActive?: boolean
+  }
+  let providerHealth = $state<Record<string, ProviderHealth>>({})
+  const unhealthyProviders = $derived(
+    Object.values(providerHealth).filter(p => !p.healthy && p.reason !== 'disabled' && p.reason !== 'unknown')
+  )
 
   let dialogOpen = $state(false)
   let projectDialogOpen = $state(false)
@@ -148,14 +163,27 @@
       const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
         degradedWarnings = [...degradedWarnings, w]
       })
+      // Seed provider health snapshot on mount then listen for flips.
+      ProviderHealthEnabled().then(enabled => {
+        if (!enabled) return
+        GetProviderHealth().then(list => {
+          const next: Record<string, ProviderHealth> = {}
+          for (const p of list ?? []) next[p.provider] = p as ProviderHealth
+          providerHealth = next
+        }).catch(() => {})
+      }).catch(() => {})
+      const unsubProviderHealth = EventsOn(ev.ProviderHealth, (p: ProviderHealth) => {
+        if (!p?.provider) return
+        providerHealth = { ...providerHealth, [p.provider]: p }
+      })
       const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
         quitConfirmVisible = true
         if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
         quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
       })
-      return { unsubTasks, unsubNotif, unsubDegraded, unsubQuit }
+      return { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit }
     })
-    const { unsubTasks, unsubNotif, unsubDegraded, unsubQuit } = cleanup
+    const { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit } = cleanup
     function handleKeydown(e: KeyboardEvent) {
       if (e.metaKey && (e.key === '=' || e.key === '+')) {
         e.preventDefault()
@@ -227,6 +255,7 @@
       unsubTasks()
       unsubNotif()
       unsubDegraded()
+      unsubProviderHealth()
       unsubQuit()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       taskStore.stopPolling()
@@ -366,6 +395,23 @@
         </AppBar.Trail>
       </AppBar.Toolbar>
     </AppBar>
+
+    {#if unhealthyProviders.length > 0}
+      <div class="flex flex-col gap-0.5">
+        {#each unhealthyProviders as p (p.provider)}
+          <div class="flex items-center gap-2 bg-error-800/90 border-b border-error-600 px-4 py-2 text-error-100 text-sm">
+            <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            <span>
+              <strong>{p.provider}</strong> unavailable — {p.reason}
+              {#if p.ratelimitedUntil}· until {new Date(p.ratelimitedUntil).toLocaleTimeString()}{/if}
+              {#if p.failoverActive}· failing over to peer{/if}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     {#if degradedWarnings.length > 0}
       <div class="flex flex-col gap-0.5">

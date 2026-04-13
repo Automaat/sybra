@@ -34,6 +34,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 		Audit:       c.Audit,
 		Todoist:     c.Todoist,
 		Renovate:    c.Renovate,
+		Providers:   c.Providers,
 		Directories: c.Directories(),
 	}
 }

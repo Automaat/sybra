@@ -1,6 +1,14 @@
 <script lang="ts">
   import { GetSettings, UpdateSettings } from '$lib/api'
   import type { synapse } from '../../wailsjs/go/models.js'
+  import {
+    GetProviderHealth,
+    ProviderHealthEnabled,
+    SetProviderAutoFailover,
+    SetProviderEnabled,
+  } from '../../wailsjs/go/synapse/IntegrationService'
+  import { EventsOn } from '$lib/api'
+  import * as ev from '../lib/events.js'
 
   type ColorScheme = 'system' | 'light' | 'dark'
 
@@ -65,6 +73,71 @@
   function reset() {
     if (!original) return
     settings = JSON.parse(original)
+  }
+
+  type ProviderHealthEntry = {
+    provider: string
+    healthy: boolean
+    reason: string
+    detail?: string
+    lastCheck?: string
+    ratelimitedUntil?: string
+  }
+  let providerHealthEnabled = $state(false)
+  let providerHealthMap = $state<Record<string, ProviderHealthEntry>>({})
+  let providerError = $state('')
+
+  async function loadProviderHealth() {
+    try {
+      providerHealthEnabled = await ProviderHealthEnabled()
+      if (!providerHealthEnabled) return
+      const list = (await GetProviderHealth()) ?? []
+      const next: Record<string, ProviderHealthEntry> = {}
+      for (const p of list) next[p.provider] = p as ProviderHealthEntry
+      providerHealthMap = next
+    } catch (e) {
+      providerError = String(e)
+    }
+  }
+
+  $effect(() => {
+    loadProviderHealth()
+    const unsub = EventsOn(ev.ProviderHealth, (p: ProviderHealthEntry) => {
+      if (!p?.provider) return
+      providerHealthMap = { ...providerHealthMap, [p.provider]: p }
+    })
+    return () => unsub()
+  })
+
+  async function onAutoFailoverChange(e: Event) {
+    if (!settings) return
+    const value = (e.target as HTMLInputElement).checked
+    try {
+      await SetProviderAutoFailover(value)
+      settings.providers.autoFailover = value
+      original = JSON.stringify(settings)
+    } catch (err) {
+      providerError = String(err)
+    }
+  }
+
+  async function onProviderEnabledChange(name: 'claude' | 'codex', e: Event) {
+    if (!settings) return
+    const value = (e.target as HTMLInputElement).checked
+    try {
+      await SetProviderEnabled(name, value)
+      settings.providers[name].enabled = value
+      original = JSON.stringify(settings)
+      await loadProviderHealth()
+    } catch (err) {
+      providerError = String(err)
+    }
+  }
+
+  function healthBadgeClass(p: ProviderHealthEntry): string {
+    if (p.healthy) return 'bg-success-500/20 text-success-600 dark:text-success-300'
+    if (p.reason === 'disabled') return 'bg-surface-300 text-surface-600 dark:bg-surface-600 dark:text-surface-300'
+    return 'bg-error-500/20 text-error-600 dark:text-error-300'
   }
 
   const modelOptions = $derived.by(() => {
@@ -188,6 +261,60 @@
         </div>
       </div>
     </div>
+
+    <!-- Providers -->
+    {#if providerHealthEnabled}
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+        <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Providers</h2>
+        {#if providerError}
+          <div class="mb-3 text-xs text-error-500">{providerError}</div>
+        {/if}
+        <div class="flex flex-col gap-3">
+          {#each ['claude', 'codex'] as name (name)}
+            {@const p = providerHealthMap[name]}
+            <div class="flex items-center justify-between gap-3 rounded border border-surface-200 bg-white px-3 py-2 dark:border-surface-700 dark:bg-surface-900">
+              <div class="flex flex-col">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium capitalize">{name}</span>
+                  {#if p}
+                    <span class="rounded px-1.5 py-0.5 text-xs {healthBadgeClass(p)}">
+                      {p.healthy ? 'healthy' : p.reason}
+                    </span>
+                  {/if}
+                </div>
+                {#if p?.detail}
+                  <span class="text-xs text-surface-400">{p.detail}</span>
+                {/if}
+                {#if p?.lastCheck}
+                  <span class="text-xs text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
+                {/if}
+              </div>
+              <label class="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 cursor-pointer rounded border-surface-300"
+                  checked={name === 'claude' ? settings.providers.claude.enabled : settings.providers.codex.enabled}
+                  onchange={(e) => onProviderEnabledChange(name as 'claude' | 'codex', e)}
+                />
+                <span>Enabled</span>
+              </label>
+            </div>
+          {/each}
+          <label class="flex cursor-pointer items-center gap-3 pt-2">
+            <input
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer rounded border-surface-300"
+              checked={settings.providers.autoFailover}
+              onchange={onAutoFailoverChange}
+            />
+            <span class="text-sm">Auto-failover between providers when one is unhealthy</span>
+          </label>
+          <span class="text-xs text-surface-400">
+            Health check interval: {settings.providers.healthCheck.intervalSeconds}s. Edit config.yaml to change.
+          </span>
+        </div>
+      </div>
+    {/if}
 
     <!-- Notifications -->
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">

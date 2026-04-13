@@ -266,6 +266,11 @@ type RunConfig struct {
 	// saturated. Reserved for system-level long-lived sessions (orchestrator)
 	// that must always be runnable regardless of swarm load.
 	IgnoreConcurrencyLimit bool
+	// IgnoreHealthGate lets an agent start even when the provider health gate
+	// marks the requested provider as unhealthy. Reserved for internal probes
+	// and system-critical sessions; user-initiated runs leave this false so
+	// they surface a clear error instead of wasting a hopeless request.
+	IgnoreHealthGate bool
 }
 
 type StreamEvent struct {

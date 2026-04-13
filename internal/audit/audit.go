@@ -29,6 +29,8 @@ const (
 	EventTodoistCompleted    = "todoist.completed"
 	EventRenovateCIFix       = "renovate.ci_fix_started"
 	EventHealthReport        = "health.report"
+	EventAgentStartFailed    = "agent.start_failed"
+	EventProviderGateBlocked = "provider.gate_blocked"
 )
 
 type Event struct {

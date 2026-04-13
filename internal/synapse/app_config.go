@@ -20,5 +20,6 @@ type AppSettings struct {
 	Audit        config.AuditConfig        `json:"audit"`
 	Todoist      config.TodoistConfig      `json:"todoist"`
 	Renovate     config.RenovateConfig     `json:"renovate"`
+	Providers    config.ProvidersConfig    `json:"providers"`
 	Directories  map[string]string         `json:"directories"`
 }
