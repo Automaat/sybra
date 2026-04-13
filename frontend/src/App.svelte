@@ -1,8 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { EventsOn } from '$lib/api'
+  import { EventsOn, GetProviderHealth, ProviderHealthEnabled } from '$lib/api'
   import * as ev from './lib/events.js'
-  import { GetProviderHealth, ProviderHealthEnabled } from '../wailsjs/go/synapse/IntegrationService'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'
   import { projectStore } from './stores/projects.svelte.js'

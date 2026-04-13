@@ -12,6 +12,7 @@ import type {
   stats,
   workflow,
   todoist,
+  provider,
 } from '../../wailsjs/go/models.js'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
@@ -56,7 +57,9 @@ export function ApproveRenovatePR(arg1: string, arg2: number): Promise<void> { r
 export function FetchAssignedIssues(): Promise<Array<github.Issue>> { return call('IntegrationService', 'FetchAssignedIssues') }
 export function FetchRenovatePRs(): Promise<Array<github.RenovatePR>> { return call('IntegrationService', 'FetchRenovatePRs') }
 export function FixRenovateCI(arg1: string, arg2: number, arg3: string, arg4: string): Promise<void> { return call('IntegrationService', 'FixRenovateCI', arg1, arg2, arg3, arg4) }
+export function GetProviderHealth(): Promise<Array<provider.Status>> { return call('IntegrationService', 'GetProviderHealth') }
 export function GetTodoistProjects(): Promise<Array<todoist.Project>> { return call('IntegrationService', 'GetTodoistProjects') }
+export function ProviderHealthEnabled(): Promise<boolean> { return call('IntegrationService', 'ProviderHealthEnabled') }
 export function MergeRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'MergeRenovatePR', arg1, arg2) }
 export function RerunRenovateChecks(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'RerunRenovateChecks', arg1, arg2) }
 export function SyncTodoist(): Promise<void> { return call('IntegrationService', 'SyncTodoist') }

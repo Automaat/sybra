@@ -10,9 +10,6 @@ const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
-}))
-
-vi.mock('../wailsjs/go/synapse/IntegrationService', () => ({
   GetProviderHealth: vi.fn().mockResolvedValue([]),
   ProviderHealthEnabled: vi.fn().mockResolvedValue(false),
 }))
