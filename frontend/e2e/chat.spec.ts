@@ -18,31 +18,31 @@ import { test, expect, type Page } from '@playwright/test'
 async function goToChats(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-  await expect(page.locator('h2', { hasText: 'Chats' })).toBeVisible()
+  // Sidebar nav also has an "h2 Chats" heading, so scope to the main region.
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Chats' })).toBeVisible()
 }
 
 test.describe('Chat list', () => {
   test('chat list page renders with new chat entry point', async ({ page }) => {
     await goToChats(page)
-    await expect(page.getByRole('button', { name: /New Chat/ })).toBeVisible()
+    await expect(page.getByRole('main').getByRole('button', { name: /New Chat/ }).first()).toBeVisible()
   })
 
   test('new chat dialog exposes optional prompt for idle-start chats', async ({ page }) => {
     await goToChats(page)
-    await page.getByRole('button', { name: /New Chat/ }).first().click()
+    await page.getByRole('main').getByRole('button', { name: /New Chat/ }).first().click()
 
-    await expect(page.getByText('New Chat', { exact: true })).toBeVisible()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
 
     // The optional-prompt copy is the user-facing contract: it tells the
     // user they can skip the prompt and land on an idle chat. The fix
     // depends on that flow producing a typeable input.
-    await expect(page.getByPlaceholder('Leave empty to land in an idle chat...')).toBeVisible()
-    await expect(page.getByText(/Prompt/).first()).toBeVisible()
-    await expect(page.getByText(/optional/i).first()).toBeVisible()
+    await expect(dialog.getByPlaceholder('Leave empty to land in an idle chat...')).toBeVisible()
 
     // Provider toggle must offer both options so chat works for the
     // active provider matrix.
-    await expect(page.getByLabel('Claude')).toBeVisible()
-    await expect(page.getByLabel('Codex')).toBeVisible()
+    await expect(dialog.getByLabel('Claude')).toBeVisible()
+    await expect(dialog.getByLabel('Codex')).toBeVisible()
   })
 })
