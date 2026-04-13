@@ -32,8 +32,12 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name:    "invalid provider",
-			la:      LoopAgent{Name: "x", Prompt: "/foo", IntervalSec: 60, Provider: "codex"},
-			wantErr: "provider must be claude",
+			la:      LoopAgent{Name: "x", Prompt: "/foo", IntervalSec: 60, Provider: "gpt4"},
+			wantErr: "provider must be claude or codex",
+		},
+		{
+			name: "codex provider accepted",
+			la:   LoopAgent{Name: "x", Prompt: "/foo", IntervalSec: 60, Provider: "codex"},
 		},
 	}
 	for _, tc := range tests {

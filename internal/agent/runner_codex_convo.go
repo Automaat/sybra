@@ -148,15 +148,22 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 	a.SetCmd(cmd)
 	m.logger.Info("agent.codex.convo.turn", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
 
+	prevLen := len(a.ConvoOutput())
 	gotResult := m.streamCodexConvoOutput(a, stdout, logWriter)
 
 	waitErr := cmd.Wait()
+	stderrOut := stderrBuf.String()
 	if waitErr != nil {
 		m.logger.Error("agent.codex.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+		all := a.ConvoOutput()
+		if prevLen > len(all) {
+			prevLen = len(all)
+		}
+		m.reportProviderHealthSignalConvo(a, stderrOut, all[prevLen:])
 	}
-	if s := stderrBuf.String(); s != "" {
-		m.logger.Error("agent.codex.convo.stderr", "id", a.ID, "stderr", s)
+	if stderrOut != "" {
+		m.logger.Error("agent.codex.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
 	return gotResult
 }

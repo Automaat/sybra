@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/provider"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
 	"github.com/Automaat/synapse/internal/workflow"
@@ -31,6 +32,8 @@ type IntegrationService struct {
 	todoistHandler  *poll.TodoistHandler
 	renovateHandler *poll.RenovateHandler
 	workflowEngine  *workflow.Engine
+	providerHealth  *provider.Checker
+	saveConfig      func() error
 }
 
 // SyncTodoist triggers an immediate Todoist sync.

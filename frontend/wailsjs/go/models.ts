@@ -261,6 +261,70 @@ export namespace config {
 	        this.autoPlan = source["autoPlan"];
 	    }
 	}
+	export class ProviderEntryConfig {
+	    enabled: boolean;
+	    rateLimitCooldownSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderEntryConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.rateLimitCooldownSeconds = source["rateLimitCooldownSeconds"];
+	    }
+	}
+	export class ProviderHealthCheckConfig {
+	    enabled: boolean;
+	    intervalSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderHealthCheckConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.intervalSeconds = source["intervalSeconds"];
+	    }
+	}
+	export class ProvidersConfig {
+	    healthCheck: ProviderHealthCheckConfig;
+	    claude: ProviderEntryConfig;
+	    codex: ProviderEntryConfig;
+	    autoFailover: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProvidersConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.healthCheck = this.convertValues(source["healthCheck"], ProviderHealthCheckConfig);
+	        this.claude = this.convertValues(source["claude"], ProviderEntryConfig);
+	        this.codex = this.convertValues(source["codex"], ProviderEntryConfig);
+	        this.autoFailover = source["autoFailover"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class RenovateConfig {
 	    enabled: boolean;
 	    author: string;
@@ -649,6 +713,53 @@ export namespace project {
 
 }
 
+export namespace provider {
+	
+	export class Status {
+	    provider: string;
+	    healthy: boolean;
+	    reason: string;
+	    detail?: string;
+	    // Go type: time
+	    lastCheck: any;
+	    // Go type: time
+	    ratelimitedUntil: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.healthy = source["healthy"];
+	        this.reason = source["reason"];
+	        this.detail = source["detail"];
+	        this.lastCheck = this.convertValues(source["lastCheck"], null);
+	        this.ratelimitedUntil = this.convertValues(source["ratelimitedUntil"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace stats {
 	
 	export class Summary {
@@ -839,6 +950,7 @@ export namespace synapse {
 	    audit: config.AuditConfig;
 	    todoist: config.TodoistConfig;
 	    renovate: config.RenovateConfig;
+	    providers: config.ProvidersConfig;
 	    directories: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
@@ -854,6 +966,7 @@ export namespace synapse {
 	        this.audit = this.convertValues(source["audit"], config.AuditConfig);
 	        this.todoist = this.convertValues(source["todoist"], config.TodoistConfig);
 	        this.renovate = this.convertValues(source["renovate"], config.RenovateConfig);
+	        this.providers = this.convertValues(source["providers"], config.ProvidersConfig);
 	        this.directories = source["directories"];
 	    }
 	

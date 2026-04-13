@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/synapse/internal/provider"
 )
 
 // headlessEmitInterval caps per-agent stream event emission rate.
@@ -134,11 +135,92 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		if prevLen > len(all) {
 			prevLen = len(all)
 		}
-		if shouldRetry(stderrOut, all[prevLen:], m.logger) {
+		attemptEvents := all[prevLen:]
+		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
+		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
 	}
 	return false, nil
+}
+
+// reportProviderHealthSignal classifies the final error surface of a failed
+// run and forwards rate-limit / auth failures to the provider health gate so
+// the next scheduling attempt can fail over to a peer.
+func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) {
+	sample := buildErrorSample(stderrOut, attemptEvents)
+	var sig provider.Signal
+	var reason string
+	var retryAfter time.Duration
+	if a.Provider == "codex" {
+		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
+	} else {
+		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
+	}
+	if sig == provider.SignalNone {
+		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
+			m.logger.Info("agent.provider.signal.unknown",
+				"provider", a.Provider,
+				"errorType", sample.ErrorType,
+				"errorStatus", sample.ErrorStatus)
+		}
+		return
+	}
+	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+}
+
+func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.ErrorSample {
+	sample := provider.ErrorSample{Stderr: stderrOut}
+	for i := len(attemptEvents) - 1; i >= 0; i-- {
+		e := attemptEvents[i]
+		if e.Type != "result" || e.Subtype != "error" {
+			continue
+		}
+		sample.ErrorType = e.ErrorType
+		sample.ErrorStatus = e.ErrorStatus
+		sample.Content = e.Content
+		break
+	}
+	return sample
+}
+
+// reportProviderHealthSignalConvo mirrors reportProviderHealthSignal for the
+// ConvoEvent stream used by conversational runners.
+func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) {
+	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
+	var sig provider.Signal
+	var reason string
+	var retryAfter time.Duration
+	if a.Provider == "codex" {
+		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
+	} else {
+		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
+	}
+	if sig == provider.SignalNone {
+		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
+			m.logger.Info("agent.provider.signal.unknown",
+				"provider", a.Provider,
+				"errorType", sample.ErrorType,
+				"errorStatus", sample.ErrorStatus)
+		}
+		return
+	}
+	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+}
+
+func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {
+	sample := provider.ErrorSample{Stderr: stderrOut}
+	for i := len(attemptEvents) - 1; i >= 0; i-- {
+		e := attemptEvents[i]
+		if e.Type != "result" || e.Subtype != "error" {
+			continue
+		}
+		sample.ErrorType = e.ErrorType
+		sample.ErrorStatus = e.ErrorStatus
+		sample.Content = e.Text
+		break
+	}
+	return sample
 }
 
 // shouldRetry returns true when stderrOut or streamEvents indicate an Anthropic

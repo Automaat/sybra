@@ -18,6 +18,10 @@ export function FixRenovateCI(arg1, arg2, arg3, arg4) {
   return window['go']['synapse']['IntegrationService']['FixRenovateCI'](arg1, arg2, arg3, arg4);
 }
 
+export function GetProviderHealth() {
+  return window['go']['synapse']['IntegrationService']['GetProviderHealth']();
+}
+
 export function GetTodoistProjects() {
   return window['go']['synapse']['IntegrationService']['GetTodoistProjects']();
 }
@@ -26,8 +30,20 @@ export function MergeRenovatePR(arg1, arg2) {
   return window['go']['synapse']['IntegrationService']['MergeRenovatePR'](arg1, arg2);
 }
 
+export function ProviderHealthEnabled() {
+  return window['go']['synapse']['IntegrationService']['ProviderHealthEnabled']();
+}
+
 export function RerunRenovateChecks(arg1, arg2) {
   return window['go']['synapse']['IntegrationService']['RerunRenovateChecks'](arg1, arg2);
+}
+
+export function SetProviderAutoFailover(arg1) {
+  return window['go']['synapse']['IntegrationService']['SetProviderAutoFailover'](arg1);
+}
+
+export function SetProviderEnabled(arg1, arg2) {
+  return window['go']['synapse']['IntegrationService']['SetProviderEnabled'](arg1, arg2);
 }
 
 export function SyncTodoist() {

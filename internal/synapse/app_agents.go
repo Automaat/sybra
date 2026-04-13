@@ -1,6 +1,7 @@
 package synapse
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/provider"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -115,6 +117,15 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		OneShot:            oneShot,
 	})
 	if err != nil {
+		// Gate block leaves no running agent. Flip the task back to todo so
+		// watchdog / restart-stale loops don't chase a ghost in-progress row.
+		if errors.Is(err, provider.ErrProviderUnhealthy) {
+			if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
+				o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
+			}
+			o.logAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
+			o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+		}
 		return nil, err
 	}
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0

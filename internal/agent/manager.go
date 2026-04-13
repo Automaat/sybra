@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/provider"
 	"github.com/google/uuid"
 )
 
@@ -34,6 +35,7 @@ type Manager struct {
 	defaultProv   string
 	approvalAddr  string // localhost:port for the HTTP tool approval server
 	guardrails    Guardrails
+	gate          provider.HealthGate
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -64,10 +66,38 @@ func (m *Manager) SetMaxConcurrent(n int) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) SetDefaultProvider(provider string) {
+func (m *Manager) SetDefaultProvider(name string) {
 	m.mu.Lock()
-	m.defaultProv = normalizeProvider(provider)
+	m.defaultProv = normalizeProvider(name)
 	m.mu.Unlock()
+}
+
+// SetHealthGate wires in a provider health checker so Run() can refuse or
+// failover when the requested provider is unhealthy. A nil gate disables the
+// check entirely (tests, feature-disabled mode).
+func (m *Manager) SetHealthGate(g provider.HealthGate) {
+	m.mu.Lock()
+	m.gate = g
+	m.mu.Unlock()
+}
+
+// ReportProviderSignal forwards a runner-side passive signal (rate-limit or
+// auth failure) to the health gate. Safe to call with a nil gate.
+func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration) {
+	m.mu.RLock()
+	g := m.gate
+	m.mu.RUnlock()
+	if g == nil {
+		return
+	}
+	switch sig {
+	case provider.SignalAuthFailure:
+		g.ReportAuthFailure(name, reason)
+	case provider.SignalRateLimit:
+		g.ReportRateLimit(name, retryAfter, reason)
+	case provider.SignalNone:
+		// no-op: caller decided not to escalate this run.
+	}
 }
 
 // DefaultProvider returns the current default provider name.
@@ -143,6 +173,11 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, fmt.Errorf("agent.Run: Dir %q is not a directory", cfg.Dir)
 	}
 
+	resolvedProvider, gateErr := m.gateProvider(cfg)
+	if gateErr != nil {
+		return nil, gateErr
+	}
+
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(m.ctx)
 
@@ -152,8 +187,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		TaskID:      cfg.TaskID,
 		Name:        cfg.Name,
 		Mode:        cfg.Mode,
-		Provider:    m.providerForRun(cfg.Provider),
-		Model:       normalizeModel(m.providerForRun(cfg.Provider), cfg.Model),
+		Provider:    resolvedProvider,
+		Model:       normalizeModel(resolvedProvider, cfg.Model),
 		State:       StateRunning,
 		StartedAt:   now,
 		LastEventAt: now,
@@ -199,7 +234,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 }
 
 func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
-	provider := m.providerForRun(cfg.Provider)
+	prov := m.providerForRun(cfg.Provider)
 	if cfg.Model != "" && !safeArgRe.MatchString(cfg.Model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}
@@ -208,8 +243,8 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 			return "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
 		}
 	}
-	model := normalizeModel(provider, cfg.Model)
-	switch provider {
+	model := normalizeModel(prov, cfg.Model)
+	switch prov {
 	case "codex":
 		return buildCodexCommand(model, cfg.RequirePermissions), nil
 	default:
@@ -245,18 +280,46 @@ func buildCodexCommand(model string, requirePerms bool) string {
 	return strings.Join(parts, " ")
 }
 
-func (m *Manager) providerForRun(provider string) string {
+// gateProvider resolves the run's provider through the health gate. If the
+// configured provider is unhealthy and auto-failover can supply a healthy
+// peer, the peer is returned. Otherwise returns a typed UnhealthyError so
+// callers can detect via errors.Is(err, provider.ErrProviderUnhealthy).
+func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
+	resolved := m.providerForRun(cfg.Provider)
+	if cfg.IgnoreHealthGate {
+		return resolved, nil
+	}
+	m.mu.RLock()
+	g := m.gate
+	m.mu.RUnlock()
+	if g == nil {
+		return resolved, nil
+	}
+	if g.IsHealthy(resolved) {
+		return resolved, nil
+	}
+	if alt := g.Failover(resolved); alt != "" {
+		m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
+		return alt, nil
+	}
+	return "", &provider.UnhealthyError{
+		Provider: resolved,
+		Reason:   g.Reason(resolved),
+	}
+}
+
+func (m *Manager) providerForRun(name string) string {
 	m.mu.RLock()
 	def := m.defaultProv
 	m.mu.RUnlock()
-	if provider == "" {
-		provider = def
+	if name == "" {
+		name = def
 	}
-	return normalizeProvider(provider)
+	return normalizeProvider(name)
 }
 
-func normalizeProvider(provider string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
+func normalizeProvider(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "claude":
 		return "claude"
 	case "codex":
@@ -266,8 +329,8 @@ func normalizeProvider(provider string) string {
 	}
 }
 
-func normalizeModel(provider, model string) string {
-	switch normalizeProvider(provider) {
+func normalizeModel(prov, model string) string {
+	switch normalizeProvider(prov) {
 	case "codex":
 		switch strings.TrimSpace(model) {
 		case "", "sonnet", "opus":

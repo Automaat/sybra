@@ -217,9 +217,11 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 		if prevLen > len(all) {
 			prevLen = len(all)
 		}
-		if shouldRetryConvo(stderrOut, all[prevLen:], m.logger) {
+		attemptEvents := all[prevLen:]
+		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
+		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	}
 	return false, nil
 }

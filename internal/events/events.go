@@ -47,6 +47,11 @@ const (
 	// App lifecycle events.
 	AppQuitConfirm  = "app:quit-confirm"
 	StartupDegraded = "startup:degraded"
+
+	// Provider health events — emitted by internal/provider.Checker when a
+	// provider (claude, codex) flips healthy/unhealthy or a rate-limit window
+	// elapses. Payload matches provider.HealthEvent.
+	ProviderHealth = "provider:health"
 )
 
 // AgentState returns the agent state event name for the given agent ID.

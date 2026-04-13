@@ -40,8 +40,8 @@ func (la *LoopAgent) Validate() error {
 	if la.IntervalSec < minIntervalSec {
 		return fmt.Errorf("loop agent interval_sec must be >= %d (got %d)", minIntervalSec, la.IntervalSec)
 	}
-	if la.Provider != "" && la.Provider != "claude" {
-		return fmt.Errorf("loop agent provider must be claude (got %q)", la.Provider)
+	if la.Provider != "" && la.Provider != "claude" && la.Provider != "codex" {
+		return fmt.Errorf("loop agent provider must be claude or codex (got %q)", la.Provider)
 	}
 	return nil
 }

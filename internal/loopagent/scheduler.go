@@ -2,12 +2,14 @@ package loopagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/synapse/internal/provider"
 )
 
 // AgentRunner is the subset of agent.Manager the scheduler depends on.
@@ -161,7 +163,11 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 		return time.Duration(la.IntervalSec) * time.Second
 	}
 	if _, err := s.fire(la); err != nil {
-		s.logger.Error("loopagent.tick.fire", "id", loopID, "err", err)
+		if errors.Is(err, provider.ErrProviderUnhealthy) {
+			s.logger.Info("loopagent.tick.skip", "id", loopID, "reason", "provider_unhealthy", "err", err)
+		} else {
+			s.logger.Error("loopagent.tick.fire", "id", loopID, "err", err)
+		}
 	}
 	return time.Duration(la.IntervalSec) * time.Second
 }
@@ -174,7 +180,7 @@ func (s *Scheduler) fire(la LoopAgent) (string, error) {
 		Mode:                   "headless",
 		Prompt:                 la.Prompt,
 		Dir:                    s.homeDir,
-		Provider:               "claude",
+		Provider:               la.Provider,
 		Model:                  la.Model,
 		AllowedTools:           la.AllowedTools,
 		IgnoreConcurrencyLimit: true,

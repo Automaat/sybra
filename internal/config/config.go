@@ -18,6 +18,7 @@ type Config struct {
 	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
+	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
 	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
@@ -108,6 +109,26 @@ type GitHubConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
+// ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
+// and their background health-check loop. A missing block defaults to "both
+// providers enabled, health check on, auto-failover on, 300s interval".
+type ProvidersConfig struct {
+	HealthCheck  ProviderHealthCheckConfig `yaml:"health_check" json:"healthCheck"`
+	Claude       ProviderEntryConfig       `yaml:"claude" json:"claude"`
+	Codex        ProviderEntryConfig       `yaml:"codex" json:"codex"`
+	AutoFailover bool                      `yaml:"auto_failover" json:"autoFailover"`
+}
+
+type ProviderHealthCheckConfig struct {
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	IntervalSeconds int  `yaml:"interval_seconds" json:"intervalSeconds"`
+}
+
+type ProviderEntryConfig struct {
+	Enabled                  bool `yaml:"enabled" json:"enabled"`
+	RateLimitCooldownSeconds int  `yaml:"rate_limit_cooldown_seconds" json:"rateLimitCooldownSeconds"`
+}
+
 func HomeDir() string {
 	if dir := os.Getenv("SYNAPSE_HOME"); dir != "" {
 		return dir
@@ -143,6 +164,15 @@ func DefaultConfig() *Config {
 		},
 		GitHub: GitHubConfig{
 			Enabled: true,
+		},
+		Providers: ProvidersConfig{
+			HealthCheck: ProviderHealthCheckConfig{
+				Enabled:         true,
+				IntervalSeconds: 300,
+			},
+			Claude:       ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Codex:        ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			AutoFailover: true,
 		},
 		TasksDir: defaultTasksDir(),
 	}
@@ -248,7 +278,27 @@ func Load() (*Config, error) {
 		cfg.Agent.Provider = "claude"
 	}
 
+	applyProvidersDefaults(cfg)
+
 	return cfg, nil
+}
+
+// applyProvidersDefaults fills zero values for the Providers block so older
+// configs (which predate the block entirely) behave identically to the
+// DefaultConfig factory.
+func applyProvidersDefaults(cfg *Config) {
+	if cfg.Providers.HealthCheck.IntervalSeconds <= 0 {
+		cfg.Providers.HealthCheck.IntervalSeconds = 300
+	}
+	if cfg.Providers.HealthCheck.IntervalSeconds < 60 {
+		cfg.Providers.HealthCheck.IntervalSeconds = 60
+	}
+	if cfg.Providers.Claude.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Claude.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.Codex.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Codex.RateLimitCooldownSeconds = 900
+	}
 }
 
 func (c *LoggingConfig) SlogLevel() slog.Level {
