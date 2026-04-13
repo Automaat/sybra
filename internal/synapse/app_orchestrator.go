@@ -75,6 +75,9 @@ func (a *App) maybeStartOrchestrator() {
 
 	hasActive := false
 	for i := range tasks {
+		if tasks[i].TaskType == task.TaskTypeChat {
+			continue
+		}
 		switch tasks[i].Status {
 		case task.StatusPlanning, task.StatusPlanReview, task.StatusInProgress, task.StatusInReview:
 			hasActive = true

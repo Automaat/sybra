@@ -1,12 +1,26 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { projectStore } from '../stores/projects.svelte.js'
+  import NewChatDialog from '../components/NewChatDialog.svelte'
 
   interface Props {
     onselect: (agentId: string) => void
   }
 
   const { onselect }: Props = $props()
+
+  let dialogOpen = $state(false)
+
+  $effect(() => {
+    if (projectStore.list.length === 0) {
+      projectStore.load().catch(() => {})
+    }
+  })
+
+  function openDialog() {
+    dialogOpen = true
+  }
 
   const interactiveAgents = $derived(
     agentStore.list.filter((a: agent.Agent) => a.mode === 'interactive'),
@@ -41,13 +55,30 @@
 </script>
 
 <div class="flex flex-col gap-4 p-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-lg font-semibold text-surface-900 dark:text-surface-100">Chats</h2>
+    <button
+      type="button"
+      class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
+      onclick={openDialog}
+    >
+      + New Chat
+    </button>
+  </div>
+
   {#if interactiveAgents.length === 0}
     <div class="flex flex-col items-center gap-3 py-16 text-center">
       <svg class="h-12 w-12 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
       </svg>
       <p class="text-sm text-surface-500">No interactive chats yet</p>
-      <p class="text-xs text-surface-400">Start an interactive task to begin chatting with Claude</p>
+      <button
+        type="button"
+        class="mt-2 rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600"
+        onclick={openDialog}
+      >
+        Start a new chat
+      </button>
     </div>
   {:else}
     <div class="flex flex-col gap-2">
@@ -91,3 +122,9 @@
     </div>
   {/if}
 </div>
+
+<NewChatDialog
+  open={dialogOpen}
+  onOpenChange={(v) => (dialogOpen = v)}
+  oncreated={(id) => onselect(id)}
+/>

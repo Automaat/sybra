@@ -69,7 +69,7 @@ var FieldAllowedValues = map[string]map[string]bool{
 		"test-plan-review": true, "human-required": true, "done": true,
 	},
 	"task.task_type": {
-		"normal": true, "debug": true, "research": true,
+		"normal": true, "debug": true, "research": true, "chat": true,
 	},
 	"pr.issue_kind": {
 		"conflict": true, "ci_failure": true, "ready_to_merge": true,

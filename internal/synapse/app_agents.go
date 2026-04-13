@@ -26,6 +26,8 @@ func resolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *con
 		return "interactive", "", true, false
 	case task.TaskTypeResearch:
 		return "headless", researchMachineDir, resolvePermission(t, cfg), true
+	case task.TaskTypeChat:
+		return "interactive", "", resolvePermission(t, cfg), false
 	default:
 		return hintMode, "", resolvePermission(t, cfg), false
 	}
@@ -140,6 +142,71 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		StartedAt: ag.StartedAt,
 	}); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
+	}
+	return ag, nil
+}
+
+// StartChat creates a synthetic chat task bound to projectID, prepares a
+// dedicated (local-only) worktree, and launches an interactive agent with
+// the requested provider. Rolls back on any failure so no orphans leak.
+func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
+	prov := strings.ToLower(strings.TrimSpace(providerName))
+	if prov != "claude" && prov != "codex" {
+		return nil, fmt.Errorf("invalid provider %q: must be claude or codex", providerName)
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
+	if _, err := o.projects.Get(projectID); err != nil {
+		return nil, fmt.Errorf("project %s: %w", projectID, err)
+	}
+
+	t, err := o.tasks.CreateChat(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("create chat task: %w", err)
+	}
+
+	dir, err := o.worktrees.PrepareForChat(t)
+	if err != nil {
+		if delErr := o.tasks.Delete(t.ID); delErr != nil {
+			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
+		}
+		return nil, fmt.Errorf("prepare chat worktree: %w", err)
+	}
+
+	requirePerm := resolvePermission(t, o.cfg)
+	ag, err := o.agents.Run(agent.RunConfig{
+		TaskID:             t.ID,
+		Name:               t.Title,
+		Mode:               "interactive",
+		Provider:           prov,
+		Prompt:             prompt,
+		Dir:                dir,
+		Model:              "sonnet",
+		RequirePermissions: requirePerm,
+	})
+	if err != nil {
+		o.worktrees.Remove(t.ID)
+		if delErr := o.tasks.Delete(t.ID); delErr != nil {
+			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
+		}
+		return nil, err
+	}
+
+	o.logAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
+		"mode": "interactive", "title": t.Title, "role": "chat",
+		"task_type": string(t.TaskType), "provider": ag.Provider,
+		"require_permissions": requirePerm,
+	})
+	if err := o.tasks.AddRun(t.ID, task.AgentRun{
+		AgentID:   ag.ID,
+		Role:      "chat",
+		Mode:      "interactive",
+		Provider:  ag.Provider,
+		State:     string(agent.StateRunning),
+		StartedAt: ag.StartedAt,
+	}); err != nil {
+		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
 	}
 	return ag, nil
 }

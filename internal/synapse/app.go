@@ -239,9 +239,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.wireServices(emit)
 
 	a.syncSkills()
-	a.worktrees.CleanupOrphaned()
-	a.cleanStaleRuns()
-	a.restartStaleInProgress()
+	a.runStartupCleanup()
 	a.RegisterSpotlightHotkey()
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 
@@ -686,6 +684,9 @@ func (a *App) cleanStaleRuns() {
 		return
 	}
 	for i := range tasks {
+		if tasks[i].TaskType == task.TaskTypeChat {
+			continue
+		}
 		for j := range tasks[i].AgentRuns {
 			run := &tasks[i].AgentRuns[j]
 			if run.State != string(agent.StateRunning) {
@@ -699,6 +700,42 @@ func (a *App) cleanStaleRuns() {
 				"state":  string(agent.StateStopped),
 				"result": "stale: marked stopped on startup",
 			})
+		}
+	}
+}
+
+// runStartupCleanup sequences boot-time maintenance in the order that lets
+// each step see the output of the previous one: chats first so their
+// worktrees show up as orphans to the subsequent sweep; stale run state
+// next so restart-stale sees a clean slate.
+func (a *App) runStartupCleanup() {
+	a.gcOrphanChats()
+	a.worktrees.CleanupOrphaned()
+	a.cleanStaleRuns()
+	a.restartStaleInProgress()
+}
+
+// gcOrphanChats deletes any chat-task that no longer has a running agent.
+// Chats are ephemeral by design; a stale chat-task is always noise left over
+// from a crash or kill. Runs before worktree orphan cleanup so the task
+// file is gone by the time the worktree sweeper looks.
+func (a *App) gcOrphanChats() {
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if t.TaskType != task.TaskTypeChat {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		a.logger.Info("chat.gc.orphan", "task_id", t.ID, "title", t.Title)
+		a.worktrees.Remove(t.ID)
+		if err := a.tasks.Delete(t.ID); err != nil {
+			a.logger.Error("chat.gc.delete", "task_id", t.ID, "err", err)
 		}
 	}
 }
@@ -718,6 +755,9 @@ func (a *App) restartStaleInProgress() {
 	}
 	for i := range tasks {
 		t := tasks[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
 		if t.Status != task.StatusInProgress {
 			continue
 		}
@@ -862,6 +902,34 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
 	return a.agentOrch.StartAgent(taskID, mode, prompt, false)
+}
+
+// StartChat creates a new interactive chat bound to projectID using the
+// requested provider ("claude" or "codex"). Each chat gets a dedicated
+// local-only worktree that is cleaned up when StopChat is called.
+func (a *App) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
+	return a.agentOrch.StartChat(projectID, providerName, prompt)
+}
+
+// StopChat stops a chat agent, deletes its synthetic task, and removes its
+// worktree. Refuses to operate on agents that are not bound to a chat task
+// so the UI cannot accidentally delete a real task.
+func (a *App) StopChat(agentID string) error {
+	ag, err := a.agents.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	if ag.TaskID == "" {
+		return fmt.Errorf("agent %s is not bound to a task", agentID)
+	}
+	t, err := a.tasks.Get(ag.TaskID)
+	if err != nil {
+		return fmt.Errorf("lookup chat task: %w", err)
+	}
+	if t.TaskType != task.TaskTypeChat {
+		return fmt.Errorf("agent %s is not a chat (task_type=%s)", agentID, t.TaskType)
+	}
+	return a.taskSvc.DeleteTask(t.ID)
 }
 
 // seedDefaultLoopAgents creates the built-in synapse-self-monitor loop on

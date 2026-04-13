@@ -38,6 +38,9 @@ func (w *Watchdog) checkDwell(now time.Time) {
 	}
 	for i := range tasks {
 		t := &tasks[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
 		if t.Status != task.StatusTodo && t.Status != task.StatusInProgress {
 			continue
 		}

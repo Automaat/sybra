@@ -39,9 +39,12 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	infos := make([]workflow.TaskInfo, len(tasks))
+	infos := make([]workflow.TaskInfo, 0, len(tasks))
 	for i := range tasks {
-		infos[i] = taskToInfo(tasks[i])
+		if tasks[i].TaskType == task.TaskTypeChat {
+			continue
+		}
+		infos = append(infos, taskToInfo(tasks[i]))
 	}
 	return infos, nil
 }

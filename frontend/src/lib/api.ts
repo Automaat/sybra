@@ -39,6 +39,8 @@ export const ListNotifications = pick(AppSvc.ListNotifications, http.ListNotific
 export const RegisterSpotlightHotkey = pick(AppSvc.RegisterSpotlightHotkey, http.RegisterSpotlightHotkey)
 export const SetDesktopNotifications = pick(AppSvc.SetDesktopNotifications, http.SetDesktopNotifications)
 export const StartAgent = pick(AppSvc.StartAgent, http.StartAgent)
+export const StartChat = pick(AppSvc.StartChat, http.StartChat)
+export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)

@@ -146,6 +146,52 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 	return wtPath, nil
 }
 
+// PrepareForChat creates a worktree for an ephemeral chat session. Same as
+// PrepareForTask but skips the upstream push — chat branches are local-only
+// and deleted with the worktree when the chat ends.
+func (m *Manager) PrepareForChat(t task.Task) (string, error) {
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+	if err := project.FetchOrigin(proj.ClonePath); err != nil {
+		return "", fmt.Errorf("fetch origin: %w", err)
+	}
+
+	branch, err := project.DefaultBranch(proj.ClonePath)
+	if err != nil {
+		return "", fmt.Errorf("default branch: %w", err)
+	}
+
+	wtPath := m.PathFor(t)
+	wtBranch := "synapse/" + t.DirName()
+	baseRef := "refs/remotes/origin/" + branch
+
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		m.logger.Info("chat.worktree.reused", "task_id", t.ID, "path", wtPath)
+		m.ensureBranch(t, wtBranch)
+		return wtPath, nil
+	}
+
+	if project.BranchExists(proj.ClonePath, wtBranch) {
+		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); err != nil {
+			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
+		}
+		m.logger.Info("chat.worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+		m.runSetup(wtPath, proj.SetupCommands)
+		m.ensureBranch(t, wtBranch)
+		return wtPath, nil
+	}
+
+	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, baseRef); err != nil {
+		return "", fmt.Errorf("create chat worktree: %w", err)
+	}
+	m.logger.Info("chat.worktree.created", "task_id", t.ID, "path", wtPath)
+	m.runSetup(wtPath, proj.SetupCommands)
+	m.ensureBranch(t, wtBranch)
+	return wtPath, nil
+}
+
 // PrepareForReview creates a detached-HEAD worktree for read-only PR review.
 func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 	proj, err := m.projects.Get(t.ProjectID)

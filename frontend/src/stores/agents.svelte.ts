@@ -5,6 +5,8 @@ import {
   GetAgentOutput,
   DiscoverAgents,
   StartAgent,
+  StartChat,
+  StopChat,
 } from '$lib/api'
 import { agent } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
@@ -49,6 +51,13 @@ class AgentStore extends EntityStore<agent.Agent> {
     return result
   }
 
+  async startChat(projectID: string, provider: string, prompt: string): Promise<agent.Agent> {
+    const result = await StartChat(projectID, provider, prompt)
+    this.set(result.id, result)
+    this.outputs.set(result.id, [])
+    return result
+  }
+
   async stop(agentID: string): Promise<void> {
     await StopAgent(agentID)
     const a = this.items.get(agentID)
@@ -56,6 +65,12 @@ class AgentStore extends EntityStore<agent.Agent> {
       a.state = 'stopped'
       this.set(agentID, a)
     }
+  }
+
+  async stopChat(agentID: string): Promise<void> {
+    await StopChat(agentID)
+    this.items.delete(agentID)
+    this.outputs.delete(agentID)
   }
 
   async getOutput(agentID: string): Promise<agent.StreamEvent[]> {

@@ -135,6 +135,9 @@ func checkStuckTasks(events []audit.Event, tasks []task.Task, now time.Time) []F
 	var findings []Finding
 	for i := range tasks {
 		t := &tasks[i]
+		if t.TaskType == task.TaskTypeChat {
+			continue
+		}
 		if t.Status != task.StatusInProgress {
 			continue
 		}

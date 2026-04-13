@@ -27,9 +27,21 @@ type TaskService struct {
 	audit          *audit.Logger
 }
 
-// ListTasks returns all tasks from the store.
+// ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
+// Chat tasks are surfaced exclusively through the Chats view.
 func (s *TaskService) ListTasks() ([]task.Task, error) {
-	return s.tasks.List()
+	all, err := s.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for i := range all {
+		if all[i].TaskType == task.TaskTypeChat {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out, nil
 }
 
 // GetTask returns a single task by ID.
