@@ -57,6 +57,7 @@ type App struct {
 	auditDir        string
 	prTracker       *github.IssueTracker
 	worktrees       *worktree.Manager
+	monitorWatch    *MonitorWatchdog
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
 	workflowEngine  *workflow.Engine
@@ -245,6 +246,10 @@ func (a *App) Startup(ctx context.Context) error {
 
 	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
 	a.wg.Go(func() { hcheck.Run(ctx) })
+
+	heartbeatPath := filepath.Join(a.cfg.Logging.Dir, "monitor-heartbeat")
+	a.monitorWatch = NewMonitorWatchdog(heartbeatPath, a.logger, emit, a.recoverMonitorCron)
+	a.wg.Go(func() { a.monitorWatch.Run(ctx) })
 
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)

@@ -29,6 +29,38 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 	}
 }
 
+// recoverMonitorCron is invoked by MonitorWatchdog when the heartbeat
+// file goes stale. The /synapse-monitor cron is bootstrapped from the
+// orchestrator session's first-turn CronCreate call, so the cheapest way
+// to re-create it is to restart the orchestrator: stop the current session
+// (if any) and start a fresh one. The watchdog's internal cooldown gates
+// how often this runs, so we do not need a second guard here.
+func (a *App) recoverMonitorCron() {
+	if a.orchSvc == nil {
+		return
+	}
+	if a.orchSvc.IsOrchestratorRunning() {
+		a.logger.Warn("monitor.watchdog.restart-orchestrator")
+		if err := a.orchSvc.StopOrchestrator(); err != nil {
+			a.logger.Error("monitor.watchdog.stop-failed", "err", err)
+			return
+		}
+	}
+	if err := a.orchSvc.StartOrchestrator(); err != nil {
+		a.logger.Error("monitor.watchdog.start-failed", "err", err)
+	}
+}
+
+// GetMonitorHeartbeat returns the current watchdog snapshot for the
+// Orchestrator frontend page. Safe to call before Startup finishes: a
+// zero-valued status is returned until the watchdog runs its first tick.
+func (a *App) GetMonitorHeartbeat() MonitorStatus {
+	if a.monitorWatch == nil {
+		return MonitorStatus{}
+	}
+	return a.monitorWatch.Status()
+}
+
 func (a *App) maybeStartOrchestrator() {
 	if a.orchSvc.IsOrchestratorRunning() {
 		return

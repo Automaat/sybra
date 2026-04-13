@@ -37,6 +37,8 @@ Each rule has a **Why** so edge cases are easy to judge.
   **Why:** `/loop` uses stdout lines as cycle markers; a missing summary looks like a hang and trips the user's attention.
 - **Non-zero `synapse-cli` exit → file a Synapse app bug issue, then abort the cycle.**
   **Why:** the CLI is the only board-state oracle; continuing on stale data would compound errors.
+- **Always write the heartbeat file at end of cycle (Phase 6).**
+  **Why:** Synapse's Go watchdog reads `mtime` on `~/.synapse/logs/monitor-heartbeat` to detect a dead cron and auto-recover the orchestrator. Skipping the write makes the loop look dead to the watchdog within 12 min and triggers a spurious restart.
 
 ## Phase 1 — Snapshot board state
 
@@ -151,9 +153,17 @@ Comment body for dedup hits:
 <fresh evidence JSON>
 ```
 
-## Phase 6 — Summary line
+## Phase 6 — Heartbeat + summary line
 
-Emit exactly one line to stdout at the end of the cycle:
+First, write the heartbeat file so the Synapse Go watchdog can confirm the cron is alive:
+
+```bash
+mkdir -p ~/.synapse/logs && date -u +%Y-%m-%dT%H:%M:%SZ > ~/.synapse/logs/monitor-heartbeat
+```
+
+Run this unconditionally — even on partial-failure cycles — so a stuck remediation phase still counts as "loop alive".
+
+Then emit exactly one line to stdout at the end of the cycle:
 
 ```
 monitor: new=<n> todo=<n> in-progress=<n> in-review=<n> done=<n> | drift=<n> | remediated=<n> | issues=<opened>/<updated>

@@ -5,6 +5,13 @@ const mockIsOrchestratorRunning = vi.fn().mockResolvedValue(false)
 const mockStartOrchestrator = vi.fn().mockResolvedValue(undefined)
 const mockStopOrchestrator = vi.fn().mockResolvedValue(undefined)
 const mockGetOrchestratorAgentID = vi.fn().mockResolvedValue('')
+const mockGetMonitorHeartbeat = vi.fn().mockResolvedValue({
+  heartbeatFile: '',
+  lastHeartbeat: '',
+  ageSeconds: 0,
+  stale: false,
+  present: false,
+})
 const mockEventsOn = vi.fn().mockReturnValue(vi.fn())
 
 const mockAgentList: any[] = []
@@ -14,6 +21,7 @@ vi.mock('$lib/api', () => ({
   StartOrchestrator: (...args: unknown[]) => mockStartOrchestrator(...args),
   StopOrchestrator: (...args: unknown[]) => mockStopOrchestrator(...args),
   GetOrchestratorAgentID: (...args: unknown[]) => mockGetOrchestratorAgentID(...args),
+  GetMonitorHeartbeat: (...args: unknown[]) => mockGetMonitorHeartbeat(...args),
   EventsOn: (...args: any[]) => mockEventsOn(...args),
   BrowserOpenURL: vi.fn(),
 }))
@@ -44,6 +52,13 @@ describe('Orchestrator', () => {
     vi.clearAllMocks()
     mockIsOrchestratorRunning.mockResolvedValue(false)
     mockGetOrchestratorAgentID.mockResolvedValue('')
+    mockGetMonitorHeartbeat.mockResolvedValue({
+      heartbeatFile: '',
+      lastHeartbeat: '',
+      ageSeconds: 0,
+      stale: false,
+      present: false,
+    })
     mockEventsOn.mockReturnValue(vi.fn())
     mockAgentList.length = 0
   })

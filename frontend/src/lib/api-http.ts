@@ -39,6 +39,7 @@ export function SendMessage(arg1: string, arg2: string): Promise<void> { return 
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
 
 // App
+export function GetMonitorHeartbeat(): Promise<synapse.MonitorStatus> { return call('App', 'GetMonitorHeartbeat') }
 export function ListNotifications(): Promise<Array<notification.Notification>> { return call('App', 'ListNotifications') }
 export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
