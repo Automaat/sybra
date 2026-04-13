@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { AppBar } from '@skeletonlabs/skeleton-svelte'
   import { viewport } from '../../lib/viewport.svelte.js'
   import { navStore } from '../../lib/navigation.svelte.js'
   import SideRail from './SideRail.svelte'
@@ -38,7 +39,26 @@
   {/if}
 
   <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
-    {#if !viewport.isDesktop}
+    {#if viewport.isDesktop}
+      <AppBar>
+        <AppBar.Toolbar>
+          <AppBar.Lead>
+            <h2 class="text-lg font-semibold">{navStore.pageTitle}</h2>
+          </AppBar.Lead>
+          <AppBar.Trail>
+            {#if primaryAction}
+              <button
+                type="button"
+                class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
+                onclick={primaryAction.run}
+              >
+                + {primaryAction.label}
+              </button>
+            {/if}
+          </AppBar.Trail>
+        </AppBar.Toolbar>
+      </AppBar>
+    {:else}
       <MobileAppBar {onsearch} {primaryAction} />
     {/if}
 

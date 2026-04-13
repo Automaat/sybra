@@ -72,8 +72,8 @@
 
   const primaryAction = $derived.by(() => {
     const k = navStore.page.kind
-    if (k === 'task-list' || k === 'dashboard') return { label: 'New', run: () => (dialogOpen = true) }
-    if (k === 'project-list') return { label: 'New', run: () => (projectDialogOpen = true) }
+    if (k === 'task-list' || k === 'dashboard') return { label: 'New Task', run: () => (dialogOpen = true) }
+    if (k === 'project-list') return { label: 'New Project', run: () => (projectDialogOpen = true) }
     return null
   })
 

@@ -59,20 +59,20 @@ class NavStore {
     const p = this.page
     switch (p.kind) {
       case 'dashboard': return 'Dashboard'
-      case 'task-list': return 'Board'
-      case 'task-detail': return 'Task'
+      case 'task-list': return 'Tasks'
+      case 'task-detail': return 'Task Detail'
       case 'project-list': return 'Projects'
-      case 'project-detail': return 'Project'
+      case 'project-detail': return 'Project Detail'
       case 'chats': return 'Chats'
       case 'chat-detail': return 'Chat'
       case 'agents': return 'Agents'
-      case 'agent-detail': return 'Agent'
+      case 'agent-detail': return 'Agent Detail'
       case 'github': return 'GitHub'
       case 'stats': return 'Stats'
       case 'reviews': return 'Reviews'
       case 'settings': return 'Settings'
       case 'workflows': return 'Workflows'
-      case 'workflow-detail': return 'Workflow'
+      case 'workflow-detail': return 'Workflow Editor'
     }
   }
 
