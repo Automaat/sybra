@@ -23,6 +23,6 @@ export function StartAgent(arg1:string,arg2:string,arg3:string):Promise<agent.Ag
 
 export function StartChat(arg1:string,arg2:string,arg3:string):Promise<agent.Agent>;
 
-export function StopChat(arg1:string):Promise<void>;
-
 export function Startup(arg1:context.Context):Promise<void>;
+
+export function StopChat(arg1:string):Promise<void>;

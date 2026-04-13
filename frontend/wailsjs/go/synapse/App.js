@@ -38,10 +38,10 @@ export function StartChat(arg1, arg2, arg3) {
   return window['go']['synapse']['App']['StartChat'](arg1, arg2, arg3);
 }
 
-export function StopChat(arg1) {
-  return window['go']['synapse']['App']['StopChat'](arg1);
-}
-
 export function Startup(arg1) {
   return window['go']['synapse']['App']['Startup'](arg1);
+}
+
+export function StopChat(arg1) {
+  return window['go']['synapse']['App']['StopChat'](arg1);
 }
