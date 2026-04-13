@@ -176,6 +176,20 @@ Startup logs an `app.automations` summary line so you can verify the role of eac
 
 **Out of scope:** the orchestrator brain (`/synapse-monitor` Claude Code cron) is external to Synapse — manage it independently per machine via the Claude Code `schedule` skill.
 
+### Server Deployment (home-nas)
+
+Synapse also runs headless as a server, deployed from `~/sideprojects/home-nas`.
+
+- **Host:** `synapse` LXC (CT 114) on Proxmox, `192.168.20.219` (VLAN 20), Ubuntu 24.04, 6 cores / 16GB RAM
+- **Container:** `ghcr.io/automaat/synapse:<version>` via Docker Compose
+- **Compose file:** `/opt/synapse/docker-compose.yml` on host (source: `ansible/docker-compose/synapse-stack.yml`)
+- **Volumes:** `/data/synapse/home` (→ `~/.synapse` inside container), `/data/synapse/claude` (Claude Code settings + hooks), `/data/synapse/codex` (Codex config)
+- **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
+- **Deploy:** `ansible/playbooks/setup-synapse-lxc.yml` (provision LXC), `ansible/playbooks/deploy-synapse.yml` (push compose + restart)
+- **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring
+
+Bumping the deployed version = update image tag in `ansible/docker-compose/synapse-stack.yml`, run the deploy playbook.
+
 ## Development Workflow
 
 ### Running Locally
