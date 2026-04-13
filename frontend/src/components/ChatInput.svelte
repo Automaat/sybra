@@ -1,10 +1,11 @@
 <script lang="ts">
   interface Props {
     disabled?: boolean
+    placeholder?: string
     onsend: (text: string) => void
   }
 
-  const { disabled = false, onsend }: Props = $props()
+  const { disabled = false, placeholder = 'Type a message...', onsend }: Props = $props()
 
   let text = $state('')
   let textarea: HTMLTextAreaElement | undefined = $state()
@@ -39,7 +40,7 @@
       bind:this={textarea}
       bind:value={text}
       {disabled}
-      placeholder={disabled ? 'Agent is thinking...' : 'Type a message...'}
+      placeholder={disabled ? 'Waiting for approval...' : placeholder}
       rows="1"
       class="flex-1 resize-none rounded-lg border border-surface-300 bg-surface-50 px-3 py-2 text-sm
         text-surface-900 placeholder:text-surface-400

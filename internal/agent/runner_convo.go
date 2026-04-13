@@ -183,6 +183,12 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 		if err := m.writeUserMessage(a, cfg.Prompt); err != nil {
 			m.logger.Error("agent.convo.initial-prompt", "id", a.ID, "err", err)
 		}
+	} else if cfg.Prompt == "" && a.GetSessionID() == "" {
+		// Chat sessions can start without an initial prompt — claude is
+		// then idle on stdin waiting for the first user message. Reflect
+		// that by flipping to Paused so the chat input is enabled.
+		a.SetState(StatePaused)
+		m.emit(events.AgentState(a.ID), a)
 	}
 
 	// Open log file on first successful start; subsequent retries append.
@@ -282,8 +288,22 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 		case "result":
 			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)
 			m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
-			// After result, agent is idle waiting for next user message.
-			a.SetState(StatePaused)
+			// Drain any prompts queued mid-turn before flipping to paused.
+			// Each queued prompt fires the next turn back-to-back so the
+			// user's chat-window queue executes in order without manual
+			// re-trigger.
+			if next, ok := a.PopPendingPrompt(); ok {
+				if err := m.writeUserMessage(a, next); err != nil {
+					m.logger.Error("agent.convo.flush-queue", "id", a.ID, "err", err)
+					a.SetState(StatePaused)
+				} else {
+					a.SetState(StateRunning)
+					m.logger.Info("agent.convo.queue-flushed", "id", a.ID, "remaining", a.PendingPromptCount())
+				}
+			} else {
+				// After result, agent is idle waiting for next user message.
+				a.SetState(StatePaused)
+			}
 			m.emit(events.AgentState(a.ID), a)
 			// One-shot runs (workflow steps that expect a single turn) close
 			// stdin now so the claude process sees EOF and exits. The scanner
@@ -337,6 +357,9 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 }
 
 // SendMessage sends a follow-up user message to a conversational agent.
+// When the agent is mid-turn (StateRunning), the message is appended to a
+// pending queue and flushed on the next "result" event, so users can pile
+// up follow-ups without waiting for each turn to settle.
 func (m *Manager) SendMessage(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
 	if err != nil {
@@ -351,14 +374,22 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if !hasPipe {
 		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
 	}
-	if err := m.writeUserMessage(a, text); err != nil {
-		return err
-	}
-	a.SetState(StateRunning)
-	m.emit(events.AgentState(a.ID), a)
-	m.logger.Info("agent.convo.message_sent", "id", a.ID)
 
-	// Add user message to convo buffer.
+	queued := a.GetState() == StateRunning
+	if queued {
+		a.EnqueuePrompt(text)
+		m.logger.Info("agent.convo.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
+	} else {
+		if err := m.writeUserMessage(a, text); err != nil {
+			return err
+		}
+		a.SetState(StateRunning)
+		m.emit(events.AgentState(a.ID), a)
+		m.logger.Info("agent.convo.message_sent", "id", a.ID)
+	}
+
+	// Add user message to convo buffer regardless — the user should see
+	// their message immediately, even if it is still queued.
 	ev := ConvoEvent{
 		Type:      "user_input",
 		Text:      text,
