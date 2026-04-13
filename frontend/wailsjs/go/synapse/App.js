@@ -10,6 +10,10 @@ export function Context() {
   return window['go']['synapse']['App']['Context']();
 }
 
+export function GetMonitorHeartbeat() {
+  return window['go']['synapse']['App']['GetMonitorHeartbeat']();
+}
+
 export function ListNotifications() {
   return window['go']['synapse']['App']['ListNotifications']();
 }

@@ -4,12 +4,13 @@
     StopOrchestrator,
     IsOrchestratorRunning,
     GetOrchestratorAgentID,
+    GetMonitorHeartbeat,
     EventsOn,
   } from '$lib/api'
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { agent, synapse } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
-  import { OrchestratorState } from '../lib/events.js'
+  import { MonitorHeartbeat, OrchestratorState } from '../lib/events.js'
   import MessageBubble from '../components/MessageBubble.svelte'
   import StreamOutput from '../components/StreamOutput.svelte'
 
@@ -19,6 +20,22 @@
   let error = $state('')
   let container: HTMLDivElement | undefined = $state()
   let convoUnsub: (() => void) | undefined
+  let monitor = $state<synapse.MonitorStatus | null>(null)
+  let monitorTick = $state(0)
+
+  const heartbeatAge = $derived.by(() => {
+    void monitorTick
+    if (!monitor || !monitor.present || !monitor.lastHeartbeat) return null
+    const last = new Date(monitor.lastHeartbeat as unknown as string).getTime()
+    if (Number.isNaN(last)) return null
+    return Math.max(0, Math.floor((Date.now() - last) / 1000))
+  })
+
+  function formatAge(sec: number): string {
+    if (sec < 60) return `${sec}s`
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
+    return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+  }
 
   const triageAgents = $derived(
     agentStore.list.filter((a) => a.name?.startsWith('triage:'))
@@ -90,6 +107,9 @@
 
   $effect(() => {
     checkStatus()
+    GetMonitorHeartbeat().then((s) => {
+      monitor = s
+    })
 
     const unsub = EventsOn(OrchestratorState, async (state: string) => {
       running = state === 'running'
@@ -101,8 +121,20 @@
       }
     })
 
+    const unsubMonitor = EventsOn(MonitorHeartbeat, (status: synapse.MonitorStatus) => {
+      monitor = status
+    })
+
+    // Tick the derived age every second so the UI counts up without waiting
+    // for a new event from the Go watchdog.
+    const ageTimer = window.setInterval(() => {
+      monitorTick++
+    }, 1000)
+
     return () => {
       unsub()
+      unsubMonitor()
+      window.clearInterval(ageTimer)
       convoUnsub?.()
     }
   })
@@ -130,6 +162,25 @@
         <span class="text-xs text-surface-400">
           {running ? 'Running' : 'Stopped'}
         </span>
+        {#if monitor}
+          <span
+            class="text-xs {monitor.stale ? 'text-error-500' : 'text-surface-500'}"
+            title={monitor.heartbeatFile}
+          >
+            {#if monitor.stale}
+              monitor: stale
+              {#if heartbeatAge !== null}
+                ({formatAge(heartbeatAge)} ago)
+              {:else}
+                (no heartbeat)
+              {/if}
+            {:else if heartbeatAge !== null}
+              monitor: {formatAge(heartbeatAge)} ago
+            {:else}
+              monitor: waiting
+            {/if}
+          </span>
+        {/if}
       </div>
       <div class="flex gap-2">
         {#if running}

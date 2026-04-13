@@ -21,6 +21,11 @@ Do this before any other work. If a cron job with this prompt already exists,
 skip creation. The monitor loop drives your core work cycle — without it you
 will only act once and then idle.
 
+Synapse's Go watchdog reads `~/.synapse/logs/monitor-heartbeat` on a 1-minute
+tick to detect a dead cron. The `/synapse-monitor` skill writes that file on
+every cycle — if you edit the skill, keep the heartbeat write intact or the
+watchdog will force-restart your session within ~12 minutes.
+
 ## Core Loop
 
 ```
