@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/synapse/internal/health"
 	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/loopagent"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
@@ -256,9 +257,64 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
+	a.registerMetricsObservers()
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
 	return nil
+}
+
+// registerMetricsObservers wires the OTel observable gauge callbacks to
+// live subsystem state. No-op when metrics are disabled — the metrics
+// package holds nil callbacks and the observe() loop returns cheaply.
+func (a *App) registerMetricsObservers() {
+	metrics.RegisterTasksByStatus(func() map[string]int64 {
+		tasks, err := a.tasks.List()
+		if err != nil {
+			return nil
+		}
+		out := make(map[string]int64, len(task.AllStatuses()))
+		for _, s := range task.AllStatuses() {
+			out[string(s)] = 0
+		}
+		for i := range tasks {
+			out[string(tasks[i].Status)]++
+		}
+		return out
+	})
+	metrics.RegisterAgentsActive(func() map[string]int64 {
+		snapshot := a.agents.ListAgents()
+		out := map[string]int64{
+			string(agent.StateIdle):    0,
+			string(agent.StateRunning): 0,
+			string(agent.StatePaused):  0,
+			string(agent.StateStopped): 0,
+		}
+		for _, ag := range snapshot {
+			out[string(ag.GetState())]++
+		}
+		return out
+	})
+	if a.monitorWatch != nil {
+		metrics.RegisterMonitorHeartbeatAge(func() int64 {
+			return a.monitorWatch.Status().AgeSeconds
+		})
+	}
+	if a.renovateHandler != nil {
+		metrics.RegisterRenovatePRsFetched(a.renovateHandler.LastFetchedCount)
+	}
+	if a.providerHealth != nil {
+		metrics.RegisterProviderHealth(func() map[string]int64 {
+			out := make(map[string]int64, 2)
+			for name, s := range a.providerHealth.Snapshot() {
+				if s.Healthy {
+					out[name] = 1
+				} else {
+					out[name] = 0
+				}
+			}
+			return out
+		})
+	}
 }
 
 // startPollHub registers all enabled poll handlers and starts the hub.
@@ -725,6 +781,7 @@ func (a *App) restartStaleInProgress() {
 		if runRole == "pr-fix" {
 			a.wg.Go(func() {
 				err := a.agentOrch.StartPRFixAgent(taskID)
+				metrics.OrchestratorStaleRestart(err == nil)
 				a.restartStaleErr.Log(a.logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 			})
 		} else {
@@ -734,6 +791,7 @@ func (a *App) restartStaleInProgress() {
 				// mode (interactive tasks are handled by recoverStaleInteractive
 				// above), so OneShot is irrelevant here — pass false.
 				_, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false)
+				metrics.OrchestratorStaleRestart(err == nil)
 				a.restartStaleErr.Log(a.logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			})
 		}

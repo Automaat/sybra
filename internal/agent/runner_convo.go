@@ -163,6 +163,7 @@ done:
 	}
 	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
+	m.recordCompletion(a, a.GetExitErr() == nil)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}

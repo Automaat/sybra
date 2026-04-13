@@ -19,6 +19,7 @@ type Config struct {
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
+	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
 	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
@@ -127,6 +128,13 @@ type ProviderHealthCheckConfig struct {
 type ProviderEntryConfig struct {
 	Enabled                  bool `yaml:"enabled" json:"enabled"`
 	RateLimitCooldownSeconds int  `yaml:"rate_limit_cooldown_seconds" json:"rateLimitCooldownSeconds"`
+}
+
+// MetricsConfig controls the OpenTelemetry metrics pipeline. When Enabled is
+// true, synapse-server mounts /metrics on its existing mux and emits
+// Prometheus-format output for external scrapers.
+type MetricsConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 func HomeDir() string {

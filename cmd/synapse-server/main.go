@@ -25,8 +25,10 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/httpapi"
 	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/sse"
 	"github.com/Automaat/synapse/internal/synapse"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -52,6 +54,17 @@ func run() error {
 	log.SetFlags(0)
 	log.SetOutput(slogWriter{logger})
 
+	if err := metrics.Init(cfg.Metrics); err != nil {
+		return fmt.Errorf("metrics: %w", err)
+	}
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metrics.Shutdown(shutCtx); err != nil {
+			logger.Error("metrics.shutdown", "err", err)
+		}
+	}()
+
 	broker := sse.New()
 
 	app := synapse.NewApp(logger, levelVar, cfg, synapse.WithEmit(broker.Emit))
@@ -71,6 +84,14 @@ func run() error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
+
+	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The
+	// OTel Prometheus exporter registers instruments into the default
+	// prometheus/client_golang registry, so promhttp.Handler serves them.
+	if metrics.Enabled() {
+		mux.Handle("GET /metrics", promhttp.Handler())
+		logger.Info("metrics.listen", "path", "/metrics")
+	}
 
 	// Multiplexed SSE stream: all events over a single connection.
 	mux.HandleFunc("GET /events", broker.ServeAll)

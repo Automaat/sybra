@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 )
@@ -55,12 +56,14 @@ func (f *IssuesFetcher) Name() string { return "issues" }
 
 func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	issues, err := f.fetchAssigned()
+	metrics.GitHubFetch(err == nil)
 	if err != nil {
 		f.logger.Warn("issues.fetch", "err", err)
 		return IssuesPollInterval
 	}
 	f.emit("issues:updated", issues)
 	f.logger.Debug("issues.poll", "count", len(issues))
+	metrics.GitHubIssuesImported(len(issues))
 	f.syncIssuesToTasks(issues)
 	f.syncLabeledIssuesToTasks()
 	return IssuesPollInterval

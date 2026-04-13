@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/provider"
 	"github.com/google/uuid"
 )
@@ -132,6 +133,17 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 	return nil
 }
 
+// recordCompletion is called from every runner's terminal site just before
+// onComplete fires. Records duration + result into the metrics pipeline.
+func (m *Manager) recordCompletion(a *Agent, ok bool) {
+	dur := time.Since(a.StartedAt)
+	result := "ok"
+	if !ok {
+		result = "error"
+	}
+	metrics.AgentCompleted(result, dur)
+}
+
 // RunningCount returns the number of currently running agents.
 func (m *Manager) RunningCount() int {
 	m.mu.RLock()
@@ -211,6 +223,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	m.agents[id] = a
 	m.mu.Unlock()
 
+	metrics.AgentStarted(a.Provider, a.Mode)
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	switch cfg.Mode {
@@ -299,12 +312,15 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 		return resolved, nil
 	}
 	if alt := g.Failover(resolved); alt != "" {
+		metrics.AgentFailover(resolved, alt)
 		m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
 		return alt, nil
 	}
+	reason := g.Reason(resolved)
+	metrics.AgentGated(resolved, reason)
 	return "", &provider.UnhealthyError{
 		Provider: resolved,
-		Reason:   g.Reason(resolved),
+		Reason:   reason,
 	}
 }
 
