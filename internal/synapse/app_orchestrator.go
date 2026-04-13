@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/task"
 )
 
@@ -16,6 +17,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			metrics.OrchestratorTick()
 			a.maybeStartOrchestrator()
 			if a.workflowEngine != nil {
 				a.workflowEngine.ResumeStalled()

@@ -74,6 +74,7 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 		}
 		m.logger.Info("agent.codex.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
+		m.recordCompletion(a, a.GetExitErr() == nil)
 		if m.onComplete != nil {
 			m.onComplete(a)
 		}

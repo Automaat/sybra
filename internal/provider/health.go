@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Automaat/synapse/internal/metrics"
 )
 
 // Status is a point-in-time health snapshot for a single provider.
@@ -155,6 +157,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 }
 
 func (c *Checker) applyProbeResult(name string, result Status, err error) {
+	metrics.ProviderProbe(name, err == nil)
 	if err != nil {
 		result = Status{
 			Provider:  name,
@@ -243,6 +246,7 @@ func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 	c.mu.Unlock()
 
 	if flip {
+		metrics.ProviderHealthFlip(snapshot.Provider, snapshot.Healthy)
 		c.logger.Info("provider.health.flip",
 			"provider", snapshot.Provider,
 			"healthy", snapshot.Healthy,
@@ -334,6 +338,7 @@ func otherProvider(p string) string {
 // ReportAuthFailure marks a provider as logged-out from a passive runner signal.
 // Only cleared by a successful active probe.
 func (c *Checker) ReportAuthFailure(provider, reason string) {
+	metrics.ProviderAuthFailure(provider)
 	if reason == "" {
 		reason = "logged_out"
 	}
@@ -348,6 +353,7 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 // ReportRateLimit marks a provider as rate-limited. retryAfter zero falls back
 // to the per-provider configured cooldown.
 func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+	metrics.ProviderRateLimit(provider)
 	cooldown := retryAfter
 	if cooldown <= 0 {
 		c.mu.RLock()

@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/todoist"
 )
@@ -63,9 +64,12 @@ func (h *TodoistHandler) PollAndSync() time.Duration {
 
 	imported, importErr := h.ImportNewTasks()
 	h.throttle.Log(h.logger, "todoist.import", "import", importErr)
+	metrics.TodoistPoll(importErr == nil)
+	metrics.TodoistImported(imported)
 
 	completed, compErr := h.syncCompletions()
 	h.throttle.Log(h.logger, "todoist.complete", "complete", compErr)
+	metrics.TodoistCompleted(completed)
 
 	if imported > 0 || completed > 0 {
 		h.logger.Info("todoist.synced", "imported", imported, "completed", completed)

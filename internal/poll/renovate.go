@@ -3,11 +3,13 @@ package poll
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/metrics"
 	"github.com/Automaat/synapse/internal/project"
 )
 
@@ -18,11 +20,12 @@ const (
 
 // RenovateHandler manages Renovate PR polling and actions.
 type RenovateHandler struct {
-	projects   *project.Store
-	logger     *slog.Logger
-	emit       func(string, any)
-	cfg        *config.RenovateConfig
-	allowsType func(project.ProjectType) bool
+	projects     *project.Store
+	logger       *slog.Logger
+	emit         func(string, any)
+	cfg          *config.RenovateConfig
+	allowsType   func(project.ProjectType) bool
+	lastPRsCount atomic.Int64
 }
 
 // NewRenovateHandler creates a RenovateHandler. allowsType filters which
@@ -70,6 +73,12 @@ func (h *RenovateHandler) Poll(_ context.Context) time.Duration {
 	return h.pollRenovatePRs()
 }
 
+// LastFetchedCount returns the most recent Renovate PR count observed by a
+// successful poll. Zero until the first successful poll.
+func (h *RenovateHandler) LastFetchedCount() int64 {
+	return h.lastPRsCount.Load()
+}
+
 func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 	repos := h.Repos()
 	if len(repos) == 0 {
@@ -77,11 +86,13 @@ func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 	}
 
 	prs, err := github.FetchRenovatePRs(h.cfg.Author, repos)
+	metrics.RenovatePoll(err == nil)
 	if err != nil {
 		h.logger.Warn("renovate.fetch", "err", err)
 		return RenovatePollSlow
 	}
 
+	h.lastPRsCount.Store(int64(len(prs)))
 	h.emit(events.RenovateUpdated, prs)
 	h.logger.Debug("renovate.poll", "count", len(prs))
 

@@ -66,6 +66,7 @@ done:
 	}
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
+	m.recordCompletion(a, a.GetExitErr() == nil)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
@@ -561,6 +562,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 	}
 	m.logger.Error("agent.error", "id", a.ID, "err", err)
 	m.emit(events.AgentError(a.ID), err.Error())
+	m.recordCompletion(a, false)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}

@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/metrics"
 )
 
 // EventEmitter publishes task lifecycle events.
@@ -80,6 +81,7 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 	if err != nil {
 		return t, err
 	}
+	metrics.TaskCreated()
 	m.emitter.Emit(events.TaskCreated, t.FilePath)
 	return t, nil
 }
@@ -108,6 +110,7 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 		mu.Unlock()
 		return t, err
 	}
+	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 
 	var (
@@ -149,6 +152,7 @@ func (m *Manager) Delete(id string) error {
 		return err
 	}
 	m.locks.Delete(id)
+	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	return nil
 }

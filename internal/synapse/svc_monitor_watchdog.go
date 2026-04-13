@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/synapse/internal/metrics"
 )
 
 // Default timing for the monitor watchdog. Heartbeat is written by
@@ -140,17 +141,20 @@ func (w *MonitorWatchdog) check() {
 
 	switch {
 	case !prev.Stale && next.Stale:
+		metrics.MonitorStaleTransition("stale")
 		w.logger.Warn("monitor.watchdog.stale",
 			"path", w.path,
 			"age_s", next.AgeSeconds,
 			"present", next.Present)
 	case prev.Stale && !next.Stale:
+		metrics.MonitorStaleTransition("alive")
 		w.logger.Info("monitor.watchdog.alive",
 			"path", w.path,
 			"age_s", next.AgeSeconds)
 	}
 
 	if shouldRecover && w.recoverFn != nil {
+		metrics.MonitorRecovery()
 		w.logger.Info("monitor.watchdog.recover")
 		w.recoverFn()
 	}
