@@ -12,6 +12,11 @@ vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
 
+vi.mock('../wailsjs/go/synapse/IntegrationService', () => ({
+  GetProviderHealth: vi.fn().mockResolvedValue([]),
+  ProviderHealthEnabled: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('./stores/tasks.svelte.js', () => ({
   taskStore: {
     load: (...args: unknown[]) => mockLoad(...args),
