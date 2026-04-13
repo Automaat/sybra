@@ -5,15 +5,58 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+@utility tap {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  touch-action: manipulation;
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+@utility h-safe-top {
+  height: env(safe-area-inset-top);
+}
+@utility h-safe-bottom {
+  height: env(safe-area-inset-bottom);
+}
+
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  overflow: hidden;
-  font-size: 18px;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+@media (min-width: 768px) {
+  html, body {
+    font-size: 18px;
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 767px) {
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 #app {
+  min-height: 100dvh;
   height: 100%;
 }
 
@@ -24,4 +67,3 @@ html, body {
 .dark [data-active] {
   background-color: var(--color-surface-700);
 }
-

@@ -1,23 +1,21 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { Navigation, AppBar } from '@skeletonlabs/skeleton-svelte'
   import { EventsOn } from '$lib/api'
   import * as ev from './lib/events.js'
   import { GetProviderHealth, ProviderHealthEnabled } from '../wailsjs/go/synapse/IntegrationService'
   import { taskStore } from './stores/tasks.svelte.js'
   import { agentStore } from './stores/agents.svelte.js'
   import { projectStore } from './stores/projects.svelte.js'
+  import { notificationStore } from './stores/notifications.svelte.js'
+  import { navStore, type Page } from './lib/navigation.svelte.js'
+  import { viewport } from './lib/viewport.svelte.js'
+  import AppShell from './components/shell/AppShell.svelte'
   import TaskList from './pages/TaskList.svelte'
   import TaskDetail from './pages/TaskDetail.svelte'
   import Agents from './pages/Agents.svelte'
   import AgentDetail from './pages/AgentDetail.svelte'
   import ProjectList from './pages/ProjectList.svelte'
   import ProjectDetail from './pages/ProjectDetail.svelte'
-  import CreateTaskDialog from './components/CreateTaskDialog.svelte'
-  import CreateProjectDialog from './components/CreateProjectDialog.svelte'
-  import QuickAddTask from './components/QuickAddTask.svelte'
-  import ToastContainer from './components/ToastContainer.svelte'
-  import { notificationStore } from './stores/notifications.svelte.js'
   import Dashboard from './pages/Dashboard.svelte'
   import GitHub from './pages/GitHub.svelte'
   import Stats from './pages/Stats.svelte'
@@ -27,37 +25,23 @@
   import ChatDetail from './pages/ChatDetail.svelte'
   import WorkflowList from './pages/WorkflowList.svelte'
   import WorkflowDetail from './pages/WorkflowDetail.svelte'
+  import CreateTaskDialog from './components/CreateTaskDialog.svelte'
+  import CreateProjectDialog from './components/CreateProjectDialog.svelte'
+  import QuickAddTask from './components/QuickAddTask.svelte'
+  import ToastContainer from './components/ToastContainer.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
 
-  type Page =
-    | { kind: 'dashboard' }
-    | { kind: 'task-list' }
-    | { kind: 'task-detail'; taskId: string }
-    | { kind: 'project-list' }
-    | { kind: 'project-detail'; projectId: string }
-    | { kind: 'chats' }
-    | { kind: 'chat-detail'; agentId: string }
-    | { kind: 'agents'; tab?: string }
-    | { kind: 'agent-detail'; agentId: string }
-    | { kind: 'github' }
-    | { kind: 'stats' }
-    | { kind: 'reviews' }
-    | { kind: 'settings' }
-    | { kind: 'workflows' }
-    | { kind: 'workflow-detail'; workflowId: string }
-
-  let page = $state<Page>({ kind: 'dashboard' })
   type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'reviews' | 'stats' | 'settings' | 'workflows'
 
   function handlePaletteNavigate(kind: string, params?: { taskId?: string; projectId?: string }): void {
     commandPaletteOpen = false
     if (kind === 'task-detail' && params?.taskId) {
-      page = { kind: 'task-detail', taskId: params.taskId }
+      navStore.navigate({ kind: 'task-detail', taskId: params.taskId })
     } else if (kind === 'project-detail' && params?.projectId) {
-      page = { kind: 'project-detail', projectId: params.projectId }
+      navStore.navigate({ kind: 'project-detail', projectId: params.projectId })
     } else {
-      page = { kind: kind as SimplePageKind }
+      navStore.reset({ kind: kind as SimplePageKind })
     }
   }
 
@@ -86,27 +70,12 @@
   let quitConfirmVisible = $state(false)
   let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
 
-  const interactiveAgentCount = $derived(
-    agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
-  )
-
-  const pageTitle = $derived(
-    page.kind === 'dashboard' ? 'Dashboard' :
-    page.kind === 'task-list' ? 'Tasks' :
-    page.kind === 'task-detail' ? 'Task Detail' :
-    page.kind === 'project-list' ? 'Projects' :
-    page.kind === 'project-detail' ? 'Project Detail' :
-    page.kind === 'chats' ? 'Chats' :
-    page.kind === 'chat-detail' ? 'Chat' :
-    page.kind === 'agents' ? 'Agents' :
-    page.kind === 'github' ? 'GitHub' :
-    page.kind === 'stats' ? 'Stats' :
-    page.kind === 'reviews' ? 'Reviews' :
-    page.kind === 'settings' ? 'Settings' :
-    page.kind === 'workflows' ? 'Workflows' :
-    page.kind === 'workflow-detail' ? 'Workflow Editor' :
-    'Agent Detail'
-  )
+  const primaryAction = $derived.by(() => {
+    const k = navStore.page.kind
+    if (k === 'task-list' || k === 'dashboard') return { label: 'New', run: () => (dialogOpen = true) }
+    if (k === 'project-list') return { label: 'New', run: () => (projectDialogOpen = true) }
+    return null
+  })
 
   function onEvents(events: string[], handler: () => void): () => void {
     const unsubs = events.map(e => EventsOn(e, handler))
@@ -119,10 +88,6 @@
   // a full taskStore.load() on every event re-builds the reactive Map and
   // forces every kanban card to re-render, which saturates the WebKit main
   // thread and freezes the UI even though the Go side is idle.
-  //
-  // Leading-edge fire keeps the UI feeling snappy on the first change in a
-  // burst; the trailing flush guarantees the last state is reflected after
-  // the burst quiets down.
   function debounced(fn: () => void, wait = 150): () => void {
     let timer: ReturnType<typeof setTimeout> | null = null
     let lastInvoke = 0
@@ -184,72 +149,66 @@
       return { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit }
     })
     const { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit } = cleanup
-    function handleKeydown(e: KeyboardEvent) {
-      if (e.metaKey && (e.key === '=' || e.key === '+')) {
-        e.preventDefault()
-        const current = parseFloat(document.documentElement.style.zoom || '1')
-        document.documentElement.style.zoom = String(Math.min(current + 0.1, 2))
+
+    // Keyboard shortcuts only on devices with a fine pointer (mouse/keyboard).
+    // Touch-only devices (iPhone, iPad without keyboard) skip listener entirely.
+    const hasFinePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches
+    let removeKeyHandler: (() => void) | undefined
+    if (hasFinePointer) {
+      function handleKeydown(e: KeyboardEvent) {
+        if (e.metaKey && e.key === 'n') {
+          e.preventDefault()
+          quickAddOpen = true
+        }
+        if (e.metaKey && e.key === 'k') {
+          e.preventDefault()
+          commandPaletteOpen = true
+        }
+        if (e.metaKey && e.key === '/') {
+          e.preventDefault()
+          helpOpen = true
+        }
+        if (e.metaKey && e.key === '1') {
+          e.preventDefault()
+          navStore.reset({ kind: 'dashboard' })
+        }
+        if (e.metaKey && e.key === '2') {
+          e.preventDefault()
+          navStore.reset({ kind: 'task-list' })
+        }
+        if (e.metaKey && e.key === '3') {
+          e.preventDefault()
+          navStore.reset({ kind: 'project-list' })
+        }
+        if (e.metaKey && e.key === '4') {
+          e.preventDefault()
+          navStore.reset({ kind: 'agents' })
+        }
+        if (e.metaKey && e.key === '5') {
+          e.preventDefault()
+          navStore.reset({ kind: 'github' })
+        }
+        if (e.metaKey && e.key === '6') {
+          e.preventDefault()
+          navStore.reset({ kind: 'reviews' })
+        }
+        if (e.metaKey && e.key === '7') {
+          e.preventDefault()
+          navStore.reset({ kind: 'stats' })
+        }
+        if (e.metaKey && e.key === ',') {
+          e.preventDefault()
+          navStore.reset({ kind: 'settings' })
+        }
+        if (e.metaKey && e.key === 'f') {
+          e.preventDefault()
+          navStore.reset({ kind: 'task-list' })
+          requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
+        }
       }
-      if (e.metaKey && e.key === '-') {
-        e.preventDefault()
-        const current = parseFloat(document.documentElement.style.zoom || '1')
-        document.documentElement.style.zoom = String(Math.max(current - 0.1, 0.5))
-      }
-      if (e.metaKey && e.key === '0') {
-        e.preventDefault()
-        document.documentElement.style.zoom = '1'
-      }
-      if (e.metaKey && e.key === 'n') {
-        e.preventDefault()
-        quickAddOpen = true
-      }
-      if (e.metaKey && e.key === 'k') {
-        e.preventDefault()
-        commandPaletteOpen = true
-      }
-      if (e.metaKey && e.key === '/') {
-        e.preventDefault()
-        helpOpen = true
-      }
-      if (e.metaKey && e.key === '1') {
-        e.preventDefault()
-        page = { kind: 'dashboard' }
-      }
-      if (e.metaKey && e.key === '2') {
-        e.preventDefault()
-        page = { kind: 'task-list' }
-      }
-      if (e.metaKey && e.key === '3') {
-        e.preventDefault()
-        page = { kind: 'project-list' }
-      }
-      if (e.metaKey && e.key === '4') {
-        e.preventDefault()
-        page = { kind: 'agents' }
-      }
-      if (e.metaKey && e.key === '5') {
-        e.preventDefault()
-        page = { kind: 'github' }
-      }
-      if (e.metaKey && e.key === '6') {
-        e.preventDefault()
-        page = { kind: 'reviews' }
-      }
-      if (e.metaKey && e.key === '7') {
-        e.preventDefault()
-        page = { kind: 'stats' }
-      }
-      if (e.metaKey && e.key === ',') {
-        e.preventDefault()
-        page = { kind: 'settings' }
-      }
-      if (e.metaKey && e.key === 'f') {
-        e.preventDefault()
-        page = { kind: 'task-list' }
-        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
-      }
+      window.addEventListener('keydown', handleKeydown)
+      removeKeyHandler = () => window.removeEventListener('keydown', handleKeydown)
     }
-    window.addEventListener('keydown', handleKeydown)
 
     return () => {
       unsubTasks()
@@ -261,254 +220,126 @@
       taskStore.stopPolling()
       agentStore.stopPolling()
       projectStore.stopPolling()
-      window.removeEventListener('keydown', handleKeydown)
+      removeKeyHandler?.()
     }
   })
+
+  function navTaskDetail(id: string) { navStore.navigate({ kind: 'task-detail', taskId: id }) }
+  function navAgentDetail(id: string) { navStore.navigate({ kind: 'agent-detail', agentId: id }) }
+  function navChatDetail(id: string) { navStore.navigate({ kind: 'chat-detail', agentId: id }) }
+  function navProjectDetail(id: string) { navStore.navigate({ kind: 'project-detail', projectId: id }) }
+  function navWorkflowDetail(id: string) { navStore.navigate({ kind: 'workflow-detail', workflowId: id }) }
 </script>
 
-<div class="flex h-full">
-  <Navigation layout="rail">
-    <Navigation.Header>
-      <span class="p-2 text-lg font-bold">S</span>
-    </Navigation.Header>
-    <Navigation.Content>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'dashboard' })}
-        data-active={page.kind === 'dashboard' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-        </svg>
-        <Navigation.TriggerText>Dashboard</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'task-list' })}
-        data-active={page.kind === 'task-list' || page.kind === 'task-detail' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-        </svg>
-        <Navigation.TriggerText>Board</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'project-list' })}
-        data-active={page.kind === 'project-list' || page.kind === 'project-detail' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-        </svg>
-        <Navigation.TriggerText>Projects</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'chats' })}
-        data-active={page.kind === 'chats' || page.kind === 'chat-detail' || undefined}
-      >
-        <div class="relative">
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+<AppShell onsearch={() => (commandPaletteOpen = true)} {primaryAction}>
+  {#if unhealthyProviders.length > 0}
+    <div class="flex shrink-0 flex-col gap-0.5">
+      {#each unhealthyProviders as p (p.provider)}
+        <div class="flex items-center gap-2 bg-error-800/90 border-b border-error-600 px-4 py-2 text-error-100 text-sm">
+          <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
           </svg>
-          {#if interactiveAgentCount > 0}
-            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary-500 text-[9px] font-bold text-white">{interactiveAgentCount}</span>
-          {/if}
+          <span>
+            <strong>{p.provider}</strong> unavailable — {p.reason}
+            {#if p.ratelimitedUntil}· until {new Date(p.ratelimitedUntil).toLocaleTimeString()}{/if}
+            {#if p.failoverActive}· failing over to peer{/if}
+          </span>
         </div>
-        <Navigation.TriggerText>Chats</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'agents' })}
-        data-active={page.kind === 'agents' || page.kind === 'agent-detail' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-        </svg>
-        <Navigation.TriggerText>Agents</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'github' })}
-        data-active={page.kind === 'github' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.866-.013-1.7-2.782.604-3.369-1.341-3.369-1.341-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.337-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
-        </svg>
-        <Navigation.TriggerText>GitHub</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'reviews' })}
-        data-active={page.kind === 'reviews' || undefined}
-      >
-        <div class="relative">
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-          </svg>
-          {#if taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length > 0}
-            <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning-500 text-[9px] font-bold text-white">{taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length}</span>
-          {/if}
-        </div>
-        <Navigation.TriggerText>Reviews</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'workflows' })}
-        data-active={page.kind === 'workflows' || page.kind === 'workflow-detail' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-        </svg>
-        <Navigation.TriggerText>Workflows</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'stats' })}
-        data-active={page.kind === 'stats' || undefined}
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-        </svg>
-        <Navigation.TriggerText>Stats</Navigation.TriggerText>
-      </Navigation.Trigger>
-      <Navigation.Trigger
-        onclick={() => (page = { kind: 'settings' })}
-        data-active={page.kind === 'settings' || undefined}
-        title="Settings (Cmd+,)"
-      >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-        <Navigation.TriggerText>Settings</Navigation.TriggerText>
-      </Navigation.Trigger>
-    </Navigation.Content>
-  </Navigation>
+      {/each}
+    </div>
+  {/if}
 
-  <div class="flex flex-1 flex-col overflow-hidden">
-    <AppBar>
-      <AppBar.Toolbar>
-        <AppBar.Lead>
-          <h2 class="text-lg font-semibold">{pageTitle}</h2>
-        </AppBar.Lead>
-        <AppBar.Trail>
+  {#if degradedWarnings.length > 0}
+    <div class="flex shrink-0 flex-col gap-0.5">
+      {#each degradedWarnings as w, i (w.subsystem)}
+        <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
+          <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>
           <button
             type="button"
-            class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
-            onclick={() => (dialogOpen = true)}
-            title="New Task (Cmd+N)"
-          >
-            + New Task
-          </button>
-        </AppBar.Trail>
-      </AppBar.Toolbar>
-    </AppBar>
+            class="ml-auto opacity-60 hover:opacity-100 text-xs"
+            onclick={() => { degradedWarnings = degradedWarnings.filter((_, j) => j !== i) }}
+            aria-label="Dismiss"
+          >✕</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
 
-    {#if unhealthyProviders.length > 0}
-      <div class="flex flex-col gap-0.5">
-        {#each unhealthyProviders as p (p.provider)}
-          <div class="flex items-center gap-2 bg-error-800/90 border-b border-error-600 px-4 py-2 text-error-100 text-sm">
-            <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-            </svg>
-            <span>
-              <strong>{p.provider}</strong> unavailable — {p.reason}
-              {#if p.ratelimitedUntil}· until {new Date(p.ratelimitedUntil).toLocaleTimeString()}{/if}
-              {#if p.failoverActive}· failing over to peer{/if}
-            </span>
-          </div>
-        {/each}
-      </div>
+  <main class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    {#if navStore.page.kind === 'dashboard'}
+      <Dashboard onviewagent={navAgentDetail} />
+    {:else if navStore.page.kind === 'task-list'}
+      <TaskList onselect={navTaskDetail} />
+    {:else if navStore.page.kind === 'task-detail'}
+      <TaskDetail
+        taskId={navStore.page.taskId}
+        onback={() => navStore.back()}
+        onviewagent={navAgentDetail}
+        ondelete={() => navStore.back()}
+        onreviewplan={() => navStore.reset({ kind: 'reviews' })}
+      />
+    {:else if navStore.page.kind === 'project-list'}
+      <ProjectList
+        onselect={navProjectDetail}
+        onadd={() => (projectDialogOpen = true)}
+      />
+    {:else if navStore.page.kind === 'project-detail'}
+      <ProjectDetail
+        projectId={navStore.page.projectId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+      />
+    {:else if navStore.page.kind === 'chats'}
+      <ChatList onselect={navChatDetail} />
+    {:else if navStore.page.kind === 'chat-detail'}
+      <ChatDetail
+        agentId={navStore.page.agentId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+      />
+    {:else if navStore.page.kind === 'agents'}
+      <Agents
+        initialTab={navStore.page.tab}
+        onselect={navAgentDetail}
+      />
+    {:else if navStore.page.kind === 'agent-detail'}
+      <AgentDetail
+        agentId={navStore.page.agentId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+      />
+    {:else if navStore.page.kind === 'github'}
+      <GitHub />
+    {:else if navStore.page.kind === 'reviews'}
+      <Reviews onviewtask={navTaskDetail} />
+    {:else if navStore.page.kind === 'stats'}
+      <Stats />
+    {:else if navStore.page.kind === 'workflows'}
+      <WorkflowList onselect={navWorkflowDetail} />
+    {:else if navStore.page.kind === 'workflow-detail'}
+      <WorkflowDetail
+        workflowId={navStore.page.workflowId}
+        onback={() => navStore.back()}
+      />
+    {:else if navStore.page.kind === 'settings'}
+      <Settings />
     {/if}
-
-    {#if degradedWarnings.length > 0}
-      <div class="flex flex-col gap-0.5">
-        {#each degradedWarnings as w, i (w.subsystem)}
-          <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
-            <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-            </svg>
-            <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>
-            <button
-              type="button"
-              class="ml-auto opacity-60 hover:opacity-100 text-xs"
-              onclick={() => { degradedWarnings = degradedWarnings.filter((_, j) => j !== i) }}
-              aria-label="Dismiss"
-            >✕</button>
-          </div>
-        {/each}
-      </div>
-    {/if}
-
-    <main class="flex-1 overflow-y-auto">
-      {#if page.kind === 'dashboard'}
-        <Dashboard
-          onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
-        />
-      {:else if page.kind === 'task-list'}
-        <TaskList onselect={(id) => (page = { kind: 'task-detail', taskId: id })} />
-      {:else if page.kind === 'task-detail'}
-        <TaskDetail
-          taskId={page.taskId}
-          onback={() => (page = { kind: 'task-list' })}
-          onviewagent={(id) => (page = { kind: 'agent-detail', agentId: id })}
-          ondelete={() => (page = { kind: 'task-list' })}
-          onreviewplan={() => (page = { kind: 'reviews' })}
-        />
-      {:else if page.kind === 'project-list'}
-        <ProjectList
-          onselect={(id) => (page = { kind: 'project-detail', projectId: id })}
-          onadd={() => (projectDialogOpen = true)}
-        />
-      {:else if page.kind === 'project-detail'}
-        <ProjectDetail
-          projectId={page.projectId}
-          onback={() => (page = { kind: 'project-list' })}
-          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
-        />
-      {:else if page.kind === 'chats'}
-        <ChatList
-          onselect={(id) => (page = { kind: 'chat-detail', agentId: id })}
-        />
-      {:else if page.kind === 'chat-detail'}
-        <ChatDetail
-          agentId={page.agentId}
-          onback={() => (page = { kind: 'chats' })}
-          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
-        />
-      {:else if page.kind === 'agents'}
-        <Agents
-          initialTab={page.tab}
-          onselect={(id) => (page = { kind: 'agent-detail', agentId: id })}
-        />
-      {:else if page.kind === 'agent-detail'}
-        <AgentDetail
-          agentId={page.agentId}
-          onback={() => (page = { kind: 'agents' })}
-          onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })}
-        />
-      {:else if page.kind === 'github'}
-        <GitHub />
-      {:else if page.kind === 'reviews'}
-        <Reviews onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
-      {:else if page.kind === 'stats'}
-        <Stats />
-      {:else if page.kind === 'workflows'}
-        <WorkflowList onselect={(id) => (page = { kind: 'workflow-detail', workflowId: id })} />
-      {:else if page.kind === 'workflow-detail'}
-        <WorkflowDetail
-          workflowId={page.workflowId}
-          onback={() => (page = { kind: 'workflows' })}
-        />
-      {:else if page.kind === 'settings'}
-        <Settings />
-      {/if}
-    </main>
-  </div>
-</div>
+  </main>
+</AppShell>
 
 <CreateTaskDialog
   open={dialogOpen}
   onOpenChange={(open) => (dialogOpen = open)}
-  oncreated={(id) => (page = { kind: 'task-detail', taskId: id })}
+  oncreated={(id) => navStore.navigate({ kind: 'task-detail', taskId: id })}
 />
 
 <CreateProjectDialog
   open={projectDialogOpen}
   onOpenChange={(open) => (projectDialogOpen = open)}
-  oncreated={(id) => (page = { kind: 'project-detail', projectId: id })}
+  oncreated={(id) => navStore.navigate({ kind: 'project-detail', projectId: id })}
 />
 
 <QuickAddTask
@@ -522,12 +353,14 @@
   onnavigate={handlePaletteNavigate}
 />
 
-<KeyboardHelp
-  open={helpOpen}
-  onclose={() => (helpOpen = false)}
-/>
+{#if !viewport.hasCoarsePointer}
+  <KeyboardHelp
+    open={helpOpen}
+    onclose={() => (helpOpen = false)}
+  />
+{/if}
 
-<ToastContainer onviewtask={(id) => (page = { kind: 'task-detail', taskId: id })} />
+<ToastContainer onviewtask={navTaskDetail} />
 
 {#if quitConfirmVisible}
   <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg bg-surface-700 px-4 py-2 text-sm text-white shadow-lg">

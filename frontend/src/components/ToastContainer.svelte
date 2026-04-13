@@ -36,7 +36,7 @@
   }
 </script>
 
-<div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-80">
+<div class="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+5rem)] z-[60] flex flex-col gap-2 md:inset-x-auto md:bottom-4 md:right-4 md:w-80">
   {#each visible as toast (toast.id)}
     <div
       class="rounded-lg border shadow-lg w-full {levelClass(toast.level)}"

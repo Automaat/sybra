@@ -22,7 +22,7 @@
   const filtered = $derived(agentStore.byState(filter))
 </script>
 
-<div class="flex flex-col gap-4 p-6">
+<div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
   <SegmentedControl orientation="horizontal" value={filter} onValueChange={(details) => (filter = details.value ?? 'all')}>
     <SegmentedControl.Control>
       <SegmentedControl.Indicator />

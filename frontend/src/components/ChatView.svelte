@@ -71,7 +71,7 @@
   }
 </script>
 
-<div class="flex h-full flex-col">
+<div class="flex h-full min-h-0 flex-col">
   <!-- Header bar -->
   <div class="flex items-center gap-3 border-b border-surface-300 px-4 py-2 dark:border-surface-600">
     <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium
@@ -107,7 +107,7 @@
   <!-- Messages -->
   <div
     bind:this={container}
-    class="flex flex-col gap-3 overflow-y-auto px-4 py-3 {bounded ? 'max-h-[600px]' : 'flex-1'}"
+    class="flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain px-3 py-3 md:px-4 {bounded ? 'max-h-[60dvh] md:max-h-[600px]' : 'flex-1'}"
   >
     {#if events.length === 0}
       <p class="py-12 text-center text-sm text-surface-500">Waiting for response...</p>

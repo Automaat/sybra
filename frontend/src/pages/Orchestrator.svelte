@@ -150,7 +150,7 @@
   })
 </script>
 
-<div class="flex h-full flex-col gap-4 overflow-hidden p-6">
+<div class="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4 md:gap-4 md:p-6">
   <!-- Orchestrator Session -->
   <section class="flex flex-col gap-3">
     <div class="flex items-center justify-between">
@@ -210,7 +210,7 @@
     {#if running}
       <div
         bind:this={container}
-        class="flex max-h-[400px] flex-col gap-2 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-200 dark:border-surface-600"
+        class="flex max-h-[50dvh] md:max-h-[400px] flex-col gap-2 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-200 dark:border-surface-600"
       >
         {#if events.length === 0}
           <p class="text-surface-500">Waiting for orchestrator…</p>

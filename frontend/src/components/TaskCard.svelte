@@ -2,14 +2,22 @@
   import type { task } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { STATUS_OPTIONS } from '../lib/statuses.js'
 
   interface Props {
     task: task.Task
     onclick: () => void
     focused?: boolean
+    onstatuschange?: (status: string) => void
   }
 
-  const { task: t, onclick, focused = false }: Props = $props()
+  const { task: t, onclick, focused = false, onstatuschange }: Props = $props()
+
+  function handleStatusChange(e: Event) {
+    e.stopPropagation()
+    const value = (e.currentTarget as HTMLSelectElement).value
+    if (value !== t.status) onstatuschange?.(value)
+  }
 
   let dragging = $state(false)
 
@@ -44,19 +52,22 @@
   }
 </script>
 
-<button
-  type="button"
-  draggable="true"
+<div
   data-focused-task={focused ? '' : undefined}
-  class="w-full rounded-lg border bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:bg-surface-800 dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40' : ''}"
-  onclick={onclick}
-  ondragstart={(e) => {
-    dragging = true
-    e.dataTransfer!.setData('text/plain', t.id)
-    e.dataTransfer!.effectAllowed = 'move'
-  }}
-  ondragend={() => { dragging = false }}
+  class="w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-colors active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40' : ''}"
 >
+  <button
+    type="button"
+    draggable="true"
+    onclick={onclick}
+    ondragstart={(e) => {
+      dragging = true
+      e.dataTransfer!.setData('text/plain', t.id)
+      e.dataTransfer!.effectAllowed = 'move'
+    }}
+    ondragend={() => { dragging = false }}
+    class="flex w-full flex-col items-stretch gap-1.5 text-left"
+  >
   <div class="mb-1.5 flex items-center gap-1.5">
     {#if topPR?.ciStatus === 'SUCCESS'}
       <svg class="h-4 w-4 shrink-0 text-green-500" viewBox="0 0 16 16" fill="currentColor"><title>CI passed</title><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-1.06-1.06L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l4.5-4.5Z"/></svg>
@@ -157,4 +168,20 @@
 
     <span class="ml-auto opacity-60">{timeAgo(t.updatedAt)}</span>
   </div>
-</button>
+  </button>
+  {#if onstatuschange}
+    <div class="mt-2 flex justify-end">
+      <select
+        value={t.status}
+        onchange={handleStatusChange}
+        onclick={(e) => e.stopPropagation()}
+        class="tap rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
+        aria-label="Change status"
+      >
+        {#each STATUS_OPTIONS as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+</div>

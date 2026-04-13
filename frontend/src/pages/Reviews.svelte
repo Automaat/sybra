@@ -3,8 +3,11 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { commentStore } from '../stores/comments.svelte.js'
   import PlanFileView from '../components/PlanFileView.svelte'
+  import { viewport } from '../lib/viewport.svelte.js'
 
   let { onviewtask }: { onviewtask?: (id: string) => void } = $props()
+
+  let mobileView = $state<'list' | 'detail'>('list')
 
   let selectedId = $state<string | null>(null)
   let rejectFeedback = $state('')
@@ -50,6 +53,7 @@
     selectedId = id
     rejectFeedback = ''
     errorMsg = ''
+    mobileView = 'detail'
     await commentStore.load(id)
     await refreshLiveAgent(id)
   }
@@ -159,9 +163,9 @@
   })
 </script>
 
-<div class="flex h-full overflow-hidden">
+<div class="flex h-full min-h-0 overflow-hidden flex-col md:flex-row">
   <!-- Task list sidebar -->
-  <div class="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-surface-300 bg-surface-50 dark:border-surface-700 dark:bg-surface-900">
+  <div class="flex w-full shrink-0 flex-col overflow-y-auto border-r border-surface-300 bg-surface-50 dark:border-surface-700 dark:bg-surface-900 md:w-80 lg:w-72 {mobileView === 'detail' ? 'hidden md:flex' : 'flex'}">
     <div class="border-b border-surface-300 px-4 py-3 dark:border-surface-700">
       <h3 class="text-sm font-semibold text-surface-700 dark:text-surface-300">
         Reviews
@@ -180,10 +184,10 @@
           <li>
             <button
               type="button"
-              class="w-full rounded-lg px-3 py-2.5 text-left transition-colors
+              class="tap w-full rounded-lg px-4 py-3.5 text-left transition-colors
                 {selectedId === t.id
                   ? 'bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200'
-                  : 'hover:bg-surface-200 dark:hover:bg-surface-800'}"
+                  : 'active:bg-surface-200 md:hover:bg-surface-200 dark:active:bg-surface-800 md:dark:hover:bg-surface-800'}"
               onclick={() => selectTask(t.id)}
             >
               <div class="flex items-start justify-between gap-2">
@@ -217,7 +221,7 @@
   </div>
 
   <!-- Review panel -->
-  <div class="flex flex-1 flex-col overflow-hidden">
+  <div class="flex flex-1 flex-col overflow-hidden {mobileView === 'list' ? 'hidden md:flex' : 'flex'}">
     {#if !selectedTask}
       <div class="flex flex-1 items-center justify-center text-surface-400">
         <div class="text-center">
@@ -229,9 +233,21 @@
       </div>
     {:else}
       <!-- Header -->
-      <div class="flex items-center justify-between border-b border-surface-300 px-6 py-3 dark:border-surface-700">
-        <div class="flex items-center gap-3">
-          <h2 class="text-base font-semibold">{selectedTask.title}</h2>
+      <div class="flex items-center justify-between gap-2 border-b border-surface-300 px-3 py-2.5 dark:border-surface-700 md:px-6 md:py-3">
+        <div class="flex min-w-0 items-center gap-2 md:gap-3">
+          {#if !viewport.isDesktop}
+            <button
+              type="button"
+              onclick={() => (mobileView = 'list')}
+              class="tap -ml-2 shrink-0 rounded-lg text-surface-600 active:bg-surface-200 dark:text-surface-300 dark:active:bg-surface-700"
+              aria-label="Back to list"
+            >
+              <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          {/if}
+          <h2 class="truncate text-base font-semibold">{selectedTask.title}</h2>
           {#if onviewtask}
             <button
               type="button"
@@ -272,34 +288,34 @@
       </div>
 
       <!-- Approve / Reject bar -->
-      <div class="border-t border-surface-300 bg-surface-50 px-6 py-4 dark:border-surface-700 dark:bg-surface-900">
+      <div class="sticky bottom-0 border-t border-surface-300 bg-surface-50 px-3 pt-3 pb-safe dark:border-surface-700 dark:bg-surface-900 md:px-6 md:py-4">
         {#if errorMsg}
           <p class="mb-3 text-sm text-error-600 dark:text-error-400">{errorMsg}</p>
         {/if}
-        <div class="flex items-start gap-3">
+        <div class="flex flex-col gap-3 md:flex-row md:items-start">
           <textarea
             bind:this={feedbackRef}
-            class="flex-1 resize-none rounded-lg border border-surface-300 bg-white p-2.5 text-sm dark:border-surface-600 dark:bg-surface-800"
+            class="flex-1 resize-none rounded-lg border border-surface-300 bg-white p-3 text-base dark:border-surface-600 dark:bg-surface-800 md:p-2.5 md:text-sm"
             rows="2"
-            placeholder="Rejection feedback (optional) — unresolved comments are included automatically..."
+            placeholder="Rejection feedback (optional)..."
             bind:value={rejectFeedback}
           ></textarea>
-          <div class="flex shrink-0 flex-col gap-2">
+          <div class="grid grid-cols-2 gap-2 md:flex md:shrink-0 md:flex-col">
             <button
               type="button"
-              class="rounded-lg bg-success-500 px-4 py-2 text-sm font-medium text-white hover:bg-success-600 disabled:opacity-50"
+              class="tap rounded-lg bg-success-500 px-4 py-3 text-sm font-medium text-white active:bg-success-700 disabled:opacity-50"
               onclick={approve}
               disabled={actionLoading}
-            >Approve {isTestPlan ? 'Test Plan' : 'Plan'}</button>
+            >Approve</button>
             <button
               type="button"
-              class="rounded-lg bg-error-500 px-4 py-2 text-sm font-medium text-white hover:bg-error-600 disabled:opacity-50"
+              class="tap rounded-lg bg-error-500 px-4 py-3 text-sm font-medium text-white active:bg-error-700 disabled:opacity-50"
               onclick={reject}
               disabled={actionLoading}
-            >Reject {isTestPlan ? 'Test Plan' : 'Plan'}</button>
+            >Reject</button>
             <button
               type="button"
-              class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+              class="tap col-span-2 rounded-lg bg-primary-500 px-4 py-3 text-sm font-medium text-white active:bg-primary-700 disabled:opacity-50"
               onclick={sendMessage}
               disabled={actionLoading || !rejectFeedback.trim() || !hasLiveAgent}
               title={hasLiveAgent ? 'Send message to live agent' : 'No live agent'}
