@@ -72,6 +72,11 @@ type Agent struct {
 	stdinMu    sync.Mutex
 	approvalCh chan ApprovalResponse
 
+	// pendingPrompts queues follow-up user messages that arrive while a turn
+	// is mid-flight. Drained after each "result" event so the next turn fires
+	// without waiting on the user. Guarded by mu.
+	pendingPrompts []string
+
 	// promptCh delivers follow-up prompts to Codex conversational agents.
 	// Each turn spawns a new codex exec process; promptCh signals the next
 	// prompt without a stdin pipe. Guarded by mu.
@@ -185,6 +190,33 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out int) floa
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
+}
+
+// EnqueuePrompt appends a follow-up prompt to the pending queue.
+func (a *Agent) EnqueuePrompt(text string) {
+	a.mu.Lock()
+	a.pendingPrompts = append(a.pendingPrompts, text)
+	a.mu.Unlock()
+}
+
+// PopPendingPrompt returns the next queued prompt and a flag indicating
+// whether a value was popped.
+func (a *Agent) PopPendingPrompt() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pendingPrompts) == 0 {
+		return "", false
+	}
+	next := a.pendingPrompts[0]
+	a.pendingPrompts = a.pendingPrompts[1:]
+	return next, true
+}
+
+// PendingPromptCount returns the size of the pending prompt queue.
+func (a *Agent) PendingPromptCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.pendingPrompts)
 }
 
 // IncTurnCount increments the turn counter and returns the new value.

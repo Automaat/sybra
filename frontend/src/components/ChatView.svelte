@@ -138,7 +138,8 @@
 
   <!-- Input -->
   <ChatInput
-    disabled={isRunning || isWaitingForApproval}
+    disabled={isWaitingForApproval}
+    placeholder={isRunning ? 'Queue a follow-up...' : 'Type a message...'}
     onsend={handleSend}
   />
 </div>

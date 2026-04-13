@@ -669,3 +669,116 @@ func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
 		t.Fatal("expected error when agent has no transport")
 	}
 }
+
+// TestSendMessage_QueuesWhenRunning verifies the queue-on-busy behaviour:
+// a follow-up sent mid-turn (StateRunning) must not hit stdin and must not
+// flip state — it just lives in pendingPrompts until the next result.
+// Regression guard for the chat-input "queue follow-up" feature.
+func TestSendMessage_QueuesWhenRunning(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, lines := captureStdinAgent(t, m, "busy", "task-1")
+	a.SetState(StateRunning) // simulate mid-turn
+
+	if err := m.SendMessage(a.ID, "queued text"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Nothing should land on stdin while the agent is mid-turn.
+	select {
+	case got := <-lines:
+		t.Fatalf("expected no stdin write while running, got %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want 1", got)
+	}
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want %q (queued send must not flip state)", st, StateRunning)
+	}
+
+	// User message must still appear in the convo buffer immediately so
+	// the chat UI shows the queued bubble before the turn drains.
+	convo := a.ConvoOutput()
+	if len(convo) != 1 {
+		t.Fatalf("convo len = %d, want 1", len(convo))
+	}
+	if convo[0].Type != "user_input" || convo[0].Text != "queued text" {
+		t.Errorf("convo[0] = %+v, want user_input/queued text", convo[0])
+	}
+}
+
+// TestSendMessage_WritesStdinWhenPaused covers the idle-chat path: when the
+// agent is parked in StatePaused (e.g. fresh chat with no initial prompt),
+// the next SendMessage must hit stdin directly and flip back to Running.
+func TestSendMessage_WritesStdinWhenPaused(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, lines := captureStdinAgent(t, m, "idle", "task-1")
+	// captureStdinAgent already starts in StatePaused.
+
+	if err := m.SendMessage(a.ID, "first message"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	select {
+	case got := <-lines:
+		if !strings.Contains(got, `first message`) {
+			t.Errorf("stdin payload missing text: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no stdin write within 2s")
+	}
+
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0", got)
+	}
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want %q after immediate send", st, StateRunning)
+	}
+}
+
+// TestStreamConvoOutput_FlushesQueueOnResult verifies that streamConvoOutput
+// drains the pending prompt queue when a result event arrives — the next
+// queued prompt is written to stdin and the agent stays Running. Without
+// this drain, queued chat follow-ups would never reach claude.
+func TestStreamConvoOutput_FlushesQueueOnResult(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, lines := captureStdinAgent(t, m, "drain", "task-1")
+	a.SetState(StateRunning)
+	a.EnqueuePrompt("next turn please")
+
+	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"
+	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+
+	select {
+	case got := <-lines:
+		if !strings.Contains(got, `next turn please`) {
+			t.Errorf("queued prompt not drained to stdin: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued prompt was not written to stdin within 2s")
+	}
+
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount after drain = %d, want 0", got)
+	}
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want Running while queue still has work in flight", st)
+	}
+}
+
+// TestStreamConvoOutput_PausesWhenQueueEmpty verifies the default no-queue
+// path: a result event with an empty pending queue must flip the agent to
+// StatePaused so the chat input goes from "thinking" to typeable.
+func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
+	m, _ := newTestManager(t)
+	a, _ := captureStdinAgent(t, m, "calm", "task-1")
+	a.SetState(StateRunning)
+
+	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.05}` + "\n"
+	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+
+	if st := a.GetState(); st != StatePaused {
+		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)
+	}
+}
