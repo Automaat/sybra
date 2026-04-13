@@ -24,6 +24,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-server ./cmd/syn
 # regenerate the blob on every build even when inputs are unchanged).
 FROM node:24-slim AS runtime
 
+# Pipe failures in subsequent RUN blocks should fail the build.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # --- Layer A: apt system packages + gh repo ---
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
