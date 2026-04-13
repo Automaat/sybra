@@ -36,8 +36,9 @@ RUN apt-get update \
     && rm -rf /root/.npm
 
 # Server-tuned klaudiush config: drop -S (no GPG key on server),
-# keep -s sign-off + conventional commit rules.
-RUN mkdir -p /root/.klaudiush && printf '%s\n' \
+# keep -s sign-off + conventional commit rules. XDG path so klaudiush
+# doctor does not warn about legacy ~/.klaudiush/ location.
+RUN mkdir -p /root/.config/klaudiush && printf '%s\n' \
     '[validators.git.commit]' \
     'enabled = true' \
     'severity = "error"' \
@@ -57,7 +58,7 @@ RUN mkdir -p /root/.klaudiush && printf '%s\n' \
     '[validators.git.no_verify]' \
     'enabled = true' \
     'severity = "error"' \
-    > /root/.klaudiush/config.toml
+    > /root/.config/klaudiush/config.toml
 
 COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
 COPY --from=frontend-builder /app/frontend/dist-web /app/web
