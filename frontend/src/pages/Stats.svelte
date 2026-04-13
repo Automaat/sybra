@@ -51,7 +51,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-6 p-6">
+<div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
   <div class="flex items-center justify-between">
     <h1 class="text-2xl font-bold">Stats</h1>
     <button

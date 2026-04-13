@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { loopStore } from '../stores/loops.svelte.js'
   import { loopagent } from '../../wailsjs/go/models.js'
   import { EventsOn } from '$lib/api'
@@ -143,7 +144,7 @@
   })
 </script>
 
-<div class="flex flex-col gap-4 p-6">
+<div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
   <div class="flex items-center justify-between">
     <p class="text-sm opacity-60">
       {loopStore.list.length} loop{loopStore.list.length !== 1 ? 's' : ''}
@@ -230,20 +231,8 @@
 </div>
 
 <!-- Create / Edit modal -->
-{#if showForm}
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-    role="presentation"
-  >
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div
-      class="w-full max-w-lg rounded-xl bg-surface-50 p-6 shadow-xl dark:bg-surface-800"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <h2 class="mb-4 text-lg font-semibold">
-        {editing ? 'Edit Loop Agent' : 'New Loop Agent'}
-      </h2>
-
+<MobileSheet open={showForm} onOpenChange={(o) => (showForm = o)} variant="bottom" title={editing ? 'Edit Loop Agent' : 'New Loop Agent'}>
+  <div class="flex flex-col px-5 pb-5 md:px-6 md:pb-6">
       {#if formError}
         <p class="mb-3 text-sm text-error-500">{formError}</p>
       {/if}
@@ -322,23 +311,22 @@
         </label>
       </div>
 
-      <div class="mt-5 flex justify-end gap-2">
+      <div class="sticky bottom-0 -mx-5 -mb-5 mt-5 flex justify-end gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95 md:-mx-6 md:-mb-6 md:px-6 md:pb-4">
         <button
           type="button"
-          class="rounded-lg bg-surface-200 px-4 py-2 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
+          class="tap rounded-lg bg-surface-200 px-4 py-2.5 text-sm font-medium active:bg-surface-300 dark:bg-surface-700 dark:active:bg-surface-600"
           onclick={() => (showForm = false)}
         >
           Cancel
         </button>
         <button
           type="button"
-          class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+          class="tap rounded-lg bg-primary-500 px-5 py-2.5 text-sm font-medium text-white active:bg-primary-700 disabled:opacity-50"
           disabled={saving || !formName || !formPrompt}
           onclick={save}
         >
           {saving ? 'Saving...' : editing ? 'Update' : 'Create'}
         </button>
       </div>
-    </div>
   </div>
-{/if}
+</MobileSheet>

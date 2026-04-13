@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MobileSheet from './shell/MobileSheet.svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { detectProject } from '../lib/detectProject.js'
@@ -120,10 +121,8 @@
   }
 </script>
 
-{#if open}
-  <div class="fixed inset-0 z-40 bg-black/40" onclick={onclose} onkeydown={handleKeydown} role="none"></div>
-  <div class="fixed left-1/2 top-1/4 z-50 w-full max-w-xl -translate-x-1/2">
-    <div class="rounded-xl border border-surface-300 bg-surface-50 shadow-2xl dark:border-surface-600 dark:bg-surface-900">
+<MobileSheet {open} onOpenChange={(o) => { if (!o) onclose() }} variant="top">
+  <div class="rounded-xl bg-surface-50 dark:bg-surface-900">
       <!-- Title input with highlight overlay -->
       <form onsubmit={handleSubmit} class="relative">
         {#if highlightParts}
@@ -221,5 +220,4 @@
         </div>
       {/if}
     </div>
-  </div>
-{/if}
+</MobileSheet>

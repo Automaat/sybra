@@ -323,7 +323,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-6 p-6">
+<div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
   <button
     type="button"
     class="flex w-fit items-center gap-1 text-sm text-surface-500 hover:text-surface-800 dark:hover:text-surface-200"
@@ -763,7 +763,7 @@
                   {:else if (runLogEvents.get(run.agentId)?.length ?? 0) > 0}
                     <StreamOutput staticEvents={runLogEvents.get(run.agentId)} />
                   {:else if run.result}
-                    <pre class="max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-300 dark:border-surface-600">{run.result}</pre>
+                    <pre class="max-h-[60dvh] md:max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-300 dark:border-surface-600">{run.result}</pre>
                   {:else}
                     <p class="py-4 text-center text-xs text-surface-500">No output available</p>
                   {/if}

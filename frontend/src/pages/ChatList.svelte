@@ -54,7 +54,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-4 p-6">
+<div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
   <div class="flex items-center justify-between">
     <h2 class="text-lg font-semibold text-surface-900 dark:text-surface-100">Chats</h2>
     <button

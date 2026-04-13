@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Dialog } from '@skeletonlabs/skeleton-svelte'
+  import MobileSheet from './shell/MobileSheet.svelte'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
 
@@ -78,18 +78,16 @@
   }
 </script>
 
-<Dialog
+<MobileSheet
   {open}
-  onOpenChange={(details) => {
-    onOpenChange(details.open)
-    if (!details.open) reset()
+  onOpenChange={(o) => {
+    onOpenChange(o)
+    if (!o) reset()
   }}
+  variant="bottom"
+  title="New Chat"
 >
-  <Dialog.Backdrop class="fixed inset-0 z-40 bg-black/50" />
-  <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <Dialog.Content class="w-full max-w-lg rounded-xl bg-surface-50 p-6 shadow-2xl dark:bg-surface-950">
-      <Dialog.Title class="mb-4 text-lg font-bold">New Chat</Dialog.Title>
-
+  <div class="flex flex-col px-5 pb-5 md:px-6 md:pb-6">
       <form onsubmit={handleSubmit} class="flex flex-col gap-4">
         <div class="flex flex-col gap-1">
           <span class="text-sm font-medium">Project</span>
@@ -123,7 +121,7 @@
                 onblur={handleProjectBlur}
               />
               {#if projectDropdownOpen}
-                <div class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-surface-300 bg-surface-50 shadow-lg dark:border-surface-600 dark:bg-surface-800">
+                <div class="absolute z-10 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-surface-300 bg-surface-50 shadow-lg dark:border-surface-600 dark:bg-surface-800">
                   {#each filteredProjects as p (p.id)}
                     <button
                       type="button"
@@ -147,8 +145,8 @@
 
         <div class="flex flex-col gap-1">
           <span class="text-sm font-medium">Provider</span>
-          <div class="flex gap-4">
-            <label class="flex items-center gap-2">
+          <div class="grid grid-cols-2 gap-2 md:flex md:gap-4">
+            <label class="tap flex cursor-pointer items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2.5 dark:border-surface-600 dark:bg-surface-700 has-[:checked]:border-primary-500 has-[:checked]:bg-primary-50 dark:has-[:checked]:bg-primary-900/30">
               <input
                 type="radio"
                 name="chat-provider"
@@ -158,7 +156,7 @@
               />
               <span class="text-sm">Claude</span>
             </label>
-            <label class="flex items-center gap-2">
+            <label class="tap flex cursor-pointer items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2.5 dark:border-surface-600 dark:bg-surface-700 has-[:checked]:border-primary-500 has-[:checked]:bg-primary-50 dark:has-[:checked]:bg-primary-900/30">
               <input
                 type="radio"
                 name="chat-provider"
@@ -185,21 +183,22 @@
           <p class="text-sm text-error-500">{error}</p>
         {/if}
 
-        <div class="flex justify-end gap-2">
-          <Dialog.CloseTrigger
-            class="rounded-lg px-4 py-2 text-sm font-medium hover:bg-surface-200 dark:hover:bg-surface-700"
+        <div class="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95 md:-mx-6 md:-mb-6 md:px-6 md:pb-4">
+          <button
+            type="button"
+            onclick={() => { onOpenChange(false); reset() }}
+            class="tap rounded-lg px-4 py-2.5 text-sm font-medium active:bg-surface-200 dark:active:bg-surface-700"
           >
             Cancel
-          </Dialog.CloseTrigger>
+          </button>
           <button
             type="submit"
             disabled={submitting || !selectedProject || projectStore.list.length === 0}
-            class="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+            class="tap rounded-lg bg-primary-500 px-5 py-2.5 text-sm font-medium text-white active:bg-primary-700 disabled:opacity-50"
           >
             {submitting ? 'Starting...' : 'Start chat'}
           </button>
         </div>
       </form>
-    </Dialog.Content>
-  </Dialog.Positioner>
-</Dialog>
+  </div>
+</MobileSheet>

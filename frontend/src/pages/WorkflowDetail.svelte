@@ -5,6 +5,8 @@
   import WorkflowGraph from '../components/workflow/WorkflowGraph.svelte'
   import StepConfigPanel from '../components/workflow/StepConfigPanel.svelte'
   import TriggerConfigPanel from '../components/workflow/TriggerConfigPanel.svelte'
+  import MobileWorkflowNotice from '../components/MobileWorkflowNotice.svelte'
+  import { viewport } from '../lib/viewport.svelte.js'
   import {
     definitionToGraph,
     graphToDefinition,
@@ -149,6 +151,9 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if !viewport.isDesktop}
+  <MobileWorkflowNotice {def} {onback} />
+{:else}
 <div class="flex h-full flex-col">
   <div class="flex items-center gap-3 border-b border-surface-300 px-4 py-2 dark:border-surface-600">
     <button
@@ -219,3 +224,4 @@
     {/if}
   </div>
 </div>
+{/if}
