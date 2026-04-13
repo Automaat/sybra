@@ -53,15 +53,18 @@ const (
 	TaskTypeNormal   TaskType = "normal"
 	TaskTypeDebug    TaskType = "debug"
 	TaskTypeResearch TaskType = "research"
+	// TaskTypeChat is a synthetic task created for interactive chat sessions.
+	// Hidden from the task list UI and skipped by restart-stale/watchdog.
+	TaskTypeChat TaskType = "chat"
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
+	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true, TaskTypeChat: true,
 }
 
 // AllTaskTypes returns every valid task type in display order.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch}
+	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat}
 }
 
 func ValidateTaskType(s string) (TaskType, error) {

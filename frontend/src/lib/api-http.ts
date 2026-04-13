@@ -44,6 +44,8 @@ export function ListNotifications(): Promise<Array<notification.Notification>> {
 export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
 export function StartAgent(arg1: string, arg2: string, arg3: string): Promise<agent.Agent> { return call('App', 'StartAgent', arg1, arg2, arg3) }
+export function StartChat(arg1: string, arg2: string, arg3: string): Promise<agent.Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
+export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 
 // ConfigService
 export function GetSettings(): Promise<synapse.AppSettings> { return call('ConfigService', 'GetSettings') }

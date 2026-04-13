@@ -115,6 +115,39 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	return t, nil
 }
 
+// CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
+// hidden from the task list UI and never restart on app reboot. The slug is
+// "chat-<8char>" so the worktree DirName is distinctive.
+func (s *Store) CreateChat(projectID string) (Task, error) {
+	if projectID == "" {
+		return Task{}, fmt.Errorf("project_id is required for chat")
+	}
+	now := time.Now().UTC()
+	id := uuid.NewString()[:8]
+	title := "chat " + now.Format("01-02 15:04")
+	t := Task{
+		ID:        id,
+		Slug:      "chat-" + id,
+		Title:     title,
+		Status:    StatusInProgress,
+		TaskType:  TaskTypeChat,
+		AgentMode: AgentModeInteractive,
+		ProjectID: projectID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	data, err := Marshal(t)
+	if err != nil {
+		return Task{}, err
+	}
+	filename := fmt.Sprintf("%s.md", t.ID)
+	t.FilePath = filepath.Join(s.dir, filename)
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+		return Task{}, fmt.Errorf("write chat task file: %w", err)
+	}
+	return t, nil
+}
+
 func (s *Store) Delete(id string) error {
 	t, err := s.Get(id)
 	if err != nil {

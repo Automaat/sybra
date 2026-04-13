@@ -37,6 +37,15 @@
       error = String(e)
     }
   }
+
+  async function handleEndChat() {
+    try {
+      await agentStore.stopChat(agentId)
+      onback()
+    } catch (e) {
+      error = String(e)
+    }
+  }
 </script>
 
 <div class="flex h-full flex-col">
@@ -75,12 +84,20 @@
       {#if a.state === 'running' || a.state === 'paused'}
         <button
           type="button"
-          class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600"
+          class="rounded bg-surface-300 px-2.5 py-1 text-xs font-medium text-surface-900 hover:bg-surface-400 dark:bg-surface-700 dark:text-surface-100 dark:hover:bg-surface-600"
           onclick={handleStop}
         >
           Stop
         </button>
       {/if}
+      <button
+        type="button"
+        class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600"
+        onclick={handleEndChat}
+        title="Stop chat and delete worktree"
+      >
+        End chat
+      </button>
     {/if}
   </div>
 

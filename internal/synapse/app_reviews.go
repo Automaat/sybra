@@ -271,6 +271,10 @@ func (r *ReviewHandler) detectPublishedReviews(tasks []task.Task) {
 // Branch-only matching stays gated on in-review to avoid false positives
 // from tasks that pushed a WIP branch without opening a PR yet.
 func prMonitorEligible(t *task.Task) bool {
+	if t.TaskType == task.TaskTypeChat {
+		// Chat tasks are ephemeral and never have PRs — exclude from PR monitoring.
+		return false
+	}
 	if slices.Contains(t.Tags, "review") {
 		// Review tasks are inbound (reviewing someone else's PR), not tasks
 		// whose own PR is being tracked. They're handled separately.
