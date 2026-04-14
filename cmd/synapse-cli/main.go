@@ -715,6 +715,9 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 
 	fmt.Printf("Health Report (generated %s)\n", report.GeneratedAt)
 	fmt.Printf("Period: %s to %s\n", report.PeriodStart, report.PeriodEnd)
+	if report.Score != "" {
+		fmt.Printf("Score: %s\n", report.Score)
+	}
 	fmt.Printf("Findings: %d\n\n", len(report.Findings))
 
 	for _, raw := range report.Findings {
@@ -736,6 +739,7 @@ type healthReport struct {
 	GeneratedAt string            `json:"generatedAt"`
 	PeriodStart string            `json:"periodStart"`
 	PeriodEnd   string            `json:"periodEnd"`
+	Score       string            `json:"score"`
 	Findings    []json.RawMessage `json:"findings"`
 	Stats       json.RawMessage   `json:"stats"`
 }

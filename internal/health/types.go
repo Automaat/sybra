@@ -14,12 +14,24 @@ const (
 type Category string
 
 const (
-	CatFailureRate  Category = "failure_rate"
-	CatCostOutlier  Category = "cost_outlier"
-	CatStuckTask    Category = "stuck_task"
-	CatWorkflowLoop Category = "workflow_loop"
-	CatStatusBounce Category = "status_bounce"
-	CatCostDrift    Category = "cost_drift"
+	CatFailureRate      Category = "failure_rate"
+	CatCostOutlier      Category = "cost_outlier"
+	CatStuckTask        Category = "stuck_task"
+	CatWorkflowLoop     Category = "workflow_loop"
+	CatStatusBounce     Category = "status_bounce"
+	CatCostDrift        Category = "cost_drift"
+	CatAgentRetryLoop   Category = "agent_retry_loop"
+	CatTriageMismatch   Category = "triage_mismatch"
+	CatStatusBottleneck Category = "status_bottleneck"
+)
+
+// Score is the rollup verdict across all findings in a report.
+type Score string
+
+const (
+	ScoreGood     Score = "good"
+	ScoreWarning  Score = "warning"
+	ScoreCritical Score = "critical"
 )
 
 // Finding is a single health issue detected by the checker.
@@ -50,6 +62,21 @@ type Report struct {
 	GeneratedAt time.Time `json:"generatedAt"`
 	PeriodStart time.Time `json:"periodStart"`
 	PeriodEnd   time.Time `json:"periodEnd"`
+	Score       Score     `json:"score"`
 	Findings    []Finding `json:"findings"`
 	Stats       Stats     `json:"stats"`
+}
+
+// RollupScore returns good if there are no findings, critical if any finding
+// is critical, otherwise warning.
+func RollupScore(findings []Finding) Score {
+	if len(findings) == 0 {
+		return ScoreGood
+	}
+	for i := range findings {
+		if findings[i].Severity == SeverityCritical {
+			return ScoreCritical
+		}
+	}
+	return ScoreWarning
 }
