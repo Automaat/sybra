@@ -409,6 +409,16 @@ func (a *App) startSelfMonitorService(ctx context.Context, emit func(string, any
 			}
 			return a.allowsProjectType(p.Type)
 		},
+		Judge: &selfmonitor.ClaudeJudge{
+			Model:  a.cfg.SelfMonitor.JudgeModel,
+			Logger: a.logger,
+		},
+		Actor: &selfmonitor.Actor{
+			Tasks:  a.tasks,
+			DryRun: a.cfg.SelfMonitor.DryRun,
+			Logger: a.logger,
+		},
+		ProviderGate: a.providerHealth,
 	})
 	a.selfMonitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
