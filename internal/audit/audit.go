@@ -10,6 +10,7 @@ const (
 	EventAgentCompleted      = "agent.completed"
 	EventAgentFailed         = "agent.failed"
 	EventTriageCompleted     = "triage.completed"
+	EventTriageClassified    = "triage.classified"
 	EventPlanCompleted       = "plan.completed"
 	EventPlanApproved        = "plan.approved"
 	EventPlanRejected        = "plan.rejected"

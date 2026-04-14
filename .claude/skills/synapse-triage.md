@@ -1,209 +1,47 @@
 ---
 name: synapse-triage
-description: Triage Synapse tasks — read incoming tasks, categorize, set priority tags, assign agent mode. Use when asked to triage, categorize, or prioritize tasks.
-allowed-tools: Bash, Read, WebFetch
+description: Triage Synapse tasks — delegate to the Go classifier which rewrites the title, assigns tags/mode/status, and matches a project in one atomic update. Use when asked to triage, categorize, or prioritize tasks.
+allowed-tools: Bash
 user-invocable: true
 ---
 
 # Synapse Task Triage
 
-Triage incoming tasks: analyze content, assign tags, set appropriate agent mode, update status.
-
-## CLI Reference
-
-The ONLY valid flags for `synapse-cli update` are: `--title`, `--status`, `--body`, `--mode`, `--tags`, `--project`. Do NOT use `--agent-mode` or any other flag — they do not exist and will error.
-
-## Constraints
-
-- Do NOT explore the codebase, read source files, or spawn sub-agents
-- Triage based on title, body, and URL context only
-- Keep total cost under $0.05 per task
-- Code exploration happens during planning/implementation, not triage
-- Ignore agent runs with a `role` field (triage, plan, eval, pr-fix) — those are system agents, not implementation agents
-- Always shorten titles >80 chars — keep them actionable/descriptive, not just truncated
-- When shortening, move the verbose original title into the task body (prepend, preserve existing content)
+Classify pending tasks via the Go classifier. Go owns routing rules, tag validation, project auto-match, and atomic multi-field updates. The LLM only produces the structured verdict.
 
 ## Process
 
-### 1. List pending tasks
+1. List pending tasks:
 
-```bash
-synapse-cli --json list --status new
-```
+   ```bash
+   synapse-cli --json list --status new
+   ```
 
-### 2. For each task, analyze and categorize
+2. For each task, run the classifier:
 
-Read the task body to understand scope:
+   ```bash
+   synapse-cli --json triage classify <id>
+   ```
 
-```bash
-synapse-cli --json get <id>
-```
+   This makes a single `claude -p` call that:
+   - Rewrites the title into a clean imperative conventional-commit form (always, even if the input already looked fine)
+   - Preserves the original title in the body
+   - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type)
+   - Picks size (small|medium|large), type (bug|feature|refactor|review|chore|docs), and mode (headless|interactive)
+   - Auto-matches a registered project if a github.com URL is in the title or body
+   - Applies routing rules (medium/large features → planning; everything else → todo)
+   - Forces `interactive` mode for `work` projects unless it's a PR review
+   - Writes a `triage.classified` audit event
 
-If the task title or body is just a URL with no description, fetch context and enrich the task:
+3. Batch mode for larger queues:
 
-```bash
-# GitHub PR
-gh pr view <url> --json title,body,files,additions,deletions
+   ```bash
+   synapse-cli --json triage classify --all
+   ```
 
-# GitHub issue
-gh issue view <url> --json title,body,labels,comments
+## Constraints
 
-# Generic URL — use WebFetch to read page title/content
-```
-
-Update the task with a human-readable summary — replace the raw URL title with what it actually is, add key details to body, preserve original URL:
-
-```bash
-synapse-cli --json update <id> \
-  --title "<concise title from fetched context>" \
-  --body "Source: <url>
-Files: N changed (+A/-D)
-
-<description excerpt, max ~500 chars>"
-```
-
-### 3. Detect and rewrite freeform instruction-style titles
-
-Check if the title looks like natural-language/casual instruction rather than a structured task title. Indicators:
-
-- Starts with "i ", "we ", "maybe ", "i think", "i want", "could we", "let's", "should we", etc.
-- Written as a sentence/thought, not an imperative action
-- Contains filler phrases like "i often", "i feel like", "sometimes", "random stuff"
-- Clearly conversational in tone
-
-If detected, rewrite the title as a concise, imperative, structured task title. Move the original freeform text into the body so context is preserved.
-
-<example>
-Input title: "in synapse i often write random stuff as task name"
-Output title: "feat(triage): rewrite freeform titles into structured task titles"
-</example>
-
-<example>
-Input title: "i think we should add auth"
-Output title: "feat(auth): add authentication"
-</example>
-
-<example>
-Input title: "make the button blue"
-Output title: "fix(ui): change button color to blue"
-</example>
-
-Use conventional commit format (`type(scope): description`) when the domain/type is clear. Otherwise use a plain imperative title.
-
-```bash
-synapse-cli --json update <id> \
-  --title "<structured imperative title>" \
-  --body "**Original instruction:** <original freeform title>
-
-<existing body content preserved here>"
-```
-
-Skip if the title is already structured/imperative.
-
-### 4. Shorten title if too long
-
-If the title exceeds 80 characters, rewrite it as a concise ≤80 char summary. Move the original verbose title into the task body so no context is lost.
-
-Read the current body first (already done in step 2), then update with both `--title` and `--body` in a single call:
-
-```bash
-synapse-cli --json update <id> \
-  --title "<concise summary ≤80 chars>" \
-  --body "**Original title:** <original verbose title>
-
-<existing body content preserved here>"
-```
-
-- Keep the rewritten title actionable and descriptive — summarize intent, don't just truncate
-- If the task already has body content, prepend the original title line above it
-- Skip if title is already ≤80 chars
-
-### 5. Add brief description if missing
-
-If the task body is empty or has no meaningful context beyond a URL, add a 2-3 sentence description based on what you know from the title, URL context (if fetched), and general understanding. Do NOT explore the codebase or read source files — just clarify what the task is about and what "done" looks like.
-
-```bash
-synapse-cli --json update <id> \
-  --body "Brief description of what needs to happen and expected outcome.
-
-Original context preserved here if any."
-```
-
-Skip if the task already has a clear, descriptive body.
-
-### 6. Assign tags based on analysis
-
-Common tag categories:
-- **Domain**: `backend`, `frontend`, `infra`, `docs`, `ci`
-- **Size**: `small`, `medium`, `large`
-- **Type**: `bug`, `feature`, `refactor`, `review`
-
-```bash
-synapse-cli --json update <id> --tags "backend,small,review"
-```
-
-### 7. Set agent mode
-
-- `headless` — automated tasks: code reviews, simple fixes, test writing
-- `interactive` — tasks needing human guidance: architecture decisions, complex debugging
-
-```bash
-synapse-cli --json update <id> --mode headless
-```
-
-### 8. Assign project (if applicable)
-
-Check if the task references a known project (GitHub repo). List available projects:
-
-```bash
-synapse-cli --json project list
-```
-
-If the task body/URL matches a registered project, assign it:
-
-```bash
-synapse-cli --json update <id> --project "owner/repo"
-```
-
-After assigning, look up the project type:
-
-```bash
-synapse-cli --json project get "owner/repo"
-```
-
-If `type` is `work`, apply these overrides in the next steps:
-- Force `planning` status for medium/large features (regardless of other signals)
-- Set mode to `interactive` unless the task is a PR review
-- Add note to body: "Work project — enforcing higher standards"
-
-### 9. Decide: planning or direct implementation
-
-Complex tasks go to `planning` status (triggers auto-planning agent). Simple tasks go to `todo`.
-
-```bash
-# Complex tasks: medium/large features, architecture decisions → planning
-synapse-cli --json update <id> --status planning
-
-# Simple tasks: small bugs, refactors, reviews, chores → todo
-synapse-cli --json update <id> --status todo
-```
-
-| Signal | Status |
-|--------|--------|
-| Size `medium` or `large` + type `feature` | planning |
-| Architecture decision, unclear scope | planning |
-| Size `small`, type `bug`/`refactor`/`review`/`chore` | todo |
-| PR review | todo |
-| **Work project** + size `medium`/`large` + type `feature` | planning (forced) |
-
-Step 8 already sets the status — no further status update needed. Skip if a previous step already changed the status.
-
-## Decision Criteria
-
-| Signal | Mode | Tags |
-|--------|------|------|
-| PR review URL | headless | review, size based on diff |
-| Bug report with repro | headless | bug, domain from stack trace |
-| Feature request, unclear scope | interactive | feature, large |
-| Simple refactor/rename | headless | refactor, small |
-| Architecture decision | interactive | feature, large |
+- Do NOT call `synapse-cli update` directly during triage — the Go classifier owns every field change. Manual updates will race the classifier and break audit trails.
+- Do NOT explore the codebase or read source files — the classifier sees only `{title, body, registered projects}`. Codebase exploration belongs in planning/implementation.
+- If `classify` returns an error, flag the task with `synapse-cli update <id> --status human-required --status-reason "triage failed"` and move on.
+- Ignore tasks with `role` field set (triage, plan, eval, pr-fix) — those are system agents, not implementation work.

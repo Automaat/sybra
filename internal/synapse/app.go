@@ -68,6 +68,7 @@ type App struct {
 	todoistHandler  *poll.TodoistHandler
 	todoistCancel   context.CancelFunc
 	renovateHandler *poll.RenovateHandler
+	triageHandler   *poll.TriageHandler
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
@@ -243,6 +244,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initTodoist(emit)
 	a.initRenovate(emit)
+	a.initTriage()
 	issuesFetcher := a.initIssuesFetcher(emit)
 	a.wireServices(emit)
 
@@ -341,6 +343,9 @@ func (a *App) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetche
 	if a.renovateHandler != nil {
 		hub.Register(a.renovateHandler, 15*time.Second)
 	}
+	if a.triageHandler != nil {
+		hub.Register(a.triageHandler, 30*time.Second)
+	}
 	hub.Start(ctx, &a.wg, a.logger)
 }
 
@@ -382,6 +387,7 @@ func (a *App) logAutomationsSummary() {
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"renovate", a.cfg.Renovate.Enabled,
+		"triage", a.cfg.Triage.Enabled,
 		"project_types", projectTypes,
 		"loop_agents_enabled", loopAgentsEnabled,
 	)
