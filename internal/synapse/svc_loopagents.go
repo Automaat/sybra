@@ -2,12 +2,13 @@ package synapse
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -122,9 +123,7 @@ func (s *LoopAgentService) ListLoopAgentRuns(id string, limit int) ([]LoopAgentR
 		runs = append(runs, fileRuns...)
 	}
 
-	sort.Slice(runs, func(i, j int) bool {
-		return runs[i].FinishedAt.After(runs[j].FinishedAt)
-	})
+	slices.SortFunc(runs, func(a, b LoopAgentRun) int { return b.FinishedAt.Compare(a.FinishedAt) })
 	if len(runs) > limit {
 		runs = runs[:limit]
 	}
@@ -148,7 +147,7 @@ func auditFilesNewestFirst(dir string) ([]string, error) {
 		}
 		paths = append(paths, filepath.Join(dir, e.Name()))
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	slices.SortFunc(paths, func(a, b string) int { return cmp.Compare(b, a) })
 	return paths, nil
 }
 

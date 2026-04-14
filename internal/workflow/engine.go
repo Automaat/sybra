@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"os/exec"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -211,8 +211,8 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 	}
 	// Stable sort preserves store order (alphabetical) within the same
 	// priority bucket, so tiebreaks stay deterministic across runs.
-	sort.SliceStable(matches, func(i, j int) bool {
-		return matches[i].Trigger.Priority > matches[j].Trigger.Priority
+	slices.SortStableFunc(matches, func(a, b *Definition) int {
+		return cmp.Compare(b.Trigger.Priority, a.Trigger.Priority)
 	})
 	if len(matches) > 1 {
 		e.logger.Info("workflow.match.multiple",
