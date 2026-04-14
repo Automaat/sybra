@@ -103,6 +103,9 @@ func (c *Checker) check() {
 	findings = append(findings, checkWorkflowLoops(dayEvents, now)...)
 	findings = append(findings, checkStatusBounce(dayEvents, now)...)
 	findings = append(findings, checkCostDrift(dayEvents, weekEvents, now)...)
+	findings = append(findings, checkAgentRetryLoops(dayEvents, now)...)
+	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
+	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
 
 	stats := buildStats(dayEvents)
 
@@ -110,6 +113,7 @@ func (c *Checker) check() {
 		GeneratedAt: now,
 		PeriodStart: since,
 		PeriodEnd:   now,
+		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
 	}
