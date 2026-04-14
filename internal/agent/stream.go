@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -48,46 +49,94 @@ type CodexEvent struct {
 	Result    *ClaudeResult
 }
 
+type claudeEnvelope struct {
+	Type              string                `json:"type"`
+	Subtype           string                `json:"subtype"`
+	SessionID         string                `json:"session_id"`
+	Message           *claudeMessagePayload `json:"message"`
+	Result            string                `json:"result"`
+	TotalCostUSD      float64               `json:"total_cost_usd"`
+	TotalInputTokens  int                   `json:"total_input_tokens"`
+	TotalOutputTokens int                   `json:"total_output_tokens"`
+}
+
+type claudeMessagePayload struct {
+	Content []claudeContentBlock `json:"content"`
+}
+
+type claudeContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+type claudeTextBlock struct {
+	Text string `json:"text"`
+}
+
+type codexEnvelope struct {
+	Type      string      `json:"type"`
+	ThreadID  string      `json:"thread_id"`
+	Message   string      `json:"message"`
+	ErrorType string      `json:"error_type"`
+	Code      int         `json:"code"`
+	Item      *codexItem  `json:"item"`
+	Usage     *codexUsage `json:"usage"`
+}
+
+type codexItem struct {
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	Text             string `json:"text"`
+	Command          string `json:"command"`
+	AggregatedOutput string `json:"aggregated_output"`
+	ExitCode         *int   `json:"exit_code"`
+}
+
+type codexUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 // ParseClaudeLine parses one line of Claude stream-json output.
 // The returned ClaudeEvent.Raw is an independent copy safe to keep after the
 // scanner buffer is reused.
 func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
-	var raw map[string]any
+	var raw claudeEnvelope
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return ClaudeEvent{}, fmt.Errorf("unmarshal: %w", err)
 	}
 
-	// ok intentionally discarded: missing/non-string type yields "" which is
-	// handled below by the default case.
-	eventType, _ := raw["type"].(string)
 	event := ClaudeEvent{
-		Type:    eventType,
-		Subtype: strVal(raw, "subtype"),
+		Type:    raw.Type,
+		Subtype: raw.Subtype,
 		Raw:     copyRaw(line),
 	}
 
-	switch eventType {
+	switch raw.Type {
 	case "system":
-		// ok intentionally discarded: zero-value "" is safe when session_id absent.
-		event.SessionID, _ = raw["session_id"].(string)
+		event.SessionID = raw.SessionID
 
 	case "assistant":
-		msg, _ := raw["message"].(map[string]any)
-		if msg != nil {
-			m := extractAssistantContent(msg)
+		if raw.Message != nil {
+			m := extractAssistantContentTyped(raw.Message)
 			event.Message = &m
 		}
-		event.SessionID = strVal(raw, "session_id")
+		event.SessionID = raw.SessionID
 
 	case "user":
-		msg, _ := raw["message"].(map[string]any)
-		if msg != nil {
-			results := extractToolResults(msg)
+		if raw.Message != nil {
+			results := extractToolResultsTyped(raw.Message)
 			event.Message = &ClaudeMessage{Role: "user", ToolResults: results}
 		}
 
 	case "result":
-		r := extractResultFields(raw)
+		r := extractResultFieldsTyped(raw)
 		event.Result = &r
 		event.SessionID = r.SessionID
 
@@ -102,50 +151,46 @@ func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
 // The returned CodexEvent.Raw is an independent copy safe to keep after the
 // scanner buffer is reused.
 func ParseCodexLine(line []byte) (CodexEvent, error) {
-	var raw map[string]any
+	var raw codexEnvelope
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return CodexEvent{}, fmt.Errorf("unmarshal: %w", err)
 	}
 
 	rawCopy := copyRaw(line)
-	eventType := strVal(raw, "type")
 
-	switch eventType {
+	switch raw.Type {
 	case "thread.started":
-		return CodexEvent{Type: "init", SessionID: strVal(raw, "thread_id"), Raw: rawCopy}, nil
+		return CodexEvent{Type: "init", SessionID: raw.ThreadID, Raw: rawCopy}, nil
 
 	case "turn.started":
 		return CodexEvent{Type: "init", Raw: rawCopy}, nil
 
 	case "error":
-		errStatus := int(floatVal(raw, "code"))
-		errType, _ := raw["error_type"].(string)
 		return CodexEvent{
 			Type:    "result",
 			Subtype: "error",
 			Raw:     rawCopy,
 			Result: &ClaudeResult{
 				Subtype:     "error",
-				Text:        strVal(raw, "message"),
-				ErrorType:   errType,
-				ErrorStatus: errStatus,
+				Text:        raw.Message,
+				ErrorType:   raw.ErrorType,
+				ErrorStatus: raw.Code,
 			},
 		}, nil
 
 	case "turn.completed":
-		usage, _ := raw["usage"].(map[string]any)
 		var r ClaudeResult
-		if usage != nil {
-			r.InputTokens = int(floatVal(usage, "input_tokens"))
-			r.OutputTokens = int(floatVal(usage, "output_tokens"))
+		if raw.Usage != nil {
+			r.InputTokens = raw.Usage.InputTokens
+			r.OutputTokens = raw.Usage.OutputTokens
 		}
 		return CodexEvent{Type: "result", Raw: rawCopy, Result: &r}, nil
 
 	case "item.started", "item.completed":
-		return parseCodexItemLine(eventType, raw, rawCopy)
+		return parseCodexItemLineTyped(raw.Type, raw.Item, rawCopy)
 
 	default:
-		return CodexEvent{Type: eventType, Raw: rawCopy}, nil
+		return CodexEvent{Type: raw.Type, Raw: rawCopy}, nil
 	}
 }
 
@@ -209,6 +254,70 @@ func parseCodexItemLine(eventType string, raw map[string]any, rawCopy json.RawMe
 	}
 }
 
+func parseCodexItemLineTyped(eventType string, item *codexItem, rawCopy json.RawMessage) (CodexEvent, error) {
+	if item == nil {
+		return CodexEvent{Type: eventType, Raw: rawCopy}, nil
+	}
+
+	switch item.Type {
+	case "agent_message":
+		return CodexEvent{
+			Type: "assistant",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "assistant",
+				Text: item.Text,
+			},
+		}, nil
+
+	case "command_execution":
+		if eventType == "item.started" {
+			return CodexEvent{
+				Type: "tool_use",
+				Raw:  rawCopy,
+				Message: &ClaudeMessage{
+					Role: "assistant",
+					ToolUses: []ToolUseBlock{{
+						ID:    item.ID,
+						Name:  "Bash",
+						Input: map[string]any{"command": item.Command},
+					}},
+				},
+			}, nil
+		}
+		output := item.AggregatedOutput
+		exitCode := 0
+		if item.ExitCode != nil {
+			exitCode = *item.ExitCode
+		}
+		if output == "" {
+			output = fmt.Sprintf("Command exited with code %d.", exitCode)
+		}
+		return CodexEvent{
+			Type: "tool_result",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "user",
+				ToolResults: []ToolResultBlock{{
+					ToolUseID: item.ID,
+					Content:   output,
+					IsError:   exitCode != 0,
+				}},
+			},
+		}, nil
+
+	default:
+		return CodexEvent{
+			Type: "assistant",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "assistant",
+				Text: item.Text,
+			},
+		}, nil
+	}
+}
+
 // extractAssistantContent parses the "message" block from an assistant event.
 // Text contains only joined text blocks. ToolUses contains structured tool calls.
 func extractAssistantContent(msg map[string]any) ClaudeMessage {
@@ -236,6 +345,39 @@ func extractAssistantContent(msg map[string]any) ClaudeMessage {
 			}
 			if input, ok := block["input"].(map[string]any); ok {
 				tb.Input = input
+			}
+			tools = append(tools, tb)
+		}
+	}
+	return ClaudeMessage{
+		Role:     "assistant",
+		Text:     strings.Join(textParts, "\n"),
+		ToolUses: tools,
+	}
+}
+
+func extractAssistantContentTyped(msg *claudeMessagePayload) ClaudeMessage {
+	if msg == nil || len(msg.Content) == 0 {
+		return ClaudeMessage{Role: "assistant"}
+	}
+	var textParts []string
+	var tools []ToolUseBlock
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				textParts = append(textParts, block.Text)
+			}
+		case "tool_use":
+			tb := ToolUseBlock{
+				ID:   block.ID,
+				Name: block.Name,
+			}
+			if len(block.Input) > 0 && !bytes.Equal(block.Input, []byte("null")) {
+				var input map[string]any
+				if err := json.Unmarshal(block.Input, &input); err == nil {
+					tb.Input = input
+				}
 			}
 			tools = append(tools, tb)
 		}
@@ -289,6 +431,40 @@ func extractToolResults(msg map[string]any) []ToolResultBlock {
 	return results
 }
 
+func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
+	if msg == nil || len(msg.Content) == 0 {
+		return nil
+	}
+	var results []ToolResultBlock
+	for _, block := range msg.Content {
+		if block.Type != "tool_result" {
+			continue
+		}
+		tr := ToolResultBlock{
+			ToolUseID: block.ToolUseID,
+			IsError:   block.IsError,
+		}
+		switch {
+		case len(block.Content) == 0 || bytes.Equal(block.Content, []byte("null")):
+		case len(block.Content) > 0 && block.Content[0] == '"':
+			_ = json.Unmarshal(block.Content, &tr.Content)
+		case len(block.Content) > 0 && block.Content[0] == '[':
+			var parts []claudeTextBlock
+			if err := json.Unmarshal(block.Content, &parts); err == nil {
+				text := make([]string, 0, len(parts))
+				for _, part := range parts {
+					if part.Text != "" {
+						text = append(text, part.Text)
+					}
+				}
+				tr.Content = strings.Join(text, "\n")
+			}
+		}
+		results = append(results, tr)
+	}
+	return results
+}
+
 // extractResultFields parses cost, token, and session fields from a "result" event.
 func extractResultFields(raw map[string]any) ClaudeResult {
 	r := ClaudeResult{
@@ -307,6 +483,17 @@ func extractResultFields(raw map[string]any) ClaudeResult {
 		r.OutputTokens = int(v)
 	}
 	return r
+}
+
+func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
+	return ClaudeResult{
+		Subtype:      raw.Subtype,
+		Text:         raw.Result,
+		SessionID:    raw.SessionID,
+		CostUSD:      raw.TotalCostUSD,
+		InputTokens:  raw.TotalInputTokens,
+		OutputTokens: raw.TotalOutputTokens,
+	}
 }
 
 // copyRaw returns an independent copy of line as json.RawMessage.

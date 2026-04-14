@@ -505,6 +505,38 @@ func TestStoreAddRunNotFound(t *testing.T) {
 	}
 }
 
+func TestStoreAddRunWithStatus(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Run task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.AddRunWithStatus(created.ID, AgentRun{
+		AgentID: "agent-001",
+		Mode:    "headless",
+		State:   "running",
+	}, Ptr(StatusInProgress)); err != nil {
+		t.Fatalf("AddRunWithStatus: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusInProgress {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+}
+
 func TestStoreUpdateRun(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
@@ -671,5 +703,108 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
+	}
+}
+
+func TestStoreGetInvalidatePathRefreshesExternalEdit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Original", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Get(created.ID); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	created.Title = "Edited on disk"
+	data, err := Marshal(created)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
+		t.Fatalf("write edited task: %v", err)
+	}
+
+	store.InvalidatePath(created.FilePath)
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get after invalidate: %v", err)
+	}
+	if got.Title != "Edited on disk" {
+		t.Fatalf("Title = %q, want %q", got.Title, "Edited on disk")
+	}
+}
+
+func TestStoreListInvalidatePathRefreshesSidecar(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.WriteFile(planPath, []byte("# refreshed plan"), 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+
+	store.InvalidatePath(planPath)
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after invalidate: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Plan != "# refreshed plan" {
+		t.Fatalf("Plan = %q, want %q", tasks[0].Plan, "# refreshed plan")
+	}
+}
+
+func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Original", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := store.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	listed[0].Title = "Mutated caller copy"
+	listed[0].Tags = append(listed[0].Tags, "mutated")
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Original" {
+		t.Fatalf("Title = %q, want %q", got.Title, "Original")
+	}
+	if len(got.Tags) != 0 {
+		t.Fatalf("Tags = %v, want empty", got.Tags)
 	}
 }

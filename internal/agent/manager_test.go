@@ -265,6 +265,38 @@ func TestHasRunningAgentUsesGoroutineLifetime(t *testing.T) {
 	}
 }
 
+func TestRunningCountTracksLiveAgents(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a1 := &Agent{ID: "a1", TaskID: "task-1", State: StateRunning, done: make(chan struct{})}
+	a2 := &Agent{ID: "a2", TaskID: "task-2", State: StatePaused, done: make(chan struct{})}
+	m.mu.Lock()
+	m.agents[a1.ID] = a1
+	m.agents[a2.ID] = a2
+	m.liveCount = 2
+	m.mu.Unlock()
+
+	if got := m.RunningCount(); got != 2 {
+		t.Fatalf("RunningCount = %d, want 2", got)
+	}
+
+	m.markAgentDone(a1)
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount after one done = %d, want 1", got)
+	}
+
+	// Idempotent on repeated terminal paths.
+	m.markAgentDone(a1)
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount after duplicate done = %d, want 1", got)
+	}
+
+	m.markAgentDone(a2)
+	if got := m.RunningCount(); got != 0 {
+		t.Fatalf("RunningCount after all done = %d, want 0", got)
+	}
+}
+
 func TestStopAgentNotFound(t *testing.T) {
 	m, _ := newTestManager(t)
 	err := m.StopAgent("nonexistent")

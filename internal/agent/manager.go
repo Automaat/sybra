@@ -27,6 +27,7 @@ type Guardrails struct {
 type Manager struct {
 	agents        map[string]*Agent
 	mu            sync.RWMutex
+	liveCount     int
 	ctx           context.Context
 	emit          EmitFunc
 	onComplete    func(ag *Agent)
@@ -148,23 +149,7 @@ func (m *Manager) recordCompletion(a *Agent, ok bool) {
 func (m *Manager) RunningCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.runningCountLocked()
-}
-
-func (m *Manager) runningCountLocked() int {
-	count := 0
-	for _, a := range m.agents {
-		if a.done != nil {
-			select {
-			case <-a.done:
-			default:
-				count++
-			}
-		} else if a.GetState() == StateRunning {
-			count++
-		}
-	}
-	return count
+	return m.liveCount
 }
 
 func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowedTools []string) (*Agent, error) {
@@ -215,12 +200,15 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 
 	m.mu.Lock()
-	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.runningCountLocked() >= m.maxConcurrent {
+	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
 		return nil, fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
 	}
 	m.agents[id] = a
+	if a.done != nil {
+		m.liveCount++
+	}
 	m.mu.Unlock()
 
 	metrics.AgentStarted(a.Provider, a.Mode)
@@ -244,6 +232,20 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func (m *Manager) markAgentDone(a *Agent) {
+	if a == nil || a.done == nil {
+		return
+	}
+	a.doneOnce.Do(func() {
+		close(a.done)
+		m.mu.Lock()
+		if m.liveCount > 0 {
+			m.liveCount--
+		}
+		m.mu.Unlock()
+	})
 }
 
 func (m *Manager) buildCommand(cfg RunConfig) (string, error) {

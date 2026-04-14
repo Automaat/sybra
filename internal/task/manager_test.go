@@ -164,6 +164,47 @@ func TestManagerAddRunEmitsUpdated(t *testing.T) {
 	}
 }
 
+func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
+	t.Parallel()
+	m, emitter := newTestManager(t)
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var hookCalls int
+	m.SetStatusChangeHook(func(id, from, to string) {
+		hookCalls++
+		if id != task.ID || from != string(StatusTodo) || to != string(StatusInProgress) {
+			t.Fatalf("hook got (%s,%s,%s)", id, from, to)
+		}
+	})
+
+	if err := m.AddRunWithStatus(task.ID, AgentRun{AgentID: "a1", State: "running"}, Ptr(StatusInProgress)); err != nil {
+		t.Fatalf("AddRunWithStatus: %v", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("hookCalls = %d, want 1", hookCalls)
+	}
+
+	names := emitter.names()
+	if len(names) != 2 || names[1] != events.TaskUpdated {
+		t.Fatalf("events = %v", names)
+	}
+
+	got, err := m.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusInProgress {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
+	}
+	if len(got.AgentRuns) != 1 || got.AgentRuns[0].AgentID != "a1" {
+		t.Fatalf("AgentRuns = %+v", got.AgentRuns)
+	}
+}
+
 func TestManagerUpdateRunEmitsUpdated(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)

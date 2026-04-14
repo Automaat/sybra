@@ -192,7 +192,15 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	emit := a.emit
+	emit := func(event string, data any) {
+		switch event {
+		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
+			if path, ok := data.(string); ok {
+				store.InvalidatePath(path)
+			}
+		}
+		a.emit(event, data)
+	}
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
@@ -562,6 +570,10 @@ func (a *App) onWorkflowComplete(info workflow.CompletionInfo) {
 }
 
 func (a *App) initWorkflowEngine() {
+	if os.Getenv("SYNAPSE_DISABLE_WORKFLOWS") == "1" {
+		a.logger.Info("workflow.disabled")
+		return
+	}
 	wfStore, err := workflow.NewStore(config.WorkflowsDir())
 	if err != nil {
 		a.logger.Error("workflow.store.init", "err", err)

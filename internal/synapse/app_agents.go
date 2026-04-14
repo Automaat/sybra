@@ -97,15 +97,6 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
-	// Flip status only after worktree prep succeeds — otherwise a failed
-	// prep leaves the task stuck at in-progress with no running agent,
-	// which triggers restart-stale respawn loops on every app restart.
-	if t.Status != task.StatusInProgress {
-		if _, err := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
-			o.logger.Error("task.auto-status", "task_id", taskID, "err", err)
-		}
-	}
-
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
@@ -135,12 +126,16 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 	})
-	if err := o.tasks.AddRun(taskID, task.AgentRun{
+	var nextStatus *task.Status
+	if t.Status != task.StatusInProgress {
+		nextStatus = task.Ptr(task.StatusInProgress)
+	}
+	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Mode:      effMode,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
-	}); err != nil {
+	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return ag, nil

@@ -352,11 +352,12 @@ func startServer(o options, home, fakeDir string, port int) (*serverProc, error)
 
 	perfPath := fakeDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	env := os.Environ()
-	env = filterEnv(env, []string{"SYNAPSE_HOME", "SYNAPSE_PORT", "SYNAPSE_PPROF", "SYNAPSE_TASKS_DIR", "PATH", "FAKE_CLAUDE_SCENARIO", "FAKE_CLAUDE_EVENT_COUNT", "FAKE_CLAUDE_EVENT_INTERVAL_MS", "FAKE_CLAUDE_DURATION_MS"})
+	env = filterEnv(env, []string{"SYNAPSE_HOME", "SYNAPSE_PORT", "SYNAPSE_PPROF", "SYNAPSE_TASKS_DIR", "SYNAPSE_DISABLE_WORKFLOWS", "PATH", "FAKE_CLAUDE_SCENARIO", "FAKE_CLAUDE_EVENT_COUNT", "FAKE_CLAUDE_EVENT_INTERVAL_MS", "FAKE_CLAUDE_DURATION_MS"})
 	env = append(env,
 		"SYNAPSE_HOME="+home,
 		"SYNAPSE_PORT="+strconv.Itoa(port),
 		"SYNAPSE_PPROF=1",
+		"SYNAPSE_DISABLE_WORKFLOWS=1",
 		"PATH="+perfPath,
 		"FAKE_CLAUDE_SCENARIO="+scenarioToFake(o.scenario),
 		"FAKE_CLAUDE_EVENT_COUNT="+strconv.Itoa(o.eventCount),
@@ -581,15 +582,29 @@ func runSoak(ctx context.Context, c *apiClient, o options, report *Report) error
 // through sync.Maps. It owns the goroutine that walks the channel and
 // returns totals when drained.
 type eventCollector struct {
-	counts sync.Map // agentID → int
-	done   sync.Map // agentID → time.Time of result event
-	total  atomic.Int64
+	counts  sync.Map // agentID → int
+	done    sync.Map // agentID → time.Time of result event
+	tasks   sync.Map // taskID → latest agentID seen on state events
+	total   atomic.Int64
+	drained chan struct{}
 }
 
 func (ec *eventCollector) start(events <-chan sseEvent) {
+	ec.drained = make(chan struct{})
 	go func() {
+		defer close(ec.drained)
 		for ev := range events {
 			ec.total.Add(1)
+			const statePrefix = "agent:state:"
+			if strings.HasPrefix(ev.name, statePrefix) {
+				var payload struct {
+					ID     string `json:"id"`
+					TaskID string `json:"taskId"`
+				}
+				if err := json.Unmarshal([]byte(ev.data), &payload); err == nil && payload.TaskID != "" && payload.ID != "" {
+					ec.tasks.Store(payload.TaskID, payload.ID)
+				}
+			}
 			// Only agent:output:{id} events carry per-agent throughput info.
 			// agent:state:{id} fires once per state transition and is
 			// counted in total but not broken down per agent here.
@@ -607,6 +622,13 @@ func (ec *eventCollector) start(events <-chan sseEvent) {
 			}
 		}
 	}()
+}
+
+func (ec *eventCollector) wait() {
+	if ec.drained == nil {
+		return
+	}
+	<-ec.drained
 }
 
 func (ec *eventCollector) sum() int {
@@ -630,6 +652,21 @@ func (ec *eventCollector) forAgent(agentID string) int {
 	}
 	n, _ := v.(int)
 	return n
+}
+
+func (ec *eventCollector) agentForTask(taskID, fallback string) string {
+	if taskID == "" {
+		return fallback
+	}
+	v, ok := ec.tasks.Load(taskID)
+	if !ok {
+		return fallback
+	}
+	id, _ := v.(string)
+	if id == "" {
+		return fallback
+	}
+	return id
 }
 
 // launchAgents fans out concurrency goroutines that each create a task and
@@ -696,6 +733,8 @@ func runConcurrentAgents(ctx context.Context, c *apiClient, o options, report *R
 	start := time.Now()
 	results := launchAgents(scenarioCtx, c, o)
 	holdForDuration(scenarioCtx, start, o.duration)
+	_ = resp.Body.Close()
+	ec.wait()
 
 	report.Kind = kind
 	report.TotalAgents = o.concurrency
@@ -704,12 +743,13 @@ func runConcurrentAgents(ctx context.Context, c *apiClient, o options, report *R
 	report.Elapsed = time.Since(start).String()
 	report.Agents = make([]agentReport, 0, len(results))
 	for _, r := range results {
+		agentID := ec.agentForTask(r.taskID, r.agentID)
 		report.Agents = append(report.Agents, agentReport{
 			TaskID:             r.taskID,
-			AgentID:            r.agentID,
+			AgentID:            agentID,
 			StartLatencyMS:     r.startLatency.Milliseconds(),
 			Error:              r.err,
-			ObservedEventCount: ec.forAgent(r.agentID),
+			ObservedEventCount: ec.forAgent(agentID),
 		})
 	}
 	return nil
@@ -872,7 +912,8 @@ func subscribeEvents(ctx context.Context, url string) (*http.Response, <-chan ss
 				if curEvent != "" || curData != "" {
 					select {
 					case out <- sseEvent{name: curEvent, data: curData}:
-					default:
+					case <-ctx.Done():
+						return
 					}
 				}
 				curEvent, curData = "", ""

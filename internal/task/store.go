@@ -5,10 +5,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -17,6 +20,9 @@ type Store struct {
 	comments      *CommentStore
 	plans         *PlanStore
 	planCritiques *PlanCritiqueStore
+	cacheMu       sync.RWMutex
+	listCache     []Task
+	listValid     bool
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -44,6 +50,10 @@ func (s *Store) PlanCritiques() *PlanCritiqueStore {
 }
 
 func (s *Store) List() ([]Task, error) {
+	if tasks, ok := s.cachedList(); ok {
+		return tasks, nil
+	}
+
 	paths, err := fsutil.ListFiles(s.dir, ".md")
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
@@ -64,6 +74,7 @@ func (s *Store) List() ([]Task, error) {
 		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 		tasks = append(tasks, t)
 	}
+	s.storeListCache(tasks)
 	return tasks, nil
 }
 
@@ -112,6 +123,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
+	s.storeTaskCache(t)
 	return t, nil
 }
 
@@ -145,6 +157,7 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write chat task file: %w", err)
 	}
+	s.storeTaskCache(t)
 	return t, nil
 }
 
@@ -159,6 +172,7 @@ func (s *Store) Delete(id string) error {
 	_ = s.comments.DeleteAll(id)
 	_ = s.plans.Delete(id)
 	_ = s.planCritiques.Delete(id)
+	s.deleteCachedTask(id)
 	return nil
 }
 
@@ -243,7 +257,117 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
+	s.storeTaskCache(t)
 	return t, nil
+}
+
+// InvalidatePath clears any cached task/list state for the given task file.
+// Non-task files are ignored.
+func (s *Store) InvalidatePath(path string) {
+	if !strings.HasSuffix(path, ".md") {
+		return
+	}
+	base := filepath.Base(path)
+	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+		s.invalidateListCache()
+		return
+	}
+	id := strings.TrimSuffix(base, ".md")
+	if id == "" {
+		return
+	}
+	s.invalidateListCache()
+}
+
+func (s *Store) cachedList() ([]Task, bool) {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	if !s.listValid {
+		return nil, false
+	}
+	return cloneTasks(s.listCache), true
+}
+
+func (s *Store) storeListCache(tasks []Task) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.listCache = cloneTasks(tasks)
+	s.listValid = true
+}
+
+func (s *Store) storeTaskCache(t Task) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	cloned := cloneTask(t)
+	if !s.listValid {
+		return
+	}
+	for i := range s.listCache {
+		if s.listCache[i].ID != t.ID {
+			continue
+		}
+		s.listCache[i] = cloned
+		return
+	}
+	s.listCache = append(s.listCache, cloned)
+}
+
+func (s *Store) deleteCachedTask(id string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if !s.listValid {
+		return
+	}
+	for i := range s.listCache {
+		if s.listCache[i].ID != id {
+			continue
+		}
+		s.listCache = append(s.listCache[:i], s.listCache[i+1:]...)
+		return
+	}
+	s.listValid = true
+}
+
+func (s *Store) invalidateListCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.listValid = false
+}
+
+func cloneTasks(tasks []Task) []Task {
+	out := make([]Task, len(tasks))
+	for i := range tasks {
+		out[i] = cloneTask(tasks[i])
+	}
+	return out
+}
+
+func cloneTask(t Task) Task {
+	clone := t
+	clone.AllowedTools = slices.Clone(t.AllowedTools)
+	clone.Tags = slices.Clone(t.Tags)
+	clone.AgentRuns = slices.Clone(t.AgentRuns)
+	if t.Workflow != nil {
+		wfClone := cloneWorkflow(*t.Workflow)
+		clone.Workflow = &wfClone
+	}
+	return clone
+}
+
+func cloneWorkflow(wf workflow.Execution) workflow.Execution {
+	clone := wf
+	clone.StepHistory = slices.Clone(wf.StepHistory)
+	if wf.Variables != nil {
+		clone.Variables = make(map[string]string, len(wf.Variables))
+		for k, v := range wf.Variables {
+			clone.Variables[k] = v
+		}
+	}
+	if wf.CompletedAt != nil {
+		ts := *wf.CompletedAt
+		clone.CompletedAt = &ts
+	}
+	return clone
 }
 
 // UpdateMap converts raw to a typed Update and applies it.
@@ -257,16 +381,31 @@ func (s *Store) UpdateMap(id string, raw map[string]any) (Task, error) {
 }
 
 func (s *Store) AddRun(taskID string, run AgentRun) error {
+	return s.addRun(taskID, run, nil)
+}
+
+func (s *Store) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
+	return s.addRun(taskID, run, status)
+}
+
+func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	t, err := s.Get(taskID)
 	if err != nil {
 		return err
+	}
+	if status != nil {
+		t.Status = *status
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
 	d, err := Marshal(t)
 	if err != nil {
 		return err
 	}
-	return fsutil.AtomicWrite(t.FilePath, d)
+	if err := fsutil.AtomicWrite(t.FilePath, d); err != nil {
+		return err
+	}
+	s.storeTaskCache(t)
+	return nil
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error {
@@ -296,5 +435,9 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 	if err != nil {
 		return err
 	}
-	return fsutil.AtomicWrite(t.FilePath, d)
+	if err := fsutil.AtomicWrite(t.FilePath, d); err != nil {
+		return err
+	}
+	s.storeTaskCache(t)
+	return nil
 }
