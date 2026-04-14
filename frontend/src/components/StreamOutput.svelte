@@ -23,6 +23,11 @@
     result: { label: 'DONE', classes: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' },
   }
 
+  function onScroll() {
+    if (!container) return
+    autoScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 10
+  }
+
   function scrollToBottom() {
     if (autoScroll && container) {
       container.scrollTop = container.scrollHeight
@@ -73,6 +78,7 @@
   </div>
   <div
     bind:this={container}
+    onscroll={onScroll}
     class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 font-mono text-xs dark:border-surface-600"
   >
     {#if events.length === 0}

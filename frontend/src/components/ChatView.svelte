@@ -36,6 +36,11 @@
     contextPct > 80 ? 'bg-error-500' : contextPct > 50 ? 'bg-warning-500' : 'bg-success-500',
   )
 
+  function onScroll() {
+    if (!container) return
+    autoScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 10
+  }
+
   function scrollToBottom() {
     if (autoScroll && container) {
       container.scrollTop = container.scrollHeight
@@ -122,6 +127,7 @@
   <!-- Messages -->
   <div
     bind:this={container}
+    onscroll={onScroll}
     class="flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain px-3 py-3 md:px-4 {bounded ? 'max-h-[60dvh] md:max-h-[600px]' : 'flex-1'}"
   >
     {#if events.length === 0}
