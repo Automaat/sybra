@@ -195,7 +195,7 @@ steps:
       mode: "{{.Task.AgentMode}}"
       model: sonnet
       prompt: >-
-        Implement this task. When done, create a draft PR with `gh pr create --draft`.
+        Implement this task. When done, create a PR with `gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}}`.
         {{- if .Task.Plan}}
 
         ## Plan

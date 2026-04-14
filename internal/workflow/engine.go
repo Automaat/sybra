@@ -42,6 +42,7 @@ type TaskInfo struct {
 	Tags         []string
 	AgentMode    string
 	ProjectID    string
+	ProjectType  string
 	PRNumber     int
 	Branch       string
 	Body         string
