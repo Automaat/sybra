@@ -18,6 +18,7 @@ type Config struct {
 	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
+	Triage        TriageConfig       `yaml:"triage" json:"triage"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
@@ -108,6 +109,15 @@ type RenovateConfig struct {
 
 type GitHubConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// TriageConfig controls the background auto-triage worker. When Enabled,
+// synapse periodically classifies tasks in status=new via claude -p and
+// atomically applies the verdict (title, tags, size/type, mode, project).
+type TriageConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
+	Model       string `yaml:"model" json:"model"`
 }
 
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
@@ -281,6 +291,12 @@ func Load() (*Config, error) {
 
 	if cfg.Renovate.Author == "" {
 		cfg.Renovate.Author = "app/renovate"
+	}
+	if cfg.Triage.PollSeconds <= 0 {
+		cfg.Triage.PollSeconds = 60
+	}
+	if cfg.Triage.Model == "" {
+		cfg.Triage.Model = "sonnet"
 	}
 	if cfg.Agent.Provider == "" {
 		cfg.Agent.Provider = "claude"

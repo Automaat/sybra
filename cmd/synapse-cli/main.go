@@ -79,6 +79,8 @@ func run(args []string) int {
 		return cmdBoard(store, jsonOut)
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
+	case "triage":
+		return cmdTriage(cfg, store, projStore, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -842,6 +844,9 @@ Commands:
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
   health   [--severity warning|critical] [--category CATEGORY]
+
+  triage classify <id>         Classify a single task via claude -p and apply the verdict.
+  triage classify --all        Classify every task with status=new.
 
 Global flags:
   --json   Output as JSON`)
