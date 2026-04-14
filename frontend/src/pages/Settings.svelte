@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetSettings, UpdateSettings } from '$lib/api'
+  import { GetSettings, UpdateSettings, GetVersion } from '$lib/api'
   import type { synapse } from '../../wailsjs/go/models.js'
   import {
     GetProviderHealth,
@@ -39,8 +39,12 @@
 
   const dirOrder = ['tasks', 'skills', 'projects', 'clones', 'worktrees', 'logs', 'audit']
 
+  let serverVersion = $state<string>('')
+  const clientVersion = String(import.meta.env.VITE_APP_VERSION || 'dev')
+
   $effect(() => {
     load()
+    GetVersion().then(v => { serverVersion = v.server }).catch(() => {})
   })
 
   async function load() {
@@ -508,6 +512,21 @@
             <span class="text-xs text-surface-400">GitHub author filter (default: app/renovate)</span>
           </div>
         {/if}
+      </div>
+    </div>
+
+    <!-- Version (read-only) -->
+    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Version</h2>
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-3">
+          <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Server</span>
+          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{serverVersion || '…'}</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Client</span>
+          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{clientVersion}</span>
+        </div>
       </div>
     </div>
 

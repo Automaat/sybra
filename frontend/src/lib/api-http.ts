@@ -52,6 +52,9 @@ export function StopChat(arg1: string): Promise<void> { return call('App', 'Stop
 export function GetSettings(): Promise<synapse.AppSettings> { return call('ConfigService', 'GetSettings') }
 export function UpdateSettings(arg1: synapse.AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 
+// InfoService
+export function GetVersion(): Promise<{ server: string }> { return call('InfoService', 'GetVersion') }
+
 // IntegrationService
 export function ApproveRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'ApproveRenovatePR', arg1, arg2) }
 export function FetchAssignedIssues(): Promise<Array<github.Issue>> { return call('IntegrationService', 'FetchAssignedIssues') }

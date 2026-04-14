@@ -90,6 +90,7 @@ type App struct {
 	statsSvc     *StatsService
 	reviewSvc    *ReviewService
 	workflowSvc  *WorkflowService
+	infoSvc      *InfoService
 }
 
 // Option configures App behaviour at construction time.
@@ -117,6 +118,7 @@ func (a *App) ServiceRegistry() map[string]any {
 		"App":                 a,
 		"AgentService":        a.agentSvc,
 		"ConfigService":       a.configSvc,
+		"InfoService":         a.infoSvc,
 		"IntegrationService":  a.intgSvc,
 		"LoopAgentService":    a.loopAgentSvc,
 		"OrchestratorService": a.orchSvc,
@@ -155,6 +157,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.statsSvc = &StatsService{}
 	a.reviewSvc = &ReviewService{}
 	a.workflowSvc = &WorkflowService{}
+	a.infoSvc = &InfoService{}
 	for _, o := range opts {
 		o(a)
 	}
@@ -1273,7 +1276,7 @@ func (a *App) BindTargets() []any {
 		a,
 		a.taskSvc, a.planSvc, a.agentSvc, a.orchSvc,
 		a.projectSvc, a.loopAgentSvc, a.configSvc, a.intgSvc,
-		a.statsSvc, a.reviewSvc, a.workflowSvc,
+		a.statsSvc, a.reviewSvc, a.workflowSvc, a.infoSvc,
 	}
 }
 

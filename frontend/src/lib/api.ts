@@ -12,6 +12,7 @@ import * as ProjectSvc from '../../wailsjs/go/synapse/ProjectService.js'
 import * as ReviewSvc from '../../wailsjs/go/synapse/ReviewService.js'
 import * as StatsSvc from '../../wailsjs/go/synapse/StatsService.js'
 import * as TaskSvc from '../../wailsjs/go/synapse/TaskService.js'
+import * as InfoSvc from '../../wailsjs/go/synapse/InfoService.js'
 import * as WorkflowSvc from '../../wailsjs/go/synapse/WorkflowService.js'
 import { EventsOn as _dEventsOn, BrowserOpenURL as _dBrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
 import * as http from './api-http.js'
@@ -45,6 +46,9 @@ export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
+
+// InfoService
+export const GetVersion = pick(InfoSvc.GetVersion, http.GetVersion)
 
 // IntegrationService
 export const ApproveRenovatePR = pick(IntegrationSvc.ApproveRenovatePR, http.ApproveRenovatePR)
