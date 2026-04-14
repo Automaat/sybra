@@ -17,6 +17,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -77,41 +78,7 @@ func run() error {
 	}
 	defer app.Shutdown(ctx)
 
-	mux := http.NewServeMux()
-
-	// Health check endpoint for container orchestration.
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
-	})
-
-	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The
-	// OTel Prometheus exporter registers instruments into the default
-	// prometheus/client_golang registry, so promhttp.Handler serves them.
-	if metrics.Enabled() {
-		mux.Handle("GET /metrics", promhttp.Handler())
-		logger.Info("metrics.listen", "path", "/metrics")
-	}
-
-	// Multiplexed SSE stream: all events over a single connection.
-	mux.HandleFunc("GET /events", broker.ServeAll)
-
-	// Per-event SSE endpoint (kept for debugging / backward compat).
-	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
-
-	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, app.ServiceRegistry(), logger)
-
-	// Optional SPA static files.
-	if staticDir := os.Getenv("SYNAPSE_STATIC_DIR"); staticDir != "" {
-		sub, err := fs.Sub(os.DirFS(staticDir), ".")
-		if err != nil {
-			logger.Error("static.dir", "err", err)
-		} else {
-			fileServer := http.FileServer(http.FS(sub))
-			mux.Handle("GET /", spaHandler{fileServer, staticDir})
-		}
-	}
+	mux := buildMux(logger, broker, app)
 
 	// CORS for dev (permissive; tighten for production).
 	handler := corsMiddleware(mux)
@@ -148,6 +115,64 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// buildMux wires every HTTP route the server exposes onto a fresh ServeMux:
+// health, optional /metrics, optional /debug/pprof, SSE streams, the
+// reflection-based /api/{service}/{method} dispatcher, and an optional SPA
+// static file server. Extracted from run() so run() stays under the 100-line
+// funlen cap without losing the explicit route declaration layout.
+func buildMux(logger *slog.Logger, broker *sse.Broker, app *synapse.App) *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// Health check endpoint for container orchestration.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	})
+
+	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The
+	// OTel Prometheus exporter registers instruments into the default
+	// prometheus/client_golang registry, so promhttp.Handler serves them.
+	if metrics.Enabled() {
+		mux.Handle("GET /metrics", promhttp.Handler())
+		logger.Info("metrics.listen", "path", "/metrics")
+	}
+
+	// pprof scrape endpoints (opt-in via SYNAPSE_PPROF=1). Mounted on the main
+	// mux so perf tooling can pull heap / goroutine profiles over the same
+	// port without opening a second listener. Off by default to avoid leaking
+	// internals on shared deployments.
+	if v := os.Getenv("SYNAPSE_PPROF"); v == "1" || v == "true" {
+		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+		logger.Info("pprof.listen", "path", "/debug/pprof/")
+	}
+
+	// Multiplexed SSE stream: all events over a single connection.
+	mux.HandleFunc("GET /events", broker.ServeAll)
+
+	// Per-event SSE endpoint (kept for debugging / backward compat).
+	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
+
+	// API dispatch: POST /api/{service}/{method}
+	httpapi.Mount(mux, app.ServiceRegistry(), logger)
+
+	// Optional SPA static files.
+	if staticDir := os.Getenv("SYNAPSE_STATIC_DIR"); staticDir != "" {
+		sub, err := fs.Sub(os.DirFS(staticDir), ".")
+		if err != nil {
+			logger.Error("static.dir", "err", err)
+		} else {
+			fileServer := http.FileServer(http.FS(sub))
+			mux.Handle("GET /", spaHandler{fileServer, staticDir})
+		}
+	}
+
+	return mux
 }
 
 // spaHandler serves static files and falls back to index.html for unknown paths

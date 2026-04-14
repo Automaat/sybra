@@ -37,3 +37,29 @@ description = "Build HTTP server binary (builds web frontend first)"
 run = ["cd frontend && npm run build:web", "SYNAPSE_STATIC_DIR=frontend/dist-web go run ./cmd/synapse-server"]
 description = "Build web frontend then run HTTP server"
 env = { SYNAPSE_PORT = "8080" }
+
+[tasks."perf:bench"]
+run = "go test -run XXX -bench . -benchmem -benchtime=2s ./internal/task/ ./internal/agent/ ./internal/sse/ ./internal/watcher/"
+description = "Run Go benchmarks for perf-critical backend packages"
+
+[tasks."perf:build"]
+run = [
+  "go build -o bin/fake-claude ./cmd/fake-claude",
+  "go build -o bin/synapse-perf ./cmd/synapse-perf",
+]
+description = "Build the synapse-perf harness and fake-claude test double (synapse-server is spawned via go run)"
+
+[tasks."perf:load"]
+run = "./bin/synapse-perf -scenario steady -duration 30s -concurrency 8 -events 200 -event-interval 10ms -fake-claude ./bin/fake-claude"
+depends = ["perf:build"]
+description = "Run the steady end-to-end perf scenario against a throwaway synapse-server"
+
+[tasks."perf:churn"]
+run = "./bin/synapse-perf -scenario churn -duration 30s -concurrency 4 -churn-rate 200 -fake-claude ./bin/fake-claude"
+depends = ["perf:build"]
+description = "Run the task-store CRUD churn scenario"
+
+[tasks."perf:soak"]
+run = "./bin/synapse-perf -scenario soak -duration 5m -concurrency 4 -event-interval 200ms -fake-claude ./bin/fake-claude -pprof-dir ./perf-profiles"
+depends = ["perf:build"]
+description = "Long-running soak scenario with heap/goroutine profiles for leak detection"
