@@ -9,7 +9,7 @@ export function BindTargets():Promise<Array<any>>;
 
 export function Context():Promise<context.Context>;
 
-export function GetMonitorHeartbeat():Promise<synapse.MonitorStatus>;
+export function GetMonitorReport():Promise<synapse.MonitorReportBinding>;
 
 export function ListNotifications():Promise<Array<notification.Notification>>;
 

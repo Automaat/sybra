@@ -611,6 +611,123 @@ export namespace loopagent {
 
 }
 
+export namespace monitor {
+	
+	export class Anomaly {
+	    kind: string;
+	    taskId?: string;
+	    severity: string;
+	    requiresLlm: boolean;
+	    fingerprint: string;
+	    evidence?: Record<string, any>;
+	    // Go type: time
+	    detectedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Anomaly(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.taskId = source["taskId"];
+	        this.severity = source["severity"];
+	        this.requiresLlm = source["requiresLlm"];
+	        this.fingerprint = source["fingerprint"];
+	        this.evidence = source["evidence"];
+	        this.detectedAt = this.convertValues(source["detectedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Counts {
+	    new: number;
+	    todo: number;
+	    inProgress: number;
+	    inReview: number;
+	    planReview: number;
+	    humanRequired: number;
+	    done: number;
+	    byStatus: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new Counts(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.new = source["new"];
+	        this.todo = source["todo"];
+	        this.inProgress = source["inProgress"];
+	        this.inReview = source["inReview"];
+	        this.planReview = source["planReview"];
+	        this.humanRequired = source["humanRequired"];
+	        this.done = source["done"];
+	        this.byStatus = source["byStatus"];
+	    }
+	}
+	export class Report {
+	    // Go type: time
+	    generatedAt: any;
+	    counts: Counts;
+	    anomalies: Anomaly[];
+	    remediated: string[];
+	    dispatched: string[];
+	    issuesOpened: number;
+	    issuesUpdated: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Report(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generatedAt = this.convertValues(source["generatedAt"], null);
+	        this.counts = this.convertValues(source["counts"], Counts);
+	        this.anomalies = this.convertValues(source["anomalies"], Anomaly);
+	        this.remediated = source["remediated"];
+	        this.dispatched = source["dispatched"];
+	        this.issuesOpened = source["issuesOpened"];
+	        this.issuesUpdated = source["issuesUpdated"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace notification {
 	
 	export class Notification {
@@ -1031,25 +1148,20 @@ export namespace synapse {
 		    return a;
 		}
 	}
-	export class MonitorStatus {
-	    heartbeatFile: string;
-	    // Go type: time
-	    lastHeartbeat: any;
-	    ageSeconds: number;
-	    stale: boolean;
-	    present: boolean;
+	export class MonitorReportBinding {
+	    enabled: boolean;
+	    ready: boolean;
+	    report: monitor.Report;
 	
 	    static createFrom(source: any = {}) {
-	        return new MonitorStatus(source);
+	        return new MonitorReportBinding(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.heartbeatFile = source["heartbeatFile"];
-	        this.lastHeartbeat = this.convertValues(source["lastHeartbeat"], null);
-	        this.ageSeconds = source["ageSeconds"];
-	        this.stale = source["stale"];
-	        this.present = source["present"];
+	        this.enabled = source["enabled"];
+	        this.ready = source["ready"];
+	        this.report = this.convertValues(source["report"], monitor.Report);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

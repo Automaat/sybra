@@ -19,6 +19,7 @@ type Config struct {
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
 	Triage        TriageConfig       `yaml:"triage" json:"triage"`
+	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
@@ -120,6 +121,24 @@ type TriageConfig struct {
 	Model       string `yaml:"model" json:"model"`
 }
 
+// MonitorConfig controls the in-process monitor service that replaces the
+// /loop 5m /synapse-monitor skill. Each tick snapshots the board + audit
+// window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
+// bottlenecks), runs idempotent remediations directly, and dispatches a
+// focused headless agent for anomalies that need LLM judgment.
+type MonitorConfig struct {
+	Enabled              bool               `yaml:"enabled" json:"enabled"`
+	IntervalSeconds      int                `yaml:"interval_seconds" json:"intervalSeconds"`
+	Model                string             `yaml:"model" json:"model"`
+	IssueCooldownMinutes int                `yaml:"issue_cooldown_minutes" json:"issueCooldownMinutes"`
+	DispatchLimit        int                `yaml:"dispatch_limit" json:"dispatchLimit"`
+	StuckHumanHours      float64            `yaml:"stuck_human_hours" json:"stuckHumanHours"`
+	LostAgentMinutes     int                `yaml:"lost_agent_minutes" json:"lostAgentMinutes"`
+	FailureRateThreshold float64            `yaml:"failure_rate_threshold" json:"failureRateThreshold"`
+	BottleneckHours      map[string]float64 `yaml:"bottleneck_hours" json:"bottleneckHours"`
+	IssueLabel           string             `yaml:"issue_label" json:"issueLabel"`
+}
+
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
 // and their background health-check loop. A missing block defaults to "both
 // providers enabled, health check on, auto-failover on, 300s interval".
@@ -181,6 +200,9 @@ func DefaultConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
+			Enabled: true,
+		},
+		Monitor: MonitorConfig{
 			Enabled: true,
 		},
 		Providers: ProvidersConfig{
@@ -303,8 +325,54 @@ func Load() (*Config, error) {
 	}
 
 	applyProvidersDefaults(cfg)
+	applyMonitorDefaults(cfg)
 
 	return cfg, nil
+}
+
+// applyMonitorDefaults fills zero values for the Monitor block so older
+// configs behave deterministically and the service can rely on every field.
+// Enabled stays false until users opt in.
+func applyMonitorDefaults(cfg *Config) {
+	if cfg.Monitor.IntervalSeconds < 60 {
+		cfg.Monitor.IntervalSeconds = 300
+	}
+	if cfg.Monitor.Model == "" {
+		cfg.Monitor.Model = "sonnet"
+	}
+	if cfg.Monitor.IssueCooldownMinutes <= 0 {
+		cfg.Monitor.IssueCooldownMinutes = 30
+	}
+	if cfg.Monitor.DispatchLimit <= 0 {
+		cfg.Monitor.DispatchLimit = 3
+	}
+	if cfg.Monitor.StuckHumanHours <= 0 {
+		cfg.Monitor.StuckHumanHours = 8
+	}
+	if cfg.Monitor.LostAgentMinutes <= 0 {
+		cfg.Monitor.LostAgentMinutes = 15
+	}
+	if cfg.Monitor.FailureRateThreshold <= 0 {
+		cfg.Monitor.FailureRateThreshold = 0.3
+	}
+	if cfg.Monitor.IssueLabel == "" {
+		cfg.Monitor.IssueLabel = "monitor"
+	}
+	if cfg.Monitor.BottleneckHours == nil {
+		cfg.Monitor.BottleneckHours = map[string]float64{}
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["plan-review"]; !ok {
+		cfg.Monitor.BottleneckHours["plan-review"] = 4
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["human-required"]; !ok {
+		cfg.Monitor.BottleneckHours["human-required"] = 8
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["in-progress"]; !ok {
+		cfg.Monitor.BottleneckHours["in-progress"] = 6
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["default"]; !ok {
+		cfg.Monitor.BottleneckHours["default"] = 12
+	}
 }
 
 // applyProvidersDefaults fills zero values for the Providers block so older

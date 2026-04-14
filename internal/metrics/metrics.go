@@ -55,8 +55,8 @@ var (
 
 	renovatePolls metric.Int64Counter
 
-	monitorStaleTransitions metric.Int64Counter
-	monitorRecoveries       metric.Int64Counter
+	monitorTicks     metric.Int64Counter
+	monitorAnomalies metric.Int64Counter
 
 	orchestratorTicks         metric.Int64Counter
 	orchestratorStaleRestarts metric.Int64Counter
@@ -73,12 +73,10 @@ var (
 	obsMu              sync.RWMutex
 	tasksByStatusFn    func() map[string]int64
 	agentsActiveFn     func() map[string]int64
-	heartbeatAgeFn     func() int64
 	renovatePRsFetchFn func() int64
 	providerHealthFn   func() map[string]int64
 	tasksByStatusGauge metric.Int64ObservableGauge
 	agentsActiveGauge  metric.Int64ObservableGauge
-	heartbeatAgeGauge  metric.Int64ObservableGauge
 	renovatePRsGauge   metric.Int64ObservableGauge
 	providerHealthyG   metric.Int64ObservableGauge
 )
@@ -249,15 +247,15 @@ func createPollInstruments() error {
 
 func createOrchestratorInstruments() error {
 	var err error
-	if monitorStaleTransitions, err = meter.Int64Counter(
-		"synapse_monitor_stale_transitions_total",
-		metric.WithDescription("Monitor watchdog transitions between alive and stale."),
+	if monitorTicks, err = meter.Int64Counter(
+		"synapse_monitor_ticks_total",
+		metric.WithDescription("Monitor service tick completions."),
 	); err != nil {
 		return err
 	}
-	if monitorRecoveries, err = meter.Int64Counter(
-		"synapse_monitor_recoveries_total",
-		metric.WithDescription("Monitor watchdog recovery triggers fired."),
+	if monitorAnomalies, err = meter.Int64Counter(
+		"synapse_monitor_anomalies_total",
+		metric.WithDescription("Monitor anomalies detected, by kind."),
 	); err != nil {
 		return err
 	}
@@ -327,13 +325,6 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
-	if heartbeatAgeGauge, err = meter.Int64ObservableGauge(
-		"synapse_monitor_heartbeat_age_seconds",
-		metric.WithDescription("Seconds since the last /synapse-monitor heartbeat write."),
-		metric.WithUnit("s"),
-	); err != nil {
-		return err
-	}
 	if renovatePRsGauge, err = meter.Int64ObservableGauge(
 		"synapse_renovate_prs_fetched",
 		metric.WithDescription("Last observed count of open Renovate PRs."),
@@ -348,7 +339,7 @@ func createObservableGauges() error {
 	}
 	_, err = meter.RegisterCallback(
 		observe,
-		tasksByStatusGauge, agentsActiveGauge, heartbeatAgeGauge, renovatePRsGauge, providerHealthyG,
+		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG,
 	)
 	return err
 }
@@ -357,7 +348,6 @@ func observe(_ context.Context, obs metric.Observer) error {
 	obsMu.RLock()
 	byStatus := tasksByStatusFn
 	byState := agentsActiveFn
-	hb := heartbeatAgeFn
 	prs := renovatePRsFetchFn
 	providerHealth := providerHealthFn
 	obsMu.RUnlock()
@@ -373,9 +363,6 @@ func observe(_ context.Context, obs metric.Observer) error {
 			obs.ObserveInt64(agentsActiveGauge, n,
 				metric.WithAttributes(attribute.String("state", state)))
 		}
-	}
-	if hb != nil {
-		obs.ObserveInt64(heartbeatAgeGauge, hb())
 	}
 	if prs != nil {
 		obs.ObserveInt64(renovatePRsGauge, prs())
@@ -402,14 +389,6 @@ func RegisterTasksByStatus(fn func() map[string]int64) {
 func RegisterAgentsActive(fn func() map[string]int64) {
 	obsMu.Lock()
 	agentsActiveFn = fn
-	obsMu.Unlock()
-}
-
-// RegisterMonitorHeartbeatAge wires a provider callback for
-// monitor_heartbeat_age_seconds.
-func RegisterMonitorHeartbeatAge(fn func() int64) {
-	obsMu.Lock()
-	heartbeatAgeFn = fn
 	obsMu.Unlock()
 }
 
@@ -519,20 +498,21 @@ func RenovatePoll(ok bool) {
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
-// MonitorStaleTransition records a heartbeat alive→stale or stale→alive edge.
-func MonitorStaleTransition(direction string) {
-	if monitorStaleTransitions == nil {
+// MonitorTick records one completed tick of the in-process monitor service.
+func MonitorTick() {
+	if monitorTicks == nil {
 		return
 	}
-	monitorStaleTransitions.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("direction", direction)))
+	monitorTicks.Add(context.Background(), 1)
 }
 
-func MonitorRecovery() {
-	if monitorRecoveries == nil {
+// MonitorAnomaly records one detected anomaly by kind.
+func MonitorAnomaly(kind string) {
+	if monitorAnomalies == nil {
 		return
 	}
-	monitorRecoveries.Add(context.Background(), 1)
+	monitorAnomalies.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", kind)))
 }
 
 func OrchestratorTick() {

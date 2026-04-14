@@ -34,7 +34,7 @@ export const SendMessage = pick(AgentSvc.SendMessage, http.SendMessage)
 export const StopAgent = pick(AgentSvc.StopAgent, http.StopAgent)
 
 // App
-export const GetMonitorHeartbeat = pick(AppSvc.GetMonitorHeartbeat, http.GetMonitorHeartbeat)
+export const GetMonitorReport = pick(AppSvc.GetMonitorReport, http.GetMonitorReport)
 export const ListNotifications = pick(AppSvc.ListNotifications, http.ListNotifications)
 export const RegisterSpotlightHotkey = pick(AppSvc.RegisterSpotlightHotkey, http.RegisterSpotlightHotkey)
 export const SetDesktopNotifications = pick(AppSvc.SetDesktopNotifications, http.SetDesktopNotifications)

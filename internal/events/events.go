@@ -21,10 +21,10 @@ const (
 	// Orchestrator events.
 	OrchestratorState = "orchestrator:state"
 
-	// MonitorHeartbeat fires whenever the monitor watchdog flips between
-	// alive and stale, or refreshes the age on a live heartbeat. Payload is
-	// a MonitorStatus struct (see internal/synapse/svc_monitor_watchdog.go).
-	MonitorHeartbeat = "monitor:heartbeat"
+	// MonitorReport fires at the end of every monitor.Service tick with the
+	// snapshot of board state + detected anomalies. Payload is a
+	// monitor.Report (see internal/monitor/report.go).
+	MonitorReport = "monitor:report"
 
 	// Loop agent events — emitted whenever the scheduler reconciles or
 	// records a new run on a loop agent. Carries no payload; consumers

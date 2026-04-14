@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/loopagent"
 	"github.com/Automaat/synapse/internal/metrics"
+	"github.com/Automaat/synapse/internal/monitor"
 	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
@@ -60,7 +61,7 @@ type App struct {
 	prTracker       *github.IssueTracker
 	providerHealth  *provider.Checker
 	worktrees       *worktree.Manager
-	monitorWatch    *MonitorWatchdog
+	monitorSvc      *monitor.Service
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
 	workflowEngine  *workflow.Engine
@@ -270,9 +271,7 @@ func (a *App) startBackgroundServices(
 	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
-	heartbeatPath := filepath.Join(a.cfg.Logging.Dir, "monitor-heartbeat")
-	a.monitorWatch = NewMonitorWatchdog(heartbeatPath, a.logger, emit, a.recoverMonitorCron)
-	a.wg.Go(func() { a.monitorWatch.Run(ctx) })
+	a.startMonitorService(ctx, emit)
 
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
@@ -310,11 +309,6 @@ func (a *App) registerMetricsObservers() {
 		}
 		return out
 	})
-	if a.monitorWatch != nil {
-		metrics.RegisterMonitorHeartbeatAge(func() int64 {
-			return a.monitorWatch.Status().AgeSeconds
-		})
-	}
 	if a.renovateHandler != nil {
 		metrics.RegisterRenovatePRsFetched(a.renovateHandler.LastFetchedCount)
 	}
@@ -331,6 +325,74 @@ func (a *App) registerMetricsObservers() {
 			return out
 		})
 	}
+}
+
+// startMonitorService wires the in-process monitor loop when enabled. Does
+// nothing when cfg.Monitor.Enabled is false, which keeps the legacy
+// /synapse-monitor /loop flow intact for rollout.
+func (a *App) startMonitorService(ctx context.Context, emit func(string, any)) {
+	if !a.cfg.Monitor.Enabled {
+		return
+	}
+	disp := monitor.NewAgentDispatcher(monitor.AgentDispatcherDeps{
+		Agents: a.agents,
+		Tasks:  a.tasks,
+		WorktreePath: func(t task.Task) (string, bool) {
+			if a.worktrees == nil {
+				return "", false
+			}
+			if !a.worktrees.Exists(t) {
+				return "", false
+			}
+			return a.worktrees.PathFor(t), true
+		},
+		RepoDir: a.repoDir,
+		Model:   a.cfg.Monitor.Model,
+	})
+	svc := monitor.NewService(monitor.Deps{
+		Cfg:        a.cfg.Monitor,
+		Tasks:      a.tasks,
+		Audit:      monitor.AuditDirReader(a.cfg.AuditDir()),
+		Agents:     a.agents,
+		Dispatcher: disp,
+		Sink:       monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel),
+		Emit:       emit,
+		Logger:     a.logger,
+		AllowsProject: func(projectID string) bool {
+			if projectID == "" {
+				return true
+			}
+			p, err := a.projects.Get(projectID)
+			if err != nil {
+				return true
+			}
+			return a.allowsProjectType(p.Type)
+		},
+	})
+	a.monitorSvc = svc
+	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// GetMonitorReport returns the most recent finished report from the
+// in-process monitor service. Ready is false until the first tick completes;
+// the frontend should show an empty state in that window. Enabled mirrors
+// cfg.Monitor.Enabled so the page can hide the panel entirely on opt-out.
+func (a *App) GetMonitorReport() MonitorReportBinding {
+	if a.monitorSvc == nil {
+		return MonitorReportBinding{Enabled: false}
+	}
+	r, ok := a.monitorSvc.LastReport()
+	return MonitorReportBinding{Enabled: true, Ready: ok, Report: r}
+}
+
+// MonitorReportBinding is the Wails-friendly envelope for the latest
+// monitor report. Keeping the struct here (rather than in internal/monitor)
+// avoids the frontend bindings needing to handle a `monitor.Report | null`
+// union — Enabled/Ready flags say whether Report is populated.
+type MonitorReportBinding struct {
+	Enabled bool           `json:"enabled"`
+	Ready   bool           `json:"ready"`
+	Report  monitor.Report `json:"report"`
 }
 
 // startPollHub registers all enabled poll handlers and starts the hub.
