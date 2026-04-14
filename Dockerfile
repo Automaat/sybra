@@ -27,6 +27,11 @@ FROM node:24-slim AS runtime
 # Pipe failures in subsequent RUN blocks should fail the build.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Non-root runtime user. Claude CLI refuses --dangerously-skip-permissions
+# under uid 0; running as uid 1000 avoids the IS_SANDBOX env-var workaround.
+ARG SYNAPSE_UID=1000
+ARG SYNAPSE_GID=1000
+
 # --- Layer A: apt system packages + gh repo ---
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
@@ -55,31 +60,38 @@ RUN npm install -g \
         "@openai/codex@${CODEX_VERSION}" \
     && rm -rf /root/.npm
 
-# --- Layer D: klaudiush server config (static) ---
+# --- Layer D: non-root user + klaudiush server config (static) ---
+# node:24-slim already defines a `node` user at uid 1000 — remove it before
+# creating `synapse` so we can reuse uid 1000 (a common bind-mount convention).
 # Server-tuned klaudiush config: drop -S (no GPG key on server),
 # keep -s sign-off + conventional commit rules. XDG path so klaudiush
 # doctor does not warn about legacy ~/.klaudiush/ location.
-RUN mkdir -p /root/.config/klaudiush && printf '%s\n' \
-    '[validators.git.commit]' \
-    'enabled = true' \
-    'severity = "error"' \
-    'required_flags = ["-s"]' \
-    'check_staging_area = true' \
-    'enable_message_validation = true' \
-    '' \
-    '[validators.git.commit.message]' \
-    'title_max_length = 50' \
-    'body_max_line_length = 72' \
-    'check_conventional_commits = true' \
-    'require_scope = true' \
-    'block_infra_scope_misuse = true' \
-    'block_pr_references = true' \
-    'block_ai_attribution = true' \
-    '' \
-    '[validators.git.no_verify]' \
-    'enabled = true' \
-    'severity = "error"' \
-    > /root/.config/klaudiush/config.toml
+RUN userdel -r node 2>/dev/null || true \
+    && groupadd -g "${SYNAPSE_GID}" synapse \
+    && useradd -l -m -u "${SYNAPSE_UID}" -g "${SYNAPSE_GID}" -s /bin/bash -d /home/synapse synapse \
+    && mkdir -p /home/synapse/.config/klaudiush \
+    && printf '%s\n' \
+        '[validators.git.commit]' \
+        'enabled = true' \
+        'severity = "error"' \
+        'required_flags = ["-s"]' \
+        'check_staging_area = true' \
+        'enable_message_validation = true' \
+        '' \
+        '[validators.git.commit.message]' \
+        'title_max_length = 50' \
+        'body_max_line_length = 72' \
+        'check_conventional_commits = true' \
+        'require_scope = true' \
+        'block_infra_scope_misuse = true' \
+        'block_pr_references = true' \
+        'block_ai_attribution = true' \
+        '' \
+        '[validators.git.no_verify]' \
+        'enabled = true' \
+        'severity = "error"' \
+        > /home/synapse/.config/klaudiush/config.toml \
+    && chown -R "${SYNAPSE_UID}:${SYNAPSE_GID}" /home/synapse
 
 # --- Layer E+F: thin, per-commit layers ---
 COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
@@ -87,14 +99,18 @@ COPY --from=frontend-builder /app/frontend/dist-web /app/web
 
 ENV SYNAPSE_PORT=8080
 ENV SYNAPSE_STATIC_DIR=/app/web
+ENV HOME=/home/synapse
+
+USER synapse
+WORKDIR /home/synapse
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "require('http').get('http://localhost:'+process.env.SYNAPSE_PORT+'/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
-# Mounts expected:
-#   ~/.synapse  → /root/.synapse  (task store, config, projects)
-#   ~/.claude   → /root/.claude   (claude CLI config + session, must contain settings.json with klaudiush hooks)
-#   ~/.codex    → /root/.codex    (codex CLI config, must contain config.toml + hooks.json with klaudiush hooks)
+# Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
+#   ~/.synapse  → /home/synapse/.synapse  (task store, config, projects)
+#   ~/.claude   → /home/synapse/.claude   (claude CLI config + session, must contain settings.json with klaudiush hooks)
+#   ~/.codex    → /home/synapse/.codex    (codex CLI config, must contain config.toml + hooks.json with klaudiush hooks)
 ENTRYPOINT ["/usr/local/bin/synapse-server"]
