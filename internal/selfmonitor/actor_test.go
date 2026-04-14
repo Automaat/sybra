@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/health"
@@ -211,5 +213,97 @@ func TestActor_FlipsAgentModeViaServicePipeline(t *testing.T) {
 	}
 	if _, ok := updater.updated["task-wired"]; !ok {
 		t.Error("task-wired not updated via pipeline")
+	}
+}
+
+func TestActor_RespectsMaxAutoActionsPerDay(t *testing.T) {
+	updater := newStubUpdater()
+
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.jsonl")
+	ledger, err := Open(ledgerPath)
+	if err != nil {
+		t.Fatalf("Open ledger: %v", err)
+	}
+	if err := ledger.Append(LedgerEntry{
+		Fingerprint: "fp-old",
+		Verdict:     VerdictConfirmed,
+		Action:      "flip_agent_mode",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	logPath := writeFixture(t, fixtureLines())
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatTriageMismatch,
+			Fingerprint: "triage_mismatch:task-capped",
+			TaskID:      "task-capped",
+			LogFile:     logPath,
+		}},
+	}
+
+	cfg := configWithAutoAct(string(health.CatTriageMismatch))
+	cfg.MaxAutoActionsPerDay = 1
+
+	svc := NewService(Deps{
+		Health: &stubHealth{Report: rep},
+		Ledger: ledger,
+		Judge:  &stubJudge{verdict: Verdict{Classification: VerdictConfirmed}},
+		Actor:  &Actor{Tasks: updater, DryRun: false, Logger: slog.Default()},
+		Cfg:    cfg,
+	})
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.ActionsTaken) != 0 {
+		t.Fatalf("ActionsTaken = %d, want 0 when budget exhausted", len(r.ActionsTaken))
+	}
+	if _, ok := updater.updated["task-capped"]; ok {
+		t.Error("task-capped updated despite exhausted budget")
+	}
+}
+
+func TestActor_RecordsActionToLedger(t *testing.T) {
+	updater := newStubUpdater()
+
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.jsonl")
+	ledger, err := Open(ledgerPath)
+	if err != nil {
+		t.Fatalf("Open ledger: %v", err)
+	}
+
+	logPath := writeFixture(t, fixtureLines())
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatTriageMismatch,
+			Fingerprint: "triage_mismatch:task-ledger",
+			TaskID:      "task-ledger",
+			LogFile:     logPath,
+		}},
+	}
+
+	cfg := configWithAutoAct(string(health.CatTriageMismatch))
+	cfg.MaxAutoActionsPerDay = 3
+
+	svc := NewService(Deps{
+		Health: &stubHealth{Report: rep},
+		Ledger: ledger,
+		Judge:  &stubJudge{verdict: Verdict{Classification: VerdictConfirmed}},
+		Actor:  &Actor{Tasks: updater, DryRun: false, Logger: slog.Default()},
+		Cfg:    cfg,
+	})
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(r.ActionsTaken) != 1 {
+		t.Fatalf("ActionsTaken = %d, want 1", len(r.ActionsTaken))
+	}
+	if got := ledger.ActionsInWindow(24 * time.Hour); got != 1 {
+		t.Fatalf("ActionsInWindow = %d, want 1", got)
 	}
 }

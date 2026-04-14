@@ -208,3 +208,44 @@ func TestCorrelate_Cascade_NoMatchWhenDifferentTaskIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestCorrelate_DeterministicOrder(t *testing.T) {
+	taskStore := map[string]task.Task{
+		"t1": {ID: "t1", ProjectID: "owner/b"},
+		"t2": {ID: "t2", ProjectID: "owner/a"},
+	}
+	getTask := func(id string) (task.Task, error) {
+		t, ok := taskStore[id]
+		if !ok {
+			return task.Task{}, os.ErrNotExist
+		}
+		return t, nil
+	}
+
+	findings := []InvestigatedFinding{
+		makeInv("fp3", health.CatAgentRetryLoop, "task-z", errorClassLS("permission_denied")),
+		makeInv("fp2", health.CatStuckTask, "task-z", errorClassLS("permission_denied")),
+		makeInv("fp1", health.CatCostOutlier, "t1", errorClassLS("auth_error")),
+		makeInv("fp4", health.CatStuckTask, "t2", errorClassLS("auth_error")),
+	}
+
+	cors := Correlate(findings, getTask)
+	if len(cors) != 3 {
+		t.Fatalf("correlations = %d, want 3", len(cors))
+	}
+
+	got := make([]string, 0, len(cors))
+	for _, c := range cors {
+		got = append(got, c.Kind+":"+c.Key)
+	}
+	want := []string{
+		"same_error_class:auth_error",
+		"same_error_class:permission_denied",
+		"cascade:task-z",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order[%d] = %q, want %q (full=%v)", i, got[i], want[i], got)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/synapse/internal/health"
+	"github.com/Automaat/synapse/internal/task"
 )
 
 // stubProviderGate records calls to ReportRateLimit for assertion.
@@ -91,6 +92,50 @@ func TestProviderFeedback_ReportsRateLimitForOverloadedError(t *testing.T) {
 	}
 	if !strings.Contains(call.reason, "overloaded_error") {
 		t.Errorf("reason = %q, want to mention overloaded_error", call.reason)
+	}
+}
+
+func TestProviderFeedback_UsesTaskRunProviderWhenAvailable(t *testing.T) {
+	logsDir := t.TempDir()
+	logPath := writeFixtureInAgentsDir(t, logsDir, "agent-codex", overloadedFixtureLines())
+
+	gate := &stubProviderGate{}
+	tasks := &stubTasks{
+		byID: map[string]task.Task{
+			"task-codex": {
+				ID: "task-codex",
+				AgentRuns: []task.AgentRun{
+					{AgentID: "agent-codex", Provider: "codex", LogFile: logPath},
+				},
+			},
+		},
+	}
+	rep := &health.Report{
+		Findings: []health.Finding{{
+			Category:    health.CatAgentRetryLoop,
+			Fingerprint: "agent_retry_loop:task-codex",
+			TaskID:      "task-codex",
+			AgentID:     "agent-codex",
+			LogFile:     logPath,
+		}},
+	}
+
+	svc := NewService(Deps{
+		Health:       &stubHealth{Report: rep},
+		Tasks:        tasks,
+		ProviderGate: gate,
+	})
+
+	_, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(gate.calls) != 1 {
+		t.Fatalf("ReportRateLimit calls = %d, want 1", len(gate.calls))
+	}
+	if gate.calls[0].provider != "codex" {
+		t.Errorf("provider = %q, want codex", gate.calls[0].provider)
 	}
 }
 

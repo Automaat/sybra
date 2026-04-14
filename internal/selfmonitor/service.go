@@ -232,8 +232,14 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 			if !slices.Contains(s.deps.Cfg.AutoActCategories, cat) {
 				continue
 			}
+			if !s.canTakeAutoAction(len(report.ActionsTaken)) {
+				s.deps.Logger.Info("selfmonitor.actor.budget_reached",
+					"max_auto_actions_per_day", s.deps.Cfg.MaxAutoActionsPerDay)
+				break
+			}
 			if rec := s.deps.Actor.Act(ctx, report.Findings[i]); rec.Kind != "" {
 				report.ActionsTaken = append(report.ActionsTaken, rec)
+				s.recordAction(report.Findings[i], rec)
 			}
 		}
 	}
@@ -298,14 +304,89 @@ func (s *Service) reportProviderSignal(f *health.Finding, ls *LogSummary) {
 	if f.Category != health.CatAgentRetryLoop {
 		return
 	}
+	providerName := s.resolveProvider(f)
+	if providerName == "" {
+		providerName = "claude"
+	}
 	for _, ec := range ls.ErrorClasses {
 		if ec.Class == "overloaded_error" || ec.Class == "rate_limit" {
-			s.deps.ProviderGate.ReportRateLimit("claude", 15*time.Minute,
+			s.deps.ProviderGate.ReportRateLimit(providerName, 15*time.Minute,
 				"selfmonitor: agent_retry_loop with "+ec.Class)
 			s.deps.Logger.Info("selfmonitor.provider_signal",
-				"class", ec.Class, "task", f.TaskID)
+				"class", ec.Class, "task", f.TaskID, "provider", providerName)
 			return
 		}
+	}
+}
+
+func (s *Service) resolveProvider(f *health.Finding) string {
+	if f == nil || f.TaskID == "" || s.deps.Tasks == nil {
+		return ""
+	}
+	t, err := s.deps.Tasks.Get(f.TaskID)
+	if err != nil {
+		return ""
+	}
+
+	latestByTime := ""
+	latestByTimeAt := time.Time{}
+	latestAny := ""
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Provider == "" {
+			continue
+		}
+		if latestAny == "" {
+			latestAny = run.Provider
+		}
+		if f.AgentID != "" && run.AgentID == f.AgentID {
+			return run.Provider
+		}
+		if f.LogFile != "" && run.LogFile != "" && run.LogFile == f.LogFile {
+			return run.Provider
+		}
+		if run.StartedAt.After(latestByTimeAt) {
+			latestByTimeAt = run.StartedAt
+			latestByTime = run.Provider
+		}
+	}
+	if latestByTime != "" {
+		return latestByTime
+	}
+	return latestAny
+}
+
+func (s *Service) canTakeAutoAction(takenThisTick int) bool {
+	maxActions := s.deps.Cfg.MaxAutoActionsPerDay
+	if maxActions <= 0 {
+		return true
+	}
+	alreadyTaken := takenThisTick
+	if s.deps.Ledger != nil {
+		alreadyTaken += s.deps.Ledger.ActionsInWindow(24 * time.Hour)
+	}
+	return alreadyTaken < maxActions
+}
+
+func (s *Service) recordAction(inv InvestigatedFinding, rec ActionRecord) {
+	if s.deps.Ledger == nil {
+		return
+	}
+	entry := LedgerEntry{
+		Fingerprint: inv.Fingerprint,
+		Category:    string(inv.Finding.Category),
+		TaskID:      inv.Finding.TaskID,
+		Verdict:     inv.Verdict.Classification,
+		Action:      rec.Kind,
+		ActionRef:   rec.Reference,
+		DryRun:      rec.DryRun,
+		Confidence:  inv.Verdict.Confidence,
+		Summary:     inv.Verdict.RootCause,
+		CreatedAt:   rec.TakenAt,
+	}
+	if err := s.deps.Ledger.Append(entry); err != nil {
+		s.deps.Logger.Warn("selfmonitor.ledger.append_action",
+			"fingerprint", inv.Fingerprint, "action", rec.Kind, "err", err)
 	}
 }
 

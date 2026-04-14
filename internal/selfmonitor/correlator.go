@@ -2,6 +2,7 @@ package selfmonitor
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/Automaat/synapse/internal/health"
 	"github.com/Automaat/synapse/internal/task"
@@ -46,10 +47,17 @@ func correlateByProject(findings []InvestigatedFinding, getTask func(id string) 
 		byProject[t.ProjectID] = append(byProject[t.ProjectID], inv.Fingerprint)
 	}
 	var out []Correlation
-	for projID, fps := range byProject {
+	projectIDs := make([]string, 0, len(byProject))
+	for projID := range byProject {
+		projectIDs = append(projectIDs, projID)
+	}
+	sort.Strings(projectIDs)
+	for _, projID := range projectIDs {
+		fps := append([]string(nil), byProject[projID]...)
 		if len(fps) < 2 {
 			continue
 		}
+		sort.Strings(fps)
 		out = append(out, Correlation{
 			Kind:         "same_project",
 			Key:          projID,
@@ -76,10 +84,17 @@ func correlateByErrorClass(findings []InvestigatedFinding) []Correlation {
 		byClass[cls] = append(byClass[cls], inv.Fingerprint)
 	}
 	var out []Correlation
-	for cls, fps := range byClass {
+	classes := make([]string, 0, len(byClass))
+	for cls := range byClass {
+		classes = append(classes, cls)
+	}
+	sort.Strings(classes)
+	for _, cls := range classes {
+		fps := append([]string(nil), byClass[cls]...)
 		if len(fps) < 2 {
 			continue
 		}
+		sort.Strings(fps)
 		out = append(out, Correlation{
 			Kind:         "same_error_class",
 			Key:          cls,
@@ -109,16 +124,24 @@ func correlateCascades(findings []InvestigatedFinding) []Correlation {
 		}
 	}
 	var out []Correlation
-	for tid, fp1 := range retryByTask {
+	taskIDs := make([]string, 0, len(retryByTask))
+	for tid := range retryByTask {
+		taskIDs = append(taskIDs, tid)
+	}
+	sort.Strings(taskIDs)
+	for _, tid := range taskIDs {
+		fp1 := retryByTask[tid]
 		fp2, ok := stuckByTask[tid]
 		if !ok {
 			continue
 		}
+		fps := []string{fp1, fp2}
+		sort.Strings(fps)
 		out = append(out, Correlation{
 			Kind:         "cascade",
 			Key:          tid,
 			Count:        2,
-			Fingerprints: []string{fp1, fp2},
+			Fingerprints: fps,
 			Description:  fmt.Sprintf("agent_retry_loop → stuck_task cascade on task %s", tid),
 		})
 	}
