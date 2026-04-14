@@ -22,6 +22,17 @@
 //   - evaluate: runs synapse-cli to set status=in-review, emits result
 //   - pr_created: emits result with a github.com/.../pull/N URL so the
 //     mechanical link_pr_and_review step can extract the PR number via regex
+//
+// Perf scenarios (zero token cost, drive backend load):
+//   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
+//     FAKE_CLAUDE_EVENT_INTERVAL_MS apart, then a result event. Defaults:
+//     100 events, 10ms interval.
+//   - perf_burst: emit FAKE_CLAUDE_EVENT_COUNT assistant events with zero
+//     inter-event sleep (stresses the 50ms emit throttle in runner_headless).
+//     Default: 500 events.
+//   - perf_long: emit assistant events at FAKE_CLAUDE_EVENT_INTERVAL_MS cadence
+//     for FAKE_CLAUDE_DURATION_MS total, then a result event. Used for soak
+//     and memory-leak testing. Defaults: 30s duration, 200ms interval.
 package main
 
 import (
@@ -32,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -132,45 +144,136 @@ func main() {
 		emitAssistant("Implementing and pushing PR...")
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 
+	case "perf_stream":
+		runPerfStream()
+
+	case "perf_burst":
+		runPerfBurst()
+
+	case "perf_long":
+		runPerfLong()
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
 }
 
+// runPerfStream emits FAKE_CLAUDE_EVENT_COUNT assistant events at a fixed
+// interval, then a result. Used to characterize steady-state throughput.
+func runPerfStream() {
+	count := envInt("FAKE_CLAUDE_EVENT_COUNT", 100)
+	intervalMs := envInt("FAKE_CLAUDE_EVENT_INTERVAL_MS", 10)
+	interval := time.Duration(intervalMs) * time.Millisecond
+	emitRaw(systemEvent())
+	for i := range count {
+		emitRaw(assistantEvent(fmt.Sprintf("perf_stream event %d/%d", i+1, count)))
+		if interval > 0 {
+			time.Sleep(interval)
+		}
+	}
+	emitRaw(resultEvent(fmt.Sprintf("perf_stream emitted %d events", count)))
+}
+
+// runPerfBurst emits FAKE_CLAUDE_EVENT_COUNT assistant events with zero
+// inter-event sleep, then a result. Used to stress the 50ms emit throttle
+// in runner_headless and the downstream event fanout.
+func runPerfBurst() {
+	count := envInt("FAKE_CLAUDE_EVENT_COUNT", 500)
+	emitRaw(systemEvent())
+	for i := range count {
+		emitRaw(assistantEvent(fmt.Sprintf("perf_burst event %d/%d", i+1, count)))
+	}
+	emitRaw(resultEvent(fmt.Sprintf("perf_burst emitted %d events", count)))
+}
+
+// runPerfLong emits assistant events at a fixed cadence for a total duration,
+// then a result. Used for soak / memory-leak detection.
+func runPerfLong() {
+	durationMs := envInt("FAKE_CLAUDE_DURATION_MS", 30000)
+	intervalMs := envInt("FAKE_CLAUDE_EVENT_INTERVAL_MS", 200)
+	duration := time.Duration(durationMs) * time.Millisecond
+	interval := time.Duration(intervalMs) * time.Millisecond
+	emitRaw(systemEvent())
+	deadline := time.Now().Add(duration)
+	i := 0
+	for time.Now().Before(deadline) {
+		i++
+		emitRaw(assistantEvent(fmt.Sprintf("perf_long event %d", i)))
+		if interval > 0 {
+			time.Sleep(interval)
+		}
+	}
+	emitRaw(resultEvent(fmt.Sprintf("perf_long emitted %d events over %s", i, duration)))
+}
+
+// envInt reads a non-negative integer from env, falling back to def on parse
+// error or missing value. Negative or non-integer inputs return def.
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
 func emitSystem() {
-	emit(map[string]any{
-		"type":       "system",
-		"session_id": "fake-session-1",
-	})
+	emit(systemEvent())
 }
 
 func emitAssistant(text string) {
-	emit(map[string]any{
+	emit(assistantEvent(text))
+}
+
+func emitResult(result string) {
+	emit(resultEvent(result))
+}
+
+func systemEvent() map[string]any {
+	return map[string]any{
+		"type":       "system",
+		"session_id": "fake-session-1",
+	}
+}
+
+func assistantEvent(text string) map[string]any {
+	return map[string]any{
 		"type": "assistant",
 		"message": map[string]any{
 			"content": []any{
 				map[string]any{"type": "text", "text": text},
 			},
 		},
-	})
+	}
 }
 
-func emitResult(result string) {
-	emit(map[string]any{
+func resultEvent(result string) map[string]any {
+	return map[string]any{
 		"type":                "result",
 		"result":              result,
 		"session_id":          "fake-session-1",
 		"total_cost_usd":      0.01,
 		"total_input_tokens":  100.0,
 		"total_output_tokens": 50.0,
-	})
+	}
 }
 
+// emit writes an event and sleeps 10ms. Used by legacy scenarios that depend
+// on the paced emission for test realism.
 func emit(event map[string]any) {
+	emitRaw(event)
+	time.Sleep(10 * time.Millisecond)
+}
+
+// emitRaw writes an event without any post-sleep. Perf scenarios use this so
+// they can control cadence explicitly.
+func emitRaw(event map[string]any) {
 	data, _ := json.Marshal(event)
 	fmt.Println(string(data))
-	time.Sleep(10 * time.Millisecond)
 }
 
 // extractTaskID attempts to find a task ID in the -p prompt argument.
