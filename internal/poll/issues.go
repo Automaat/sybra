@@ -122,10 +122,14 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 			continue
 		}
 
-		// Skip issues from registered projects whose type isn't allowed on this
-		// machine. Issues from unregistered repos pass through (caller hasn't
-		// declared a type for them).
-		if proj, err := f.projects.Get(issue.Repository); err == nil && !f.allowsType(proj.Type) {
+		// Require the issue's repo to be a registered project. Issues from
+		// unregistered repos are dropped entirely — synapse only tracks work
+		// for repos the user has explicitly added as projects.
+		proj, err := f.projects.Get(issue.Repository)
+		if err != nil {
+			continue
+		}
+		if !f.allowsType(proj.Type) {
 			continue
 		}
 
@@ -133,14 +137,12 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 		// Enrich it with the real title and link instead of creating a duplicate.
 		if taskID, exists := urlTitleTasks[issue.URL]; exists {
 			u := task.Update{
-				Title: task.Ptr(issue.Title),
-				Issue: task.Ptr(issue.URL),
+				Title:     task.Ptr(issue.Title),
+				Issue:     task.Ptr(issue.URL),
+				ProjectID: task.Ptr(issue.Repository),
 			}
 			if issue.Body != "" {
 				u.Body = task.Ptr(issue.Body)
-			}
-			if _, projErr := f.projects.Get(issue.Repository); projErr == nil {
-				u.ProjectID = task.Ptr(issue.Repository)
 			}
 			if _, err := f.tasks.Update(taskID, u); err != nil {
 				f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
@@ -157,12 +159,9 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 		}
 
 		u := task.Update{
-			Issue:  task.Ptr(issue.URL),
-			Status: task.Ptr(task.StatusTodo),
-		}
-
-		if _, projErr := f.projects.Get(issue.Repository); projErr == nil {
-			u.ProjectID = task.Ptr(issue.Repository)
+			Issue:     task.Ptr(issue.URL),
+			Status:    task.Ptr(task.StatusTodo),
+			ProjectID: task.Ptr(issue.Repository),
 		}
 
 		if len(issue.Labels) > 0 {

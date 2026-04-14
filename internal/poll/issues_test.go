@@ -80,34 +80,31 @@ func TestIssuesFetcher_SyncIssuesToTasks_FiltersByProjectType(t *testing.T) {
 		name       string
 		allowsType func(project.ProjectType) bool
 		// wantIssues is the set of issue URLs expected to have resulted in a
-		// task. Unregistered repos always pass through.
+		// task. Issues from unregistered repos are always dropped.
 		wantIssues []string
 	}{
 		{
-			name:       "pet-only machine skips work repos",
+			name:       "pet-only machine skips work and unregistered repos",
 			allowsType: petOnly,
 			wantIssues: []string{
 				"https://github.com/acme/pet1/issues/1",
 				"https://github.com/acme/pet2/issues/2",
-				"https://github.com/ext/tool/issues/4",
 			},
 		},
 		{
-			name:       "work-only machine skips pet repos",
+			name:       "work-only machine skips pet and unregistered repos",
 			allowsType: workOnly,
 			wantIssues: []string{
 				"https://github.com/bigco/work1/issues/3",
-				"https://github.com/ext/tool/issues/4",
 			},
 		},
 		{
-			name:       "allow-all accepts every registered and unregistered repo",
+			name:       "allow-all accepts every registered repo but drops unregistered",
 			allowsType: allowAll,
 			wantIssues: []string{
 				"https://github.com/acme/pet1/issues/1",
 				"https://github.com/acme/pet2/issues/2",
 				"https://github.com/bigco/work1/issues/3",
-				"https://github.com/ext/tool/issues/4",
 			},
 		},
 	}
