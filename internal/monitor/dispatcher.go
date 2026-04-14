@@ -16,12 +16,19 @@ type Dispatcher interface {
 	Dispatch(ctx context.Context, a Anomaly) (agentID string, err error)
 }
 
+// agentRunner is the slice of agent.Manager the dispatcher needs. Defining
+// it as an interface lets tests inject a recording fake without constructing
+// a full Manager. *agent.Manager satisfies this interface naturally.
+type agentRunner interface {
+	Run(cfg agent.RunConfig) (*agent.Agent, error)
+}
+
 // agentDispatcher is the production implementation. It reuses the existing
 // agent.Manager so monitor-spawned agents show up in the Agents list, get
 // audit events, and respect the same lifecycle as user-initiated headless
 // runs.
 type agentDispatcher struct {
-	agents       *agent.Manager
+	agents       agentRunner
 	tasks        taskAPI
 	worktreePath func(t task.Task) (string, bool)
 	repoDir      string
