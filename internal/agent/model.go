@@ -62,6 +62,9 @@ type Agent struct {
 	// done is closed when the headless/conversational goroutine has fully exited.
 	// Used by HasRunningAgentForTask to guard worktree cleanup.
 	done chan struct{}
+	// doneOnce prevents double-close on done and lets Manager maintain an
+	// exact live-agent count even when multiple terminal paths race.
+	doneOnce sync.Once
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.

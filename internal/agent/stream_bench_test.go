@@ -50,6 +50,22 @@ func makeResultLine() []byte {
 	return b
 }
 
+func makeCodexCommandCompletedLine() []byte {
+	event := map[string]any{
+		"type": "item.completed",
+		"item": map[string]any{
+			"id":                "item_1",
+			"type":              "command_execution",
+			"command":           "pwd",
+			"aggregated_output": "/repo\n",
+			"exit_code":         0,
+			"status":            "completed",
+		},
+	}
+	b, _ := json.Marshal(event)
+	return b
+}
+
 // BenchmarkParseClaudeLine_Assistant measures per-line parse cost for the
 // most common event type. This runs on every stream line (50ms throttle only
 // caps emit, not parse) so regressions here scale linearly with event volume.
@@ -90,6 +106,17 @@ func BenchmarkParseClaudeLine_Mixed(b *testing.B) {
 	for i := range b.N {
 		if _, err := ParseClaudeLine(lines[i%len(lines)]); err != nil {
 			b.Fatalf("ParseClaudeLine: %v", err)
+		}
+	}
+}
+
+func BenchmarkParseCodexLine_CommandCompleted(b *testing.B) {
+	line := makeCodexCommandCompletedLine()
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		if _, err := ParseCodexLine(line); err != nil {
+			b.Fatalf("ParseCodexLine: %v", err)
 		}
 	}
 }

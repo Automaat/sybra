@@ -61,9 +61,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 
 done:
 	a.SetState(StateStopped)
-	if a.done != nil {
-		close(a.done)
-	}
+	m.markAgentDone(a)
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, a.GetExitErr() == nil)
@@ -557,9 +555,7 @@ func formatHeadlessToolResults(results []ToolResultBlock) string {
 
 func (m *Manager) handleError(a *Agent, err error) {
 	a.SetState(StateStopped)
-	if a.done != nil {
-		close(a.done)
-	}
+	m.markAgentDone(a)
 	m.logger.Error("agent.error", "id", a.ID, "err", err)
 	m.emit(events.AgentError(a.ID), err.Error())
 	m.recordCompletion(a, false)

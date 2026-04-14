@@ -170,15 +170,38 @@ func (m *Manager) Delete(id string) error {
 
 // AddRun appends an agent run to the task and emits task:updated.
 func (m *Manager) AddRun(taskID string, run AgentRun) error {
+	return m.AddRunWithStatus(taskID, run, nil)
+}
+
+// AddRunWithStatus appends an agent run and optionally changes task status in one write.
+func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
-	defer mu.Unlock()
-	if err := m.store.AddRun(taskID, run); err != nil {
+	var prevStatus string
+	if status != nil {
+		if prev, getErr := m.store.Get(taskID); getErr == nil {
+			prevStatus = string(prev.Status)
+		}
+	}
+	if err := m.store.AddRunWithStatus(taskID, run, status); err != nil {
+		mu.Unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
 	if err == nil {
 		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	}
+	var (
+		fireHook  bool
+		newStatus string
+	)
+	if status != nil && m.onStatusHook != nil && err == nil {
+		newStatus = string(t.Status)
+		fireHook = newStatus != prevStatus
+	}
+	mu.Unlock()
+	if fireHook {
+		m.onStatusHook(taskID, prevStatus, newStatus)
 	}
 	return nil
 }

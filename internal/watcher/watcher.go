@@ -66,33 +66,20 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 	// leading-edge implementation silently dropped the last write in a
 	// burst, leaving consumers with stale content.
 	pending := make(map[string]fsnotify.Op)
-	timers := make(map[string]*time.Timer)
-	flushCh := make(chan string, 64)
-
-	stopAllTimers := func() {
-		for _, t := range timers {
-			t.Stop()
-		}
-	}
+	deadlines := make(map[string]time.Time)
+	timer := time.NewTimer(time.Hour)
+	stopTimer(timer)
+	var timerCh <-chan time.Time
 
 	for {
 		select {
 		case <-ctx.Done():
-			stopAllTimers()
+			stopTimer(timer)
 			return
-
-		case name := <-flushCh:
-			op, ok := pending[name]
-			if !ok {
-				continue
-			}
-			delete(pending, name)
-			delete(timers, name)
-			w.emitFor(name, op)
 
 		case event, ok := <-fw.Events:
 			if !ok {
-				stopAllTimers()
+				stopTimer(timer)
 				return
 			}
 			if !strings.HasSuffix(event.Name, ".md") {
@@ -100,23 +87,64 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 			}
 			// OR ops so a Create+Write burst still surfaces as Create.
 			pending[event.Name] |= event.Op
-			if t, exists := timers[event.Name]; exists {
-				t.Stop()
-			}
-			name := event.Name
-			timers[name] = time.AfterFunc(debounceInterval, func() {
-				select {
-				case flushCh <- name:
-				case <-ctx.Done():
+			deadlines[event.Name] = time.Now().Add(debounceInterval)
+			timerCh = resetDebounceTimer(timer, deadlines)
+
+		case <-timerCh:
+			now := time.Now()
+			for name, deadline := range deadlines {
+				if deadline.After(now) {
+					continue
 				}
-			})
+				op, ok := pending[name]
+				if !ok {
+					delete(deadlines, name)
+					continue
+				}
+				delete(pending, name)
+				delete(deadlines, name)
+				w.emitFor(name, op)
+			}
+			timerCh = resetDebounceTimer(timer, deadlines)
 
 		case err, ok := <-fw.Errors:
 			if !ok {
-				stopAllTimers()
+				stopTimer(timer)
 				return
 			}
 			w.logger.Error("watcher.error", "err", err)
+		}
+	}
+}
+
+func resetDebounceTimer(timer *time.Timer, deadlines map[string]time.Time) <-chan time.Time {
+	if len(deadlines) == 0 {
+		stopTimer(timer)
+		return nil
+	}
+	next := nextDeadline(deadlines)
+	wait := time.Until(next)
+	wait = max(wait, 0)
+	stopTimer(timer)
+	timer.Reset(wait)
+	return timer.C
+}
+
+func nextDeadline(deadlines map[string]time.Time) time.Time {
+	var next time.Time
+	for _, deadline := range deadlines {
+		if next.IsZero() || deadline.Before(next) {
+			next = deadline
+		}
+	}
+	return next
+}
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
 		}
 	}
 }

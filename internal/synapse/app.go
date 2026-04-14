@@ -192,7 +192,15 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	emit := a.emit
+	emit := func(event string, data any) {
+		switch event {
+		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
+			if path, ok := data.(string); ok {
+				store.InvalidatePath(path)
+			}
+		}
+		a.emit(event, data)
+	}
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
@@ -241,6 +249,17 @@ func (a *App) Startup(ctx context.Context) error {
 	a.syncSkills()
 	a.runStartupCleanup()
 	a.RegisterSpotlightHotkey()
+	a.startBackgroundServices(ctx, emit, issuesFetcher)
+	a.logAutomationsSummary()
+	a.logger.Info("app.started")
+	return nil
+}
+
+func (a *App) startBackgroundServices(
+	ctx context.Context,
+	emit func(string, any),
+	issuesFetcher *poll.IssuesFetcher,
+) {
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 
 	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
@@ -256,9 +275,6 @@ func (a *App) Startup(ctx context.Context) error {
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
 	a.registerMetricsObservers()
-	a.logAutomationsSummary()
-	a.logger.Info("app.started")
-	return nil
 }
 
 // registerMetricsObservers wires the OTel observable gauge callbacks to
@@ -562,6 +578,10 @@ func (a *App) onWorkflowComplete(info workflow.CompletionInfo) {
 }
 
 func (a *App) initWorkflowEngine() {
+	if os.Getenv("SYNAPSE_DISABLE_WORKFLOWS") == "1" {
+		a.logger.Info("workflow.disabled")
+		return
+	}
 	wfStore, err := workflow.NewStore(config.WorkflowsDir())
 	if err != nil {
 		a.logger.Error("workflow.store.init", "err", err)

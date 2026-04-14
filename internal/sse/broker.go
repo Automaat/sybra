@@ -64,6 +64,14 @@ func (b *Broker) SubscribeAll() (ch <-chan Event, cancel func()) {
 // all SubscribeAll subscribers.
 // Safe for concurrent use. Slow consumers are dropped (non-blocking send).
 func (b *Broker) Emit(event string, data any) {
+	b.mu.RLock()
+	hasNamed := len(b.subs[event]) > 0
+	hasAll := len(b.allSubs) > 0
+	b.mu.RUnlock()
+	if !hasNamed && !hasAll {
+		return
+	}
+
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -71,14 +79,9 @@ func (b *Broker) Emit(event string, data any) {
 	msg := string(payload)
 
 	b.mu.RLock()
-	chans := b.subs[event]
-	namedSnap := make([]chan string, len(chans))
-	copy(namedSnap, chans)
-	allSnap := make([]chan Event, len(b.allSubs))
-	copy(allSnap, b.allSubs)
-	b.mu.RUnlock()
+	defer b.mu.RUnlock()
 
-	for _, ch := range namedSnap {
+	for _, ch := range b.subs[event] {
 		select {
 		case ch <- msg:
 		default: // drop slow consumer
@@ -86,7 +89,7 @@ func (b *Broker) Emit(event string, data any) {
 	}
 
 	ev := Event{Name: event, Data: msg}
-	for _, ch := range allSnap {
+	for _, ch := range b.allSubs {
 		select {
 		case ch <- ev:
 		default: // drop slow consumer

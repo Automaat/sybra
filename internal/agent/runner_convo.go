@@ -158,9 +158,7 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 
 done:
 	a.SetState(StateStopped)
-	if a.done != nil {
-		close(a.done)
-	}
+	m.markAgentDone(a)
 	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, a.GetExitErr() == nil)
