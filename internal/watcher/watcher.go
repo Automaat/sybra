@@ -69,7 +69,7 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 	deadlines := make(map[string]time.Time)
 	timer := time.NewTimer(time.Hour)
 	stopTimer(timer)
-	timerCh := (<-chan time.Time)(nil)
+	var timerCh <-chan time.Time
 
 	for {
 		select {
@@ -124,9 +124,7 @@ func resetDebounceTimer(timer *time.Timer, deadlines map[string]time.Time) <-cha
 	}
 	next := nextDeadline(deadlines)
 	wait := time.Until(next)
-	if wait < 0 {
-		wait = 0
-	}
+	wait = max(wait, 0)
 	stopTimer(timer)
 	timer.Reset(wait)
 	return timer.C

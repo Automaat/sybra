@@ -3,6 +3,7 @@ package task
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,9 +360,7 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 	clone.StepHistory = slices.Clone(wf.StepHistory)
 	if wf.Variables != nil {
 		clone.Variables = make(map[string]string, len(wf.Variables))
-		for k, v := range wf.Variables {
-			clone.Variables[k] = v
-		}
+		maps.Copy(clone.Variables, wf.Variables)
 	}
 	if wf.CompletedAt != nil {
 		ts := *wf.CompletedAt

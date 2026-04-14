@@ -194,66 +194,6 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 	}
 }
 
-func parseCodexItemLine(eventType string, raw map[string]any, rawCopy json.RawMessage) (CodexEvent, error) {
-	item, _ := raw["item"].(map[string]any)
-	itemType := strVal(item, "type")
-
-	switch itemType {
-	case "agent_message":
-		return CodexEvent{
-			Type: "assistant",
-			Raw:  rawCopy,
-			Message: &ClaudeMessage{
-				Role: "assistant",
-				Text: strVal(item, "text"),
-			},
-		}, nil
-
-	case "command_execution":
-		if eventType == "item.started" {
-			return CodexEvent{
-				Type: "tool_use",
-				Raw:  rawCopy,
-				Message: &ClaudeMessage{
-					Role: "assistant",
-					ToolUses: []ToolUseBlock{{
-						ID:    strVal(item, "id"),
-						Name:  "Bash",
-						Input: map[string]any{"command": strVal(item, "command")},
-					}},
-				},
-			}, nil
-		}
-		output := strVal(item, "aggregated_output")
-		exitCode := int(floatVal(item, "exit_code"))
-		if output == "" {
-			output = fmt.Sprintf("Command exited with code %d.", exitCode)
-		}
-		return CodexEvent{
-			Type: "tool_result",
-			Raw:  rawCopy,
-			Message: &ClaudeMessage{
-				Role: "user",
-				ToolResults: []ToolResultBlock{{
-					ToolUseID: strVal(item, "id"),
-					Content:   output,
-					IsError:   exitCode != 0,
-				}},
-			},
-		}, nil
-
-	default:
-		return CodexEvent{
-			Type: "assistant",
-			Raw:  rawCopy,
-			Message: &ClaudeMessage{
-				Role: "assistant",
-				Text: strVal(item, "text"),
-			},
-		}, nil
-	}
-}
-
 func parseCodexItemLineTyped(eventType string, item *codexItem, rawCopy json.RawMessage) (CodexEvent, error) {
 	if item == nil {
 		return CodexEvent{Type: eventType, Raw: rawCopy}, nil
@@ -362,7 +302,8 @@ func extractAssistantContentTyped(msg *claudeMessagePayload) ClaudeMessage {
 	}
 	var textParts []string
 	var tools []ToolUseBlock
-	for _, block := range msg.Content {
+	for i := range msg.Content {
+		block := &msg.Content[i]
 		switch block.Type {
 		case "text":
 			if block.Text != "" {
@@ -436,7 +377,8 @@ func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
 		return nil
 	}
 	var results []ToolResultBlock
-	for _, block := range msg.Content {
+	for i := range msg.Content {
+		block := &msg.Content[i]
 		if block.Type != "tool_result" {
 			continue
 		}
@@ -465,26 +407,6 @@ func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
 	return results
 }
 
-// extractResultFields parses cost, token, and session fields from a "result" event.
-func extractResultFields(raw map[string]any) ClaudeResult {
-	r := ClaudeResult{
-		Subtype:   strVal(raw, "subtype"),
-		SessionID: strVal(raw, "session_id"),
-	}
-	// ok intentionally discarded: zero-value "" is acceptable when result absent.
-	r.Text, _ = raw["result"].(string)
-	if cost, ok := raw["total_cost_usd"].(float64); ok {
-		r.CostUSD = cost
-	}
-	if v, ok := raw["total_input_tokens"].(float64); ok {
-		r.InputTokens = int(v)
-	}
-	if v, ok := raw["total_output_tokens"].(float64); ok {
-		r.OutputTokens = int(v)
-	}
-	return r
-}
-
 func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 	return ClaudeResult{
 		Subtype:      raw.Subtype,
@@ -511,14 +433,5 @@ func strVal(m map[string]any, key string) string {
 		return ""
 	}
 	v, _ := m[key].(string)
-	return v
-}
-
-// floatVal extracts a float64 from a map[string]any, returning 0 on any failure.
-func floatVal(m map[string]any, key string) float64 {
-	if m == nil {
-		return 0
-	}
-	v, _ := m[key].(float64)
 	return v
 }

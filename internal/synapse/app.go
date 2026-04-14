@@ -249,6 +249,17 @@ func (a *App) Startup(ctx context.Context) error {
 	a.syncSkills()
 	a.runStartupCleanup()
 	a.RegisterSpotlightHotkey()
+	a.startBackgroundServices(ctx, emit, issuesFetcher)
+	a.logAutomationsSummary()
+	a.logger.Info("app.started")
+	return nil
+}
+
+func (a *App) startBackgroundServices(
+	ctx context.Context,
+	emit func(string, any),
+	issuesFetcher *poll.IssuesFetcher,
+) {
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 
 	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
@@ -264,9 +275,6 @@ func (a *App) Startup(ctx context.Context) error {
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
 	a.registerMetricsObservers()
-	a.logAutomationsSummary()
-	a.logger.Info("app.started")
-	return nil
 }
 
 // registerMetricsObservers wires the OTel observable gauge callbacks to
