@@ -259,6 +259,59 @@ func TestE2ECLILedgerSinceFilter(t *testing.T) {
 	}
 }
 
+func TestE2ECLILedgerUnfilteredSinceIncludesNonIssues(t *testing.T) {
+	home := setupStore(t)
+	ledgerPath := filepath.Join(home, "selfmonitor", "ledger.jsonl")
+	ledger, err := selfmonitor.Open(ledgerPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	now := time.Now().UTC()
+	rows := []selfmonitor.LedgerEntry{
+		{
+			Fingerprint: "old:task",
+			Verdict:     selfmonitor.VerdictPending,
+			CreatedAt:   now.Add(-72 * time.Hour),
+		},
+		{
+			Fingerprint: "fresh-non-issue:task",
+			Verdict:     selfmonitor.VerdictConfirmed,
+			CreatedAt:   now.Add(-2 * time.Hour),
+		},
+		{
+			Fingerprint: "fresh-open-issue:task",
+			Verdict:     selfmonitor.VerdictNeedsHuman,
+			IssueNumber: 42,
+			IssueState:  "open",
+			CreatedAt:   now.Add(-1 * time.Hour),
+		},
+	}
+	for _, r := range rows {
+		if err := ledger.Append(r); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	code, out := runCLI(t, "--json", "selfmonitor", "ledger", "--since", "24h")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	var entries []selfmonitor.LedgerEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2 recent rows", len(entries))
+	}
+	if entries[0].Fingerprint != "fresh-non-issue:task" {
+		t.Fatalf("entries[0] = %q, want fresh non-issue row", entries[0].Fingerprint)
+	}
+	if entries[1].Fingerprint != "fresh-open-issue:task" {
+		t.Fatalf("entries[1] = %q, want fresh open issue row", entries[1].Fingerprint)
+	}
+}
+
 // TestE2ECLIInvestigateSuppressionReadsLedger wires a seeded ledger into
 // the CLI investigate path: the finding should be counted as Suppressed
 // instead of emitted, proving the CLI shares the same ledger file the

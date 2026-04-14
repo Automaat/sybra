@@ -157,6 +157,7 @@ func parseRich(path string, maxEvents int) ([]agent.ClaudeEvent, error) {
 // be attributed back to the tool that earned it. Lifted to package scope so
 // the distributeCost helper can take it as a typed slice.
 type pendingCall struct {
+	useID    string
 	name     string
 	bytesIn  int
 	bytesOut int
@@ -177,6 +178,7 @@ type analyzerState struct {
 	perToolHashes     map[string]map[string]int
 	perToolSample     map[string]map[string]map[string]any
 	since             []pendingCall
+	sinceByUseID      map[string]int
 	byUseID           map[string]*liveCall
 	order             []string
 	errorClassCounts  map[string]int
@@ -193,6 +195,7 @@ func newAnalyzerState(total int) *analyzerState {
 		},
 		perToolHashes:     map[string]map[string]int{},
 		perToolSample:     map[string]map[string]map[string]any{},
+		sinceByUseID:      map[string]int{},
 		byUseID:           map[string]*liveCall{},
 		errorClassCounts:  map[string]int{},
 		errorClassSamples: map[string]string{},
@@ -235,7 +238,8 @@ func (st *analyzerState) onAssistant(ev *agent.ClaudeEvent) {
 		if _, ok := st.perToolSample[t.Name][hash]; !ok {
 			st.perToolSample[t.Name][hash] = sample
 		}
-		st.since = append(st.since, pendingCall{name: t.Name, bytesIn: estimateInputBytes(t.Input)})
+		st.since = append(st.since, pendingCall{useID: t.ID, name: t.Name, bytesIn: estimateInputBytes(t.Input)})
+		st.sinceByUseID[t.ID] = len(st.since) - 1
 		st.byUseID[t.ID] = &liveCall{trace: ToolCallTrace{Tool: t.Name, Input: sample}, inputHash: hash}
 		st.order = append(st.order, t.ID)
 	}
@@ -251,10 +255,11 @@ func (st *analyzerState) onUser(ev *agent.ClaudeEvent) {
 			call.trace.ResultExcerpt = excerpt
 			call.trace.IsError = r.IsError
 		}
-		// Attribute output bytes to the most recent pending tool call,
-		// which matches the common interleave pattern where tool_use and
-		// tool_result are adjacent.
-		if len(st.since) > 0 {
+		// Attribute output bytes to the matching tool_use by ID. Falls back
+		// to recency for malformed streams lacking tool_use_id.
+		if idx, ok := st.sinceByUseID[r.ToolUseID]; ok && idx >= 0 && idx < len(st.since) {
+			st.since[idx].bytesOut += len(r.Content)
+		} else if len(st.since) > 0 {
 			st.since[len(st.since)-1].bytesOut += len(r.Content)
 		}
 		if r.IsError {
@@ -276,6 +281,7 @@ func (st *analyzerState) onResult(ev *agent.ClaudeEvent) {
 	st.summary.TotalOutputTokens += ev.Result.OutputTokens
 	distributeCost(st.summary.InferredCostPerTool, st.since, ev.Result.CostUSD)
 	st.since = st.since[:0]
+	clear(st.sinceByUseID)
 	if ev.Subtype != "error" && ev.Result.ErrorType == "" {
 		return
 	}

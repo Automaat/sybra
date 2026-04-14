@@ -150,15 +150,29 @@ func (l *Ledger) History(fp string, window time.Duration) []LedgerEntry {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	var out []LedgerEntry
-	cutoff := time.Time{}
-	if window > 0 {
-		cutoff = time.Now().UTC().Add(-window)
-	}
+	cutoff := ledgerCutoff(window)
 	for i := range l.entries {
 		e := &l.entries[i]
 		if e.Fingerprint != fp {
 			continue
 		}
+		if !cutoff.IsZero() && e.CreatedAt.Before(cutoff) {
+			continue
+		}
+		out = append(out, *e)
+	}
+	return out
+}
+
+// Entries returns all entries whose CreatedAt falls within [now-window, now].
+// A zero window returns every entry.
+func (l *Ledger) Entries(window time.Duration) []LedgerEntry {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var out []LedgerEntry
+	cutoff := ledgerCutoff(window)
+	for i := range l.entries {
+		e := &l.entries[i]
 		if !cutoff.IsZero() && e.CreatedAt.Before(cutoff) {
 			continue
 		}
@@ -216,14 +230,14 @@ func (l *Ledger) OpenIssues() []LedgerEntry {
 func (l *Ledger) ActionsInWindow(window time.Duration) int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	cutoff := time.Now().UTC().Add(-window)
+	cutoff := ledgerCutoff(window)
 	count := 0
 	for i := range l.entries {
 		e := &l.entries[i]
 		if e.Action == "" {
 			continue
 		}
-		if e.CreatedAt.Before(cutoff) {
+		if !cutoff.IsZero() && e.CreatedAt.Before(cutoff) {
 			continue
 		}
 		count++
@@ -265,4 +279,11 @@ func (l *Ledger) replay() error {
 		return fmt.Errorf("scan ledger: %w", err)
 	}
 	return nil
+}
+
+func ledgerCutoff(window time.Duration) time.Time {
+	if window <= 0 {
+		return time.Time{}
+	}
+	return time.Now().UTC().Add(-window)
 }

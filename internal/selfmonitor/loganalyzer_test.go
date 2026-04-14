@@ -179,6 +179,53 @@ func TestAggregateRepeatedCallsDirect(t *testing.T) {
 	}
 }
 
+func TestAggregateCostAttributionUsesToolUseID(t *testing.T) {
+	events := []agent.ClaudeEvent{
+		{
+			Type: "assistant",
+			Message: &agent.ClaudeMessage{
+				Role: "assistant",
+				ToolUses: []agent.ToolUseBlock{
+					{ID: "a", Name: "Read", Input: map[string]any{"path": "/tmp/a"}},
+					{ID: "b", Name: "Bash", Input: map[string]any{"command": "echo hi"}},
+				},
+			},
+		},
+		{
+			Type: "user",
+			Message: &agent.ClaudeMessage{
+				Role: "user",
+				ToolResults: []agent.ToolResultBlock{
+					{ToolUseID: "a", Content: strings.Repeat("A", 1200)},
+					{ToolUseID: "b", Content: strings.Repeat("b", 10)},
+				},
+			},
+		},
+		{
+			Type: "result",
+			Result: &agent.ClaudeResult{
+				CostUSD: 1.0,
+			},
+		},
+	}
+
+	s := aggregate(events)
+	if s.TotalToolCalls != 2 {
+		t.Fatalf("TotalToolCalls = %d, want 2", s.TotalToolCalls)
+	}
+	readCost := s.InferredCostPerTool["Read"]
+	bashCost := s.InferredCostPerTool["Bash"]
+	if readCost <= bashCost {
+		t.Fatalf("expected Read cost > Bash cost, got Read=%.4f Bash=%.4f", readCost, bashCost)
+	}
+	if readCost < 0.90 {
+		t.Fatalf("Read cost too low: %.4f, want > 0.90", readCost)
+	}
+	if bashCost > 0.10 {
+		t.Fatalf("Bash cost too high: %.4f, want < 0.10", bashCost)
+	}
+}
+
 func TestClassifyResultError(t *testing.T) {
 	tests := []struct {
 		errType string

@@ -118,11 +118,7 @@ func cmdSelfmonitorLedger(args []string, jsonOut bool) int {
 	if *fpFilter != "" {
 		entries = ledger.History(*fpFilter, window)
 	} else {
-		// History takes a fingerprint, so for an unfiltered view we fall
-		// through to OpenIssues + Latest for a condensed summary. Print
-		// all entries when --since is provided by walking OpenIssues and
-		// filtering the timestamps inline.
-		entries = ledger.OpenIssues()
+		entries = ledger.Entries(window)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {

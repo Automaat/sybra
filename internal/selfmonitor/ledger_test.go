@@ -180,3 +180,35 @@ func TestLedgerAppendEmptyFingerprint(t *testing.T) {
 		t.Error("Append empty fingerprint = nil, want error")
 	}
 }
+
+func TestLedgerEntriesWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	l, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	now := time.Now().UTC()
+	rows := []LedgerEntry{
+		{Fingerprint: "old", Verdict: VerdictPending, CreatedAt: now.Add(-72 * time.Hour)},
+		{Fingerprint: "mid", Verdict: VerdictConfirmed, CreatedAt: now.Add(-3 * time.Hour)},
+		{Fingerprint: "new", Verdict: VerdictSuppressed, CreatedAt: now.Add(-30 * time.Minute)},
+	}
+	for _, r := range rows {
+		if err := l.Append(r); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	all := l.Entries(0)
+	if len(all) != 3 {
+		t.Fatalf("Entries(0) = %d, want 3", len(all))
+	}
+	recent := l.Entries(6 * time.Hour)
+	if len(recent) != 2 {
+		t.Fatalf("Entries(6h) = %d, want 2", len(recent))
+	}
+	if recent[0].Fingerprint != "mid" || recent[1].Fingerprint != "new" {
+		t.Fatalf("Entries(6h) order/content = %+v", recent)
+	}
+}
