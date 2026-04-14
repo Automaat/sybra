@@ -713,7 +713,7 @@ func (a *App) initWorkflowEngine() {
 	}
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
-		&taskAdapter{tasks: a.tasks},
+		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
 		a.logger,
 	)
@@ -966,11 +966,16 @@ func (a *App) restartStaleInProgress() {
 			})
 		} else {
 			mode := t.AgentMode
+			prFlag := " --draft"
+			if proj, pErr := a.projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
+				prFlag = ""
+			}
+			prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
 			a.wg.Go(func() {
 				// Restart-stale only ever reaches this branch for headless
 				// mode (interactive tasks are handled by recoverStaleInteractive
 				// above), so OneShot is irrelevant here — pass false.
-				_, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false)
+				_, err := a.agentOrch.StartAgent(taskID, mode, prompt, false)
 				metrics.OrchestratorStaleRestart(err == nil)
 				a.restartStaleErr.Log(a.logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			})
