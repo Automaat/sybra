@@ -12,7 +12,8 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-server ./cmd/synapse-server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-server ./cmd/synapse-server \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-cli ./cmd/synapse-cli
 
 # Stage 3: Runtime — node:24-slim for claude CLI (Node.js-based)
 #
@@ -90,11 +91,16 @@ RUN userdel -r node 2>/dev/null || true \
         '[validators.git.no_verify]' \
         'enabled = true' \
         'severity = "error"' \
+        '' \
+        '[overrides.entries.FILE005]' \
+        'disabled = true' \
+        'reason = "YAML frontmatter false positive in task files"' \
         > /home/synapse/.config/klaudiush/config.toml \
     && chown -R "${SYNAPSE_UID}:${SYNAPSE_GID}" /home/synapse
 
 # --- Layer E+F: thin, per-commit layers ---
 COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
+COPY --from=go-builder /bin/synapse-cli /usr/local/bin/synapse-cli
 COPY --from=frontend-builder /app/frontend/dist-web /app/web
 
 ENV SYNAPSE_PORT=8080

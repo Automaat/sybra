@@ -1013,6 +1013,13 @@ func (a *App) syncSkills() {
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	a.syncDir(skillsSrc, a.skillsDir)
 
+	// Also sync to the system Claude Code skills dir so headless agents
+	// launched via `claude -p` can discover skills with the Skill tool.
+	if userHome, err := os.UserHomeDir(); err == nil {
+		claudeSkillsDst := filepath.Join(userHome, ".claude", "skills")
+		a.syncDir(skillsSrc, claudeSkillsDst)
+	}
+
 	claudeSrc := filepath.Join(repoDir, "orchestrator", "CLAUDE.md")
 	claudeDst := filepath.Join(config.HomeDir(), "CLAUDE.md")
 	a.syncFile(claudeSrc, claudeDst)
