@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/synapse/internal/selfmonitor"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/stats"
 	"github.com/Automaat/synapse/internal/task"
@@ -62,6 +63,7 @@ type App struct {
 	providerHealth  *provider.Checker
 	worktrees       *worktree.Manager
 	monitorSvc      *monitor.Service
+	selfMonitorSvc  *selfmonitor.Service
 	agentOrch       *AgentOrchestrator
 	reviewer        *ReviewHandler
 	workflowEngine  *workflow.Engine
@@ -272,6 +274,7 @@ func (a *App) startBackgroundServices(
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	a.startMonitorService(ctx, emit)
+	a.startSelfMonitorService(ctx, emit)
 
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
@@ -370,6 +373,44 @@ func (a *App) startMonitorService(ctx context.Context, emit func(string, any)) {
 		},
 	})
 	a.monitorSvc = svc
+	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// startSelfMonitorService wires the in-process deep-analysis loop that ticks
+// every cfg.SelfMonitor.IntervalHours, distills agent logs via loganalyzer,
+// and persists a Report to ~/.synapse/selfmonitor/last-report.json. Does
+// nothing when cfg.SelfMonitor.Enabled is false, matching the
+// startMonitorService gating pattern.
+func (a *App) startSelfMonitorService(ctx context.Context, emit func(string, any)) {
+	if !a.cfg.SelfMonitor.Enabled {
+		return
+	}
+	ledger, err := selfmonitor.Open(config.SelfMonitorLedgerPath())
+	if err != nil {
+		a.logger.Error("selfmonitor.ledger_open", "err", err)
+		return
+	}
+	svc := selfmonitor.NewService(selfmonitor.Deps{
+		Cfg:            a.cfg.SelfMonitor,
+		Tasks:          a.tasks,
+		Health:         selfmonitor.DiskHealthReader{Path: config.HealthReportPath()},
+		Ledger:         ledger,
+		LogsDir:        a.cfg.Logging.Dir,
+		LastReportPath: config.SelfMonitorLastReportPath(),
+		Emit:           emit,
+		Logger:         a.logger,
+		AllowsProject: func(projectID string) bool {
+			if projectID == "" {
+				return true
+			}
+			p, err := a.projects.Get(projectID)
+			if err != nil {
+				return true
+			}
+			return a.allowsProjectType(p.Type)
+		},
+	})
+	a.selfMonitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
 }
 
@@ -589,6 +630,7 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"role":       agent.RoleFromName(ag.Name),
 		"provider":   ag.Provider,
 		"name":       ag.Name,
+		"log_file":   ag.LogPath,
 	})
 
 	// Loop agents run without a TaskID — let the scheduler record cost

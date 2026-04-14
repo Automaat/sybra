@@ -107,6 +107,10 @@ func (c *Checker) check() {
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
 
+	for i := range findings {
+		findings[i].Fingerprint = FingerprintFor(&findings[i])
+	}
+
 	stats := buildStats(dayEvents)
 
 	report := &Report{

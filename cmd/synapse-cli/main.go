@@ -85,6 +85,8 @@ func run(args []string) int {
 		return cmdTriage(cfg, store, projStore, rest, jsonOut)
 	case "monitor":
 		return cmdMonitor(cfg, store, rest, jsonOut)
+	case "selfmonitor":
+		return cmdSelfmonitor(cfg, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}

@@ -26,6 +26,12 @@ const (
 	// monitor.Report (see internal/monitor/report.go).
 	MonitorReport = "monitor:report"
 
+	// SelfMonitorReport fires at the end of every selfmonitor.Service tick
+	// with the distilled health findings, verdicts, correlations, filed
+	// issues, and actions taken. Payload is a selfmonitor.Report
+	// (see internal/selfmonitor/report.go).
+	SelfMonitorReport = "selfmonitor:report"
+
 	// Loop agent events — emitted whenever the scheduler reconciles or
 	// records a new run on a loop agent. Carries no payload; consumers
 	// re-list LoopAgents on receipt.
