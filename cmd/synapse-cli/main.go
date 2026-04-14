@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/synapse/internal/monitor"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 )
@@ -81,6 +83,8 @@ func run(args []string) int {
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
 		return cmdTriage(cfg, store, projStore, rest, jsonOut)
+	case "monitor":
+		return cmdMonitor(cfg, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -744,6 +748,62 @@ type healthReport struct {
 	Stats       json.RawMessage   `json:"stats"`
 }
 
+func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: monitor <scan> [--json]")
+	}
+	switch args[0] {
+	case "scan":
+		return cmdMonitorScan(cfg, store, jsonOut)
+	default:
+		return fatal(jsonOut, "unknown monitor subcommand: %s", args[0])
+	}
+}
+
+func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
+	svc := monitor.NewService(monitor.Deps{
+		Cfg:        cfg.Monitor,
+		Tasks:      store,
+		Audit:      monitor.AuditDirReader(cfg.AuditDir()),
+		Agents:     nil,
+		Dispatcher: monitor.NoopDispatcher(),
+		Sink:       monitor.NoopSink(),
+	})
+	report, err := svc.Scan(context.Background())
+	if err != nil {
+		return fatal(jsonOut, "scan: %v", err)
+	}
+	if jsonOut {
+		return printJSON(report)
+	}
+	kinds := ""
+	for _, a := range report.Anomalies {
+		if kinds != "" {
+			kinds += " "
+		}
+		if a.TaskID != "" {
+			kinds += string(a.Kind) + ":" + a.TaskID
+		} else {
+			kinds += string(a.Kind)
+		}
+	}
+	fmt.Printf("monitor: new=%d todo=%d in-progress=%d in-review=%d plan-review=%d human-required=%d done=%d | drift=%d",
+		report.Counts.New,
+		report.Counts.Todo,
+		report.Counts.InProgress,
+		report.Counts.InReview,
+		report.Counts.PlanReview,
+		report.Counts.HumanRequired,
+		report.Counts.Done,
+		len(report.Anomalies),
+	)
+	if kinds != "" {
+		fmt.Printf(" | %s", kinds)
+	}
+	fmt.Println()
+	return 0
+}
+
 func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
@@ -847,6 +907,7 @@ Commands:
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
+  monitor  scan [--json]    one-shot read-only detector pass (no remediation)
   health   [--severity warning|critical] [--category CATEGORY]
 
   triage classify <id>         Classify a single task via claude -p and apply the verdict.

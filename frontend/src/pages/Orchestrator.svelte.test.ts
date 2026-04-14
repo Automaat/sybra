@@ -5,12 +5,27 @@ const mockIsOrchestratorRunning = vi.fn().mockResolvedValue(false)
 const mockStartOrchestrator = vi.fn().mockResolvedValue(undefined)
 const mockStopOrchestrator = vi.fn().mockResolvedValue(undefined)
 const mockGetOrchestratorAgentID = vi.fn().mockResolvedValue('')
-const mockGetMonitorHeartbeat = vi.fn().mockResolvedValue({
-  heartbeatFile: '',
-  lastHeartbeat: '',
-  ageSeconds: 0,
-  stale: false,
-  present: false,
+const mockGetMonitorReport = vi.fn().mockResolvedValue({
+  enabled: true,
+  ready: false,
+  report: {
+    generatedAt: '',
+    counts: {
+      new: 0,
+      todo: 0,
+      inProgress: 0,
+      inReview: 0,
+      planReview: 0,
+      humanRequired: 0,
+      done: 0,
+      byStatus: {},
+    },
+    anomalies: [],
+    remediated: [],
+    dispatched: [],
+    issuesOpened: 0,
+    issuesUpdated: 0,
+  },
 })
 const mockEventsOn = vi.fn().mockReturnValue(vi.fn())
 
@@ -21,7 +36,7 @@ vi.mock('$lib/api', () => ({
   StartOrchestrator: (...args: unknown[]) => mockStartOrchestrator(...args),
   StopOrchestrator: (...args: unknown[]) => mockStopOrchestrator(...args),
   GetOrchestratorAgentID: (...args: unknown[]) => mockGetOrchestratorAgentID(...args),
-  GetMonitorHeartbeat: (...args: unknown[]) => mockGetMonitorHeartbeat(...args),
+  GetMonitorReport: (...args: unknown[]) => mockGetMonitorReport(...args),
   EventsOn: (...args: any[]) => mockEventsOn(...args),
   BrowserOpenURL: vi.fn(),
 }))
@@ -52,12 +67,27 @@ describe('Orchestrator', () => {
     vi.clearAllMocks()
     mockIsOrchestratorRunning.mockResolvedValue(false)
     mockGetOrchestratorAgentID.mockResolvedValue('')
-    mockGetMonitorHeartbeat.mockResolvedValue({
-      heartbeatFile: '',
-      lastHeartbeat: '',
-      ageSeconds: 0,
-      stale: false,
-      present: false,
+    mockGetMonitorReport.mockResolvedValue({
+      enabled: true,
+      ready: false,
+      report: {
+        generatedAt: '',
+        counts: {
+          new: 0,
+          todo: 0,
+          inProgress: 0,
+          inReview: 0,
+          planReview: 0,
+          humanRequired: 0,
+          done: 0,
+          byStatus: {},
+        },
+        anomalies: [],
+        remediated: [],
+        dispatched: [],
+        issuesOpened: 0,
+        issuesUpdated: 0,
+      },
     })
     mockEventsOn.mockReturnValue(vi.fn())
     mockAgentList.length = 0

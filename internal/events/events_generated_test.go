@@ -84,6 +84,6 @@ var _ = strings.Join([]string{
 	TaskCreated, TaskUpdated, TaskDeleted,
 	AgentStatePrefix, AgentOutputPrefix, AgentErrorPrefix,
 	AgentStuckPrefix, AgentConvoPrefix, AgentApprovalPrefix, AgentEscalationPrefix,
-	OrchestratorState, MonitorHeartbeat, LoopAgentUpdated, ReviewsUpdated, RenovateUpdated,
+	OrchestratorState, MonitorReport, LoopAgentUpdated, ReviewsUpdated, RenovateUpdated,
 	Notification, TodoistSynced, IssuesUpdated, AppQuitConfirm, StartupDegraded,
 }, ",")

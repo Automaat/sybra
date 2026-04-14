@@ -26,8 +26,8 @@ func TestMetricsPipeline(t *testing.T) {
 	TodoistPoll(true)
 	GitHubFetch(false)
 	RenovatePoll(true)
-	MonitorStaleTransition("stale")
-	MonitorRecovery()
+	MonitorTick()
+	MonitorAnomaly("lost_agent")
 	OrchestratorTick()
 	ProviderProbe("claude", true)
 	ProviderHealthFlip("claude", false)
@@ -58,9 +58,10 @@ func TestMetricsPipeline(t *testing.T) {
 	GitHubFetch(true)
 	GitHubIssuesImported(7)
 	RenovatePoll(true)
-	MonitorStaleTransition("stale")
-	MonitorStaleTransition("alive")
-	MonitorRecovery()
+	MonitorTick()
+	MonitorTick()
+	MonitorAnomaly("lost_agent")
+	MonitorAnomaly("pr_gap")
 	OrchestratorTick()
 	OrchestratorStaleRestart(true)
 	OrchestratorStaleRestart(false)
@@ -80,7 +81,6 @@ func TestMetricsPipeline(t *testing.T) {
 	RegisterAgentsActive(func() map[string]int64 {
 		return map[string]int64{"running": 2, "idle": 1}
 	})
-	RegisterMonitorHeartbeatAge(func() int64 { return 42 })
 	RegisterRenovatePRsFetched(func() int64 { return 6 })
 	RegisterProviderHealth(func() map[string]int64 {
 		return map[string]int64{"claude": 1, "codex": 0}
@@ -101,13 +101,12 @@ func TestMetricsPipeline(t *testing.T) {
 		"synapse_github_fetches_total",
 		"synapse_github_issues_imported_total",
 		"synapse_renovate_polls_total",
-		"synapse_monitor_stale_transitions_total",
-		"synapse_monitor_recoveries_total",
+		"synapse_monitor_ticks_total",
+		"synapse_monitor_anomalies_total",
 		"synapse_orchestrator_ticks_total",
 		"synapse_orchestrator_stale_restarts_total",
 		"synapse_tasks_by_status",
 		"synapse_agents_active",
-		"synapse_monitor_heartbeat_age_seconds",
 		"synapse_renovate_prs_fetched",
 		"synapse_provider_probes_total",
 		"synapse_provider_health_flips_total",
@@ -120,8 +119,8 @@ func TestMetricsPipeline(t *testing.T) {
 		`state="running"`,
 		`result="ok"`,
 		`result="error"`,
-		`direction="stale"`,
-		`direction="alive"`,
+		`kind="lost_agent"`,
+		`kind="pr_gap"`,
 		`provider="claude"`,
 		`from="claude"`,
 		`to="codex"`,
