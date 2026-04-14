@@ -1,10 +1,11 @@
 package loopagent
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/Automaat/synapse/internal/fsutil"
@@ -38,7 +39,7 @@ func (s *Store) List() ([]LoopAgent, error) {
 		}
 		out = append(out, la)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b LoopAgent) int { return cmp.Compare(a.Name, b.Name) })
 	return out, nil
 }
 

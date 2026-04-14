@@ -1,9 +1,10 @@
 package monitor
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -195,11 +196,11 @@ func suggestedInvestigation(kind AnomalyKind) string {
 // SortAnomalies returns the same slice with a stable ordering so reports are
 // deterministic across ticks (useful for snapshot tests and human reviewers).
 func SortAnomalies(anoms []Anomaly) []Anomaly {
-	sort.SliceStable(anoms, func(i, j int) bool {
-		if anoms[i].Kind != anoms[j].Kind {
-			return anoms[i].Kind < anoms[j].Kind
+	slices.SortStableFunc(anoms, func(a, b Anomaly) int {
+		if c := cmp.Compare(a.Kind, b.Kind); c != 0 {
+			return c
 		}
-		return anoms[i].Fingerprint < anoms[j].Fingerprint
+		return cmp.Compare(a.Fingerprint, b.Fingerprint)
 	})
 	return anoms
 }

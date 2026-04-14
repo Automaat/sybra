@@ -1,9 +1,10 @@
 package stats
 
 import (
+	"cmp"
 	"encoding/json"
 	"os"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -122,9 +123,7 @@ func (s *Store) Query() StatsResponse {
 	// Recent runs: last 50, newest first
 	recent := make([]RunRecord, len(s.runs))
 	copy(recent, s.runs)
-	sort.Slice(recent, func(i, j int) bool {
-		return recent[i].Timestamp.After(recent[j].Timestamp)
-	})
+	slices.SortFunc(recent, func(a, b RunRecord) int { return b.Timestamp.Compare(a.Timestamp) })
 	if len(recent) > 50 {
 		recent = recent[:50]
 	}
@@ -163,8 +162,6 @@ func groupedStats(groups map[string][]RunRecord) []GroupedStat {
 	for key, runs := range groups {
 		result = append(result, GroupedStat{Key: key, Stats: summarize(runs)})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Stats.TotalCostUSD > result[j].Stats.TotalCostUSD
-	})
+	slices.SortFunc(result, func(a, b GroupedStat) int { return cmp.Compare(b.Stats.TotalCostUSD, a.Stats.TotalCostUSD) })
 	return result
 }

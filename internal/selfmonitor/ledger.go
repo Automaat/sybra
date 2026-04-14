@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -218,9 +218,7 @@ func (l *Ledger) OpenIssues() []LedgerEntry {
 		cp.Fingerprint = fp
 		out = append(out, cp)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
-	})
+	slices.SortFunc(out, func(a, b LedgerEntry) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out
 }
 
