@@ -18,6 +18,7 @@
 
   let events = $state<agent.ConvoEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
+  let autoScroll = $state(true)
 
   const isRunning = $derived(agentState === 'running')
   const isPaused = $derived(agentState === 'paused')
@@ -41,6 +42,12 @@
     }
   }
 
+  function onScroll() {
+    if (!container) return
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 10
+    autoScroll = atBottom
+  }
+
   $effect(() => {
     convoStore.getOutput(agentId).then((initial) => {
       events = initial
@@ -58,7 +65,7 @@
     const current = convoStore.conversations.get(agentId)
     if (current && current.length > events.length) {
       events = current
-      requestAnimationFrame(scrollToBottom)
+      if (autoScroll) requestAnimationFrame(scrollToBottom)
     }
   })
 
@@ -102,11 +109,25 @@
     {#if costUsd > 0}
       <span class="text-xs text-surface-500">${costUsd.toFixed(2)}</span>
     {/if}
+
+    <button
+      type="button"
+      onclick={() => { autoScroll = !autoScroll }}
+      title={autoScroll ? 'Auto-scroll on' : 'Auto-scroll off'}
+      class="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors
+        {autoScroll ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
+    >
+      <svg class="h-3 w-3" aria-hidden="true" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 11L3 6h10z"/>
+      </svg>
+      Auto-scroll
+    </button>
   </div>
 
   <!-- Messages -->
   <div
     bind:this={container}
+    onscroll={onScroll}
     class="flex min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain px-3 py-3 md:px-4 {bounded ? 'max-h-[60dvh] md:max-h-[600px]' : 'flex-1'}"
   >
     {#if events.length === 0}
