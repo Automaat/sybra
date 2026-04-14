@@ -46,6 +46,10 @@ type Finding struct {
 	LogFile     string         `json:"logFile,omitempty"`
 	Evidence    map[string]any `json:"evidence"`
 	DetectedAt  time.Time      `json:"detectedAt"`
+	// Fingerprint is a stable dedup key derived from (Category, TaskID,
+	// Evidence). Populated by the Checker after each tick; downstream
+	// consumers (selfmonitor, issue sinks) use it as a cross-run identity.
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // Stats aggregates basic metrics for the check window.

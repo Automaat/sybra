@@ -20,6 +20,7 @@ type Config struct {
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
 	Triage        TriageConfig       `yaml:"triage" json:"triage"`
 	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
+	SelfMonitor   SelfMonitorConfig  `yaml:"self_monitor" json:"selfMonitor"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
@@ -119,6 +120,30 @@ type TriageConfig struct {
 	Enabled     bool   `yaml:"enabled" json:"enabled"`
 	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
 	Model       string `yaml:"model" json:"model"`
+}
+
+// SelfMonitorConfig controls the in-process selfmonitor service that
+// replaces the /loop 6h /synapse-self-monitor skill. Each tick snapshots
+// the latest health report, distills per-finding agent logs into a
+// LogSummary, runs a two-stage LLM judge + synthesizer (Phase C), files
+// deduped issues via the shared monitor.IssueSink, and autonomously
+// remediates a whitelisted set of categories (Phase D). Enabled stays
+// false until users opt in.
+type SelfMonitorConfig struct {
+	Enabled              bool     `yaml:"enabled" json:"enabled"`
+	IntervalHours        float64  `yaml:"interval_hours" json:"intervalHours"`
+	JudgeModel           string   `yaml:"judge_model" json:"judgeModel"`
+	SynthesizerModel     string   `yaml:"synthesizer_model" json:"synthesizerModel"`
+	MaxIssuesPerRun      int      `yaml:"max_issues_per_run" json:"maxIssuesPerRun"`
+	MaxAutoActionsPerDay int      `yaml:"max_auto_actions_per_day" json:"maxAutoActionsPerDay"`
+	AutoActCategories    []string `yaml:"auto_act_categories" json:"autoActCategories"`
+	DryRun               bool     `yaml:"dry_run" json:"dryRun"`
+	IssueCooldownHours   float64  `yaml:"issue_cooldown_hours" json:"issueCooldownHours"`
+	IssueLabel           string   `yaml:"issue_label" json:"issueLabel"`
+	MaxCostPerTickUSD    float64  `yaml:"max_cost_per_tick_usd" json:"maxCostPerTickUsd"`
+	JudgeParallelism     int      `yaml:"judge_parallelism" json:"judgeParallelism"`
+	SuppressionDays      int      `yaml:"suppression_days" json:"suppressionDays"`
+	SuppressionThreshold int      `yaml:"suppression_threshold" json:"suppressionThreshold"`
 }
 
 // MonitorConfig controls the in-process monitor service that replaces the
@@ -326,8 +351,68 @@ func Load() (*Config, error) {
 
 	applyProvidersDefaults(cfg)
 	applyMonitorDefaults(cfg)
+	applySelfMonitorDefaults(cfg)
 
 	return cfg, nil
+}
+
+// applySelfMonitorDefaults fills zero values for the SelfMonitor block so
+// older configs behave deterministically and the service can rely on every
+// field. Enabled stays false until operators opt in.
+func applySelfMonitorDefaults(cfg *Config) {
+	s := &cfg.SelfMonitor
+	if s.IntervalHours < 1 {
+		s.IntervalHours = 6
+	}
+	if s.JudgeModel == "" {
+		s.JudgeModel = "claude-haiku-4-5-20251001"
+	}
+	if s.SynthesizerModel == "" {
+		s.SynthesizerModel = "claude-sonnet-4-6"
+	}
+	if s.MaxIssuesPerRun <= 0 {
+		s.MaxIssuesPerRun = 5
+	}
+	if s.MaxAutoActionsPerDay <= 0 {
+		s.MaxAutoActionsPerDay = 3
+	}
+	if len(s.AutoActCategories) == 0 {
+		s.AutoActCategories = []string{
+			"stuck_task",
+			"workflow_loop",
+			"cost_outlier",
+			"triage_mismatch",
+		}
+	}
+	// DryRun defaults to true as the first-week safety net. Operators flip
+	// it to false once the ledger shows clean ActionRecords. Because bool
+	// zero-values are indistinguishable from explicit false, we only flip
+	// to true when the whole SelfMonitor block is freshly populated — i.e.
+	// when none of the user-facing knobs were set. This avoids silently
+	// re-enabling DryRun on an operator who explicitly disabled it.
+	//
+	// Proxy for "freshly populated": IssueLabel is the last field the
+	// operator typically edits; if it's empty after the above defaults
+	// ran, we know nothing in the block was user-specified.
+	if s.IssueCooldownHours <= 0 {
+		s.IssueCooldownHours = 24
+	}
+	if s.IssueLabel == "" {
+		s.IssueLabel = "selfmonitor"
+		s.DryRun = true
+	}
+	if s.MaxCostPerTickUSD <= 0 {
+		s.MaxCostPerTickUSD = 2.0
+	}
+	if s.JudgeParallelism <= 0 {
+		s.JudgeParallelism = 4
+	}
+	if s.SuppressionDays <= 0 {
+		s.SuppressionDays = 7
+	}
+	if s.SuppressionThreshold <= 0 {
+		s.SuppressionThreshold = 3
+	}
 }
 
 // applyMonitorDefaults fills zero values for the Monitor block so older
@@ -451,4 +536,29 @@ func WorkflowsDir() string {
 
 func StatsFile() string {
 	return filepath.Join(HomeDir(), "stats.json")
+}
+
+// SelfMonitorDir is the directory under ~/.synapse that holds the
+// selfmonitor ledger, last-report snapshot, and any other persisted state
+// the service owns.
+func SelfMonitorDir() string {
+	return filepath.Join(HomeDir(), "selfmonitor")
+}
+
+// SelfMonitorLedgerPath is the append-only ledger file selfmonitor.Open uses.
+func SelfMonitorLedgerPath() string {
+	return filepath.Join(SelfMonitorDir(), "ledger.jsonl")
+}
+
+// SelfMonitorLastReportPath is where the service writes the most recent
+// Report as JSON. The CLI `synapse-cli selfmonitor scan` reads from here.
+func SelfMonitorLastReportPath() string {
+	return filepath.Join(SelfMonitorDir(), "last-report.json")
+}
+
+// HealthReportPath is the canonical path the health.Checker persists its
+// rollup report to. Exposed here so CLI commands (and the selfmonitor
+// service) can read it without hardcoding the layout.
+func HealthReportPath() string {
+	return filepath.Join(HomeDir(), "health-report.json")
 }
