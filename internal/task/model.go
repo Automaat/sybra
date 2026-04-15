@@ -112,21 +112,21 @@ type AgentRun struct {
 }
 
 type Task struct {
-	ID           string   `yaml:"id" json:"id"`
-	Slug         string   `yaml:"slug,omitempty" json:"slug"`
-	Title        string   `yaml:"title" json:"title"`
-	Status       Status   `yaml:"status" json:"status"`
-	TaskType     TaskType `yaml:"task_type,omitempty" json:"taskType"`
-	AgentMode    string   `yaml:"agent_mode" json:"agentMode"`
-	AllowedTools []string `yaml:"allowed_tools" json:"allowedTools"`
-	Tags         []string `yaml:"tags" json:"tags"`
-	ProjectID    string   `yaml:"project_id,omitempty" json:"projectId"`
-	Branch       string   `yaml:"branch,omitempty" json:"branch"`
-	PRNumber     int      `yaml:"pr_number,omitempty" json:"prNumber"`
-	Issue        string   `yaml:"issue,omitempty" json:"issue"`
-	StatusReason string   `yaml:"status_reason,omitempty" json:"statusReason"`
-	Reviewed     bool     `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole      string   `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	ID           string     `yaml:"id" json:"id"`
+	Slug         string     `yaml:"slug,omitempty" json:"slug"`
+	Title        string     `yaml:"title" json:"title"`
+	Status       Status     `yaml:"status" json:"status"`
+	TaskType     TaskType   `yaml:"task_type,omitempty" json:"taskType"`
+	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
+	AllowedTools []string   `yaml:"allowed_tools" json:"allowedTools"`
+	Tags         []string   `yaml:"tags" json:"tags"`
+	ProjectID    string     `yaml:"project_id,omitempty" json:"projectId"`
+	Branch       string     `yaml:"branch,omitempty" json:"branch"`
+	PRNumber     int        `yaml:"pr_number,omitempty" json:"prNumber"`
+	Issue        string     `yaml:"issue,omitempty" json:"issue"`
+	StatusReason string     `yaml:"status_reason,omitempty" json:"statusReason"`
+	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole      string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
 	DueDate      *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
 	// RequirePermissions overrides the system default when set.
