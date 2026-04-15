@@ -857,6 +857,20 @@ export namespace notification {
 
 export namespace project {
 	
+	export class ChecksConfig {
+	    preCommit?: string[];
+	    prePush?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ChecksConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.preCommit = source["preCommit"];
+	        this.prePush = source["prePush"];
+	    }
+	}
 	export class SandboxConfig {
 	    image?: string;
 	    build?: string;
@@ -898,6 +912,7 @@ export namespace project {
 	    status: string;
 	    setupCommands?: string[];
 	    sandbox?: SandboxConfig;
+	    checks?: ChecksConfig;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -919,6 +934,7 @@ export namespace project {
 	        this.status = source["status"];
 	        this.setupCommands = source["setupCommands"];
 	        this.sandbox = this.convertValues(source["sandbox"], SandboxConfig);
+	        this.checks = this.convertValues(source["checks"], ChecksConfig);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
