@@ -165,6 +165,20 @@ export namespace agent {
 		    return a;
 		}
 	}
+	export class PlanStep {
+	    content: string;
+	    status: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PlanStep(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.content = source["content"];
+	        this.status = source["status"];
+	    }
+	}
 	export class StreamEvent {
 	    type: string;
 	    content?: string;
@@ -177,11 +191,12 @@ export namespace agent {
 	    timestamp: any;
 	    error_type?: string;
 	    error_status?: number;
-	
+	    plan_steps?: PlanStep[];
+
 	    static createFrom(source: any = {}) {
 	        return new StreamEvent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -194,8 +209,9 @@ export namespace agent {
 	        this.timestamp = this.convertValues(source["timestamp"], null);
 	        this.error_type = source["error_type"];
 	        this.error_status = source["error_status"];
+	        this.plan_steps = this.convertValues(source["plan_steps"], PlanStep);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;

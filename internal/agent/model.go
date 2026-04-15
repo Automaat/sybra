@@ -325,6 +325,12 @@ type RunConfig struct {
 	ExtraEnv []string
 }
 
+// PlanStep represents a single item from a TodoWrite tool call.
+type PlanStep struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // "pending", "in_progress", "completed"
+}
+
 type StreamEvent struct {
 	Type         string    `json:"type"`
 	Content      string    `json:"content,omitempty"`
@@ -338,6 +344,9 @@ type StreamEvent struct {
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"error_type,omitempty"`
 	ErrorStatus int    `json:"error_status,omitempty"`
+	// PlanSteps is populated when the assistant calls TodoWrite; contains the
+	// latest snapshot of the agent's todo list at this point in the stream.
+	PlanSteps []PlanStep `json:"plan_steps,omitempty"`
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool
