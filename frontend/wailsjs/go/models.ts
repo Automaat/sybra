@@ -214,12 +214,12 @@ export namespace agent {
 		    return a;
 		}
 	}
-
+	
 
 }
 
 export namespace bgop {
-
+	
 	export class Operation {
 	    id: string;
 	    type: string;
@@ -231,13 +231,13 @@ export namespace bgop {
 	    // Go type: time
 	    startedAt: any;
 	    // Go type: time
-	    completedAt?: any;
+	    completedAt: any;
 	    error?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Operation(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -251,7 +251,7 @@ export namespace bgop {
 	        this.completedAt = this.convertValues(source["completedAt"], null);
 	        this.error = source["error"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
