@@ -2,10 +2,12 @@
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
+  import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
 
   interface EscalationEvent {
     reason: string
@@ -41,6 +43,17 @@
     a?.errorKind ? { kind: a.errorKind, msg: a.errorMsg ?? '' } : null
   )
   const displayError = $derived(errorDismissed ? null : (agentErr ?? cachedError))
+
+  const phase = $derived(
+    a
+      ? getAgentPhase(
+          a.state,
+          a.escalationReason,
+          a.taskId ? taskStore.tasks.get(a.taskId)?.status : undefined,
+        )
+      : 'done',
+  )
+  const phaseConfig = $derived(PHASE_CONFIG[phase])
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -177,24 +190,32 @@
           {#if a.name}
             <span class="text-sm text-surface-400">{a.name}</span>
           {/if}
-          {#if a.state === 'running'}
+          {#if phase === 'running'}
             <p class="mt-0.5 text-sm italic text-surface-400">
               {agentStore.stepTexts.get(agentId) ?? 'Working...'}
+            </p>
+          {:else if phase === 'blocked'}
+            <p class="mt-0.5 text-sm text-tertiary-600 dark:text-tertiary-400">
+              Awaiting tool approval
+            </p>
+          {:else if phase === 'human-required'}
+            <p class="mt-0.5 text-sm font-medium text-error-600 dark:text-error-400">
+              Waiting for human input
+            </p>
+          {:else if phase === 'reviewing'}
+            <p class="mt-0.5 text-sm text-warning-600 dark:text-warning-400">
+              Under review
             </p>
           {/if}
         </div>
         <div class="flex items-center gap-2">
-          <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium
-            {a.state === 'running' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
-             a.state === 'paused' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
-             a.state === 'stopped' ? 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' :
-             'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
-            {#if isRunning}
-              <span class="h-2 w-2 animate-pulse rounded-full bg-primary-500"></span>
-            {:else if a.state === 'paused'}
-              <span class="h-2 w-2 animate-pulse rounded-full bg-warning-500"></span>
+          <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium {phaseConfig.badgeClasses}">
+            {#if phaseConfig.animate}
+              <span class="h-2 w-2 animate-pulse-subtle rounded-full {phaseConfig.dotClasses}"></span>
+            {:else if phase !== 'queued' && phase !== 'done'}
+              <span class="h-2 w-2 rounded-full {phaseConfig.dotClasses}"></span>
             {/if}
-            {a.state === 'paused' ? 'Waiting for input' : a.state}
+            {phaseConfig.label}
           </span>
           {#if isRunning}
             <button
