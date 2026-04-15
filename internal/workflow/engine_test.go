@@ -2424,7 +2424,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 		},
 	}
 
-	out, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec)
+	out, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2451,7 +2451,7 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		},
 	}
 
-	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
@@ -2473,7 +2473,7 @@ func TestExecEvaluate_LastAgentSucceededFlipsHumanRequiredWithDefault(t *testing
 		},
 	}
 
-	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
@@ -2497,7 +2497,7 @@ func TestExecEvaluate_SkipsMechanicalStepsInHistory(t *testing.T) {
 		},
 	}
 
-	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := tasks.Reason("t1"); got != "real error" {
@@ -2511,7 +2511,7 @@ func TestExecEvaluate_EmptyHistory(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 	wfExec := &Execution{}
 
-	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
@@ -2533,7 +2533,7 @@ func TestExecEvaluate_FailedWithEmptyOutput(t *testing.T) {
 		},
 	}
 
-	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec); err != nil {
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := tasks.Reason("t1"); got != "agent failed with no output" {

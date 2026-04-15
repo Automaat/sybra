@@ -738,7 +738,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	case StepLinkPRAndReview:
 		return e.execLinkPRAndReview(taskID, step, wfExec, t)
 	case StepEvaluate:
-		return e.execEvaluate(taskID, step, wfExec)
+		return e.execEvaluate(taskID, step, wfExec, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -1154,9 +1154,35 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 // history backwards for the most recent run_agent record (the impl/fix step)
 // and flips the task to human-required with a bounded reason string.
 //
-// This runs only when link_pr_and_review could not find a PR, so the task
-// always ends in human-required here — there is no in-review path.
-func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
+// Before giving up, it does a final gh pr list check — guarding against the
+// race where the agent created a PR after link_pr_and_review already ran.
+func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	// Final GitHub PR check — catches PRs created after link_pr_and_review ran.
+	if t.ProjectID != "" && t.Branch != "" {
+		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "bash", "-c",
+			"gh pr list --repo \"$_REPO\" --head \"$_BRANCH\" --json number --limit 2")
+		cmd.Env = append(cmd.Environ(), "_REPO="+t.ProjectID, "_BRANCH="+t.Branch)
+		if out, err := cmd.Output(); err == nil {
+			var prs []struct {
+				Number int `json:"number"`
+			}
+			if jsonErr := json.Unmarshal(out, &prs); jsonErr == nil && len(prs) == 1 {
+				prNum := prs[0].Number
+				if linkErr := e.tasks.UpdateTaskPR(taskID, prNum); linkErr != nil {
+					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
+				}
+				if linkErr := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); linkErr != nil {
+					return StepOutput{}, fmt.Errorf("evaluate: set in-review: %w", linkErr)
+				}
+				msg := fmt.Sprintf("pr #%d found via late gh pr list → in-review", prNum)
+				e.logger.Info("workflow.evaluate.late-pr-found", "task_id", taskID, "pr", prNum)
+				return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+			}
+		}
+	}
+
 	var last *StepRecord
 	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
 		if wfExec.StepHistory[i].AgentID != "" {
