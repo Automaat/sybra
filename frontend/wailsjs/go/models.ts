@@ -1183,16 +1183,16 @@ export namespace synapse {
 		}
 	}
 	export class VersionInfo {
-    server: string;
-
-    static createFrom(source: any = {}) {
-        return new VersionInfo(source);
-    }
-
-    constructor(source: any = {}) {
-        if ('string' === typeof source) source = JSON.parse(source);
-        this.server = source["server"];
-    }
+	    server: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VersionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.server = source["server"];
+	    }
 	}
 
 }
