@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
@@ -45,19 +46,34 @@ func resolvePermission(t task.Task, cfg *config.Config) bool {
 }
 
 // pickImplementationResumeSession walks AgentRuns newest-first and returns
-// the most recent session_id from a prior implementation run. Other roles
-// (triage, plan, eval, …) own their own session state, often run in a
-// different cwd, and resuming them from the implementation worktree makes
-// claude bail with error_during_execution before the prompt is ever sent.
-// Empty Role is treated as implementation since AgentOrchestrator records
-// implementation runs without a role string.
-func pickImplementationResumeSession(runs []task.AgentRun) string {
+// the most recent session_id from a prior implementation run that belongs
+// to the current workflow execution.
+//
+// Two filters are applied:
+//
+//  1. Role must be implementation. Other roles (triage, plan, eval, …) own
+//     their own session state, often run in a different cwd, and resuming
+//     them from the implementation worktree makes claude bail with
+//     error_during_execution before the prompt is ever sent. Empty Role is
+//     allowed only for legacy runs predating the orchestrator role-recording
+//     fix; new runs always carry Role explicitly.
+//  2. StartedAt must be at or after workflowStart. A previous workflow
+//     execution may have left an aborted implementation run with a
+//     session_id that no longer exists in claude's session store. Resuming
+//     it would make claude exit with "No conversation found", cost $0,
+//     and verify_commits flip the task to human-required without ever
+//     running the implementation prompt. workflowStart=zero disables the
+//     time filter (useful for callers that have no execution context).
+func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time) string {
 	for i := len(runs) - 1; i >= 0; i-- {
 		run := runs[i]
 		if run.SessionID == "" {
 			continue
 		}
 		if run.Role != "" && run.Role != string(agent.RoleImplementation) {
+			continue
+		}
+		if !workflowStart.IsZero() && run.StartedAt.Before(workflowStart) {
 			continue
 		}
 		return run.SessionID
@@ -121,7 +137,11 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
-	resumeSessionID := pickImplementationResumeSession(t.AgentRuns)
+	var workflowStart time.Time
+	if t.Workflow != nil {
+		workflowStart = t.Workflow.StartedAt
+	}
+	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart)
 
 	var extraEnv []string
 	if o.sandboxes != nil && t.ProjectID != "" {
@@ -177,7 +197,9 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 	}
 	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
 		AgentID:   ag.ID,
+		Role:      string(agent.RoleImplementation),
 		Mode:      effMode,
+		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 	}, nextStatus); err != nil {
