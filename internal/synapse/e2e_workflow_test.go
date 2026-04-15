@@ -218,9 +218,10 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 
 	agentMgr.SetOnComplete(func(ag *agent.Agent) {
 		var result string
-		for _, ev := range ag.Output() {
-			if ev.Type == "result" {
-				result = ev.Content
+		output := ag.Output()
+		for i := range output {
+			if output[i].Type == "result" {
+				result = output[i].Content
 			}
 		}
 		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{

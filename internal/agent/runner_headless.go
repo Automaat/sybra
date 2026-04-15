@@ -229,9 +229,9 @@ func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provide
 // Substring matching is used as a fallback and triggers a Warn log so format
 // regressions surface in logs without silently breaking retries.
 func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logger) bool {
-	for _, e := range streamEvents {
-		if e.Type == "result" && e.Subtype == "error" {
-			if e.ErrorType == "overloaded_error" || e.ErrorStatus == 529 {
+	for i := range streamEvents {
+		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" {
+			if streamEvents[i].ErrorType == "overloaded_error" || streamEvents[i].ErrorStatus == 529 {
 				return true
 			}
 		}
@@ -241,8 +241,8 @@ func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logg
 		warnSubstringFallback(logger)
 		return true
 	}
-	for _, e := range streamEvents {
-		if e.Type == "result" && e.Subtype == "error" && substringMatch529(e.Content) {
+	for i := range streamEvents {
+		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" && substringMatch529(streamEvents[i].Content) {
 			warnSubstringFallback(logger)
 			return true
 		}
@@ -339,6 +339,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			continue
 		}
 
+		event.Timestamp = time.Now().UTC()
 		a.AppendOutput(event)
 		if event.Type == "result" || time.Since(lastEmit) >= headlessEmitInterval {
 			m.emit(events.AgentOutput(a.ID), event)

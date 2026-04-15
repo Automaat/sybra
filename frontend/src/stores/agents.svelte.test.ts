@@ -172,8 +172,8 @@ describe('AgentStore', () => {
 
   describe('appendEvent', () => {
     it('appends to existing output', () => {
-      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' }, receivedAt: new Date() }])
-      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' })
+      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' } as unknown as agent.StreamEvent, receivedAt: new Date() }])
+      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' } as unknown as agent.StreamEvent)
 
       const events = agentStore.outputs.get('a1')!
       expect(events).toHaveLength(2)
@@ -181,7 +181,7 @@ describe('AgentStore', () => {
     })
 
     it('creates new array if none exists', () => {
-      agentStore.appendEvent('a1', { type: 'init', content: '' })
+      agentStore.appendEvent('a1', { type: 'init', content: '' } as unknown as agent.StreamEvent)
 
       expect(agentStore.outputs.get('a1')).toHaveLength(1)
     })
