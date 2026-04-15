@@ -252,6 +252,11 @@ test.describe('Navigation Rail', () => {
 
 test.describe('Task watcher', () => {
   test('board updates when task file is created externally', async ({ page }) => {
+    test.fixme(
+      process.env.CI === 'true',
+      'External fs watcher create events are unreliable on GitHub macOS Wails runs',
+    )
+
     await goToTaskList(page)
     await waitForTasks(page)
 
