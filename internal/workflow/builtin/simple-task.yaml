@@ -145,6 +145,36 @@ steps:
         - Skill
         - Agent
     next:
+      - goto: reset_for_address
+
+  - id: reset_for_address
+    name: Reset for Critique Address
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: address_critique
+
+  - id: address_critique
+    name: Address Critique
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: opus
+      reuse_agent: true
+      wait_for_status: plan-review
+      prompt: >-
+        The plan critic has reviewed your plan for task {{.Task.ID}}.
+
+        Steps:
+          1. synapse-cli --json get {{.Task.ID}} — read the .plan_critique field
+          2. For each concern raised, revise the plan to address it
+          3. synapse-cli update {{.Task.ID}} --plan "<full revised plan markdown>"
+          4. synapse-cli update {{.Task.ID}} --status plan-review
+
+        Then STOP and wait. Do NOT implement.
+    next:
       - goto: review_plan
 
   - id: review_plan
