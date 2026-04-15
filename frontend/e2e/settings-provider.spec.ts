@@ -72,4 +72,21 @@ test.describe('Settings provider matrix', () => {
       }
     })
   }
+
+  test('provider switch resets incompatible model to default option', async ({ page }) => {
+    await goToSettings(page)
+    const original = await currentAgentSettings(page)
+
+    try {
+      await page.locator('#agent-provider').selectOption('claude')
+      await page.locator('#agent-model').selectOption('haiku')
+      await saveSettings(page)
+
+      await page.locator('#agent-provider').selectOption('codex')
+      await expect(page.locator('#agent-model')).toHaveValue('')
+      await expect(page.locator('#agent-model option').first()).toHaveText('Default (gpt-5.4)')
+    } finally {
+      await restoreAgentSettings(page, original)
+    }
+  })
 })

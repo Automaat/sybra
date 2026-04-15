@@ -165,6 +165,16 @@
       { value: 'haiku', label: 'Haiku' },
     ]
   })
+
+  // Keep provider/model pair valid in-memory: when provider flips and the
+  // current model is not in that provider's option list, reset to default.
+  $effect(() => {
+    if (!settings) return
+    const allowed = modelOptions.map((o) => o.value)
+    if (!allowed.includes(settings.agent.model)) {
+      settings.agent.model = ''
+    }
+  })
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">

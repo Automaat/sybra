@@ -5,6 +5,7 @@ package synapse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -84,6 +85,7 @@ type e2eEnv struct {
 	wfStore      *workflow.Store
 	taskDir      string
 	agentDir     string // pre-staged working dir injected into run_agent steps
+	worktreesDir string
 	scenarioFile string
 	provider     string
 	cancel       context.CancelFunc
@@ -215,6 +217,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
 	engine := workflow.NewEngine(wfStore, ta, aa, logger)
+	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 
 	agentMgr.SetOnComplete(func(ag *agent.Agent) {
 		var result string
@@ -225,9 +228,10 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 			}
 		}
 		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-			AgentID: ag.ID,
-			Result:  result,
-			Success: ag.GetExitErr() == nil,
+			AgentID:  ag.ID,
+			Result:   result,
+			Success:  ag.GetExitErr() == nil,
+			Provider: ag.Provider,
 		})
 	})
 
@@ -240,14 +244,15 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
 
 	return &e2eEnv{
-		tasks:    taskMgr,
-		agents:   agentMgr,
-		engine:   engine,
-		wfStore:  wfStore,
-		taskDir:  taskDir,
-		agentDir: agentDir,
-		provider: provider,
-		cancel:   cancel,
+		tasks:        taskMgr,
+		agents:       agentMgr,
+		engine:       engine,
+		wfStore:      wfStore,
+		taskDir:      taskDir,
+		agentDir:     agentDir,
+		worktreesDir: wtDir,
+		provider:     provider,
+		cancel:       cancel,
 	}
 }
 
@@ -665,6 +670,89 @@ func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
 	}
 }
 
+// TestE2E_Codex_HeadlessRetry_OverloadedStructured verifies retry behavior
+// when Codex emits a structured overloaded envelope (code=529).
+func TestE2E_Codex_HeadlessRetry_OverloadedStructured(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error_structured", "success"})
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "task-codex-retry-structured",
+		Name:     "codex retry overloaded structured",
+		Mode:     "headless",
+		Provider: "codex",
+		Prompt:   "do work",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 90*time.Second, "codex agent stops after structured retry", func() bool {
+		return ag.GetState() == agent.StateStopped
+	})
+
+	hasResult := false
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" && ev.Subtype == "" {
+			hasResult = true
+		}
+	}
+	if !hasResult {
+		t.Error("expected result event from second attempt, got none")
+	}
+}
+
+// TestE2E_ProviderMatrix_NoResult_DoesNotStall verifies workflows don't hang
+// when provider exits 0 without emitting a result event.
+func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "no_result"})
+
+		created, err := env.tasks.Create("no result task", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+			t.Fatal(err)
+		}
+
+		waitFor(t, 30*time.Second, "workflow completes despite no result event", func() bool {
+			tk, gErr := env.tasks.Get(created.ID)
+			if gErr != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+		})
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.Status != task.StatusHumanRequired {
+			t.Errorf("task status = %q, want human-required", tk.Status)
+		}
+
+		var implementRec *workflow.StepRecord
+		seen := map[string]bool{}
+		for i := range tk.Workflow.StepHistory {
+			r := &tk.Workflow.StepHistory[i]
+			seen[r.StepID] = true
+			if r.StepID == "implement" {
+				implementRec = r
+			}
+		}
+		for _, want := range []string{"triage", "implement", "evaluate"} {
+			if !seen[want] {
+				t.Errorf("missing step %q in history, got %v", want, seen)
+			}
+		}
+		if implementRec == nil {
+			t.Fatal("missing implement step record")
+		}
+		if implementRec.Output != "" {
+			t.Errorf("implement output = %q, want empty (provider emitted no result event)", implementRec.Output)
+		}
+	})
+}
+
 // TestE2E_InteractiveImplement_OneShotAdvancesToEvaluate locks in the fix
 // for interactive implement steps stalling the workflow. Before the fix, a
 // conversational claude agent would emit its result event, flip to
@@ -840,6 +928,58 @@ func TestE2E_ResumeStalled(t *testing.T) {
 	// Should have advanced to evaluate or completed.
 	if tk.Workflow.CurrentStep == "implement" {
 		t.Fatal("expected workflow to advance past implement after ResumeStalled")
+	}
+}
+
+// TestE2E_ResumeStalled_SkipsTaskWithRunningAgent verifies ResumeStalled does
+// not spawn duplicate work when a live agent is already attached to the task.
+func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "interactive_implement")
+
+	created, err := env.tasks.Create("stalled but live agent task", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfExec := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status":   "in-progress",
+		"workflow": wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = env.agents.Run(agent.RunConfig{
+		TaskID:   created.ID,
+		Name:     "implementation",
+		Mode:     "interactive",
+		Provider: "claude",
+		Model:    "sonnet",
+		Prompt:   "Implement task",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "agent becomes live", func() bool {
+		live := env.agents.FindAllRunningAgentsForTask(created.ID, "")
+		return len(live) == 1
+	})
+
+	before := len(env.agents.FindAllRunningAgentsForTask(created.ID, ""))
+
+	env.engine.ResumeStalled()
+
+	// ResumeStalled is synchronous. Live agent count must stay unchanged.
+	after := len(env.agents.FindAllRunningAgentsForTask(created.ID, ""))
+	if after != before {
+		t.Fatalf("live agents changed after ResumeStalled: before=%d after=%d", before, after)
 	}
 }
 
@@ -1532,6 +1672,18 @@ func countStepRecords(tk task.Task, stepID string) int {
 	return n
 }
 
+func lastStepStatus(tk task.Task, stepID string) string {
+	if tk.Workflow == nil {
+		return ""
+	}
+	for i := len(tk.Workflow.StepHistory) - 1; i >= 0; i-- {
+		if tk.Workflow.StepHistory[i].StepID == stepID {
+			return tk.Workflow.StepHistory[i].Status
+		}
+	}
+	return ""
+}
+
 // TestE2E_TestingTaskWorkflow_HappyPath drives the manual-testing workflow
 // from status→testing dispatch through plan_test, human approve, and
 // execute_tests, ending in ExecCompleted.
@@ -1678,6 +1830,59 @@ func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
 	}
 	if got := countStepRecords(tk, "execute_tests"); got != 1 {
 		t.Errorf("execute_tests runs = %d, want 1", got)
+	}
+}
+
+// TestE2E_WaitHuman_InvalidActionRejected ensures unknown actions are rejected
+// without mutating waiting workflow state.
+func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
+	env := setupE2EMulti(t, []string{"triage_to_planning", "success"})
+
+	created, err := env.tasks.Create("invalid human action task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow reaches review_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	before, _ := env.tasks.Get(created.ID)
+	historyBefore := len(before.Workflow.StepHistory)
+	updatedBefore := before.UpdatedAt
+
+	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
+	if err == nil {
+		t.Fatal("expected invalid action error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid human action") {
+		t.Fatalf("err = %v, want invalid human action", err)
+	}
+
+	after, _ := env.tasks.Get(created.ID)
+	if after.Workflow.State != workflow.ExecWaiting {
+		t.Errorf("state = %q, want waiting", after.Workflow.State)
+	}
+	if after.Workflow.CurrentStep != "review_plan" {
+		t.Errorf("current_step = %q, want review_plan", after.Workflow.CurrentStep)
+	}
+	if got := len(after.Workflow.StepHistory); got != historyBefore {
+		t.Errorf("step_history len = %d, want %d", got, historyBefore)
+	}
+	if !after.UpdatedAt.Equal(updatedBefore) {
+		t.Errorf("UpdatedAt changed from %v to %v", updatedBefore, after.UpdatedAt)
+	}
+	if _, set := after.Workflow.Variables["human_action"]; set {
+		t.Errorf("human_action unexpectedly set: %q", after.Workflow.Variables["human_action"])
 	}
 }
 
@@ -2180,5 +2385,2424 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	roles := agentRunRoles(tk)
 	if slices.Contains(roles, "plan-critic") {
 		t.Errorf("no plan-critic agent should be spawned when nocritic tag is set\nroles: %v", roles)
+	}
+}
+
+// TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits verifies triage can
+// terminate simple-task directly on terminal statuses without running plan or
+// implementation.
+func TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits(t *testing.T) {
+	cases := []struct {
+		name       string
+		scenario   string
+		wantStatus task.Status
+	}{
+		{name: "done", scenario: "triage_to_done", wantStatus: task.StatusDone},
+		{name: "in_review", scenario: "triage_to_in_review", wantStatus: task.StatusInReview},
+		{name: "human_required", scenario: "triage_to_human_required", wantStatus: task.StatusHumanRequired},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forEachProvider(t, func(t *testing.T, p providerSpec) {
+				env := setupE2EMultiProvider(t, p.provider, []string{tc.scenario})
+				loadBuiltinWorkflow(t, env, "simple-task")
+
+				created, err := env.tasks.Create("terminal triage "+tc.name, "", "headless")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+					t.Fatal(err)
+				}
+
+				waitFor(t, 30*time.Second, "workflow completes after triage terminal short-circuit", func() bool {
+					tk, gErr := env.tasks.Get(created.ID)
+					if gErr != nil {
+						return false
+					}
+					return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+				})
+
+				tk, _ := env.tasks.Get(created.ID)
+				if tk.Status != tc.wantStatus {
+					t.Errorf("status = %q, want %q", tk.Status, tc.wantStatus)
+				}
+
+				stepIDs := stepIDsFromHistory(tk.Workflow)
+				if !slices.Contains(stepIDs, "triage") {
+					t.Errorf("triage missing from step history: %v", stepIDs)
+				}
+				for _, forbidden := range []string{"plan", "set_in_progress", "implement", "verify_commits", "link_pr_and_review", "evaluate"} {
+					if slices.Contains(stepIDs, forbidden) {
+						t.Errorf("forbidden step %q executed on terminal short-circuit: %v", forbidden, stepIDs)
+					}
+				}
+			})
+		})
+	}
+}
+
+const testWaitForStatusWorkflowYAML = `id: test-wait-status
+name: Test Wait For Status
+steps:
+  - id: plan_wait
+    name: Plan Wait
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: sonnet
+      wait_for_status: plan-review
+      prompt: "Plan {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testReuseAgentWorkflowYAML = `id: test-reuse-agent
+name: Test Reuse Agent
+steps:
+  - id: phase1
+    name: Phase 1
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: sonnet
+      reuse_agent: true
+      wait_for_status: phase1
+      prompt: "Phase1 {{.Task.ID}}"
+    next:
+      - goto: phase2
+  - id: phase2
+    name: Phase 2
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: sonnet
+      reuse_agent: true
+      wait_for_status: phase2
+      prompt: "Phase2 {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testTransitionFailureWorkflowYAML = `id: test-transition-fail
+name: Test Transition Fail
+steps:
+  - id: gate
+    name: Gate
+    type: condition
+    config:
+      check:
+        field: task.status
+        operator: equals
+        value: todo
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
+`
+
+const testProviderFallbackWorkflowYAML = `id: test-provider-fallback
+name: Test Provider Fallback
+steps:
+  - id: first
+    name: First
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      provider: claude
+      prompt: "First {{.Task.ID}}"
+    next:
+      - goto: second
+  - id: second
+    name: Second
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      prompt: "Second {{.Task.ID}}"
+    next:
+      - goto: ""
+`
+
+func writeWorkflowFixture(t *testing.T, env *e2eEnv, name, yaml string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), name+".yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write %s.yaml: %v", name, err)
+	}
+}
+
+func stageProviderPath(t *testing.T, include ...string) string {
+	t.Helper()
+	srcDir := buildTestBinaries(t)
+	dstDir := t.TempDir()
+	for _, name := range include {
+		src := filepath.Join(srcDir, name)
+		dst := filepath.Join(dstDir, name)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("read %s: %v", src, err)
+		}
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
+			t.Fatalf("write %s: %v", dst, err)
+		}
+	}
+	return dstDir
+}
+
+func runCmd(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+}
+
+func initRepoWithOriginMain(t *testing.T, dir string) {
+	t.Helper()
+	runCmd(t, dir, "git", "init")
+	runCmd(t, dir, "git", "config", "user.email", "e2e@example.com")
+	runCmd(t, dir, "git", "config", "user.name", "E2E")
+	runCmd(t, dir, "git", "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCmd(t, dir, "git", "add", "README.md")
+	runCmd(t, dir, "git", "commit", "-m", "init")
+
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runCmd(t, "", "git", "init", "--bare", remote)
+	runCmd(t, dir, "git", "remote", "add", "origin", remote)
+	runCmd(t, dir, "git", "push", "-u", "origin", "main")
+}
+
+type scriptedGate struct {
+	mu       sync.Mutex
+	healthy  map[string]bool
+	reason   map[string]string
+	failover map[string]string
+}
+
+func newScriptedGate() *scriptedGate {
+	return &scriptedGate{
+		healthy:  map[string]bool{"claude": true, "codex": true},
+		reason:   map[string]string{"claude": "ok", "codex": "ok"},
+		failover: map[string]string{},
+	}
+}
+
+func (g *scriptedGate) IsHealthy(p string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.healthy[p]
+}
+
+func (g *scriptedGate) Failover(unhealthy string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.failover[unhealthy]
+}
+
+func (g *scriptedGate) Reason(p string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reason[p]
+}
+
+func (g *scriptedGate) ReportAuthFailure(provider, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.healthy[provider] = false
+	if reason == "" {
+		reason = "auth_failed"
+	}
+	g.reason[provider] = reason
+}
+
+func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.healthy[provider] = false
+	if reason == "" {
+		reason = "rate_limited"
+	}
+	g.reason[provider] = reason
+}
+
+type cooldownGate struct {
+	mu        sync.Mutex
+	limitedTo map[string]time.Time
+	failover  map[string]string
+}
+
+func newCooldownGate() *cooldownGate {
+	return &cooldownGate{
+		limitedTo: map[string]time.Time{},
+		failover:  map[string]string{"claude": "codex", "codex": "claude"},
+	}
+}
+
+func (g *cooldownGate) IsHealthy(p string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	until, ok := g.limitedTo[p]
+	return !ok || time.Now().After(until)
+}
+
+func (g *cooldownGate) Failover(unhealthy string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.failover[unhealthy]
+}
+
+func (g *cooldownGate) Reason(p string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	until, ok := g.limitedTo[p]
+	if ok && time.Now().Before(until) {
+		return "rate_limited"
+	}
+	return "ok"
+}
+
+func (g *cooldownGate) ReportAuthFailure(provider, reason string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.limitedTo[provider] = time.Now().Add(5 * time.Minute)
+}
+
+func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+	if retryAfter <= 0 {
+		retryAfter = 200 * time.Millisecond
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.limitedTo[provider] = time.Now().Add(retryAfter)
+}
+
+type scriptedPRLinker struct {
+	get  func(repo string, prNumber int) ([]int, string, error)
+	edit func(repo string, prNumber int, body string) error
+}
+
+func (l *scriptedPRLinker) GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error) {
+	if l.get == nil {
+		return nil, "", nil
+	}
+	return l.get(repo, prNumber)
+}
+
+func (l *scriptedPRLinker) EditBody(repo string, prNumber int, body string) error {
+	if l.edit == nil {
+		return nil
+	}
+	return l.edit(repo, prNumber, body)
+}
+
+func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
+	t.Helper()
+
+	tasksDir := filepath.Join(env.taskDir, "tasks")
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	logDir := t.TempDir()
+	agentMgr := agent.NewManager(ctx, func(string, any) {}, e2eLogger(), logDir)
+	agentMgr.SetDefaultProvider(env.provider)
+
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: env.worktreesDir,
+		Tasks:        taskMgr,
+		Logger:       e2eLogger(),
+		AgentChecker: agentMgr.HasRunningAgentForTask,
+	})
+	agentOrch := newAgentOrchestrator(taskMgr, nil, agentMgr, nil, e2eLogger(), wm, nil)
+
+	ta := &taskAdapter{tasks: taskMgr}
+	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
+	engine := workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
+	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
+	engine.SetPRLinker(nil)
+
+	agentMgr.SetOnComplete(func(ag *agent.Agent) {
+		var result string
+		output := ag.Output()
+		for i := range output {
+			if output[i].Type == "result" {
+				result = output[i].Content
+			}
+		}
+		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+			AgentID:  ag.ID,
+			Result:   result,
+			Success:  ag.GetExitErr() == nil,
+			Provider: ag.Provider,
+		})
+	})
+	return engine
+}
+
+// TestE2E_DispatchPREvent_ConcurrentSingleWinner verifies concurrent dispatches
+// on the same task/event race to one winner, with the loser rejected.
+func TestE2E_DispatchPREvent_ConcurrentSingleWinner(t *testing.T) {
+	env := setupE2EMulti(t, []string{"success"})
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-pr-fix.yaml"), []byte(testPRFixWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("dispatch race task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"status": "in-review"}); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		wfID string
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			wfID, dErr := env.engine.DispatchEvent(
+				created.ID,
+				"pr.event",
+				map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueCIFailure)},
+				map[string]string{"prompt": "fix race", workflow.WorkflowVarDir: env.agentDir},
+			)
+			results <- result{wfID: wfID, err: dErr}
+		}()
+	}
+	close(start)
+
+	successes := 0
+	alreadyActive := 0
+	for range 2 {
+		r := <-results
+		if r.err == nil {
+			successes++
+			if r.wfID != "test-pr-fix" {
+				t.Fatalf("wfID = %q, want test-pr-fix", r.wfID)
+			}
+			continue
+		}
+		if errors.Is(r.err, workflow.ErrWorkflowAlreadyActive) {
+			alreadyActive++
+			continue
+		}
+		t.Fatalf("unexpected dispatch err: %v", r.err)
+	}
+	if successes != 1 || alreadyActive != 1 {
+		t.Fatalf("want 1 success + 1 already-active, got success=%d already-active=%d", successes, alreadyActive)
+	}
+}
+
+// TestE2E_DispatchPREvent_TerminalWorkflowCanBeReplaced verifies dispatch is
+// allowed when the existing workflow is already terminal.
+func TestE2E_DispatchPREvent_TerminalWorkflowCanBeReplaced(t *testing.T) {
+	env := setupE2E(t, "success")
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-auto-merge.yaml"), []byte(testAutoMergeWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("dispatch terminal replace", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status": "in-review",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "stale-old",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			Variables:   map[string]string{"old": "value"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wfID, err := env.engine.DispatchEvent(created.ID, "pr.event",
+		map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueReadyToMerge)}, nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if wfID != "test-auto-merge" {
+		t.Fatalf("wfID = %q, want test-auto-merge", wfID)
+	}
+}
+
+func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("wait status mismatch", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "workflow waits on plan_wait", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	env.engine.HandleStatusChange(created.ID, "in-progress")
+	time.Sleep(250 * time.Millisecond)
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow.CurrentStep != "plan_wait" || tk.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow advanced on mismatched status: step=%q state=%q", tk.Workflow.CurrentStep, tk.Workflow.State)
+	}
+}
+
+func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("wait status exact", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "workflow waits on plan_wait", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	env.engine.HandleStatusChange(created.ID, "plan-review")
+	waitFor(t, 10*time.Second, "workflow completes on matching status", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordsBefore := len(tk.Workflow.StepHistory)
+	env.engine.HandleStatusChange(created.ID, "plan-review")
+	time.Sleep(150 * time.Millisecond)
+	tkAfter, _ := env.tasks.Get(created.ID)
+	if len(tkAfter.Workflow.StepHistory) != recordsBefore {
+		t.Fatalf("duplicate advancement on repeated status: before=%d after=%d", recordsBefore, len(tkAfter.Workflow.StepHistory))
+	}
+}
+
+func TestE2E_ReuseAgent_ContinuesWithSameAgent(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
+
+	created, err := env.tasks.Create("reuse agent same", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase1" && tk.Workflow.State == workflow.ExecWaiting && len(tk.AgentRuns) == 1
+	})
+	tk1, _ := env.tasks.Get(created.ID)
+	firstAgentID := tk1.AgentRuns[0].AgentID
+
+	env.engine.HandleStatusChange(created.ID, "phase1")
+	waitFor(t, 10*time.Second, "phase2 waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase2" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tk2, _ := env.tasks.Get(created.ID)
+	if len(tk2.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %d, want 1 (reuse)", len(tk2.AgentRuns))
+	}
+	if tk2.AgentRuns[0].AgentID != firstAgentID {
+		t.Fatalf("agent id changed: %s -> %s", firstAgentID, tk2.AgentRuns[0].AgentID)
+	}
+
+	env.engine.HandleStatusChange(created.ID, "phase2")
+	waitFor(t, 10*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+}
+
+func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement", "interactive_implement"})
+	writeWorkflowFixture(t, env, "test-reuse-agent", testReuseAgentWorkflowYAML)
+
+	created, err := env.tasks.Create("reuse agent dead fallback", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase1" && len(tk.AgentRuns) == 1
+	})
+	tk1, _ := env.tasks.Get(created.ID)
+	firstAgentID := tk1.AgentRuns[0].AgentID
+	if err := env.agents.StopAgent(firstAgentID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "first agent stopped", func() bool {
+		ag, gErr := env.agents.GetAgent(firstAgentID)
+		return gErr == nil && ag.GetState() == agent.StateStopped
+	})
+
+	env.engine.HandleStatusChange(created.ID, "phase1")
+	waitFor(t, 10*time.Second, "phase2 waiting with replacement agent", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "phase2" && len(tk.AgentRuns) >= 2
+	})
+	tk2, _ := env.tasks.Get(created.ID)
+	if len(tk2.AgentRuns) < 2 {
+		t.Fatalf("agent runs = %d, want >=2", len(tk2.AgentRuns))
+	}
+	secondAgentID := tk2.AgentRuns[len(tk2.AgentRuns)-1].AgentID
+	if secondAgentID == firstAgentID {
+		t.Fatalf("expected replacement agent id, got same %s", secondAgentID)
+	}
+
+	env.engine.HandleStatusChange(created.ID, "phase2")
+	waitFor(t, 10*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+}
+
+func TestE2E_MaxRetries_Boundary(t *testing.T) {
+	cases := []struct {
+		name        string
+		maxRetries  int
+		scenarios   []string
+		wantRuns    int
+		description string
+	}{
+		{name: "zero", maxRetries: 0, scenarios: []string{"fail_exit"}, wantRuns: 1, description: "no retry"},
+		{name: "one", maxRetries: 1, scenarios: []string{"fail_exit", "success"}, wantRuns: 2, description: "single retry"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupE2EMultiProvider(t, "claude", tc.scenarios)
+			yaml := fmt.Sprintf(`id: test-retry-boundary
+name: Test Retry Boundary
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      max_retries: %d
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`, tc.maxRetries)
+			writeWorkflowFixture(t, env, "test-retry-boundary", yaml)
+
+			created, err := env.tasks.Create("retry boundary "+tc.description, "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := env.startWorkflow(created.ID, "test-retry-boundary"); err != nil {
+				t.Fatal(err)
+			}
+
+			waitFor(t, 30*time.Second, "workflow completes", func() bool {
+				tk, gErr := env.tasks.Get(created.ID)
+				return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+			})
+			tk, _ := env.tasks.Get(created.ID)
+			runs := countStepRecords(tk, "implement")
+			if runs != tc.wantRuns {
+				t.Fatalf("implement runs = %d, want %d", runs, tc.wantRuns)
+			}
+		})
+	}
+}
+
+func TestE2E_ConditionTransitionFailure_FailsWorkflow(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-transition-fail", testTransitionFailureWorkflowYAML)
+
+	created, err := env.tasks.Create("transition failure", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-transition-fail"); err == nil {
+		t.Fatal("expected transition resolution error, got nil")
+	} else if !strings.Contains(err.Error(), "no matching transition found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil || tk.Workflow.State != workflow.ExecFailed {
+		t.Fatalf("workflow state = %v, want failed", tk.Workflow)
+	}
+}
+
+func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
+	writeWorkflowFixture(t, env, "test-provider-fallback", testProviderFallbackWorkflowYAML)
+
+	claudeArgsLog := filepath.Join(t.TempDir(), "claude-args.log")
+	codexArgsLog := filepath.Join(t.TempDir(), "codex-args.log")
+	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
+	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
+
+	// Expose only claude + synapse-cli on PATH so cross=>codex is unavailable.
+	subsetPath := stageProviderPath(t, "claude", "synapse-cli")
+	t.Setenv("PATH", subsetPath)
+
+	created, err := env.tasks.Create("provider fallback", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-provider-fallback"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "provider fallback workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	if _, err := os.Stat(codexArgsLog); err == nil {
+		t.Fatalf("codex args log exists; cross provider should have fallen back to default claude")
+	}
+	if _, err := os.Stat(claudeArgsLog); err != nil {
+		t.Fatalf("claude args log missing: %v", err)
+	}
+}
+
+func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"triage", "success"})
+	loadBuiltinWorkflow(t, env, "simple-task")
+
+	created, err := env.tasks.Create("verify commits no ahead", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(env.worktreesDir, current.DirName())
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithOriginMain(t, worktreePath)
+	runCmd(t, worktreePath, "git", "log", "origin/main..HEAD", "--oneline")
+
+	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes after verify_commits", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", tk.Status)
+	}
+	if tk.StatusReason != "no commits pushed to branch" {
+		var verifyOut string
+		for i := range tk.Workflow.StepHistory {
+			if tk.Workflow.StepHistory[i].StepID == "verify_commits" {
+				verifyOut = tk.Workflow.StepHistory[i].Output
+			}
+		}
+		t.Fatalf("status_reason = %q, want no commits pushed to branch (verify_commits output=%q)", tk.StatusReason, verifyOut)
+	}
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if !slices.Contains(stepIDs, "verify_commits") {
+		t.Fatalf("verify_commits missing from history: %v", stepIDs)
+	}
+	if slices.Contains(stepIDs, "link_pr_and_review") || slices.Contains(stepIDs, "evaluate") {
+		t.Fatalf("unexpected fallback steps executed after verify_commits gate: %v", stepIDs)
+	}
+}
+
+func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"pr_created"})
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("pr precedence", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"pr_number": 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes in-review", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusInReview
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.PRNumber != 7 {
+		t.Fatalf("pr_number = %d, want 7 (existing task PR should win)", tk.PRNumber)
+	}
+}
+
+func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "interactive_implement")
+	created, err := env.tasks.Create("delete during run", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   created.ID,
+		Name:     "manual-agent",
+		Mode:     "interactive",
+		Provider: "claude",
+		Model:    "sonnet",
+		Prompt:   "run",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "manual agent live", func() bool {
+		s := ag.GetState()
+		return s == agent.StateRunning || s == agent.StatePaused
+	})
+
+	if err := env.tasks.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{
+		AgentID:  ag.ID,
+		Result:   "late completion",
+		Success:  true,
+		Provider: "claude",
+	})
+
+	if _, err := env.tasks.Get(created.ID); err == nil {
+		t.Fatal("task recreated unexpectedly after stale completion")
+	}
+	_ = env.agents.StopAgent(ag.ID)
+}
+
+const testDispatchDirectWorkflowYAML = `id: test-direct-start
+name: Test Direct Start
+steps:
+  - id: direct
+    name: Direct
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Direct {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testStatusCompleteRaceWorkflowYAML = `id: test-status-complete-race
+name: Test Status/Complete Race
+steps:
+  - id: plan_wait
+    name: Plan Wait
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      wait_for_status: plan-review
+      prompt: "Plan {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testStalePriorStepWorkflowYAML = `id: test-stale-prior
+name: Test Stale Prior Step
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: review_gate
+  - id: review_gate
+    name: Review Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testCrossMixedWorkflowYAML = `id: test-cross-mixed
+name: Test Cross Mixed
+steps:
+  - id: first
+    name: First
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      provider: claude
+      prompt: "First {{.Task.ID}}"
+    next:
+      - goto: second
+  - id: second
+    name: Second
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      prompt: "Second {{.Task.ID}}"
+    next:
+      - goto: third
+  - id: third
+    name: Third
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      provider: cross
+      prompt: "Third {{.Task.ID}}"
+    next:
+      - goto: ""
+`
+
+const testWaitHumanConcurrentWorkflowYAML = `id: test-wait-human-concurrent
+name: Test Wait Human Concurrent
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_done
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testVerifyAfterStatusWorkflowYAML = `id: test-verify-after-status
+name: Test Verify After Status
+steps:
+  - id: prep
+    name: Prepare
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      wait_for_status: go-verify
+      prompt: "Prep {{.Task.ID}}"
+    next:
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: verify_commits
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testProviderFlapWorkflowYAML = `id: test-provider-flap
+name: Test Provider Flap
+steps:
+  - id: first
+    name: First
+    type: run_agent
+    config:
+      role: implementation
+      mode: interactive
+      provider: codex
+      wait_for_status: flip
+      prompt: "First {{.Task.ID}}"
+    next:
+      - goto: second
+  - id: second
+    name: Second
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      prompt: "Second {{.Task.ID}}"
+    next:
+      - goto: ""
+`
+
+func TestE2E_DispatchVsDirectStart_RaceStable(t *testing.T) {
+	env := setupE2EMulti(t, []string{"success", "success"})
+	writeWorkflowFixture(t, env, "test-pr-fix", testPRFixWorkflowYAML)
+	writeWorkflowFixture(t, env, "test-direct-start", testDispatchDirectWorkflowYAML)
+
+	created, err := env.tasks.Create("dispatch/start race", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"status": "in-review"}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var dispatchErr error
+	var startErr error
+	go func() {
+		defer wg.Done()
+		<-start
+		_, dispatchErr = env.engine.DispatchEvent(
+			created.ID, "pr.event",
+			map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueCIFailure)},
+			map[string]string{"prompt": "fix", workflow.WorkflowVarDir: env.agentDir},
+		)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		startErr = env.engine.StartWorkflowWithVars(created.ID, "test-direct-start", map[string]string{
+			workflow.WorkflowVarDir: env.agentDir,
+		})
+	}()
+	close(start)
+	wg.Wait()
+
+	if dispatchErr != nil && !errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive) {
+		t.Fatalf("dispatch err = %v", dispatchErr)
+	}
+	if startErr != nil {
+		t.Fatalf("start err = %v", startErr)
+	}
+
+	waitFor(t, 20*time.Second, "final workflow terminal", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	for i := range tk.Workflow.StepHistory {
+		if tk.Workflow.StepHistory[i].StepID == "" {
+			t.Fatalf("empty StepID in history index %d", i)
+		}
+	}
+}
+
+func TestE2E_StatusChangeAndAgentComplete_RaceSingleRecord(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-status-complete-race", testStatusCompleteRaceWorkflowYAML)
+
+	created, err := env.tasks.Create("status/complete race", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-status-complete-race"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "plan_wait waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait" && tk.Workflow.State == workflow.ExecWaiting && len(tk.AgentRuns) == 1
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	agentID := tk.AgentRuns[0].AgentID
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		env.engine.HandleStatusChange(created.ID, "plan-review")
+	}()
+	go func() {
+		defer wg.Done()
+		env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{
+			AgentID:  agentID,
+			Success:  true,
+			Result:   "late completion",
+			Provider: "claude",
+		})
+	}()
+	wg.Wait()
+
+	waitFor(t, 10*time.Second, "workflow completed once", func() bool {
+		cur, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && cur.Workflow != nil && cur.Workflow.State == workflow.ExecCompleted
+	})
+	cur, _ := env.tasks.Get(created.ID)
+	if got := countStepRecords(cur, "plan_wait"); got != 1 {
+		t.Fatalf("plan_wait records = %d, want 1", got)
+	}
+}
+
+func TestE2E_StalePriorStepAdvance_DroppedWhileNewStepActive(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	writeWorkflowFixture(t, env, "test-stale-prior", testStalePriorStepWorkflowYAML)
+
+	created, err := env.tasks.Create("stale prior", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-stale-prior"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "review_gate waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "review_gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+	before, _ := env.tasks.Get(created.ID)
+	historyBefore := len(before.Workflow.StepHistory)
+
+	if err := env.engine.AdvanceStep(created.ID, workflow.StepOutput{
+		StepID: "implement",
+		Status: "completed",
+		Output: "late output",
+	}); err != nil {
+		t.Fatalf("advance stale prior step: %v", err)
+	}
+
+	after, _ := env.tasks.Get(created.ID)
+	if after.Workflow.CurrentStep != "review_gate" || after.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow mutated by stale prior step: step=%q state=%q", after.Workflow.CurrentStep, after.Workflow.State)
+	}
+	if got := len(after.Workflow.StepHistory); got != historyBefore {
+		t.Fatalf("step history changed by stale prior step: before=%d after=%d", historyBefore, got)
+	}
+}
+
+func TestE2E_CrossProvider_FlipsFromLatestMixedHistory(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success", "success"})
+	writeWorkflowFixture(t, env, "test-cross-mixed", testCrossMixedWorkflowYAML)
+
+	created, err := env.tasks.Create("cross mixed history", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-cross-mixed"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+
+	providerByStep := map[string]string{}
+	for i := range tk.Workflow.StepHistory {
+		r := tk.Workflow.StepHistory[i]
+		providerByStep[r.StepID] = r.Provider
+	}
+	if providerByStep["first"] != "claude" {
+		t.Fatalf("first provider = %q, want claude", providerByStep["first"])
+	}
+	if providerByStep["second"] != "codex" {
+		t.Fatalf("second provider = %q, want codex", providerByStep["second"])
+	}
+	if providerByStep["third"] != "claude" {
+		t.Fatalf("third provider = %q, want claude (cross flip from codex)", providerByStep["third"])
+	}
+}
+
+func TestE2E_CodexRetry_OverloadedThenAuthStopsRetry(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error", "auth_error", "success"})
+
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "task-codex-overload-auth",
+		Name:     "codex overload then auth",
+		Mode:     "headless",
+		Provider: "codex",
+		Prompt:   "do work",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 120*time.Second, "agent stops after auth error", func() bool {
+		return ag.GetState() == agent.StateStopped
+	})
+
+	hasSuccess := false
+	hasOverloadErr := false
+	hasAuthErr := false
+	for _, ev := range ag.Output() {
+		if ev.Type == "result" && ev.Subtype == "" {
+			hasSuccess = true
+		}
+		if ev.Type == "result" && ev.Subtype == "error" && strings.Contains(strings.ToLower(ev.Content), "overloaded") {
+			hasOverloadErr = true
+		}
+		if ev.Type == "result" && ev.Subtype == "error" && strings.Contains(strings.ToLower(ev.Content), "auth") {
+			hasAuthErr = true
+		}
+	}
+	if hasSuccess {
+		t.Fatal("unexpected success result after auth error; retries should stop")
+	}
+	if !hasOverloadErr || !hasAuthErr {
+		t.Fatalf("missing expected errors: overloaded=%v auth=%v", hasOverloadErr, hasAuthErr)
+	}
+}
+
+func TestE2E_WaitHuman_ConcurrentDoubleActionSingleWinner(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-wait-human-concurrent", testWaitHumanConcurrentWorkflowYAML)
+
+	created, err := env.tasks.Create("double human action", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-human-concurrent"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "gate waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make(chan error, 2)
+	go func() {
+		defer wg.Done()
+		errs <- env.engine.HandleHumanAction(created.ID, "approve", nil)
+	}()
+	go func() {
+		defer wg.Done()
+		errs <- env.engine.HandleHumanAction(created.ID, "reject", nil)
+	}()
+	wg.Wait()
+	close(errs)
+
+	okCount := 0
+	errCount := 0
+	for err := range errs {
+		if err == nil {
+			okCount++
+		} else {
+			errCount++
+		}
+	}
+	if okCount != 1 || errCount != 1 {
+		t.Fatalf("want one success + one error, got success=%d error=%d", okCount, errCount)
+	}
+
+	waitFor(t, 10*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+}
+
+func TestE2E_WorktreeDisappearsMidVerify_SkipsGracefully(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-verify-after-status", testVerifyAfterStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("worktree disappears", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(env.worktreesDir, cur.DirName())
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithOriginMain(t, wtPath)
+
+	if err := env.startWorkflow(created.ID, "test-verify-after-status"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "prep waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "prep" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.HandleStatusChange(created.ID, "go-verify")
+	waitFor(t, 10*time.Second, "workflow completes after missing worktree", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	var verifyOut string
+	for i := range tk.Workflow.StepHistory {
+		if tk.Workflow.StepHistory[i].StepID == "verify" {
+			verifyOut = tk.Workflow.StepHistory[i].Output
+		}
+	}
+	if !strings.Contains(verifyOut, "skipped: no worktree for task") {
+		t.Fatalf("verify output = %q, want missing-worktree skip", verifyOut)
+	}
+}
+
+func TestE2E_LinkPRAndReview_MalformedHugeOutput_NoFalsePositive(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"malformed_pr_output"})
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := env.tasks.Create("malformed pr output", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes fallback", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.PRNumber != 0 {
+		t.Fatalf("pr_number = %d, want 0 for malformed output", tk.PRNumber)
+	}
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", tk.Status)
+	}
+}
+
+func TestE2E_DeletedTask_RaceCallbacks_NoRecreate(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-pr-fix", testPRFixWorkflowYAML)
+
+	created, err := env.tasks.Create("delete callback race", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.tasks.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	var dispatchErr error
+	go func() {
+		defer wg.Done()
+		env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{
+			AgentID:  "late",
+			Success:  true,
+			Result:   "late",
+			Provider: "claude",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		env.engine.HandleStatusChange(created.ID, "plan-review")
+	}()
+	go func() {
+		defer wg.Done()
+		_, dispatchErr = env.engine.DispatchEvent(created.ID, "pr.event",
+			map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueCIFailure)}, nil)
+	}()
+	wg.Wait()
+
+	if dispatchErr == nil {
+		t.Fatal("expected dispatch error for deleted task, got nil")
+	}
+	if _, err := env.tasks.Get(created.ID); err == nil {
+		t.Fatal("task recreated unexpectedly")
+	}
+}
+
+func TestE2E_ResumeStalled_TightLoopIdempotent(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "interactive_implement")
+	created, err := env.tasks.Create("resume tight loop", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfExec := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status":   "in-progress",
+		"workflow": wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Go(func() {
+			env.engine.ResumeStalled()
+		})
+	}
+	wg.Wait()
+
+	waitFor(t, 15*time.Second, "workflow advances past implement", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep != "implement"
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %d, want 1", len(tk.AgentRuns))
+	}
+}
+
+func TestE2E_WaitForStatus_RepeatedIdenticalEvents_AdvanceOnce(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("repeat same status", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "plan_wait waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	for range 20 {
+		env.engine.HandleStatusChange(created.ID, "plan-review")
+	}
+	waitFor(t, 10*time.Second, "workflow complete", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if got := countStepRecords(tk, "plan_wait"); got != 1 {
+		t.Fatalf("plan_wait records = %d, want 1", got)
+	}
+}
+
+func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"interactive_implement", "success"})
+	writeWorkflowFixture(t, env, "test-provider-flap", testProviderFlapWorkflowYAML)
+
+	codexArgsLog := filepath.Join(t.TempDir(), "codex-args.log")
+	claudeArgsLog := filepath.Join(t.TempDir(), "claude-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
+	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
+
+	created, err := env.tasks.Create("provider flap", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-provider-flap"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "first waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "first" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	// Remove claude binary before second step starts; cross from codex wants
+	// claude and must deterministically fall back to default codex.
+	subset := stageProviderPath(t, "codex", "synapse-cli")
+	t.Setenv("PATH", subset)
+
+	env.engine.HandleStatusChange(created.ID, "flip")
+	waitFor(t, 20*time.Second, "provider-flap workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	if _, err := os.Stat(claudeArgsLog); err == nil {
+		t.Fatalf("claude args log exists; second step should have fallen back to codex")
+	}
+	data, err := os.ReadFile(codexArgsLog)
+	if err != nil {
+		t.Fatalf("read codex args: %v", err)
+	}
+	if !strings.Contains(string(data), "Second") {
+		t.Fatalf("codex args missing second-step prompt:\n%s", string(data))
+	}
+}
+
+const testHistoryCapWorkflowYAML = `id: test-history-cap
+name: Test History Cap
+steps:
+  - id: gate
+    name: Loop Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - goto: gate
+`
+
+const testReloadWorkflowYAML = `id: test-reload-live
+name: Test Reload Live
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testReloadWorkflowYAMLUpdated = `id: test-reload-live
+name: Test Reload Live
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - goto: set_in_progress
+  - id: set_in_progress
+    name: Mark In Progress
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: ""
+`
+
+const testVarsWorkflowYAML = `id: test-vars
+name: Test Vars
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      prompt: 'Var: {{ getvar .Vars "odd:key" }} Task {{.Task.ID}}'
+    next:
+      - goto: ""
+`
+
+const testVerifyOnlyWorkflowYAML = `id: test-verify-only
+name: Test Verify Only
+steps:
+  - id: verify
+    name: Verify
+    type: verify_commits
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testCrossDefaultWorkflowYAML = `id: test-cross-default
+name: Test Cross Default
+steps:
+  - id: cross_step
+    name: Cross Step
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      prompt: "Cross {{.Task.ID}}"
+    next:
+      - goto: ""
+`
+
+const testEnsurePRWorkflowYAML = `id: test-ensure-pr
+name: Test Ensure PR
+steps:
+  - id: ensure
+    name: Ensure PR closes issue
+    type: ensure_pr_closes_issue
+    next:
+      - goto: ""
+`
+
+const testEvaluateLatePRWorkflowYAML = `id: test-evaluate-late-pr
+name: Test Evaluate Late PR
+steps:
+  - id: eval
+    name: Evaluate
+    type: evaluate
+    next:
+      - goto: ""
+`
+
+const testShellToLinkPRWorkflowYAML = `id: test-shell-link-pr
+name: Test Shell to Link PR
+steps:
+  - id: emit
+    name: Emit PR short ref
+    type: shell
+    config:
+      command: "echo owner/repo#55"
+    next:
+      - goto: link
+  - id: link
+    name: Link PR
+    type: link_pr_and_review
+    next:
+      - goto: ""
+`
+
+func TestE2E_ProviderHealthFailoverAndRecovery(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
+	g := newScriptedGate()
+	g.healthy["claude"] = false
+	g.reason["claude"] = "rate_limited"
+	g.failover["claude"] = "codex"
+	env.agents.SetHealthGate(g)
+
+	ag1, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "health-failover-1",
+		Name:     "health failover 1",
+		Mode:     "headless",
+		Provider: "claude",
+		Prompt:   "work",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag1.Provider != "codex" {
+		t.Fatalf("provider = %q, want codex failover", ag1.Provider)
+	}
+	waitFor(t, 10*time.Second, "failover run stops", func() bool { return ag1.GetState() == agent.StateStopped })
+
+	g.mu.Lock()
+	g.healthy["claude"] = true
+	g.reason["claude"] = "ok"
+	g.mu.Unlock()
+
+	ag2, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "health-failover-2",
+		Name:     "health failover 2",
+		Mode:     "headless",
+		Provider: "claude",
+		Prompt:   "work",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag2.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude after recovery", ag2.Provider)
+	}
+	waitFor(t, 10*time.Second, "recovery run stops", func() bool { return ag2.GetState() == agent.StateStopped })
+}
+
+func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
+	g := newCooldownGate()
+	env.agents.SetHealthGate(g)
+	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited")
+
+	ag1, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "cooldown-1",
+		Name:     "cooldown 1",
+		Mode:     "headless",
+		Provider: "claude",
+		Prompt:   "work",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag1.Provider != "codex" {
+		t.Fatalf("provider = %q, want codex during cooldown", ag1.Provider)
+	}
+	waitFor(t, 10*time.Second, "cooldown run1 stops", func() bool { return ag1.GetState() == agent.StateStopped })
+
+	time.Sleep(250 * time.Millisecond)
+	ag2, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "cooldown-2",
+		Name:     "cooldown 2",
+		Mode:     "headless",
+		Provider: "claude",
+		Prompt:   "work",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag2.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude after cooldown", ag2.Provider)
+	}
+	waitFor(t, 10*time.Second, "cooldown run2 stops", func() bool { return ag2.GetState() == agent.StateStopped })
+}
+
+func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
+	env := setupE2E(t, "success")
+	tasks := make([]task.Task, 0, 3)
+	for i := 1; i <= 3; i++ {
+		created, err := env.tasks.Create(fmt.Sprintf("ooo-%d", i), "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wfExec := &workflow.Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
+		}
+		if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+			"status":   "in-progress",
+			"workflow": wfExec,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, created)
+	}
+
+	env.engine.HandleAgentComplete(tasks[1].ID, workflow.AgentCompletion{AgentID: "a2", Success: false, Result: "err-two"})
+	env.engine.HandleAgentComplete(tasks[0].ID, workflow.AgentCompletion{AgentID: "a1", Success: false, Result: "err-one"})
+	env.engine.HandleAgentComplete(tasks[2].ID, workflow.AgentCompletion{AgentID: "a3", Success: false, Result: "err-three"})
+
+	want := map[string]string{
+		tasks[0].ID: "err-one",
+		tasks[1].ID: "err-two",
+		tasks[2].ID: "err-three",
+	}
+	for _, tk := range tasks {
+		cur, err := env.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.StatusReason != want[tk.ID] {
+			t.Fatalf("task %s status_reason = %q, want %q", tk.ID, cur.StatusReason, want[tk.ID])
+		}
+	}
+}
+
+func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-history-cap", testHistoryCapWorkflowYAML)
+
+	created, err := env.tasks.Create("history cap", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-history-cap"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "history gate waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	for i := range 80 {
+		action := "approve"
+		if i%2 == 1 {
+			action = "reject"
+		}
+		if err := env.engine.HandleHumanAction(created.ID, action, nil); err != nil {
+			t.Fatalf("action %d failed: %v", i, err)
+		}
+	}
+	tk, _ := env.tasks.Get(created.ID)
+	if got := len(tk.Workflow.StepHistory); got != 50 {
+		t.Fatalf("step history len = %d, want 50", got)
+	}
+}
+
+func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAML)
+
+	created, err := env.tasks.Create("reload live", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-reload-live"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "reload gate waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAMLUpdated)
+	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "reload workflow terminal", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress from updated workflow", tk.Status)
+	}
+}
+
+func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("status storm", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "storm waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait"
+	})
+
+	var wg sync.WaitGroup
+	for i := range 120 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%3 == 0 {
+				env.engine.HandleStatusChange(created.ID, "plan-review")
+			} else {
+				env.engine.HandleStatusChange(created.ID, "todo")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	waitFor(t, 10*time.Second, "storm completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if got := countStepRecords(tk, "plan_wait"); got != 1 {
+		t.Fatalf("plan_wait records = %d, want 1", got)
+	}
+}
+
+func TestE2E_StartWorkflowWithMalformedVars_NoPanic(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	writeWorkflowFixture(t, env, "test-vars", testVarsWorkflowYAML)
+
+	created, err := env.tasks.Create("malformed vars", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]string{
+		"odd:key": strings.Repeat("X", 4096),
+		"../../x": "{{bad}}",
+		"\nkey":   "v",
+	}
+	if err := env.engine.StartWorkflowWithVars(created.ID, "test-vars", vars); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "vars workflow complete", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+}
+
+func TestE2E_CrossDefaultEmptyProvider_ResolvesDeterministically(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	writeWorkflowFixture(t, env, "test-cross-default", testCrossDefaultWorkflowYAML)
+	env.agents.SetDefaultProvider("")
+
+	created, err := env.tasks.Create("cross default empty", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-cross-default"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "cross default completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	var prov string
+	for i := range tk.Workflow.StepHistory {
+		if tk.Workflow.StepHistory[i].StepID == "cross_step" {
+			prov = tk.Workflow.StepHistory[i].Provider
+		}
+	}
+	if prov != "codex" {
+		t.Fatalf("cross_step provider = %q, want codex when default empty(normalized claude)", prov)
+	}
+}
+
+func TestE2E_VerifyCommits_CanceledContext_SkipsWithGitError(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-verify-only", testVerifyOnlyWorkflowYAML)
+
+	created, err := env.tasks.Create("verify canceled ctx", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(env.worktreesDir, cur.DirName())
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepoWithOriginMain(t, wtPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	env.engine.SetContext(ctx)
+
+	if err := env.startWorkflow(created.ID, "test-verify-only"); err != nil {
+		t.Fatal(err)
+	}
+	tk, _ := env.tasks.Get(created.ID)
+	var out string
+	for i := range tk.Workflow.StepHistory {
+		if tk.Workflow.StepHistory[i].StepID == "verify" {
+			out = tk.Workflow.StepHistory[i].Output
+		}
+	}
+	if !strings.Contains(strings.ToLower(out), "context canceled") {
+		t.Fatalf("verify output = %q, want context canceled skip", out)
+	}
+}
+
+func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := stageProviderPath(t, "claude", "synapse-cli")
+	gh := filepath.Join(bin, "gh")
+	script := "#!/bin/sh\nprintf '[{\"number\":1},{\"number\":2}]'\n"
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	created, err := env.tasks.Create("gh ambiguous", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "synapse/" + created.ID
+	projectID := "test-org/test-repo"
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"project_id": projectID,
+		"branch":     branch,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "gh ambiguous workflow complete", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.PRNumber != 0 {
+		t.Fatalf("pr_number = %d, want 0 on ambiguous gh list", tk.PRNumber)
+	}
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required fallback", tk.Status)
+	}
+}
+
+func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "interactive_implement")
+	ag, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "prompt-pressure",
+		Name:     "prompt pressure",
+		Mode:     "interactive",
+		Provider: "claude",
+		Model:    "sonnet",
+		Prompt:   "start",
+		Dir:      env.agentDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "agent live for pressure", func() bool {
+		s := ag.GetState()
+		return s == agent.StateRunning || s == agent.StatePaused
+	})
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 50)
+	for i := range 50 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errCh <- env.agents.SendPromptToAgent(ag.ID, fmt.Sprintf("msg-%d", i))
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("send prompt err: %v", err)
+		}
+	}
+	if err := env.agents.StopAgent(ag.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "pressure agent stopped", func() bool {
+		got, gErr := env.agents.GetAgent(ag.ID)
+		return gErr == nil && got.GetState() == agent.StateStopped
+	})
+}
+
+func TestE2E_RestartSimulation_PersistedWaitingResumesOnce(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "success")
+	created, err := env.tasks.Create("restart simulation", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfExec := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status":   "in-progress",
+		"workflow": wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := rebuildEngineFromEnv(t, env)
+	restored.ResumeStalled()
+	waitFor(t, 15*time.Second, "restored engine advances workflow", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep != "implement"
+	})
+	tk, _ := env.tasks.Get(created.ID)
+	if got := countStepRecords(tk, "implement"); got != 1 {
+		t.Fatalf("implement records = %d, want 1 after restart resume", got)
+	}
+}
+
+func TestE2E_ProviderUnhealthy_NoFailoverReturnsError(t *testing.T) {
+	env := setupE2EProvider(t, "claude", "success")
+	g := newScriptedGate()
+	g.healthy["claude"] = false
+	g.reason["claude"] = "logged_out"
+	// No failover mapping -> scheduler must reject run.
+	env.agents.SetHealthGate(g)
+
+	_, err := env.agents.Run(agent.RunConfig{
+		TaskID:   "no-failover",
+		Name:     "no failover",
+		Mode:     "headless",
+		Provider: "claude",
+		Prompt:   "work",
+		Dir:      env.agentDir,
+	})
+	if err == nil {
+		t.Fatal("expected unhealthy provider error, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "unhealthy") {
+		t.Fatalf("err = %v, want unhealthy error", err)
+	}
+}
+
+func TestE2E_WorkflowReload_CorruptFileKeepsWaitingState(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAML)
+
+	created, err := env.tasks.Create("reload corrupt", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-reload-live"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "reload gate waiting", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	corrupt := filepath.Join(env.wfStore.Dir(), "test-reload-live.yaml")
+	if err := os.WriteFile(corrupt, []byte("id: test-reload-live\nsteps:\n  - : bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = env.engine.HandleHumanAction(created.ID, "approve", nil)
+	if err == nil {
+		t.Fatal("expected parse error from corrupted workflow file")
+	}
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Workflow.State != workflow.ExecWaiting || tk.Workflow.CurrentStep != "gate" {
+		t.Fatalf("workflow mutated on corrupt reload: step=%q state=%q", tk.Workflow.CurrentStep, tk.Workflow.State)
+	}
+}
+
+func TestE2E_StatusChange_AfterTerminal_NoMutation(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"interactive_implement"})
+	writeWorkflowFixture(t, env, "test-wait-status", testWaitForStatusWorkflowYAML)
+
+	created, err := env.tasks.Create("terminal status noop", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "waiting on plan_wait", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait"
+	})
+	env.engine.HandleStatusChange(created.ID, "plan-review")
+	waitFor(t, 10*time.Second, "workflow completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	historyBefore := len(tk.Workflow.StepHistory)
+	env.engine.HandleStatusChange(created.ID, "plan-review")
+	time.Sleep(150 * time.Millisecond)
+	after, _ := env.tasks.Get(created.ID)
+	if len(after.Workflow.StepHistory) != historyBefore {
+		t.Fatalf("terminal status change mutated history: before=%d after=%d", historyBefore, len(after.Workflow.StepHistory))
+	}
+}
+
+func TestE2E_EnsurePRClosesIssue_EditFailure_FlipsHumanRequired(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-ensure-pr", testEnsurePRWorkflowYAML)
+
+	editCalled := false
+	env.engine.SetPRLinker(&scriptedPRLinker{
+		get: func(repo string, prNumber int) ([]int, string, error) {
+			return nil, "Body", nil
+		},
+		edit: func(repo string, prNumber int, body string) error {
+			editCalled = true
+			return errors.New("forbidden edit")
+		},
+	})
+
+	created, err := env.tasks.Create("ensure pr edit fail", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"project_id": "owner/repo",
+		"issue":      "https://github.com/owner/repo/issues/42",
+		"pr_number":  101,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "ensure step completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	if !editCalled {
+		t.Fatal("expected PR body edit attempt")
+	}
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", tk.Status)
+	}
+	if !strings.Contains(tk.StatusReason, "auto-fix failed") {
+		t.Fatalf("status_reason = %q, want auto-fix failed message", tk.StatusReason)
+	}
+	if got := countStepRecords(tk, "ensure"); got != 1 {
+		t.Fatalf("ensure step records = %d, want 1", got)
+	}
+	if st := lastStepStatus(tk, "ensure"); st != "failed" {
+		t.Fatalf("ensure step status = %q, want failed", st)
+	}
+}
+
+func TestE2E_EnsurePRClosesIssue_AlreadyLinked_SkipsEdit(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-ensure-pr", testEnsurePRWorkflowYAML)
+
+	editCalled := false
+	env.engine.SetPRLinker(&scriptedPRLinker{
+		get: func(repo string, prNumber int) ([]int, string, error) {
+			return []int{42}, "Body", nil
+		},
+		edit: func(repo string, prNumber int, body string) error {
+			editCalled = true
+			return nil
+		},
+	})
+
+	created, err := env.tasks.Create("ensure pr already linked", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"project_id": "owner/repo",
+		"issue":      "https://github.com/owner/repo/issues/42",
+		"pr_number":  101,
+		"status":     "in-progress",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "ensure already-linked completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	if editCalled {
+		t.Fatal("unexpected PR body edit when already linked")
+	}
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want unchanged in-progress", tk.Status)
+	}
+	if st := lastStepStatus(tk, "ensure"); st != "completed" {
+		t.Fatalf("ensure step status = %q, want completed", st)
+	}
+}
+
+func TestE2E_Evaluate_LateGHSinglePR_FlipsInReview(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-evaluate-late-pr", testEvaluateLatePRWorkflowYAML)
+
+	bin := stageProviderPath(t, "claude", "synapse-cli")
+	gh := filepath.Join(bin, "gh")
+	script := "#!/bin/sh\nprintf '[{\"number\":321}]'\n"
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	created, err := env.tasks.Create("evaluate late gh", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"project_id": "owner/repo",
+		"branch":     "synapse/" + created.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-evaluate-late-pr"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "evaluate late-gh completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.PRNumber != 321 {
+		t.Fatalf("pr_number = %d, want 321", tk.PRNumber)
+	}
+	if tk.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", tk.Status)
+	}
+}
+
+func TestE2E_LinkPRAndReview_ShortRefFromHistory_FlipsInReview(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-shell-link-pr", testShellToLinkPRWorkflowYAML)
+
+	created, err := env.tasks.Create("link from short ref", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-shell-link-pr"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "link short ref completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.PRNumber != 55 {
+		t.Fatalf("pr_number = %d, want 55", tk.PRNumber)
+	}
+	if tk.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", tk.Status)
+	}
+}
+
+func TestE2E_EnsurePRClosesIssue_CrossRepoIssue_SkipsEdit(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-ensure-pr", testEnsurePRWorkflowYAML)
+
+	editCalled := false
+	env.engine.SetPRLinker(&scriptedPRLinker{
+		get: func(repo string, prNumber int) ([]int, string, error) {
+			return nil, "", nil
+		},
+		edit: func(repo string, prNumber int, body string) error {
+			editCalled = true
+			return nil
+		},
+	})
+
+	created, err := env.tasks.Create("ensure cross repo skip", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"project_id": "owner/repo",
+		"issue":      "https://github.com/other/repo/issues/42",
+		"pr_number":  101,
+		"status":     "in-progress",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "ensure cross-repo completed", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	if editCalled {
+		t.Fatal("unexpected edit call for cross-repo issue")
+	}
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want unchanged in-progress", tk.Status)
 	}
 }

@@ -103,6 +103,8 @@ type Engine struct {
 	ctx         context.Context
 	mu          sync.Mutex
 	inflight    map[string]struct{} // taskID → step in flight (prevent double-advance)
+	dispatching map[string]struct{} // taskID → dispatch in progress
+	humanAction map[string]struct{} // taskID → HandleHumanAction in progress
 	agentSteps  map[string]string   // agentID → stepID it was spawned for
 	resumeError *logging.ErrorThrottle
 }
@@ -116,6 +118,8 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		logger:      logger,
 		ctx:         context.Background(),
 		inflight:    make(map[string]struct{}),
+		dispatching: make(map[string]struct{}),
+		humanAction: make(map[string]struct{}),
 		agentSteps:  make(map[string]string),
 		resumeError: logging.NewErrorThrottle(),
 	}
@@ -239,6 +243,21 @@ var ErrWorkflowAlreadyActive = fmt.Errorf("task already has an active workflow")
 // ErrWorkflowAlreadyActive and does not dispatch. Callers that intentionally
 // want to replace an active workflow should use StartWorkflowWithVars.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
+	// Serialize dispatch attempts per task to prevent concurrent callers from
+	// both observing "no active workflow" and double-starting.
+	e.mu.Lock()
+	if _, busy := e.dispatching[taskID]; busy {
+		e.mu.Unlock()
+		return "", fmt.Errorf("%w: dispatch in progress", ErrWorkflowAlreadyActive)
+	}
+	e.dispatching[taskID] = struct{}{}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
+	}()
+
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		return "", fmt.Errorf("get task: %w", err)
@@ -419,12 +438,41 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (*Executio
 
 // HandleHumanAction processes approve/reject/input from the UI.
 func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string) error {
+	// Serialize concurrent human actions per task so double-click races do not
+	// both mutate workflow vars and attempt to advance the same wait_human step.
+	e.mu.Lock()
+	if _, busy := e.humanAction[taskID]; busy {
+		e.mu.Unlock()
+		return fmt.Errorf("task %s human action already in progress", taskID)
+	}
+	e.humanAction[taskID] = struct{}{}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.humanAction, taskID)
+		e.mu.Unlock()
+	}()
+
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		return err
 	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
 		return fmt.Errorf("task %s is not waiting for human action", taskID)
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return err
+	}
+	currentStep := def.StepByID(t.Workflow.CurrentStep)
+	if currentStep == nil {
+		return fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
+	}
+	if currentStep.Type != StepWaitHuman {
+		return fmt.Errorf("task %s is not at a wait_human step", taskID)
+	}
+	if len(currentStep.Config.HumanActions) > 0 && !slices.Contains(currentStep.Config.HumanActions, action) {
+		return fmt.Errorf("invalid human action %q for step %q", action, currentStep.ID)
 	}
 
 	wfExec := t.Workflow
@@ -610,16 +658,27 @@ func (e *Engine) ResumeStalled() {
 		// agent's completion would corrupt the workflow at the wait_human
 		// gate.
 		e.mu.Lock()
-		_, dispatching := e.inflight[t.ID]
+		_, advancing := e.inflight[t.ID]
+		_, dispatching := e.dispatching[t.ID]
+		if !advancing && !dispatching {
+			e.dispatching[t.ID] = struct{}{}
+		}
 		e.mu.Unlock()
-		if dispatching {
+		if advancing || dispatching {
+			reason := "dispatching"
+			if advancing {
+				reason = "inflight"
+			}
 			e.logger.Debug("workflow.resume-stalled.skip",
-				"task_id", t.ID, "reason", "inflight", "step", step.ID)
+				"task_id", t.ID, "reason", reason, "step", step.ID)
 			continue
 		}
 
 		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
 		rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
+		e.mu.Lock()
+		delete(e.dispatching, t.ID)
+		e.mu.Unlock()
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 	}
 }
