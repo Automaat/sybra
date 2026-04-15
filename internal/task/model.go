@@ -127,7 +127,8 @@ type Task struct {
 	StatusReason string   `yaml:"status_reason,omitempty" json:"statusReason"`
 	Reviewed     bool     `yaml:"reviewed,omitempty" json:"reviewed"`
 	RunRole      string   `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
-	TodoistID    string   `yaml:"todoist_id,omitempty" json:"todoistId"`
+	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
+	DueDate      *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).
 	RequirePermissions *bool               `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
