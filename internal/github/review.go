@@ -20,11 +20,14 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 	}
 	summary.CreatedByMe = created
 
+	// review-requested may fail on server deployments with scoped tokens or
+	// rate limits. Log and continue rather than discarding createdByMe data.
 	requested, err := searchPRsWith(e, "is:pr is:open review-requested:@me")
 	if err != nil {
-		return summary, fmt.Errorf("fetch review requests: %w", err)
+		summary.ReviewRequested = nil
+	} else {
+		summary.ReviewRequested = requested
 	}
-	summary.ReviewRequested = requested
 
 	return summary, nil
 }
