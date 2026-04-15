@@ -1308,6 +1308,8 @@ export namespace task {
 	    reviewed: boolean;
 	    runRole: string;
 	    todoistId: string;
+	    // Go type: time
+	    dueDate?: any;
 	    requirePermissions?: boolean;
 	    agentRuns: AgentRun[];
 	    workflow?: workflow.Execution;
@@ -1342,6 +1344,7 @@ export namespace task {
 	        this.reviewed = source["reviewed"];
 	        this.runRole = source["runRole"];
 	        this.todoistId = source["todoistId"];
+	        this.dueDate = this.convertValues(source["dueDate"], null);
 	        this.requirePermissions = source["requirePermissions"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);

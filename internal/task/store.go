@@ -235,6 +235,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.TodoistID != nil {
 		t.TodoistID = *u.TodoistID
 	}
+	if u.DueDate != nil {
+		t.DueDate = *u.DueDate
+	}
 	if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
@@ -348,6 +351,10 @@ func cloneTask(t Task) Task {
 	clone.AllowedTools = slices.Clone(t.AllowedTools)
 	clone.Tags = slices.Clone(t.Tags)
 	clone.AgentRuns = slices.Clone(t.AgentRuns)
+	if t.DueDate != nil {
+		d := *t.DueDate
+		clone.DueDate = &d
+	}
 	if t.Workflow != nil {
 		wfClone := cloneWorkflow(*t.Workflow)
 		clone.Workflow = &wfClone

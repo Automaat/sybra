@@ -3,6 +3,7 @@ package task
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Automaat/synapse/internal/workflow"
 )
@@ -26,6 +27,7 @@ type Update struct {
 	Reviewed     *bool
 	RunRole      *string
 	TodoistID    *string
+	DueDate      **time.Time
 	Workflow     **workflow.Execution
 	Plan         *string
 	PlanCritique *string
@@ -66,6 +68,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyTagsField(u, k, v)
 	case "pr_number":
 		return applyPRNumberField(u, k, v)
+	case "due_date":
+		return applyDueDateField(u, v)
 	case "reviewed":
 		b, ok := v.(bool)
 		if !ok {
@@ -180,5 +184,29 @@ func applyPRNumberField(u *Update, k string, v any) error {
 	default:
 		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
 	}
+	return nil
+}
+
+func applyDueDateField(u *Update, v any) error {
+	if v == nil {
+		var nilTime *time.Time
+		u.DueDate = &nilTime
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field \"due_date\": want string or nil, got %T", v)
+	}
+	if s == "" {
+		var nilTime *time.Time
+		u.DueDate = &nilTime
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return fmt.Errorf("field \"due_date\": invalid RFC3339 date %q: %w", s, err)
+	}
+	tp := &parsed
+	u.DueDate = &tp
 	return nil
 }

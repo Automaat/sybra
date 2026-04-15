@@ -7,7 +7,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { connectionStore } from '../stores/connection.svelte.js'
-  import { STATUS_OPTIONS } from '../lib/statuses.js'
+  import { STATUS_OPTIONS, STATUS_MAP } from '../lib/statuses.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
   import ProviderLogo from '../components/ProviderLogo.svelte'
@@ -31,7 +31,7 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
-      if (editingTitle || editingBody) return
+      if (editingTitle || editingBody || editingTags || editingDueDate) return
       onback()
       return
     }
@@ -71,6 +71,21 @@
   let bodyDraft = $state('')
   let editingTitle = $state(false)
   let titleDraft = $state('')
+  let editingTags = $state(false)
+  let tagsDraft = $state<string[]>([])
+  let tagInput = $state('')
+  let tagInputRef = $state<HTMLInputElement | null>(null)
+  let editingDueDate = $state(false)
+  let dueDateDraft = $state('')
+  let dueDateInputRef = $state<HTMLInputElement | null>(null)
+
+  $effect(() => {
+    if (editingTags && tagInputRef) tagInputRef.focus()
+  })
+
+  $effect(() => {
+    if (editingDueDate && dueDateInputRef) dueDateInputRef.focus()
+  })
 
   let t = $state<task.Task | null>(null)
   let error = $state('')
@@ -193,6 +208,165 @@
       saveBody()
     } else if (e.key === 'Escape') {
       editingBody = false
+    }
+  }
+
+  function startEditingTags() {
+    if (!t) return
+    tagsDraft = [...(t.tags ?? [])]
+    tagInput = ''
+    editingTags = true
+  }
+
+  function addTag() {
+    const tag = tagInput.trim().replace(/,/g, '')
+    if (tag && !tagsDraft.includes(tag)) tagsDraft = [...tagsDraft, tag]
+    tagInput = ''
+  }
+
+  function removeTag(tag: string) {
+    tagsDraft = tagsDraft.filter((x) => x !== tag)
+  }
+
+  async function saveTags() {
+    editingTags = false
+    if (!t) return
+    const current = t.tags ?? []
+    const same =
+      current.length === tagsDraft.length && current.every((v, i) => v === tagsDraft[i])
+    if (same) return
+    try {
+      t = await taskStore.update(taskId, { tags: tagsDraft })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function handleTagInputKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (tagInput.trim()) {
+        addTag()
+      } else {
+        saveTags()
+      }
+    } else if (e.key === 'Escape') {
+      editingTags = false
+    } else if (e.key === 'Backspace' && !tagInput && tagsDraft.length > 0) {
+      tagsDraft = tagsDraft.slice(0, -1)
+    } else if (e.key === ',') {
+      e.preventDefault()
+      addTag()
+    }
+  }
+
+  function handleTagsContainerFocusout(e: FocusEvent) {
+    const related = e.relatedTarget as Node | null
+    const container = e.currentTarget as HTMLElement
+    if (!related || !container.contains(related)) saveTags()
+  }
+
+  function parseNaturalDate(input: string): Date | null {
+    const lower = input.toLowerCase().trim()
+    if (!lower || lower === 'none' || lower === 'clear') return null
+    const now = new Date()
+    if (lower === 'today') {
+      const d = new Date(now)
+      d.setHours(23, 59, 59, 0)
+      return d
+    }
+    if (lower === 'tomorrow') {
+      const d = new Date(now)
+      d.setDate(d.getDate() + 1)
+      d.setHours(23, 59, 59, 0)
+      return d
+    }
+    if (lower === 'yesterday') {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 1)
+      d.setHours(23, 59, 59, 0)
+      return d
+    }
+    const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+    const nextMatch = lower.match(/^(?:next\s+)?(\w+)$/)
+    if (nextMatch) {
+      const day = weekdays.indexOf(nextMatch[1])
+      if (day !== -1) {
+        const d = new Date(now)
+        const current = d.getDay()
+        const diff = ((day - current + 7) % 7) || 7
+        d.setDate(d.getDate() + diff)
+        d.setHours(23, 59, 59, 0)
+        return d
+      }
+    }
+    const inMatch = lower.match(/^in\s+(\d+)\s+(day|days|week|weeks)$/)
+    if (inMatch) {
+      const n = parseInt(inMatch[1])
+      const d = new Date(now)
+      d.setDate(d.getDate() + (inMatch[2].startsWith('week') ? n * 7 : n))
+      d.setHours(23, 59, 59, 0)
+      return d
+    }
+    const parsed = new Date(input)
+    return isNaN(parsed.getTime()) ? null : parsed
+  }
+
+  function formatDueDateDisplay(date: any): string {
+    if (!date) return 'Set due date'
+    const d = new Date(date)
+    if (isNaN(d.getTime())) return 'Set due date'
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const target = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+    const diff = Math.round((target.getTime() - today.getTime()) / 86400000)
+    if (diff === 0) return 'Today'
+    if (diff === 1) return 'Tomorrow'
+    if (diff === -1) return 'Yesterday'
+    if (diff > 1 && diff < 7) return `In ${diff} days`
+    if (diff < 0) return `${Math.abs(diff)}d overdue`
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined })
+  }
+
+  function startEditingDueDate() {
+    if (!t) return
+    if (t.dueDate) {
+      const d = new Date(t.dueDate)
+      dueDateDraft = isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0]
+    } else {
+      dueDateDraft = ''
+    }
+    editingDueDate = true
+  }
+
+  async function saveDueDate() {
+    editingDueDate = false
+    if (!t) return
+    const input = dueDateDraft.trim()
+    let newVal: string | null = null
+    if (input && input.toLowerCase() !== 'none' && input.toLowerCase() !== 'clear') {
+      const parsed = parseNaturalDate(input)
+      if (!parsed) {
+        error = `Invalid date: "${input}". Try "today", "tomorrow", "next monday", "in 3 days", or YYYY-MM-DD.`
+        return
+      }
+      newVal = parsed.toISOString()
+    }
+    const currentISO = t.dueDate ? new Date(t.dueDate).toISOString() : null
+    if (newVal === currentISO) return
+    try {
+      t = await taskStore.update(taskId, { due_date: newVal })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function handleDueDateKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      saveDueDate()
+    } else if (e.key === 'Escape') {
+      editingDueDate = false
     }
   }
 
@@ -366,9 +540,11 @@
           <select
             bind:this={statusSelectRef}
             data-testid="task-status-select"
-            class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
+            class="cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-semibold transition-opacity hover:opacity-80 {STATUS_MAP[t.status]?.badgeClasses ?? 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}"
+            style="appearance: auto"
             value={t.status}
             onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
+            title="Click to change status"
           >
             {#each statusOptions as s}
               <option value={s.value}>{s.label}</option>
@@ -465,16 +641,51 @@
           <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{t.agentMode}</span>
         </div>
 
-        {#if t.tags?.length}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Tags</span>
-            <div class="flex gap-1">
-              {#each t.tags as tag}
-                <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{tag}</span>
+        <div class="flex flex-col gap-1">
+          <span class="font-medium text-surface-500">Tags</span>
+          {#if editingTags}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="flex min-w-[8rem] flex-wrap items-center gap-1 rounded-lg border border-primary-400 bg-surface-50 px-2 py-1 dark:border-primary-500 dark:bg-surface-900"
+              onfocusout={handleTagsContainerFocusout}
+            >
+              {#each tagsDraft as tag}
+                <span class="inline-flex items-center gap-0.5 rounded bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">
+                  {tag}
+                  <button
+                    type="button"
+                    class="ml-0.5 text-surface-400 hover:text-error-500"
+                    onclick={() => removeTag(tag)}
+                    tabindex="-1"
+                    aria-label="Remove tag {tag}"
+                  >×</button>
+                </span>
               {/each}
+              <input
+                bind:this={tagInputRef}
+                bind:value={tagInput}
+                class="min-w-[4rem] flex-1 bg-transparent text-xs outline-none"
+                placeholder={tagsDraft.length ? '' : 'add tags...'}
+                onkeydown={handleTagInputKeydown}
+              />
             </div>
-          </div>
-        {/if}
+          {:else}
+            <button
+              type="button"
+              class="flex flex-wrap items-center gap-1 rounded-lg border border-transparent px-1 py-0.5 text-left transition-colors hover:border-surface-300 hover:bg-surface-100 dark:hover:border-surface-600 dark:hover:bg-surface-800"
+              onclick={startEditingTags}
+              title="Click to edit tags"
+            >
+              {#if t.tags?.length}
+                {#each t.tags as tag}
+                  <span class="rounded bg-surface-200 px-2 py-0.5 text-xs dark:bg-surface-700">{tag}</span>
+                {/each}
+              {:else}
+                <span class="text-xs italic text-surface-400">add tags</span>
+              {/if}
+            </button>
+          {/if}
+        </div>
 
         {#if t.projectId}
           <div class="flex flex-col gap-1">
@@ -617,9 +828,32 @@
         </div>
       {/if}
 
-      <div class="flex gap-6 text-xs text-surface-400">
+      <div class="flex flex-wrap items-center gap-4 text-xs text-surface-400">
         <span>Created: {formatDate(t.createdAt)}</span>
         <span>Updated: {formatDate(t.updatedAt)}</span>
+        <div class="flex items-center gap-1">
+          <span>Due:</span>
+          {#if editingDueDate}
+            <input
+              bind:this={dueDateInputRef}
+              bind:value={dueDateDraft}
+              class="rounded border border-primary-400 bg-surface-50 px-2 py-0.5 text-xs outline-none dark:border-primary-500 dark:bg-surface-900"
+              placeholder="today / tomorrow / YYYY-MM-DD"
+              onblur={saveDueDate}
+              onkeydown={handleDueDateKeydown}
+            />
+            <span class="text-surface-300 dark:text-surface-600">Esc to cancel</span>
+          {:else}
+            <button
+              type="button"
+              class="rounded px-1 py-0.5 transition-colors hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-300 {t.dueDate && new Date(t.dueDate) < new Date() ? 'text-error-500 dark:text-error-400' : ''}"
+              onclick={startEditingDueDate}
+              title="Click to set due date"
+            >
+              {formatDueDateDisplay(t.dueDate)}
+            </button>
+          {/if}
+        </div>
       </div>
 
       {#if t.status === 'plan-review'}
