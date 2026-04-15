@@ -181,7 +181,7 @@ describe('AgentStore', () => {
     })
 
     it('creates new array if none exists', () => {
-      agentStore.appendEvent('a1', { type: 'init', content: '' })
+      agentStore.appendEvent('a1', { type: 'init', content: '' } as unknown as agent.StreamEvent)
 
       expect(agentStore.outputs.get('a1')).toHaveLength(1)
     })
