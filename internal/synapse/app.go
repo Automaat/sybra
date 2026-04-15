@@ -90,6 +90,7 @@ type App struct {
 	statsSvc     *StatsService
 	reviewSvc    *ReviewService
 	workflowSvc  *WorkflowService
+	infoSvc      *InfoService
 }
 
 // Option configures App behaviour at construction time.
@@ -117,6 +118,7 @@ func (a *App) ServiceRegistry() map[string]any {
 		"App":                 a,
 		"AgentService":        a.agentSvc,
 		"ConfigService":       a.configSvc,
+		"InfoService":         a.infoSvc,
 		"IntegrationService":  a.intgSvc,
 		"LoopAgentService":    a.loopAgentSvc,
 		"OrchestratorService": a.orchSvc,
@@ -155,6 +157,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.statsSvc = &StatsService{}
 	a.reviewSvc = &ReviewService{}
 	a.workflowSvc = &WorkflowService{}
+	a.infoSvc = &InfoService{}
 	for _, o := range opts {
 		o(a)
 	}
@@ -409,6 +412,16 @@ func (a *App) startSelfMonitorService(ctx context.Context, emit func(string, any
 			}
 			return a.allowsProjectType(p.Type)
 		},
+		Judge: &selfmonitor.ClaudeJudge{
+			Model:  a.cfg.SelfMonitor.JudgeModel,
+			Logger: a.logger,
+		},
+		Actor: &selfmonitor.Actor{
+			Tasks:  a.tasks,
+			DryRun: a.cfg.SelfMonitor.DryRun,
+			Logger: a.logger,
+		},
+		ProviderGate: a.providerHealth,
 	})
 	a.selfMonitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
@@ -703,7 +716,7 @@ func (a *App) initWorkflowEngine() {
 	}
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
-		&taskAdapter{tasks: a.tasks},
+		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
 		a.logger,
 	)
@@ -956,11 +969,16 @@ func (a *App) restartStaleInProgress() {
 			})
 		} else {
 			mode := t.AgentMode
+			prFlag := " --draft"
+			if proj, pErr := a.projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
+				prFlag = ""
+			}
+			prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
 			a.wg.Go(func() {
 				// Restart-stale only ever reaches this branch for headless
 				// mode (interactive tasks are handled by recoverStaleInteractive
 				// above), so OneShot is irrelevant here — pass false.
-				_, err := a.agentOrch.StartAgent(taskID, mode, "Continue implementing this task. When done, create a draft PR with `gh pr create --draft`.", false)
+				_, err := a.agentOrch.StartAgent(taskID, mode, prompt, false)
 				metrics.OrchestratorStaleRestart(err == nil)
 				a.restartStaleErr.Log(a.logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			})
@@ -1263,7 +1281,7 @@ func (a *App) BindTargets() []any {
 		a,
 		a.taskSvc, a.planSvc, a.agentSvc, a.orchSvc,
 		a.projectSvc, a.loopAgentSvc, a.configSvc, a.intgSvc,
-		a.statsSvc, a.reviewSvc, a.workflowSvc,
+		a.statsSvc, a.reviewSvc, a.workflowSvc, a.infoSvc,
 	}
 }
 

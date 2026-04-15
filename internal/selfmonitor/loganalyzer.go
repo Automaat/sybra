@@ -10,13 +10,14 @@ package selfmonitor
 
 import (
 	"bufio"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/Automaat/synapse/internal/agent"
@@ -316,11 +317,11 @@ func (st *analyzerState) populateRepeatedCalls() {
 			})
 		}
 	}
-	sort.Slice(st.summary.RepeatedCalls, func(i, j int) bool {
-		if st.summary.RepeatedCalls[i].Count != st.summary.RepeatedCalls[j].Count {
-			return st.summary.RepeatedCalls[i].Count > st.summary.RepeatedCalls[j].Count
+	slices.SortFunc(st.summary.RepeatedCalls, func(a, b RepeatedCall) int {
+		if c := cmp.Compare(b.Count, a.Count); c != 0 {
+			return c
 		}
-		return st.summary.RepeatedCalls[i].Tool < st.summary.RepeatedCalls[j].Tool
+		return cmp.Compare(a.Tool, b.Tool)
 	})
 }
 
@@ -332,11 +333,11 @@ func (st *analyzerState) populateErrorClasses() {
 			Sample: st.errorClassSamples[class],
 		})
 	}
-	sort.Slice(st.summary.ErrorClasses, func(i, j int) bool {
-		if st.summary.ErrorClasses[i].Count != st.summary.ErrorClasses[j].Count {
-			return st.summary.ErrorClasses[i].Count > st.summary.ErrorClasses[j].Count
+	slices.SortFunc(st.summary.ErrorClasses, func(a, b ErrorClass) int {
+		if c := cmp.Compare(b.Count, a.Count); c != 0 {
+			return c
 		}
-		return st.summary.ErrorClasses[i].Class < st.summary.ErrorClasses[j].Class
+		return cmp.Compare(a.Class, b.Class)
 	})
 }
 

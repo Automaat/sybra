@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
@@ -23,7 +24,8 @@ var (
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
 type taskAdapter struct {
-	tasks *task.Manager
+	tasks    *task.Manager
+	projects *project.Store
 }
 
 func (a *taskAdapter) GetTask(id string) (workflow.TaskInfo, error) {
@@ -31,7 +33,13 @@ func (a *taskAdapter) GetTask(id string) (workflow.TaskInfo, error) {
 	if err != nil {
 		return workflow.TaskInfo{}, err
 	}
-	return taskToInfo(t), nil
+	info := taskToInfo(t)
+	if t.ProjectID != "" && a.projects != nil {
+		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
+			info.ProjectType = string(p.Type)
+		}
+	}
+	return info, nil
 }
 
 func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {

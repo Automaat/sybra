@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/health"
+	"github.com/Automaat/synapse/internal/provider"
 	"github.com/Automaat/synapse/internal/task"
 )
 
@@ -85,6 +87,16 @@ type Deps struct {
 	Now              func() time.Time
 	AllowsProject    func(projectID string) bool
 	MaxLogEventsHint int // caps loganalyzer.Analyze; 0 → default
+
+	// Judge is the LLM classifier for Phase C verdict generation.
+	// nil disables verdict generation (tests, opt-out).
+	Judge Judge
+	// Actor is the autonomous remediator for Phase D actions.
+	// nil disables remediation.
+	Actor *Actor
+	// ProviderGate receives passive rate-limit signals derived from log analysis.
+	// nil disables provider feedback.
+	ProviderGate provider.HealthGate
 }
 
 // Service is the in-process self-monitor loop. Each tick snapshots the
@@ -171,7 +183,7 @@ func (s *Service) tickAndLog(ctx context.Context) {
 	)
 }
 
-func (s *Service) tick(_ context.Context) (Report, error) {
+func (s *Service) tick(ctx context.Context) (Report, error) {
 	start := s.deps.Now()
 	report := Report{
 		SchemaVersion: ReportSchemaVersion,
@@ -200,12 +212,36 @@ func (s *Service) tick(_ context.Context) (Report, error) {
 	report.PeriodEnd = hr.PeriodEnd
 
 	for i := range hr.Findings {
-		inv, skipped := s.investigate(&hr.Findings[i])
+		inv, skipped := s.investigate(ctx, &hr.Findings[i])
 		if skipped {
 			report.Suppressed++
 			continue
 		}
 		report.Findings = append(report.Findings, inv)
+	}
+
+	// Cross-finding correlations (pure Go, no I/O).
+	if s.deps.Tasks != nil && len(report.Findings) > 1 {
+		report.Correlations = Correlate(report.Findings, s.deps.Tasks.Get)
+	}
+
+	// Phase D: act on confirmed findings in allowed categories.
+	if s.deps.Actor != nil {
+		for i := range report.Findings {
+			cat := string(report.Findings[i].Finding.Category)
+			if !slices.Contains(s.deps.Cfg.AutoActCategories, cat) {
+				continue
+			}
+			if !s.canTakeAutoAction(len(report.ActionsTaken)) {
+				s.deps.Logger.Info("selfmonitor.actor.budget_reached",
+					"max_auto_actions_per_day", s.deps.Cfg.MaxAutoActionsPerDay)
+				break
+			}
+			if rec := s.deps.Actor.Act(ctx, report.Findings[i]); rec.Kind != "" {
+				report.ActionsTaken = append(report.ActionsTaken, rec)
+				s.recordAction(report.Findings[i], rec)
+			}
+		}
 	}
 
 	return s.finalize(report, start), nil
@@ -214,7 +250,7 @@ func (s *Service) tick(_ context.Context) (Report, error) {
 // investigate runs the per-finding distillation pipeline. Returns skipped=true
 // when the ledger auto-suppresses the fingerprint or the AllowsProject gate
 // rejects the task's project.
-func (s *Service) investigate(f *health.Finding) (InvestigatedFinding, bool) {
+func (s *Service) investigate(ctx context.Context, f *health.Finding) (InvestigatedFinding, bool) {
 	if !s.projectAllowed(f) {
 		return InvestigatedFinding{}, true
 	}
@@ -236,7 +272,122 @@ func (s *Service) investigate(f *health.Finding) (InvestigatedFinding, bool) {
 			inv.LogSummary = &summary
 		}
 	}
+
+	// Phase C: LLM judge — fill Verdict when a LogSummary is available.
+	if s.deps.Judge != nil && inv.LogSummary != nil {
+		var tp *task.Task
+		if f.TaskID != "" && s.deps.Tasks != nil {
+			if t, err := s.deps.Tasks.Get(f.TaskID); err == nil {
+				tp = &t
+			}
+		}
+		if v, err := s.deps.Judge.Judge(ctx, *f, inv.LogSummary, tp); err != nil {
+			s.deps.Logger.Warn("selfmonitor.judge", "fp", f.Fingerprint, "err", err)
+		} else {
+			inv.Verdict = v
+		}
+	}
+
+	// Provider feedback: passive rate-limit signal from retry-loop logs.
+	s.reportProviderSignal(f, inv.LogSummary)
+
 	return inv, false
+}
+
+// reportProviderSignal calls ReportRateLimit on the provider gate when an
+// agent_retry_loop finding's log shows overloaded or rate-limit errors. This
+// lets the provider health system trigger failover without waiting for a probe.
+func (s *Service) reportProviderSignal(f *health.Finding, ls *LogSummary) {
+	if s.deps.ProviderGate == nil || ls == nil {
+		return
+	}
+	if f.Category != health.CatAgentRetryLoop {
+		return
+	}
+	providerName := s.resolveProvider(f)
+	if providerName == "" {
+		providerName = "claude"
+	}
+	for _, ec := range ls.ErrorClasses {
+		if ec.Class == "overloaded_error" || ec.Class == "rate_limit" {
+			s.deps.ProviderGate.ReportRateLimit(providerName, 15*time.Minute,
+				"selfmonitor: agent_retry_loop with "+ec.Class)
+			s.deps.Logger.Info("selfmonitor.provider_signal",
+				"class", ec.Class, "task", f.TaskID, "provider", providerName)
+			return
+		}
+	}
+}
+
+func (s *Service) resolveProvider(f *health.Finding) string {
+	if f == nil || f.TaskID == "" || s.deps.Tasks == nil {
+		return ""
+	}
+	t, err := s.deps.Tasks.Get(f.TaskID)
+	if err != nil {
+		return ""
+	}
+
+	latestByTime := ""
+	latestByTimeAt := time.Time{}
+	latestAny := ""
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Provider == "" {
+			continue
+		}
+		if latestAny == "" {
+			latestAny = run.Provider
+		}
+		if f.AgentID != "" && run.AgentID == f.AgentID {
+			return run.Provider
+		}
+		if f.LogFile != "" && run.LogFile != "" && run.LogFile == f.LogFile {
+			return run.Provider
+		}
+		if run.StartedAt.After(latestByTimeAt) {
+			latestByTimeAt = run.StartedAt
+			latestByTime = run.Provider
+		}
+	}
+	if latestByTime != "" {
+		return latestByTime
+	}
+	return latestAny
+}
+
+func (s *Service) canTakeAutoAction(takenThisTick int) bool {
+	maxActions := s.deps.Cfg.MaxAutoActionsPerDay
+	if maxActions <= 0 {
+		return true
+	}
+	alreadyTaken := takenThisTick
+	if s.deps.Ledger != nil {
+		alreadyTaken += s.deps.Ledger.ActionsInWindow(24 * time.Hour)
+	}
+	return alreadyTaken < maxActions
+}
+
+func (s *Service) recordAction(inv InvestigatedFinding, rec ActionRecord) {
+	if s.deps.Ledger == nil {
+		return
+	}
+	entry := LedgerEntry{
+		Fingerprint: inv.Fingerprint,
+		Category:    string(inv.Finding.Category),
+		TaskID:      inv.Finding.TaskID,
+		Verdict:     inv.Verdict.Classification,
+		Action:      rec.Kind,
+		ActionRef:   rec.Reference,
+		DryRun:      rec.DryRun,
+		Confidence:  inv.Verdict.Confidence,
+		Summary:     inv.Verdict.RootCause,
+		CreatedAt:   rec.TakenAt,
+	}
+	if err := s.deps.Ledger.Append(entry); err != nil {
+		s.deps.Logger.Warn("selfmonitor.ledger.append_action",
+			"fingerprint", inv.Fingerprint, "action", rec.Kind, "err", err)
+	}
 }
 
 func (s *Service) projectAllowed(f *health.Finding) bool {

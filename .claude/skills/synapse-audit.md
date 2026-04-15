@@ -7,34 +7,34 @@ user-invocable: true
 
 # Synapse Audit Analysis
 
-The Go side already runs every detector you would otherwise reproduce here:
-failure rate, cost outliers (per-role), stuck tasks, plan-rejection loops,
-status bounce, cost drift, agent retry loops, triage mode mismatches, and
-status bottlenecks. Your job is to **read the findings + summary, ground them
-in the actual tasks, and propose concrete fixes** — not to recompute them.
+The Go side already runs every detector and, when the selfmonitor service is
+enabled, distills each finding's agent log into a `LogSummary` (stall
+detection, repeated calls, error classes, cost attribution) and classifies it
+with an LLM judge. Your job is to **read those pre-computed results, ground
+them in real context, and produce concrete fixes** — not to recompute them.
 
-## Step 1: Pull the pre-computed health report
+## Step 1: Pull the selfmonitor report
+
+```bash
+synapse-cli --json selfmonitor scan
+```
+
+Returns a `selfmonitor.Report` with:
+- `healthScore` — `good` | `warning` | `critical`
+- `findings[]` — each `InvestigatedFinding` has:
+  - `.finding` — `category`, `severity`, `title`, `evidence`, `taskId`
+  - `.logSummary` — `stallDetected`, `stallReason`, `repeatedCalls`,
+    `errorClasses`, `inferredCostPerTool`, `lastToolCalls`, `totalCostUsd`
+  - `.verdict` — `classification`, `rootCause`, `confidence`, `nextAction`
+    (may be `"pending"` if judge is disabled or no log file resolved)
+- `correlations[]` — `kind` (`same_project` | `same_error_class` | `cascade`),
+  `key`, `count`, `fingerprints`, `description`
+
+**Fallback** — if the report is missing or `generatedAt` is > 2h ago:
 
 ```bash
 synapse-cli --json health
 ```
-
-Returns a `Report` with:
-- `score` — `good` | `warning` | `critical` (rollup across all findings)
-- `findings[]` — each has `category`, `severity`, `title`, `description`,
-  `taskId`, `agentId`, `role`, `evidence`, `detectedAt`
-- `stats` — totals, failure rate, cost by role
-
-Categories you may see and what each means:
-- `failure_rate` — too many agent runs failed today
-- `cost_outlier` — a single run exceeded the per-role budget
-- `cost_drift` — today's avg cost is way above the 7-day rolling avg
-- `stuck_task` — a task has been in-progress >6h with no agent activity
-- `workflow_loop` — a task hit 3+ plan rejections (triage→plan→reject loop)
-- `status_bounce` — task ping-ponged the same status transition 2+ times
-- `agent_retry_loop` — same task accumulated 2+ failed agent runs
-- `triage_mismatch` — task triaged as headless that escalated to human-required
-- `status_bottleneck` — average dwell in a status exceeded its threshold
 
 ## Step 2: Pull the workflow summary
 
@@ -42,41 +42,60 @@ Categories you may see and what each means:
 synapse-cli --json audit --since 7d --summary
 ```
 
-Use this for trend context: cycle time, total cost, plan rejection rate,
-status bottleneck dwell hours over the longer window. Don't recompute these.
+Use for trend context only: cycle time, total cost, plan rejection rate, status
+bottleneck dwell over the longer window.
 
 ## Step 3: Ground each finding
 
-For the top 3 findings (by severity, then by impact), read the actual task so
-your suggestions cite real content, not generic advice:
+For the top 3 findings (by severity, then impact):
+
+**If `logSummary` is present:**
+- Cite `stallReason` directly when `stallDetected: true` — no need to read task
+- Cite the top `repeatedCalls` entry (tool name + count + sampleInput) for tool-loop findings
+- Cite `errorClasses[0]` (class + sample) for failure findings
+- Use `inferredCostPerTool` to name the expensive tool for cost outliers
+
+**If `verdict.classification != "pending"`:**
+- Use `verdict.rootCause` as the primary diagnosis
+- Use `verdict.nextAction` as the fix — only refine if task content adds nuance
+
+**Otherwise (no logSummary, verdict pending):**
 
 ```bash
-synapse-cli --json get <task_id>
+synapse-cli --json get <taskId>
 ```
 
-Use the task body, status_reason, plan, and any embedded run results to
-explain *why* the finding fired and what specifically should change.
+Read task body, status_reason, and any embedded run results to explain why
+the finding fired.
 
 ## Step 4: Produce the report
 
 ```
-Health: <report.score>
-Period: <report.periodStart> → <report.periodEnd>
+Health: <healthScore>
+Period: <periodStart> → <periodEnd>
 
 Findings: <N> (critical: <C>, warning: <W>)
+{{if correlations}}
+Correlations: <K>
+{{end}}
 
 Top issues:
 1. [category] <title>
-   - Task: <task_id> — <one-line task summary from the task body>
-   - Why it fired: <evidence-grounded explanation>
-   - Fix: <specific, actionable change — prompt diff, mode flip, triage
-     rule update, subtask split — referencing real task content>
+   - Task: <taskId> — <one-line task summary>
+   - Root cause: <verdict.rootCause OR logSummary-derived explanation>
+   - Evidence: <specific signal — stallReason, repeatedCalls[0], errorClasses[0].sample>
+   - Fix: <verdict.nextAction OR specific actionable change>
+
 2. ...
 3. ...
 
+{{if correlations}}
+Correlations:
+- [<kind>] <description>
+{{end}}
+
 Recommendations (cross-cutting):
-- <patterns spanning multiple findings: e.g., "3 of 5 retry loops are eval
-  agents — the eval prompt template needs a verification step">
+- <patterns spanning multiple findings or correlations>
 - <triage rule changes grounded in triage_mismatch findings>
 - <cost optimizations grounded in cost_outlier evidence>
 ```
@@ -84,33 +103,50 @@ Recommendations (cross-cutting):
 ## Rules
 
 - **Never recompute what the report gives you.** If you find yourself filtering
-  raw audit events to count failures or measuring dwell times, stop — those
-  are already in `findings` and `stats`.
-- **Always read the underlying task** for the top findings before suggesting a
-  fix. Generic advice ("split into smaller subtasks") is not useful.
-- **Cite evidence values** from `finding.evidence` in your explanation so the
-  user can verify the call.
-- **Skip the report entirely** if `score == "good"` and no findings — output
-  one line: `Health: good — no findings in the last 24h.`
+  raw audit events, stop — use findings and stats.
+- **Cite log-summary signals by name.** Say "stall: last 5 calls are identical
+  Read invocations" not "the agent seemed stuck."
+- **Skip the report entirely** if `healthScore == "good"` and no findings:
+  output one line: `Health: good — no findings in the last 24h.`
+- **Trust the verdict when confidence ≥ 0.8.** Confirm with task content only
+  when confidence is lower or verdict is pending.
 
 <example>
-`synapse-cli --json health` returns:
+`synapse-cli --json selfmonitor scan` returns:
 ```json
 {
-  "score": "critical",
+  "healthScore": "critical",
   "findings": [
-    {"category": "agent_retry_loop", "severity": "critical", "taskId": "task-abc123",
-     "title": "task task-abc123 has 3 failed agent runs",
-     "evidence": {"failure_count": 3}},
-    {"category": "triage_mismatch", "severity": "warning", "taskId": "task-def456",
-     "title": "task task-def456 triaged headless but escalated to human-required"}
+    {
+      "finding": {"category": "agent_retry_loop", "severity": "critical",
+                  "taskId": "task-abc123", "title": "task task-abc123 has 3 failed agent runs",
+                  "evidence": {"failure_count": 3}},
+      "logSummary": {
+        "stallDetected": true,
+        "stallReason": "last 5 tool calls are identical Read(path='internal/agent/manager.go') invocations",
+        "totalCostUsd": 0.43,
+        "inferredCostPerTool": {"Read": 0.38, "Bash": 0.05}
+      },
+      "verdict": {"classification": "confirmed", "confidence": 0.92,
+                  "rootCause": "agent loops on reading the same 2000-line file without making progress",
+                  "nextAction": "split task into 3 subtasks scoped per concern, or flip to interactive mode"}
+    },
+    {
+      "finding": {"category": "triage_mismatch", "severity": "warning",
+                  "taskId": "task-def456", "title": "task task-def456 triaged headless but escalated to human-required",
+                  "evidence": {"classified_mode": "headless", "final_status": "human-required"}},
+      "logSummary": null,
+      "verdict": {"classification": "pending"}
+    }
   ],
-  "stats": {"totalAgentRuns": 18, "failedAgentRuns": 5, "failureRate": 0.28}
+  "correlations": []
 }
 ```
 
-Then `synapse-cli --json get task-abc123` shows a task asking the agent to
-refactor a 2000-line file. Output:
+Then for the pending triage_mismatch, `synapse-cli --json get task-def456` shows
+a task about integrating a new auth provider (touches secrets + IAM).
+
+Output:
 
 ```
 Health: critical
@@ -121,27 +157,28 @@ Findings: 2 (critical: 1, warning: 1)
 Top issues:
 1. [agent_retry_loop] task task-abc123 has 3 failed agent runs
    - Task: refactor internal/agent/manager.go (~2000 LOC)
-   - Why it fired: 3/3 headless attempts failed; file is too large for
-     a single agent context.
-   - Fix: split into 3 subtasks scoped per concern (lifecycle, persistence,
-     events), or flip to interactive mode so a human can guide the boundaries.
+   - Root cause: agent loops on reading the same 2000-line file without making progress
+   - Evidence: stall — last 5 calls are identical Read('internal/agent/manager.go');
+     78% of $0.43 cost attributed to Read
+   - Fix: split into 3 subtasks scoped per concern, or flip to interactive mode
 
 2. [triage_mismatch] task task-def456 triaged headless but escalated to human-required
    - Task: integrate new auth provider (touches secrets + IAM)
-   - Why it fired: triage saw "integrate" + small description and chose
-     headless; task actually needs credential setup that no agent can do.
-   - Fix: add triage rule "tasks tagged `secrets` or `iam` → interactive".
+   - Root cause: triage saw "integrate" + small description and chose headless;
+     task needs credential setup no agent can do autonomously
+   - Evidence: classified_mode=headless → final_status=human-required
+   - Fix: add triage rule "tasks tagged secrets or iam → interactive"
 
 Recommendations:
-- Add a triage heuristic: tasks targeting files >1000 LOC default to interactive
+- Add triage heuristic: tasks targeting files >1000 LOC default to interactive
   or get auto-split before dispatch.
-- Eval-agent failure rate (28%) is approaching the 30% threshold — review the
-  last week of eval prompts for common failure modes.
+- The selfmonitor actor (when dry_run=false) will auto-flip task-def456 to
+  interactive on the next selfmonitor tick.
 ```
 </example>
 
 <example>
-`synapse-cli --json health` returns `{"score": "good", "findings": []}`.
+`synapse-cli --json selfmonitor scan` returns `{"healthScore": "good", "findings": []}`.
 
 Output: `Health: good — no findings in the last 24h.`
 </example>
