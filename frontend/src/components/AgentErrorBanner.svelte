@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Component } from 'svelte'
+  import { ArrowUpDown, Cloud, Ban, Clock, AlertTriangle, RotateCcw, ChevronRight } from '@lucide/svelte'
   import { agentStore } from '../stores/agents.svelte.js'
 
   interface ErrorEvent {
@@ -19,7 +21,7 @@
 
   type ErrorSpec = {
     label: string
-    icon: string
+    icon: Component<{ size?: number }>
     what: string
     todo: string
     color: string
@@ -29,7 +31,7 @@
   const ERROR_SPECS: Record<string, ErrorSpec> = {
     worktree_conflict: {
       label: 'Worktree conflict',
-      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />`,
+      icon: ArrowUpDown,
       what: 'Git worktree is already checked out by another agent.',
       todo: 'Stop the conflicting agent or retry once it finishes.',
       color: 'bg-error-50 border-error-400 dark:bg-error-950 dark:border-error-600',
@@ -37,7 +39,7 @@
     },
     git_clone: {
       label: 'Git / network error',
-      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />`,
+      icon: Cloud,
       what: 'Failed to clone or fetch the repository.',
       todo: 'Check network connectivity and repository access, then retry.',
       color: 'bg-warning-50 border-warning-400 dark:bg-warning-950 dark:border-warning-600',
@@ -45,7 +47,7 @@
     },
     permission_denied: {
       label: 'Permission denied',
-      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />`,
+      icon: Ban,
       what: 'A tool call was rejected due to insufficient permissions.',
       todo: 'Review allowed tools in task settings and retry.',
       color: 'bg-error-50 border-error-400 dark:bg-error-950 dark:border-error-600',
@@ -53,7 +55,7 @@
     },
     rate_limit: {
       label: 'API rate limited',
-      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />`,
+      icon: Clock,
       what: 'The API provider rate limit was reached.',
       todo: 'Wait a few minutes and retry, or check provider health.',
       color: 'bg-warning-50 border-warning-400 dark:bg-warning-950 dark:border-warning-600',
@@ -61,7 +63,7 @@
     },
     crash: {
       label: 'Agent crashed',
-      icon: `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />`,
+      icon: AlertTriangle,
       what: 'The agent process exited unexpectedly.',
       todo: 'View logs for details, then retry.',
       color: 'bg-error-50 border-error-400 dark:bg-error-950 dark:border-error-600',
@@ -75,9 +77,9 @@
 
 <div class="rounded-lg border-2 {spec.color} p-4">
   <div class="flex items-start gap-3">
-    <svg class="h-5 w-5 shrink-0 {spec.iconColor} mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      {@html spec.icon}
-    </svg>
+    <span class="mt-0.5 shrink-0 {spec.iconColor}">
+      <spec.icon size={20} />
+    </span>
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-sm font-semibold text-surface-800 dark:text-surface-100">{spec.label}</span>
@@ -98,9 +100,7 @@
         class="flex items-center gap-1.5 rounded-md bg-surface-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-surface-800 dark:bg-surface-600 dark:hover:bg-surface-500"
         onclick={onretry}
       >
-        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
+        <RotateCcw size={14} />
         Retry
       </button>
     {/if}
@@ -110,9 +110,7 @@
         class="flex items-center gap-1.5 rounded-md border border-surface-300 px-3 py-1.5 text-sm font-medium text-surface-700 hover:bg-surface-100 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-800"
         onclick={() => (logsExpanded = !logsExpanded)}
       >
-        <svg class="h-3.5 w-3.5 transition-transform {logsExpanded ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-        </svg>
+        <ChevronRight size={14} class="transition-transform {logsExpanded ? 'rotate-90' : ''}" />
         View logs
       </button>
     {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import type { project } from '../../wailsjs/go/models.js'
   import { projectStore } from '../stores/projects.svelte.js'
@@ -88,9 +89,7 @@
     class="flex w-fit items-center gap-1 text-sm text-surface-500 hover:text-surface-800 dark:hover:text-surface-200"
     onclick={onback}
   >
-    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-    </svg>
+    <ChevronLeft size={16} />
     Back to projects
   </button>
 

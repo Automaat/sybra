@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   interface Props {
     oldText: string
     newText: string
@@ -20,9 +21,7 @@
       class="flex w-full items-center gap-2 border-b border-surface-200 px-2 py-1 text-left dark:border-surface-700"
       onclick={() => (expanded = !expanded)}
     >
-      <svg class="h-3 w-3 transition-transform {expanded ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-      </svg>
+      <ChevronRight size={12} class="transition-transform {expanded ? 'rotate-90' : ''}" />
       <span class="font-mono text-surface-600 dark:text-surface-400">{filePath}</span>
     </button>
   {/if}

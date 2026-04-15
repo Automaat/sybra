@@ -4,6 +4,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import NewChatDialog from '../components/NewChatDialog.svelte'
+  import { MessageCircle } from '@lucide/svelte'
 
   interface Props {
     onselect: (agentId: string) => void
@@ -57,9 +58,7 @@
 
   {#if interactiveAgents.length === 0}
     <div class="flex flex-col items-center gap-3 py-16 text-center">
-      <svg class="h-12 w-12 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
+      <MessageCircle size={48} class="text-surface-400" />
       <p class="text-sm text-surface-500">No interactive chats yet</p>
       <button
         type="button"

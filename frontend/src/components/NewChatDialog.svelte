@@ -1,5 +1,6 @@
 <script lang="ts">
   import MobileSheet from './shell/MobileSheet.svelte'
+  import { Folder, X } from '@lucide/svelte'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
 
@@ -95,9 +96,7 @@
             <p class="text-sm text-surface-500">No projects registered. Create one first.</p>
           {:else if selectedProject}
             <div class="flex items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700">
-              <svg class="h-4 w-4 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
+              <Folder size={16} class="shrink-0 text-surface-400" />
               <span class="flex-1">{selectedProjectName}</span>
               <button
                 type="button"
@@ -105,9 +104,7 @@
                 aria-label="Clear project"
                 onclick={clearProject}
               >
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <X size={16} />
               </button>
             </div>
           {:else}
@@ -128,9 +125,7 @@
                       class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-100 dark:hover:bg-surface-700"
                       onclick={() => selectProject(p.id)}
                     >
-                      <svg class="h-4 w-4 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                      </svg>
+                      <Folder size={16} class="shrink-0 text-surface-400" />
                       {p.owner}/{p.repo}
                     </button>
                   {/each}

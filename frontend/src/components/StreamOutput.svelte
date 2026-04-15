@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ArrowDown } from '@lucide/svelte'
   import { EventsOn } from '$lib/api'
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -70,9 +71,7 @@
           ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200'
           : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
     >
-      <svg class="h-3 w-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M8 3v8M5 8l3 3 3-3" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
+      <ArrowDown size={12} />
       {autoScroll ? 'Auto-scroll on' : 'Auto-scroll off'}
     </button>
   </div>

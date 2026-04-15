@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot } from '@lucide/svelte'
   import type { task } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
@@ -77,11 +78,11 @@
   >
   <div class="mb-1.5 flex items-center gap-1.5">
     {#if topPR?.ciStatus === 'SUCCESS'}
-      <svg class="h-4 w-4 shrink-0 text-success-500" viewBox="0 0 16 16" fill="currentColor"><title>CI passed</title><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-1.06-1.06L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.06 1.06l2 2a.75.75 0 0 0 1.06 0l4.5-4.5Z"/></svg>
+      <CheckCircle size={16} class="shrink-0 text-success-500" />
     {:else if topPR?.ciStatus === 'FAILURE'}
-      <svg class="h-4 w-4 shrink-0 text-error-500" viewBox="0 0 16 16" fill="currentColor"><title>CI failed</title><path d="M2.343 13.657A8 8 0 1 1 13.658 2.343 8 8 0 0 1 2.343 13.657ZM6.03 4.97a.751.751 0 0 0-1.06 1.06L6.94 8 4.97 9.97a.751.751 0 1 0 1.06 1.06L8 9.06l1.97 1.97a.751.751 0 1 0 1.06-1.06L9.06 8l1.97-1.97a.751.751 0 1 0-1.06-1.06L8 6.94 6.03 4.97Z"/></svg>
+      <XCircle size={16} class="shrink-0 text-error-500" />
     {:else if topPR?.ciStatus === 'PENDING'}
-      <svg class="h-4 w-4 shrink-0 text-warning-500" viewBox="0 0 16 16" fill="currentColor"><title>CI pending</title><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm1-8.577V4.75a.75.75 0 0 0-1.5 0V8a.75.75 0 0 0 .388.657l3 1.5a.75.75 0 1 0 .67-1.342L9 7.423Z"/></svg>
+      <Clock size={16} class="shrink-0 text-warning-500" />
     {/if}
     <h3 class="text-sm font-semibold leading-tight">{t.title}</h3>
   </div>
@@ -144,7 +145,7 @@
 
     {#if topPR}
       <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400" title={topPR.title}>
-        <svg class="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+        <GitPullRequest size={12} />
         #{topPR.number}
         {#if topPR.reviewDecision === 'APPROVED'}
           <span class="text-success-500" title="Approved">✓</span>
@@ -157,7 +158,7 @@
       </span>
     {:else if t.prNumber}
       <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400">
-        <svg class="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+        <GitPullRequest size={12} />
         #{t.prNumber}
       </span>
     {/if}
@@ -167,7 +168,7 @@
         class="inline-flex items-center gap-1 rounded bg-secondary-500/15 px-1.5 py-0.5 font-medium text-secondary-700 dark:text-secondary-400"
         title={t.issue}
       >
-        <svg class="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"/></svg>
+        <CircleDot size={12} />
         Issue
       </span>
     {/if}

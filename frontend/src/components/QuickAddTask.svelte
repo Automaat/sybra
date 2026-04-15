@@ -1,5 +1,6 @@
 <script lang="ts">
   import MobileSheet from './shell/MobileSheet.svelte'
+  import { Folder, X } from '@lucide/svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { detectProject } from '../lib/detectProject.js'
@@ -148,9 +149,7 @@
           {#if autoDetected && !userOverrode}
             <!-- Auto-detected project chip -->
             <div class="flex items-center gap-2 px-5 py-2 text-xs text-surface-500">
-              <svg class="h-3.5 w-3.5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
+              <Folder size={14} class="shrink-0 text-surface-400" />
               <span class="inline-flex items-center gap-1 rounded-md bg-primary-100 px-2 py-0.5 font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
                 {autoDetected.project.owner}/{autoDetected.project.repo}
                 <button
@@ -159,9 +158,7 @@
                   class="ml-0.5 hover:text-primary-900 dark:hover:text-primary-100"
                   onclick={dismissDetection}
                 >
-                  <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  <X size={12} />
                 </button>
               </span>
               <span class="text-surface-400">from {autoDetected.matchType === 'url' ? 'link' : 'title'}</span>
@@ -169,9 +166,7 @@
           {:else if selectedProject && userOverrode}
             <!-- Manually selected project chip -->
             <div class="flex items-center gap-2 px-5 py-2 text-xs">
-              <svg class="h-3.5 w-3.5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
+              <Folder size={14} class="shrink-0 text-surface-400" />
               <span class="text-sm">{projectStore.list.find((p) => p.id === selectedProject)?.id}</span>
               <button
                 type="button"
@@ -179,9 +174,7 @@
                 class="text-surface-400 hover:text-surface-600 dark:hover:text-surface-300"
                 onclick={clearManualProject}
               >
-                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <X size={12} />
               </button>
             </div>
           {:else}
@@ -204,9 +197,7 @@
                       class="flex w-full items-center gap-2 px-4 py-1.5 text-left text-xs hover:bg-surface-100 dark:hover:bg-surface-700"
                       onmousedown={() => selectProjectManual(p.id)}
                     >
-                      <svg class="h-3.5 w-3.5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                      </svg>
+                      <Folder size={14} class="shrink-0 text-surface-400" />
                       {p.owner}/{p.repo}
                     </button>
                   {/each}

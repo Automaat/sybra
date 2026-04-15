@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronLeft } from '@lucide/svelte'
   import type { workflow } from '../../wailsjs/go/models.js'
 
   interface Props {
@@ -17,9 +18,7 @@
       class="tap -ml-2 rounded-lg active:bg-surface-200 dark:active:bg-surface-700"
       aria-label="Back"
     >
-      <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-      </svg>
+      <ChevronLeft size={24} />
     </button>
     <h2 class="truncate text-base font-semibold">{def?.name ?? 'Loading...'}</h2>
   </div>

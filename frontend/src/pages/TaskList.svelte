@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Search, Filter, ChevronDown } from '@lucide/svelte'
   import type { task } from '../../wailsjs/go/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
@@ -311,9 +312,7 @@
   <!-- Mobile filter trigger -->
   <div class="flex shrink-0 items-center gap-2 border-b border-surface-200 px-3 py-2 dark:border-surface-800 md:hidden">
     <div class="relative flex-1">
-      <svg class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
+      <Search size={16} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400" />
       <input
         type="text"
         bind:value={searchQuery}
@@ -327,9 +326,7 @@
       class="tap relative flex items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-3 text-sm font-medium dark:border-surface-700 dark:bg-surface-800"
       aria-label="Filters"
     >
-      <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-      </svg>
+      <Filter size={16} />
       Filters
       {#if hasActiveFilters}
         <span class="h-2 w-2 rounded-full bg-primary-500"></span>
@@ -341,9 +338,7 @@
   <div class="hidden flex-wrap items-center gap-3 border-b border-surface-200 px-6 py-3 dark:border-surface-800 md:flex">
     <!-- Search -->
     <div class="relative">
-      <svg class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
+      <Search size={16} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400" />
       <input
         bind:this={searchInputRef}
         type="text"
@@ -362,9 +357,7 @@
           onclick={() => (projectDropdownOpen = !projectDropdownOpen)}
         >
           <span class={selectedProjectId ? '' : 'text-surface-400'}>{selectedProjectLabel}</span>
-          <svg class="h-3.5 w-3.5 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
+          <ChevronDown size={14} class="text-surface-400" />
         </button>
         {#if projectDropdownOpen}
           <div class="absolute top-full z-10 mt-1 min-w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
@@ -481,13 +474,7 @@
             class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-200 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
           >
             <span class="flex items-center gap-2">
-              <svg
-                class="h-4 w-4 transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}"
-                fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
+              <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
               <h2 class="text-sm font-semibold">{col.label}</h2>
             </span>
             <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">

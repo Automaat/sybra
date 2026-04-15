@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronLeft, Search } from '@lucide/svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
 
   interface PrimaryAction {
@@ -25,9 +26,7 @@
         class="tap -ml-2 flex items-center justify-center rounded-lg text-surface-600 active:bg-surface-200 dark:text-surface-300 dark:active:bg-surface-800"
         aria-label="Back"
       >
-        <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-        </svg>
+        <ChevronLeft size={24} />
       </button>
     {:else}
       <span class="px-2 text-base font-bold text-primary-600 dark:text-primary-400">S</span>
@@ -41,9 +40,7 @@
       class="tap flex items-center justify-center rounded-lg text-surface-600 active:bg-surface-200 dark:text-surface-300 dark:active:bg-surface-800"
       aria-label="Search"
     >
-      <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
+      <Search size={20} />
     </button>
 
     {#if primaryAction}

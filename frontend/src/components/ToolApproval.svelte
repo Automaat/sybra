@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Check, X } from '@lucide/svelte'
   import DiffViewer from './DiffViewer.svelte'
 
   interface Props {
@@ -70,9 +71,7 @@
       class="flex items-center gap-1.5 rounded-lg bg-success-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-success-700 disabled:opacity-50"
       onclick={handleApprove}
     >
-      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-      </svg>
+      <Check size={16} />
       Approve
     </button>
     <button
@@ -81,9 +80,7 @@
       class="flex items-center gap-1.5 rounded-lg bg-error-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-error-700 disabled:opacity-50"
       onclick={handleReject}
     >
-      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-      </svg>
+      <X size={16} />
       Reject
     </button>
   </div>

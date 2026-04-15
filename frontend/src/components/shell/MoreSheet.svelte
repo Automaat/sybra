@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import MobileSheet from './MobileSheet.svelte'
   import { navStore, type Page } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
@@ -46,9 +47,7 @@
             {#if item.badge}
               <span class="rounded-full bg-warning-500 px-2 py-0.5 text-xs font-bold text-white">{item.badge}</span>
             {/if}
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
+            <ChevronRight size={16} />
           </span>
         </button>
       </li>

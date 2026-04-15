@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte'
+  import { Zap } from '@lucide/svelte'
   import type { TriggerNodeData } from '../../../lib/workflow-graph.js'
 
   interface Props {
@@ -19,17 +20,7 @@
   style="min-width: 180px;"
 >
   <div class="flex items-center gap-2">
-    <svg
-      class="h-4 w-4 text-amber-600 dark:text-amber-400"
-      fill="currentColor"
-      viewBox="0 0 20 20"
-    >
-      <path
-        fill-rule="evenodd"
-        d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z"
-        clip-rule="evenodd"
-      />
-    </svg>
+    <Zap size={16} class="text-amber-600 dark:text-amber-400" />
     <span class="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
       Trigger
     </span>

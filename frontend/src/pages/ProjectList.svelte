@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Folder } from '@lucide/svelte'
   import { projectStore } from '../stores/projects.svelte.js'
 
   interface Props {
@@ -32,9 +33,7 @@
     <p class="text-sm text-error-500">{projectStore.error}</p>
   {:else if projectStore.list.length === 0}
     <div class="flex flex-col items-center gap-3 py-16 text-center">
-      <svg class="h-12 w-12 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-      </svg>
+      <Folder size={48} class="text-surface-400" />
       <p class="text-sm text-surface-500">No projects yet</p>
       <button
         type="button"
@@ -53,9 +52,7 @@
           onclick={() => onselect(p.id)}
         >
           <div class="flex items-center gap-2">
-            <svg class="h-5 w-5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-            </svg>
+            <Folder size={20} class="shrink-0 text-surface-400" />
             <span class="text-sm font-semibold">{p.owner}/{p.repo}</span>
             {#if p.type === 'work'}
               <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-warning-100 text-warning-700 dark:bg-warning-900/40 dark:text-warning-300">work</span>
