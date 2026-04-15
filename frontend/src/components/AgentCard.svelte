@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
+  import { agentStore } from '../stores/agents.svelte.js'
 
   interface Props {
     agent: agent.Agent
@@ -39,6 +40,11 @@
       <h3 class="text-sm font-semibold leading-tight">{a.project || a.id}</h3>
       {#if a.name}
         <span class="text-xs text-surface-400">{a.name}</span>
+      {/if}
+      {#if a.state === 'running'}
+        <span class="text-xs italic text-surface-400">
+          {agentStore.stepTexts.get(a.id) ?? 'Working...'}
+        </span>
       {/if}
     </div>
     <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium {resolved.classes}">
