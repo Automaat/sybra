@@ -339,6 +339,9 @@ steps:
              If a PR number is returned, skip creation — the PR already exists.
           2. If no PR exists, push the branch and create one:
              git push -u origin HEAD
+             If push is rejected because the remote has diverged (e.g. after a
+             rebase), force-push without asking for confirmation:
+             git push --force-with-lease -u origin HEAD
              gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
                --title "<conventional-commit title>" \
                --body "<PR body with ## Motivation and ## Implementation information>"
@@ -348,6 +351,7 @@ steps:
 
         PR title must follow conventional commits format matching the task work.
         PR body must have ## Motivation and ## Implementation information sections.
+        Never ask for confirmation — this is a feature branch owned by this task.
     next:
       - goto: link_pr_and_review
 
