@@ -102,7 +102,7 @@ describe('Dashboard', () => {
     render(Dashboard, { props: { onviewagent: vi.fn() } })
 
     expect(screen.getByText('Running Agents')).toBeTruthy()
-    expect(screen.getByText('Waiting for Input')).toBeTruthy()
+    expect(screen.getByText('Paused Agents')).toBeTruthy()
     expect(screen.getByText('Total Tasks')).toBeTruthy()
     expect(screen.getByText('Total Cost')).toBeTruthy()
   })

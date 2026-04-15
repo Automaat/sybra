@@ -48,9 +48,9 @@ describe('AgentCard', () => {
     expect(screen.getByText('Running')).toBeDefined()
   })
 
-  it('renders Idle state label', () => {
+  it('renders Queued label for idle state', () => {
     render(AgentCard, { props: { agent: makeAgent({ state: 'idle' }), onclick: () => {} } })
-    expect(screen.getByText('Idle')).toBeDefined()
+    expect(screen.getByText('Queued')).toBeDefined()
   })
 
   it('renders Waiting state label for paused', () => {
@@ -58,14 +58,14 @@ describe('AgentCard', () => {
     expect(screen.getByText('Waiting')).toBeDefined()
   })
 
-  it('renders Stopped state label', () => {
+  it('renders Done label for stopped state', () => {
     render(AgentCard, { props: { agent: makeAgent({ state: 'stopped' }), onclick: () => {} } })
-    expect(screen.getByText('Stopped')).toBeDefined()
+    expect(screen.getByText('Done')).toBeDefined()
   })
 
-  it('renders unknown state as-is', () => {
+  it('renders Done label for unknown state', () => {
     render(AgentCard, { props: { agent: makeAgent({ state: 'crashed' }), onclick: () => {} } })
-    expect(screen.getByText('crashed')).toBeDefined()
+    expect(screen.getByText('Done')).toBeDefined()
   })
 
   it('renders mode', () => {
