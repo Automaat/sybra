@@ -10,9 +10,11 @@ import {
 } from '$lib/api'
 import { agent } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
+import { extractStepText } from '$lib/step-text.js'
 
 class AgentStore extends EntityStore<agent.Agent> {
   outputs = new SvelteMap<string, agent.StreamEvent[]>()
+  stepTexts = new SvelteMap<string, string>()
 
   constructor() {
     super(
@@ -75,13 +77,27 @@ class AgentStore extends EntityStore<agent.Agent> {
 
   async getOutput(agentID: string): Promise<agent.StreamEvent[]> {
     const events = await GetAgentOutput(agentID)
-    this.outputs.set(agentID, events ?? [])
-    return events ?? []
+    const list = events ?? []
+    this.outputs.set(agentID, list)
+    for (let i = list.length - 1; i >= 0; i--) {
+      const text = extractStepText(list[i])
+      if (text) {
+        this.stepTexts.set(agentID, text)
+        break
+      }
+    }
+    return list
   }
 
   appendEvent(agentID: string, event: agent.StreamEvent): void {
     const existing = this.outputs.get(agentID) ?? []
     this.outputs.set(agentID, [...existing, event])
+    const text = extractStepText(event)
+    if (text) this.stepTexts.set(agentID, text)
+  }
+
+  setStepText(agentID: string, text: string): void {
+    this.stepTexts.set(agentID, text)
   }
 
   updateAgent(agentID: string, data: agent.Agent): void {

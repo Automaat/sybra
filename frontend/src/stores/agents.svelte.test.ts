@@ -39,6 +39,7 @@ describe('AgentStore', () => {
     // Reset store state
     agentStore.agents = new Map()
     agentStore.outputs.clear()
+    agentStore.stepTexts.clear()
     agentStore.error = ''
     agentStore.loading = false
     agentStore.stopPolling()
@@ -137,6 +138,31 @@ describe('AgentStore', () => {
 
       expect(result).toEqual([])
       expect(agentStore.outputs.get('a1')).toEqual([])
+    })
+
+    it('seeds stepTexts from last extractable event in history', async () => {
+      const events = [
+        { type: 'init', content: '' },
+        { type: 'assistant', content: 'hello\n[Read] reading file' },
+        { type: 'tool_result', content: 'done' },
+      ]
+      mockGetAgentOutput.mockResolvedValue(events)
+
+      await agentStore.getOutput('a1')
+
+      expect(agentStore.stepTexts.get('a1')).toBe('[Read] reading file')
+    })
+
+    it('does not set stepTexts when no extractable event in history', async () => {
+      const events = [
+        { type: 'init', content: '' },
+        { type: 'tool_result', content: 'done' },
+      ]
+      mockGetAgentOutput.mockResolvedValue(events)
+
+      await agentStore.getOutput('a1')
+
+      expect(agentStore.stepTexts.get('a1')).toBeUndefined()
     })
   })
 

@@ -148,6 +148,11 @@
           {#if a.name}
             <span class="text-sm text-surface-400">{a.name}</span>
           {/if}
+          {#if a.state === 'running'}
+            <p class="mt-0.5 text-sm italic text-surface-400">
+              {agentStore.stepTexts.get(agentId) ?? 'Working...'}
+            </p>
+          {/if}
         </div>
         <div class="flex items-center gap-2">
           <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium
