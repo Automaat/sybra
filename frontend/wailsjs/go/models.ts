@@ -25,9 +25,8 @@ export namespace agent {
 	    escalationReason?: string;
 	    errorKind?: string;
 	    errorMsg?: string;
-	
 	    awaitingApproval?: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
