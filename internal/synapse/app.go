@@ -205,7 +205,16 @@ func (a *App) Startup(ctx context.Context) error {
 		switch event {
 		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
 			if path, ok := data.(string); ok {
-				store.InvalidatePath(path)
+				// Prefer Manager.OnExternalUpdate so cross-process file
+				// writes (synapse-cli inside an agent worktree) flow
+				// through the same status-change hook as in-process
+				// updates. Falls back to a bare cache invalidate if the
+				// Manager has not been wired yet (degraded-init path).
+				if a.tasks != nil {
+					a.tasks.OnExternalUpdate(path)
+				} else {
+					store.InvalidatePath(path)
+				}
 			}
 		}
 		a.emit(event, data)
