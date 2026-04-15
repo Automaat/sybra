@@ -65,6 +65,18 @@ func TestMatchTaskPRs(t *testing.T) {
 			want:  nil,
 		},
 		{
+			name:  "FAILURE with pending checks is not yet triggered",
+			prs:   []PullRequest{{Number: 42, CIStatus: "FAILURE", HasPendingChecks: true}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
+		},
+		{
+			name:  "FAILURE with all checks complete triggers fix",
+			prs:   []PullRequest{{Number: 42, CIStatus: "FAILURE", HasPendingChecks: false}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  []PRIssue{{Kind: PRIssueCIFailure, TaskID: "t1", PR: PullRequest{Number: 42, CIStatus: "FAILURE"}}},
+		},
+		{
 			name:  "mergeable with CI success → ready to merge",
 			prs:   []PullRequest{{Number: 42, CIStatus: "SUCCESS", Mergeable: "MERGEABLE"}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},

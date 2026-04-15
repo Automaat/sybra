@@ -77,7 +77,14 @@ const prQuery = `query($q: String!) {
         commits(last: 1) {
           nodes {
             commit {
-              statusCheckRollup { state }
+              statusCheckRollup {
+                state
+                contexts(first: 50) {
+                  nodes {
+                    ... on CheckRun { status }
+                  }
+                }
+              }
             }
           }
         }
@@ -189,9 +196,16 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	}
 
 	var ciStatus string
+	var hasPendingChecks bool
 	if len(n.Commits.Nodes) > 0 {
 		if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
 			ciStatus = rollup.State
+			for _, ctx := range rollup.Contexts.Nodes {
+				if ctx.Status != "" && ctx.Status != "COMPLETED" {
+					hasPendingChecks = true
+					break
+				}
+			}
 		}
 	}
 
@@ -224,6 +238,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Mergeable:         n.Mergeable,
 		Labels:            labels,
 		CIStatus:          ciStatus,
+		HasPendingChecks:  hasPendingChecks,
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
 		ViewerHasApproved: viewerApproved,

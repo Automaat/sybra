@@ -89,7 +89,7 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		if pr.Mergeable == "CONFLICTING" {
 			issues = append(issues, PRIssue{Kind: PRIssueConflict, TaskID: tm.ID, PR: *pr})
 		}
-		if pr.CIStatus == "FAILURE" {
+		if pr.CIStatus == "FAILURE" && !pr.HasPendingChecks {
 			issues = append(issues, PRIssue{Kind: PRIssueCIFailure, TaskID: tm.ID, PR: *pr})
 		}
 		if !pr.IsDraft && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {
