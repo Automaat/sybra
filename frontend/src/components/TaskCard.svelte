@@ -54,7 +54,7 @@
 
 <div
   data-focused-task={focused ? '' : undefined}
-  class="w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-colors active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40' : ''}"
+  class="w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40 shadow-lg' : ''}"
 >
   <button
     type="button"
@@ -96,14 +96,14 @@
 
     {#if triaging}
       <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
+        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-primary-500"></span>
         Triaging
       </span>
     {/if}
 
     {#if planning}
       <span class="inline-flex items-center gap-1 rounded bg-tertiary-200 px-1.5 py-0.5 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-tertiary-500"></span>
+        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-tertiary-500"></span>
         Planning
       </span>
     {/if}
@@ -115,15 +115,15 @@
     {/if}
 
     {#if agentRunning}
-      <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
+      <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
+        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-success-500"></span>
         Agent
       </span>
     {/if}
 
     {#if evaluating}
       <span class="inline-flex items-center gap-1 rounded bg-warning-200 px-1.5 py-0.5 text-warning-800 dark:bg-warning-700 dark:text-warning-200">
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
+        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-warning-500"></span>
         Evaluating
       </span>
     {/if}
