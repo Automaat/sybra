@@ -339,6 +339,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			continue
 		}
 
+		event.Timestamp = time.Now().UTC()
 		a.AppendOutput(event)
 		if event.Type == "result" || time.Since(lastEmit) >= headlessEmitInterval {
 			m.emit(events.AgentOutput(a.ID), event)

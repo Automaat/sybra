@@ -323,13 +323,14 @@ type RunConfig struct {
 }
 
 type StreamEvent struct {
-	Type         string  `json:"type"`
-	Content      string  `json:"content,omitempty"`
-	SessionID    string  `json:"session_id,omitempty"`
-	CostUSD      float64 `json:"cost_usd,omitempty"`
-	InputTokens  int     `json:"input_tokens,omitempty"`
-	OutputTokens int     `json:"output_tokens,omitempty"`
-	Subtype      string  `json:"subtype,omitempty"`
+	Type         string    `json:"type"`
+	Content      string    `json:"content,omitempty"`
+	SessionID    string    `json:"session_id,omitempty"`
+	CostUSD      float64   `json:"cost_usd,omitempty"`
+	InputTokens  int       `json:"input_tokens,omitempty"`
+	OutputTokens int       `json:"output_tokens,omitempty"`
+	Subtype      string    `json:"subtype,omitempty"`
+	Timestamp    time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"error_type,omitempty"`
