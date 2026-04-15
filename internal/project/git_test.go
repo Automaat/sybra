@@ -438,3 +438,381 @@ func TestCreateWorktreeInvalidBase(t *testing.T) {
 		t.Fatal("expected error for invalid base branch")
 	}
 }
+
+func initWorktree(t *testing.T) (bare, wtPath string) {
+	t.Helper()
+	src := initRepoWithCommit(t)
+	bare = filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath = filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return bare, wtPath
+}
+
+func TestMergeChecks(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		repo          *ChecksConfig
+		app           *ChecksConfig
+		wantPreCommit []string
+		wantPrePush   []string
+		wantNil       bool
+	}{
+		{
+			name:    "both nil",
+			wantNil: true,
+		},
+		{
+			name:          "repo only",
+			repo:          &ChecksConfig{PreCommit: []string{"echo repo"}},
+			wantPreCommit: []string{"echo repo"},
+		},
+		{
+			name:          "app only",
+			app:           &ChecksConfig{PreCommit: []string{"echo app"}},
+			wantPreCommit: []string{"echo app"},
+		},
+		{
+			name:          "repo wins pre_commit",
+			repo:          &ChecksConfig{PreCommit: []string{"echo repo"}},
+			app:           &ChecksConfig{PreCommit: []string{"echo app"}},
+			wantPreCommit: []string{"echo repo"},
+		},
+		{
+			name:        "repo wins pre_push",
+			repo:        &ChecksConfig{PrePush: []string{"echo repo-push"}},
+			app:         &ChecksConfig{PrePush: []string{"echo app-push"}},
+			wantPrePush: []string{"echo repo-push"},
+		},
+		{
+			name:          "composable: repo pre_commit, app pre_push",
+			repo:          &ChecksConfig{PreCommit: []string{"echo repo-commit"}},
+			app:           &ChecksConfig{PrePush: []string{"echo app-push"}},
+			wantPreCommit: []string{"echo repo-commit"},
+			wantPrePush:   []string{"echo app-push"},
+		},
+		{
+			name:          "empty repo slice falls back to app",
+			repo:          &ChecksConfig{PreCommit: []string{}},
+			app:           &ChecksConfig{PreCommit: []string{"echo app"}},
+			wantPreCommit: []string{"echo app"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := MergeChecks(tt.repo, tt.app)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("want nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("got nil, want non-nil")
+			}
+			if !slicesEqual(got.PreCommit, tt.wantPreCommit) {
+				t.Errorf("PreCommit = %v, want %v", got.PreCommit, tt.wantPreCommit)
+			}
+			if !slicesEqual(got.PrePush, tt.wantPrePush) {
+				t.Errorf("PrePush = %v, want %v", got.PrePush, tt.wantPrePush)
+			}
+		})
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestLoadRepoConfig_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfg, err := LoadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil || cfg.Checks != nil {
+		t.Errorf("expected empty RepoConfig, got %+v", cfg)
+	}
+}
+
+func TestLoadRepoConfig_Valid(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := "checks:\n  pre_commit:\n    - echo hello\n  pre_push:\n    - echo world\n"
+	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Checks == nil {
+		t.Fatal("expected checks, got nil")
+	}
+	if len(cfg.Checks.PreCommit) != 1 || cfg.Checks.PreCommit[0] != "echo hello" {
+		t.Errorf("PreCommit = %v", cfg.Checks.PreCommit)
+	}
+	if len(cfg.Checks.PrePush) != 1 || cfg.Checks.PrePush[0] != "echo world" {
+		t.Errorf("PrePush = %v", cfg.Checks.PrePush)
+	}
+}
+
+func TestLoadRepoConfig_Invalid(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(":\n  bad: [yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadRepoConfig(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestInstallHooks_RepoConfigPriority(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	// Write .synapse.yaml with a failing pre-commit to prove repo config is used.
+	repoYAML := "checks:\n  pre_commit:\n    - exit 1\n"
+	if err := os.WriteFile(filepath.Join(wtPath, ".synapse.yaml"), []byte(repoYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// App config has a passing pre-commit — repo should win.
+	appChecks := &ChecksConfig{PreCommit: []string{"exit 0"}}
+	repoCfg, err := LoadRepoConfig(wtPath)
+	if err != nil {
+		t.Fatalf("LoadRepoConfig: %v", err)
+	}
+	merged := MergeChecks(repoCfg.Checks, appChecks)
+	if err := InstallHooks(wtPath, merged); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "change.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = wtPath
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	commitCmd := exec.Command("git", "commit", "--no-gpg-sign", "-m", "test")
+	commitCmd.Dir = wtPath
+	if err := commitCmd.Run(); err == nil {
+		t.Fatal("commit should have been blocked by repo pre-commit hook (exit 1)")
+	}
+}
+
+func TestInstallHooks_NilChecks(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+	if err := InstallHooks(wtPath, nil); err != nil {
+		t.Fatalf("InstallHooks(nil): %v", err)
+	}
+}
+
+func TestInstallHooks_EmptySlices(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+	if err := InstallHooks(wtPath, &ChecksConfig{}); err != nil {
+		t.Fatalf("InstallHooks(empty): %v", err)
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	for _, name := range []string{"pre-commit", "pre-push"} {
+		if _, err := os.Stat(filepath.Join(gitDir, "hooks", name)); err == nil {
+			t.Errorf("hook %s should not exist for empty config", name)
+		}
+	}
+}
+
+func TestInstallHooks_PreCommitBlocksOnFailure(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{
+		PreCommit: []string{"exit 1"},
+	}
+	if err := InstallHooks(wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	// Verify hook file exists and is executable.
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+	info, err := os.Stat(hookPath)
+	if err != nil {
+		t.Fatalf("pre-commit hook missing: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Error("pre-commit hook not executable")
+	}
+
+	// Commit should be blocked by the failing hook.
+	if err := os.WriteFile(filepath.Join(wtPath, "change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = wtPath
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	commitCmd := exec.Command("git", "commit", "--no-gpg-sign", "-m", "test")
+	commitCmd.Dir = wtPath
+	if err := commitCmd.Run(); err == nil {
+		t.Fatal("expected commit to fail due to pre-commit hook")
+	}
+}
+
+func TestInstallHooks_PreCommitPassesOnSuccess(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{
+		PreCommit: []string{"exit 0"},
+	}
+	if err := InstallHooks(wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = wtPath
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	commitCmd := exec.Command("git", "commit", "--no-gpg-sign", "-m", "test")
+	commitCmd.Dir = wtPath
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit should succeed with passing hook: %v: %s", err, out)
+	}
+}
+
+func TestInstallHooks_PrePushInstalled(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{
+		PrePush: []string{"echo pre-push ok"},
+	}
+	if err := InstallHooks(wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+	info, err := os.Stat(hookPath)
+	if err != nil {
+		t.Fatalf("pre-push hook missing: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Error("pre-push hook not executable")
+	}
+	content, _ := os.ReadFile(hookPath)
+	if !strings.Contains(string(content), "echo pre-push ok") {
+		t.Errorf("hook content missing command: %s", content)
+	}
+}
+
+func TestInstallHooks_Overwrites(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	// Install first version.
+	if err := InstallHooks(wtPath, &ChecksConfig{PreCommit: []string{"echo v1"}}); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// Overwrite with second version.
+	if err := InstallHooks(wtPath, &ChecksConfig{PreCommit: []string{"echo v2"}}); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	content, _ := os.ReadFile(filepath.Join(gitDir, "hooks", "pre-commit"))
+	if strings.Contains(string(content), "v1") {
+		t.Error("hook should have been overwritten with v2")
+	}
+	if !strings.Contains(string(content), "v2") {
+		t.Errorf("hook should contain v2: %s", content)
+	}
+}
