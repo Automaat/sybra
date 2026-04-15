@@ -224,6 +224,13 @@ func PushUpstream(worktreePath, branch string) error {
 	return executil.Run(worktreePath, "git", "push", "-u", "origin", branch)
 }
 
+// PushForce force-pushes the branch to origin using --force-with-lease.
+// Used after a local rebase to sync the remote without overwriting commits
+// from other authors (--force-with-lease fails if remote has unknown commits).
+func PushForce(worktreePath, branch string) error {
+	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", "origin", branch)
+}
+
 func RemoveWorktree(barePath, worktreePath string) error {
 	return executil.Run(barePath, "git", "worktree", "remove", "--force", worktreePath)
 }

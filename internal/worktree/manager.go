@@ -109,6 +109,11 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 		} else {
 			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+			// Sync remote after rebase — local SHAs changed, remote still has
+			// old commits. create_pr push would fail with "diverged" otherwise.
+			if err := project.PushForce(wtPath, wtBranch); err != nil {
+				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
+			}
 		}
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
@@ -125,6 +130,11 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		}
 		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
+		} else {
+			// Sync remote after rebase.
+			if err := project.PushForce(wtPath, wtBranch); err != nil {
+				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
+			}
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		m.runSetup(wtPath, proj.SetupCommands)
