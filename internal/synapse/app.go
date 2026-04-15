@@ -619,9 +619,10 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
 	var resultContent string
-	for _, ev := range ag.Output() {
-		if ev.Type == "result" {
-			resultContent = ev.Content
+	outputs := ag.Output()
+	for i := range outputs {
+		if outputs[i].Type == "result" {
+			resultContent = outputs[i].Content
 		}
 	}
 
