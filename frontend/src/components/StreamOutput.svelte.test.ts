@@ -21,6 +21,10 @@ function makeEvent(type: string, content: string | undefined = undefined) {
   return { type, content }
 }
 
+function makeTSE(type: string, content: string | undefined = undefined) {
+  return { event: makeEvent(type, content), receivedAt: new Date() }
+}
+
 describe('StreamOutput', () => {
   let StreamOutput: typeof import('./StreamOutput.svelte').default
 
@@ -43,8 +47,8 @@ describe('StreamOutput', () => {
 
   it('renders events when getOutput returns data', async () => {
     mockGetOutput.mockResolvedValue([
-      makeEvent('assistant', 'Hello world'),
-      makeEvent('tool_use', 'Running tests'),
+      makeTSE('assistant', 'Hello world'),
+      makeTSE('tool_use', 'Running tests'),
     ])
 
     render(StreamOutput, { props: { agentId: 'test-1' } })
@@ -58,7 +62,7 @@ describe('StreamOutput', () => {
   })
 
   it('renders unknown event type label as uppercase', async () => {
-    mockGetOutput.mockResolvedValue([makeEvent('custom', 'data')])
+    mockGetOutput.mockResolvedValue([makeTSE('custom', 'data')])
 
     render(StreamOutput, { props: { agentId: 'test-1' } })
 
@@ -69,11 +73,11 @@ describe('StreamOutput', () => {
 
   it('renders all known type labels', async () => {
     mockGetOutput.mockResolvedValue([
-      makeEvent('init', ''),
-      makeEvent('assistant', ''),
-      makeEvent('tool_use', ''),
-      makeEvent('tool_result', ''),
-      makeEvent('result', ''),
+      makeTSE('init', ''),
+      makeTSE('assistant', ''),
+      makeTSE('tool_use', ''),
+      makeTSE('tool_result', ''),
+      makeTSE('result', ''),
     ])
 
     render(StreamOutput, { props: { agentId: 'test-1' } })
@@ -88,7 +92,7 @@ describe('StreamOutput', () => {
   })
 
   it('handles event with undefined content', async () => {
-    mockGetOutput.mockResolvedValue([makeEvent('assistant')])
+    mockGetOutput.mockResolvedValue([makeTSE('assistant')])
 
     render(StreamOutput, { props: { agentId: 'test-1' } })
 

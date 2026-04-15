@@ -127,8 +127,12 @@ describe('AgentStore', () => {
 
       const result = await agentStore.getOutput('a1')
 
-      expect(result).toEqual(events)
-      expect(agentStore.outputs.get('a1')).toEqual(events)
+      expect(result).toHaveLength(1)
+      expect(result[0].event).toEqual(events[0])
+      expect(result[0].receivedAt).toBeInstanceOf(Date)
+      const stored = agentStore.outputs.get('a1')!
+      expect(stored).toHaveLength(1)
+      expect(stored[0].event).toEqual(events[0])
     })
 
     it('handles null result', async () => {
