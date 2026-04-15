@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { project } from '../../wailsjs/go/models.js'
   import { ListWorktrees, OpenInTerminal, OpenInEditor } from '$lib/api'
+  import { Terminal, Code } from '@lucide/svelte'
 
   interface Props {
     projectId: string
@@ -75,9 +76,7 @@
             title="Open in Ghostty"
             onclick={() => openTerminal(wt.path)}
           >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
+            <Terminal size={16} />
           </button>
           <button
             type="button"
@@ -85,9 +84,7 @@
             title="Open in Zed"
             onclick={() => openEditor(wt.path)}
           >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-            </svg>
+            <Code size={16} />
           </button>
         </div>
       </div>

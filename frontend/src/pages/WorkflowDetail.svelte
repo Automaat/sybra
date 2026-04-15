@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronLeft } from '@lucide/svelte'
   import type { Node, Edge } from '@xyflow/svelte'
   import { workflowStore } from '../stores/workflows.svelte.js'
   import { workflow } from '../../wailsjs/go/models.js'
@@ -163,9 +164,7 @@
       title="Back"
       aria-label="Back"
     >
-      <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-      </svg>
+      <ChevronLeft size={20} />
     </button>
     <h2 class="text-sm font-semibold">{def?.name ?? 'Loading...'}</h2>
     {#if def?.builtin}

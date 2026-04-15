@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { ArrowUp } from '@lucide/svelte'
+
   interface Props {
     disabled?: boolean
     placeholder?: string
@@ -60,9 +62,7 @@
         disabled:cursor-not-allowed disabled:opacity-50"
       onclick={submit}
     >
-      <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5m0 0l-7 7m7-7l7 7" />
-      </svg>
+      <ArrowUp size={20} />
     </button>
   </div>
 </div>

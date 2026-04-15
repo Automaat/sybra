@@ -4,6 +4,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentState } from '../lib/events.js'
   import ChatView from '../components/ChatView.svelte'
+  import { ChevronLeft } from '@lucide/svelte'
 
   interface Props {
     agentId: string
@@ -56,9 +57,7 @@
       class="flex items-center gap-1 text-sm text-surface-500 hover:text-surface-800 dark:hover:text-surface-200"
       onclick={onback}
     >
-      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-      </svg>
+      <ChevronLeft size={16} />
       Chats
     </button>
 

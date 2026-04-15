@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { LayoutDashboard } from '@lucide/svelte'
   import { workflowStore } from '../stores/workflows.svelte.js'
 
   interface Props {
@@ -24,9 +25,7 @@
     <p class="text-sm text-error-500">{workflowStore.error}</p>
   {:else if workflowStore.list.length === 0}
     <div class="flex flex-col items-center gap-3 py-16 text-center">
-      <svg class="h-12 w-12 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-      </svg>
+      <LayoutDashboard size={48} class="text-surface-400" />
       <p class="text-sm text-surface-500">No workflows found</p>
     </div>
   {:else}
@@ -38,9 +37,7 @@
           onclick={() => onselect(wf.id)}
         >
           <div class="flex items-center gap-2">
-            <svg class="h-5 w-5 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-            </svg>
+            <LayoutDashboard size={20} class="shrink-0 text-surface-400" />
             <span class="text-sm font-semibold">{wf.name}</span>
             {#if wf.builtin}
               <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300">built-in</span>

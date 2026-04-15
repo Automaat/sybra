@@ -31,6 +31,7 @@
   import ToastContainer from './components/ToastContainer.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
+  import { Cloud, AlertTriangle } from '@lucide/svelte'
 
   type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'reviews' | 'stats' | 'settings' | 'workflows'
 
@@ -236,9 +237,7 @@
 <AppShell onsearch={() => (commandPaletteOpen = true)} {primaryAction}>
   {#if !connectionStore.online}
     <div class="flex shrink-0 items-center gap-2 border-b border-warning-600 bg-warning-800/90 px-4 py-2 text-sm text-warning-100">
-      <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
-      </svg>
+      <Cloud size={16} class="shrink-0" />
       <span>
         <strong>Offline</strong> — task board is read-only.
         {connectionStore.networkOnline ? 'Backend unreachable.' : 'No network connection.'}
@@ -251,9 +250,7 @@
     <div class="flex shrink-0 flex-col gap-0.5">
       {#each unhealthyProviders as p (p.provider)}
         <div class="flex items-center gap-2 bg-error-800/90 border-b border-error-600 px-4 py-2 text-error-100 text-sm">
-          <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-          </svg>
+          <AlertTriangle size={16} class="shrink-0" />
           <span>
             <strong>{p.provider}</strong> unavailable — {p.reason}
             {#if p.ratelimitedUntil}· until {new Date(p.ratelimitedUntil).toLocaleTimeString()}{/if}
@@ -268,9 +265,7 @@
     <div class="flex shrink-0 flex-col gap-0.5">
       {#each degradedWarnings as w, i (w.subsystem)}
         <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
-          <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-          </svg>
+          <AlertTriangle size={16} class="shrink-0" />
           <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>
           <button
             type="button"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronLeft, CircleDot, GitPullRequest, ChevronDown } from '@lucide/svelte'
   import type { agent, task } from '../../wailsjs/go/models.js'
   import { EventsOn, BrowserOpenURL, StartFixReview, StartReview, GetAgentRunLog } from '$lib/api'
   import { agentState } from '../lib/events.js'
@@ -331,9 +332,7 @@
     class="flex w-fit items-center gap-1 text-sm text-surface-500 hover:text-surface-800 dark:hover:text-surface-200"
     onclick={onback}
   >
-    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-    </svg>
+    <ChevronLeft size={16} />
     Back to tasks
   </button>
 
@@ -498,7 +497,7 @@
               class="flex w-fit items-center gap-1.5 text-sm text-secondary-600 hover:underline dark:text-secondary-400"
               onclick={() => t && BrowserOpenURL(t.issue)}
             >
-              <svg class="h-4 w-4 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"/></svg>
+              <CircleDot size={16} class="shrink-0" />
               {t.issue}
             </button>
           </div>
@@ -532,7 +531,7 @@
                     title="CI: {pr.ciStatus.toLowerCase()}"
                   ></span>
                 {/if}
-                <svg class="h-4 w-4 shrink-0 text-warning-500" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+                <GitPullRequest size={16} class="shrink-0 text-warning-500" />
                 <div class="flex flex-col">
                   <span class="text-sm font-semibold">{pr.title}</span>
                   <span class="text-xs text-surface-500">{pr.repository}#{pr.number} by {pr.author}</span>
@@ -566,7 +565,7 @@
             class="flex w-fit items-center gap-1.5 text-sm text-warning-700 hover:underline dark:text-warning-400"
             onclick={() => t && BrowserOpenURL(`https://github.com/${t.projectId}/pull/${t.prNumber}`)}
           >
-            <svg class="h-4 w-4 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/></svg>
+            <GitPullRequest size={16} class="shrink-0" />
             {t.projectId}#{t.prNumber}
           </button>
         </div>
@@ -765,9 +764,7 @@
                     <span>${run.costUsd.toFixed(4)}</span>
                   {/if}
                   <span>{formatDate(run.startedAt)}</span>
-                  <svg class="h-4 w-4 transition-transform {expandedRun === run.agentId ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                  </svg>
+                  <ChevronDown size={16} class="transition-transform {expandedRun === run.agentId ? 'rotate-180' : ''}" />
                 </div>
               </button>
               {#if expandedRun === run.agentId}

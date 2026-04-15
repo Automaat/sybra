@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Trash2, X } from '@lucide/svelte'
   import { workflow } from '../../../wailsjs/go/models.js'
   import ConditionRow from './ConditionRow.svelte'
 
@@ -110,9 +111,7 @@
         title="Delete step"
         aria-label="Delete step"
       >
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
+        <Trash2 size={16} />
       </button>
     </div>
 
@@ -369,9 +368,7 @@
                 title="Remove transition"
                 aria-label="Remove transition"
               >
-                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <X size={12} />
               </button>
             </div>
             <label class="flex items-center gap-1 text-xs">

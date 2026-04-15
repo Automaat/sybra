@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ClipboardList, MessageCircle, UserCircle, ClipboardCheck, Menu } from '@lucide/svelte'
   import { navStore, type TabKey } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
@@ -39,9 +40,7 @@
     class:dark:text-primary-400={navStore.activeTab === 'board'}
     aria-label="Board"
   >
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-    </svg>
+    <ClipboardList size={24} />
     Board
   </button>
 
@@ -55,9 +54,7 @@
     aria-label="Chats"
   >
     <div class="relative">
-      <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
+      <MessageCircle size={24} />
       {#if interactiveAgentCount > 0}
         <span class="absolute -right-1.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[9px] font-bold text-white">{interactiveAgentCount}</span>
       {/if}
@@ -74,9 +71,7 @@
     class:dark:text-primary-400={navStore.activeTab === 'agents'}
     aria-label="Agents"
   >
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-    </svg>
+    <UserCircle size={24} />
     Agents
   </button>
 
@@ -90,9 +85,7 @@
     aria-label="Reviews"
   >
     <div class="relative">
-      <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-      </svg>
+      <ClipboardCheck size={24} />
       {#if reviewCount > 0}
         <span class="absolute -right-1.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning-500 px-1 text-[9px] font-bold text-white">{reviewCount}</span>
       {/if}
@@ -109,9 +102,7 @@
     class:dark:text-primary-400={navStore.activeTab === 'more'}
     aria-label="More"
   >
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-    </svg>
+    <Menu size={24} />
     More
   </button>
 </nav>

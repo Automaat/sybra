@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Search, X } from '@lucide/svelte'
   import MobileSheet from './shell/MobileSheet.svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
@@ -116,12 +117,7 @@
   <div class="flex flex-col">
     <!-- Search bar -->
     <div class="flex items-center gap-3 border-b border-surface-200 px-4 dark:border-surface-700">
-      <svg
-        class="h-4 w-4 shrink-0 transition-colors {query ? 'text-primary-500' : 'text-surface-400'}"
-        fill="none" stroke="currentColor" viewBox="0 0 24 24"
-      >
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
+      <Search size={16} class="shrink-0 transition-colors {query ? 'text-primary-500' : 'text-surface-400'}" />
       <input
         bind:this={inputRef}
         bind:value={query}
@@ -136,9 +132,7 @@
         aria-label="Close"
       >
         <kbd class="hidden rounded border border-surface-300 px-1.5 py-0.5 font-mono text-[10px] text-surface-400 dark:border-surface-600 md:inline">Esc</kbd>
-        <svg class="h-5 w-5 md:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
+        <X size={20} class="md:hidden" />
       </button>
     </div>
 

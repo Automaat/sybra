@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { FileText, ChevronLeft } from '@lucide/svelte'
   import { renderMarkdown } from '../lib/markdown.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { commentStore } from '../stores/comments.svelte.js'
@@ -225,9 +226,7 @@
     {#if !selectedTask}
       <div class="flex flex-1 items-center justify-center text-surface-400">
         <div class="text-center">
-          <svg class="mx-auto mb-3 h-12 w-12 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
+          <FileText size={48} class="mx-auto mb-3 opacity-40" />
           <p class="text-sm">Select a task to review its {isTestPlan ? 'test plan' : 'plan'}</p>
         </div>
       </div>
@@ -242,9 +241,7 @@
               class="tap -ml-2 shrink-0 rounded-lg text-surface-600 active:bg-surface-200 dark:text-surface-300 dark:active:bg-surface-700"
               aria-label="Back to list"
             >
-              <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-              </svg>
+              <ChevronLeft size={24} />
             </button>
           {/if}
           <h2 class="truncate text-base font-semibold">{selectedTask.title}</h2>
@@ -276,9 +273,7 @@
           </details>
         {/if}
         <div class="mb-3 flex items-center gap-2">
-          <svg class="h-4 w-4 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
+          <FileText size={16} class="text-surface-400" />
           <span class="text-xs font-medium text-surface-500">{isTestPlan ? 'TEST_PLAN.md' : 'PLAN.md'}</span>
           <span class="text-xs text-surface-400">— click <kbd class="rounded bg-surface-200 px-1 dark:bg-surface-700">+</kbd> on any line to comment</span>
         </div>
