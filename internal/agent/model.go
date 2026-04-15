@@ -51,6 +51,8 @@ type Agent struct {
 
 	TurnCount        int    `json:"turnCount,omitempty"`
 	EscalationReason string `json:"escalationReason,omitempty"`
+	ErrorKind        string `json:"errorKind,omitempty"`
+	ErrorMsg         string `json:"errorMsg,omitempty"`
 
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
@@ -377,6 +379,20 @@ func (a *Agent) ConvoOutput() []ConvoEvent {
 	snapshot := make([]ConvoEvent, len(a.convoBuffer))
 	copy(snapshot, a.convoBuffer)
 	return snapshot
+}
+
+// SetError records a classified error on the agent.
+func (a *Agent) SetError(kind, msg string) {
+	a.mu.Lock()
+	a.ErrorKind = kind
+	a.ErrorMsg = msg
+	a.mu.Unlock()
+}
+
+// ErrorEvent is the payload emitted on agent:error:{id}.
+type ErrorEvent struct {
+	Kind string `json:"kind"`
+	Msg  string `json:"msg"`
 }
 
 // EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.

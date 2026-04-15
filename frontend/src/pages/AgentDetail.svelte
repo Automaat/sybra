@@ -2,15 +2,21 @@
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
-  import { agentState, agentEscalation } from '../lib/events.js'
+  import { agentState, agentEscalation, agentError } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
+  import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
 
   interface EscalationEvent {
     reason: string
     turnCount?: number
     costUsd?: number
     limit: number
+  }
+
+  interface AgentErrorEvent {
+    kind: string
+    msg: string
   }
 
   interface Props {
@@ -23,10 +29,18 @@
 
   let a = $state<agent.Agent | null>(null)
   let error = $state('')
+  let agentErr = $state<AgentErrorEvent | null>(null)
   let escalation = $state<EscalationEvent | null>(null)
   let escalationResponding = $state(false)
+  let errorDismissed = $state(false)
 
   const isRunning = $derived(a?.state === 'running')
+
+  // Seed error from cached agent state (already stopped with errorKind set).
+  const cachedError = $derived(
+    a?.errorKind ? { kind: a.errorKind, msg: a.errorMsg ?? '' } : null
+  )
+  const displayError = $derived(errorDismissed ? null : (agentErr ?? cachedError))
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -37,6 +51,11 @@
       agentStore.updateAgent(agentId, data)
     })
 
+    const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {
+      agentErr = data
+      errorDismissed = false
+    })
+
     const unsubEscalation = EventsOn(agentEscalation(agentId), (data: EscalationEvent) => {
       escalation = data
       escalationResponding = false
@@ -44,6 +63,7 @@
 
     return () => {
       unsubState()
+      unsubError()
       unsubEscalation()
     }
   })
@@ -99,6 +119,15 @@
 
   {#if error}
     <p class="text-sm text-error-500">{error}</p>
+  {/if}
+
+  {#if displayError}
+    <AgentErrorBanner
+      {agentId}
+      error={displayError}
+      onretry={a?.taskId ? () => onviewtask(a!.taskId) : undefined}
+      ondismiss={() => { agentErr = null; errorDismissed = true }}
+    />
   {/if}
 
   {#if escalation}

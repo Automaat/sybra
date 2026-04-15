@@ -8,6 +8,7 @@
   import { notificationStore } from './stores/notifications.svelte.js'
   import { navStore, type Page } from './lib/navigation.svelte.js'
   import { viewport } from './lib/viewport.svelte.js'
+  import { connectionStore } from './stores/connection.svelte.js'
   import AppShell from './components/shell/AppShell.svelte'
   import TaskList from './pages/TaskList.svelte'
   import TaskDetail from './pages/TaskDetail.svelte'
@@ -113,6 +114,7 @@
     // every subscription and EventSource connection and re-create them in a
     // tight loop (~60×/s in the wild — caused full UI flicker on the web build).
     const cleanup = untrack(() => {
+      const stopConnection = connectionStore.start()
       taskStore.load()
       taskStore.startPolling()
       agentStore.load()
@@ -145,9 +147,9 @@
         if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
         quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
       })
-      return { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit }
+      return { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit }
     })
-    const { unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit } = cleanup
+    const { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit } = cleanup
 
     // Keyboard shortcuts only on devices with a fine pointer (mouse/keyboard).
     // Touch-only devices (iPhone, iPad without keyboard) skip listener entirely.
@@ -210,6 +212,7 @@
     }
 
     return () => {
+      stopConnection()
       unsubTasks()
       unsubNotif()
       unsubDegraded()
@@ -231,6 +234,19 @@
 </script>
 
 <AppShell onsearch={() => (commandPaletteOpen = true)} {primaryAction}>
+  {#if !connectionStore.online}
+    <div class="flex shrink-0 items-center gap-2 border-b border-warning-600 bg-warning-800/90 px-4 py-2 text-sm text-warning-100">
+      <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+      </svg>
+      <span>
+        <strong>Offline</strong> — task board is read-only.
+        {connectionStore.networkOnline ? 'Backend unreachable.' : 'No network connection.'}
+        Agents cannot start; GitHub sync will resume when reconnected.
+      </span>
+    </div>
+  {/if}
+
   {#if unhealthyProviders.length > 0}
     <div class="flex shrink-0 flex-col gap-0.5">
       {#each unhealthyProviders as p (p.provider)}

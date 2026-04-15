@@ -17,7 +17,11 @@
     stopped: { label: 'Stopped', classes: 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' },
   }
 
-  const resolved = $derived(stateConfig[a.state] ?? { label: a.state, classes: 'bg-surface-200 text-surface-800' })
+  const resolved = $derived(
+    a.errorKind
+      ? { label: 'Error', classes: 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-100' }
+      : (stateConfig[a.state] ?? { label: a.state, classes: 'bg-surface-200 text-surface-800' })
+  )
 
   function timeAgo(date: any): string {
     if (!date) return ''
@@ -33,7 +37,10 @@
 
 <button
   type="button"
-  class="w-full rounded-lg border border-surface-300 bg-surface-50 p-4 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+  class="w-full rounded-lg border p-4 text-left transition-colors hover:bg-surface-100 dark:hover:bg-surface-700
+    {a.errorKind
+      ? 'border-error-400 bg-error-50 dark:border-error-600 dark:bg-error-950/30'
+      : 'border-surface-300 bg-surface-50 dark:border-surface-600 dark:bg-surface-800'}"
   onclick={onclick}
 >
   <div class="mb-2 flex items-start justify-between gap-2">
@@ -49,7 +56,11 @@
       {/if}
     </div>
     <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150 {resolved.classes}">
-      {#if a.state === 'running'}
+      {#if a.errorKind}
+        <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+      {:else if a.state === 'running'}
         <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-success-500"></span>
       {:else if a.state === 'paused'}
         <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-warning-500"></span>

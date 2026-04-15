@@ -23,6 +23,8 @@ export namespace agent {
 	    model?: string;
 	    turnCount?: number;
 	    escalationReason?: string;
+	    errorKind?: string;
+	    errorMsg?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
@@ -50,6 +52,8 @@ export namespace agent {
 	        this.model = source["model"];
 	        this.turnCount = source["turnCount"];
 	        this.escalationReason = source["escalationReason"];
+	        this.errorKind = source["errorKind"];
+	        this.errorMsg = source["errorMsg"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
