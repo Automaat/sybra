@@ -19,6 +19,7 @@
     url = ''
     projectType = 'pet'
     error = ''
+    submitting = false
   }
 
   async function handleSubmit(e: Event) {
@@ -28,13 +29,14 @@
     submitting = true
     error = ''
     try {
+      // CreateProject returns immediately with status=cloning.
+      // Clone runs in background; progress shows in BgOpsIndicator.
       const p = await projectStore.create(url.trim(), projectType)
       reset()
       onOpenChange(false)
       oncreated?.(p.id)
-    } catch (e) {
-      error = String(e)
-    } finally {
+    } catch (err) {
+      error = String(err)
       submitting = false
     }
   }
@@ -87,7 +89,7 @@
         {/if}
 
         {#if submitting}
-          <p class="text-sm text-surface-500">Cloning repository...</p>
+          <p class="text-sm text-surface-500">Starting clone…</p>
         {/if}
 
         <div class="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95 md:-mx-6 md:-mb-6 md:px-6 md:pb-4">
@@ -103,7 +105,7 @@
             disabled={submitting || !url.trim()}
             class="tap rounded-lg bg-primary-500 px-5 py-2.5 text-sm font-medium text-white active:bg-primary-700 disabled:opacity-50"
           >
-            {submitting ? 'Cloning...' : 'Add Project'}
+            {submitting ? 'Adding…' : 'Add Project'}
           </button>
         </div>
       </form>

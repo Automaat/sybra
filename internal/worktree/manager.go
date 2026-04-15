@@ -78,14 +78,24 @@ func (m *Manager) ValidatePath(path string) error {
 	return nil
 }
 
+// callPhase invokes fn with phase if fn is non-nil. Nil-safe.
+func callPhase(fn func(string), phase string) {
+	if fn != nil {
+		fn(phase)
+	}
+}
+
 // PrepareForTask creates (or reuses) a worktree for implementation work.
 // Fetches origin, creates branch synapse/{dirName} off default branch,
 // pushes upstream, and sets task.Branch.
-func (m *Manager) PrepareForTask(t task.Task) (string, error) {
+// onPhase is an optional callback that receives human-readable phase labels
+// as work progresses; pass nil when phase reporting is not needed.
+func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, error) {
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
+	callPhase(onPhase, "Fetching origin…")
 	if err := project.FetchOrigin(proj.ClonePath); err != nil {
 		return "", fmt.Errorf("fetch origin: %w", err)
 	}
@@ -105,12 +115,14 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		}
 		// Rebase is best-effort — conflicts with main shouldn't block agent
 		// start on a branch that already has committed work.
+		callPhase(onPhase, "Rebasing onto origin…")
 		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 		} else {
 			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 			// Sync remote after rebase — local SHAs changed, remote still has
 			// old commits. create_pr push would fail with "diverged" otherwise.
+			callPhase(onPhase, "Pushing upstream…")
 			if err := project.PushForce(wtPath, wtBranch); err != nil {
 				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
 			}
@@ -122,16 +134,19 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 	// Branch may survive a prior worktree removal — check out existing branch
 	// and rebase onto base instead of failing with "branch already exists".
 	if project.BranchExists(proj.ClonePath, wtBranch) {
+		callPhase(onPhase, "Creating worktree…")
 		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); err != nil {
 			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
 		}
 		if err := project.SanitizeWorktree(wtPath); err != nil {
 			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 		}
+		callPhase(onPhase, "Rebasing onto origin…")
 		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 		} else {
 			// Sync remote after rebase.
+			callPhase(onPhase, "Pushing upstream…")
 			if err := project.PushForce(wtPath, wtBranch); err != nil {
 				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
 			}
@@ -142,12 +157,14 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 
+	callPhase(onPhase, "Creating worktree…")
 	if err := project.CreateWorktree(proj.ClonePath, wtPath, wtBranch, baseRef); err != nil {
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
 	m.runSetup(wtPath, proj.SetupCommands)
 
+	callPhase(onPhase, "Pushing upstream…")
 	if err := project.PushUpstream(wtPath, wtBranch); err != nil {
 		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
 	}
@@ -159,11 +176,13 @@ func (m *Manager) PrepareForTask(t task.Task) (string, error) {
 // PrepareForChat creates a worktree for an ephemeral chat session. Same as
 // PrepareForTask but skips the upstream push — chat branches are local-only
 // and deleted with the worktree when the chat ends.
-func (m *Manager) PrepareForChat(t task.Task) (string, error) {
+// onPhase is an optional callback for phase labels; pass nil when not needed.
+func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, error) {
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
+	callPhase(onPhase, "Fetching origin…")
 	if err := project.FetchOrigin(proj.ClonePath); err != nil {
 		return "", fmt.Errorf("fetch origin: %w", err)
 	}
@@ -183,6 +202,7 @@ func (m *Manager) PrepareForChat(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 
+	callPhase(onPhase, "Creating worktree…")
 	if project.BranchExists(proj.ClonePath, wtBranch) {
 		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, wtBranch); err != nil {
 			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)

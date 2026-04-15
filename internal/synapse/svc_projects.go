@@ -3,7 +3,10 @@ package synapse
 import (
 	"log/slog"
 	"os/exec"
+	"sync"
 
+	"github.com/Automaat/synapse/internal/bgop"
+	"github.com/Automaat/synapse/internal/notification"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -13,6 +16,9 @@ type ProjectService struct {
 	projects  *project.Store
 	worktrees *worktree.Manager
 	logger    *slog.Logger
+	notifier  *notification.Emitter
+	bgops     *bgop.Tracker
+	wg        *sync.WaitGroup
 }
 
 // ListProjects returns all registered projects.
@@ -25,15 +31,50 @@ func (s *ProjectService) GetProject(id string) (project.Project, error) {
 	return s.projects.Get(id)
 }
 
-// CreateProject clones a GitHub repo as a bare mirror and registers it.
+// CreateProject registers a GitHub repo and starts a bare clone in the
+// background. It returns immediately with the project in cloning status.
 func (s *ProjectService) CreateProject(url, ptype string) (project.Project, error) {
 	s.logger.Info("project.create", "url", url, "type", ptype)
-	p, err := s.projects.Create(url, project.ProjectType(ptype))
+	p, err := s.projects.CreateMeta(url, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.create.failed", "url", url, "err", err)
 		return p, err
 	}
-	s.logger.Info("project.created", "id", p.ID, "url", url)
+
+	opID := ""
+	if s.bgops != nil {
+		opID = s.bgops.Start(bgop.TypeClone, "Cloning "+p.Owner+"/"+p.Repo, p.ID, "")
+	}
+	s.logger.Info("project.clone.started", "id", p.ID, "op", opID)
+
+	s.wg.Go(func() {
+		if err := project.CloneBare(p.URL, p.ClonePath); err != nil {
+			s.logger.Error("project.clone.failed", "id", p.ID, "err", err)
+			if markErr := s.projects.MarkError(p.ID); markErr != nil {
+				s.logger.Error("project.mark-error", "id", p.ID, "err", markErr)
+			}
+			if s.bgops != nil && opID != "" {
+				s.bgops.Fail(opID, err)
+			}
+			if s.notifier != nil {
+				s.notifier.Send(notification.LevelError, "Clone failed",
+					p.Owner+"/"+p.Repo+": "+err.Error(), "", "")
+			}
+			return
+		}
+		if markErr := s.projects.MarkReady(p.ID); markErr != nil {
+			s.logger.Error("project.mark-ready", "id", p.ID, "err", markErr)
+		}
+		if s.bgops != nil && opID != "" {
+			s.bgops.Complete(opID)
+		}
+		if s.notifier != nil {
+			s.notifier.Send(notification.LevelSuccess, "Project cloned",
+				p.Owner+"/"+p.Repo+" is ready", "", "")
+		}
+		s.logger.Info("project.cloned", "id", p.ID)
+	})
+
 	return p, nil
 }
 
