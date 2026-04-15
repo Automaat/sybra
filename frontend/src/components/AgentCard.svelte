@@ -12,11 +12,13 @@
 
   const { agent: a, onclick }: Props = $props()
 
+  const linkedTask = $derived(a.taskId ? taskStore.tasks.get(a.taskId) : null)
+
   const phase = $derived(
     getAgentPhase(
       a.state,
       a.escalationReason,
-      a.taskId ? taskStore.tasks.get(a.taskId)?.status : undefined,
+      linkedTask?.status,
       a.awaitingApproval,
     ),
   )
@@ -88,7 +90,10 @@
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{a.project}</span>
     {/if}
     {#if a.taskId}
-      <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">task: {a.taskId}</span>
+      <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{linkedTask?.title ?? a.taskId}</span>
+    {/if}
+    {#if linkedTask?.branch}
+      <span class="rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">{linkedTask.branch.replace(/^synapse\//, '')}</span>
     {/if}
     {#if a.costUsd > 0}
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(2)}</span>

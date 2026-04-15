@@ -382,6 +382,13 @@
     }
   }
 
+  const hasRunningAgent = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === taskId && a.state === 'running')
+  )
+
+  // Statuses that conflict with a running agent
+  const AGENT_BLOCKED_STATUSES = new Set(['new', 'todo', 'done'])
+
   const triaging = $derived(
     (agentStore.list ?? []).some((a) => a.taskId === taskId && a.name?.startsWith('triage:') && a.state === 'running')
   )
@@ -547,7 +554,7 @@
             title="Click to change status"
           >
             {#each statusOptions as s}
-              <option value={s.value}>{s.label}</option>
+              <option value={s.value} disabled={hasRunningAgent && AGENT_BLOCKED_STATUSES.has(s.value)}>{s.label}</option>
             {/each}
           </select>
           <select

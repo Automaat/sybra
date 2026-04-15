@@ -37,6 +37,13 @@
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running' && !a.name?.startsWith('triage:') && !a.name?.startsWith('eval:') && !a.name?.startsWith('plan:'))
   )
 
+  const hasRunningAgent = $derived(
+    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running')
+  )
+
+  // Statuses that conflict with a running agent — cannot move to these while agent is active
+  const AGENT_BLOCKED_STATUSES = new Set(['new', 'todo', 'done'])
+
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
 
@@ -91,6 +98,13 @@
     {#if t.projectId}
       <span class="rounded bg-primary-100 px-1.5 py-0.5 text-primary-700 dark:bg-primary-800 dark:text-primary-300">
         {t.projectId}
+      </span>
+    {/if}
+
+    {#if t.branch}
+      <span class="inline-flex items-center gap-1 rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">
+        <svg class="h-3 w-3 shrink-0" viewBox="0 0 16 16" fill="currentColor"><title>Branch</title><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z"/></svg>
+        {t.branch.replace(/^synapse\//, '')}
       </span>
     {/if}
 
@@ -179,7 +193,7 @@
         aria-label="Change status"
       >
         {#each STATUS_OPTIONS as opt}
-          <option value={opt.value}>{opt.label}</option>
+          <option value={opt.value} disabled={hasRunningAgent && AGENT_BLOCKED_STATUSES.has(opt.value)}>{opt.label}</option>
         {/each}
       </select>
     </div>

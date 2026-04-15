@@ -44,12 +44,14 @@
   )
   const displayError = $derived(errorDismissed ? null : (agentErr ?? cachedError))
 
+  const linkedTask = $derived(a?.taskId ? taskStore.tasks.get(a.taskId) : null)
+
   const phase = $derived(
     a
       ? getAgentPhase(
           a.state,
           a.escalationReason,
-          a.taskId ? taskStore.tasks.get(a.taskId)?.status : undefined,
+          linkedTask?.status,
           a.awaitingApproval,
         )
       : 'done',
@@ -243,8 +245,14 @@
               class="text-left text-primary-500 hover:underline"
               onclick={() => onviewtask(a!.taskId)}
             >
-              {a.taskId}
+              {linkedTask?.title ?? a.taskId}
             </button>
+          </div>
+        {/if}
+        {#if linkedTask?.branch}
+          <div class="flex flex-col gap-1">
+            <span class="font-medium text-surface-500">Branch</span>
+            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono text-xs dark:bg-surface-700">{linkedTask.branch}</span>
           </div>
         {/if}
         <div class="flex flex-col gap-1">
