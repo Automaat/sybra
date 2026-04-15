@@ -195,7 +195,9 @@ steps:
       mode: "{{.Task.AgentMode}}"
       model: sonnet
       prompt: >-
-        Implement this task. When done, create a PR with `gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}}`.
+        Implement this task. When done, commit your work and push the branch to
+        origin. Do NOT create a PR yet — the PR will be created after local code
+        review so that review fixes land in the same branch before it is opened.
         {{- if .Task.Plan}}
 
         ## Plan
@@ -218,6 +220,105 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: maybe_review
+
+  # Skip review when tagged noreview or already reviewed in a prior run.
+  # On skip, jump straight to create_pr so the PR is still opened.
+  - id: maybe_review
+    name: Review Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: noreview
+    next:
+      - when:
+          field: task.reviewed
+          operator: equals
+          value: "true"
+        goto: create_pr
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: noreview
+        goto: code_review
+      - goto: create_pr
+
+  # Review runs locally on the worktree before the PR is created, so fixes
+  # are committed to the branch first. No PR URL needed — diff against
+  # origin/main captures everything the agent just implemented.
+  - id: code_review
+    name: Code Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > /tmp/synapse-diff-{{.Task.ID}}.patch
+          2. Run /staff-code-review against that patch and the worktree source
+          3. Save the full review to /tmp/synapse-review-{{.Task.ID}}.md
+
+        Do NOT submit anything to GitHub. Only save to the file.
+    next:
+      - goto: fix_review
+
+  - id: fix_review
+    name: Fix Review Comments
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Read the code review at /tmp/synapse-review-{{.Task.ID}}.md
+
+        For each actionable finding (critical/high/medium severity), fix the code.
+        Skip low-severity nitpicks and style-only comments.
+
+        When done, commit your changes (do NOT push yet — push happens with PR
+        creation). Sign commits with `git commit -s -S`.
+        Use conventional commit format: `fix(review): address review comments`.
+    next:
+      - goto: create_pr
+
+  # Create the GitHub PR after review fixes are committed locally.
+  # Check for an existing PR first to stay idempotent on retries.
+  - id: create_pr
+    name: Create PR
+    type: run_agent
+    config:
+      role: create-pr
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Create a GitHub PR for the current branch if one does not exist yet.
+
+        Steps:
+          1. Check: gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number'
+             If a PR number is returned, skip creation — the PR already exists.
+          2. If no PR exists, push the branch and create one:
+             git push -u origin HEAD
+             gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
+               --title "<conventional-commit title>" \
+               --body "<PR body with ## Motivation and ## Implementation information>"
+             {{- if .Task.Issue}}
+             Include "Closes {{.Task.Issue}}" in the PR body.
+             {{- end}}
+
+        PR title must follow conventional commits format matching the task work.
+        PR body must have ## Motivation and ## Implementation information sections.
+    next:
       - goto: link_pr_and_review
 
   # Non-LLM step: recover PR number from task, agent result history, or
@@ -256,63 +357,5 @@ steps:
   - id: ensure_pr_closes_issue
     name: Ensure PR Closes Issue
     type: ensure_pr_closes_issue
-    next:
-      - goto: maybe_review
-
-  # Skip review when tagged noreview or already reviewed in a prior run.
-  - id: maybe_review
-    name: Review Decision
-    type: condition
-    config:
-      check:
-        field: task.tags
-        operator: not_contains
-        value: noreview
-    next:
-      - when:
-          field: task.reviewed
-          operator: equals
-          value: "true"
-        goto: ""
-      - when:
-          field: task.tags
-          operator: not_contains
-          value: noreview
-        goto: code_review
-      - goto: ""
-
-  - id: code_review
-    name: Code Review
-    type: run_agent
-    config:
-      role: review
-      mode: headless
-      provider: cross
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
-
-        Save the full review output to /tmp/synapse-review-{{.Task.ID}}.md
-        Do NOT submit anything to GitHub. Only save to the file.
-    next:
-      - goto: fix_review
-
-  - id: fix_review
-    name: Fix Review Comments
-    type: run_agent
-    config:
-      role: fix-review
-      mode: headless
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Read the code review at /tmp/synapse-review-{{.Task.ID}}.md
-
-        For each actionable finding (critical/high/medium severity), fix the code.
-        Skip low-severity nitpicks and style-only comments.
-
-        When done, commit and push. Sign commits with `git commit -s -S`.
-        Use conventional commit format: `fix(review): address review comments`.
     next:
       - goto: ""
