@@ -466,6 +466,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 	case "assistant":
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)
+			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
 		}
 	case "user":
 		if e.Message != nil {
@@ -482,6 +483,39 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 
 	}
 	return ev
+}
+
+// extractTodoWriteSteps scans tool uses for a TodoWrite call and returns the
+// parsed todo list. Returns nil if no TodoWrite call is present or parsing fails.
+func extractTodoWriteSteps(toolUses []ToolUseBlock) []PlanStep {
+	for i := range toolUses {
+		if toolUses[i].Name != "TodoWrite" {
+			continue
+		}
+		todosRaw, ok := toolUses[i].Input["todos"]
+		if !ok {
+			return nil
+		}
+		items, ok := todosRaw.([]any)
+		if !ok {
+			return nil
+		}
+		steps := make([]PlanStep, 0, len(items))
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			content, _ := m["content"].(string)
+			status, _ := m["status"].(string)
+			if content == "" {
+				continue
+			}
+			steps = append(steps, PlanStep{Content: content, Status: status})
+		}
+		return steps
+	}
+	return nil
 }
 
 // codexEventToStreamEvent converts a shared CodexEvent into a StreamEvent

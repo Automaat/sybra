@@ -10,8 +10,10 @@
   import ChatView from '../components/ChatView.svelte'
   import ActionTimeline from '../components/ActionTimeline.svelte'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
+  import PlanSteps from '../components/PlanSteps.svelte'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
+  import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
 
   interface EscalationEvent {
     reason: string
@@ -41,6 +43,7 @@
   let errorDismissed = $state(false)
   let timelineOpen = $state(true)
   let selectedIndex = $state<number | null>(null)
+  let planCollapsed = $state(false)
 
   const isRunning = $derived(a?.state === 'running')
 
@@ -72,6 +75,17 @@
       ? buildConvoTimeline(convoEvents)
       : buildStreamTimeline(streamOutputs),
   )
+
+  const planSteps = $derived(
+    a?.mode === 'interactive'
+      ? extractLatestPlanStepsFromConvo(convoEvents)
+      : extractLatestPlanSteps(streamOutputs),
+  )
+
+  // Auto-expand plan when agent starts running, collapse when done.
+  $effect(() => {
+    if (a?.state === 'running') planCollapsed = false
+  })
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -341,6 +355,10 @@
           <span>{formatDate(a.startedAt)}</span>
         </div>
       </div>
+
+      {#if planSteps.length > 0}
+        <PlanSteps steps={planSteps} bind:collapsed={planCollapsed} />
+      {/if}
 
       <div class="flex min-h-0 flex-1 flex-col gap-2">
         <div class="flex items-center gap-2">
