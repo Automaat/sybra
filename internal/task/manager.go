@@ -1,6 +1,8 @@
 package task
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/Automaat/synapse/internal/events"
@@ -36,6 +38,13 @@ type Manager struct {
 	emitter      EventEmitter
 	locks        sync.Map // string -> *sync.Mutex
 	onStatusHook StatusChangeHook
+
+	// firedMu/firedStatus tracks the most recent status value that has
+	// triggered onStatusHook. OnExternalUpdate uses it to dedupe repeated
+	// file events for the same status, while still detecting genuine
+	// cross-process transitions (where firedStatus is stale or unset).
+	firedMu     sync.RWMutex
+	firedStatus map[string]string
 }
 
 // SetStatusChangeHook registers a callback fired on every status transition.
@@ -53,6 +62,75 @@ func NewManager(store *Store, emitter EventEmitter) *Manager {
 
 // Store returns the underlying Store. Use for operations not covered by Manager.
 func (m *Manager) Store() *Store { return m.store }
+
+// OnExternalUpdate is invoked by the file watcher when a task file is
+// modified outside this Manager — typically by `synapse-cli` running in
+// a separate process. It invalidates the store cache and, when the
+// on-disk status differs from the value that last triggered the hook,
+// fires the registered status-change hook so workflow steps using
+// wait_for_status can advance.
+//
+// Without this, status flips written by out-of-process tools never
+// reach engine.HandleStatusChange and interactive plan agents leave
+// their workflow stranded on the plan step.
+func (m *Manager) OnExternalUpdate(path string) {
+	if !strings.HasSuffix(path, ".md") {
+		return
+	}
+	base := filepath.Base(path)
+	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+		m.store.InvalidatePath(path)
+		return
+	}
+	id := strings.TrimSuffix(base, ".md")
+	if id == "" {
+		return
+	}
+
+	m.store.InvalidatePath(path)
+
+	if m.onStatusHook == nil {
+		return
+	}
+
+	t, err := m.store.Get(id)
+	if err != nil {
+		return
+	}
+	newStatus := string(t.Status)
+
+	prev, ok := m.lastFiredStatus(id)
+	if ok && prev == newStatus {
+		return
+	}
+	m.recordFiredStatus(id, newStatus)
+	m.onStatusHook(id, prev, newStatus)
+}
+
+func (m *Manager) recordFiredStatus(id, status string) {
+	m.firedMu.Lock()
+	defer m.firedMu.Unlock()
+	if m.firedStatus == nil {
+		m.firedStatus = make(map[string]string)
+	}
+	m.firedStatus[id] = status
+}
+
+func (m *Manager) lastFiredStatus(id string) (string, bool) {
+	m.firedMu.RLock()
+	defer m.firedMu.RUnlock()
+	if m.firedStatus == nil {
+		return "", false
+	}
+	s, ok := m.firedStatus[id]
+	return s, ok
+}
+
+func (m *Manager) forgetFiredStatus(id string) {
+	m.firedMu.Lock()
+	defer m.firedMu.Unlock()
+	delete(m.firedStatus, id)
+}
 
 // Comments returns the underlying CommentStore.
 func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
@@ -82,6 +160,7 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 		return t, err
 	}
 	metrics.TaskCreated()
+	m.recordFiredStatus(t.ID, string(t.Status))
 	m.emitter.Emit(events.TaskCreated, t.FilePath)
 	return t, nil
 }
@@ -135,6 +214,7 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 	mu.Unlock()
 
 	if fireHook {
+		m.recordFiredStatus(id, newStatus)
 		m.onStatusHook(id, prevStatus, newStatus)
 	}
 	return t, nil
@@ -163,6 +243,7 @@ func (m *Manager) Delete(id string) error {
 		return err
 	}
 	m.locks.Delete(id)
+	m.forgetFiredStatus(id)
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	return nil
@@ -201,6 +282,7 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 	}
 	mu.Unlock()
 	if fireHook {
+		m.recordFiredStatus(taskID, newStatus)
 		m.onStatusHook(taskID, prevStatus, newStatus)
 	}
 	return nil

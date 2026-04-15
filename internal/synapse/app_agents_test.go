@@ -2,24 +2,36 @@ package synapse
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/task"
 )
 
-// TestPickImplementationResumeSession guards against the regression where
-// the resume-session walker grabbed the latest non-empty session_id from
-// any prior run (including triage), which made the implementation agent
-// launch with --resume against a session that lived in a different cwd.
-// Claude CLI then bailed with subtype "error_during_execution", $0 cost,
-// and verify_commits flipped the task to human-required immediately.
+// TestPickImplementationResumeSession pins two regression guards on the
+// resume-session walker:
+//
+//  1. Cross-role pollution: triage/plan/eval session_ids must never be
+//     handed to the implementation agent, even when they are the most
+//     recent run on the task. Claude CLI bails with
+//     "error_during_execution" because the session lives in a different
+//     cwd.
+//  2. Cross-workflow pollution: an aborted implementation run from a
+//     prior workflow execution must not leak its session_id into a fresh
+//     execution. The session_id no longer exists in claude's session
+//     store, so claude exits with "No conversation found", cost $0, and
+//     verify_commits flips the task to human-required without ever
+//     running the implementation prompt.
 func TestPickImplementationResumeSession(t *testing.T) {
 	t.Parallel()
 
+	wfStart := time.Now()
+
 	cases := []struct {
-		name string
-		runs []task.AgentRun
-		want string
+		name          string
+		runs          []task.AgentRun
+		workflowStart time.Time
+		want          string
 	}{
 		{
 			name: "empty",
@@ -37,14 +49,14 @@ func TestPickImplementationResumeSession(t *testing.T) {
 			name: "triage then implementation — return implementation",
 			runs: []task.AgentRun{
 				{Role: "triage", SessionID: "ses-triage"},
-				{Role: "", SessionID: "ses-impl"},
+				{Role: string(agent.RoleImplementation), SessionID: "ses-impl"},
 			},
 			want: "ses-impl",
 		},
 		{
 			name: "implementation then triage — skip triage, return impl",
 			runs: []task.AgentRun{
-				{Role: "", SessionID: "ses-impl-1"},
+				{Role: string(agent.RoleImplementation), SessionID: "ses-impl-1"},
 				{Role: "triage", SessionID: "ses-triage"},
 			},
 			want: "ses-impl-1",
@@ -59,8 +71,8 @@ func TestPickImplementationResumeSession(t *testing.T) {
 		{
 			name: "skip empty session_id, return previous impl",
 			runs: []task.AgentRun{
-				{Role: "", SessionID: "ses-old"},
-				{Role: "", SessionID: ""},
+				{Role: string(agent.RoleImplementation), SessionID: "ses-old"},
+				{Role: string(agent.RoleImplementation), SessionID: ""},
 			},
 			want: "ses-old",
 		},
@@ -73,12 +85,72 @@ func TestPickImplementationResumeSession(t *testing.T) {
 			},
 			want: "",
 		},
+		{
+			name: "legacy empty-Role run still picked when no time cutoff",
+			runs: []task.AgentRun{
+				{Role: "", SessionID: "ses-legacy"},
+			},
+			want: "ses-legacy",
+		},
+		{
+			name: "stale impl from prior workflow — must NOT resume",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-stale",
+					StartedAt: wfStart.Add(-24 * time.Hour),
+				},
+			},
+			workflowStart: wfStart,
+			want:          "",
+		},
+		{
+			name: "stale empty-Role impl from prior workflow — must NOT resume",
+			runs: []task.AgentRun{
+				{
+					Role:      "",
+					SessionID: "ses-stale-empty",
+					StartedAt: wfStart.Add(-24 * time.Hour),
+				},
+			},
+			workflowStart: wfStart,
+			want:          "",
+		},
+		{
+			name: "current-workflow impl preferred over stale impl",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-stale",
+					StartedAt: wfStart.Add(-24 * time.Hour),
+				},
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-current",
+					StartedAt: wfStart.Add(time.Minute),
+				},
+			},
+			workflowStart: wfStart,
+			want:          "ses-current",
+		},
+		{
+			name: "run started exactly at workflow start is eligible",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-edge",
+					StartedAt: wfStart,
+				},
+			},
+			workflowStart: wfStart,
+			want:          "ses-edge",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := pickImplementationResumeSession(tc.runs)
+			got := pickImplementationResumeSession(tc.runs, tc.workflowStart)
 			if got != tc.want {
 				t.Errorf("pickImplementationResumeSession() = %q, want %q", got, tc.want)
 			}
