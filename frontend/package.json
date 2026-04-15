@@ -25,6 +25,7 @@
     "@tailwindcss/vite": "4.2.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/svelte": "5.3.1",
+    "@types/js-yaml": "^4.0.9",
     "@vitest/coverage-v8": "4.1.2",
     "jsdom": "29.0.1",
     "oxlint": "1.58.0",
@@ -39,6 +40,7 @@
     "@lucide/svelte": "^1.8.0",
     "@xyflow/svelte": "^1.5.2",
     "highlight.js": "^11.11.1",
+    "js-yaml": "^4.1.1",
     "marked": "^18.0.0",
     "marked-highlight": "^2.2.4",
     "snarkdown": "^2.0.0"

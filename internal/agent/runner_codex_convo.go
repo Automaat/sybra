@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 
@@ -130,6 +131,9 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 	cmd := exec.CommandContext(ctx, "codex", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
+	}
+	if len(cfg.ExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
 	}
 
 	stdout, err := cmd.StdoutPipe()

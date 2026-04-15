@@ -101,6 +101,9 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
+	if len(cfg.ExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

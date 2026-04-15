@@ -80,6 +80,9 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
+	if len(cfg.ExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	}
 	a.Command = command
 
 	stdout, pipeErr := cmd.StdoutPipe()

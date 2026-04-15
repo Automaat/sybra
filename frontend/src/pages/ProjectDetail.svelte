@@ -1,7 +1,9 @@
 <script lang="ts">
   import { ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
+  import * as yaml from 'js-yaml'
   import type { project } from '../../wailsjs/go/models.js'
+  import { SetProjectSandboxConfig } from '../../wailsjs/go/synapse/ProjectService.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
@@ -21,14 +23,25 @@
   let deleting = $state(false)
   let updatingType = $state(false)
   let activeTab = $state('tasks')
+  let sandboxYaml = $state('')
+  let sandboxSaving = $state(false)
+  let sandboxError = $state('')
+  let sandboxSaved = $state(false)
 
   const tabs = [
     { value: 'tasks', label: 'Tasks' },
     { value: 'worktrees', label: 'Worktrees' },
+    { value: 'sandbox', label: 'Sandbox' },
   ]
 
   $effect(() => {
     loadProject()
+  })
+
+  $effect(() => {
+    if (p) {
+      sandboxYaml = p.sandbox ? yaml.dump(p.sandbox, { indent: 2 }) : ''
+    }
   })
 
   async function loadProject() {
@@ -36,6 +49,25 @@
       p = await projectStore.get(projectId)
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function saveSandboxConfig() {
+    if (!p) return
+    sandboxSaving = true
+    sandboxError = ''
+    sandboxSaved = false
+    try {
+      const parsed = sandboxYaml.trim()
+        ? (yaml.load(sandboxYaml) as project.SandboxConfig)
+        : null
+      p = await SetProjectSandboxConfig(projectId, parsed as project.SandboxConfig)
+      sandboxSaved = true
+      setTimeout(() => { sandboxSaved = false }, 2000)
+    } catch (e) {
+      sandboxError = String(e)
+    } finally {
+      sandboxSaving = false
     }
   }
 
@@ -190,6 +222,34 @@
         </div>
       {:else if activeTab === 'worktrees'}
         <WorktreeList projectId={projectId} />
+      {:else if activeTab === 'sandbox'}
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-surface-500">
+            Configure the sandbox environment for agents working on this project.
+            Leave empty to disable sandbox.
+          </p>
+          <textarea
+            class="h-64 w-full rounded border border-surface-300 bg-surface-50 px-3 py-2 font-mono text-sm dark:border-surface-600 dark:bg-surface-900"
+            placeholder="# Example:&#10;image: myapp:latest&#10;port: 8080&#10;with:&#10;  - postgres:16"
+            bind:value={sandboxYaml}
+          ></textarea>
+          {#if sandboxError}
+            <p class="text-sm text-error-500">{sandboxError}</p>
+          {/if}
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              class="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+              onclick={saveSandboxConfig}
+              disabled={sandboxSaving}
+            >
+              {sandboxSaving ? 'Saving...' : 'Save'}
+            </button>
+            {#if sandboxSaved}
+              <span class="text-sm text-success-500">Saved</span>
+            {/if}
+          </div>
+        </div>
       {/if}
     </div>
   {:else if !error}

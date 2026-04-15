@@ -1,6 +1,7 @@
 package synapse
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/synapse/internal/sandbox"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/worktree"
 )
@@ -51,6 +53,7 @@ type AgentOrchestrator struct {
 	agents    *agent.Manager
 	worktrees *worktree.Manager
 	cfg       *config.Config
+	sandboxes *sandbox.Manager
 }
 
 func newAgentOrchestrator(
@@ -105,6 +108,23 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		}
 	}
 
+	var extraEnv []string
+	if o.sandboxes != nil && t.ProjectID != "" {
+		if proj, pErr := o.projects.Get(t.ProjectID); pErr == nil && proj.Sandbox != nil {
+			inst := o.sandboxes.Get(taskID)
+			if inst == nil {
+				inst, err = o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
+				if err != nil {
+					o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", err)
+					err = nil // non-fatal: agent runs without sandbox
+				}
+			}
+			if inst != nil {
+				extraEnv = inst.EnvVars()
+			}
+		}
+	}
+
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
@@ -117,6 +137,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		RequirePermissions: requirePerm,
 		OneShot:            oneShot,
 		ResumeSessionID:    resumeSessionID,
+		ExtraEnv:           extraEnv,
 	})
 	if err != nil {
 		// Gate block leaves no running agent. Flip the task back to todo so

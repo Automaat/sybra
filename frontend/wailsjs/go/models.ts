@@ -786,6 +786,36 @@ export namespace notification {
 
 export namespace project {
 	
+	export class SandboxConfig {
+	    image?: string;
+	    build?: string;
+	    with?: string[];
+	    composeFile?: string;
+	    service?: string;
+	    port?: number;
+	    env?: Record<string, string>;
+	    envFile?: string;
+	    cluster?: string;
+	    deploy?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SandboxConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.image = source["image"];
+	        this.build = source["build"];
+	        this.with = source["with"];
+	        this.composeFile = source["composeFile"];
+	        this.service = source["service"];
+	        this.port = source["port"];
+	        this.env = source["env"];
+	        this.envFile = source["envFile"];
+	        this.cluster = source["cluster"];
+	        this.deploy = source["deploy"];
+	    }
+	}
 	export class Project {
 	    id: string;
 	    name: string;
@@ -795,6 +825,7 @@ export namespace project {
 	    clonePath: string;
 	    type: string;
 	    setupCommands?: string[];
+	    sandbox?: SandboxConfig;
 	    // Go type: time
 	    createdAt: any;
 	    // Go type: time
@@ -814,6 +845,7 @@ export namespace project {
 	        this.clonePath = source["clonePath"];
 	        this.type = source["type"];
 	        this.setupCommands = source["setupCommands"];
+	        this.sandbox = this.convertValues(source["sandbox"], SandboxConfig);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
@@ -836,6 +868,7 @@ export namespace project {
 		    return a;
 		}
 	}
+	
 	export class Worktree {
 	    path: string;
 	    branch: string;

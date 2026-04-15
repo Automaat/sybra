@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/synapse/internal/sandbox"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
@@ -140,6 +141,7 @@ type agentAdapter struct {
 	agents    *agent.Manager
 	agentOrch *AgentOrchestrator
 	tasks     *task.Manager
+	sandboxes *sandbox.Manager
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
@@ -196,6 +198,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// (which in dev mode would be the synapse source repo — the bug that
 		// caused branch changes on main).
 		cfg.Dir = config.HomeDir()
+	}
+
+	// Inject sandbox env vars if a sandbox is already running for this task.
+	if a.sandboxes != nil {
+		if inst := a.sandboxes.Get(taskID); inst != nil {
+			cfg.ExtraEnv = inst.EnvVars()
+		}
 	}
 
 	ag, err := a.agents.Run(cfg)

@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/synapse/internal/audit"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
+	"github.com/Automaat/synapse/internal/sandbox"
 	"github.com/Automaat/synapse/internal/task"
 	"github.com/Automaat/synapse/internal/workflow"
 	"github.com/Automaat/synapse/internal/worktree"
@@ -22,6 +23,7 @@ type TaskService struct {
 	agents         *agent.Manager
 	workflowEngine *workflow.Engine
 	worktrees      *worktree.Manager
+	sandboxes      *sandbox.Manager
 	wg             *sync.WaitGroup
 	logger         *slog.Logger
 	audit          *audit.Logger
@@ -128,7 +130,12 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		return t, err
 	}
 	if t.Status == task.StatusDone {
-		s.wg.Go(func() { s.worktrees.Remove(t.ID) })
+		s.wg.Go(func() {
+			s.worktrees.Remove(t.ID)
+			if s.sandboxes != nil {
+				s.sandboxes.Stop(t.ID)
+			}
+		})
 	}
 
 	// When manually moved to in-progress with a terminal workflow and no live
@@ -156,6 +163,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
 	s.agents.KillAgentsForTask(id, 10*time.Second)
+	if s.sandboxes != nil {
+		s.sandboxes.Stop(id)
+	}
 	s.worktrees.Remove(id)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
