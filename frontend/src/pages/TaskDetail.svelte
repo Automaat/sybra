@@ -6,6 +6,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { connectionStore } from '../stores/connection.svelte.js'
   import { STATUS_OPTIONS } from '../lib/statuses.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
@@ -717,14 +718,20 @@
             placeholder="Enter prompt for the agent..."
             bind:value={prompt}
           ></textarea>
-          <button
-            type="button"
-            class="w-fit rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
-            onclick={startAgent}
-            disabled={starting || !prompt.trim()}
-          >
-            {starting ? 'Starting...' : 'Start agent'}
-          </button>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="w-fit rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={startAgent}
+              disabled={starting || !prompt.trim() || !connectionStore.online}
+              title={!connectionStore.online ? 'Offline — agent cannot start until connection is restored' : undefined}
+            >
+              {starting ? 'Starting...' : 'Start agent'}
+            </button>
+            {#if !connectionStore.online}
+              <span class="text-xs text-warning-600 dark:text-warning-400">Offline</span>
+            {/if}
+          </div>
         </div>
       {/if}
 

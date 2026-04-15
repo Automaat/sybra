@@ -554,12 +554,35 @@ func formatHeadlessToolResults(results []ToolResultBlock) string {
 }
 
 func (m *Manager) handleError(a *Agent, err error) {
+	kind := classifyAgentError(err)
+	a.SetError(kind, err.Error())
 	a.SetState(StateStopped)
 	m.markAgentDone(a)
-	m.logger.Error("agent.error", "id", a.ID, "err", err)
-	m.emit(events.AgentError(a.ID), err.Error())
+	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
+	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
+	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, false)
 	if m.onComplete != nil {
 		m.onComplete(a)
+	}
+}
+
+// classifyAgentError maps a fatal agent error to a canonical kind string.
+func classifyAgentError(err error) string {
+	if err == nil {
+		return "crash"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
+		return "worktree_conflict"
+	case strings.Contains(msg, "clone") || (strings.Contains(msg, "git") && strings.Contains(msg, "network")):
+		return "git_clone"
+	case strings.Contains(msg, "permission denied"):
+		return "permission_denied"
+	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded"):
+		return "rate_limit"
+	default:
+		return "crash"
 	}
 }
