@@ -30,6 +30,7 @@ jobs:
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
+            LATEST=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
           else
             LATEST=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
             if [ -z "$LATEST" ]; then
@@ -41,7 +42,8 @@ jobs:
             fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Publishing version: $VERSION"
+          echo "prev_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION (prev: $LATEST)"
 
       - name: Create and push tag
         run: |
@@ -82,10 +84,61 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Generate release notes
+        shell: bash
+        run: |
+          PREV="${{ steps.version.outputs.prev_version }}"
+          if [ -z "$PREV" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV}..HEAD"
+          fi
+
+          declare -A TITLES
+          TITLES[feat]="### Features"
+          TITLES[fix]="### Bug Fixes"
+          TITLES[perf]="### Performance"
+          TITLES[refactor]="### Refactoring"
+          TITLES[docs]="### Documentation"
+          TITLES[ci]="### CI"
+          TITLES[test]="### Tests"
+          TITLES[build]="### Build"
+          TITLES[chore]="### Chores"
+
+          declare -A LINES
+
+          while IFS= read -r subject; do
+            TYPE=$(echo "$subject" | grep -oP '^[a-z]+(?=[\(\:!])')
+            if [ -n "$TYPE" ] && [ -n "${TITLES[$TYPE]+x}" ]; then
+              LINES[$TYPE]+="- ${subject}"$'\n'
+            else
+              LINES[other]+="- ${subject}"$'\n'
+            fi
+          done < <(git log "$RANGE" --format="%s" 2>/dev/null)
+
+          NOTES=""
+          for TYPE in feat fix perf refactor docs ci test build chore; do
+            if [ -n "${LINES[$TYPE]}" ]; then
+              NOTES+="${TITLES[$TYPE]}"$'\n'
+              NOTES+="${LINES[$TYPE]}"$'\n'
+            fi
+          done
+          if [ -n "${LINES[other]}" ]; then
+            NOTES+="### Other"$'\n'
+            NOTES+="${LINES[other]}"$'\n'
+          fi
+
+          if [ -z "$NOTES" ]; then
+            NOTES="No changes recorded."
+          fi
+
+          printf '%s' "$NOTES" > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ steps.version.outputs.version }}" \
             --title "${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --notes-file /tmp/release-notes.md
