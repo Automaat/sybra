@@ -33,6 +33,7 @@ type agentDispatcher struct {
 	worktreePath func(t task.Task) (string, bool)
 	repoDir      string
 	model        string
+	issueRepo    string
 }
 
 // AgentDispatcherDeps groups the constructor inputs so the call site at app
@@ -43,6 +44,11 @@ type AgentDispatcherDeps struct {
 	WorktreePath func(t task.Task) (string, bool)
 	RepoDir      string
 	Model        string
+	// IssueRepo is the "owner/name" GitHub repository where monitor issues
+	// must be filed. Passed explicitly into prompts so agents are independent
+	// of their working directory (which may be a task worktree for an
+	// unrelated project).
+	IssueRepo string
 }
 
 func NewAgentDispatcher(d AgentDispatcherDeps) *agentDispatcher {
@@ -52,6 +58,7 @@ func NewAgentDispatcher(d AgentDispatcherDeps) *agentDispatcher {
 		worktreePath: d.WorktreePath,
 		repoDir:      d.RepoDir,
 		model:        d.Model,
+		issueRepo:    d.IssueRepo,
 	}
 }
 
@@ -69,7 +76,7 @@ func (d *agentDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error)
 		TaskID:                 taskID,
 		Name:                   name,
 		Mode:                   "headless",
-		Prompt:                 DispatchPrompt(a),
+		Prompt:                 DispatchPrompt(a, d.issueRepo),
 		AllowedTools:           []string{"Bash", "Read"},
 		Dir:                    dir,
 		Model:                  d.model,

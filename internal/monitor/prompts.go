@@ -32,18 +32,21 @@ func DeterministicIssueBody(a Anomaly) string {
 
 // DispatchPrompt builds the focused per-anomaly Claude prompt the agent
 // dispatcher hands to claude -p. Each kind gets a short, surgical script.
-func DispatchPrompt(a Anomaly) string {
+// issueRepo is the "owner/name" repository where GitHub issues must be filed;
+// it is injected explicitly so agents are independent of their working
+// directory (which may be a task worktree for an unrelated project).
+func DispatchPrompt(a Anomaly, issueRepo string) string {
 	switch a.Kind {
 	case KindPRGap:
 		return prGapPrompt(a)
 	case KindStuckHumanBlocked:
-		return stuckPrompt(a)
+		return stuckPrompt(a, issueRepo)
 	case KindFailureSpike:
-		return failureSpikePrompt(a)
+		return failureSpikePrompt(a, issueRepo)
 	case KindBottleneck:
-		return bottleneckPrompt(a)
+		return bottleneckPrompt(a, issueRepo)
 	default:
-		return investigatePrompt(a)
+		return investigatePrompt(a, issueRepo)
 	}
 }
 
@@ -73,7 +76,7 @@ Output exactly one final JSON line:
 	)
 }
 
-func stuckPrompt(a Anomaly) string {
+func stuckPrompt(a Anomaly, issueRepo string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
 	status, _ := a.Evidence["status"].(string)
@@ -88,22 +91,23 @@ Task file: %s
 Read-only investigation:
 - Read the task file and the most recent agent log under ~/.synapse/logs/agents matching this task id.
 - Identify the actual blocker in one sentence and propose the next concrete step a human could take.
-- Then dedup against open issues and either create or comment one on the host repo.
+- Then dedup against open issues and either create or comment one on the repo below.
 
 GitHub issue handling:
-- Repo: $(gh repo view --json nameWithOwner -q .nameWithOwner)
+- Repo: %s
 - Title: "[monitor] stuck_human_blocked: %s"
-- Dedup: gh issue list --state open --label monitor --search "in:title \"[monitor] stuck_human_blocked: %s\""
-- On hit: gh issue comment <num> --body "..."
-- On miss: gh issue create --title "[monitor] stuck_human_blocked: %s" --body "..." --label monitor,bug
+- Dedup: gh issue list --repo %s --state open --label monitor --search "in:title \"[monitor] stuck_human_blocked: %s\""
+- On hit: gh issue comment --repo %s <num> --body "..."
+- On miss: gh issue create --repo %s --title "[monitor] stuck_human_blocked: %s" --body "..." --label monitor,bug
 
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","blocker":"<one phrase>","nextStep":"<imperative sentence>"}`,
-		taskID, title, status, dwell, filePath, taskID, taskID, taskID,
+		taskID, title, status, dwell, filePath,
+		issueRepo, taskID, issueRepo, taskID, issueRepo, issueRepo, taskID,
 	)
 }
 
-func failureSpikePrompt(a Anomaly) string {
+func failureSpikePrompt(a Anomaly, issueRepo string) string {
 	rate, _ := a.Evidence["failure_rate"].(float64)
 	runs, _ := a.Evidence["agent_runs"].(int)
 	return fmt.Sprintf(`You are the synapse monitor failure-spike investigator.
@@ -117,19 +121,19 @@ Read-only investigation:
 - Look for a common pattern across failures (provider error, tool error, repeated tool loop, etc).
 
 GitHub issue handling:
-- Repo: $(gh repo view --json nameWithOwner -q .nameWithOwner)
+- Repo: %s
 - Title: "[monitor] failure_spike"
-- Dedup: gh issue list --state open --label monitor --search "in:title \"[monitor] failure_spike\""
-- On hit: gh issue comment <num> --body "..."
-- On miss: gh issue create --title "[monitor] failure_spike" --body "..." --label monitor,bug
+- Dedup: gh issue list --repo %s --state open --label monitor --search "in:title \"[monitor] failure_spike\""
+- On hit: gh issue comment --repo %s <num> --body "..."
+- On miss: gh issue create --repo %s --title "[monitor] failure_spike" --body "..." --label monitor,bug
 
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","rootCause":"<one phrase>","commonPattern":"<one phrase>"}`,
-		rate, runs,
+		rate, runs, issueRepo, issueRepo, issueRepo, issueRepo,
 	)
 }
 
-func bottleneckPrompt(a Anomaly) string {
+func bottleneckPrompt(a Anomaly, issueRepo string) string {
 	status, _ := a.Evidence["status"].(string)
 	dwell, _ := a.Evidence["dwell_h"].(float64)
 	threshold, _ := a.Evidence["threshold"].(float64)
@@ -142,21 +146,21 @@ Read-only investigation:
 - Identify whether the bottleneck is structural (workflow rule), human (waiting on a person), or process (slow handoff between statuses).
 
 GitHub issue handling:
-- Repo: $(gh repo view --json nameWithOwner -q .nameWithOwner)
+- Repo: %s
 - Title: "[monitor] bottleneck: %s"
-- Dedup: gh issue list --state open --label monitor --search "in:title \"[monitor] bottleneck: %s\""
-- On hit: gh issue comment <num> --body "..."
-- On miss: gh issue create --title "[monitor] bottleneck: %s" --body "..." --label monitor,bug
+- Dedup: gh issue list --repo %s --state open --label monitor --search "in:title \"[monitor] bottleneck: %s\""
+- On hit: gh issue comment --repo %s <num> --body "..."
+- On miss: gh issue create --repo %s --title "[monitor] bottleneck: %s" --body "..." --label monitor,bug
 
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","likelyCause":"<phrase>","affectedTaskIds":[...]}`,
-		status, dwell, threshold, status, status, status, status,
+		status, dwell, threshold, status, issueRepo, status, issueRepo, status, issueRepo, issueRepo, status,
 	)
 }
 
 // investigatePrompt is the catch-all handler for kinds that have no specific
 // template — should never run today, but keeps DispatchPrompt total.
-func investigatePrompt(a Anomaly) string {
+func investigatePrompt(a Anomaly, issueRepo string) string {
 	return fmt.Sprintf(`You are the synapse monitor anomaly investigator.
 
 Anomaly: %s
@@ -165,10 +169,11 @@ Evidence:
 %s
 
 Read the relevant logs under ~/.synapse/logs/, identify the proximate cause,
-and either create or comment an issue at the host repo with label "monitor".
+and either create or comment an issue at %s with label "monitor".
+Always pass --repo %s to gh commands.
 
 Output one final JSON line: {"issueNumber":N,"action":"created"|"commented","summary":"..."}`,
-		a.Kind, a.Fingerprint, evidenceJSON(a.Evidence),
+		a.Kind, a.Fingerprint, evidenceJSON(a.Evidence), issueRepo, issueRepo,
 	)
 }
 

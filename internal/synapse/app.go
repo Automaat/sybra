@@ -355,8 +355,9 @@ func (a *App) startMonitorService(ctx context.Context, emit func(string, any)) {
 			}
 			return a.worktrees.PathFor(t), true
 		},
-		RepoDir: a.repoDir,
-		Model:   a.cfg.Monitor.Model,
+		RepoDir:   a.repoDir,
+		Model:     a.cfg.Monitor.Model,
+		IssueRepo: a.cfg.Monitor.IssueRepo,
 	})
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        a.cfg.Monitor,
@@ -364,7 +365,7 @@ func (a *App) startMonitorService(ctx context.Context, emit func(string, any)) {
 		Audit:      monitor.AuditDirReader(a.cfg.AuditDir()),
 		Agents:     a.agents,
 		Dispatcher: disp,
-		Sink:       monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel),
+		Sink:       monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo),
 		Emit:       emit,
 		Logger:     a.logger,
 		AllowsProject: func(projectID string) bool {
