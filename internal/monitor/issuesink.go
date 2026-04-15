@@ -40,16 +40,19 @@ func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) 
 type GHIssueSink struct {
 	exec       ghExecer
 	label      string
+	repo       string
 	labelsOnce sync.Once
 }
 
 // NewGHIssueSink returns a sink wired to the real gh CLI. label is the
-// monitor anomaly label used for filtering and creation.
-func NewGHIssueSink(label string) *GHIssueSink {
+// monitor anomaly label used for filtering and creation. repo is the
+// "owner/name" GitHub repository where issues are filed; it is passed via
+// --repo so the sink is independent of the process working directory.
+func NewGHIssueSink(label, repo string) *GHIssueSink {
 	if label == "" {
 		label = "monitor"
 	}
-	return &GHIssueSink{exec: defaultGHExecer{}, label: label}
+	return &GHIssueSink{exec: defaultGHExecer{}, label: label, repo: repo}
 }
 
 // Submit searches for an open issue matching the anomaly fingerprint title.
@@ -65,37 +68,45 @@ func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool,
 		return false, err
 	}
 	if num > 0 {
-		if _, err := s.exec.run(ctx, "issue", "comment", fmt.Sprint(num), "--body", body); err != nil {
+		if _, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", fmt.Sprint(num), "--body", body)...); err != nil {
 			return false, classifyGHError(err)
 		}
 		return false, nil
 	}
-	if _, err := s.exec.run(ctx, "issue", "create",
+	if _, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "create",
 		"--title", title,
 		"--body", body,
 		"--label", s.label+",bug",
-	); err != nil {
+	)...); err != nil {
 		return false, classifyGHError(err)
 	}
 	return true, nil
+}
+
+// repoArgs returns ["--repo", s.repo] when a repo is configured, or nil.
+func (s *GHIssueSink) repoArgs() []string {
+	if s.repo == "" {
+		return nil
+	}
+	return []string{"--repo", s.repo}
 }
 
 func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 	// Best-effort. gh exits non-zero if the label exists; both outcomes are
 	// fine. We swallow the error and rely on the create call to surface
 	// label-related problems if any.
-	_, _ = s.exec.run(ctx, "label", "create", s.label, "--color", "BFD4F2", "--description", "Opened by synapse monitor")
-	_, _ = s.exec.run(ctx, "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")
+	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", s.label, "--color", "BFD4F2", "--description", "Opened by synapse monitor")...)
+	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")...)
 }
 
 func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (int, error) {
-	out, err := s.exec.run(ctx, "issue", "list",
+	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list",
 		"--state", "open",
 		"--label", s.label,
 		"--search", "in:title \""+title+"\"",
 		"--json", "number,title",
 		"--limit", "5",
-	)
+	)...)
 	if err != nil {
 		return 0, classifyGHError(err)
 	}

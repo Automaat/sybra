@@ -162,6 +162,7 @@ type MonitorConfig struct {
 	FailureRateThreshold float64            `yaml:"failure_rate_threshold" json:"failureRateThreshold"`
 	BottleneckHours      map[string]float64 `yaml:"bottleneck_hours" json:"bottleneckHours"`
 	IssueLabel           string             `yaml:"issue_label" json:"issueLabel"`
+	IssueRepo            string             `yaml:"issue_repo" json:"issueRepo"`
 }
 
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
@@ -442,6 +443,9 @@ func applyMonitorDefaults(cfg *Config) {
 	}
 	if cfg.Monitor.IssueLabel == "" {
 		cfg.Monitor.IssueLabel = "monitor"
+	}
+	if cfg.Monitor.IssueRepo == "" {
+		cfg.Monitor.IssueRepo = "Automaat/synapse"
 	}
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}
