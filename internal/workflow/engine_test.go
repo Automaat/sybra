@@ -2575,6 +2575,110 @@ func TestExecEvaluate_NoPRFallsThrough(t *testing.T) {
 	}
 }
 
+func newLinkPRStep() *Step {
+	return &Step{ID: "link_pr_and_review", Type: StepLinkPRAndReview}
+}
+
+func TestExecLinkPRAndReview_PRAlreadyLinked(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 42})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 42 {
+		t.Errorf("pr_number = %d, want 42", ti.PRNumber)
+	}
+}
+
+func TestExecLinkPRAndReview_FullURLInAgentOutput(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1",
+				Output: "PR created: https://github.com/owner/repo/pull/123"},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 123 {
+		t.Errorf("pr_number = %d, want 123", ti.PRNumber)
+	}
+}
+
+func TestExecLinkPRAndReview_ShortRefInAgentOutput(t *testing.T) {
+	// Agents sometimes output "owner/repo#N" instead of a full GitHub URL.
+	// The step must parse this shorthand and link the PR.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1",
+				Output: "PR created: Automaat/synapse#444\n\nChanges applied."},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-review" {
+		t.Errorf("task status = %q, want in-review", ti.Status)
+	}
+	if ti.PRNumber != 444 {
+		t.Errorf("pr_number = %d, want 444", ti.PRNumber)
+	}
+}
+
+func TestExecLinkPRAndReview_NoPRFallsThrough(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "changes pushed"},
+		},
+	}
+
+	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), wfExec, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (must not change)", ti.Status)
+	}
+}
+
 func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
 	// After a run_agent step with role=review completes successfully,
 	// the task must be marked reviewed so re-triggered workflows skip code_review.

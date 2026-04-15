@@ -1092,6 +1092,7 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 }
 
 var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
+var prShortRe = regexp.MustCompile(`\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#(\d+)`)
 
 // execLinkPRAndReview is a non-LLM mechanical step that tries to recover the
 // PR number from three sources and flip the task to in-review:
@@ -1120,16 +1121,18 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		return setInReview(t.PRNumber, "task.pr_number")
 	}
 
-	// Path 2: Scan step history for a GitHub PR URL in agent output.
+	// Path 2: Scan step history for a GitHub PR URL or owner/repo#N in agent output.
 	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
 		rec := wfExec.StepHistory[i]
 		if rec.Status != "completed" || rec.Output == "" {
 			continue
 		}
-		if m := prURLRe.FindStringSubmatch(rec.Output); len(m) > 1 {
-			n, err := strconv.Atoi(m[1])
-			if err == nil && n > 0 {
-				return setInReview(n, "agent result")
+		for _, re := range []*regexp.Regexp{prURLRe, prShortRe} {
+			if m := re.FindStringSubmatch(rec.Output); len(m) > 1 {
+				n, err := strconv.Atoi(m[1])
+				if err == nil && n > 0 {
+					return setInReview(n, "agent result")
+				}
 			}
 		}
 	}
