@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/synapse/internal/httpapi"
 	"github.com/Automaat/synapse/internal/logging"
 	"github.com/Automaat/synapse/internal/metrics"
+	"github.com/Automaat/synapse/internal/skills"
 	"github.com/Automaat/synapse/internal/sse"
 	"github.com/Automaat/synapse/internal/synapse"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -68,7 +69,7 @@ func run() error {
 
 	broker := sse.New()
 
-	app := synapse.NewApp(logger, levelVar, cfg, synapse.WithEmit(broker.Emit))
+	app := synapse.NewApp(logger, levelVar, cfg, synapse.WithEmit(broker.Emit), synapse.WithSkillsFS(skills.FS))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
