@@ -346,6 +346,10 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 		closedPRs := github.DetectClosedTaskPRs(summary.CreatedByMe, matchers, github.FetchPRState)
 		for _, c := range closedPRs {
+			if r.agents.HasRunningAgentForTask(c.TaskID) {
+				r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+				continue
+			}
 			if _, err := r.tasks.Update(c.TaskID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
 				r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
 				continue

@@ -102,12 +102,25 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	cur, _ := s.tasks.Get(id)
 
-	if status, ok := updates["status"].(string); ok && status == string(task.StatusTesting) {
-		if cur.Workflow != nil &&
-			cur.Workflow.State != workflow.ExecCompleted &&
-			cur.Workflow.State != workflow.ExecFailed {
-			return cur, fmt.Errorf("cannot move to testing: task has active workflow %q (state=%s)",
-				cur.Workflow.WorkflowID, cur.Workflow.State)
+	if status, ok := updates["status"].(string); ok {
+		// Reject status regressions while an agent is running on this task.
+		// Moving back to todo/new/done while an agent is active loses in-flight work.
+		agentBlockedStatuses := map[string]bool{
+			string(task.StatusNew):  true,
+			string(task.StatusTodo): true,
+			string(task.StatusDone): true,
+		}
+		if agentBlockedStatuses[status] && s.agents.HasRunningAgentForTask(id) {
+			return cur, fmt.Errorf("cannot move to %q: stop the running agent first", status)
+		}
+
+		if status == string(task.StatusTesting) {
+			if cur.Workflow != nil &&
+				cur.Workflow.State != workflow.ExecCompleted &&
+				cur.Workflow.State != workflow.ExecFailed {
+				return cur, fmt.Errorf("cannot move to testing: task has active workflow %q (state=%s)",
+					cur.Workflow.WorkflowID, cur.Workflow.State)
+			}
 		}
 	}
 	t, err := s.tasks.UpdateMap(id, updates)
