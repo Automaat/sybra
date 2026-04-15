@@ -916,11 +916,9 @@ func TestConcurrentAdvance(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
 	for i := range 2 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			errs[idx] = engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"})
-		}(i)
+		wg.Go(func() {
+			errs[i] = engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"})
+		})
 	}
 	wg.Wait()
 
