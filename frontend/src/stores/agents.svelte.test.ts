@@ -168,12 +168,12 @@ describe('AgentStore', () => {
 
   describe('appendEvent', () => {
     it('appends to existing output', () => {
-      agentStore.outputs.set('a1', [{ type: 'init', content: 'start' }])
+      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' }, receivedAt: new Date() }])
       agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' })
 
       const events = agentStore.outputs.get('a1')!
       expect(events).toHaveLength(2)
-      expect(events[1].type).toBe('assistant')
+      expect(events[1].event.type).toBe('assistant')
     })
 
     it('creates new array if none exists', () => {

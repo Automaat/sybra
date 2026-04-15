@@ -71,7 +71,7 @@
     if (!agentId) return
 
     agentStore.getOutput(agentId).then((initial) => {
-      events = initial
+      events = initial.map((tse) => tse.event)
       scrollToBottom()
     })
 
