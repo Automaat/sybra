@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { GetSettings, UpdateSettings, GetVersion } from '$lib/api'
   import type { synapse } from '../../wailsjs/go/models.js'
   import {
@@ -39,12 +40,15 @@
 
   const dirOrder = ['tasks', 'skills', 'projects', 'clones', 'worktrees', 'logs', 'audit']
 
-  let serverVersion = $state<string>('')
+  let serverVersion = $state<string | null>(null)
   const clientVersion = String(import.meta.env.VITE_APP_VERSION || 'dev')
 
   $effect(() => {
     load()
-    GetVersion().then(v => { serverVersion = v.server }).catch(() => {})
+  })
+
+  onMount(() => {
+    GetVersion().then(v => { serverVersion = v.server }).catch(() => { serverVersion = 'unavailable' })
   })
 
   async function load() {
@@ -521,7 +525,7 @@
       <div class="flex flex-col gap-2">
         <div class="flex items-center gap-3">
           <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Server</span>
-          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{serverVersion || '…'}</span>
+          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{serverVersion ?? '…'}</span>
         </div>
         <div class="flex items-center gap-3">
           <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Client</span>
