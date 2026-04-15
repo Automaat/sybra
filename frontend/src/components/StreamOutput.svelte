@@ -79,18 +79,18 @@
   <div
     bind:this={container}
     onscroll={onScroll}
-    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 font-mono text-xs dark:border-surface-600"
+    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-700 bg-surface-950 p-3 font-mono text-xs text-surface-50"
   >
     {#if events.length === 0}
       <p class="py-8 text-center text-surface-500">Waiting for output...</p>
     {:else}
       {#each events as event, i (i)}
-        {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-300 text-surface-800' }}
+        {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-700 text-surface-200' }}
         <div class="flex items-start gap-2">
           <span class="mt-0.5 inline-block shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold {style.classes}">
             {style.label}
           </span>
-          <pre class="min-w-0 flex-1 whitespace-pre-wrap break-words text-surface-200">{event.content ?? ''}</pre>
+          <pre class="min-w-0 flex-1 whitespace-pre-wrap break-words">{event.content ?? ''}</pre>
         </div>
       {/each}
     {/if}
