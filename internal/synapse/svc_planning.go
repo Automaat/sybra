@@ -97,6 +97,7 @@ func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	if err := s.engine.HandleHumanAction(id, "reject", data); err != nil {
 		return task.Task{}, err
 	}
+	_ = s.tasks.Comments().ResolveAll(id)
 	return s.tasks.Get(id)
 }
 
