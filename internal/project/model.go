@@ -53,13 +53,13 @@ const (
 )
 
 type Project struct {
-	ID            string         `yaml:"id" json:"id"`
-	Name          string         `yaml:"name" json:"name"`
-	Owner         string         `yaml:"owner" json:"owner"`
-	Repo          string         `yaml:"repo" json:"repo"`
-	URL           string         `yaml:"url" json:"url"`
-	ClonePath     string         `yaml:"clone_path" json:"clonePath"`
-	Type          ProjectType    `yaml:"type" json:"type"`
+	ID        string      `yaml:"id" json:"id"`
+	Name      string      `yaml:"name" json:"name"`
+	Owner     string      `yaml:"owner" json:"owner"`
+	Repo      string      `yaml:"repo" json:"repo"`
+	URL       string      `yaml:"url" json:"url"`
+	ClonePath string      `yaml:"clone_path" json:"clonePath"`
+	Type      ProjectType `yaml:"type" json:"type"`
 	// Status reflects the clone lifecycle. Empty value is treated as ready
 	// so existing projects without this field continue to work.
 	Status        ProjectStatus  `yaml:"status,omitempty" json:"status"`

@@ -33,6 +33,6 @@ type Operation struct {
 	ProjectID   string    `json:"projectId,omitempty"`
 	TaskID      string    `json:"taskId,omitempty"`
 	StartedAt   time.Time `json:"startedAt"`
-	CompletedAt time.Time `json:"completedAt,omitempty"`
+	CompletedAt time.Time `json:"completedAt,omitzero"`
 	Error       string    `json:"error,omitempty"`
 }

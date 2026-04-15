@@ -39,6 +39,16 @@ vi.mock('./stores/agents.svelte.js', () => ({
   },
 }))
 
+vi.mock('./stores/bgops.svelte.js', () => ({
+  bgopStore: {
+    load: vi.fn().mockResolvedValue(undefined),
+    listen: vi.fn(() => vi.fn()),
+    ops: [],
+    activeCount: 0,
+    hasActive: false,
+  },
+}))
+
 vi.mock('./stores/notifications.svelte.js', () => ({
   notificationStore: {
     load: vi.fn().mockResolvedValue(undefined),

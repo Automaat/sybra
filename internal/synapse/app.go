@@ -222,8 +222,7 @@ func (a *App) Startup(ctx context.Context) error {
 		}
 		a.emit(event, data)
 	}
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
-	a.bgops.LoadFromDisk()
+	a.initBgops(emit)
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
@@ -279,6 +278,11 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
 	return nil
+}
+
+func (a *App) initBgops(emit func(string, any)) {
+	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
+	a.bgops.LoadFromDisk()
 }
 
 func (a *App) startBackgroundServices(
