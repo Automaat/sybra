@@ -10,6 +10,6 @@
   const resolved = $derived(STATUS_MAP[status] ?? { label: status, badgeClasses: 'bg-surface-200 text-surface-800' })
 </script>
 
-<span class="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium {resolved.badgeClasses}">
+<span class="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-100 {resolved.badgeClasses}">
   {resolved.label}
 </span>

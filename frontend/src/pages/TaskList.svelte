@@ -7,6 +7,9 @@
   import TaskCard from '../components/TaskCard.svelte'
   import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { viewport } from '../lib/viewport.svelte.js'
+  import { fly } from 'svelte/transition'
+  import { flip } from 'svelte/animate'
+  import { cubicOut } from 'svelte/easing'
 
   interface Props {
     onselect: (id: string) => void
@@ -494,12 +497,18 @@
           {#if !isCollapsed}
             <div class="flex flex-col gap-2 px-2 pb-2 md:flex-1 md:overflow-y-auto">
               {#each tasks as t (t.id)}
-                <TaskCard
-                  task={t}
-                  onclick={() => onselect(t.id)}
-                  focused={focusedTaskId === t.id}
-                  onstatuschange={(s) => moveTask(t.id, s)}
-                />
+                <div
+                  in:fly={{ y: -12, duration: 150, easing: cubicOut }}
+                  out:fly={{ y: 12, duration: 200, easing: cubicOut }}
+                  animate:flip={{ duration: 200, easing: cubicOut }}
+                >
+                  <TaskCard
+                    task={t}
+                    onclick={() => onselect(t.id)}
+                    focused={focusedTaskId === t.id}
+                    onstatuschange={(s) => moveTask(t.id, s)}
+                  />
+                </div>
               {/each}
             </div>
             <div class="px-2 pb-2">

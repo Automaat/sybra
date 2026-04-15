@@ -67,3 +67,12 @@ html, body {
 .dark [data-active] {
   background-color: var(--color-surface-700);
 }
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@utility animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
