@@ -41,6 +41,7 @@ export function StopAgent(arg1: string): Promise<void> { return call('AgentServi
 
 // App
 export function GetMonitorReport(): Promise<synapse.MonitorReportBinding> { return call('App', 'GetMonitorReport') }
+export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<notification.Notification>> { return call('App', 'ListNotifications') }
 export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }

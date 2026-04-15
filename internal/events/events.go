@@ -50,6 +50,13 @@ const (
 	// GitHub issues events.
 	IssuesUpdated = "issues:updated"
 
+	// Background operation events — emitted by bgop.Tracker for long-running
+	// operations (clone, worktree prep). Payload is a bgop.Operation.
+	BgOpStarted   = "bgop:started"
+	BgOpProgress  = "bgop:progress"
+	BgOpCompleted = "bgop:completed"
+	BgOpFailed    = "bgop:failed"
+
 	// App lifecycle events.
 	AppQuitConfirm  = "app:quit-confirm"
 	StartupDegraded = "startup:degraded"

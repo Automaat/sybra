@@ -14,6 +14,10 @@ export function GetMonitorReport() {
   return window['go']['synapse']['App']['GetMonitorReport']();
 }
 
+export function ListBackgroundOps() {
+  return window['go']['synapse']['App']['ListBackgroundOps']();
+}
+
 export function ListNotifications() {
   return window['go']['synapse']['App']['ListNotifications']();
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/bgop"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/github"
 	"github.com/Automaat/synapse/internal/project"
@@ -91,6 +92,7 @@ type AgentOrchestrator struct {
 	worktrees *worktree.Manager
 	cfg       *config.Config
 	sandboxes *sandbox.Manager
+	bgops     *bgop.Tracker
 }
 
 func newAgentOrchestrator(
@@ -127,10 +129,13 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		if t.ProjectID == "" {
 			return nil, fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
 		}
-		d, wtErr := o.worktrees.PrepareForTask(t)
+		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
+		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
 		if wtErr != nil {
+			o.failWorktreeOp(opID, wtErr)
 			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
+		o.completeWorktreeOp(opID)
 		dir = d
 	}
 	if dir == "" {
@@ -228,13 +233,16 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 		return nil, fmt.Errorf("create chat task: %w", err)
 	}
 
-	dir, err := o.worktrees.PrepareForChat(t)
+	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
+	dir, err := o.worktrees.PrepareForChat(t, onPhase)
 	if err != nil {
+		o.failWorktreeOp(opID, err)
 		if delErr := o.tasks.Delete(t.ID); delErr != nil {
 			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
 		}
 		return nil, fmt.Errorf("prepare chat worktree: %w", err)
 	}
+	o.completeWorktreeOp(opID)
 
 	requirePerm := resolvePermission(t, o.cfg)
 	ag, err := o.agents.Run(agent.RunConfig{
@@ -308,10 +316,13 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		if t.ProjectID == "" {
 			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree", taskID)
 		}
-		d, wtErr := o.worktrees.PrepareForTask(t)
+		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
+		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
 		if wtErr != nil {
+			o.failWorktreeOp(opID, wtErr)
 			return fmt.Errorf("worktree required: %w", wtErr)
 		}
+		o.completeWorktreeOp(opID)
 		dir = d
 	}
 	if dir == "" {
@@ -394,4 +405,27 @@ func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 	}
 
 	return sb.String()
+}
+
+// startWorktreeOp starts a bgop for worktree preparation and returns the op ID
+// and a phase-update callback. Returns empty string and nil when bgops is nil.
+func (o *AgentOrchestrator) startWorktreeOp(label, projectID, taskID string) (opID string, onPhase func(string)) {
+	if o.bgops == nil {
+		return "", nil
+	}
+	opID = o.bgops.Start(bgop.TypeWorktreePrep, label, projectID, taskID)
+	onPhase = func(phase string) { o.bgops.UpdatePhase(opID, phase) }
+	return opID, onPhase
+}
+
+func (o *AgentOrchestrator) completeWorktreeOp(opID string) {
+	if o.bgops != nil && opID != "" {
+		o.bgops.Complete(opID)
+	}
+}
+
+func (o *AgentOrchestrator) failWorktreeOp(opID string, err error) {
+	if o.bgops != nil && opID != "" {
+		o.bgops.Fail(opID, err)
+	}
 }

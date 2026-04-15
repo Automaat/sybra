@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/synapse/internal/agent"
 	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/synapse/internal/bgop"
 	"github.com/Automaat/synapse/internal/config"
 	"github.com/Automaat/synapse/internal/events"
 	"github.com/Automaat/synapse/internal/github"
@@ -79,6 +80,8 @@ type App struct {
 	emit            func(string, any)
 	emitFactory     func(context.Context) func(string, any)
 	restartStaleErr *logging.ErrorThrottle
+
+	bgops *bgop.Tracker
 
 	// Wails-bound services (created in startup)
 	taskSvc      *TaskService
@@ -219,6 +222,9 @@ func (a *App) Startup(ctx context.Context) error {
 		}
 		a.emit(event, data)
 	}
+	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
+	a.bgops.LoadFromDisk()
+
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
@@ -783,6 +789,10 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.projectSvc.projects = a.projects
 	a.projectSvc.worktrees = a.worktrees
 	a.projectSvc.logger = a.logger
+	a.projectSvc.notifier = a.notifier
+	a.projectSvc.bgops = a.bgops
+	a.projectSvc.wg = &a.wg
+	a.agentOrch.bgops = a.bgops
 	a.loopAgentSvc.store = a.loopAgents
 	a.loopAgentSvc.sched = a.loopSched
 	a.loopAgentSvc.auditDir = a.auditDir
@@ -1250,6 +1260,14 @@ func (a *App) syncFile(src, dst string) {
 		return
 	}
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
+}
+
+// ListBackgroundOps returns active and recently-completed background operations.
+func (a *App) ListBackgroundOps() []bgop.Operation {
+	if a.bgops == nil {
+		return nil
+	}
+	return a.bgops.List()
 }
 
 // ListNotifications returns pending in-app notifications.

@@ -432,7 +432,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		if issue.Kind == github.PRIssueConflict {
 			d, wtErr = r.worktrees.PrepareForFix(t, issue.PR.Number)
 		} else {
-			d, wtErr = r.worktrees.PrepareForTask(t)
+			d, wtErr = r.worktrees.PrepareForTask(t, nil)
 		}
 		if wtErr != nil {
 			r.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)

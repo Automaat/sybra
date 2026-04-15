@@ -185,7 +185,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		if t.ProjectID == "" {
 			return "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
 		}
-		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t)
+		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
 		if wtErr != nil {
 			return "", wtErr
 		}

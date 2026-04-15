@@ -11,6 +11,8 @@ export function Context():Promise<context.Context>;
 
 export function GetMonitorReport():Promise<synapse.MonitorReportBinding>;
 
+export function ListBackgroundOps():Promise<Array<any>>;
+
 export function ListNotifications():Promise<Array<notification.Notification>>;
 
 export function RegisterSpotlightHotkey():Promise<void>;

@@ -110,6 +110,7 @@ export namespace agent {
 	}
 	export class ConvoEvent {
 	    type: string;
+	    status: string;
 	    subtype?: string;
 	    sessionId?: string;
 	    text?: string;
@@ -132,6 +133,7 @@ export namespace agent {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
+		this.status = source["status"] || "ready";
 	        this.subtype = source["subtype"];
 	        this.sessionId = source["sessionId"];
 	        this.text = source["text"];
@@ -167,6 +169,7 @@ export namespace agent {
 	}
 	export class StreamEvent {
 	    type: string;
+	    status: string;
 	    content?: string;
 	    session_id?: string;
 	    cost_usd?: number;
@@ -185,6 +188,7 @@ export namespace agent {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
+		this.status = source["status"] || "ready";
 	        this.content = source["content"];
 	        this.session_id = source["session_id"];
 	        this.cost_usd = source["cost_usd"];
@@ -824,6 +828,7 @@ export namespace project {
 	    url: string;
 	    clonePath: string;
 	    type: string;
+	    status: string;
 	    setupCommands?: string[];
 	    sandbox?: SandboxConfig;
 	    // Go type: time
@@ -844,6 +849,7 @@ export namespace project {
 	        this.url = source["url"];
 	        this.clonePath = source["clonePath"];
 	        this.type = source["type"];
+		this.status = source["status"] || "ready";
 	        this.setupCommands = source["setupCommands"];
 	        this.sandbox = this.convertValues(source["sandbox"], SandboxConfig);
 	        this.createdAt = this.convertValues(source["createdAt"], null);
@@ -1566,6 +1572,7 @@ export namespace workflow {
 	    id: string;
 	    name: string;
 	    type: string;
+	    status: string;
 	    config: StepConfig;
 	    next: Transition[];
 	    parallel: Step[];
@@ -1580,6 +1587,7 @@ export namespace workflow {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.type = source["type"];
+		this.status = source["status"] || "ready";
 	        this.config = this.convertValues(source["config"], StepConfig);
 	        this.next = this.convertValues(source["next"], Transition);
 	        this.parallel = this.convertValues(source["parallel"], Step);

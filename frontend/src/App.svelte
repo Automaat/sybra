@@ -6,6 +6,7 @@
   import { agentStore } from './stores/agents.svelte.js'
   import { projectStore } from './stores/projects.svelte.js'
   import { notificationStore } from './stores/notifications.svelte.js'
+  import { bgopStore } from './stores/bgops.svelte.js'
   import { navStore, type Page } from './lib/navigation.svelte.js'
   import { viewport } from './lib/viewport.svelte.js'
   import { connectionStore } from './stores/connection.svelte.js'
@@ -127,6 +128,8 @@
       const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
       notificationStore.load()
       const unsubNotif = notificationStore.listen()
+      bgopStore.load()
+      const unsubBgops = bgopStore.listen()
       const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
         degradedWarnings = [...degradedWarnings, w]
       })
@@ -148,9 +151,9 @@
         if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
         quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
       })
-      return { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit }
+      return { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit, unsubBgops }
     })
-    const { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit } = cleanup
+    const { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit, unsubBgops } = cleanup
 
     // Keyboard shortcuts only on devices with a fine pointer (mouse/keyboard).
     // Touch-only devices (iPhone, iPad without keyboard) skip listener entirely.
@@ -216,6 +219,7 @@
       stopConnection()
       unsubTasks()
       unsubNotif()
+      unsubBgops()
       unsubDegraded()
       unsubProviderHealth()
       unsubQuit()

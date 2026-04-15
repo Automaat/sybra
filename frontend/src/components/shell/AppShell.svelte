@@ -7,6 +7,7 @@
   import BottomTabBar from './BottomTabBar.svelte'
   import MobileAppBar from './MobileAppBar.svelte'
   import MoreSheet from './MoreSheet.svelte'
+  import BgOpsIndicator from '../BgOpsIndicator.svelte'
 
   interface PrimaryAction {
     label: string
@@ -46,6 +47,7 @@
             <h2 class="text-lg font-semibold">{navStore.pageTitle}</h2>
           </AppBar.Lead>
           <AppBar.Trail>
+            <BgOpsIndicator />
             {#if primaryAction}
               <button
                 type="button"

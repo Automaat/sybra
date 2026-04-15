@@ -40,6 +40,18 @@ func (s *SandboxConfig) IsK8s() bool { return s != nil && s.Cluster != "" }
 // IsDocker reports whether this config uses docker mode.
 func (s *SandboxConfig) IsDocker() bool { return s != nil && s.Cluster == "" }
 
+// ProjectStatus tracks whether a project's bare clone is ready.
+type ProjectStatus string
+
+const (
+	// ProjectStatusReady means the bare clone exists and is usable.
+	ProjectStatusReady ProjectStatus = "ready"
+	// ProjectStatusCloning means a bare-clone is in progress.
+	ProjectStatusCloning ProjectStatus = "cloning"
+	// ProjectStatusError means the bare-clone failed.
+	ProjectStatusError ProjectStatus = "error"
+)
+
 type Project struct {
 	ID            string         `yaml:"id" json:"id"`
 	Name          string         `yaml:"name" json:"name"`
@@ -48,6 +60,9 @@ type Project struct {
 	URL           string         `yaml:"url" json:"url"`
 	ClonePath     string         `yaml:"clone_path" json:"clonePath"`
 	Type          ProjectType    `yaml:"type" json:"type"`
+	// Status reflects the clone lifecycle. Empty value is treated as ready
+	// so existing projects without this field continue to work.
+	Status        ProjectStatus  `yaml:"status,omitempty" json:"status"`
 	SetupCommands []string       `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
 	Sandbox       *SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 	CreatedAt     time.Time      `yaml:"created_at" json:"createdAt"`

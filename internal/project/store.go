@@ -79,6 +79,7 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 		URL:       rawURL,
 		ClonePath: clonePath,
 		Type:      ptype,
+		Status:    ProjectStatusReady,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -87,6 +88,65 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 		return Project{}, err
 	}
 	return p, nil
+}
+
+// CreateMeta writes project metadata with Status=cloning without starting the
+// clone. The caller is responsible for cloning and calling MarkReady or MarkError.
+func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
+	owner, repo, err := ParseGitHubURL(rawURL)
+	if err != nil {
+		return Project{}, err
+	}
+	if ptype == "" {
+		ptype = ProjectTypePet
+	}
+	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
+		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
+	}
+	id := owner + "/" + repo
+	if _, err := s.Get(id); err == nil {
+		return Project{}, fmt.Errorf("project %s already exists", id)
+	}
+	clonePath := filepath.Join(s.clonesDir, owner, repo+".git")
+	now := time.Now().UTC()
+	p := Project{
+		ID:        id,
+		Name:      repo,
+		Owner:     owner,
+		Repo:      repo,
+		URL:       rawURL,
+		ClonePath: clonePath,
+		Type:      ptype,
+		Status:    ProjectStatusCloning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.writeFile(p); err != nil {
+		return Project{}, err
+	}
+	return p, nil
+}
+
+// MarkReady transitions a project from cloning to ready after a successful clone.
+func (s *Store) MarkReady(id string) error {
+	p, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	p.Status = ProjectStatusReady
+	p.UpdatedAt = time.Now().UTC()
+	return s.writeFile(p)
+}
+
+// MarkError transitions a project to the error state when cloning fails.
+func (s *Store) MarkError(id string) error {
+	p, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	p.Status = ProjectStatusError
+	p.UpdatedAt = time.Now().UTC()
+	return s.writeFile(p)
 }
 
 func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
@@ -158,6 +218,9 @@ func (s *Store) readFile(path string) (Project, error) {
 	}
 	if p.Type == "" {
 		p.Type = ProjectTypePet
+	}
+	if p.Status == "" {
+		p.Status = ProjectStatusReady
 	}
 	return p, nil
 }
