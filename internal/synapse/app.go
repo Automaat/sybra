@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/synapse/internal/poll"
 	"github.com/Automaat/synapse/internal/project"
 	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/synapse/internal/sandbox"
 	"github.com/Automaat/synapse/internal/selfmonitor"
 	"github.com/Automaat/synapse/internal/spotlight"
 	"github.com/Automaat/synapse/internal/stats"
@@ -62,6 +63,7 @@ type App struct {
 	prTracker       *github.IssueTracker
 	providerHealth  *provider.Checker
 	worktrees       *worktree.Manager
+	sandboxes       *sandbox.Manager
 	monitorSvc      *monitor.Service
 	selfMonitorSvc  *selfmonitor.Service
 	agentOrch       *AgentOrchestrator
@@ -228,6 +230,7 @@ func (a *App) Startup(ctx context.Context) error {
 		PRBranchResolver: github.FetchPRBranch,
 		AgentChecker:     a.agents.HasRunningAgentForTask,
 	})
+	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees)
 
@@ -685,9 +688,12 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		})
 	}
 
-	// Worktree cleanup for done tasks (after engine advances, so status is final).
+	// Worktree and sandbox cleanup for done tasks (after engine advances, so status is final).
 	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
 		go a.worktrees.Remove(ag.TaskID)
+		if a.sandboxes != nil {
+			go a.sandboxes.Stop(ag.TaskID)
+		}
 	}
 }
 
@@ -719,7 +725,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, sandboxes: a.sandboxes},
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
@@ -747,6 +753,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.taskSvc.agents = a.agents
 	a.taskSvc.workflowEngine = a.workflowEngine
 	a.taskSvc.worktrees = a.worktrees
+	a.taskSvc.sandboxes = a.sandboxes
 	a.taskSvc.wg = &a.wg
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
@@ -762,6 +769,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger
 	a.orchSvc.emit = emit
+	a.agentOrch.sandboxes = a.sandboxes
 	a.projectSvc.projects = a.projects
 	a.projectSvc.worktrees = a.worktrees
 	a.projectSvc.logger = a.logger

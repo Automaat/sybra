@@ -48,6 +48,16 @@ func (s *ProjectService) UpdateProject(id, ptype string) (project.Project, error
 	return p, nil
 }
 
+// SetProjectSandboxConfig replaces the sandbox configuration for a project.
+func (s *ProjectService) SetProjectSandboxConfig(id string, cfg *project.SandboxConfig) (project.Project, error) {
+	s.logger.Info("project.set-sandbox-config", "id", id)
+	p, err := s.projects.SetSandboxConfig(id, cfg)
+	if err != nil {
+		s.logger.Error("project.set-sandbox-config.failed", "id", id, "err", err)
+	}
+	return p, err
+}
+
 // SetProjectSetupCommands replaces the setup commands for a project.
 func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (project.Project, error) {
 	s.logger.Info("project.set-setup-commands", "id", id, "count", len(cmds))

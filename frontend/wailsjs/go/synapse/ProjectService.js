@@ -30,6 +30,10 @@ export function OpenInTerminal(arg1) {
   return window['go']['synapse']['ProjectService']['OpenInTerminal'](arg1);
 }
 
+export function SetProjectSandboxConfig(arg1, arg2) {
+  return window['go']['synapse']['ProjectService']['SetProjectSandboxConfig'](arg1, arg2);
+}
+
 export function SetProjectSetupCommands(arg1, arg2) {
   return window['go']['synapse']['ProjectService']['SetProjectSetupCommands'](arg1, arg2);
 }

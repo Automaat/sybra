@@ -320,6 +320,9 @@ type RunConfig struct {
 	// agent continues a prior conversation instead of starting from scratch.
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
+	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
+	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG).
+	ExtraEnv []string
 }
 
 type StreamEvent struct {
