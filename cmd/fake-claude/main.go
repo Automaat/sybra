@@ -14,6 +14,9 @@
 //   - triage: runs synapse-cli to set status=todo, tags=small, emits result
 //   - triage_to_planning: runs synapse-cli to set status=planning, tags=large
 //   - triage_to_planning_nocritic: like triage_to_planning but adds nocritic tag
+//   - triage_to_done: runs synapse-cli to set status=done
+//   - triage_to_in_review: runs synapse-cli to set status=in-review
+//   - triage_to_human_required: runs synapse-cli to set status=human-required
 //   - implement: emits result with "PR created" text
 //   - interactive_implement: emits result then blocks on stdin until EOF,
 //     simulating a real conversational claude agent that stays alive between
@@ -22,6 +25,8 @@
 //   - evaluate: runs synapse-cli to set status=in-review, emits result
 //   - pr_created: emits result with a github.com/.../pull/N URL so the
 //     mechanical link_pr_and_review step can extract the PR number via regex
+//   - auth_error: emits auth-failure text then exits 1
+//   - malformed_pr_output: emits large malformed PR-ish text (no valid URL)
 //
 // Perf scenarios (zero token cost, drive backend load):
 //   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
@@ -115,6 +120,30 @@ func main() {
 		}
 		emitResult("Triage complete. Set status=planning, tags=large,nocritic.")
 
+	case "triage_to_done":
+		emitSystem()
+		emitAssistant("Triaging task...")
+		if taskID != "" {
+			runCLI("update", taskID, "--status", "done")
+		}
+		emitResult("Triage complete. Set status=done.")
+
+	case "triage_to_in_review":
+		emitSystem()
+		emitAssistant("Triaging task...")
+		if taskID != "" {
+			runCLI("update", taskID, "--status", "in-review")
+		}
+		emitResult("Triage complete. Set status=in-review.")
+
+	case "triage_to_human_required":
+		emitSystem()
+		emitAssistant("Triaging task...")
+		if taskID != "" {
+			runCLI("update", taskID, "--status", "human-required")
+		}
+		emitResult("Triage complete. Set status=human-required.")
+
 	case "implement":
 		emitSystem()
 		emitAssistant("Implementing...")
@@ -143,6 +172,20 @@ func main() {
 		emitSystem()
 		emitAssistant("Implementing and pushing PR...")
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
+
+	case "auth_error":
+		emitSystem()
+		emitAssistant("Authentication failed. Please re-auth.")
+		os.Exit(1)
+
+	case "malformed_pr_output":
+		emitSystem()
+		emitAssistant("Implementing and preparing output...")
+		var b strings.Builder
+		for range 200 {
+			b.WriteString("note: saw github.com/test-org/test-repo/pul/42 and github.com/test-org/test-repo/pulls/42\n")
+		}
+		emitResult(b.String())
 
 	case "perf_stream":
 		runPerfStream()

@@ -72,6 +72,18 @@ func runExec() {
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
 		emitTurnCompleted(100, 20)
+	case "triage_to_done":
+		emitAgentMessage("Triaging task...")
+		runCLI(taskID, "update", taskID, "--status", "done")
+		emitTurnCompleted(100, 20)
+	case "triage_to_in_review":
+		emitAgentMessage("Triaging task...")
+		runCLI(taskID, "update", taskID, "--status", "in-review")
+		emitTurnCompleted(100, 20)
+	case "triage_to_human_required":
+		emitAgentMessage("Triaging task...")
+		runCLI(taskID, "update", taskID, "--status", "human-required")
+		emitTurnCompleted(100, 20)
 	case "overloaded_error":
 		emitError("Service overloaded (529)")
 		os.Exit(1)
@@ -91,6 +103,16 @@ func runExec() {
 		emitTurnCompleted(100, 20)
 	case "pr_created":
 		emitAgentMessage("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
+		emitTurnCompleted(100, 20)
+	case "auth_error":
+		emitError("Authentication failed")
+		os.Exit(1)
+	case "malformed_pr_output":
+		var b strings.Builder
+		for range 200 {
+			b.WriteString("note: saw github.com/test-org/test-repo/pul/42 and github.com/test-org/test-repo/pulls/42\n")
+		}
+		emitAgentMessage(b.String())
 		emitTurnCompleted(100, 20)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)

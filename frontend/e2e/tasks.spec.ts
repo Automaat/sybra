@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { readdir, unlink } from 'node:fs/promises'
+import { readdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -25,6 +25,26 @@ async function goToTaskList(page: Page) {
 
 async function waitForTasks(page: Page) {
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
+}
+
+async function createExternalTaskFile(title: string): Promise<string> {
+  const id = `${Date.now().toString(16).slice(-8)}`
+  const content = `---
+id: ${id}
+title: ${title}
+status: todo
+agent_mode: headless
+allowed_tools: []
+tags: [e2e, watcher]
+created_at: 2026-04-01T00:00:00Z
+updated_at: 2026-04-01T00:00:00Z
+---
+## Description
+Task created externally during Playwright run.
+`
+  const path = join(TASKS_DIR, `${id}.md`)
+  await writeFile(path, content, 'utf8')
+  return id
 }
 
 // Select a status value on the task detail status dropdown
@@ -227,5 +247,17 @@ test.describe('Navigation Rail', () => {
     await navTrigger.click()
 
     await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
+  })
+})
+
+test.describe('Task watcher', () => {
+  test('board updates when task file is created externally', async ({ page }) => {
+    await goToTaskList(page)
+    await waitForTasks(page)
+
+    const title = `E2E External Task ${Date.now()}`
+    await createExternalTaskFile(title)
+
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 10_000 })
   })
 })

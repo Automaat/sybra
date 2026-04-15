@@ -227,3 +227,66 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 		t.Errorf("codex invocation should contain review prompt, got:\n%s", string(codexArgs))
 	}
 }
+
+// TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex verifies the
+// inverse routing: when default provider is codex, provider: cross dispatches
+// the review step to claude.
+func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T) {
+	codexArgsLog := filepath.Join(t.TempDir(), "codex-args.log")
+	claudeArgsLog := filepath.Join(t.TempDir(), "claude-args.log")
+
+	env := setupCrossProviderEnv(t, "codex",
+		[]string{"success"},            // claude: code_review (cross)
+		[]string{"success", "success"}, // codex: implement, fix_review
+	)
+	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
+	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
+
+	created, err := env.tasks.Create("provider verify inverse test", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			(tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed)
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
+	}
+
+	if _, err := os.Stat(claudeArgsLog); err != nil {
+		t.Fatalf("claude args log not written — review step did not invoke claude: %v", err)
+	}
+	claudeArgs, err := os.ReadFile(claudeArgsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(claudeArgs), "Review") {
+		t.Errorf("claude invocation should contain review prompt, got:\n%s", string(claudeArgs))
+	}
+
+	if _, err := os.Stat(codexArgsLog); err != nil {
+		t.Fatalf("codex args log not written — default-provider steps did not invoke codex: %v", err)
+	}
+	codexArgs, err := os.ReadFile(codexArgsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(codexArgs), "Fix review comments") {
+		t.Errorf("codex invocation should contain fix-review prompt, got:\n%s", string(codexArgs))
+	}
+}
