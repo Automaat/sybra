@@ -3,7 +3,10 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { ALL_STATUSES } from '../lib/statuses.js'
-  import { MarkPRReady } from '$lib/api'
+  import { MarkPRReady, EventsOn } from '$lib/api'
+  import { agentOutput } from '../lib/events.js'
+  import { extractStepText } from '$lib/step-text.js'
+  import type { agent } from '../../wailsjs/go/models.js'
   import AgentCard from '../components/AgentCard.svelte'
   import PRCard from '../components/PRCard.svelte'
 
@@ -27,6 +30,18 @@
   )
 
   const draftPRs = $derived(reviewStore.createdByMe.filter((pr) => pr.isDraft))
+
+  // Subscribe to output events for running agents so step text stays live.
+  $effect(() => {
+    const runningIds = runningAgents.map((a) => a.id)
+    const unsubs = runningIds.map((id) =>
+      EventsOn(agentOutput(id), (event: agent.StreamEvent) => {
+        const text = extractStepText(event)
+        if (text) agentStore.setStepText(id, text)
+      }),
+    )
+    return () => unsubs.forEach((u) => u())
+  })
 
   async function markReady(repo: string, number: number) {
     await MarkPRReady(repo, number)

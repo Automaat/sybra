@@ -7,6 +7,8 @@ const mockAgentStoreData = {
   error: '',
   byState: (...args: unknown[]) => mockByState(...args),
   list: [],
+  stepTexts: new Map<string, string>(),
+  setStepText: vi.fn(),
 }
 
 vi.mock('../stores/agents.svelte.js', () => ({

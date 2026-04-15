@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import AgentCard from './AgentCard.svelte'
+import { agentStore } from '../stores/agents.svelte.js'
 
 function makeAgent(overrides: Record<string, unknown> = {}) {
   return {
@@ -102,6 +103,30 @@ describe('AgentCard', () => {
     render(AgentCard, { props: { agent: makeAgent(), onclick: handler } })
     await fireEvent.click(screen.getByRole('button'))
     expect(handler).toHaveBeenCalledOnce()
+  })
+
+  describe('step text', () => {
+    afterEach(() => {
+      agentStore.stepTexts.delete('agent-1')
+    })
+
+    it('shows "Working..." when running with no step text', () => {
+      render(AgentCard, { props: { agent: makeAgent({ state: 'running' }), onclick: () => {} } })
+      expect(screen.getByText('Working...')).toBeDefined()
+    })
+
+    it('shows step text from store when running', () => {
+      agentStore.setStepText('agent-1', '[Bash] npm install')
+      render(AgentCard, { props: { agent: makeAgent({ state: 'running' }), onclick: () => {} } })
+      expect(screen.getByText('[Bash] npm install')).toBeDefined()
+    })
+
+    it('does not show step text when not running', () => {
+      agentStore.setStepText('agent-1', '[Bash] npm install')
+      render(AgentCard, { props: { agent: makeAgent({ state: 'idle' }), onclick: () => {} } })
+      expect(screen.queryByText('[Bash] npm install')).toBeNull()
+      expect(screen.queryByText('Working...')).toBeNull()
+    })
   })
 
   describe('timeAgo', () => {
