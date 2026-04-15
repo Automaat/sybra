@@ -20,6 +20,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     labels: [],
     headRefName: 'feature/test',
     ciStatus: '',
+    hasPendingChecks: false,
     reviewDecision: '',
     mergeable: '',
     unresolvedCount: 0,
