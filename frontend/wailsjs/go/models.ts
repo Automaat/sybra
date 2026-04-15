@@ -25,7 +25,7 @@ export namespace agent {
 	    escalationReason?: string;
 	    errorKind?: string;
 	    errorMsg?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
