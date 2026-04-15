@@ -464,6 +464,7 @@ export namespace github {
 	    labels: string[];
 	    headRefName: string;
 	    ciStatus: string;
+	    hasPendingChecks: boolean;
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
@@ -487,6 +488,7 @@ export namespace github {
 	        this.labels = source["labels"];
 	        this.headRefName = source["headRefName"];
 	        this.ciStatus = source["ciStatus"];
+	        this.hasPendingChecks = source["hasPendingChecks"];
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
@@ -506,6 +508,7 @@ export namespace github {
 	    labels: string[];
 	    headRefName: string;
 	    ciStatus: string;
+	    hasPendingChecks: boolean;
 	    reviewDecision: string;
 	    mergeable: string;
 	    unresolvedCount: number;
@@ -530,6 +533,7 @@ export namespace github {
 	        this.labels = source["labels"];
 	        this.headRefName = source["headRefName"];
 	        this.ciStatus = source["ciStatus"];
+	        this.hasPendingChecks = source["hasPendingChecks"];
 	        this.reviewDecision = source["reviewDecision"];
 	        this.mergeable = source["mergeable"];
 	        this.unresolvedCount = source["unresolvedCount"];
