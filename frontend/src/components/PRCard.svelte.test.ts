@@ -82,21 +82,21 @@ describe('PRCard', () => {
       render(PRCard, { props: { pr: makePR({ ciStatus: 'SUCCESS' }) } })
       const dot = document.querySelector('[title="CI: success"]')
       expect(dot).toBeDefined()
-      expect(dot?.className).toContain('bg-green-500')
+      expect(dot?.className).toContain('bg-success-500')
     })
 
     it('shows red dot for FAILURE', () => {
       render(PRCard, { props: { pr: makePR({ ciStatus: 'FAILURE' }) } })
       const dot = document.querySelector('[title="CI: failure"]')
       expect(dot).toBeDefined()
-      expect(dot?.className).toContain('bg-red-500')
+      expect(dot?.className).toContain('bg-error-500')
     })
 
     it('shows yellow dot for PENDING', () => {
       render(PRCard, { props: { pr: makePR({ ciStatus: 'PENDING' }) } })
       const dot = document.querySelector('[title="CI: pending"]')
       expect(dot).toBeDefined()
-      expect(dot?.className).toContain('bg-yellow-500')
+      expect(dot?.className).toContain('bg-warning-500')
     })
 
     it('shows no dot when empty', () => {

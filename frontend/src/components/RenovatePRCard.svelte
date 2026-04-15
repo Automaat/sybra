@@ -91,7 +91,7 @@
     <div class="flex items-center gap-2">
       {#if pr.ciStatus}
         <span
-          class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-green-500' : pr.ciStatus === 'FAILURE' ? 'bg-red-500' : 'bg-yellow-500'}"
+          class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-success-500' : pr.ciStatus === 'FAILURE' ? 'bg-error-500' : 'bg-warning-500'}"
           title="CI: {pr.ciStatus.toLowerCase()}"
         ></span>
       {/if}
@@ -99,10 +99,10 @@
     </div>
     <div class="flex shrink-0 items-center gap-1.5">
       {#if pr.reviewDecision === 'APPROVED'}
-        <span class="rounded bg-green-500/15 px-1.5 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">Approved</span>
+        <span class="rounded bg-success-500/15 px-1.5 py-0.5 text-xs font-medium text-success-700 dark:text-success-400">Approved</span>
       {/if}
       {#if pr.mergeable === 'CONFLICTING'}
-        <span class="rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-medium text-red-600 dark:text-red-400">Conflicts</span>
+        <span class="rounded bg-error-500/15 px-1.5 py-0.5 text-xs font-medium text-error-700 dark:text-error-400">Conflicts</span>
       {/if}
     </div>
   </div>
@@ -123,7 +123,7 @@
     {#if !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
       <button
         type="button"
-        class="rounded bg-green-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+        class="rounded bg-success-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-success-700 disabled:opacity-50"
         onclick={approve}
         disabled={busy !== ''}
       >
@@ -145,7 +145,7 @@
     {#if pr.ciStatus === 'FAILURE'}
       <button
         type="button"
-        class="rounded bg-yellow-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-yellow-700 disabled:opacity-50"
+        class="rounded bg-warning-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-warning-700 disabled:opacity-50"
         onclick={rerun}
         disabled={busy !== ''}
       >
@@ -153,7 +153,7 @@
       </button>
       <button
         type="button"
-        class="rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+        class="rounded bg-error-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-error-700 disabled:opacity-50"
         onclick={fix}
         disabled={busy !== ''}
       >

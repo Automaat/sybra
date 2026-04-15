@@ -110,17 +110,16 @@
     }
   }
 
-  function typeIcon(type: 'page' | 'task' | 'project'): string {
-    if (type === 'page') return '→'
-    if (type === 'task') return '□'
-    return '◈'
-  }
 </script>
 
 <MobileSheet {open} onOpenChange={(o) => { if (!o) onclose() }} variant="top">
   <div class="flex flex-col">
-    <div class="flex items-center border-b border-surface-300 px-4 dark:border-surface-600">
-      <svg class="h-4 w-4 shrink-0 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <!-- Search bar -->
+    <div class="flex items-center gap-3 border-b border-surface-200 px-4 dark:border-surface-700">
+      <svg
+        class="h-4 w-4 shrink-0 transition-colors {query ? 'text-primary-500' : 'text-surface-400'}"
+        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+      >
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
       </svg>
       <input
@@ -128,36 +127,53 @@
         bind:value={query}
         type="text"
         placeholder="Search tasks, pages, projects..."
-        class="flex-1 bg-transparent py-3.5 pl-3 text-base outline-none placeholder:text-surface-400 md:text-sm"
+        class="flex-1 bg-transparent py-3.5 text-base outline-none placeholder:text-surface-400 md:text-sm"
       />
       <button
         type="button"
         onclick={onclose}
-        class="tap -mr-2 rounded text-surface-400 active:bg-surface-200 dark:active:bg-surface-700"
+        class="tap -mr-2 flex items-center gap-1.5 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300"
         aria-label="Close"
       >
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <kbd class="hidden rounded border border-surface-300 px-1.5 py-0.5 font-mono text-[10px] text-surface-400 dark:border-surface-600 md:inline">Esc</kbd>
+        <svg class="h-5 w-5 md:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
     </div>
 
-    <ul class="max-h-[60dvh] overflow-y-auto py-2 md:max-h-80">
+    <!-- Results -->
+    <ul class="max-h-[60dvh] overflow-y-auto py-1 md:max-h-80">
       {#if results.length === 0}
-        <li class="px-4 py-3 text-sm italic text-surface-400">No results</li>
+        <li class="px-4 py-8 text-center text-sm text-surface-400">
+          No results for "<span class="text-surface-700 dark:text-surface-300">{query}</span>"
+        </li>
       {:else}
         {#each results as result, i}
           <li>
             <button
               type="button"
-              class="tap flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition-colors {i === selectedIndex ? 'bg-primary-100 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200' : 'active:bg-surface-200 dark:active:bg-surface-700'}"
+              class="tap flex w-full items-center gap-3 border-l-2 px-3 py-2.5 text-left text-sm transition-colors
+                {i === selectedIndex
+                  ? 'border-primary-500 bg-primary-50 text-primary-900 dark:bg-primary-950/50 dark:text-primary-100'
+                  : 'border-transparent hover:bg-surface-100 dark:hover:bg-surface-800'}"
               onclick={() => selectResult(result)}
               onmouseenter={() => { selectedIndex = i }}
             >
-              <span class="w-4 shrink-0 text-center font-mono text-xs text-surface-400">{typeIcon(result.type)}</span>
+              <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase
+                {result.type === 'page'
+                  ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/50 dark:text-primary-300'
+                  : result.type === 'task'
+                    ? 'bg-secondary-100 text-secondary-700 dark:bg-secondary-900/50 dark:text-secondary-300'
+                    : 'bg-tertiary-100 text-tertiary-700 dark:bg-tertiary-900/50 dark:text-tertiary-300'}">
+                {result.type === 'page' ? 'PAGE' : result.type === 'task' ? 'TASK' : 'PROJ'}
+              </span>
               <span class="flex-1 font-medium">{result.title}</span>
               {#if result.subtitle}
                 <span class="text-xs text-surface-400">{result.subtitle}</span>
+              {/if}
+              {#if i === selectedIndex}
+                <span class="shrink-0 font-mono text-xs text-primary-500">↵</span>
               {/if}
             </button>
           </li>
@@ -165,11 +181,17 @@
       {/if}
     </ul>
 
-    <div class="hidden border-t border-surface-300 px-4 py-2 dark:border-surface-600 md:block">
+    <!-- Footer hints -->
+    <div class="hidden items-center gap-4 border-t border-surface-200 px-4 py-2.5 dark:border-surface-700 md:flex">
       <div class="flex gap-4 text-xs text-surface-400">
-        <span><kbd class="font-mono">↑↓</kbd> navigate</span>
-        <span><kbd class="font-mono">↵</kbd> open</span>
-        <span><kbd class="font-mono">Esc</kbd> close</span>
+        <span class="flex items-center gap-1">
+          <kbd class="rounded border border-surface-300 px-1 py-0.5 font-mono text-[10px] dark:border-surface-600">↑↓</kbd>
+          navigate
+        </span>
+        <span class="flex items-center gap-1">
+          <kbd class="rounded border border-surface-300 px-1 py-0.5 font-mono text-[10px] dark:border-surface-600">↵</kbd>
+          open
+        </span>
       </div>
     </div>
   </div>
