@@ -680,9 +680,7 @@ func launchAgents(ctx context.Context, c *apiClient, o options) []agentResult {
 		if o.concurrency > 1 && o.rampDuration > 0 {
 			delay = time.Duration(i) * o.rampDuration / time.Duration(o.concurrency-1)
 		}
-		wg.Add(1)
-		go func(i int, delay time.Duration) {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case <-ctx.Done():
 				return
@@ -693,7 +691,7 @@ func launchAgents(ctx context.Context, c *apiClient, o options) []agentResult {
 			if o.verbose {
 				log.Printf("agent[%d] task=%s err=%q events=%d", i, r.taskID, r.err, r.totalEvents)
 			}
-		}(i, delay)
+		})
 	}
 	wg.Wait()
 	return results
@@ -814,9 +812,8 @@ func runChurn(ctx context.Context, c *apiClient, o options, report *Report) erro
 			// worker pool saturated — count as backpressure event
 			continue
 		}
-		wg.Add(1)
-		go func(seq int64) {
-			defer wg.Done()
+		seq := total.Load()
+		wg.Go(func() {
 			defer func() { <-sem }()
 
 			cStart := time.Now()
@@ -856,7 +853,7 @@ func runChurn(ctx context.Context, c *apiClient, o options, report *Report) erro
 			deleteLat = append(deleteLat, dDur)
 			mu.Unlock()
 			total.Add(1)
-		}(total.Load())
+		})
 	}
 
 done:
