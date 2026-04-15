@@ -1015,7 +1015,7 @@
                   {:else if (runLogEvents.get(run.agentId)?.length ?? 0) > 0}
                     <StreamOutput staticEvents={runLogEvents.get(run.agentId)} />
                   {:else if run.result}
-                    <pre class="max-h-[60dvh] md:max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-300 dark:border-surface-600">{run.result}</pre>
+                    <pre class="max-h-[60dvh] md:max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-100 p-3 text-xs text-surface-700 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-300">{run.result}</pre>
                   {:else}
                     <p class="py-4 text-center text-xs text-surface-500">No output available</p>
                   {/if}

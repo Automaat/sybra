@@ -104,13 +104,13 @@
   <div
     bind:this={container}
     onscroll={onScroll}
-    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-700 bg-surface-950 p-3 font-mono text-xs text-surface-50"
+    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-300 bg-surface-100 p-3 font-mono text-xs text-surface-900 dark:border-surface-700 dark:bg-surface-950 dark:text-surface-50"
   >
     {#if events.length === 0}
       <p class="py-8 text-center text-surface-500">Waiting for output...</p>
     {:else}
       {#each events as event, i (i)}
-        {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-700 text-surface-200' }}
+        {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-300 text-surface-800 dark:bg-surface-700 dark:text-surface-200' }}
         <div
           data-event-index={i}
           class="flex items-start gap-2 rounded transition-colors duration-300
