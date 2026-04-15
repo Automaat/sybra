@@ -6,7 +6,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
-    baseURL: 'http://localhost:34115',
+    baseURL: 'http://localhost:8080',
     screenshot: 'only-on-failure',
     trace: 'on-first-retry',
   },
@@ -17,9 +17,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'cd .. && wails dev',
-    url: 'http://localhost:34115',
+    command: 'cd .. && mise run dev:server',
+    url: 'http://localhost:8080',
     reuseExistingServer: true,
-    timeout: 60_000,
+    timeout: 120_000,
   },
 })

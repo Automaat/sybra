@@ -12,7 +12,7 @@ permissions:
 jobs:
   test-go:
     name: Go Tests
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -26,7 +26,7 @@ jobs:
 
   test-frontend:
     name: Frontend Tests
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -49,7 +49,7 @@ jobs:
 
   lint-go:
     name: Go Lint
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -142,7 +142,7 @@ jobs:
 
   security:
     name: Security Audit
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -156,7 +156,7 @@ jobs:
 
   e2e:
     name: E2E Tests (${{ matrix.provider }})
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -166,9 +166,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
-
-      - name: Install wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Install frontend deps
         run: cd frontend && npm ci
@@ -187,33 +184,31 @@ jobs:
         env:
           SYNAPSE_HOME: /tmp/synapse-e2e
 
-      - name: Start wails dev
+      - name: Build web frontend
+        run: cd frontend && npm run build:web
+
+      - name: Build synapse-server
+        run: go build -o bin/synapse-server ./cmd/synapse-server
+
+      - name: Start synapse-server
         run: |
-          SYNAPSE_HOME=/tmp/synapse-e2e wails dev > /tmp/wails-dev.log 2>&1 &
-          WAILS_PID=$!
-          echo "WAILS_PID=$WAILS_PID" >> "$GITHUB_ENV"
-          echo "Waiting for wails dev (pid $WAILS_PID)..."
-          for i in $(seq 1 90); do
-            if ! kill -0 $WAILS_PID 2>/dev/null; then
-              echo "::error::wails dev exited prematurely"
-              cat /tmp/wails-dev.log
-              exit 1
-            fi
-            if curl -s http://localhost:34115 > /dev/null 2>&1; then
-              echo "Wails dev ready after $((i*2))s"
+          SYNAPSE_HOME=/tmp/synapse-e2e \
+          SYNAPSE_STATIC_DIR=frontend/dist-web \
+          ./bin/synapse-server > /tmp/synapse-server.log 2>&1 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+          echo "Waiting for synapse-server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Ready after ${i}s"
               break
             fi
-            if [ "$i" -eq 90 ]; then
-              echo "::error::wails dev timed out"
-              cat /tmp/wails-dev.log
+            if [ "$i" -eq 30 ]; then
+              echo "::error::synapse-server timed out"
+              cat /tmp/synapse-server.log
               exit 1
             fi
-            sleep 2
+            sleep 1
           done
-          # Extra wait for Go backend binding bridge
-          sleep 5
-          echo "--- wails dev log ---"
-          cat /tmp/wails-dev.log
 
       - name: Run e2e tests
         run: cd frontend && npx playwright test --reporter=github
@@ -221,9 +216,9 @@ jobs:
           SYNAPSE_HOME: /tmp/synapse-e2e
           SYNAPSE_E2E_PROVIDER: ${{ matrix.provider }}
 
-      - name: Dump wails dev log
+      - name: Dump server log
         if: failure()
-        run: cat /tmp/wails-dev.log || true
+        run: cat /tmp/synapse-server.log || true
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()

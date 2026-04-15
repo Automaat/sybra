@@ -38,6 +38,15 @@ run = ["cd frontend && npm run build:web", "SYNAPSE_STATIC_DIR=frontend/dist-web
 description = "Build web frontend then run HTTP server"
 env = { SYNAPSE_PORT = "8080" }
 
+[tasks."test:e2e"]
+run = [
+  "mkdir -p /tmp/synapse-e2e/tasks",
+  "cp frontend/e2e/fixtures/*.md /tmp/synapse-e2e/tasks/",
+  "cd frontend && npx playwright test",
+]
+description = "Run e2e tests (run 'mise run dev:server' in another terminal first)"
+env = { SYNAPSE_HOME = "/tmp/synapse-e2e" }
+
 [tasks."perf:bench"]
 run = "go test -run XXX -bench . -benchmem -benchtime=2s ./internal/task/ ./internal/agent/ ./internal/sse/ ./internal/watcher/"
 description = "Run Go benchmarks for perf-critical backend packages"

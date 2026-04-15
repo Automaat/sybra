@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { agentOutput } from '../lib/events.js'
 import { render, screen, cleanup } from '@testing-library/svelte'
+import StreamOutput from './StreamOutput.svelte'
 
 const mockGetOutput = vi.fn()
 const mockAppendEvent = vi.fn()
@@ -26,12 +27,9 @@ function makeTSE(type: string, content: string | undefined = undefined) {
 }
 
 describe('StreamOutput', () => {
-  let StreamOutput: typeof import('./StreamOutput.svelte').default
-
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks()
     mockGetOutput.mockResolvedValue([])
-    StreamOutput = (await import('./StreamOutput.svelte')).default
   })
 
   afterEach(() => {
