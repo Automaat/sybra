@@ -1,14 +1,17 @@
 <script lang="ts">
-  import { ChevronLeft } from '@lucide/svelte'
+  import { ChevronLeft, PanelLeft } from '@lucide/svelte'
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
+  import { convoStore } from '../stores/convo.svelte.js'
   import { agentState, agentEscalation, agentError } from '../lib/events.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
+  import ActionTimeline from '../components/ActionTimeline.svelte'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
+  import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
 
   interface EscalationEvent {
     reason: string
@@ -36,6 +39,8 @@
   let escalation = $state<EscalationEvent | null>(null)
   let escalationResponding = $state(false)
   let errorDismissed = $state(false)
+  let timelineOpen = $state(true)
+  let selectedIndex = $state<number | null>(null)
 
   const isRunning = $derived(a?.state === 'running')
 
@@ -58,6 +63,15 @@
       : 'done',
   )
   const phaseConfig = $derived(PHASE_CONFIG[phase])
+
+  // Timeline entries — reactive to store changes
+  const streamOutputs = $derived(agentStore.outputs.get(agentId) ?? [])
+  const convoEvents = $derived(convoStore.conversations.get(agentId) ?? [])
+  const timelineEntries = $derived(
+    a?.mode === 'interactive'
+      ? buildConvoTimeline(convoEvents)
+      : buildStreamTimeline(streamOutputs),
+  )
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -120,7 +134,29 @@
     if (!date) return '-'
     return new Date(date).toLocaleString()
   }
+
+  function onkeydown(e: KeyboardEvent) {
+    // Don't hijack when typing in an input/textarea
+    const tag = (e.target as HTMLElement).tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return
+
+    if (e.key === '[' || e.key === 'ArrowLeft') {
+      e.preventDefault()
+      selectedIndex = selectedIndex === null
+        ? Math.max(0, timelineEntries.length - 1)
+        : Math.max(0, selectedIndex - 1)
+    } else if (e.key === ']' || e.key === 'ArrowRight') {
+      e.preventDefault()
+      selectedIndex = selectedIndex === null
+        ? 0
+        : Math.min(timelineEntries.length - 1, selectedIndex + 1)
+    } else if (e.key === 'Escape') {
+      selectedIndex = null
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onkeydown} />
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
   <button
@@ -307,12 +343,51 @@
       </div>
 
       <div class="flex min-h-0 flex-1 flex-col gap-2">
-        <span class="text-sm font-medium text-surface-500">Output</span>
-        {#if a.mode === 'interactive'}
-          <ChatView agentId={agentId} agentState={a.state} costUsd={a.costUsd} inputTokens={a.inputTokens ?? 0} outputTokens={a.outputTokens ?? 0} />
-        {:else}
-          <StreamOutput agentId={agentId} />
-        {/if}
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium text-surface-500">Output</span>
+          <button
+            type="button"
+            title={timelineOpen ? 'Hide timeline' : 'Show timeline'}
+            onclick={() => { timelineOpen = !timelineOpen }}
+            class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors
+              {timelineOpen
+                ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200'
+                : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
+          >
+            <PanelLeft size={12} />
+            Timeline
+          </button>
+        </div>
+        <div class="flex min-h-0 items-start gap-3">
+          {#if timelineOpen}
+            <div class="hidden w-64 shrink-0 overflow-hidden rounded-lg border border-surface-300 dark:border-surface-700 md:flex md:flex-col" style="max-height: 600px; min-height: 300px;">
+              <ActionTimeline
+                entries={timelineEntries}
+                activeIndex={selectedIndex}
+                onselect={(i) => { selectedIndex = i }}
+              />
+            </div>
+          {/if}
+          <div class="min-w-0 flex-1">
+            {#if a.mode === 'interactive'}
+              <ChatView
+                agentId={agentId}
+                agentState={a.state}
+                costUsd={a.costUsd}
+                inputTokens={a.inputTokens ?? 0}
+                outputTokens={a.outputTokens ?? 0}
+                highlightIndex={selectedIndex}
+                onvisibleindex={(i) => { if (selectedIndex === null) selectedIndex = i }}
+              />
+            {:else}
+              <StreamOutput
+                agentId={agentId}
+                highlightIndex={selectedIndex}
+                onvisibleindex={(i) => { if (selectedIndex === null) selectedIndex = i }}
+              />
+            {/if}
+          </div>
+        </div>
       </div>
     </div>
   {:else if !error}

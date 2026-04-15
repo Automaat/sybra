@@ -8,13 +8,16 @@
   interface Props {
     agentId?: string
     staticEvents?: agent.StreamEvent[]
+    highlightIndex?: number | null
+    onvisibleindex?: (index: number) => void
   }
 
-  const { agentId, staticEvents }: Props = $props()
+  const { agentId, staticEvents, highlightIndex = null, onvisibleindex }: Props = $props()
 
   let events = $state<agent.StreamEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
   let autoScroll = $state(true)
+  let flashIndex = $state<number | null>(null)
 
   const typeStyles: Record<string, { label: string; classes: string }> = {
     init: { label: 'INIT', classes: 'bg-surface-300 text-surface-800 dark:bg-surface-600 dark:text-surface-200' },
@@ -27,6 +30,17 @@
   function onScroll() {
     if (!container) return
     autoScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 10
+    if (onvisibleindex) {
+      const els = container.querySelectorAll<HTMLElement>('[data-event-index]')
+      for (const el of els) {
+        const rect = el.getBoundingClientRect()
+        const parentRect = container.getBoundingClientRect()
+        if (rect.top >= parentRect.top && rect.bottom <= parentRect.bottom) {
+          onvisibleindex(Number(el.dataset.eventIndex))
+          break
+        }
+      }
+    }
   }
 
   function scrollToBottom() {
@@ -34,6 +48,18 @@
       container.scrollTop = container.scrollHeight
     }
   }
+
+  // Scroll to highlighted event
+  $effect(() => {
+    if (highlightIndex === null || !container) return
+    const el = container.querySelector<HTMLElement>(`[data-event-index="${highlightIndex}"]`)
+    if (!el) return
+    autoScroll = false
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    flashIndex = highlightIndex
+    const t = setTimeout(() => { flashIndex = null }, 600)
+    return () => clearTimeout(t)
+  })
 
   $effect(() => {
     if (staticEvents) {
@@ -45,7 +71,7 @@
     if (!agentId) return
 
     agentStore.getOutput(agentId).then((initial) => {
-      events = initial
+      events = initial.map((tse) => tse.event)
       scrollToBottom()
     })
 
@@ -85,7 +111,11 @@
     {:else}
       {#each events as event, i (i)}
         {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-700 text-surface-200' }}
-        <div class="flex items-start gap-2">
+        <div
+          data-event-index={i}
+          class="flex items-start gap-2 rounded transition-colors duration-300
+            {flashIndex === i ? 'bg-warning-900/40' : ''}"
+        >
           <span class="mt-0.5 inline-block shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold {style.classes}">
             {style.label}
           </span>

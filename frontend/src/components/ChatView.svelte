@@ -13,13 +13,16 @@
     inputTokens?: number
     outputTokens?: number
     bounded?: boolean
+    highlightIndex?: number | null
+    onvisibleindex?: (index: number) => void
   }
 
-  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false }: Props = $props()
+  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false, highlightIndex = null, onvisibleindex }: Props = $props()
 
   let events = $state<agent.ConvoEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
   let autoScroll = $state(true)
+  let flashIndex = $state<number | null>(null)
 
   const isRunning = $derived(agentState === 'running')
   const isPaused = $derived(agentState === 'paused')
@@ -40,6 +43,17 @@
   function onScroll() {
     if (!container) return
     autoScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 10
+    if (onvisibleindex) {
+      const els = container.querySelectorAll<HTMLElement>('[data-event-index]')
+      for (const el of els) {
+        const rect = el.getBoundingClientRect()
+        const parentRect = container.getBoundingClientRect()
+        if (rect.top >= parentRect.top && rect.bottom <= parentRect.bottom) {
+          onvisibleindex(Number(el.dataset.eventIndex))
+          break
+        }
+      }
+    }
   }
 
   function scrollToBottom() {
@@ -47,6 +61,18 @@
       container.scrollTop = container.scrollHeight
     }
   }
+
+  // Scroll to highlighted event
+  $effect(() => {
+    if (highlightIndex === null || !container) return
+    const el = container.querySelector<HTMLElement>(`[data-event-index="${highlightIndex}"]`)
+    if (!el) return
+    autoScroll = false
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    flashIndex = highlightIndex
+    const t = setTimeout(() => { flashIndex = null }, 600)
+    return () => clearTimeout(t)
+  })
 
   $effect(() => {
     convoStore.getOutput(agentId).then((initial) => {
@@ -133,7 +159,13 @@
       <p class="py-12 text-center text-sm text-surface-500">Waiting for response...</p>
     {:else}
       {#each events as event, i (i)}
-        <MessageBubble {event} />
+        <div
+          data-event-index={i}
+          class="rounded transition-colors duration-300
+            {flashIndex === i ? 'bg-warning-100/50 dark:bg-warning-900/20' : ''}"
+        >
+          <MessageBubble {event} />
+        </div>
       {/each}
     {/if}
 

@@ -127,8 +127,12 @@ describe('AgentStore', () => {
 
       const result = await agentStore.getOutput('a1')
 
-      expect(result).toEqual(events)
-      expect(agentStore.outputs.get('a1')).toEqual(events)
+      expect(result).toHaveLength(1)
+      expect(result[0].event).toEqual(events[0])
+      expect(result[0].receivedAt).toBeInstanceOf(Date)
+      const stored = agentStore.outputs.get('a1')!
+      expect(stored).toHaveLength(1)
+      expect(stored[0].event).toEqual(events[0])
     })
 
     it('handles null result', async () => {
@@ -168,12 +172,12 @@ describe('AgentStore', () => {
 
   describe('appendEvent', () => {
     it('appends to existing output', () => {
-      agentStore.outputs.set('a1', [{ type: 'init', content: 'start' }])
+      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' }, receivedAt: new Date() }])
       agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' })
 
       const events = agentStore.outputs.get('a1')!
       expect(events).toHaveLength(2)
-      expect(events[1].type).toBe('assistant')
+      expect(events[1].event.type).toBe('assistant')
     })
 
     it('creates new array if none exists', () => {

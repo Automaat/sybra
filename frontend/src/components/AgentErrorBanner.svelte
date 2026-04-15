@@ -128,8 +128,8 @@
   {#if logsExpanded && logs.length > 0}
     <div class="mt-3 max-h-48 overflow-y-auto rounded bg-surface-900 p-3 font-mono text-xs text-surface-200">
       {#each logs as ev}
-        {#if ev.content}
-          <div class="mb-0.5 leading-relaxed">{ev.content}</div>
+        {#if ev.event.content}
+          <div class="mb-0.5 leading-relaxed">{ev.event.content}</div>
         {/if}
       {/each}
     </div>

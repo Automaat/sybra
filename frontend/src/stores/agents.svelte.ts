@@ -11,9 +11,10 @@ import {
 import { agent } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 import { extractStepText } from '$lib/step-text.js'
+import type { TimestampedStreamEvent } from '$lib/timeline.js'
 
 class AgentStore extends EntityStore<agent.Agent> {
-  outputs = new SvelteMap<string, agent.StreamEvent[]>()
+  outputs = new SvelteMap<string, TimestampedStreamEvent[]>()
   stepTexts = new SvelteMap<string, string>()
 
   constructor() {
@@ -75,23 +76,26 @@ class AgentStore extends EntityStore<agent.Agent> {
     this.outputs.delete(agentID)
   }
 
-  async getOutput(agentID: string): Promise<agent.StreamEvent[]> {
+  async getOutput(agentID: string): Promise<TimestampedStreamEvent[]> {
     const events = await GetAgentOutput(agentID)
     const list = events ?? []
-    this.outputs.set(agentID, list)
-    for (let i = list.length - 1; i >= 0; i--) {
-      const text = extractStepText(list[i])
+    const now = new Date()
+    const wrapped: TimestampedStreamEvent[] = list.map((e) => ({ event: e, receivedAt: now }))
+    this.outputs.set(agentID, wrapped)
+    for (let i = wrapped.length - 1; i >= 0; i--) {
+      const text = extractStepText(wrapped[i].event)
       if (text) {
         this.stepTexts.set(agentID, text)
         break
       }
     }
-    return list
+    return wrapped
   }
 
   appendEvent(agentID: string, event: agent.StreamEvent): void {
+    const tse: TimestampedStreamEvent = { event, receivedAt: new Date() }
     const existing = this.outputs.get(agentID) ?? []
-    this.outputs.set(agentID, [...existing, event])
+    this.outputs.set(agentID, [...existing, tse])
     const text = extractStepText(event)
     if (text) this.stepTexts.set(agentID, text)
   }

@@ -11,6 +11,7 @@ const mockAgents = new Map()
 vi.mock('../stores/agents.svelte.js', () => ({
   agentStore: {
     agents: mockAgents,
+    outputs: new Map<string, unknown[]>(),
     stepTexts: new Map<string, string>(),
     stop: (...args: unknown[]) => mockStop(...args),
     updateAgent: (...args: unknown[]) => mockUpdateAgent(...args),
