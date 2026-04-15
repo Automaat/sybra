@@ -102,6 +102,18 @@ func (s *CommentStore) Delete(taskID, commentID string) error {
 	return s.write(taskID, filtered)
 }
 
+// ResolveAll marks every unresolved comment for a task as resolved.
+func (s *CommentStore) ResolveAll(taskID string) error {
+	comments, err := s.List(taskID)
+	if err != nil {
+		return err
+	}
+	for i := range comments {
+		comments[i].Resolved = true
+	}
+	return s.write(taskID, comments)
+}
+
 // DeleteAll removes the sidecar file for a task (called on task deletion).
 func (s *CommentStore) DeleteAll(taskID string) error {
 	path := s.sidecarPath(taskID)
