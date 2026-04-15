@@ -18,8 +18,8 @@
   const typeStyles: Record<string, { label: string; classes: string }> = {
     init: { label: 'INIT', classes: 'bg-surface-300 text-surface-800 dark:bg-surface-600 dark:text-surface-200' },
     assistant: { label: 'ASST', classes: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' },
-    tool_use: { label: 'TOOL', classes: 'bg-blue-200 text-blue-800 dark:bg-blue-700 dark:text-blue-200' },
-    tool_result: { label: 'RSLT', classes: 'bg-green-200 text-green-800 dark:bg-green-700 dark:text-green-200' },
+    tool_use: { label: 'TOOL', classes: 'bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200' },
+    tool_result: { label: 'RSLT', classes: 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200' },
     result: { label: 'DONE', classes: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' },
   }
 

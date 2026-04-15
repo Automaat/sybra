@@ -151,12 +151,12 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium
-            {a.state === 'running' ? 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' :
+            {a.state === 'running' ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' :
              a.state === 'paused' ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' :
              a.state === 'stopped' ? 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' :
              'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}">
             {#if isRunning}
-              <span class="h-2 w-2 animate-pulse rounded-full bg-success-500"></span>
+              <span class="h-2 w-2 animate-pulse rounded-full bg-primary-500"></span>
             {:else if a.state === 'paused'}
               <span class="h-2 w-2 animate-pulse rounded-full bg-warning-500"></span>
             {/if}

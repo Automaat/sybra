@@ -10,7 +10,7 @@
 
   const stateConfig: Record<string, { label: string; classes: string }> = {
     idle: { label: 'Idle', classes: 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' },
-    running: { label: 'Running', classes: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200' },
+    running: { label: 'Running', classes: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' },
     paused: { label: 'Waiting', classes: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' },
     stopped: { label: 'Stopped', classes: 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200' },
   }
@@ -43,7 +43,7 @@
     </div>
     <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium {resolved.classes}">
       {#if a.state === 'running'}
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success-500"></span>
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
       {:else if a.state === 'paused'}
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
       {/if}
