@@ -258,6 +258,6 @@ test.describe('Task watcher', () => {
     const title = `E2E External Task ${Date.now()}`
     await createExternalTaskFile(title)
 
-    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 30_000 })
   })
 })

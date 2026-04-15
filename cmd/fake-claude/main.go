@@ -78,88 +78,46 @@ func main() {
 	}
 
 	scenario := popScenario()
+	if !runScenario(scenario, extractTaskID(os.Args)) {
+		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
+		os.Exit(2)
+	}
+}
 
-	taskID := extractTaskID(os.Args)
-
+func runScenario(scenario, taskID string) bool {
 	switch scenario {
 	case "success":
 		emitSystem()
 		emitAssistant("Working on it...")
 		emitResult("Task completed successfully.")
-
 	case "fail_exit":
 		emitSystem()
 		os.Exit(1)
-
 	case "no_result":
 		emitSystem()
 		emitAssistant("Working on it...")
 		os.Exit(0)
-
 	case "triage":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "todo", "--tags", "small")
-		}
-		emitResult("Triage complete. Set status=todo, tags=small.")
-
+		runTriage(taskID, "todo", "small")
 	case "triage_to_planning":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "planning", "--tags", "large")
-		}
-		emitResult("Triage complete. Set status=planning, tags=large.")
-
+		runTriage(taskID, "planning", "large")
 	case "triage_to_planning_nocritic":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "planning", "--tags", "large,nocritic")
-		}
-		emitResult("Triage complete. Set status=planning, tags=large,nocritic.")
-
+		runTriage(taskID, "planning", "large,nocritic")
 	case "triage_to_done":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "done")
-		}
-		emitResult("Triage complete. Set status=done.")
-
+		runTriage(taskID, "done", "")
 	case "triage_to_in_review":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "in-review")
-		}
-		emitResult("Triage complete. Set status=in-review.")
-
+		runTriage(taskID, "in-review", "")
 	case "triage_to_human_required":
-		emitSystem()
-		emitAssistant("Triaging task...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "human-required")
-		}
-		emitResult("Triage complete. Set status=human-required.")
-
+		runTriage(taskID, "human-required", "")
 	case "implement":
 		emitSystem()
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
-
 	case "interactive_implement":
 		emitSystem()
 		emitAssistant("Implementing interactively...")
 		emitResult("Implementation done. PR created")
-		// Block on stdin so we mirror a real conversational claude agent
-		// that waits for more input between turns. The runner with
-		// OneShot=true closes our stdin after reading the result event,
-		// unblocking this read and letting the process exit — which is
-		// exactly the signal path the one-shot fix relies on.
 		_, _ = io.Copy(io.Discard, os.Stdin)
-
 	case "evaluate":
 		emitSystem()
 		emitAssistant("Evaluating...")
@@ -167,17 +125,14 @@ func main() {
 			runCLI("update", taskID, "--status", "in-review")
 		}
 		emitResult("Evaluation complete. Status set to in-review.")
-
 	case "pr_created":
 		emitSystem()
 		emitAssistant("Implementing and pushing PR...")
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
-
 	case "auth_error":
 		emitSystem()
 		emitAssistant("Authentication failed. Please re-auth.")
 		os.Exit(1)
-
 	case "malformed_pr_output":
 		emitSystem()
 		emitAssistant("Implementing and preparing output...")
@@ -186,20 +141,33 @@ func main() {
 			b.WriteString("note: saw github.com/test-org/test-repo/pul/42 and github.com/test-org/test-repo/pulls/42\n")
 		}
 		emitResult(b.String())
-
 	case "perf_stream":
 		runPerfStream()
-
 	case "perf_burst":
 		runPerfBurst()
-
 	case "perf_long":
 		runPerfLong()
-
 	default:
-		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
-		os.Exit(2)
+		return false
 	}
+	return true
+}
+
+func runTriage(taskID, status, tags string) {
+	emitSystem()
+	emitAssistant("Triaging task...")
+	if taskID != "" {
+		if tags != "" {
+			runCLI("update", taskID, "--status", status, "--tags", tags)
+		} else {
+			runCLI("update", taskID, "--status", status)
+		}
+	}
+	msg := "Triage complete. Set status=" + status + "."
+	if tags != "" {
+		msg = "Triage complete. Set status=" + status + ", tags=" + tags + "."
+	}
+	emitResult(msg)
 }
 
 // runPerfStream emits FAKE_CLAUDE_EVENT_COUNT assistant events at a fixed

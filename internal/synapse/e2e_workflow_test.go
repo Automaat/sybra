@@ -2707,7 +2707,7 @@ type scriptedPRLinker struct {
 	edit func(repo string, prNumber int, body string) error
 }
 
-func (l *scriptedPRLinker) GetClosingIssues(repo string, prNumber int) ([]int, string, error) {
+func (l *scriptedPRLinker) GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error) {
 	if l.get == nil {
 		return nil, "", nil
 	}
@@ -3844,11 +3844,9 @@ func TestE2E_ResumeStalled_TightLoopIdempotent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			env.engine.ResumeStalled()
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -4220,7 +4218,7 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
 	})
 
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		action := "approve"
 		if i%2 == 1 {
 			action = "reject"
@@ -4282,7 +4280,7 @@ func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 120; i++ {
+	for i := range 120 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -4456,7 +4454,7 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 50)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
