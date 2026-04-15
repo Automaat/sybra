@@ -51,7 +51,7 @@
       {#each event.toolUses as tool (tool.id)}
         <div class="rounded-lg border border-surface-300 bg-surface-50 dark:border-surface-600 dark:bg-surface-900">
           <div class="flex items-center gap-2 border-b border-surface-200 px-3 py-1.5 dark:border-surface-700">
-            <span class="rounded bg-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-800 dark:bg-blue-700 dark:text-blue-200">
+            <span class="rounded bg-secondary-200 px-1.5 py-0.5 text-[10px] font-bold text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200">
               TOOL
             </span>
             <span class="text-xs font-medium text-surface-700 dark:text-surface-300">{tool.name}</span>
@@ -67,7 +67,7 @@
                 filePath={String(tool.input.file_path ?? '')}
               />
             {:else if tool.name === 'Bash' && tool.input?.command}
-              <pre class="rounded bg-surface-900 px-2 py-1.5 text-xs text-green-400 dark:bg-surface-950">{tool.input.command}</pre>
+              <pre class="rounded bg-surface-900 px-2 py-1.5 text-xs text-success-400 dark:bg-surface-950">{tool.input.command}</pre>
             {:else if tool.name === 'Write' && tool.input?.content}
               <pre class="max-h-40 overflow-y-auto rounded bg-surface-900 px-2 py-1.5 text-xs text-surface-200 dark:bg-surface-950">{truncate(String(tool.input.content), 500)}</pre>
             {:else if tool.input}
@@ -85,7 +85,7 @@
       <div class="ml-4 rounded border-l-2 px-3 py-1.5 text-xs
         {result.isError
           ? 'border-error-500 bg-error-50 text-error-800 dark:bg-error-950 dark:text-error-200'
-          : 'border-green-500 bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'}">
+          : 'border-success-500 bg-success-50 text-success-800 dark:bg-success-950 dark:text-success-200'}">
         <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">{truncate(result.content, 1000)}</pre>
       </div>
     {/each}

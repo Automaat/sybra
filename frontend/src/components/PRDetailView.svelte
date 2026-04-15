@@ -61,20 +61,20 @@
     <div class="mt-4 flex flex-wrap items-center gap-2">
       {#if pr.ciStatus}
         <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium
-          {pr.ciStatus === 'SUCCESS' ? 'bg-green-500/15 text-green-600 dark:text-green-400' :
-           pr.ciStatus === 'FAILURE' ? 'bg-red-500/15 text-red-600 dark:text-red-400' :
-           'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400'}">
+          {pr.ciStatus === 'SUCCESS' ? 'bg-success-500/15 text-success-700 dark:text-success-400' :
+           pr.ciStatus === 'FAILURE' ? 'bg-error-500/15 text-error-700 dark:text-error-400' :
+           'bg-warning-500/15 text-warning-700 dark:text-warning-400'}">
           <span class="inline-block h-2 w-2 rounded-full
-            {pr.ciStatus === 'SUCCESS' ? 'bg-green-500' :
-             pr.ciStatus === 'FAILURE' ? 'bg-red-500' : 'bg-yellow-500'}"></span>
+            {pr.ciStatus === 'SUCCESS' ? 'bg-success-500' :
+             pr.ciStatus === 'FAILURE' ? 'bg-error-500' : 'bg-warning-500'}"></span>
           CI: {pr.ciStatus.toLowerCase()}
         </span>
       {/if}
 
       {#if pr.mergeable}
         <span class="rounded-full px-2.5 py-1 text-xs font-medium
-          {pr.mergeable === 'MERGEABLE' ? 'bg-green-500/15 text-green-600 dark:text-green-400' :
-           pr.mergeable === 'CONFLICTING' ? 'bg-red-500/15 text-red-600 dark:text-red-400' :
+          {pr.mergeable === 'MERGEABLE' ? 'bg-success-500/15 text-success-700 dark:text-success-400' :
+           pr.mergeable === 'CONFLICTING' ? 'bg-error-500/15 text-error-700 dark:text-error-400' :
            'bg-surface-200 text-surface-500 dark:bg-surface-700'}">
           {pr.mergeable === 'MERGEABLE' ? 'Mergeable' :
            pr.mergeable === 'CONFLICTING' ? 'Conflicts' : 'Unknown'}
@@ -82,15 +82,15 @@
       {/if}
 
       {#if pr.reviewDecision === 'APPROVED'}
-        <span class="rounded-full bg-green-500/15 px-2.5 py-1 text-xs font-medium text-green-600 dark:text-green-400">Approved</span>
+        <span class="rounded-full bg-success-500/15 px-2.5 py-1 text-xs font-medium text-success-700 dark:text-success-400">Approved</span>
       {:else if pr.reviewDecision === 'CHANGES_REQUESTED'}
-        <span class="rounded-full bg-red-500/15 px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400">Changes Requested</span>
+        <span class="rounded-full bg-error-500/15 px-2.5 py-1 text-xs font-medium text-error-700 dark:text-error-400">Changes Requested</span>
       {:else if pr.reviewDecision === 'REVIEW_REQUIRED'}
-        <span class="rounded-full bg-yellow-500/15 px-2.5 py-1 text-xs font-medium text-yellow-600 dark:text-yellow-400">Review Required</span>
+        <span class="rounded-full bg-warning-500/15 px-2.5 py-1 text-xs font-medium text-warning-700 dark:text-warning-400">Review Required</span>
       {/if}
 
       {#if pr.unresolvedCount > 0}
-        <span class="rounded-full bg-yellow-500/15 px-2.5 py-1 text-xs font-medium text-yellow-600 dark:text-yellow-400">
+        <span class="rounded-full bg-warning-500/15 px-2.5 py-1 text-xs font-medium text-warning-700 dark:text-warning-400">
           {pr.unresolvedCount} unresolved
         </span>
       {/if}
@@ -112,9 +112,9 @@
         {#each checkRuns as check}
           <div class="flex items-center gap-2 text-sm">
             <span class="inline-block h-2 w-2 shrink-0 rounded-full
-              {check.conclusion === 'SUCCESS' ? 'bg-green-500' :
-               check.conclusion === 'FAILURE' ? 'bg-red-500' :
-               check.status === 'IN_PROGRESS' ? 'bg-yellow-500' : 'bg-surface-400'}"></span>
+              {check.conclusion === 'SUCCESS' ? 'bg-success-500' :
+               check.conclusion === 'FAILURE' ? 'bg-error-500' :
+               check.status === 'IN_PROGRESS' ? 'bg-warning-500' : 'bg-surface-400'}"></span>
             <span class="flex-1 truncate">{check.name}</span>
             <span class="text-xs text-surface-400">
               {check.conclusion ? check.conclusion.toLowerCase() : check.status?.toLowerCase() ?? ''}
@@ -137,7 +137,7 @@
     {#if onapprove && !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
       <button
         type="button"
-        class="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-700"
+        class="rounded-lg bg-success-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-success-700"
         onclick={onapprove}
       >
         Approve
@@ -157,7 +157,7 @@
     {#if onrerun && hasFailed}
       <button
         type="button"
-        class="rounded-lg bg-yellow-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-yellow-700"
+        class="rounded-lg bg-warning-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-warning-700"
         onclick={onrerun}
       >
         Rerun Failed
@@ -167,7 +167,7 @@
     {#if onfix && hasFailed}
       <button
         type="button"
-        class="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+        class="rounded-lg bg-error-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-error-700"
         onclick={onfix}
       >
         Fix

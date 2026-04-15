@@ -47,7 +47,7 @@
         filePath={String(input.file_path ?? '')}
       />
     {:else if toolName === 'Bash' && input.command}
-      <div class="rounded bg-surface-900 px-3 py-2 font-mono text-xs text-green-400 dark:bg-surface-950">
+      <div class="rounded bg-surface-900 px-3 py-2 font-mono text-xs text-success-400 dark:bg-surface-950">
         $ {input.command}
       </div>
       {#if input.description}

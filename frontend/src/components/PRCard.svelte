@@ -34,7 +34,7 @@
     <div class="flex items-center gap-2">
       {#if pr.ciStatus}
         <span
-          class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-green-500' : pr.ciStatus === 'FAILURE' ? 'bg-red-500' : 'bg-yellow-500'}"
+          class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-success-500' : pr.ciStatus === 'FAILURE' ? 'bg-error-500' : 'bg-warning-500'}"
           title="CI: {pr.ciStatus.toLowerCase()}"
         ></span>
       {/if}
@@ -45,12 +45,12 @@
         <span class="rounded bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">Draft</span>
       {/if}
       {#if pr.reviewDecision === 'APPROVED'}
-        <span class="rounded bg-green-500/15 px-1.5 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">Approved</span>
+        <span class="rounded bg-success-500/15 px-1.5 py-0.5 text-xs font-medium text-success-700 dark:text-success-400">Approved</span>
       {:else if pr.reviewDecision === 'CHANGES_REQUESTED'}
-        <span class="rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-medium text-red-600 dark:text-red-400">Changes</span>
+        <span class="rounded bg-error-500/15 px-1.5 py-0.5 text-xs font-medium text-error-700 dark:text-error-400">Changes</span>
       {/if}
       {#if pr.unresolvedCount > 0}
-        <span class="rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs font-medium text-yellow-600 dark:text-yellow-400"
+        <span class="rounded bg-warning-500/15 px-1.5 py-0.5 text-xs font-medium text-warning-700 dark:text-warning-400"
           title="{pr.unresolvedCount} unresolved thread{pr.unresolvedCount !== 1 ? 's' : ''}"
         >{pr.unresolvedCount} unresolved</span>
       {/if}
