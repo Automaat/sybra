@@ -44,6 +44,27 @@ func resolvePermission(t task.Task, cfg *config.Config) bool {
 	return cfg.DefaultRequirePermissions()
 }
 
+// pickImplementationResumeSession walks AgentRuns newest-first and returns
+// the most recent session_id from a prior implementation run. Other roles
+// (triage, plan, eval, …) own their own session state, often run in a
+// different cwd, and resuming them from the implementation worktree makes
+// claude bail with error_during_execution before the prompt is ever sent.
+// Empty Role is treated as implementation since AgentOrchestrator records
+// implementation runs without a role string.
+func pickImplementationResumeSession(runs []task.AgentRun) string {
+	for i := len(runs) - 1; i >= 0; i-- {
+		run := runs[i]
+		if run.SessionID == "" {
+			continue
+		}
+		if run.Role != "" && run.Role != string(agent.RoleImplementation) {
+			continue
+		}
+		return run.SessionID
+	}
+	return ""
+}
+
 // AgentOrchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
 type AgentOrchestrator struct {
@@ -100,13 +121,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
-	resumeSessionID := ""
-	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
-		if t.AgentRuns[i].SessionID != "" {
-			resumeSessionID = t.AgentRuns[i].SessionID
-			break
-		}
-	}
+	resumeSessionID := pickImplementationResumeSession(t.AgentRuns)
 
 	var extraEnv []string
 	if o.sandboxes != nil && t.ProjectID != "" {
