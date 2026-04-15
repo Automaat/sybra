@@ -50,6 +50,7 @@
           a.state,
           a.escalationReason,
           a.taskId ? taskStore.tasks.get(a.taskId)?.status : undefined,
+          a.awaitingApproval,
         )
       : 'done',
   )
@@ -193,6 +194,10 @@
           {#if phase === 'running'}
             <p class="mt-0.5 text-sm italic text-surface-400">
               {agentStore.stepTexts.get(agentId) ?? 'Working...'}
+            </p>
+          {:else if phase === 'waiting'}
+            <p class="mt-0.5 text-sm text-surface-400">
+              Waiting for reply
             </p>
           {:else if phase === 'blocked'}
             <p class="mt-0.5 text-sm text-tertiary-600 dark:text-tertiary-400">

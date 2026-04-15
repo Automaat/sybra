@@ -26,6 +26,8 @@ export namespace agent {
 	    errorKind?: string;
 	    errorMsg?: string;
 	
+	    awaitingApproval?: boolean;
+
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
@@ -54,6 +56,7 @@ export namespace agent {
 	        this.escalationReason = source["escalationReason"];
 	        this.errorKind = source["errorKind"];
 	        this.errorMsg = source["errorMsg"];
+	        this.awaitingApproval = source["awaitingApproval"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

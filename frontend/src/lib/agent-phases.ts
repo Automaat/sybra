@@ -1,6 +1,7 @@
 export type AgentPhase =
   | 'queued'
   | 'running'
+  | 'waiting'
   | 'blocked'
   | 'human-required'
   | 'reviewing'
@@ -25,6 +26,14 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
     label: 'Queued',
     dotClasses: 'bg-surface-400 dark:bg-surface-500',
     badgeClasses: 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400',
+    animate: false,
+    faded: false,
+  },
+  waiting: {
+    phase: 'waiting',
+    label: 'Waiting',
+    dotClasses: 'bg-surface-400 dark:bg-surface-500',
+    badgeClasses: 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300',
     animate: false,
     faded: false,
   },
@@ -76,17 +85,19 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
 /**
  * Derive the visual phase for an agent from its state and context.
  *
- * - idle                              → queued
- * - running                           → running
- * - paused, no escalationReason       → blocked (tool approval pending)
- * - paused, has escalationReason      → human-required (guardrail hit)
- * - stopped, task status = in-review  → reviewing
- * - stopped                           → done
+ * - idle                                          → queued
+ * - running                                       → running
+ * - paused, has escalationReason                  → human-required (guardrail hit)
+ * - paused, awaitingApproval=true                 → blocked (tool approval pending)
+ * - paused, neither                               → waiting (conversational, awaiting next message)
+ * - stopped, task status = in-review              → reviewing
+ * - stopped                                       → done
  */
 export function getAgentPhase(
   state: string,
   escalationReason?: string,
   taskStatus?: string,
+  awaitingApproval?: boolean,
 ): AgentPhase {
   switch (state) {
     case 'idle':
@@ -94,7 +105,9 @@ export function getAgentPhase(
     case 'running':
       return 'running'
     case 'paused':
-      return escalationReason ? 'human-required' : 'blocked'
+      if (escalationReason) return 'human-required'
+      if (awaitingApproval) return 'blocked'
+      return 'waiting'
     case 'stopped':
       if (taskStatus === 'in-review') return 'reviewing'
       return 'done'

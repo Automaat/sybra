@@ -33,7 +33,7 @@
   const states = [
     { value: 'all', label: 'All' },
     { value: 'running', label: 'Running' },
-    { value: 'paused', label: 'Waiting' },
+    { value: 'paused', label: 'Paused' },
     { value: 'idle', label: 'Idle' },
     { value: 'stopped', label: 'Stopped' },
   ]

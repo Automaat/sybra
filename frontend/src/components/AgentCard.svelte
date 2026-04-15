@@ -17,6 +17,7 @@
       a.state,
       a.escalationReason,
       a.taskId ? taskStore.tasks.get(a.taskId)?.status : undefined,
+      a.awaitingApproval,
     ),
   )
   const config = $derived(PHASE_CONFIG[phase])
@@ -51,6 +52,10 @@
       {:else if phase === 'human-required'}
         <span class="text-xs font-medium text-error-600 dark:text-error-400">
           Waiting for human input
+        </span>
+      {:else if phase === 'waiting'}
+        <span class="text-xs text-surface-400">
+          Waiting for reply
         </span>
       {:else if phase === 'blocked'}
         <span class="text-xs text-tertiary-600 dark:text-tertiary-400">

@@ -145,9 +145,10 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	}
 	s.emit(events.AgentApproval(agentID), req)
 
-	// Update agent state to paused.
+	// Update agent state to paused, flagged as awaiting tool approval.
 	if s.agents != nil {
 		if a, err := s.agents.GetAgent(agentID); err == nil {
+			a.SetAwaitingApproval(true)
 			a.SetState(StatePaused)
 			s.emit(events.AgentState(agentID), a)
 		}
@@ -158,6 +159,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	case resp := <-ch:
 		if s.agents != nil {
 			if a, err := s.agents.GetAgent(agentID); err == nil {
+				a.SetAwaitingApproval(false)
 				a.SetState(StateRunning)
 				s.emit(events.AgentState(agentID), a)
 			}
