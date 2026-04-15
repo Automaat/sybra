@@ -32,6 +32,7 @@
   let agentErr = $state<AgentErrorEvent | null>(null)
   let escalation = $state<EscalationEvent | null>(null)
   let escalationResponding = $state(false)
+  let errorDismissed = $state(false)
 
   const isRunning = $derived(a?.state === 'running')
 
@@ -39,7 +40,7 @@
   const cachedError = $derived(
     a?.errorKind ? { kind: a.errorKind, msg: a.errorMsg ?? '' } : null
   )
-  const displayError = $derived(agentErr ?? cachedError)
+  const displayError = $derived(errorDismissed ? null : (agentErr ?? cachedError))
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -52,6 +53,7 @@
 
     const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {
       agentErr = data
+      errorDismissed = false
     })
 
     const unsubEscalation = EventsOn(agentEscalation(agentId), (data: EscalationEvent) => {
@@ -124,7 +126,7 @@
       {agentId}
       error={displayError}
       onretry={a?.taskId ? () => onviewtask(a!.taskId) : undefined}
-      ondismiss={() => { agentErr = null }}
+      ondismiss={() => { agentErr = null; errorDismissed = true }}
     />
   {/if}
 
