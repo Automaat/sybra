@@ -316,6 +316,10 @@ type RunConfig struct {
 	// and system-critical sessions; user-initiated runs leave this false so
 	// they surface a clear error instead of wasting a hopeless request.
 	IgnoreHealthGate bool
+	// ResumeSessionID, when set, passes --resume to the claude CLI so the
+	// agent continues a prior conversation instead of starting from scratch.
+	// Populated from the task's last AgentRun.SessionID on restart.
+	ResumeSessionID string
 }
 
 type StreamEvent struct {

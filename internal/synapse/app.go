@@ -665,10 +665,11 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
 	}
 	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
-		"state":    string(state),
-		"cost_usd": cost,
-		"result":   truncated,
-		"log_file": ag.LogPath,
+		"state":      string(state),
+		"cost_usd":   cost,
+		"result":     truncated,
+		"log_file":   ag.LogPath,
+		"session_id": ag.GetSessionID(),
 	}); err != nil {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}

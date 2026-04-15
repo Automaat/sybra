@@ -132,6 +132,32 @@ func TestStartAgentHeadless(t *testing.T) {
 	}
 }
 
+func TestRunConfigResumeSessionID(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	dir, err := os.MkdirTemp("", "synapse-agent-resume-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	ag, err := m.Run(RunConfig{
+		TaskID:          "task-resume",
+		Name:            "Resume Test",
+		Mode:            "headless",
+		Prompt:          "continue",
+		Dir:             dir,
+		ResumeSessionID: "ses-resume-abc",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ag.GetSessionID() != "ses-resume-abc" {
+		t.Errorf("SessionID = %q, want %q", ag.GetSessionID(), "ses-resume-abc")
+	}
+}
+
 func TestGetAgent(t *testing.T) {
 	m, _ := newTestManager(t)
 

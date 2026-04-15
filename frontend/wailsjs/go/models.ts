@@ -1216,6 +1216,7 @@ export namespace task {
 	    costUsd: number;
 	    result: string;
 	    logFile: string;
+	    sessionId?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentRun(source);
@@ -1232,6 +1233,7 @@ export namespace task {
 	        this.costUsd = source["costUsd"];
 	        this.result = source["result"];
 	        this.logFile = source["logFile"];
+	        this.sessionId = source["sessionId"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

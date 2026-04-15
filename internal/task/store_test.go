@@ -629,6 +629,80 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateRunSessionID(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Session ID task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-s", Mode: "headless", State: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.UpdateRun(created.ID, "agent-s", map[string]any{
+		"state":      "done",
+		"session_id": "ses-abc123",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].SessionID != "ses-abc123" {
+		t.Errorf("SessionID = %q, want %q", got.AgentRuns[0].SessionID, "ses-abc123")
+	}
+
+	// Verify YAML round-trip persists session_id
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
+		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
+	}
+}
+
+func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Session ID empty task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-e", Mode: "headless", State: "running", SessionID: "existing-id"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty session_id should not overwrite existing value
+	err = store.UpdateRun(created.ID, "agent-e", map[string]any{
+		"state":      "done",
+		"session_id": "",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].SessionID != "existing-id" {
+		t.Errorf("SessionID = %q, want existing-id preserved", got.AgentRuns[0].SessionID)
+	}
+}
+
 func TestStoreListSkipsPlanSidecars(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
