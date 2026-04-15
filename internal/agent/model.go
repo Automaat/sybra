@@ -53,6 +53,7 @@ type Agent struct {
 	EscalationReason string `json:"escalationReason,omitempty"`
 	ErrorKind        string `json:"errorKind,omitempty"`
 	ErrorMsg         string `json:"errorMsg,omitempty"`
+	AwaitingApproval bool   `json:"awaitingApproval,omitempty"`
 
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
@@ -96,6 +97,13 @@ type Agent struct {
 func (a *Agent) SetState(s State) {
 	a.mu.Lock()
 	a.State = s
+	a.mu.Unlock()
+}
+
+// SetAwaitingApproval marks whether the agent is paused pending tool approval.
+func (a *Agent) SetAwaitingApproval(v bool) {
+	a.mu.Lock()
+	a.AwaitingApproval = v
 	a.mu.Unlock()
 }
 

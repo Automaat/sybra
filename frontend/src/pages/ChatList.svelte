@@ -2,6 +2,7 @@
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
+  import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import NewChatDialog from '../components/NewChatDialog.svelte'
 
   interface Props {
@@ -26,20 +27,8 @@
     agentStore.list.filter((a: agent.Agent) => a.mode === 'interactive'),
   )
 
-  function stateColor(state: string): string {
-    switch (state) {
-      case 'running': return 'bg-success-500'
-      case 'paused': return 'bg-warning-500'
-      default: return 'bg-surface-400'
-    }
-  }
-
-  function stateLabel(state: string): string {
-    switch (state) {
-      case 'running': return 'Running'
-      case 'paused': return 'Idle'
-      default: return 'Stopped'
-    }
+  function agentPhaseConfig(a: agent.Agent) {
+    return PHASE_CONFIG[getAgentPhase(a.state, a.escalationReason, undefined, a.awaitingApproval)]
   }
 
   function timeAgo(date: string | undefined): string {
@@ -90,8 +79,8 @@
           onclick={() => onselect(a.id)}
         >
           <!-- Status dot -->
-          <span class="h-2.5 w-2.5 shrink-0 rounded-full {stateColor(a.state)}
-            {a.state === 'running' || a.state === 'paused' ? 'animate-pulse' : ''}"></span>
+          <span class="h-2.5 w-2.5 shrink-0 rounded-full {agentPhaseConfig(a).dotClasses}
+            {agentPhaseConfig(a).animate ? 'animate-pulse' : ''}"></span>
 
           <!-- Content -->
           <div class="min-w-0 flex-1">
@@ -106,7 +95,7 @@
               {/if}
             </div>
             <p class="mt-0.5 text-xs text-surface-500">
-              {stateLabel(a.state)}
+              {agentPhaseConfig(a).label}
             </p>
           </div>
 

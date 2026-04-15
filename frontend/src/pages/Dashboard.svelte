@@ -60,7 +60,7 @@
       <p class="mt-1 text-2xl font-bold text-success-600 dark:text-success-400">{runningAgents.length}</p>
     </div>
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-      <span class="text-xs font-medium text-surface-500">Waiting for Input</span>
+      <span class="text-xs font-medium text-surface-500">Paused Agents</span>
       <p class="mt-1 text-2xl font-bold text-warning-600 dark:text-warning-400">{pausedAgents.length}</p>
     </div>
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">

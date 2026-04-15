@@ -85,7 +85,7 @@ describe('AgentDetail', () => {
       props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
     })
     await vi.waitFor(() => {
-      expect(screen.getByText(/running/)).toBeDefined()
+      expect(screen.getByText(/running/i)).toBeDefined()
     })
   })
 
