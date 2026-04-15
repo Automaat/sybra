@@ -67,6 +67,12 @@ func (a *taskAdapter) UpdateTaskPR(id string, prNumber int) error {
 	return err
 }
 
+func (a *taskAdapter) MarkTaskReviewed(id string) error {
+	reviewed := true
+	_, err := a.tasks.Update(id, task.Update{Reviewed: &reviewed})
+	return err
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
@@ -86,6 +92,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Plan:         t.Plan,
 		PlanCritique: t.PlanCritique,
 		Issue:        t.Issue,
+		Reviewed:     t.Reviewed,
 		Workflow:     t.Workflow,
 	}
 }

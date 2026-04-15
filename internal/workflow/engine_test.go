@@ -124,6 +124,18 @@ func (m *memTasks) UpdateTaskPR(id string, prNumber int) error {
 	return nil
 }
 
+func (m *memTasks) MarkTaskReviewed(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Reviewed = true
+	m.tasks[id] = t
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

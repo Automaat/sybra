@@ -25,6 +25,7 @@ var KnownTriggerFields = map[string]bool{
 	"task.project_id": true,
 	"task.branch":     true,
 	"task.pr_number":  true,
+	"task.reviewed":   true,
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.
 	"pr.issue_kind": true,
