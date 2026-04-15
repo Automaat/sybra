@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { agent } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
+  import { fade } from 'svelte/transition'
 
   interface Props {
     agent: agent.Agent
@@ -47,11 +48,11 @@
         </span>
       {/if}
     </div>
-    <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium {resolved.classes}">
+    <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150 {resolved.classes}">
       {#if a.state === 'running'}
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
+        <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-success-500"></span>
       {:else if a.state === 'paused'}
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning-500"></span>
+        <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-warning-500"></span>
       {/if}
       {resolved.label}
     </span>
