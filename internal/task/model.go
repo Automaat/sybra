@@ -109,6 +109,7 @@ type AgentRun struct {
 	CostUSD   float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
 	Result    string    `yaml:"result,omitempty" json:"result"`
 	LogFile   string    `yaml:"log_file,omitempty" json:"logFile"`
+	SessionID string    `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
 }
 
 type Task struct {

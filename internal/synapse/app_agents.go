@@ -97,6 +97,14 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Synapse cwd", taskID, skipWT)
 	}
 
+	resumeSessionID := ""
+	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
+		if t.AgentRuns[i].SessionID != "" {
+			resumeSessionID = t.AgentRuns[i].SessionID
+			break
+		}
+	}
+
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
@@ -108,6 +116,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		Model:              "sonnet",
 		RequirePermissions: requirePerm,
 		OneShot:            oneShot,
+		ResumeSessionID:    resumeSessionID,
 	})
 	if err != nil {
 		// Gate block leaves no running agent. Flip the task back to todo so

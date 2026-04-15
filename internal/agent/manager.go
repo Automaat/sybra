@@ -192,6 +192,9 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cancel:      cancel,
 		sessionCWD:  cfg.Dir,
 	}
+	if cfg.ResumeSessionID != "" {
+		a.SetSessionID(cfg.ResumeSessionID)
+	}
 	if cfg.Mode == "headless" || cfg.Mode == "interactive" {
 		a.done = make(chan struct{})
 	}
