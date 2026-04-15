@@ -95,7 +95,7 @@ describe('AgentCard', () => {
 
   it('shows taskId when present', () => {
     render(AgentCard, { props: { agent: makeAgent({ taskId: 'task-1' }), onclick: () => {} } })
-    expect(screen.getByText('task: task-1')).toBeDefined()
+    expect(screen.getByText('task-1')).toBeDefined()
   })
 
   it('calls onclick when clicked', async () => {
