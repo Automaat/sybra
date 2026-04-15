@@ -177,11 +177,11 @@ export namespace agent {
 	    timestamp: any;
 	    error_type?: string;
 	    error_status?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StreamEvent(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -195,7 +195,7 @@ export namespace agent {
 	        this.error_type = source["error_type"];
 	        this.error_status = source["error_status"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
