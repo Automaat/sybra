@@ -10,6 +10,7 @@
   import { STATUS_OPTIONS } from '../lib/statuses.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
+  import ProviderLogo from '../components/ProviderLogo.svelte'
 
   interface Props {
     taskId: string
@@ -667,6 +668,9 @@
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2">
               <span class="text-sm font-medium text-surface-500">Agent</span>
+              {#if runningAgent.provider}
+                <ProviderLogo provider={runningAgent.provider} class="h-4 w-4 text-surface-500" />
+              {/if}
               <button
                 type="button"
                 class="font-mono text-sm text-primary-500 hover:underline"
@@ -747,6 +751,9 @@
                 onclick={() => toggleRunLog(run.agentId)}
               >
                 <div class="flex items-center gap-2">
+                  {#if run.provider}
+                    <ProviderLogo provider={run.provider} class="h-3.5 w-3.5 text-surface-400" />
+                  {/if}
                   <span class="font-mono text-surface-400">{run.agentId}</span>
                   <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{run.mode}</span>
                   <span class="rounded px-1.5 py-0.5 {run.state === 'stopped' ? 'bg-surface-200 dark:bg-surface-700' : 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200'}">
