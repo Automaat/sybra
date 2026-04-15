@@ -49,6 +49,7 @@ type TaskInfo struct {
 	Plan         string
 	PlanCritique string
 	Issue        string
+	Reviewed     bool
 	Workflow     *Execution
 }
 
@@ -58,6 +59,7 @@ type TaskProvider interface {
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
 	UpdateTaskPR(id string, prNumber int) error
+	MarkTaskReviewed(id string) error
 	SetWorkflow(id string, wf *Execution) error
 }
 
@@ -310,6 +312,14 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 			"attempts", retries)
+	}
+
+	// Mark task reviewed after a review-role step succeeds.
+	// Persisted so a re-triggered workflow run skips code_review (idempotent).
+	if currentStep.Config.Role == "review" && output.Status == "completed" {
+		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
+			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
+		}
 	}
 
 	// Re-read task for latest state (agent may have changed tags/status).
@@ -1240,6 +1250,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.agent_mode": t.AgentMode,
 		"task.project_id": t.ProjectID,
 		"task.branch":     t.Branch,
+		"task.reviewed":   strconv.FormatBool(t.Reviewed),
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = fmt.Sprintf("%d", t.PRNumber)

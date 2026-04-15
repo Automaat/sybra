@@ -79,6 +79,9 @@ class ReviewStore {
 }
 
 export const reviewStore = new ReviewStore()
-if (typeof window !== 'undefined' && window.runtime) {
-  reviewStore.listen()
+if (typeof window !== 'undefined') {
+  // Desktop mode needs window.runtime (Wails IPC); web mode uses SSE directly.
+  if (import.meta.env.VITE_MODE === 'web' || window.runtime) {
+    reviewStore.listen()
+  }
 }

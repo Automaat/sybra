@@ -124,6 +124,18 @@ func (m *memTasks) UpdateTaskPR(id string, prNumber int) error {
 	return nil
 }
 
+func (m *memTasks) MarkTaskReviewed(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Reviewed = true
+	m.tasks[id] = t
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2538,5 +2550,63 @@ func TestExecEvaluate_FailedWithEmptyOutput(t *testing.T) {
 	}
 	if got := tasks.Reason("t1"); got != "agent failed with no output" {
 		t.Errorf("reason = %q, want %q", got, "agent failed with no output")
+	}
+}
+
+func TestExecEvaluate_NoPRFallsThrough(t *testing.T) {
+	// When ProjectID+Branch are set but gh pr list finds nothing, the step must
+	// still fall through to human-required (not panic or error).
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo", Branch: "feature-branch"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		StepHistory: []StepRecord{
+			{StepID: "implement", Status: "failed", AgentID: "a1", Output: "timed out"},
+		},
+	}
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", Branch: "feature-branch"}
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, ti); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+}
+
+func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
+	// After a run_agent step with role=review completes successfully,
+	// the task must be marked reviewed so re-triggered workflows skip code_review.
+	store := newTestStoreWith(t, "test-review-fix.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-review-fix"); err != nil {
+		t.Fatal(err)
+	}
+
+	// implement → maybe_review → code_review
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "implement", Status: "completed", AgentID: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Workflow should now be waiting at code_review.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "code_review" {
+		t.Fatalf("expected code_review step, got %q", ti.Workflow.CurrentStep)
+	}
+
+	// Complete code_review (role=review) → must mark reviewed.
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "code_review", Status: "completed", AgentID: "a2", Output: "review done"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, _ = tasks.GetTask("t1")
+	if !ti.Reviewed {
+		t.Error("task.Reviewed = false after review-role step completed; want true")
 	}
 }

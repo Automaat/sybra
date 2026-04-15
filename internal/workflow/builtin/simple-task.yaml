@@ -259,7 +259,7 @@ steps:
     next:
       - goto: maybe_review
 
-  # Skip review when tagged noreview (mirrors maybe_critique/nocritic pattern)
+  # Skip review when tagged noreview or already reviewed in a prior run.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -269,6 +269,11 @@ steps:
         operator: not_contains
         value: noreview
     next:
+      - when:
+          field: task.reviewed
+          operator: equals
+          value: "true"
+        goto: ""
       - when:
           field: task.tags
           operator: not_contains

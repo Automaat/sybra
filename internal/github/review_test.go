@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+// seqExecer returns successive output/error pairs per call, cycling the last
+// entry if calls exceed the slice length. Used to simulate partial failures
+// (e.g. first query succeeds, second fails).
+type seqExecer struct {
+	responses []struct {
+		output []byte
+		err    error
+	}
+	i int
+}
+
+func (s *seqExecer) run(_ ...string) ([]byte, error) {
+	idx := s.i
+	if idx >= len(s.responses) {
+		idx = len(s.responses) - 1
+	}
+	s.i++
+	return s.responses[idx].output, s.responses[idx].err
+}
+
 func TestFetchReviewsWith_success(t *testing.T) {
 	t.Parallel()
 	response := `{
@@ -40,6 +60,38 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	}
 	if len(summary.ReviewRequested) != 1 {
 		t.Errorf("ReviewRequested len = %d, want 1", len(summary.ReviewRequested))
+	}
+}
+
+func TestFetchReviewsWith_reviewRequestedFailsReturnsCreatedByMe(t *testing.T) {
+	// Simulates a server where review-requested query fails (scoped token,
+	// rate limit, etc.). Must return createdByMe without error.
+	t.Parallel()
+	response := `{"data":{"search":{"nodes":[{"number":7,"title":"my pr",` +
+		`"url":"https://github.com/o/r/pull/7","author":{"login":"me","type":"User"},` +
+		`"repository":{"name":"r","nameWithOwner":"o/r"},` +
+		`"labels":{"nodes":[]},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]}}]}}}`
+
+	resetViewerCache()
+	type entry = struct {
+		output []byte
+		err    error
+	}
+	fe := &seqExecer{responses: []entry{
+		{output: []byte(response)},                              // createdByMe graphql
+		{output: []byte("me\n")},                                // viewerLogin user API
+		{output: []byte("gh error"), err: fmt.Errorf("exit 1")}, // review-requested graphql → fail
+	}}
+
+	summary, err := fetchReviewsWith(fe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(summary.CreatedByMe) != 1 {
+		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
+	}
+	if summary.ReviewRequested != nil {
+		t.Errorf("ReviewRequested = %v, want nil", summary.ReviewRequested)
 	}
 }
 
