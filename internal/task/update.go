@@ -27,6 +27,7 @@ type Update struct {
 	Reviewed     *bool
 	RunRole      *string
 	TodoistID    *string
+	Priority     *Priority
 	DueDate      **time.Time
 	Workflow     **workflow.Execution
 	Plan         *string
@@ -58,6 +59,8 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "body",
 		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique":
 		return applyPlainStringField(u, k, v)
+	case "priority":
+		return applyPriorityField(u, v)
 	case "status":
 		return applyStatusField(u, k, v)
 	case "agent_mode":
@@ -184,6 +187,19 @@ func applyPRNumberField(u *Update, k string, v any) error {
 	default:
 		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
 	}
+	return nil
+}
+
+func applyPriorityField(u *Update, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field \"priority\": want string, got %T", v)
+	}
+	p, err := ValidatePriority(s)
+	if err != nil {
+		return err
+	}
+	u.Priority = &p
 	return nil
 }
 

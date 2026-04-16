@@ -4,6 +4,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { STATUS_OPTIONS } from '../lib/statuses.js'
+  import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
     task: task.Task
@@ -60,6 +61,10 @@
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
 
+  function priorityMeta(p: string | undefined) {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
+  }
+
   function timeAgo(date: any): string {
     if (!date) return ''
     const now = Date.now()
@@ -95,6 +100,10 @@
       <XCircle size={16} class="shrink-0 text-error-500" />
     {:else if topPR?.ciStatus === 'PENDING'}
       <Clock size={16} class="shrink-0 text-warning-500" />
+    {/if}
+    {#if t.priority && t.priority !== ''}
+      {@const pm = priorityMeta(t.priority)}
+      <span class="shrink-0 font-mono text-xs {pm.classes}" title="Priority: {pm.label}">{pm.icon}</span>
     {/if}
     <h3 class="text-sm font-semibold leading-tight">{t.title}</h3>
   </div>
@@ -202,11 +211,19 @@
         type="button"
         onclick={copyBranch}
         class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-surface-400 transition-colors hover:bg-surface-200 hover:text-surface-600 dark:hover:bg-surface-600 dark:hover:text-surface-300"
-        title="Copy branch name"
+        title="Copy branch name (⇧⌘.)"
       >
         <Copy size={10} />
         {copiedBranch ? 'Copied!' : taskBranchName.replace(/^sybra\//, '')}
       </button>
+    </div>
+  {/if}
+  {#if focused}
+    <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-surface-400">
+      <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">Enter</kbd><span>open</span>
+      <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">S</kbd><span>status</span>
+      <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">P</kbd><span>priority</span>
+      <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">⌘I</kbd><span>sidebar</span>
     </div>
   {/if}
   {#if onstatuschange}

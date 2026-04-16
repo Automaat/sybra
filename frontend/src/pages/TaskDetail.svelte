@@ -45,6 +45,11 @@
       }
       return
     }
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === 'd') {
+      e.preventDefault()
+      startEditingDueDate()
+      return
+    }
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -66,6 +71,12 @@
   $effect(() => {
     window.addEventListener('keydown', handleKeydown)
     return () => window.removeEventListener('keydown', handleKeydown)
+  })
+
+  $effect(() => {
+    function onOpenDueDate() { startEditingDueDate() }
+    window.addEventListener('open-due-date', onOpenDueDate)
+    return () => window.removeEventListener('open-due-date', onOpenDueDate)
   })
 
   let deleting = $state(false)

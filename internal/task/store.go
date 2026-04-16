@@ -255,6 +255,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.TodoistID != nil {
 		t.TodoistID = *u.TodoistID
 	}
+	if u.Priority != nil {
+		t.Priority = *u.Priority
+	}
 	if u.DueDate != nil {
 		t.DueDate = *u.DueDate
 	}

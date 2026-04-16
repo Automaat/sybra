@@ -47,6 +47,29 @@ func ValidateStatus(s string) (Status, error) {
 	return st, nil
 }
 
+type Priority string
+
+const (
+	PriorityNone   Priority = ""
+	PriorityLow    Priority = "low"
+	PriorityMedium Priority = "medium"
+	PriorityHigh   Priority = "high"
+	PriorityUrgent Priority = "urgent"
+)
+
+var validPriorities = map[Priority]bool{
+	PriorityNone: true, PriorityLow: true, PriorityMedium: true,
+	PriorityHigh: true, PriorityUrgent: true,
+}
+
+func ValidatePriority(s string) (Priority, error) {
+	p := Priority(s)
+	if !validPriorities[p] {
+		return "", fmt.Errorf("invalid priority %q (valid: none, low, medium, high, urgent)", s)
+	}
+	return p, nil
+}
+
 type TaskType string
 
 const (
@@ -129,6 +152,7 @@ type Task struct {
 	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
 	RunRole      string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
+	Priority     Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
 	DueDate      *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).

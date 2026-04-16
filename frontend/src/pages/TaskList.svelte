@@ -1,23 +1,30 @@
 <script lang="ts">
-  import { Search, Filter, ChevronDown } from '@lucide/svelte'
+  import { Search, Filter, ChevronDown, List, Columns } from '@lucide/svelte'
   import type { task } from '../../wailsjs/go/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
   import TaskCard from '../components/TaskCard.svelte'
+  import StatusPicker from '../components/StatusPicker.svelte'
+  import PriorityPicker from '../components/PriorityPicker.svelte'
+  import AssignProjectDialog from '../components/AssignProjectDialog.svelte'
   import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { viewport } from '../lib/viewport.svelte.js'
   import { fly } from 'svelte/transition'
   import { flip } from 'svelte/animate'
   import { cubicOut } from 'svelte/easing'
+  import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
     onselect: (id: string) => void
     filter?: 'in-progress'
+    onnewTask?: () => void
+    onfocusedtaskchange?: (taskId: string | null) => void
+    viewMode?: 'board' | 'list'
   }
 
-  const { onselect, filter }: Props = $props()
+  const { onselect, filter, onnewTask, onfocusedtaskchange, viewMode: viewModeProp }: Props = $props()
 
   let dragOverStatus = $state<string | null>(null)
   let addingToColumn = $state<string | null>(null)
@@ -25,6 +32,9 @@
   let inputRef = $state<HTMLInputElement | null>(null)
   let filtersOpen = $state(false)
   let collapsedColumns = $state<Set<string>>(new Set(['testing', 'done']))
+  let internalViewMode = $state<'board' | 'list'>('board')
+
+  const viewMode = $derived(viewModeProp ?? internalViewMode)
 
   function toggleColumn(status: string) {
     const next = new Set(collapsedColumns)
@@ -47,6 +57,11 @@
   let focusedColIdx = $state(-1)
   let focusedRowIdx = $state(-1)
 
+  // Picker state
+  let statusPickerOpen = $state(false)
+  let priorityPickerOpen = $state(false)
+  let assignProjectOpen = $state(false)
+
   function getColumnTasks(colIndex: number): task.Task[] {
     const col = visibleColumns[colIndex]
     if (!col) return []
@@ -56,11 +71,23 @@
 
   const focusedTaskId = $derived.by((): string | null => {
     if (focusedColIdx < 0 || focusedRowIdx < 0) return null
-    const tasks = getColumnTasks(focusedColIdx)
+    const tasks = viewMode === 'list'
+      ? allFilteredTasks
+      : getColumnTasks(focusedColIdx)
     return tasks[focusedRowIdx]?.id ?? null
   })
 
+  const focusedTask = $derived(focusedTaskId ? taskStore.tasks.get(focusedTaskId) ?? null : null)
+
+  $effect(() => {
+    onfocusedtaskchange?.(focusedTaskId)
+  })
+
   function focusFirstTask(): void {
+    if (viewMode === 'list') {
+      if (allFilteredTasks.length > 0) { focusedColIdx = 0; focusedRowIdx = 0 }
+      return
+    }
     for (let ci = 0; ci < visibleColumns.length; ci++) {
       if (getColumnTasks(ci).length > 0) {
         focusedColIdx = ci
@@ -76,66 +103,158 @@
     })
   }
 
+  async function changeStatusOfFocused(status: string) {
+    if (!focusedTaskId) return
+    try {
+      await taskStore.update(focusedTaskId, { status })
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Status change failed', String(err))
+    }
+    statusPickerOpen = false
+  }
+
+  async function changePriorityOfFocused(priority: string) {
+    if (!focusedTaskId) return
+    try {
+      await taskStore.update(focusedTaskId, { priority })
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Priority change failed', String(err))
+    }
+    priorityPickerOpen = false
+  }
+
+  async function assignProjectToFocused(projectId: string) {
+    if (!focusedTaskId) return
+    try {
+      await taskStore.update(focusedTaskId, { project_id: projectId })
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Project assignment failed', String(err))
+    }
+    assignProjectOpen = false
+  }
+
   function handleBoardKeydown(e: KeyboardEvent): void {
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
-    if (e.metaKey || e.ctrlKey || e.altKey) return
+
+    // Don't handle if a picker is open — pickers capture keys themselves
+    if (statusPickerOpen || priorityPickerOpen || assignProjectOpen) return
 
     const key = e.key
+    const isCmd = e.metaKey || e.ctrlKey
 
-    if (key === 'j' || key === 'ArrowDown') {
+    // Cmd+D → due date for focused task (navigate to task detail and open due date)
+    if (isCmd && key === 'd' && focusedTaskId) {
       e.preventDefault()
-      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-      const tasks = getColumnTasks(focusedColIdx)
-      focusedRowIdx = Math.min(focusedRowIdx + 1, tasks.length - 1)
-      scrollFocusedIntoView()
+      onselect(focusedTaskId)
+      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('open-due-date')))
       return
     }
 
-    if (key === 'k' || key === 'ArrowUp') {
+    if (isCmd) return
+    if (e.altKey) return
+
+    if (key === '/' || key === 'F') {
       e.preventDefault()
-      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-      focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
-      scrollFocusedIntoView()
+      searchInputRef?.focus()
+      searchInputRef?.select()
       return
     }
 
-    if (key === 'h' || key === 'ArrowLeft') {
-      e.preventDefault()
-      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-      for (let ci = focusedColIdx - 1; ci >= 0; ci--) {
-        const tasks = getColumnTasks(ci)
-        if (tasks.length > 0) {
-          focusedColIdx = ci
-          focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
-          scrollFocusedIntoView()
-          return
-        }
+    if (viewMode === 'list') {
+      if (key === 'j' || key === 'ArrowDown') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        focusedRowIdx = Math.min(focusedRowIdx + 1, allFilteredTasks.length - 1)
+        scrollFocusedIntoView()
+        return
       }
-      return
-    }
-
-    if (key === 'l' || key === 'ArrowRight') {
-      e.preventDefault()
-      if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-      for (let ci = focusedColIdx + 1; ci < visibleColumns.length; ci++) {
-        const tasks = getColumnTasks(ci)
-        if (tasks.length > 0) {
-          focusedColIdx = ci
-          focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
-          scrollFocusedIntoView()
-          return
-        }
+      if (key === 'k' || key === 'ArrowUp') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
+        scrollFocusedIntoView()
+        return
       }
-      return
+    } else {
+      if (key === 'j' || key === 'ArrowDown') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        const tasks = getColumnTasks(focusedColIdx)
+        focusedRowIdx = Math.min(focusedRowIdx + 1, tasks.length - 1)
+        scrollFocusedIntoView()
+        return
+      }
+
+      if (key === 'k' || key === 'ArrowUp') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
+        scrollFocusedIntoView()
+        return
+      }
+
+      if (key === 'h' || key === 'ArrowLeft') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        for (let ci = focusedColIdx - 1; ci >= 0; ci--) {
+          const tasks = getColumnTasks(ci)
+          if (tasks.length > 0) {
+            focusedColIdx = ci
+            focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
+            scrollFocusedIntoView()
+            return
+          }
+        }
+        return
+      }
+
+      if (key === 'l' || key === 'ArrowRight') {
+        e.preventDefault()
+        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
+        for (let ci = focusedColIdx + 1; ci < visibleColumns.length; ci++) {
+          const tasks = getColumnTasks(ci)
+          if (tasks.length > 0) {
+            focusedColIdx = ci
+            focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
+            scrollFocusedIntoView()
+            return
+          }
+        }
+        return
+      }
     }
 
-    if (key === 'Enter') {
+    if (key === 'Enter' || key === 'e') {
       const taskId = focusedTaskId
       if (taskId) {
         e.preventDefault()
         onselect(taskId)
       }
+      return
+    }
+
+    if (key === 'c' && !e.shiftKey) {
+      e.preventDefault()
+      onnewTask?.()
+      return
+    }
+
+    if (key === 'C' && e.shiftKey) {
+      e.preventDefault()
+      if (focusedTaskId) assignProjectOpen = true
+      return
+    }
+
+    if (key === 's' && focusedTaskId) {
+      e.preventDefault()
+      statusPickerOpen = true
+      return
+    }
+
+    if (key === 'p' && focusedTaskId) {
+      e.preventDefault()
+      priorityPickerOpen = true
       return
     }
 
@@ -149,6 +268,17 @@
   $effect(() => {
     window.addEventListener('keydown', handleBoardKeydown)
     return () => window.removeEventListener('keydown', handleBoardKeydown)
+  })
+
+  // Listen for toggle-view event from App.svelte (Cmd+B)
+  $effect(() => {
+    function onToggleView() {
+      internalViewMode = internalViewMode === 'board' ? 'list' : 'board'
+      focusedColIdx = -1
+      focusedRowIdx = -1
+    }
+    window.addEventListener('toggle-view', onToggleView)
+    return () => window.removeEventListener('toggle-view', onToggleView)
   })
 
   let searchInputRef = $state<HTMLInputElement | null>(null)
@@ -201,6 +331,34 @@
       return true
     })
   }
+
+  // All filtered tasks for list view (sorted by status order)
+  const statusOrder: Record<string, number> = {
+    'new': 0, 'todo': 1, 'planning': 2, 'plan-review': 3,
+    'in-progress': 4, 'in-review': 5, 'testing': 6, 'test-plan-review': 7,
+    'human-required': 8, 'done': 9,
+  }
+  const priorityOrder: Record<string, number> = {
+    'urgent': 0, 'high': 1, 'medium': 2, 'low': 3, '': 4,
+  }
+
+  const allFilteredTasks = $derived.by(() => {
+    const query = searchQuery.toLowerCase().trim()
+    return taskStore.list.filter((t: task.Task) => {
+      if (!showDone && t.status === 'done') return false
+      if (query && !t.title.toLowerCase().includes(query)
+          && !(t.body ?? '').toLowerCase().includes(query)
+          && !(t.issue ?? '').toLowerCase().includes(query)) return false
+      if (selectedProjectId && t.projectId !== selectedProjectId) return false
+      if (selectedTags.length > 0 && !selectedTags.every(tag => t.tags?.includes(tag))) return false
+      if (selectedAgentMode && t.agentMode !== selectedAgentMode) return false
+      return true
+    }).sort((a, b) => {
+      const statusDiff = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99)
+      if (statusDiff !== 0) return statusDiff
+      return (priorityOrder[a.priority ?? ''] ?? 4) - (priorityOrder[b.priority ?? ''] ?? 4)
+    })
+  })
 
   const visibleColumns = $derived(
     showDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
@@ -318,9 +476,43 @@
       dismissInlineAdd()
     }
   }
+
+  function priorityIcon(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
+  }
+
+  function priorityLabel(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.label ?? 'None'
+  }
+
+  function priorityClasses(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.classes ?? 'text-surface-400'
+  }
 </script>
 
 <svelte:window onclick={handleWindowClick} />
+
+{#if statusPickerOpen && focusedTask}
+  <StatusPicker
+    currentStatus={focusedTask.status}
+    onpick={changeStatusOfFocused}
+    onclose={() => (statusPickerOpen = false)}
+  />
+{/if}
+
+{#if priorityPickerOpen && focusedTask}
+  <PriorityPicker
+    currentPriority={focusedTask.priority ?? ''}
+    onpick={changePriorityOfFocused}
+    onclose={() => (priorityPickerOpen = false)}
+  />
+{/if}
+
+<AssignProjectDialog
+  open={assignProjectOpen}
+  onOpenChange={(o) => (assignProjectOpen = o)}
+  onassign={assignProjectToFocused}
+/>
 
 <div class="flex h-full min-h-0 flex-col">
   <!-- Mobile filter trigger -->
@@ -446,7 +638,7 @@
       {/if}
     </div>
 
-    <!-- Right side: clear + show done -->
+    <!-- Right side: clear + show done + view toggle -->
     <div class="ml-auto flex items-center gap-3">
       {#if hasActiveFilters}
         <button
@@ -461,16 +653,73 @@
         <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
         Show done
       </label>
+      <button
+        type="button"
+        class="flex items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 py-1 text-xs font-medium transition-colors hover:bg-surface-200 dark:border-surface-700 dark:bg-surface-800 dark:hover:bg-surface-700"
+        onclick={() => { internalViewMode = internalViewMode === 'board' ? 'list' : 'board'; focusedColIdx = -1; focusedRowIdx = -1 }}
+        title="Toggle list/board view (⌘B)"
+      >
+        {#if viewMode === 'board'}
+          <List size={14} />
+          List
+        {:else}
+          <Columns size={14} />
+          Board
+        {/if}
+      </button>
     </div>
   </div>
 
-  <!-- Board columns -->
-  <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
-    {#if taskStore.loading}
-      <p class="m-auto text-sm opacity-60">Loading tasks...</p>
-    {:else if taskStore.error}
-      <p class="m-auto text-sm text-error-500">{taskStore.error}</p>
-    {:else}
+  {#if taskStore.loading}
+    <p class="m-auto text-sm opacity-60">Loading tasks...</p>
+  {:else if taskStore.error}
+    <p class="m-auto text-sm text-error-500">{taskStore.error}</p>
+  {:else if viewMode === 'list'}
+    <!-- List view -->
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <table class="w-full text-sm">
+        <thead class="sticky top-0 z-10 border-b border-surface-200 bg-surface-100 dark:border-surface-700 dark:bg-surface-900">
+          <tr>
+            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider w-8">P</th>
+            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Title</th>
+            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Status</th>
+            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden md:table-cell">Project</th>
+            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden lg:table-cell">Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each allFilteredTasks as t, rowIdx (t.id)}
+            {@const isFocused = focusedTaskId === t.id}
+            <tr
+              data-focused-task={isFocused ? '' : undefined}
+              class="cursor-pointer border-b border-surface-100 transition-colors dark:border-surface-800 {isFocused ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+              onclick={() => onselect(t.id)}
+              onmouseenter={() => { focusedColIdx = 0; focusedRowIdx = rowIdx }}
+            >
+              <td class="px-4 py-2">
+                <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
+              </td>
+              <td class="px-4 py-2 font-medium">{t.title}</td>
+              <td class="px-4 py-2">
+                <span class="rounded-full px-2 py-0.5 text-xs font-semibold bg-surface-200 dark:bg-surface-700">{t.status}</span>
+              </td>
+              <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
+              <td class="hidden px-4 py-2 text-surface-400 text-xs lg:table-cell">
+                {t.updatedAt ? new Date(t.updatedAt).toLocaleDateString() : '—'}
+              </td>
+            </tr>
+          {/each}
+          {#if allFilteredTasks.length === 0}
+            <tr>
+              <td colspan="5" class="px-4 py-8 text-center text-surface-400">No tasks match your filters</td>
+            </tr>
+          {/if}
+        </tbody>
+      </table>
+    </div>
+  {:else}
+    <!-- Board columns -->
+    <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
       {#each visibleColumns as col}
         {@const statuses = col.includes.length > 0 ? col.includes : [col.status]}
         {@const tasks = filteredByStatuses(statuses)}
@@ -529,6 +778,7 @@
                   type="button"
                   class="tap flex w-full items-center gap-1 rounded-md px-2 py-2.5 text-sm opacity-60 transition-opacity active:bg-surface-200 active:opacity-100 dark:active:bg-surface-800 md:py-1.5 md:hover:bg-surface-200 md:hover:opacity-100 dark:md:hover:bg-surface-800"
                   onclick={() => openInlineAdd(col.status)}
+                  title="Add task (C)"
                 >
                   <span class="text-base leading-none">+</span> Add task
                 </button>
@@ -537,9 +787,24 @@
           {/if}
         </div>
       {/each}
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
+
+<!-- Shortcut hint bar for focused task -->
+{#if focusedTaskId}
+  <div class="shrink-0 border-t border-surface-200 bg-surface-100 px-4 py-1.5 text-xs text-surface-400 dark:border-surface-700 dark:bg-surface-900">
+    <span class="flex flex-wrap items-center gap-3">
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">Enter</kbd> / <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">E</kbd> open</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">S</kbd> status</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">P</kbd> priority</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">⇧C</kbd> project</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">⌘I</kbd> sidebar</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">⌘D</kbd> due date</span>
+      <span><kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono dark:bg-surface-700">Esc</kbd> deselect</span>
+    </span>
+  </div>
+{/if}
 
 <!-- Mobile filters sheet -->
 <MobileSheet open={filtersOpen} onOpenChange={(o) => (filtersOpen = o)} variant="bottom" title="Filters">
