@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,12 @@ type e2eEnv struct {
 	scenarioFile string
 	provider     string
 	cancel       context.CancelFunc
+	// pendingCompletions counts agent-completion callbacks currently executing
+	// (between the onComplete wrapper's enter and exit). The chaos settle
+	// check consults this to distinguish "workflow truly quiesced" from the
+	// gap between markAgentDone (which flips HasRunningAgentForTask to false)
+	// and HandleAgentComplete finishing its AdvanceStep/executeSteps chain.
+	pendingCompletions atomic.Int64
 }
 
 // startWorkflow seeds the reserved _dir variable so that run_agent steps have
@@ -219,7 +226,29 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	engine := workflow.NewEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 
+	// Pre-create a working directory so run_agent steps can satisfy the
+	// Manager.Run guard that rejects empty Dir.
+	agentDir, err := os.MkdirTemp("", "sybra-e2e-agent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
+
+	env := &e2eEnv{
+		tasks:        taskMgr,
+		agents:       agentMgr,
+		engine:       engine,
+		wfStore:      wfStore,
+		taskDir:      taskDir,
+		agentDir:     agentDir,
+		worktreesDir: wtDir,
+		provider:     provider,
+		cancel:       cancel,
+	}
+
 	agentMgr.SetOnComplete(func(ag *agent.Agent) {
+		env.pendingCompletions.Add(1)
+		defer env.pendingCompletions.Add(-1)
 		var result string
 		output := ag.Output()
 		for i := range output {
@@ -235,25 +264,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		})
 	})
 
-	// Pre-create a working directory so run_agent steps can satisfy the
-	// Manager.Run guard that rejects empty Dir.
-	agentDir, err := os.MkdirTemp("", "sybra-e2e-agent-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
-
-	return &e2eEnv{
-		tasks:        taskMgr,
-		agents:       agentMgr,
-		engine:       engine,
-		wfStore:      wfStore,
-		taskDir:      taskDir,
-		agentDir:     agentDir,
-		worktreesDir: wtDir,
-		provider:     provider,
-		cancel:       cancel,
-	}
+	return env
 }
 
 // waitFor polls a condition with timeout.

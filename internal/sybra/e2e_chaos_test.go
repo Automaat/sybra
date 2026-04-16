@@ -209,7 +209,17 @@ func waitForChaosSettle(t *testing.T, env *e2eEnv, taskID string, timeout time.D
 // terminal state with no live agent. Used by waitForChaosSettle as a
 // per-poll predicate; the caller requires sustained truth before declaring
 // settlement to filter out transient between-step observations.
+//
+// The pendingCompletions gate closes the race window between
+// agent.Manager.markAgentDone (which flips HasRunningAgentForTask to false
+// before the onComplete callback runs) and the engine's AdvanceStep/
+// executeSteps chain actually advancing workflow state. Without it, under
+// CI load the gap widens past the stable-poll budget and the invariant-4
+// check observes state=Running mid-transition.
 func isChaosSettled(env *e2eEnv, taskID string) bool {
+	if env.pendingCompletions.Load() > 0 {
+		return false
+	}
 	if env.agents.HasRunningAgentForTask(taskID) {
 		return false
 	}
