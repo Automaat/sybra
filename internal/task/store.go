@@ -215,6 +215,28 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+func (s *Store) writeSidecars(id string, u Update, t *Task) error {
+	if u.Plan != nil {
+		if err := s.plans.Write(id, *u.Plan); err != nil {
+			return fmt.Errorf("write plan: %w", err)
+		}
+		t.Plan = *u.Plan
+	}
+	if u.PlanCritique != nil {
+		if err := s.planCritiques.Write(id, *u.PlanCritique); err != nil {
+			return fmt.Errorf("write plan critique: %w", err)
+		}
+		t.PlanCritique = *u.PlanCritique
+	}
+	if u.CodeReview != nil {
+		if err := s.codeReviews.Write(id, *u.CodeReview); err != nil {
+			return fmt.Errorf("write code review: %w", err)
+		}
+		t.CodeReview = *u.CodeReview
+	}
+	return nil
+}
+
 func (s *Store) Update(id string, u Update) (Task, error) {
 	t, err := s.Get(id)
 	if err != nil {
@@ -293,23 +315,8 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
-	if u.Plan != nil {
-		if wErr := s.plans.Write(id, *u.Plan); wErr != nil {
-			return Task{}, fmt.Errorf("write plan: %w", wErr)
-		}
-		t.Plan = *u.Plan
-	}
-	if u.PlanCritique != nil {
-		if wErr := s.planCritiques.Write(id, *u.PlanCritique); wErr != nil {
-			return Task{}, fmt.Errorf("write plan critique: %w", wErr)
-		}
-		t.PlanCritique = *u.PlanCritique
-	}
-	if u.CodeReview != nil {
-		if wErr := s.codeReviews.Write(id, *u.CodeReview); wErr != nil {
-			return Task{}, fmt.Errorf("write code review: %w", wErr)
-		}
-		t.CodeReview = *u.CodeReview
+	if err := s.writeSidecars(id, u, &t); err != nil {
+		return Task{}, err
 	}
 
 	data, err := Marshal(t)
