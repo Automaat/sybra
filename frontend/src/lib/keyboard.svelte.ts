@@ -15,7 +15,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: '⌘1 – ⌘7', description: 'Navigate pages' },
       { keys: '⌘,', description: 'Settings' },
       { keys: '⌘F  /  /', description: 'Focus task search' },
-      { keys: '⌘B', description: 'Toggle list / board view' },
+      { keys: '⌘B', description: 'Cycle view: List → Board → Timeline' },
       { keys: '⌘I', description: 'Open task detail sidebar' },
       { keys: '⌘=  /  ⌘-  /  ⌘0', description: 'Zoom in / out / reset' },
     ],
@@ -35,6 +35,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: '⇧C', description: 'Add focused task to project' },
       { keys: '⌘D', description: 'Set due date on focused task' },
       { keys: 'Esc', description: 'Clear focus' },
+      { keys: '+  /  -', description: 'Zoom in / out (Timeline view)' },
     ],
   },
   {
