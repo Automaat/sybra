@@ -13,13 +13,14 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -151,8 +152,8 @@ func renderTS(consts []constDecl, funcs []funcDecl) string {
 	// file this generator replaces).
 	sortedFuncs := make([]funcDecl, len(funcs))
 	copy(sortedFuncs, funcs)
-	sort.SliceStable(sortedFuncs, func(i, j int) bool {
-		return sortedFuncs[i].name < sortedFuncs[j].name
+	slices.SortStableFunc(sortedFuncs, func(a, b funcDecl) int {
+		return cmp.Compare(a.name, b.name)
 	})
 	for _, fn := range sortedFuncs {
 		lower := strings.ToLower(fn.name[:1]) + fn.name[1:]

@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"text/tabwriter"
 	"time"
 
@@ -121,8 +121,8 @@ func cmdSelfmonitorLedger(args []string, jsonOut bool) int {
 		entries = ledger.Entries(window)
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].CreatedAt.Before(entries[j].CreatedAt)
+	slices.SortFunc(entries, func(a, b selfmonitor.LedgerEntry) int {
+		return a.CreatedAt.Compare(b.CreatedAt)
 	})
 
 	if jsonOut {
