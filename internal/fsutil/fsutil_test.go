@@ -55,6 +55,54 @@ func TestAtomicWrite_BadDir(t *testing.T) {
 	}
 }
 
+// TestAtomicWrite_RenameFailCleansUpTemp verifies the temp file is removed
+// when os.Rename fails. A read-only target directory is the simplest
+// repeatable trigger: CreateTemp succeeds (the temp lands next to the
+// eventual target), Write succeeds, Close succeeds, but Rename into the
+// read-only target fails with EACCES. Prior to the fix, the orphan .tmp
+// accumulated on every failed write — eventually filling the disk.
+func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod 0o500")
+	}
+	dir := t.TempDir()
+
+	// Seed an existing target file so Rename has something concrete to replace,
+	// then drop write permission on the containing directory so Rename fails
+	// but CreateTemp still works against an already-writable temp namespace.
+	target := filepath.Join(dir, "locked.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make the directory non-writable so Rename fails.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	// AtomicWrite should fail — but must not leave an orphan temp.
+	err := AtomicWrite(target, []byte("new"))
+	if err == nil {
+		t.Skip("rename did not fail on this platform/fs; test relies on directory permissions semantics")
+	}
+
+	// Restore permissions so we can inspect the dir.
+	_ = os.Chmod(dir, 0o755)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "locked.txt" {
+			continue
+		}
+		// Any leftover entry indicates a temp file leak.
+		t.Errorf("found leftover entry after failed AtomicWrite: %s", e.Name())
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

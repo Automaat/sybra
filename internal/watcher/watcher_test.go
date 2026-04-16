@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -295,5 +296,170 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 	}
 	if afterSecond == 0 {
 		t.Errorf("expected at least one event after the trailing write at %v; got %d events total at %v — the final write was silently dropped", secondWriteAt, len(events), events)
+	}
+}
+
+// TestAtomicRenameOverExistingEmitsUpdate covers editors like vim/nvim that
+// save by writing to a temp file and renaming it over the target. The rename
+// fires fsnotify.Remove for the victim inode, but the file still exists after
+// the rename — the watcher must classify this as an update, not a delete.
+//
+// Sequence:
+//
+//	write   tasks/t.md     (v1)  -> Create
+//	write   tasks/.t.md.sw (v2)  -> (ignored, not .md)
+//	rename  .t.md.sw → t.md      -> Remove + Create for t.md; file exists
+//
+// Expected: final event for t.md must NOT be TaskDeleted.
+func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	emit := func(event string, _ any) {
+		if event != ev.TaskCreated && event != ev.TaskUpdated && event != ev.TaskDeleted {
+			return
+		}
+		mu.Lock()
+		seen = append(seen, event)
+		mu.Unlock()
+	}
+
+	target := filepath.Join(dir, "t.md")
+	if err := os.WriteFile(target, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(dir, emit, discardLogger())
+	if err := w.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitReady(t, w)
+
+	// Stage v2 outside the watched dir to avoid spurious intermediate events,
+	// then hardlink it into the dir under a sibling name and rename over target.
+	// Using a non-.md staging name keeps the watcher from filtering on a
+	// transient sibling.
+	staging := filepath.Join(dir, "t.md.tmp")
+	if err := os.WriteFile(staging, []byte("v2-atomic-final"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staging, target); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait well past the 200ms debounce window for any emission to flush.
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, e := range seen {
+		if e == ev.TaskDeleted {
+			t.Errorf("got %s event after atomic rename; file still exists — should have been update. events=%v", ev.TaskDeleted, seen)
+		}
+	}
+	if len(seen) == 0 {
+		t.Errorf("expected at least one create/update event after atomic rename; got none")
+	}
+}
+
+// TestWatcherNoGoroutineLeakOnCancel verifies that starting and cancelling N
+// watchers does not leak goroutines. The watcher loop owns an fsnotify
+// watcher plus a timer; a regression that forgot to `fw.Close()` or failed
+// to signal `done` would leak one goroutine per Start + Close cycle.
+// Running 20 cycles catches regressions that leak a small fixed number,
+// since the drift then exceeds normal runtime goroutine jitter.
+func TestWatcherNoGoroutineLeakOnCancel(t *testing.T) {
+	// Warm up the runtime so the initial goroutine count is stable.
+	runtime.GC()
+	runtime.Gosched()
+	time.Sleep(50 * time.Millisecond)
+
+	startCount := runtime.NumGoroutine()
+
+	for range 20 {
+		dir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		w := New(dir, func(string, any) {}, discardLogger())
+		if err := w.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		<-w.Ready()
+		cancel()
+		select {
+		case <-w.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatalf("watcher did not exit after cancel")
+		}
+	}
+
+	// Let the runtime settle — goroutine exit is observed lazily.
+	runtime.GC()
+	runtime.Gosched()
+	time.Sleep(100 * time.Millisecond)
+
+	endCount := runtime.NumGoroutine()
+	// Allow a small slack for unrelated runtime goroutines (GC workers, etc.)
+	// that may come and go, but 20 leaked loop goroutines would blow past this.
+	const slack = 5
+	if endCount-startCount > slack {
+		t.Errorf("goroutine leak: start=%d end=%d diff=%d (>%d slack)", startCount, endCount, endCount-startCount, slack)
+	}
+}
+
+// TestDebounceIsolatesPerFile verifies that a burst on file A does not cause
+// events for file B to be coalesced or dropped. Each filename owns its own
+// debounce slot; a regression that shared the slot would silently swallow
+// writes to the other file.
+func TestDebounceIsolatesPerFile(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu     sync.Mutex
+		counts = map[string]int{}
+	)
+	emit := func(event string, data any) {
+		if event != ev.TaskCreated && event != ev.TaskUpdated {
+			return
+		}
+		name, _ := data.(string)
+		mu.Lock()
+		counts[filepath.Base(name)]++
+		mu.Unlock()
+	}
+
+	w := New(dir, emit, discardLogger())
+	if err := w.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitReady(t, w)
+
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+
+	// Interleave writes: A burst then B burst, both inside the debounce window.
+	for range 3 {
+		if err := os.WriteFile(a, []byte("a"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 3 {
+		if err := os.WriteFile(b, []byte("b"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Wait well past the debounce window.
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if counts["a.md"] < 1 {
+		t.Errorf("expected >=1 event for a.md, got %d (counts=%v)", counts["a.md"], counts)
+	}
+	if counts["b.md"] < 1 {
+		t.Errorf("expected >=1 event for b.md, got %d (counts=%v)", counts["b.md"], counts)
 	}
 }

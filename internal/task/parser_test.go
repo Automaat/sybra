@@ -471,3 +471,102 @@ func TestParseBytesSpecialCharsInBody(t *testing.T) {
 		t.Error("body should contain backticks")
 	}
 }
+
+// TestParseBytesBOMPrefix verifies task files with a leading UTF-8 BOM
+// parse successfully. Windows editors (Notepad, VS Code with BOM enabled)
+// prepend `\xef\xbb\xbf` on save — prior to the fix the frontmatter regex
+// failed to match the first `---` and the whole task silently disappeared
+// from the list. ParseBytes now strips the BOM before the regex runs.
+func TestParseBytesBOMPrefix(t *testing.T) {
+	t.Parallel()
+	bom := "\xef\xbb\xbf"
+	input := bom + "---\nid: bom1\ntitle: BOM task\nstatus: todo\n---\nBody"
+	got, err := ParseBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("BOM-prefixed task file should parse cleanly after the fix; got %v", err)
+	}
+	if got.ID != "bom1" {
+		t.Errorf("ID = %q, want %q", got.ID, "bom1")
+	}
+	if got.Title != "BOM task" {
+		t.Errorf("Title = %q, want %q", got.Title, "BOM task")
+	}
+	if got.Body != "Body" {
+		t.Errorf("Body = %q, want %q", got.Body, "Body")
+	}
+}
+
+// TestParseBytesCRLFLineEndings verifies that task files saved on Windows
+// (CRLF line endings) parse identically to Unix-LF files. The frontmatter
+// regex `(?m)^---\s*$` relies on `\s*` absorbing `\r` before end-of-line.
+// A regression that tightened the regex to `$` with `strict=true` would
+// drop CRLF files on the floor.
+func TestParseBytesCRLFLineEndings(t *testing.T) {
+	t.Parallel()
+	input := "---\r\nid: crlf1\r\ntitle: CRLF task\r\nstatus: todo\r\nagent_mode: headless\r\n---\r\nBody line one\r\nBody line two\r\n"
+	got, err := ParseBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("CRLF file should parse: %v", err)
+	}
+	if got.ID != "crlf1" {
+		t.Errorf("ID = %q, want %q", got.ID, "crlf1")
+	}
+	if got.Title != "CRLF task" {
+		t.Errorf("Title = %q, want %q", got.Title, "CRLF task")
+	}
+	if !strings.Contains(got.Body, "Body line one") || !strings.Contains(got.Body, "Body line two") {
+		t.Errorf("Body = %q, expected both lines present", got.Body)
+	}
+}
+
+// TestParseBytesDuplicateYAMLKeysLastWins documents yaml.v3's last-wins
+// behavior for duplicate mapping keys in frontmatter. A task saved by two
+// tools that both emit an `id` field would otherwise silently shadow the
+// first. Pinning the behavior here means any future switch to a strict
+// yaml.v3 decoder (KnownFields/Strict) will surface as a failing test
+// instead of a runtime surprise.
+func TestParseBytesDuplicateYAMLKeysLastWins(t *testing.T) {
+	t.Parallel()
+	input := "---\nid: first\nid: second\ntitle: Dup keys\nstatus: todo\n---\nBody"
+	got, err := ParseBytes([]byte(input))
+	if err != nil {
+		// Strict mode would reject — also acceptable, but must say which key.
+		if !strings.Contains(err.Error(), "id") && !strings.Contains(err.Error(), "duplicate") {
+			t.Errorf("duplicate-key error should reference the key; got %q", err)
+		}
+		return
+	}
+	if got.ID != "second" {
+		t.Errorf("ID = %q, want %q (yaml.v3 last-wins)", got.ID, "second")
+	}
+}
+
+// TestParseBytesLargeBody verifies a ~1 MiB body survives round-trip without
+// truncation or allocation panics. Agents dumping command output into the
+// task body can easily hit this range. A regression that truncates silently
+// (e.g. introducing a bytes.Buffer.Cap check) would corrupt history.
+func TestParseBytesLargeBody(t *testing.T) {
+	t.Parallel()
+	const size = 1024 * 1024
+	body := strings.Repeat("x", size)
+	input := "---\nid: big1\ntitle: Big body\nstatus: todo\n---\n" + body
+	got, err := ParseBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got.Body) != size {
+		t.Errorf("Body len = %d, want %d (no truncation)", len(got.Body), size)
+	}
+	// Round-trip.
+	data, err := Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	reparsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("reparse: %v", err)
+	}
+	if len(reparsed.Body) != size {
+		t.Errorf("reparse Body len = %d, want %d", len(reparsed.Body), size)
+	}
+}

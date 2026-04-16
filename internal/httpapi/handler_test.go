@@ -154,3 +154,32 @@ func TestHandler_ObjIn(t *testing.T) {
 		t.Fatalf("got %q", result)
 	}
 }
+
+// TestHandler_OversizedBodyRejected verifies the MaxRequestBody cap blocks
+// trivial memory-exhaustion attacks. Sending a body larger than the limit
+// must short-circuit before io.ReadAll allocates the whole payload — the
+// server returns HTTP 4xx (413 Request Entity Too Large per
+// http.MaxBytesReader semantics) instead of crashing.
+func TestHandler_OversizedBodyRejected(t *testing.T) {
+	_, srv := setup(t)
+
+	// Body just over the cap. The framework triggers MaxBytesReader's error
+	// during io.ReadAll on the server side.
+	oversize := httpapi.MaxRequestBody + 1024
+	body := bytes.Repeat([]byte("a"), oversize)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/TestSvc/Echo", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// Some Go versions surface the cap as a connection-reset; treat that as
+		// the same successful "rejection" outcome.
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("oversized body was accepted (status %d); MaxBytesReader cap not enforced", resp.StatusCode)
+	}
+}

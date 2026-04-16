@@ -183,6 +183,40 @@ func TestApprovalServer_RespondApproval_NoPending(t *testing.T) {
 	}
 }
 
+// TestApprovalServer_RespondApproval_DoubleSendDoesNotBlock simulates a UI
+// double-click race: the user clicks Approve twice, the handler reads the
+// first response and returns, but the deferred `delete(pending, id)` hasn't
+// run yet. The second send must NOT block the UI thread on a full buffered
+// channel — non-blocking send returns a clear "already consumed" error.
+// A regression that reverted the select+default to a plain `ch <- ...` would
+// hang the test for the full 500ms deadline.
+func TestApprovalServer_RespondApproval_DoubleSendDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	srv := newTestApprovalServer(t)
+
+	// Manually plant a pending entry — bypasses needing a real agent flow.
+	ch := make(chan ApprovalResponse, 1)
+	srv.mu.Lock()
+	srv.pending["double-click"] = ch
+	srv.mu.Unlock()
+
+	// First send fills the buffer.
+	if err := srv.RespondApproval("double-click", true); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	// Second send must not block (buffer is full, no reader yet).
+	done := make(chan error, 1)
+	go func() { done <- srv.RespondApproval("double-click", true) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("second send returned nil; expected 'already consumed' error")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second RespondApproval blocked — UI thread would hang on a double-click race")
+	}
+}
+
 func TestIsSafeTool(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

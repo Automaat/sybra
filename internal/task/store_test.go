@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -880,5 +881,172 @@ func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	}
 	if len(got.Tags) != 0 {
 		t.Fatalf("Tags = %v, want empty", got.Tags)
+	}
+}
+
+// TestStoreConcurrentCreate verifies that N goroutines calling Create in
+// parallel each produce a distinct, readable task — no ID collision,
+// no lost writes, no race in the list cache. Run with -race to catch
+// data races on s.listCache and s.listValid.
+func TestStoreConcurrentCreate(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	ids := make(chan string, n)
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tk, cerr := store.Create(fmt.Sprintf("task-%d", i), "body", "headless")
+			if cerr != nil {
+				errs <- cerr
+				return
+			}
+			ids <- tk.ID
+		}(i)
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent create: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for id := range ids {
+		if id == "" {
+			t.Error("empty ID returned from Create")
+			continue
+		}
+		if seen[id] {
+			t.Errorf("ID collision: %q", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != n {
+		t.Errorf("got %d unique ids, want %d", len(seen), n)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != n {
+		t.Errorf("List returned %d tasks, want %d", len(tasks), n)
+	}
+
+	// Every created ID must be retrievable via Get — proves the file write
+	// survived the concurrent cache updates.
+	for id := range seen {
+		if _, err := store.Get(id); err != nil {
+			t.Errorf("Get(%q) after concurrent create: %v", id, err)
+		}
+	}
+}
+
+// TestStoreSafePathRejectsTraversal verifies that Get/Delete/Update reject
+// task IDs that would escape the store directory. The CLI passes raw user
+// input as task IDs, and agents (which call sybra-cli with IDs scraped from
+// prompts) form an untrusted-input edge — without this check, an ID like
+// `../../etc/passwd` would resolve to `/etc/passwd.md` and Get could read /
+// Delete could remove arbitrary `.md` files outside the tasks dir.
+func TestStoreSafePathRejectsTraversal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Plant a real task file outside the store dir to prove the safePath
+	// check protects it.
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("---\nid: outside\ntitle: outside\n---\nsensitive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	relative := "../" + filepath.Base(filepath.Dir(outside)) + "/outside"
+
+	for _, badID := range []string{"../../etc/passwd", "/etc/passwd", "../escape", relative} {
+		t.Run(badID, func(t *testing.T) {
+			t.Parallel()
+			if _, err := store.Get(badID); err == nil {
+				t.Errorf("Get(%q) accepted traversal id; should reject", badID)
+			}
+			if err := store.Delete(badID); err == nil {
+				t.Errorf("Delete(%q) accepted traversal id; should reject", badID)
+			}
+		})
+	}
+	// Confirm the planted outside file is intact — the test setup itself
+	// shouldn't have touched it, but a regression that broke safePath would
+	// have removed it via the Delete attempts above.
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("outside file was touched by the safePath bypass: %v", err)
+	}
+}
+
+// TestStoreConcurrentUpdateSameTask verifies that two goroutines updating the
+// same task concurrently never leave the file corrupted (unparseable) or with
+// a lost StatusReason/Title state — the last writer must win cleanly. The test
+// also checks that the on-disk file parses successfully after the race.
+func TestStoreConcurrentUpdateSameTask(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("orig", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const rounds = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range rounds {
+			if _, err := store.Update(created.ID, Update{Title: Ptr(fmt.Sprintf("A-%d", i))}); err != nil {
+				t.Errorf("writer A: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range rounds {
+			if _, err := store.Update(created.ID, Update{Body: Ptr(fmt.Sprintf("B-%d", i))}); err != nil {
+				t.Errorf("writer B: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	// The file must parse cleanly — atomic-write guarantees no half-written
+	// content. A regression that dropped the rename-over-write would leave
+	// a torn file here.
+	final, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get after concurrent updates: %v", err)
+	}
+	if final.ID != created.ID {
+		t.Errorf("ID changed across updates: got %q, want %q", final.ID, created.ID)
+	}
+
+	// Parse the raw file to confirm on-disk consistency independent of cache.
+	reloaded, err := Parse(final.FilePath)
+	if err != nil {
+		t.Fatalf("raw parse: %v — file is torn", err)
+	}
+	if reloaded.ID != created.ID {
+		t.Errorf("reloaded ID = %q, want %q", reloaded.ID, created.ID)
 	}
 }
