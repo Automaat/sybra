@@ -23,7 +23,7 @@
 </script>
 
 {#if bgopStore.ops.length > 0}
-  <div class="relative">
+  <div>
     <button
       type="button"
       class="relative flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-700 transition-colors"
@@ -51,7 +51,7 @@
         tabindex="-1"
       ></button>
 
-      <div class="absolute right-0 top-full z-50 mt-1 w-72 rounded-xl border border-surface-600 bg-surface-800 shadow-xl">
+      <div class="fixed right-4 top-14 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-surface-600 bg-surface-800 shadow-xl">
         <div class="flex items-center justify-between border-b border-surface-700 px-3 py-2">
           <span class="text-xs font-medium text-surface-300">Background operations</span>
           <button
