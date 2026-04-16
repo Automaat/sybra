@@ -9,6 +9,8 @@
 import { test, type Page, type BrowserContext } from '@playwright/test'
 import { mockGitHub } from './lib/github-mocks.js'
 import { mockProjects } from './lib/project-mocks.js'
+import { mockProviderHealth } from './lib/provider-mocks.js'
+import { mockReviewComments } from './lib/review-mocks.js'
 import { copyFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -66,8 +68,9 @@ for (const theme of ['light', 'dark'] as const) {
   test.describe(theme, () => {
     test.use({ colorScheme: theme, viewport: { width: 1920, height: 1080 } })
 
-    test.beforeEach(async ({ context }) => {
+    test.beforeEach(async ({ context, page }) => {
       await applyTheme(context, theme)
+      await mockProviderHealth(page)
     })
 
     // ─── Dashboard ───────────────────────────────────────────────────────────
@@ -156,6 +159,16 @@ for (const theme of ['light', 'dark'] as const) {
       // Wait for the plan content and action bar to render
       await page.getByRole('button', { name: 'Approve' }).waitFor({ timeout: 5_000 })
       await shot(page, theme, 'reviews-plan-selected')
+    })
+
+    test('reviews-plan-with-comment', async ({ page }) => {
+      await mockReviewComments(page)
+      await goToReviews(page)
+      await page.getByText('Refactor logging system').click()
+      await page.getByRole('button', { name: 'Approve' }).waitFor({ timeout: 5_000 })
+      // Wait for the seeded comment to render inline under its line
+      await page.getByText('Should we also migrate the middleware package?').waitFor({ timeout: 5_000 })
+      await shot(page, theme, 'reviews-plan-with-comment')
     })
 
     // ─── Chats ────────────────────────────────────────────────────────────────
