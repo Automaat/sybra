@@ -311,6 +311,45 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 	}
 }
 
+// TestE2E_AgentRunPromptPersisted verifies that the prompt passed to an agent
+// is captured on the persisted AgentRun and survives a parse round-trip.
+// The triage step of test-simple.yaml uses prompt "Triage {{.Task.ID}}", so
+// after the agent runs the task file's AgentRuns[0].Prompt must contain the
+// rendered value — this is what powers the "prompt at top of task view"
+// UI in TaskDetail.svelte.
+func TestE2E_AgentRunPromptPersisted(t *testing.T) {
+	env := setupE2E(t, "success")
+
+	created, err := env.tasks.Create("prompt persistence", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "triage agent run recorded with prompt", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || len(tk.AgentRuns) == 0 {
+			return false
+		}
+		return tk.AgentRuns[0].Prompt != ""
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Triage " + created.ID
+	if got := tk.AgentRuns[0].Prompt; got != want {
+		t.Fatalf("AgentRuns[0].Prompt = %q, want %q", got, want)
+	}
+	if tk.AgentRuns[0].Role != "triage" {
+		t.Errorf("AgentRuns[0].Role = %q, want %q", tk.AgentRuns[0].Role, "triage")
+	}
+}
+
 func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		argsLog := filepath.Join(t.TempDir(), p.name+"-args.log")

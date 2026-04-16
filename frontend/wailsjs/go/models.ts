@@ -21,6 +21,7 @@ export namespace agent {
 	    project?: string;
 	    provider?: string;
 	    model?: string;
+	    prompt?: string;
 	    turnCount?: number;
 	    escalationReason?: string;
 	    errorKind?: string;
@@ -51,6 +52,7 @@ export namespace agent {
 	        this.project = source["project"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
+	        this.prompt = source["prompt"];
 	        this.turnCount = source["turnCount"];
 	        this.escalationReason = source["escalationReason"];
 	        this.errorKind = source["errorKind"];
@@ -1363,6 +1365,7 @@ export namespace task {
 	    // Go type: time
 	    startedAt: any;
 	    costUsd: number;
+	    prompt?: string;
 	    result: string;
 	    logFile: string;
 	    sessionId?: string;
@@ -1380,6 +1383,7 @@ export namespace task {
 	        this.state = source["state"];
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.costUsd = source["costUsd"];
+	        this.prompt = source["prompt"];
 	        this.result = source["result"];
 	        this.logFile = source["logFile"];
 	        this.sessionId = source["sessionId"];

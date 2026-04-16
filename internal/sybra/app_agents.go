@@ -207,6 +207,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
+		Prompt:    fullPrompt,
 	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
@@ -275,6 +276,7 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
+		Prompt:    prompt,
 	}); err != nil {
 		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
 	}
@@ -352,6 +354,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		Prompt: prompt,
 	}); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}

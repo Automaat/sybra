@@ -150,6 +150,7 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 	}
 	if err := r.tasks.AddRun(t.ID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RoleFixReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		Prompt: prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
@@ -184,6 +185,7 @@ func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 	}
 	if err := r.tasks.AddRun(t.ID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
+		Prompt: prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}

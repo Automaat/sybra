@@ -66,13 +66,14 @@ func ParseBytes(data []byte) (Task, error) {
 func Marshal(t Task) ([]byte, error) {
 	t.UpdatedAt = time.Now().UTC()
 
-	// Strip leading whitespace/newlines from agent run results so yaml.v3
-	// doesn't emit |N- block scalars that it fails to parse back (known
-	// round-trip bug: leading blank lines or indented first line force an
-	// explicit indentation indicator that miscounts columns inside a
-	// nested sequence).
+	// Strip leading whitespace/newlines from agent run results and prompts
+	// so yaml.v3 doesn't emit |N- block scalars that it fails to parse back
+	// (known round-trip bug: leading blank lines or indented first line
+	// force an explicit indentation indicator that miscounts columns inside
+	// a nested sequence).
 	for i := range t.AgentRuns {
 		t.AgentRuns[i].Result = strings.TrimLeft(t.AgentRuns[i].Result, " \t\n\r")
+		t.AgentRuns[i].Prompt = strings.TrimLeft(t.AgentRuns[i].Prompt, " \t\n\r")
 	}
 
 	fm, err := yaml.Marshal(t)

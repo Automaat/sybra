@@ -264,6 +264,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 		Mode:      "headless",
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
+		Prompt:    prompt,
 	}); err != nil {
 		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
