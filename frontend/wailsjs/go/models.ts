@@ -27,11 +27,11 @@ export namespace agent {
 	    errorKind?: string;
 	    errorMsg?: string;
 	    awaitingApproval?: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Agent(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1369,11 +1369,11 @@ export namespace task {
 	    result: string;
 	    logFile: string;
 	    sessionId?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AgentRun(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.agentId = source["agentId"];
