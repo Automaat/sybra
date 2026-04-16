@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -452,6 +453,134 @@ func TestRunSetup_NoLogsDir(t *testing.T) {
 
 	if err := m.runSetup("task-nologs", wtDir, []string{"exit 1"}); err == nil {
 		t.Fatal("expected failure to propagate even without log dir")
+	}
+}
+
+// --- mise trust preflight -----------------------------------------------
+//
+// installFakeMise drops a tiny shim on PATH that logs invocation args to a
+// file the test can assert against, then returns the expected exit code.
+// Scoped to the test via t.Cleanup(os.Setenv) so it does not leak into
+// other tests.
+func installFakeMise(t *testing.T, exitCode int) (logPath string) {
+	t.Helper()
+	binDir := t.TempDir()
+	logPath = filepath.Join(binDir, "invocations.log")
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit " + fmt.Sprintf("%d", exitCode) + "\n"
+	shim := filepath.Join(binDir, "mise")
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	prev := os.Getenv("PATH")
+	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+prev); err != nil {
+		t.Fatalf("setenv PATH: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", prev) })
+	return logPath
+}
+
+// TestRunSetup_TrustsMiseConfig guards the fix for the 2026-04-16 server
+// wave of "mise ERROR Config files ... are not trusted" failures. When a
+// mise.toml is present in the worktree, runSetup must call `mise trust
+// --yes` before any user setup command so first-run setup does not
+// fail.
+func TestRunSetup_TrustsMiseConfig(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
+		t.Fatalf("seed mise.toml: %v", err)
+	}
+	miseLog := installFakeMise(t, 0)
+
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	if err := m.runSetup("task-trust", wtDir, []string{"true"}); err != nil {
+		t.Fatalf("runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(miseLog)
+	if err != nil {
+		t.Fatalf("mise shim was never invoked: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "trust --yes" {
+		t.Errorf("mise invoked with %q, want %q", got, "trust --yes")
+	}
+
+	setupLog, err := os.ReadFile(filepath.Join(logsDir, "worktrees", "task-trust-setup.log"))
+	if err != nil {
+		t.Fatalf("read setup log: %v", err)
+	}
+	if !strings.Contains(string(setupLog), "mise trust --yes") {
+		t.Errorf("setup log missing trust entry:\n%s", setupLog)
+	}
+}
+
+// TestRunSetup_SkipsTrustWithoutMiseConfig prevents regressions that would
+// spend a subprocess call on every worktree regardless of whether mise is
+// actually in play.
+func TestRunSetup_SkipsTrustWithoutMiseConfig(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	miseLog := installFakeMise(t, 0)
+
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	if err := m.runSetup("task-no-mise", wtDir, []string{"true"}); err != nil {
+		t.Fatalf("runSetup: %v", err)
+	}
+
+	if _, err := os.Stat(miseLog); !os.IsNotExist(err) {
+		t.Errorf("mise shim was invoked despite absent mise.toml (stat err=%v)", err)
+	}
+}
+
+// TestRunSetup_TrustFailureIsNonFatal: if `mise trust` exits non-zero
+// (e.g. mise is installed but the config has a parse error that trust
+// itself cannot accept), the setup commands still run. The clearer error
+// surfaces from the real command that needs mise, not from the preflight.
+func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wtDir, ".mise.toml"), []byte(""), 0o644); err != nil {
+		t.Fatalf("seed .mise.toml: %v", err)
+	}
+	installFakeMise(t, 3)
+
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	marker := filepath.Join(wtDir, "did-run")
+	if err := m.runSetup("task-trust-fail", wtDir, []string{"touch " + marker}); err != nil {
+		t.Fatalf("runSetup should succeed despite trust failure: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("marker missing — setup command did not execute: %v", err)
+	}
+}
+
+func TestHasMiseConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		file string
+		want bool
+	}{
+		{"mise.toml", "mise.toml", true},
+		{"dotfile variant", ".mise.toml", true},
+		{"local variant", "mise.local.toml", true},
+		{"dotfile local", ".mise.local.toml", true},
+		{"unrelated toml is not a mise config", "foo.toml", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.file)
+			if err := os.WriteFile(path, nil, 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := hasMiseConfig(dir); got != tc.want {
+				t.Errorf("hasMiseConfig(%s)=%v want %v", tc.file, got, tc.want)
+			}
+		})
 	}
 }
 

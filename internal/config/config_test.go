@@ -307,3 +307,24 @@ func TestPathsUnderHomeDir(t *testing.T) {
 		t.Errorf("defaultTasksDir() = %q, want under %q", got, dir)
 	}
 }
+
+func TestDefaultLogRetentionDays(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{"nil config → 14", nil, 14},
+		{"unset → 14", &Config{}, 14},
+		{"explicit 7 → 7", &Config{Agent: AgentDefaults{LogRetentionDays: 7}}, 7},
+		{"negative disables (sentinel preserved)", &Config{Agent: AgentDefaults{LogRetentionDays: -1}}, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.DefaultLogRetentionDays(); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

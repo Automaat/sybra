@@ -129,6 +129,7 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
 	args := buildCodexConvoArgs(a, cfg, prompt)
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
