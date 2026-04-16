@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/health"
@@ -51,6 +52,7 @@ type App struct {
 	loopSched       *loopagent.Scheduler
 	agents          *agent.Manager
 	watcher         *watcher.Watcher
+	configWatcher   *confighot.Watcher
 	notifier        *notification.Emitter
 	audit           *audit.Logger
 	stats           *stats.Store
@@ -296,11 +298,31 @@ func (a *App) initBgops(emit func(string, any)) {
 	a.bgops.LoadFromDisk()
 }
 
+func (a *App) startConfigWatcher(ctx context.Context) {
+	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
+	cw := confighot.New(cfgPath, func() {
+		changed, err := a.configSvc.ReloadFromDisk()
+		if err != nil {
+			a.logger.Error("config.reload.failed", "err", err)
+			return
+		}
+		if len(changed) > 0 {
+			a.logger.Info("config.reloaded", "changed", changed)
+		}
+	}, a.logger)
+	if err := cw.Start(ctx); err != nil {
+		a.logger.Error("config.watcher.start", "err", err)
+		return
+	}
+	a.configWatcher = cw
+}
+
 func (a *App) startBackgroundServices(
 	ctx context.Context,
 	emit func(string, any),
 	issuesFetcher *poll.IssuesFetcher,
 ) {
+	a.startConfigWatcher(ctx)
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
 
 	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
@@ -316,6 +338,7 @@ func (a *App) startBackgroundServices(
 	a.startTodoistLoop(ctx)
 	a.startAgentLogPruneLoop(ctx)
 	a.registerMetricsObservers()
+	a.startConfigWatcher(ctx)
 }
 
 // startAgentLogPruneLoop sweeps stale per-agent NDJSON files once a day.
@@ -872,6 +895,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.configSvc.logLevel = a.logLevel
 	a.configSvc.notifier = a.notifier
 	a.configSvc.agents = a.agents
+	a.configSvc.logger = a.logger
 	a.configSvc.reloadHook = a.reloadTodoist
 	a.intgSvc.tasks = a.tasks
 	a.intgSvc.projects = a.projects

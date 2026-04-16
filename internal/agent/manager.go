@@ -116,6 +116,13 @@ func (m *Manager) SetGuardrails(g Guardrails) {
 	m.mu.Unlock()
 }
 
+// Guardrails returns the current guardrail limits.
+func (m *Manager) Guardrails() Guardrails {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.guardrails
+}
+
 // RespondEscalation sends a human decision to a paused agent.
 // continueRun=true lets the agent keep running; false kills it.
 func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {

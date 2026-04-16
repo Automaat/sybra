@@ -4,4 +4,6 @@ import {sybra} from '../models';
 
 export function GetSettings():Promise<sybra.AppSettings>;
 
+export function ReloadFromDisk():Promise<Array<string>>;
+
 export function UpdateSettings(arg1:sybra.AppSettings):Promise<void>;

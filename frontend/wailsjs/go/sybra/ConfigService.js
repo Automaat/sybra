@@ -6,6 +6,10 @@ export function GetSettings() {
   return window['go']['sybra']['ConfigService']['GetSettings']();
 }
 
+export function ReloadFromDisk() {
+  return window['go']['sybra']['ConfigService']['ReloadFromDisk']();
+}
+
 export function UpdateSettings(arg1) {
   return window['go']['sybra']['ConfigService']['UpdateSettings'](arg1);
 }
