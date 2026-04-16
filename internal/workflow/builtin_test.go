@@ -1,6 +1,141 @@
 package workflow
 
-import "testing"
+import (
+	"testing"
+)
+
+// TestBuiltinSimpleTask_MaybeCritiqueReplanSkip locks the behavior that
+// critique_plan runs only on the first plan pass. On replan (after a human
+// reject), `vars.step.review_plan.output` exists, so maybe_critique must
+// route directly to review_plan and spare the critic a second run on a
+// plan the human already eyeballed once. Substring-checking tag "nocritic"
+// is still honored as an opt-out on the first pass.
+func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task builtin definition not found")
+	}
+	step := simple.StepByID("maybe_critique")
+	if step == nil {
+		t.Fatal("maybe_critique step not found in simple-task")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name: "first_pass_runs_critique",
+			fields: map[string]string{
+				"task.tags": "backend,feature",
+			},
+			want: "critique_plan",
+		},
+		{
+			name: "nocritic_tag_skips_critique",
+			fields: map[string]string{
+				"task.tags": "backend,nocritic",
+			},
+			want: "review_plan",
+		},
+		{
+			name: "replan_skips_critique_even_without_nocritic",
+			fields: map[string]string{
+				"task.tags":                    "backend,feature",
+				"vars.step.review_plan.output": "reject",
+				"vars.human_action":            "reject",
+			},
+			want: "review_plan",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinTestingTask_MaybeCritiqueReplanSkip is the testing-task
+// mirror of the simple-task replan-skip guarantee above.
+func TestBuiltinTestingTask_MaybeCritiqueReplanSkip(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var testing_ *Definition
+	for i := range defs {
+		if defs[i].ID == "testing-task" {
+			testing_ = &defs[i]
+			break
+		}
+	}
+	if testing_ == nil {
+		t.Fatal("testing-task builtin definition not found")
+	}
+	step := testing_.StepByID("maybe_critique_test")
+	if step == nil {
+		t.Fatal("maybe_critique_test step not found in testing-task")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "first_pass_runs_critique",
+			fields: map[string]string{"task.tags": "testing"},
+			want:   "critique_test_plan",
+		},
+		{
+			name:   "nocritic_tag_skips_critique",
+			fields: map[string]string{"task.tags": "testing,nocritic"},
+			want:   "review_test_plan",
+		},
+		{
+			name: "replan_skips_critique_even_without_nocritic",
+			fields: map[string]string{
+				"task.tags":                         "testing",
+				"vars.step.review_test_plan.output": "reject",
+			},
+			want: "review_test_plan",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestBuiltinDefinitions(t *testing.T) {
 	t.Parallel()
