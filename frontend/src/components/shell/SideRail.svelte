@@ -47,6 +47,7 @@
       {@const active = item.kind.includes(navStore.page.kind)}
       <button
         type="button"
+        data-part="trigger"
         onclick={item.onclick}
         title={item.title ?? item.label}
         class="flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[10px] font-medium transition-colors
