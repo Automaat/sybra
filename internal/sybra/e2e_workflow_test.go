@@ -351,6 +351,7 @@ func TestE2E_AgentRunPromptPersisted(t *testing.T) {
 }
 
 func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		argsLog := filepath.Join(t.TempDir(), p.name+"-args.log")
 		env := setupE2EProvider(t, p.provider, "success")
