@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/screenshots.spec.ts'],
+  testIgnore: process.env.PLAYWRIGHT_SCREENSHOTS ? [] : ['**/screenshots.spec.ts'],
   timeout: 10_000,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'list',
