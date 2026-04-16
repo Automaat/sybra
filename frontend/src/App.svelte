@@ -33,6 +33,7 @@
   import CommandPalette from './components/CommandPalette.svelte'
   import type { PaletteCtx } from './lib/palette-commands.js'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
+  import TaskSidebar from './components/TaskSidebar.svelte'
   import { Cloud, AlertTriangle } from '@lucide/svelte'
 
   const paletteCtx: PaletteCtx = {
@@ -66,6 +67,8 @@
   let helpOpen = $state(false)
   let quitConfirmVisible = $state(false)
   let quitConfirmTimer: ReturnType<typeof setTimeout> | null = null
+  let sidebarTaskId = $state<string | null>(null)
+  let focusedTaskIdFromList = $state<string | null>(null)
 
   const primaryAction = $derived.by(() => {
     const k = navStore.page.kind
@@ -214,8 +217,30 @@
           navStore.reset({ kind: 'task-list' })
           requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
         }
+        if (e.metaKey && e.key === 'b') {
+          e.preventDefault()
+          window.dispatchEvent(new CustomEvent('toggle-view'))
+        }
+        if (e.metaKey && e.key === 'i') {
+          e.preventDefault()
+          if (navStore.page.kind === 'task-list') {
+            if (focusedTaskIdFromList) {
+              sidebarTaskId = sidebarTaskId === focusedTaskIdFromList ? null : focusedTaskIdFromList
+            } else {
+              sidebarTaskId = null
+            }
+          }
+        }
 
-        // G-chord navigation: bare keypresses only, not in input/textarea/contenteditable
+        // G-chord navigation and bare shortcuts: not in input/textarea/contenteditable
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          const target = e.target as HTMLElement
+          const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+          if (!inInput && e.shiftKey && e.key === '?') {
+            e.preventDefault()
+            helpOpen = true
+          }
+        }
         if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
           const target = e.target as HTMLElement
           const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
@@ -313,11 +338,26 @@
     </div>
   {/if}
 
-  <main class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+  <main class="flex min-h-0 flex-1 {navStore.page.kind === 'task-list' && sidebarTaskId ? 'flex-row overflow-hidden' : 'flex-col overflow-y-auto'}">
     {#if navStore.page.kind === 'dashboard'}
       <Dashboard onviewagent={navAgentDetail} />
     {:else if navStore.page.kind === 'task-list'}
-      <TaskList onselect={navTaskDetail} filter={navStore.page.filter} />
+      <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <TaskList
+          onselect={(id) => { sidebarTaskId = null; navTaskDetail(id) }}
+          filter={navStore.page.filter}
+          onnewTask={() => (quickAddOpen = true)}
+          onfocusedtaskchange={(id) => (focusedTaskIdFromList = id)}
+        />
+      </div>
+      {#if sidebarTaskId}
+        <TaskSidebar
+          taskId={sidebarTaskId}
+          onclose={() => (sidebarTaskId = null)}
+          onviewagent={navAgentDetail}
+          onviewtask={(id) => { sidebarTaskId = null; navTaskDetail(id) }}
+        />
+      {/if}
     {:else if navStore.page.kind === 'task-detail'}
       <TaskDetail
         taskId={navStore.page.taskId}
