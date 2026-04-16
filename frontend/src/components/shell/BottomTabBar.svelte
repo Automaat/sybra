@@ -14,6 +14,10 @@
     agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
   )
 
+  const runningAgentCount = $derived(
+    agentStore.list.filter(a => a.state === 'running').length
+  )
+
   const reviewCount = $derived(
     taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length
   )
@@ -66,12 +70,17 @@
     type="button"
     onclick={() => navStore.reset({ kind: 'agents' })}
     data-active={navStore.activeTab === 'agents' || undefined}
-    class="tap flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium text-surface-500 transition-colors active:bg-surface-100 dark:active:bg-surface-800"
+    class="tap relative flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium text-surface-500 transition-colors active:bg-surface-100 dark:active:bg-surface-800"
     class:text-primary-600={navStore.activeTab === 'agents'}
     class:dark:text-primary-400={navStore.activeTab === 'agents'}
     aria-label="Agents"
   >
-    <UserCircle size={24} />
+    <div class="relative">
+      <UserCircle size={24} />
+      {#if runningAgentCount > 0}
+        <span class="absolute -right-1.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-success-500 px-1 text-[9px] font-bold text-white">{runningAgentCount}</span>
+      {/if}
+    </div>
     Agents
   </button>
 

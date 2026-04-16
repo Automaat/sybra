@@ -9,6 +9,10 @@
     agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
   )
 
+  const runningAgentCount = $derived(
+    agentStore.list.filter(a => a.state === 'running').length
+  )
+
   const reviewCount = $derived(
     taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length
   )
@@ -56,7 +60,12 @@
       onclick={() => navStore.reset({ kind: 'agents' })}
       data-active={navStore.page.kind === 'agents' || navStore.page.kind === 'agent-detail' || undefined}
     >
-      <UserCircle size={20} />
+      <div class="relative">
+        <UserCircle size={20} />
+        {#if runningAgentCount > 0}
+          <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success-500 text-[9px] font-bold text-white">{runningAgentCount}</span>
+        {/if}
+      </div>
       <Navigation.TriggerText>Agents</Navigation.TriggerText>
     </Navigation.Trigger>
     <Navigation.Trigger
