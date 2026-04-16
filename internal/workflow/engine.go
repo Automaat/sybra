@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -1114,12 +1115,14 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // Skip conditions (no-op, returns "completed"):
 //   - No WorktreeGetter configured
 //   - No worktree found for the task
-//   - git command error (e.g. remote unreachable, detached HEAD)
 //
-// When the branch has no commits ahead of origin/main the task is flipped to
-// human-required with reason "no commits pushed to branch" and the step
-// returns "completed" so the workflow can route to end via a task.status
-// transition condition rather than a failed step.
+// When the branch has no commits ahead of origin/main, OR when the git
+// command fails (broken worktree, missing bare clone, unresolvable HEAD),
+// the task is flipped to human-required and the step returns "completed" so
+// the workflow can route to end via a task.status transition condition.
+// Treating git failures as a hard gate prevents the workflow from wasting
+// `code_review`/`fix_review`/`create_pr` cycles on a worktree the agent
+// cannot operate in.
 func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if e.worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
@@ -1136,8 +1139,18 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	cmd.Dir = wtPath
 	output, err := cmd.Output()
 	if err != nil {
+		// Context cancellation indicates engine shutdown, not a worktree
+		// problem — leave task status alone so it resumes on next boot.
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", err)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+		}
 		e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: git error: " + err.Error()}, nil
+		reason := "worktree git error: " + err.Error()
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+		}
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
 	}
 
 	if strings.TrimSpace(string(output)) == "" {

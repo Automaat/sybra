@@ -897,6 +897,7 @@ func (a *App) cleanStaleRuns() {
 // worktrees show up as orphans to the subsequent sweep; stale run state
 // next so restart-stale sees a clean slate.
 func (a *App) runStartupCleanup() {
+	a.worktrees.RepairAll()
 	a.gcOrphanChats()
 	a.worktrees.CleanupOrphaned()
 	a.cleanStaleRuns()

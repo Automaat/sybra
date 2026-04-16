@@ -304,6 +304,22 @@ func PruneWorktrees(barePath string) error {
 	return executil.Run(barePath, "git", "worktree", "prune")
 }
 
+// WorktreeHealthy reports whether a checked-out worktree's git metadata is
+// resolvable. A `false` result typically means the .git pointer references a
+// path that no longer exists — the usual cause is a container redeploy that
+// changed the in-container mount point of the bare clone.
+func WorktreeHealthy(worktreePath string) bool {
+	_, err := executil.Output(worktreePath, "git", "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// RepairWorktrees runs `git worktree repair` against the bare repo, which
+// rewrites the absolute path back-pointers in every checked-out worktree's
+// .git file and the bare's worktrees/<id>/gitdir file. Idempotent.
+func RepairWorktrees(barePath string) error {
+	return executil.Run(barePath, "git", "worktree", "repair")
+}
+
 // RebaseOnto rebases the worktree's current branch onto the given ref.
 // Aborts and returns an error on conflict.
 func RebaseOnto(worktreePath, ref string) error {

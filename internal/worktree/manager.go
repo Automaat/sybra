@@ -110,26 +110,34 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	baseRef := "refs/remotes/origin/" + branch
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
-		if err := project.SanitizeWorktree(wtPath); err != nil {
-			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+		callPhase(onPhase, "Checking worktree…")
+		usable, err := m.healOrRecreate(t.ID, proj.ClonePath, wtPath)
+		if err != nil {
+			return "", err
 		}
-		// Rebase is best-effort — conflicts with main shouldn't block agent
-		// start on a branch that already has committed work.
-		callPhase(onPhase, "Rebasing onto origin…")
-		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
-		} else {
-			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-			// Sync remote after rebase — local SHAs changed, remote still has
-			// old commits. create_pr push would fail with "diverged" otherwise.
-			callPhase(onPhase, "Pushing upstream…")
-			if err := project.PushForce(wtPath, wtBranch); err != nil {
-				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
+		if usable {
+			if err := project.SanitizeWorktree(wtPath); err != nil {
+				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 			}
+			// Rebase is best-effort — conflicts with main shouldn't block agent
+			// start on a branch that already has committed work.
+			callPhase(onPhase, "Rebasing onto origin…")
+			if err := project.RebaseOnto(wtPath, baseRef); err != nil {
+				m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
+			} else {
+				m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+				// Sync remote after rebase — local SHAs changed, remote still has
+				// old commits. create_pr push would fail with "diverged" otherwise.
+				callPhase(onPhase, "Pushing upstream…")
+				if err := project.PushForce(wtPath, wtBranch); err != nil {
+					m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
+				}
+			}
+			m.installChecks(wtPath, proj)
+			m.ensureBranch(t, wtBranch)
+			return wtPath, nil
 		}
-		m.installChecks(wtPath, proj)
-		m.ensureBranch(t, wtBranch)
-		return wtPath, nil
+		// Worktree was wiped — fall through to create paths below.
 	}
 
 	// Branch may survive a prior worktree removal — check out existing branch
@@ -200,9 +208,16 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 	baseRef := "refs/remotes/origin/" + branch
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
-		m.logger.Info("chat.worktree.reused", "task_id", t.ID, "path", wtPath)
-		m.ensureBranch(t, wtBranch)
-		return wtPath, nil
+		usable, err := m.healOrRecreate(t.ID, proj.ClonePath, wtPath)
+		if err != nil {
+			return "", err
+		}
+		if usable {
+			m.logger.Info("chat.worktree.reused", "task_id", t.ID, "path", wtPath)
+			m.ensureBranch(t, wtBranch)
+			return wtPath, nil
+		}
+		// Worktree was wiped — fall through.
 	}
 
 	callPhase(onPhase, "Creating worktree…")
@@ -386,6 +401,53 @@ func (m *Manager) List(projectID string) ([]project.Worktree, error) {
 		return nil, err
 	}
 	return project.ListWorktrees(proj.ClonePath)
+}
+
+// RepairAll runs `git worktree repair` against every project's bare clone.
+// Designed for boot-time invocation: a container redeploy that moves the
+// in-container mount point of the bare clone leaves every worktree with a
+// stale absolute back-pointer. `git worktree repair` rewrites both sides of
+// the pointer pair and is a no-op when paths are already correct.
+func (m *Manager) RepairAll() {
+	if m.projects == nil {
+		return
+	}
+	projects, err := m.projects.List()
+	if err != nil {
+		m.logger.Warn("worktree.repair-all.list", "err", err)
+		return
+	}
+	for i := range projects {
+		if err := project.RepairWorktrees(projects[i].ClonePath); err != nil {
+			m.logger.Warn("worktree.repair-all", "project", projects[i].ID, "err", err)
+			continue
+		}
+		m.logger.Info("worktree.repair-all", "project", projects[i].ID)
+	}
+}
+
+// healOrRecreate ensures the worktree at wtPath has resolvable git metadata.
+// Returns (true, nil) if the worktree is usable on return, (false, nil) if it
+// was wiped and the caller should re-create it, or (_, err) on a hard error.
+func (m *Manager) healOrRecreate(taskID, clonePath, wtPath string) (bool, error) {
+	if project.WorktreeHealthy(wtPath) {
+		return true, nil
+	}
+	m.logger.Warn("worktree.unhealthy", "task_id", taskID, "path", wtPath)
+	if err := project.RepairWorktrees(clonePath); err != nil {
+		m.logger.Warn("worktree.repair", "task_id", taskID, "err", err)
+	}
+	if project.WorktreeHealthy(wtPath) {
+		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
+		return true, nil
+	}
+	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
+	_ = project.RemoveWorktree(clonePath, wtPath)
+	if err := os.RemoveAll(wtPath); err != nil {
+		return false, fmt.Errorf("remove unhealthy worktree %s: %w", wtPath, err)
+	}
+	_ = project.PruneWorktrees(clonePath)
+	return false, nil
 }
 
 // runSetup executes a project's setup commands inside the worktree directory.

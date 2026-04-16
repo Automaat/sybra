@@ -178,6 +178,48 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	}
 }
 
+func TestWorktreeHealthyAndRepair(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	if !WorktreeHealthy(wtPath) {
+		t.Fatal("fresh worktree should be healthy")
+	}
+
+	// Simulate the synapse→sybra path-rename scenario: rewrite the .git
+	// pointer to a path that no longer exists.
+	dotGit := filepath.Join(wtPath, ".git")
+	if err := os.WriteFile(dotGit, []byte("gitdir: /nonexistent/path/that/does/not/exist\n"), 0o644); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+	if WorktreeHealthy(wtPath) {
+		t.Fatal("broken worktree should not be healthy")
+	}
+
+	if err := RepairWorktrees(bare); err != nil {
+		t.Fatalf("RepairWorktrees: %v", err)
+	}
+	if !WorktreeHealthy(wtPath) {
+		t.Fatal("worktree should be healthy after repair")
+	}
+}
+
 func TestCreateAndRemoveWorktree(t *testing.T) {
 	t.Parallel()
 	if !hasGit() {
