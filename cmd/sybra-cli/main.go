@@ -894,7 +894,7 @@ func usage() {
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
-           STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done
+           STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done|cancelled
   get      <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
            TYPE: normal|debug|research

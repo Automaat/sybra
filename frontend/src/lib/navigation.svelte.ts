@@ -17,6 +17,7 @@ export type Page =
   | { kind: 'settings' }
   | { kind: 'workflows' }
   | { kind: 'workflow-detail'; workflowId: string }
+  | { kind: 'logbook' }
 
 export type TabKey = 'board' | 'chats' | 'agents' | 'reviews' | 'more'
 
@@ -73,6 +74,7 @@ class NavStore {
       case 'settings': return 'Settings'
       case 'workflows': return 'Workflows'
       case 'workflow-detail': return 'Workflow Editor'
+      case 'logbook': return 'Logbook'
     }
   }
 

@@ -719,8 +719,8 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		})
 	}
 
-	// Worktree and sandbox cleanup for done tasks (after engine advances, so status is final).
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && t.Status == task.StatusDone {
+	// Worktree and sandbox cleanup for terminal tasks (after engine advances, so status is final).
+	if t, err := a.tasks.Get(ag.TaskID); err == nil && task.IsTerminalStatus(t.Status) {
 		go a.worktrees.Remove(ag.TaskID)
 		if a.sandboxes != nil {
 			go a.sandboxes.Stop(ag.TaskID)
