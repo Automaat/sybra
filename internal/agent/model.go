@@ -255,6 +255,20 @@ func (a *Agent) GetCostUSD() float64 {
 	return a.CostUSD
 }
 
+// GetInputTokens returns the cumulative input token count.
+func (a *Agent) GetInputTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.InputTokens
+}
+
+// GetOutputTokens returns the cumulative output token count.
+func (a *Agent) GetOutputTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.OutputTokens
+}
+
 // GetLogPath returns the current output log path.
 func (a *Agent) GetLogPath() string {
 	a.mu.RLock()

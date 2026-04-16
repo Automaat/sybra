@@ -702,6 +702,40 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"log_file":   ag.LogPath,
 	})
 
+	if a.stats != nil {
+		in := ag.GetInputTokens()
+		out := ag.GetOutputTokens()
+		agCost := cost
+		if agCost == 0 && ag.Provider == "codex" {
+			agCost = stats.EstimateCost(ag.Model, in, out)
+		}
+		outcome := "failed"
+		if exitErr == nil {
+			outcome = "completed"
+		}
+		var projectID string
+		if ag.TaskID != "" {
+			if t, err := a.tasks.Get(ag.TaskID); err == nil {
+				projectID = t.ProjectID
+			}
+		}
+		_ = a.stats.Record(stats.RunRecord{
+			ID:           ag.ID,
+			TaskID:       ag.TaskID,
+			ProjectID:    projectID,
+			Mode:         ag.Mode,
+			Role:         string(agent.RoleFromName(ag.Name)),
+			Model:        ag.Model,
+			Provider:     ag.Provider,
+			CostUSD:      agCost,
+			DurationS:    duration,
+			InputTokens:  in,
+			OutputTokens: out,
+			Outcome:      outcome,
+			Timestamp:    time.Now(),
+		})
+	}
+
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
 	if a.loopSched != nil {
