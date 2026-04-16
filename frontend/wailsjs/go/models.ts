@@ -301,6 +301,7 @@ export namespace config {
 	    maxTurns: number;
 	    requirePermissions?: boolean;
 	    maxLogEvents: number;
+	    logRetentionDays: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentDefaults(source);
@@ -317,6 +318,7 @@ export namespace config {
 	        this.maxTurns = source["maxTurns"];
 	        this.requirePermissions = source["requirePermissions"];
 	        this.maxLogEvents = source["maxLogEvents"];
+	        this.logRetentionDays = source["logRetentionDays"];
 	    }
 	}
 	export class AuditConfig {
