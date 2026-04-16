@@ -1,21 +1,21 @@
 ---
-name: synapse-self-monitor
+name: sybra-self-monitor
 description: Periodic deep analysis of agent runs and workflow health. Reads structured findings from Go health checker, investigates root causes by reading agent logs, cross-correlates patterns, and files deduped GitHub issues. Designed for loop-agent invocation every ~6h.
 allowed-tools: Bash, Read, Grep, Glob
 user-invocable: true
 ---
 
-# Synapse Self-Monitor
+# Sybra Self-Monitor
 
-Deep reasoning analysis of Synapse agent runs and workflow health. The Go health checker (`internal/health/`) runs every 10 minutes and produces structured findings (cost outliers, failure spikes, stuck tasks, workflow loops, status bounces, cost drift). This skill consumes those findings and investigates the **why** — reading agent conversation logs, cross-correlating patterns, and producing actionable recommendations.
+Deep reasoning analysis of Sybra agent runs and workflow health. The Go health checker (`internal/health/`) runs every 10 minutes and produces structured findings (cost outliers, failure spikes, stuck tasks, workflow loops, status bounces, cost drift). This skill consumes those findings and investigates the **why** — reading agent conversation logs, cross-correlating patterns, and producing actionable recommendations.
 
-Designed to run as a loop agent (`/synapse-self-monitor` every 6h) but also works as a one-shot invocation.
+Designed to run as a loop agent (`/sybra-self-monitor` every 6h) but also works as a one-shot invocation.
 
 ## When not to use
 
-- Real-time board monitoring → use `/synapse-monitor` (runs every 5m inside the orchestrator session).
-- Deep historical audit report → use `/synapse-audit`.
-- Triaging tasks → use `/synapse-triage`.
+- Real-time board monitoring → use `/sybra-monitor` (runs every 5m inside the orchestrator session).
+- Deep historical audit report → use `/sybra-audit`.
+- Triaging tasks → use `/sybra-triage`.
 
 ## Hard rules
 
@@ -28,7 +28,7 @@ Designed to run as a loop agent (`/synapse-self-monitor` every 6h) but also work
 ## Phase 1 — Gather structured health data
 
 ```bash
-synapse-cli --json health
+sybra-cli --json health
 ```
 
 This returns the latest health report from the Go checker with all findings and stats.
@@ -36,13 +36,13 @@ This returns the latest health report from the Go checker with all findings and 
 If no report exists (app not running), fall back to manual audit analysis:
 
 ```bash
-synapse-cli --json audit --since 24h --summary
+sybra-cli --json audit --since 24h --summary
 ```
 
 For each finding with a `taskId`, fetch task details:
 
 ```bash
-synapse-cli --json get <taskId>
+sybra-cli --json get <taskId>
 ```
 
 ## Phase 2 — Deep investigation
@@ -103,13 +103,13 @@ After investigating individual findings, look for patterns across them:
 Determine the target repo:
 
 ```bash
-REPO=$(cd ~/.synapse && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")
+REPO=$(cd ~/.sybra && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")
 ```
 
 If empty, try the first registered project:
 
 ```bash
-REPO=$(synapse-cli --json project list 2>/dev/null | jq -r '.[0].id // empty')
+REPO=$(sybra-cli --json project list 2>/dev/null | jq -r '.[0].id // empty')
 ```
 
 If still empty, skip issue filing and just print findings to stdout.
@@ -117,13 +117,13 @@ If still empty, skip issue filing and just print findings to stdout.
 Ensure label exists:
 
 ```bash
-gh label create synapse-self-monitor --repo "$REPO" --color C5DEF5 --description "Filed by /synapse-self-monitor" 2>/dev/null || true
+gh label create sybra-self-monitor --repo "$REPO" --color C5DEF5 --description "Filed by /sybra-self-monitor" 2>/dev/null || true
 ```
 
 For each confirmed finding (not false positives), derive a stable title and search for duplicates:
 
 ```bash
-gh issue list --repo "$REPO" --label synapse-self-monitor --state all --search "in:title \"<title prefix>\"" --json number,state,title --limit 3
+gh issue list --repo "$REPO" --label sybra-self-monitor --state all --search "in:title \"<title prefix>\"" --json number,state,title --limit 3
 ```
 
 - Open match → skip
@@ -133,7 +133,7 @@ gh issue list --repo "$REPO" --label synapse-self-monitor --state all --search "
 Issue body format:
 
 ```bash
-gh issue create --repo "$REPO" --label synapse-self-monitor --title "<title>" --body "$(cat <<'EOF'
+gh issue create --repo "$REPO" --label sybra-self-monitor --title "<title>" --body "$(cat <<'EOF'
 ## Detection
 
 - **Time:** <ISO timestamp>
@@ -156,7 +156,7 @@ gh issue create --repo "$REPO" --label synapse-self-monitor --title "<title>" --
 
 ## Context
 
-Filed by synapse-self-monitor. Findings from Go health checker investigated with agent log analysis.
+Filed by sybra-self-monitor. Findings from Go health checker investigated with agent log analysis.
 EOF
 )"
 ```

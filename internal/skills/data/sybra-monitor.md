@@ -1,14 +1,14 @@
 ---
-name: synapse-monitor
-description: Deprecated. Monitor now runs in-process inside Synapse. Use `synapse-cli monitor scan` for an ad-hoc detector pass or read the `monitor:report` event from the GUI.
+name: sybra-monitor
+description: Deprecated. Monitor now runs in-process inside Sybra. Use `sybra-cli monitor scan` for an ad-hoc detector pass or read the `monitor:report` event from the GUI.
 allowed-tools: Bash, Read
 user-invocable: true
 ---
 
-# Synapse Monitor (legacy skill stub)
+# Sybra Monitor (legacy skill stub)
 
-The monitor loop previously driven by `/loop 5m /synapse-monitor` now runs
-inside the Synapse Go backend (`internal/monitor/`). It ticks every 5 min,
+The monitor loop previously driven by `/loop 5m /sybra-monitor` now runs
+inside the Sybra Go backend (`internal/monitor/`). It ticks every 5 min,
 detects anomalies, applies idempotent remediations, and spawns focused
 headless Claude agents for anything that needs LLM judgment.
 
@@ -18,8 +18,8 @@ for it.
 ## Read-only ad-hoc pass
 
 ```bash
-synapse-cli monitor scan            # human summary line
-synapse-cli monitor scan --json     # full Report JSON
+sybra-cli monitor scan            # human summary line
+sybra-cli monitor scan --json     # full Report JSON
 ```
 
 The `--json` output matches `monitor.Report` in `internal/monitor/report.go`

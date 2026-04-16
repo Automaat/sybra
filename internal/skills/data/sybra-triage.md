@@ -1,11 +1,11 @@
 ---
-name: synapse-triage
-description: Triage Synapse tasks — delegate to the Go classifier which rewrites the title, assigns tags/mode/status, and matches a project in one atomic update. Use when asked to triage, categorize, or prioritize tasks.
+name: sybra-triage
+description: Triage Sybra tasks — delegate to the Go classifier which rewrites the title, assigns tags/mode/status, and matches a project in one atomic update. Use when asked to triage, categorize, or prioritize tasks.
 allowed-tools: Bash
 user-invocable: true
 ---
 
-# Synapse Task Triage
+# Sybra Task Triage
 
 Classify pending tasks via the Go classifier. Go owns routing rules, tag validation, project auto-match, and atomic multi-field updates. The LLM only produces the structured verdict.
 
@@ -14,13 +14,13 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
 1. List pending tasks:
 
    ```bash
-   synapse-cli --json list --status new
+   sybra-cli --json list --status new
    ```
 
 2. For each task, run the classifier:
 
    ```bash
-   synapse-cli --json triage classify <id>
+   sybra-cli --json triage classify <id>
    ```
 
    This makes a single `claude -p` call that:
@@ -36,12 +36,12 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
 3. Batch mode for larger queues:
 
    ```bash
-   synapse-cli --json triage classify --all
+   sybra-cli --json triage classify --all
    ```
 
 ## Constraints
 
-- Do NOT call `synapse-cli update` directly during triage — the Go classifier owns every field change. Manual updates will race the classifier and break audit trails.
+- Do NOT call `sybra-cli update` directly during triage — the Go classifier owns every field change. Manual updates will race the classifier and break audit trails.
 - Do NOT explore the codebase or read source files — the classifier sees only `{title, body, registered projects}`. Codebase exploration belongs in planning/implementation.
-- If `classify` returns an error, flag the task with `synapse-cli update <id> --status human-required --status-reason "triage failed"` and move on.
+- If `classify` returns an error, flag the task with `sybra-cli update <id> --status human-required --status-reason "triage failed"` and move on.
 - Ignore tasks with `role` field set (triage, plan, eval, pr-fix) — those are system agents, not implementation work.

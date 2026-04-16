@@ -1,12 +1,12 @@
 ---
-name: synapse-evaluate
-description: Evaluate completed Synapse tasks — determine status transition and link PRs. Use when asked to evaluate task completion.
+name: sybra-evaluate
+description: Evaluate completed Sybra tasks — determine status transition and link PRs. Use when asked to evaluate task completion.
 allowed-tools: Bash
 user-invocable: true
 disable-model-invocation: true
 ---
 
-# Synapse Task Evaluation
+# Sybra Task Evaluation
 
 Decide what happens to a task after an agent finishes. Do NOT read source code, review diffs, or explore the codebase.
 
@@ -22,7 +22,7 @@ Decide what happens to a task after an agent finishes. Do NOT read source code, 
 ### 1. Read the task
 
 ```bash
-synapse-cli --json get <id>
+sybra-cli --json get <id>
 ```
 
 ### 2. Link PR if created
@@ -36,10 +36,10 @@ If found, link to task:
 
 ```bash
 # Link PR number
-synapse-cli --json update <id> --pr <number>
+sybra-cli --json update <id> --pr <number>
 
 # Link branch if known and not already set
-synapse-cli --json update <id> --branch <branch-name>
+sybra-cli --json update <id> --branch <branch-name>
 ```
 
 ### 3. Decide status transition
@@ -63,7 +63,7 @@ Based ONLY on the agent result text:
 ### 4. Update status
 
 ```bash
-synapse-cli --json update <id> --status <new-status>
+sybra-cli --json update <id> --status <new-status>
 ```
 
 <example>
@@ -71,8 +71,8 @@ Input: Agent result text contains `https://github.com/acme/repo/pull/42` and "Su
 
 Actions:
 ```bash
-synapse-cli --json update task-abc --pr 42
-synapse-cli --json update task-abc --status in-review
+sybra-cli --json update task-abc --pr 42
+sybra-cli --json update task-abc --status in-review
 ```
 </example>
 
@@ -81,7 +81,7 @@ Input: Agent result text contains "Error: rate limit exceeded" with no PR refere
 
 Actions:
 ```bash
-synapse-cli --json update task-abc --status human-required
+sybra-cli --json update task-abc --status human-required
 ```
 </example>
 

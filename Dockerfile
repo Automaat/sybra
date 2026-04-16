@@ -63,7 +63,7 @@ RUN npm install -g \
 
 # --- Layer D: mise binary only (tools installed per-worktree) ---
 # The prod image intentionally does NOT bake language toolchains. Each
-# project declares its tools (e.g. synapse's mise.toml pins Go/Node/etc.)
+# project declares its tools (e.g. sybra's mise.toml pins Go/Node/etc.)
 # and Sybra runs `mise install` in every worktree via SetupCommands on
 # creation — cached in ~/.sybra/mise-data, shared across worktrees, version
 # pinned per branch. This keeps the image lean and supports projects in any

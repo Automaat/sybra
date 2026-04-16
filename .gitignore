@@ -5,7 +5,7 @@ frontend/dist-web/
 frontend/node_modules/
 frontend/package.json.md5
 
-# Runtime data (lives in ~/.synapse at runtime)
+# Runtime data (lives in ~/.sybra at runtime)
 tasks/
 
 # Claude Code
@@ -26,7 +26,9 @@ frontend/test-results/
 frontend/playwright-report/
 
 # Binary
-/synapse
-/synapse-cli
+/sybra
+/sybra-cli
+/sybra-server
+/sybra-perf
 /fake-claude
-/synapse-server
+/fake-codex

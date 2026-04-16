@@ -1,11 +1,11 @@
 ---
-name: synapse-audit
-description: Analyze Synapse health findings + audit summary to explain workflow issues and propose grounded fixes. Use when asked to review how work is flowing or suggest process improvements.
+name: sybra-audit
+description: Analyze Sybra health findings + audit summary to explain workflow issues and propose grounded fixes. Use when asked to review how work is flowing or suggest process improvements.
 allowed-tools: Bash, Read
 user-invocable: true
 ---
 
-# Synapse Audit Analysis
+# Sybra Audit Analysis
 
 The Go side already runs every detector and, when the selfmonitor service is
 enabled, distills each finding's agent log into a `LogSummary` (stall
@@ -16,7 +16,7 @@ them in real context, and produce concrete fixes** — not to recompute them.
 ## Step 1: Pull the selfmonitor report
 
 ```bash
-synapse-cli --json selfmonitor scan
+sybra-cli --json selfmonitor scan
 ```
 
 Returns a `selfmonitor.Report` with:
@@ -33,13 +33,13 @@ Returns a `selfmonitor.Report` with:
 **Fallback** — if the report is missing or `generatedAt` is > 2h ago:
 
 ```bash
-synapse-cli --json health
+sybra-cli --json health
 ```
 
 ## Step 2: Pull the workflow summary
 
 ```bash
-synapse-cli --json audit --since 7d --summary
+sybra-cli --json audit --since 7d --summary
 ```
 
 Use for trend context only: cycle time, total cost, plan rejection rate, status
@@ -62,7 +62,7 @@ For the top 3 findings (by severity, then impact):
 **Otherwise (no logSummary, verdict pending):**
 
 ```bash
-synapse-cli --json get <taskId>
+sybra-cli --json get <taskId>
 ```
 
 Read task body, status_reason, and any embedded run results to explain why
@@ -112,7 +112,7 @@ Recommendations (cross-cutting):
   when confidence is lower or verdict is pending.
 
 <example>
-`synapse-cli --json selfmonitor scan` returns:
+`sybra-cli --json selfmonitor scan` returns:
 ```json
 {
   "healthScore": "critical",
@@ -143,7 +143,7 @@ Recommendations (cross-cutting):
 }
 ```
 
-Then for the pending triage_mismatch, `synapse-cli --json get task-def456` shows
+Then for the pending triage_mismatch, `sybra-cli --json get task-def456` shows
 a task about integrating a new auth provider (touches secrets + IAM).
 
 Output:
@@ -178,7 +178,7 @@ Recommendations:
 </example>
 
 <example>
-`synapse-cli --json selfmonitor scan` returns `{"healthScore": "good", "findings": []}`.
+`sybra-cli --json selfmonitor scan` returns `{"healthScore": "good", "findings": []}`.
 
 Output: `Health: good — no findings in the last 24h.`
 </example>
