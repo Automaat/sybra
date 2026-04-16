@@ -708,6 +708,17 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
+		// Re-read to guard against stale snapshots from concurrent ResumeStalled
+		// calls: by the time we acquire dispatching, a prior goroutine may have
+		// already advanced the workflow past this step.
+		fresh, fErr := e.tasks.GetTask(t.ID)
+		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed {
+			e.mu.Lock()
+			delete(e.dispatching, t.ID)
+			e.mu.Unlock()
+			continue
+		}
+
 		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
 		rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
 		e.mu.Lock()
