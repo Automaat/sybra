@@ -15,6 +15,13 @@ import (
 	"reflect"
 )
 
+// MaxRequestBody caps the size of a single API request body. Sybra service
+// methods are JSON-arg-typed (small payloads — task IDs, titles, plan text);
+// 32 MiB is generous headroom for plan content while preventing trivial
+// memory-exhaustion attacks via multi-GB POST bodies. Override with
+// SYBRA_HTTPAPI_MAX_BODY_MB at process start if a larger payload is needed.
+const MaxRequestBody = 32 * 1024 * 1024
+
 // Mount registers POST /api/{service}/{method} handlers for every exported
 // method on each service in the registry. Unknown services/methods return 404.
 func Mount(mux *http.ServeMux, services map[string]any, logger *slog.Logger) {
@@ -37,6 +44,10 @@ func Mount(mux *http.ServeMux, services map[string]any, logger *slog.Logger) {
 
 		mt := m.Type()
 
+		// Cap body size before reading. MaxBytesReader replaces r.Body with a
+		// reader that returns an error after MaxRequestBody bytes — protects
+		// against a multi-GB POST exhausting server memory.
+		r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBody)
 		// Read body once.
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

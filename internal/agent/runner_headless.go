@@ -305,10 +305,17 @@ func (t *trackingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// headlessScannerBuffer caps the size of a single NDJSON line. A result
+// event with a large content field (e.g. a dumped command output) can
+// approach this size. Exceeding it aborts the scanner with ErrTooLong and
+// is logged below — any regression that lowers this cap will surface in
+// stream_tooLong log lines.
+const headlessScannerBuffer = 4 * 1024 * 1024
+
 func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer) {
 	tracked := &trackingReader{r: stdout, touch: a.TouchLastEvent}
 	scanner := bufio.NewScanner(tracked)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, headlessScannerBuffer), headlessScannerBuffer)
 	var lastEmit time.Time
 	isCodex := normalizeProvider(a.Provider) == "codex"
 	for scanner.Scan() {
@@ -403,6 +410,20 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			}
 		}
 	}
+	m.reportScannerError(a, scanner.Err())
+}
+
+// reportScannerError surfaces bufio.Scanner errors at the end of the NDJSON
+// loop so oversized lines and pipe failures don't silently drop events.
+// io.EOF is the normal exit path and never reaches this function.
+func (m *Manager) reportScannerError(a *Agent, err error) {
+	if err == nil {
+		return
+	}
+	m.logger.Warn("agent.headless.stream.error",
+		"id", a.ID,
+		"err", err,
+		"hint", "oversized line or broken pipe aborted the NDJSON stream; trailing events were lost")
 }
 
 func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []string, command string, err error) {

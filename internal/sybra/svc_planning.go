@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,14 +17,23 @@ type PlanningService struct {
 	agents *agent.Manager
 }
 
-// TriageTask starts the triage workflow for the given task.
+// TriageTask starts the triage workflow for the given task. Idempotent:
+// returns nil if a workflow is already running or being started concurrently
+// (CreateTask spawns the same workflow in a goroutine).
 func (s *PlanningService) TriageTask(id string) error {
-	return s.engine.StartWorkflow(id, "simple-task")
+	if err := s.engine.StartWorkflow(id, "simple-task"); err != nil {
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // PlanTask starts a workflow for the given task if none is active.
-// If a workflow is already running, this is a no-op — the engine drives
-// plan steps via transitions.
+// If a workflow is already running — or being started concurrently
+// (CreateTask auto-spawns one in a goroutine) — this is a no-op so the
+// UI Plan button stays idempotent.
 func (s *PlanningService) PlanTask(id string) error {
 	t, err := s.tasks.Get(id)
 	if err != nil {
@@ -32,7 +42,15 @@ func (s *PlanningService) PlanTask(id string) error {
 	if t.Workflow != nil && t.Workflow.State != "" {
 		return nil
 	}
-	return s.engine.StartWorkflow(id, "simple-task")
+	if err := s.engine.StartWorkflow(id, "simple-task"); err != nil {
+		// Concurrent auto-start (from CreateTask) holds the per-task start
+		// lock — that's also a no-op outcome from the user's perspective.
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // ApprovePlan approves the plan via the workflow engine.

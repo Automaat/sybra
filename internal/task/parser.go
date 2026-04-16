@@ -13,6 +13,13 @@ import (
 
 var frontmatterRe = regexp.MustCompile(`(?m)^---\s*$`)
 
+// utf8BOM is stripped from the front of task files before the frontmatter
+// regex runs. Editors on Windows (Notepad, VS Code with "add BOM") and some
+// web download flows prepend this. Leaving it in place makes the first `---`
+// not match `^` in multiline mode, which surfaces as a confusing "invalid
+// frontmatter" error and causes the whole task to disappear from the list.
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}
+
 func Parse(path string) (Task, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -28,6 +35,7 @@ func Parse(path string) (Task, error) {
 }
 
 func ParseBytes(data []byte) (Task, error) {
+	data = bytes.TrimPrefix(data, utf8BOM)
 	locs := frontmatterRe.FindAllIndex(data, 2)
 	if len(locs) < 2 {
 		return Task{}, fmt.Errorf("invalid frontmatter: expected --- delimiters")

@@ -105,6 +105,7 @@ type Engine struct {
 	mu          sync.Mutex
 	inflight    map[string]struct{} // taskID → step in flight (prevent double-advance)
 	dispatching map[string]struct{} // taskID → dispatch in progress
+	starting    map[string]struct{} // taskID → StartWorkflowWithVars in progress
 	humanAction map[string]struct{} // taskID → HandleHumanAction in progress
 	agentSteps  map[string]string   // agentID → stepID it was spawned for
 	resumeError *logging.ErrorThrottle
@@ -120,6 +121,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		ctx:         context.Background(),
 		inflight:    make(map[string]struct{}),
 		dispatching: make(map[string]struct{}),
+		starting:    make(map[string]struct{}),
 		humanAction: make(map[string]struct{}),
 		agentSteps:  make(map[string]string),
 		resumeError: logging.NewErrorThrottle(),
@@ -154,7 +156,24 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 // StartWorkflowWithVars assigns a workflow and seeds the execution with
 // initial variables. Use the reserved WorkflowVarDir key to pass a
 // pre-prepared working directory to run_agent steps.
+//
+// Serialized per task via the starting map so two concurrent callers
+// (restart + UI button, two loop-agent ticks, etc) never both spawn agents
+// for the same task. Second caller gets ErrWorkflowAlreadyActive.
 func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[string]string) error {
+	e.mu.Lock()
+	if _, busy := e.starting[taskID]; busy {
+		e.mu.Unlock()
+		return fmt.Errorf("%w: start in progress", ErrWorkflowAlreadyActive)
+	}
+	e.starting[taskID] = struct{}{}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.starting, taskID)
+		e.mu.Unlock()
+	}()
+
 	def, err := e.store.Get(workflowID)
 	if err != nil {
 		return fmt.Errorf("get workflow %s: %w", workflowID, err)
@@ -1225,8 +1244,14 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 			var prs []struct {
 				Number int `json:"number"`
 			}
-			if jsonErr := json.Unmarshal(out, &prs); jsonErr == nil && len(prs) == 1 {
+			jsonErr := json.Unmarshal(out, &prs)
+			if jsonErr == nil && len(prs) == 1 {
 				return setInReview(prs[0].Number, "gh pr list")
+			}
+			if jsonErr != nil {
+				// gh --json returned malformed output. Don't mask the upstream
+				// failure as "no pr found" — log so operators can diagnose.
+				e.logger.Warn("workflow.link-pr.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
 			}
 		}
 	}
@@ -1254,7 +1279,8 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 			var prs []struct {
 				Number int `json:"number"`
 			}
-			if jsonErr := json.Unmarshal(out, &prs); jsonErr == nil && len(prs) == 1 {
+			jsonErr := json.Unmarshal(out, &prs)
+			if jsonErr == nil && len(prs) == 1 {
 				prNum := prs[0].Number
 				if linkErr := e.tasks.UpdateTaskPR(taskID, prNum); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
@@ -1265,6 +1291,9 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				msg := fmt.Sprintf("pr #%d found via late gh pr list → in-review", prNum)
 				e.logger.Info("workflow.evaluate.late-pr-found", "task_id", taskID, "pr", prNum)
 				return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+			}
+			if jsonErr != nil {
+				e.logger.Warn("workflow.evaluate.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
 			}
 		}
 	}
