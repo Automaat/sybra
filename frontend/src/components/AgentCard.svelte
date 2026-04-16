@@ -4,6 +4,8 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { fade } from 'svelte/transition'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
+  import { clock } from '$lib/clock.svelte.js'
+  import { formatElapsed } from '$lib/elapsed.js'
 
   interface Props {
     agent: agent.Agent
@@ -24,6 +26,10 @@
   )
   const config = $derived(PHASE_CONFIG[phase])
 
+  const isActivePhase = $derived(
+    phase === 'running' || phase === 'blocked' || phase === 'waiting' || phase === 'human-required',
+  )
+
   function timeAgo(date: any): string {
     if (!date) return ''
     const now = Date.now()
@@ -43,7 +49,7 @@
 >
   <div class="mb-2 flex items-start justify-between gap-2">
     <div class="flex flex-col gap-0.5">
-      <h3 class="text-sm font-semibold leading-tight {config.faded ? 'text-surface-400 dark:text-surface-500' : ''}">{a.project || a.id}</h3>
+      <h3 class="text-sm font-semibold leading-tight {config.faded ? 'text-surface-400 dark:text-surface-500' : ''}">{linkedTask?.title ?? (a.project || a.id)}</h3>
       {#if a.name}
         <span class="text-xs text-surface-400">{a.name}</span>
       {/if}
@@ -89,15 +95,18 @@
     {#if a.project}
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{a.project}</span>
     {/if}
-    {#if a.taskId}
-      <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{linkedTask?.title ?? a.taskId}</span>
-    {/if}
     {#if linkedTask?.branch}
       <span class="rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">{linkedTask.branch.replace(/^sybra\//, '')}</span>
     {/if}
     {#if a.costUsd > 0}
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(2)}</span>
     {/if}
-    <span class="ml-auto opacity-60">{timeAgo(a.startedAt)}</span>
+    <span class="ml-auto opacity-60">
+      {#if isActivePhase}
+        {formatElapsed(a.startedAt, clock.now)}
+      {:else}
+        {timeAgo(a.startedAt)}
+      {/if}
+    </span>
   </div>
 </button>

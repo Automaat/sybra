@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import AgentCard from './AgentCard.svelte'
 import { agentStore } from '../stores/agents.svelte.js'
+import { taskStore } from '../stores/tasks.svelte.js'
+import type { task } from '../../wailsjs/go/models.js'
+
+// Mutable clock mock — set per test as needed; vi.hoisted ensures it is accessible
+// inside the hoisted vi.mock factory
+const clockMock = vi.hoisted(() => ({ now: Date.now() }))
+vi.mock('$lib/clock.svelte.js', () => ({ clock: clockMock }))
 
 function makeAgent(overrides: Record<string, unknown> = {}) {
   return {
@@ -23,17 +30,48 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeTask(overrides: Partial<task.Task> = {}): task.Task {
+  return {
+    id: 'task-1',
+    title: 'Test task title',
+    status: 'todo',
+    slug: '',
+    taskType: '',
+    agentMode: '',
+    allowedTools: [],
+    tags: [],
+    projectId: '',
+    branch: '',
+    prNumber: 0,
+    issue: '',
+    statusReason: '',
+    reviewed: false,
+    runRole: '',
+    todoistId: '',
+    agentRuns: [],
+    convertValues: () => {},
+    ...overrides,
+  } as task.Task
+}
+
 describe('AgentCard', () => {
   afterEach(() => {
     cleanup()
+    taskStore.tasks = new Map()
   })
 
-  it('renders agent project name in heading', () => {
+  it('renders task title in heading when linked task is present', () => {
+    taskStore.tasks = new Map([['task-1', makeTask({ title: 'Implement auth' })]])
+    render(AgentCard, { props: { agent: makeAgent(), onclick: () => {} } })
+    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('Implement auth')
+  })
+
+  it('renders agent project name in heading when no linked task', () => {
     render(AgentCard, { props: { agent: makeAgent(), onclick: () => {} } })
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('sybra')
   })
 
-  it('renders agent id as fallback when project is empty', () => {
+  it('renders agent id as fallback when project is empty and no linked task', () => {
     render(AgentCard, { props: { agent: makeAgent({ project: '' }), onclick: () => {} } })
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('agent-1')
   })
@@ -93,11 +131,6 @@ describe('AgentCard', () => {
     expect(screen.queryByText(/^\$/)).toBeNull()
   })
 
-  it('shows taskId when present', () => {
-    render(AgentCard, { props: { agent: makeAgent({ taskId: 'task-1' }), onclick: () => {} } })
-    expect(screen.getByText('task-1')).toBeDefined()
-  })
-
   it('calls onclick when clicked', async () => {
     const handler = vi.fn()
     render(AgentCard, { props: { agent: makeAgent(), onclick: handler } })
@@ -129,7 +162,20 @@ describe('AgentCard', () => {
     })
   })
 
-  describe('timeAgo', () => {
+  describe('elapsed time for active phases', () => {
+    const START = '2026-04-01T00:00:00Z'
+    const START_MS = new Date(START).getTime()
+
+    it('shows elapsed time for running agent', () => {
+      clockMock.now = START_MS + 90 * 1000
+      render(AgentCard, {
+        props: { agent: makeAgent({ state: 'running', startedAt: START }), onclick: () => {} },
+      })
+      expect(screen.getByText('1m 30s')).toBeDefined()
+    })
+  })
+
+  describe('timeAgo for terminal phases', () => {
     beforeEach(() => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-04-01T01:00:00Z'))
@@ -139,30 +185,30 @@ describe('AgentCard', () => {
       vi.useRealTimers()
     })
 
-    it('returns "just now" for < 60s ago', () => {
+    it('returns "just now" for stopped agent started < 60s ago', () => {
       render(AgentCard, {
-        props: { agent: makeAgent({ startedAt: '2026-04-01T00:59:30Z' }), onclick: () => {} },
+        props: { agent: makeAgent({ state: 'stopped', startedAt: '2026-04-01T00:59:30Z' }), onclick: () => {} },
       })
       expect(screen.getByText('just now')).toBeDefined()
     })
 
-    it('returns minutes ago', () => {
+    it('returns minutes ago for stopped agent', () => {
       render(AgentCard, {
-        props: { agent: makeAgent({ startedAt: '2026-04-01T00:55:00Z' }), onclick: () => {} },
+        props: { agent: makeAgent({ state: 'stopped', startedAt: '2026-04-01T00:55:00Z' }), onclick: () => {} },
       })
       expect(screen.getByText('5m ago')).toBeDefined()
     })
 
-    it('returns hours ago', () => {
+    it('returns hours ago for stopped agent', () => {
       render(AgentCard, {
-        props: { agent: makeAgent({ startedAt: '2026-04-01T00:00:00Z' }), onclick: () => {} },
+        props: { agent: makeAgent({ state: 'stopped', startedAt: '2026-04-01T00:00:00Z' }), onclick: () => {} },
       })
       expect(screen.getByText('1h ago')).toBeDefined()
     })
 
-    it('returns days ago', () => {
+    it('returns days ago for stopped agent', () => {
       render(AgentCard, {
-        props: { agent: makeAgent({ startedAt: '2026-03-30T00:00:00Z' }), onclick: () => {} },
+        props: { agent: makeAgent({ state: 'stopped', startedAt: '2026-03-30T00:00:00Z' }), onclick: () => {} },
       })
       expect(screen.getByText('2d ago')).toBeDefined()
     })
