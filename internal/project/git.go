@@ -9,7 +9,71 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/executil"
+	"gopkg.in/yaml.v3"
 )
+
+// LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
+// RepoConfig (not an error) if the file does not exist.
+func LoadRepoConfig(worktreePath string) (*RepoConfig, error) {
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".sybra.yaml"))
+	if os.IsNotExist(err) {
+		return &RepoConfig{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read .sybra.yaml: %w", err)
+	}
+	var cfg RepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse .sybra.yaml: %w", err)
+	}
+	return &cfg, nil
+}
+
+// InstallHooks writes pre-commit and pre-push git hooks into the worktree's
+// hooks directory. Existing hooks are overwritten. No-op if checks is nil or
+// both slices are empty.
+func InstallHooks(worktreePath string, checks *ChecksConfig) error {
+	if checks == nil || (len(checks.PreCommit) == 0 && len(checks.PrePush) == 0) {
+		return nil
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return fmt.Errorf("create hooks dir: %w", err)
+	}
+
+	write := func(name string, commands []string) error {
+		if len(commands) == 0 {
+			return nil
+		}
+		var sb strings.Builder
+		sb.WriteString("#!/bin/sh\nset -e\n")
+		for _, c := range commands {
+			sb.WriteString(c)
+			sb.WriteByte('\n')
+		}
+		path := filepath.Join(hooksDir, name)
+		if err := os.WriteFile(path, []byte(sb.String()), 0o755); err != nil {
+			return fmt.Errorf("write %s hook: %w", name, err)
+		}
+		return nil
+	}
+
+	if err := write("pre-commit", checks.PreCommit); err != nil {
+		return err
+	}
+	return write("pre-push", checks.PrePush)
+}
 
 func ParseGitHubURL(raw string) (owner, repo string, err error) {
 	raw = strings.TrimSpace(raw)

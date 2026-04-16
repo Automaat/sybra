@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -68,7 +69,7 @@ func run() error {
 
 	broker := sse.New()
 
-	app := sybra.NewApp(logger, levelVar, cfg, sybra.WithEmit(broker.Emit))
+	app := sybra.NewApp(logger, levelVar, cfg, sybra.WithEmit(broker.Emit), sybra.WithSkillsFS(skills.FS))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

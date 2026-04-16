@@ -9,6 +9,42 @@ const (
 	ProjectTypeWork ProjectType = "work"
 )
 
+// ChecksConfig defines shell commands run as git hooks in agent worktrees.
+// Commands execute in the worktree root; non-zero exit blocks the git operation.
+type ChecksConfig struct {
+	PreCommit []string `yaml:"pre_commit,omitempty" json:"preCommit,omitempty"`
+	PrePush   []string `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
+}
+
+// RepoConfig is the subset of Synapse config that can be defined in a repo's
+// .synapse.yaml file. Repo config takes priority over the app-level project config.
+type RepoConfig struct {
+	Checks *ChecksConfig `yaml:"checks,omitempty" json:"checks,omitempty"`
+}
+
+// MergeChecks returns a merged ChecksConfig where repo fields take priority over
+// app fields on a per-slice basis. A non-nil, non-empty slice in repo wins.
+func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
+	if repo == nil && app == nil {
+		return nil
+	}
+	out := &ChecksConfig{}
+	if repo != nil && len(repo.PreCommit) > 0 {
+		out.PreCommit = repo.PreCommit
+	} else if app != nil {
+		out.PreCommit = app.PreCommit
+	}
+	if repo != nil && len(repo.PrePush) > 0 {
+		out.PrePush = repo.PrePush
+	} else if app != nil {
+		out.PrePush = app.PrePush
+	}
+	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 {
+		return nil
+	}
+	return out
+}
+
 // SandboxConfig describes how to spin up an isolated app environment for a task.
 // Three modes are supported, detected by field presence:
 //   - K8s mode:             Cluster != ""
@@ -65,6 +101,7 @@ type Project struct {
 	Status        ProjectStatus  `yaml:"status,omitempty" json:"status"`
 	SetupCommands []string       `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
 	Sandbox       *SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Checks        *ChecksConfig  `yaml:"checks,omitempty"  json:"checks,omitempty"`
 	CreatedAt     time.Time      `yaml:"created_at" json:"createdAt"`
 	UpdatedAt     time.Time      `yaml:"updated_at" json:"updatedAt"`
 }

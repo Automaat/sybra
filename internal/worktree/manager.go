@@ -127,6 +127,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
 			}
 		}
+		m.installChecks(wtPath, proj)
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
 	}
@@ -153,6 +154,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		m.runSetup(wtPath, proj.SetupCommands)
+		m.installChecks(wtPath, proj)
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
 	}
@@ -163,6 +165,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
 	m.runSetup(wtPath, proj.SetupCommands)
+	m.installChecks(wtPath, proj)
 
 	callPhase(onPhase, "Pushing upstream…")
 	if err := project.PushUpstream(wtPath, wtBranch); err != nil {
@@ -397,6 +400,21 @@ func (m *Manager) runSetup(wtPath string, commands []string) {
 			continue
 		}
 		m.logger.Info("worktree.setup-cmd", "cmd", raw, "path", wtPath)
+	}
+}
+
+func (m *Manager) installChecks(wtPath string, proj project.Project) {
+	repoCfg, err := project.LoadRepoConfig(wtPath)
+	if err != nil {
+		m.logger.Warn("worktree.repo-config", "path", wtPath, "err", err)
+	}
+	var repoChecks *project.ChecksConfig
+	if repoCfg != nil {
+		repoChecks = repoCfg.Checks
+	}
+	checks := project.MergeChecks(repoChecks, proj.Checks)
+	if err := project.InstallHooks(wtPath, checks); err != nil {
+		m.logger.Warn("worktree.hooks", "path", wtPath, "err", err)
 	}
 }
 
