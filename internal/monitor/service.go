@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/metrics"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/metrics"
 )
 
 // auditAPI mirrors the slice of internal/audit the service needs. Tests
@@ -32,7 +32,7 @@ type agentLister interface {
 }
 
 // EmitFunc is the signature App passes for Wails events. Defined locally so
-// the package can be imported without pulling internal/synapse.
+// the package can be imported without pulling internal/sybra.
 type EmitFunc func(event string, data any)
 
 // Deps groups Service constructor inputs so the wiring at app.go is named
@@ -187,7 +187,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 }
 
 // Scan runs one detector pass with no remediation, dispatch, or issue side
-// effects. Used by `synapse-cli monitor scan` and by tests.
+// effects. Used by `sybra-cli monitor scan` and by tests.
 func (s *Service) Scan(_ context.Context) (Report, error) {
 	now := s.now()
 	tasks, err := s.tasks.List()

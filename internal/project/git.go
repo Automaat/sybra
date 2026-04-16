@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/executil"
+	"github.com/Automaat/sybra/internal/executil"
 )
 
 func ParseGitHubURL(raw string) (owner, repo string, err error) {
@@ -202,7 +202,7 @@ func parseWorktreePorcelain(raw string) []Worktree {
 			} else if ref, ok := strings.CutPrefix(line, "branch "); ok {
 				branch, _ := strings.CutPrefix(ref, "refs/heads/")
 				wt.Branch = branch
-				if name, ok := strings.CutPrefix(wt.Branch, "synapse/"); ok {
+				if name, ok := strings.CutPrefix(wt.Branch, "sybra/"); ok {
 					// Task ID is always the last 8 chars (uuid[:8])
 					if len(name) >= 8 {
 						wt.TaskID = name[len(name)-8:]

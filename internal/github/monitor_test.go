@@ -33,9 +33,9 @@ func TestMatchTaskPRs(t *testing.T) {
 		},
 		{
 			name:  "match by branch, conflict",
-			prs:   []PullRequest{{Number: 10, HeadRefName: "synapse/fix-abc", Mergeable: "CONFLICTING"}},
-			tasks: []TaskMatcher{{ID: "t2", Branch: "synapse/fix-abc"}},
-			want:  []PRIssue{{Kind: PRIssueConflict, TaskID: "t2", PR: PullRequest{Number: 10, HeadRefName: "synapse/fix-abc", Mergeable: "CONFLICTING"}}},
+			prs:   []PullRequest{{Number: 10, HeadRefName: "sybra/fix-abc", Mergeable: "CONFLICTING"}},
+			tasks: []TaskMatcher{{ID: "t2", Branch: "sybra/fix-abc"}},
+			want:  []PRIssue{{Kind: PRIssueConflict, TaskID: "t2", PR: PullRequest{Number: 10, HeadRefName: "sybra/fix-abc", Mergeable: "CONFLICTING"}}},
 		},
 		{
 			name:  "both conflict and CI failure",

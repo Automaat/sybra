@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
 )
 
 // codexEventToConvoEvent converts a shared CodexEvent into a ConvoEvent for

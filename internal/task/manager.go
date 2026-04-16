@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/metrics"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/metrics"
 )
 
 // EventEmitter publishes task lifecycle events.
@@ -64,7 +64,7 @@ func NewManager(store *Store, emitter EventEmitter) *Manager {
 func (m *Manager) Store() *Store { return m.store }
 
 // OnExternalUpdate is invoked by the file watcher when a task file is
-// modified outside this Manager — typically by `synapse-cli` running in
+// modified outside this Manager — typically by `sybra-cli` running in
 // a separate process. It invalidates the store cache and, when the
 // on-disk status differs from the value that last triggered the hook,
 // fires the registered status-change hook so workflow steps using

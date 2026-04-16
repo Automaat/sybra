@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // PlanCritiqueStore persists plan-critique reports as a plain-markdown sidecar

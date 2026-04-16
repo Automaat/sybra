@@ -95,7 +95,7 @@ func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 	// Best-effort. gh exits non-zero if the label exists; both outcomes are
 	// fine. We swallow the error and rely on the create call to surface
 	// label-related problems if any.
-	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", s.label, "--color", "BFD4F2", "--description", "Opened by synapse monitor")...)
+	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", s.label, "--color", "BFD4F2", "--description", "Opened by sybra monitor")...)
 	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")...)
 }
 

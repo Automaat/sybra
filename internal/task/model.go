@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Automaat/synapse/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 type Status string

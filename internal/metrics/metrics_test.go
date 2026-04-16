@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -89,32 +89,32 @@ func TestMetricsPipeline(t *testing.T) {
 	body := scrape(t)
 
 	wantSubstrings := []string{
-		"synapse_agents_started_total",
-		"synapse_agents_completed_total",
-		"synapse_agent_duration_seconds",
-		"synapse_tasks_created_total",
-		"synapse_tasks_updated_total",
-		"synapse_tasks_deleted_total",
-		"synapse_todoist_polls_total",
-		"synapse_todoist_items_imported_total",
-		"synapse_todoist_items_completed_total",
-		"synapse_github_fetches_total",
-		"synapse_github_issues_imported_total",
-		"synapse_renovate_polls_total",
-		"synapse_monitor_ticks_total",
-		"synapse_monitor_anomalies_total",
-		"synapse_orchestrator_ticks_total",
-		"synapse_orchestrator_stale_restarts_total",
-		"synapse_tasks_by_status",
-		"synapse_agents_active",
-		"synapse_renovate_prs_fetched",
-		"synapse_provider_probes_total",
-		"synapse_provider_health_flips_total",
-		"synapse_provider_auth_failures_total",
-		"synapse_provider_rate_limits_total",
-		"synapse_agent_failovers_total",
-		"synapse_agents_gated_total",
-		"synapse_provider_healthy",
+		"sybra_agents_started_total",
+		"sybra_agents_completed_total",
+		"sybra_agent_duration_seconds",
+		"sybra_tasks_created_total",
+		"sybra_tasks_updated_total",
+		"sybra_tasks_deleted_total",
+		"sybra_todoist_polls_total",
+		"sybra_todoist_items_imported_total",
+		"sybra_todoist_items_completed_total",
+		"sybra_github_fetches_total",
+		"sybra_github_issues_imported_total",
+		"sybra_renovate_polls_total",
+		"sybra_monitor_ticks_total",
+		"sybra_monitor_anomalies_total",
+		"sybra_orchestrator_ticks_total",
+		"sybra_orchestrator_stale_restarts_total",
+		"sybra_tasks_by_status",
+		"sybra_agents_active",
+		"sybra_renovate_prs_fetched",
+		"sybra_provider_probes_total",
+		"sybra_provider_health_flips_total",
+		"sybra_provider_auth_failures_total",
+		"sybra_provider_rate_limits_total",
+		"sybra_agent_failovers_total",
+		"sybra_agents_gated_total",
+		"sybra_provider_healthy",
 		`status="todo"`,
 		`state="running"`,
 		`result="ok"`,

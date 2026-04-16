@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // taskUpdater is the write-path slice of task.Manager the actor needs.

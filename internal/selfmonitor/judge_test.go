@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // stubJudge satisfies the Judge interface for unit tests.

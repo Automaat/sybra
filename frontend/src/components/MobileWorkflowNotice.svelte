@@ -26,7 +26,7 @@
   <div class="flex-1 overflow-y-auto p-4">
     <div class="mb-4 rounded-lg border border-warning-300 bg-warning-50 p-4 text-sm text-warning-800 dark:border-warning-700 dark:bg-warning-900/20 dark:text-warning-300">
       <p class="font-semibold">Read-only on mobile</p>
-      <p class="mt-1 text-xs">Workflows use a graph editor that needs a larger screen and a pointer. Open Synapse on a desktop to edit.</p>
+      <p class="mt-1 text-xs">Workflows use a graph editor that needs a larger screen and a pointer. Open Sybra on a desktop to edit.</p>
     </div>
 
     {#if def}

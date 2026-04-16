@@ -11,12 +11,12 @@ import (
 	"slices"
 	"time"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/provider"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // minInterval is the smallest tick interval the Run loop will honor. Anything
@@ -154,7 +154,7 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 // Scan runs one pipeline pass and returns the Report without persisting or
-// emitting. Used by `synapse-cli selfmonitor investigate` and tests.
+// emitting. Used by `sybra-cli selfmonitor investigate` and tests.
 func (s *Service) Scan(ctx context.Context) (Report, error) {
 	return s.tick(ctx)
 }

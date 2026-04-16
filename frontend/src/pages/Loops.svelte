@@ -243,7 +243,7 @@
           <input
             type="text"
             class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            placeholder="synapse-self-monitor"
+            placeholder="sybra-self-monitor"
             bind:value={formName}
           />
         </label>
@@ -253,7 +253,7 @@
           <textarea
             class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm font-mono dark:border-surface-600 dark:bg-surface-700"
             rows="3"
-            placeholder="/synapse-self-monitor"
+            placeholder="/sybra-self-monitor"
             bind:value={formPrompt}
           ></textarea>
         </label>

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func TestCheckFailureRate(t *testing.T) {

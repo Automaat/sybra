@@ -11,18 +11,18 @@
 //   - success (default): system + assistant + result events
 //   - fail_exit: system event then exit 1
 //   - no_result: system + assistant, exit 0 (no result event)
-//   - triage: runs synapse-cli to set status=todo, tags=small, emits result
-//   - triage_to_planning: runs synapse-cli to set status=planning, tags=large
+//   - triage: runs sybra-cli to set status=todo, tags=small, emits result
+//   - triage_to_planning: runs sybra-cli to set status=planning, tags=large
 //   - triage_to_planning_nocritic: like triage_to_planning but adds nocritic tag
-//   - triage_to_done: runs synapse-cli to set status=done
-//   - triage_to_in_review: runs synapse-cli to set status=in-review
-//   - triage_to_human_required: runs synapse-cli to set status=human-required
+//   - triage_to_done: runs sybra-cli to set status=done
+//   - triage_to_in_review: runs sybra-cli to set status=in-review
+//   - triage_to_human_required: runs sybra-cli to set status=human-required
 //   - implement: emits result with "PR created" text
 //   - interactive_implement: emits result then blocks on stdin until EOF,
 //     simulating a real conversational claude agent that stays alive between
 //     turns. Exits when the parent closes stdin — e.g. the one-shot runner
 //     path that closes stdin after the first result event.
-//   - evaluate: runs synapse-cli to set status=in-review, emits result
+//   - evaluate: runs sybra-cli to set status=in-review, emits result
 //   - pr_created: emits result with a github.com/.../pull/N URL so the
 //     mechanical link_pr_and_review step can extract the PR number via regex
 //   - auth_error: emits auth-failure text then exits 1
@@ -325,9 +325,9 @@ func popScenario() string {
 }
 
 func runCLI(subcmd, taskID string, extra ...string) {
-	bin, err := exec.LookPath("synapse-cli")
+	bin, err := exec.LookPath("sybra-cli")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "synapse-cli not found: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sybra-cli not found: %v\n", err)
 		return
 	}
 	cmdArgs := []string{"--json", subcmd, taskID}
@@ -339,6 +339,6 @@ func runCLI(subcmd, taskID string, extra ...string) {
 		Stderr: os.Stderr,
 	}
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "synapse-cli failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sybra-cli failed: %v\n", err)
 	}
 }

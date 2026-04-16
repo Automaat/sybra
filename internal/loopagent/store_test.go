@@ -72,7 +72,7 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Create — provider defaults to claude when blank
-	created, err := store.Create(LoopAgent{Name: "self-monitor", Prompt: "/synapse-self-monitor", IntervalSec: 3600})
+	created, err := store.Create(LoopAgent{Name: "self-monitor", Prompt: "/sybra-self-monitor", IntervalSec: 3600})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

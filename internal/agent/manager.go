@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/metrics"
-	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/google/uuid"
 )
 
@@ -158,11 +158,11 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	// Hard guard: every agent must run in an explicit, existing directory.
-	// An empty Dir means the spawned process inherits Synapse's cwd, which in
-	// dev mode is the Synapse source repo — agents would then mutate its
+	// An empty Dir means the spawned process inherits Sybra's cwd, which in
+	// dev mode is the Sybra source repo — agents would then mutate its
 	// branches via git checkout. Reject rather than silently leak.
 	if strings.TrimSpace(cfg.Dir) == "" {
-		return nil, fmt.Errorf("agent.Run: Dir is required (empty Dir would leak agent process into Synapse cwd)")
+		return nil, fmt.Errorf("agent.Run: Dir is required (empty Dir would leak agent process into Sybra cwd)")
 	}
 	if info, err := os.Stat(cfg.Dir); err != nil {
 		return nil, fmt.Errorf("agent.Run: Dir %q not accessible: %w", cfg.Dir, err)

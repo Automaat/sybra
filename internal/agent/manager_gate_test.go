@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // fakeGate lets a test control what Manager sees from the health gate without

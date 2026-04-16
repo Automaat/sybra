@@ -196,7 +196,7 @@ func TestCreateAndRemoveWorktree(t *testing.T) {
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "worktree")
-	if err := CreateWorktree(bare, wtPath, "synapse/test-task", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test-task", branch); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
@@ -224,13 +224,13 @@ func TestParseWorktreePorcelain(t *testing.T) {
 	}{
 		{
 			name:    "old format bare id",
-			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/a1b2c3d4\n",
-			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/a1b2c3d4",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/sybra/a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "sybra/a1b2c3d4",
 		},
 		{
 			name:    "new format slug-id",
-			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/implement-auth-a1b2c3d4\n",
-			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/implement-auth-a1b2c3d4",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/sybra/implement-auth-a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "sybra/implement-auth-a1b2c3d4",
 		},
 		{
 			name:    "non-synapse branch",
@@ -278,7 +278,7 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	}
 	gitWt("add", ".")
 	gitWt("commit", "-m", "conflict")
-	gitWt("checkout", "synapse/test")
+	gitWt("checkout", "sybra/test")
 
 	// Start a rebase that will conflict.
 	cmd := exec.Command("git", "rebase", "conflict-base")
@@ -344,7 +344,7 @@ func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -384,7 +384,7 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 

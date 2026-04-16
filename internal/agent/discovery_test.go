@@ -14,7 +14,7 @@ func TestProjectName(t *testing.T) {
 		cwd  string
 		want string
 	}{
-		{"/Users/me/projects/synapse", "synapse"},
+		{"/Users/me/projects/sybra", "sybra"},
 		{"/Users/me/kong/kuma", "kuma"},
 		{"", ""},
 		{"/", "/"},

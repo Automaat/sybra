@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Classifier wraps the claude -p invocation. Exposed as an interface so

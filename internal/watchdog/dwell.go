@@ -4,7 +4,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 const (

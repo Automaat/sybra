@@ -16,7 +16,7 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     pid: 0,
     command: '',
     name: 'test-agent',
-    project: 'synapse',
+    project: 'sybra',
     lastEventAt: '',
     convertValues: () => {},
     ...overrides,
@@ -30,7 +30,7 @@ describe('AgentCard', () => {
 
   it('renders agent project name in heading', () => {
     render(AgentCard, { props: { agent: makeAgent(), onclick: () => {} } })
-    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('synapse')
+    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('sybra')
   })
 
   it('renders agent id as fallback when project is empty', () => {

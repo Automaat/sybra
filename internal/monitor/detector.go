@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // liveAgent is the minimal projection of agent.Agent the detector needs.

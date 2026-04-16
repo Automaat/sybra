@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 func TestRenovateHandlerRepos_FilterByProjectType(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // PRBranchResolver fetches the head branch name for a PR.
@@ -86,7 +86,7 @@ func callPhase(fn func(string), phase string) {
 }
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.
-// Fetches origin, creates branch synapse/{dirName} off default branch,
+// Fetches origin, creates branch sybra/{dirName} off default branch,
 // pushes upstream, and sets task.Branch.
 // onPhase is an optional callback that receives human-readable phase labels
 // as work progresses; pass nil when phase reporting is not needed.
@@ -106,7 +106,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	}
 
 	wtPath := m.PathFor(t)
-	wtBranch := "synapse/" + t.DirName()
+	wtBranch := "sybra/" + t.DirName()
 	baseRef := "refs/remotes/origin/" + branch
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
@@ -193,7 +193,7 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 	}
 
 	wtPath := m.PathFor(t)
-	wtBranch := "synapse/" + t.DirName()
+	wtBranch := "sybra/" + t.DirName()
 	baseRef := "refs/remotes/origin/" + branch
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {

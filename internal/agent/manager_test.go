@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/sybra/internal/events"
 )
 
 func discardLogger() *slog.Logger {
@@ -68,7 +68,7 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 // spawned by runHeadless may still be touching the dir when the test ends.
 func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string, allowedTools []string) (*Agent, error) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "synapse-agent-test-*")
+	dir, err := os.MkdirTemp("", "sybra-agent-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestRunConfigResumeSessionID(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)
 
-	dir, err := os.MkdirTemp("", "synapse-agent-resume-*")
+	dir, err := os.MkdirTemp("", "sybra-agent-resume-*")
 	if err != nil {
 		t.Fatal(err)
 	}

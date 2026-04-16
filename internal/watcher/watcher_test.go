@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	ev "github.com/Automaat/synapse/internal/events"
+	ev "github.com/Automaat/sybra/internal/events"
 )
 
 func discardLogger() *slog.Logger {

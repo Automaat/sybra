@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/sybra/internal/audit"
 )
 
 const (

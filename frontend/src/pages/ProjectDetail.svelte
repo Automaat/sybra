@@ -3,7 +3,7 @@
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import * as yaml from 'js-yaml'
   import type { project } from '../../wailsjs/go/models.js'
-  import { SetProjectSandboxConfig } from '../../wailsjs/go/synapse/ProjectService.js'
+  import { SetProjectSandboxConfig } from '../../wailsjs/go/sybra/ProjectService.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'

@@ -3,8 +3,8 @@ import { readdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-const SYNAPSE_HOME = process.env.SYNAPSE_HOME ?? join(homedir(), '.synapse')
-const TASKS_DIR = join(SYNAPSE_HOME, 'tasks')
+const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 
 const FIXTURE_FILES = new Set(['auth0001.md', 'test0001.md', 'db0001.md', 'plan0001.md'])
 

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // e2eEnv groups the real filesystem-backed pieces a full selfmonitor pipeline
@@ -626,11 +626,11 @@ func TestE2EHealthToSelfMonitorHandoff(t *testing.T) {
 
 // TestE2ECLIInvestigateUsesSamePipeline spins up a service in-process using
 // the same DiskHealthReader + SelfMonitorLedgerPath layout the CLI touches
-// (via SYNAPSE_HOME), then verifies the CLI binary would see the same
+// (via SYBRA_HOME), then verifies the CLI binary would see the same
 // Report shape. Keeps the CLI-side wiring contract in one place.
 func TestE2EDiskHealthReaderPathsHonorSynapseHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", home)
+	t.Setenv("SYBRA_HOME", home)
 
 	if got := config.HealthReportPath(); got != filepath.Join(home, "health-report.json") {
 		t.Errorf("HealthReportPath = %q, want under %q", got, home)

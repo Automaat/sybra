@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.

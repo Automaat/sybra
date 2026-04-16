@@ -93,7 +93,7 @@
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{linkedTask?.title ?? a.taskId}</span>
     {/if}
     {#if linkedTask?.branch}
-      <span class="rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">{linkedTask.branch.replace(/^synapse\//, '')}</span>
+      <span class="rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">{linkedTask.branch.replace(/^sybra\//, '')}</span>
     {/if}
     {#if a.costUsd > 0}
       <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(2)}</span>

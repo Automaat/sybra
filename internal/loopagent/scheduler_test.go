@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/sybra/internal/agent"
 )
 
 type fakeRunner struct {

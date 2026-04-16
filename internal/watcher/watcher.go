@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/fsnotify/fsnotify"
 )
 

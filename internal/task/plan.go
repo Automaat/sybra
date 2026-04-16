@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // PlanStore persists plan content as a plain-markdown sidecar next to the task file.

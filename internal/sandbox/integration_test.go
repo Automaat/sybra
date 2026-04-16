@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // TestDockerSandbox_StartStop verifies the full docker lifecycle:

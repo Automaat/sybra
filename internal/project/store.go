@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"gopkg.in/yaml.v3"
 )
 

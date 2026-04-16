@@ -30,7 +30,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestLoadFromYAML(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	yaml := []byte("logging:\n  level: debug\n  max_size_mb: 10\n  max_files: 3\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
@@ -54,7 +54,7 @@ func TestLoadFromYAML(t *testing.T) {
 
 func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -79,10 +79,10 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 }
 
 func TestLoadEnvOverride(t *testing.T) {
-	t.Setenv("SYNAPSE_HOME", t.TempDir())
-	t.Setenv("SYNAPSE_LOG_LEVEL", "error")
-	t.Setenv("SYNAPSE_LOG_DIR", "/tmp/test-logs")
-	t.Setenv("SYNAPSE_TASKS_DIR", "/tmp/test-tasks")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	t.Setenv("SYBRA_LOG_LEVEL", "error")
+	t.Setenv("SYBRA_LOG_DIR", "/tmp/test-logs")
+	t.Setenv("SYBRA_TASKS_DIR", "/tmp/test-tasks")
 
 	cfg, err := Load()
 	if err != nil {
@@ -126,7 +126,7 @@ func TestSlogLevel(t *testing.T) {
 
 func TestLoadMissingConfigCreatesDefault(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -144,7 +144,7 @@ func TestLoadMissingConfigCreatesDefault(t *testing.T) {
 
 func TestLoadInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(":{bad yaml"), 0o644); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestLoadInvalidYAML(t *testing.T) {
 
 func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  dir: \"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestDefaultRequirePermissions(t *testing.T) {
 
 func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	// Simulate the pre-cdb6dc5 default that users still have persisted.
 	stale := filepath.Join(dir, "skills")
@@ -256,7 +256,7 @@ func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 
 func TestLoadPreservesCustomSkillsDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	custom := "/tmp/my-custom-skills"
 	yaml := []byte("skills_dir: " + custom + "\n")
@@ -274,28 +274,28 @@ func TestLoadPreservesCustomSkillsDir(t *testing.T) {
 }
 
 func TestHomeDirDefault(t *testing.T) {
-	t.Setenv("SYNAPSE_HOME", "")
+	t.Setenv("SYBRA_HOME", "")
 
 	dir := HomeDir()
 	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".synapse")
+	want := filepath.Join(home, ".sybra")
 	if dir != want {
 		t.Errorf("HomeDir() = %q, want %q", dir, want)
 	}
 }
 
 func TestHomeDirOverride(t *testing.T) {
-	t.Setenv("SYNAPSE_HOME", "/custom/synapse")
+	t.Setenv("SYBRA_HOME", "/custom/sybra")
 
 	dir := HomeDir()
-	if dir != "/custom/synapse" {
-		t.Errorf("HomeDir() = %q, want %q", dir, "/custom/synapse")
+	if dir != "/custom/sybra" {
+		t.Errorf("HomeDir() = %q, want %q", dir, "/custom/sybra")
 	}
 }
 
 func TestPathsUnderHomeDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SYNAPSE_HOME", dir)
+	t.Setenv("SYBRA_HOME", dir)
 
 	if got := configPath(); got != filepath.Join(dir, "config.yaml") {
 		t.Errorf("configPath() = %q, want under %q", got, dir)

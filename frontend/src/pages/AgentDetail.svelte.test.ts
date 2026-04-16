@@ -39,7 +39,7 @@ const mockAgent = {
   pid: 12345,
   command: 'claude -p test',
   name: 'test-session',
-  project: 'synapse',
+  project: 'sybra',
 }
 
 describe('AgentDetail', () => {
@@ -76,7 +76,7 @@ describe('AgentDetail', () => {
     })
     await vi.waitFor(() => {
       const heading = screen.getByRole('heading', { level: 1 })
-      expect(heading.textContent).toBe('synapse')
+      expect(heading.textContent).toBe('sybra')
     })
   })
 

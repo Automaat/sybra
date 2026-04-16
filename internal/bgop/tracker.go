@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/google/uuid"
 )
 

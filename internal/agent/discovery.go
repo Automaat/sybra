@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const (

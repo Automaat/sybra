@@ -1,5 +1,5 @@
 // Package selfmonitor contains the background service that runs the periodic
-// deep-analysis loop over Synapse agent runs: distills NDJSON agent logs into
+// deep-analysis loop over Sybra agent runs: distills NDJSON agent logs into
 // a structured LogSummary, judges findings with a two-stage LLM pipeline, and
 // autonomously remediates a whitelisted set of categories.
 //
@@ -20,7 +20,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/sybra/internal/agent"
 )
 
 // LogSummarySchemaVersion is bumped whenever the shape of LogSummary changes

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Correlate groups a slice of InvestigatedFinding into cross-finding

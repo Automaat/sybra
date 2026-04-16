@@ -5,16 +5,16 @@ hadolint = "2.14.0"
 "go:github.com/wailsapp/wails/v2/cmd/wails" = "v2.12.0"
 
 [tasks.dev]
-run = ["go install ./cmd/synapse-cli", "wails dev"]
+run = ["go install ./cmd/sybra-cli", "wails dev"]
 description = "Install CLI and run wails dev server"
-env = { SYNAPSE_PPROF = "127.0.0.1:6060" }
+env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
 [tasks.build]
 run = "wails build"
 description = "Build production binary"
 
 [tasks."build:cli"]
-run = "go build -o build/bin/synapse-cli ./cmd/synapse-cli"
+run = "go build -o build/bin/sybra-cli ./cmd/sybra-cli"
 description = "Build CLI binary"
 
 [tasks.lint]
@@ -30,22 +30,22 @@ run = "cd frontend && npm run build:web"
 description = "Build frontend for web (output: frontend/dist-web/)"
 
 [tasks."build:server"]
-run = "cd frontend && npm run build:web && go build -o bin/synapse-server ./cmd/synapse-server"
+run = "cd frontend && npm run build:web && go build -o bin/sybra-server ./cmd/sybra-server"
 description = "Build HTTP server binary (builds web frontend first)"
 
 [tasks."dev:server"]
-run = ["cd frontend && npm run build:web", "SYNAPSE_STATIC_DIR=frontend/dist-web go run ./cmd/synapse-server"]
+run = ["cd frontend && npm run build:web", "SYBRA_STATIC_DIR=frontend/dist-web go run ./cmd/sybra-server"]
 description = "Build web frontend then run HTTP server"
-env = { SYNAPSE_PORT = "8080" }
+env = { SYBRA_PORT = "8080" }
 
 [tasks."test:e2e"]
 run = [
-  "mkdir -p /tmp/synapse-e2e/tasks",
-  "cp frontend/e2e/fixtures/*.md /tmp/synapse-e2e/tasks/",
+  "mkdir -p /tmp/sybra-e2e/tasks",
+  "cp frontend/e2e/fixtures/*.md /tmp/sybra-e2e/tasks/",
   "cd frontend && npx playwright test",
 ]
 description = "Run e2e tests (run 'mise run dev:server' in another terminal first)"
-env = { SYNAPSE_HOME = "/tmp/synapse-e2e" }
+env = { SYBRA_HOME = "/tmp/sybra-e2e" }
 
 [tasks."perf:bench"]
 run = "go test -run XXX -bench . -benchmem -benchtime=2s ./internal/task/ ./internal/agent/ ./internal/sse/ ./internal/watcher/"
@@ -54,21 +54,21 @@ description = "Run Go benchmarks for perf-critical backend packages"
 [tasks."perf:build"]
 run = [
   "go build -o bin/fake-claude ./cmd/fake-claude",
-  "go build -o bin/synapse-perf ./cmd/synapse-perf",
+  "go build -o bin/sybra-perf ./cmd/sybra-perf",
 ]
-description = "Build the synapse-perf harness and fake-claude test double (synapse-server is spawned via go run)"
+description = "Build the sybra-perf harness and fake-claude test double (sybra-server is spawned via go run)"
 
 [tasks."perf:load"]
-run = "./bin/synapse-perf -scenario steady -duration 30s -concurrency 8 -events 200 -event-interval 10ms -fake-claude ./bin/fake-claude"
+run = "./bin/sybra-perf -scenario steady -duration 30s -concurrency 8 -events 200 -event-interval 10ms -fake-claude ./bin/fake-claude"
 depends = ["perf:build"]
-description = "Run the steady end-to-end perf scenario against a throwaway synapse-server"
+description = "Run the steady end-to-end perf scenario against a throwaway sybra-server"
 
 [tasks."perf:churn"]
-run = "./bin/synapse-perf -scenario churn -duration 30s -concurrency 4 -churn-rate 200 -fake-claude ./bin/fake-claude"
+run = "./bin/sybra-perf -scenario churn -duration 30s -concurrency 4 -churn-rate 200 -fake-claude ./bin/fake-claude"
 depends = ["perf:build"]
 description = "Run the task-store CRUD churn scenario"
 
 [tasks."perf:soak"]
-run = "./bin/synapse-perf -scenario soak -duration 5m -concurrency 4 -event-interval 200ms -fake-claude ./bin/fake-claude -pprof-dir ./perf-profiles"
+run = "./bin/sybra-perf -scenario soak -duration 5m -concurrency 4 -event-interval 200ms -fake-claude ./bin/fake-claude -pprof-dir ./perf-profiles"
 depends = ["perf:build"]
 description = "Long-running soak scenario with heap/goroutine profiles for leak detection"

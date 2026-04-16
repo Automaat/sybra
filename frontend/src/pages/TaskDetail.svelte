@@ -826,7 +826,7 @@
         <div class="flex flex-col gap-1">
           <div class="flex items-center gap-2">
             <span class="text-sm font-medium text-surface-500">Plan</span>
-            <span class="text-xs text-surface-400 italic">read-only · edit via synapse-cli --plan</span>
+            <span class="text-xs text-surface-400 italic">read-only · edit via sybra-cli --plan</span>
           </div>
           <div class="rounded-lg border border-surface-300 bg-surface-100 p-4 dark:border-surface-600 dark:bg-surface-900">
             <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedPlan}</div>

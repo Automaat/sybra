@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 	"gopkg.in/yaml.v3"
 )
 
@@ -218,7 +218,7 @@ func TestLoadEnvFile_Malformed(t *testing.T) {
 func TestLoadEnvFile_TildeExpansion(t *testing.T) {
 	t.Parallel()
 	// Just verify ~ expansion doesn't panic; file won't exist → error expected.
-	_, err := LoadEnvFile("~/nonexistent-synapse-test-file.env")
+	_, err := LoadEnvFile("~/nonexistent-sybra-test-file.env")
 	if err == nil {
 		t.Error("expected error for nonexistent expanded path")
 	}
@@ -247,7 +247,7 @@ func TestInstanceEnvVars_K8s(t *testing.T) {
 	inst := &Instance{
 		TaskID:     "t1",
 		URL:        "http://localhost:54321",
-		Kubeconfig: "/tmp/synapse-t1/kubeconfig",
+		Kubeconfig: "/tmp/sybra-t1/kubeconfig",
 	}
 	vars := inst.EnvVars()
 	if len(vars) != 2 {
@@ -259,7 +259,7 @@ func TestInstanceEnvVars_K8s(t *testing.T) {
 		if v == "SANDBOX_URL=http://localhost:54321" {
 			hasURL = true
 		}
-		if v == "KUBECONFIG=/tmp/synapse-t1/kubeconfig" {
+		if v == "KUBECONFIG=/tmp/sybra-t1/kubeconfig" {
 			hasKube = true
 		}
 	}

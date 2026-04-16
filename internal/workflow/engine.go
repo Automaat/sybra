@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/sybra/internal/logging"
 )
 
 const (
@@ -1011,12 +1011,12 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 	// Expose task fields as env vars to avoid shell injection via template interpolation.
 	ti := ctx.Task
 	cmd.Env = append(cmd.Environ(),
-		"SYNAPSE_TASK_ID="+ti.ID,
-		"SYNAPSE_TASK_TITLE="+ti.Title,
-		"SYNAPSE_TASK_STATUS="+ti.Status,
-		"SYNAPSE_TASK_PROJECT="+ti.ProjectID,
-		"SYNAPSE_TASK_BRANCH="+ti.Branch,
-		fmt.Sprintf("SYNAPSE_TASK_PR=%d", ti.PRNumber),
+		"SYBRA_TASK_ID="+ti.ID,
+		"SYBRA_TASK_TITLE="+ti.Title,
+		"SYBRA_TASK_STATUS="+ti.Status,
+		"SYBRA_TASK_PROJECT="+ti.ProjectID,
+		"SYBRA_TASK_BRANCH="+ti.Branch,
+		fmt.Sprintf("SYBRA_TASK_PR=%d", ti.PRNumber),
 	)
 
 	output, runErr := cmd.CombinedOutput()

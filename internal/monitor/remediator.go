@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // taskAPI is the slice of task.Manager the remediator + service needs. Keeps

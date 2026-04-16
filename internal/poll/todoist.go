@@ -6,19 +6,19 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/logging"
-	"github.com/Automaat/synapse/internal/metrics"
-	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/todoist"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/todoist"
 )
 
 // TaskCreator creates a new task. Matches TaskService.CreateTask signature.
 type TaskCreator func(title, body, mode string) (task.Task, error)
 
-// TodoistHandler syncs tasks between Todoist and Synapse.
+// TodoistHandler syncs tasks between Todoist and Sybra.
 type TodoistHandler struct {
 	tasks      *task.Manager
 	createTask TaskCreator
@@ -82,7 +82,7 @@ func (h *TodoistHandler) PollAndSync() time.Duration {
 	return interval
 }
 
-// ImportNewTasks fetches active Todoist tasks and creates missing ones in Synapse.
+// ImportNewTasks fetches active Todoist tasks and creates missing ones in Sybra.
 func (h *TodoistHandler) ImportNewTasks() (int, error) {
 	remote, err := h.client.ListActiveTasks(h.cfg.ProjectID)
 	if err != nil {

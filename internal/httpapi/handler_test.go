@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpapi"
 )
 
 // testSvc is a minimal service used for handler tests.

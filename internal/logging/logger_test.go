@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func TestNew(t *testing.T) {
@@ -37,7 +37,7 @@ func TestNew(t *testing.T) {
 	// Verify log file exists after writing
 	logger.Info("test.message", "key", "value")
 
-	logFile := filepath.Join(dir, "synapse.log")
+	logFile := filepath.Join(dir, "sybra.log")
 	info, err := os.Stat(logFile)
 	if err != nil {
 		t.Fatalf("log file not created: %v", err)
@@ -66,7 +66,7 @@ func TestNewDefaultLimits(t *testing.T) {
 
 	logger.Debug("debug.test")
 
-	info, err := os.Stat(filepath.Join(dir, "synapse.log"))
+	info, err := os.Stat(filepath.Join(dir, "sybra.log"))
 	if err != nil {
 		t.Fatal(err)
 	}

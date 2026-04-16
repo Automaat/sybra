@@ -6,20 +6,20 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build:web
 
-# Stage 2: Build synapse-server binary
+# Stage 2: Build sybra-server binary
 FROM golang:1.26.2-bookworm AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-server ./cmd/synapse-server \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/synapse-cli ./cmd/synapse-cli
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra-server \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-cli ./cmd/sybra-cli
 
 # Stage 3: Runtime — node:24-slim for claude CLI (Node.js-based)
 #
 # Layer ordering targets pull-time on re-deploys: the heavy, version-pinned
-# tool layers sit above the thin synapse-binary + web-assets layers. Bumping
-# synapse invalidates only the last two COPY layers (~20MB); bumping a tool
+# tool layers sit above the thin sybra-binary + web-assets layers. Bumping
+# sybra invalidates only the last two COPY layers (~20MB); bumping a tool
 # ARG invalidates just that tool's layer. Pinned versions keep layer digests
 # stable across rebuilds (unpinned `apt-get` / `npm install` would otherwise
 # regenerate the blob on every build even when inputs are unchanged).
@@ -30,8 +30,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Non-root runtime user. Claude CLI refuses --dangerously-skip-permissions
 # under uid 0; running as uid 1000 avoids the IS_SANDBOX env-var workaround.
-ARG SYNAPSE_UID=1000
-ARG SYNAPSE_GID=1000
+ARG SYBRA_UID=1000
+ARG SYBRA_GID=1000
 
 # --- Layer A: apt system packages + gh repo ---
 RUN apt-get update \
@@ -63,14 +63,14 @@ RUN npm install -g \
 
 # --- Layer D: non-root user + klaudiush server config (static) ---
 # node:24-slim already defines a `node` user at uid 1000 — remove it before
-# creating `synapse` so we can reuse uid 1000 (a common bind-mount convention).
+# creating `sybra` so we can reuse uid 1000 (a common bind-mount convention).
 # Server-tuned klaudiush config: drop -S (no GPG key on server),
 # keep -s sign-off + conventional commit rules. XDG path so klaudiush
 # doctor does not warn about legacy ~/.klaudiush/ location.
 RUN userdel -r node 2>/dev/null || true \
-    && groupadd -g "${SYNAPSE_GID}" synapse \
-    && useradd -l -m -u "${SYNAPSE_UID}" -g "${SYNAPSE_GID}" -s /bin/bash -d /home/synapse synapse \
-    && mkdir -p /home/synapse/.config/klaudiush \
+    && groupadd -g "${SYBRA_GID}" sybra \
+    && useradd -l -m -u "${SYBRA_UID}" -g "${SYBRA_GID}" -s /bin/bash -d /home/sybra sybra \
+    && mkdir -p /home/sybra/.config/klaudiush \
     && printf '%s\n' \
         '[validators.git.commit]' \
         'enabled = true' \
@@ -95,28 +95,28 @@ RUN userdel -r node 2>/dev/null || true \
         '[overrides.entries.FILE005]' \
         'disabled = true' \
         'reason = "YAML frontmatter false positive in task files"' \
-        > /home/synapse/.config/klaudiush/config.toml \
-    && chown -R "${SYNAPSE_UID}:${SYNAPSE_GID}" /home/synapse
+        > /home/sybra/.config/klaudiush/config.toml \
+    && chown -R "${SYBRA_UID}:${SYBRA_GID}" /home/sybra
 
 # --- Layer E+F: thin, per-commit layers ---
-COPY --from=go-builder /bin/synapse-server /usr/local/bin/synapse-server
-COPY --from=go-builder /bin/synapse-cli /usr/local/bin/synapse-cli
+COPY --from=go-builder /bin/sybra-server /usr/local/bin/sybra-server
+COPY --from=go-builder /bin/sybra-cli /usr/local/bin/sybra-cli
 COPY --from=frontend-builder /app/frontend/dist-web /app/web
 
-ENV SYNAPSE_PORT=8080
-ENV SYNAPSE_STATIC_DIR=/app/web
-ENV HOME=/home/synapse
+ENV SYBRA_PORT=8080
+ENV SYBRA_STATIC_DIR=/app/web
+ENV HOME=/home/sybra
 
-USER synapse
-WORKDIR /home/synapse
+USER sybra
+WORKDIR /home/sybra
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:'+process.env.SYNAPSE_PORT+'/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+    CMD node -e "require('http').get('http://localhost:'+process.env.SYBRA_PORT+'/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
-#   ~/.synapse  → /home/synapse/.synapse  (task store, config, projects)
-#   ~/.claude   → /home/synapse/.claude   (claude CLI config + session, must contain settings.json with klaudiush hooks)
-#   ~/.codex    → /home/synapse/.codex    (codex CLI config, must contain config.toml + hooks.json with klaudiush hooks)
-ENTRYPOINT ["/usr/local/bin/synapse-server"]
+#   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)
+#   ~/.claude   → /home/sybra/.claude   (claude CLI config + session, must contain settings.json with klaudiush hooks)
+#   ~/.codex    → /home/sybra/.codex    (codex CLI config, must contain config.toml + hooks.json with klaudiush hooks)
+ENTRYPOINT ["/usr/local/bin/sybra-server"]

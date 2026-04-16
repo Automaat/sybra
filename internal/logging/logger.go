@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Automaat/synapse/internal/config"
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func New(cfg config.LoggingConfig) (*slog.Logger, *slog.LevelVar, func(), error) {
@@ -13,7 +13,7 @@ func New(cfg config.LoggingConfig) (*slog.Logger, *slog.LevelVar, func(), error)
 		return nil, nil, nil, err
 	}
 
-	path := filepath.Join(cfg.Dir, "synapse.log")
+	path := filepath.Join(cfg.Dir, "sybra.log")
 	maxBytes := int64(cfg.MaxSizeMB) * 1024 * 1024
 	if maxBytes <= 0 {
 		maxBytes = 50 * 1024 * 1024

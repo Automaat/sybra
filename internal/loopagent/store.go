@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )

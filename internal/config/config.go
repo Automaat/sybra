@@ -114,7 +114,7 @@ type GitHubConfig struct {
 }
 
 // TriageConfig controls the background auto-triage worker. When Enabled,
-// synapse periodically classifies tasks in status=new via claude -p and
+// sybra periodically classifies tasks in status=new via claude -p and
 // atomically applies the verdict (title, tags, size/type, mode, project).
 type TriageConfig struct {
 	Enabled     bool   `yaml:"enabled" json:"enabled"`
@@ -123,7 +123,7 @@ type TriageConfig struct {
 }
 
 // SelfMonitorConfig controls the in-process selfmonitor service that
-// replaces the /loop 6h /synapse-self-monitor skill. Each tick snapshots
+// replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
 // the latest health report, distills per-finding agent logs into a
 // LogSummary, runs a two-stage LLM judge + synthesizer (Phase C), files
 // deduped issues via the shared monitor.IssueSink, and autonomously
@@ -147,7 +147,7 @@ type SelfMonitorConfig struct {
 }
 
 // MonitorConfig controls the in-process monitor service that replaces the
-// /loop 5m /synapse-monitor skill. Each tick snapshots the board + audit
+// /loop 5m /sybra-monitor skill. Each tick snapshots the board + audit
 // window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
 // bottlenecks), runs idempotent remediations directly, and dispatches a
 // focused headless agent for anomalies that need LLM judgment.
@@ -186,18 +186,18 @@ type ProviderEntryConfig struct {
 }
 
 // MetricsConfig controls the OpenTelemetry metrics pipeline. When Enabled is
-// true, synapse-server mounts /metrics on its existing mux and emits
+// true, sybra-server mounts /metrics on its existing mux and emits
 // Prometheus-format output for external scrapers.
 type MetricsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 func HomeDir() string {
-	if dir := os.Getenv("SYNAPSE_HOME"); dir != "" {
+	if dir := os.Getenv("SYBRA_HOME"); dir != "" {
 		return dir
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".synapse")
+	return filepath.Join(home, ".sybra")
 }
 
 func DefaultConfig() *Config {
@@ -261,7 +261,7 @@ func (c *Config) Save() error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// Directories returns the resolved paths for all synapse data directories.
+// Directories returns the resolved paths for all sybra data directories.
 func (c *Config) Directories() map[string]string {
 	return map[string]string{
 		"tasks":       c.TasksDir,
@@ -290,10 +290,10 @@ func Load() (*Config, error) {
 		}
 	}
 
-	if v := os.Getenv("SYNAPSE_LOG_LEVEL"); v != "" {
+	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
-	if v := os.Getenv("SYNAPSE_LOG_DIR"); v != "" {
+	if v := os.Getenv("SYBRA_LOG_DIR"); v != "" {
 		cfg.Logging.Dir = v
 	}
 
@@ -303,14 +303,14 @@ func Load() (*Config, error) {
 	if cfg.TasksDir == "" {
 		cfg.TasksDir = defaultTasksDir()
 	}
-	if v := os.Getenv("SYNAPSE_TASKS_DIR"); v != "" {
+	if v := os.Getenv("SYBRA_TASKS_DIR"); v != "" {
 		cfg.TasksDir = v
 	}
 
 	if cfg.SkillsDir == "" {
 		cfg.SkillsDir = defaultSkillsDir()
 	}
-	// Migration: previous releases defaulted to ~/.synapse/skills which Claude
+	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
 	// Code never reads. Silently retarget the old default so users with stale
 	// configs get the fix without manual intervention. cdb6dc5 changed the
 	// default but did not migrate persisted overrides.
@@ -330,7 +330,7 @@ func Load() (*Config, error) {
 		cfg.LoopAgentsDir = defaultLoopAgentsDir()
 	}
 
-	if v := os.Getenv("SYNAPSE_TODOIST_TOKEN"); v != "" {
+	if v := os.Getenv("SYBRA_TODOIST_TOKEN"); v != "" {
 		cfg.Todoist.APIToken = v
 	}
 	if cfg.Todoist.PollSeconds <= 0 {
@@ -445,7 +445,7 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IssueLabel = "monitor"
 	}
 	if cfg.Monitor.IssueRepo == "" {
-		cfg.Monitor.IssueRepo = "Automaat/synapse"
+		cfg.Monitor.IssueRepo = "Automaat/sybra"
 	}
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}
@@ -499,7 +499,7 @@ func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Synapse configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
 }
 
 func configPath() string {
@@ -542,7 +542,7 @@ func StatsFile() string {
 	return filepath.Join(HomeDir(), "stats.json")
 }
 
-// SelfMonitorDir is the directory under ~/.synapse that holds the
+// SelfMonitorDir is the directory under ~/.sybra that holds the
 // selfmonitor ledger, last-report snapshot, and any other persisted state
 // the service owns.
 func SelfMonitorDir() string {
@@ -555,7 +555,7 @@ func SelfMonitorLedgerPath() string {
 }
 
 // SelfMonitorLastReportPath is where the service writes the most recent
-// Report as JSON. The CLI `synapse-cli selfmonitor scan` reads from here.
+// Report as JSON. The CLI `sybra-cli selfmonitor scan` reads from here.
 func SelfMonitorLastReportPath() string {
 	return filepath.Join(SelfMonitorDir(), "last-report.json")
 }

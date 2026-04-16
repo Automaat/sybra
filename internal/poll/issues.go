@@ -6,16 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/github"
-	"github.com/Automaat/synapse/internal/metrics"
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 const IssuesPollInterval = 5 * time.Minute
 
-// synapseIssueLabel is the GitHub label that triggers auto-creation of Synapse tasks.
-const synapseIssueLabel = "synapse"
+// synapseIssueLabel is the GitHub label that triggers auto-creation of Sybra tasks.
+const synapseIssueLabel = "sybra"
 
 // IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
 type IssuesFetcher struct {
@@ -69,7 +69,7 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	return IssuesPollInterval
 }
 
-// syncLabeledIssuesToTasks fetches issues labeled 'synapse' across all registered
+// syncLabeledIssuesToTasks fetches issues labeled 'sybra' across all registered
 // pet projects and creates tasks for any not yet tracked.
 func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 	projects, err := f.projects.List()
@@ -123,7 +123,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 		}
 
 		// Require the issue's repo to be a registered project. Issues from
-		// unregistered repos are dropped entirely — synapse only tracks work
+		// unregistered repos are dropped entirely — sybra only tracks work
 		// for repos the user has explicitly added as projects.
 		proj, err := f.projects.Get(issue.Repository)
 		if err != nil {

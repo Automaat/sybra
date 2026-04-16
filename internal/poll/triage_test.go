@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
-	"github.com/Automaat/synapse/internal/triage"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 )
 
 type fakeClassifier struct {

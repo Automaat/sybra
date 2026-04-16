@@ -3,7 +3,7 @@ package health
 import (
 	"testing"
 
-	"github.com/Automaat/synapse/internal/monitor"
+	"github.com/Automaat/sybra/internal/monitor"
 )
 
 func TestFingerprintFor(t *testing.T) {

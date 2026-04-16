@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/metrics"
+	"github.com/Automaat/sybra/internal/metrics"
 )
 
 // Status is a point-in-time health snapshot for a single provider.

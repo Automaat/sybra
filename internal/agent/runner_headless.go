@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/logging"
-	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // headlessEmitInterval caps per-agent stream event emission rate.
