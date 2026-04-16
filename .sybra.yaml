@@ -1,8 +1,8 @@
 checks:
   pre_commit:
     - golangci-lint run ./...
-    - cd frontend && npx oxlint .
+    - (cd frontend && npx oxlint .)
     - wails generate module && git diff --exit-code frontend/wailsjs/
   pre_push:
     - go test ./...
-    - cd frontend && npm run check
+    - (cd frontend && npm run check)
