@@ -78,7 +78,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 	base := filepath.Base(path)
-	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
 		m.store.InvalidatePath(path)
 		return
 	}

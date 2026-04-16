@@ -172,6 +172,7 @@ type Task struct {
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`
 	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
+	CodeReview   string `yaml:"-" json:"codeReview,omitempty"`
 	FilePath     string `yaml:"-" json:"filePath"`
 }
 

@@ -153,6 +153,25 @@ steps:
         - Skill
         - Agent
     next:
+      - goto: require_plan_critique
+
+  # Guard: the critic agent above exits cleanly even when it is blocked
+  # from executing any shell command (e.g. codex bwrap sandbox failure
+  # inside Docker). Without this check the workflow silently advances to
+  # address_critique with an empty sidecar, and the human sees only the
+  # plan — no critique — in the review UI. Flips task to human-required
+  # when the sidecar is empty so the failure is visible.
+  - id: require_plan_critique
+    name: Require Plan Critique
+    type: require_sidecar
+    config:
+      sidecar: plan_critique
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: reset_for_address
 
   - id: reset_for_address
@@ -303,9 +322,29 @@ steps:
           1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
           3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+          4. synapse-cli update {{.Task.ID}} --code-review-file /tmp/sybra-review-{{.Task.ID}}.md
 
-        Do NOT submit anything to GitHub. Only save to the file.
+        Do NOT submit anything to GitHub. The /tmp file remains for the
+        next step (fix_review) to read; the synapse-cli call preserves
+        the review as a task sidecar visible in the GUI.
     next:
+      - goto: require_code_review
+
+  # Guard: mirrors require_plan_critique above. Flips task to
+  # human-required when the review sidecar is empty (e.g. agent exited
+  # without running step 4). Without this, fix_review reads /tmp and
+  # the GUI never sees what the reviewer wrote.
+  - id: require_code_review
+    name: Require Code Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: fix_review
 
   - id: fix_review

@@ -72,6 +72,19 @@ func runExec() {
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
 		emitTurnCompleted(100, 20)
+	case "plan_critic_success":
+		emitAgentMessage("Critiquing plan...")
+		runCLI(taskID, "update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
+		emitTurnCompleted(100, 20)
+	case "plan_critic_no_save":
+		// Simulates codex agent blocked by env (bwrap sandbox failure) — exits
+		// cleanly without saving the critique sidecar.
+		emitAgentMessage("Blocked by env. Did not save critique.")
+		emitTurnCompleted(100, 20)
+	case "code_review_success":
+		emitAgentMessage("Reviewing code...")
+		runCLI(taskID, "update", taskID, "--code-review", "# Code Review\n\nLooks good.\n")
+		emitTurnCompleted(100, 20)
 	case "triage_to_done":
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "done")

@@ -1472,6 +1472,7 @@ export namespace task {
 	    body: string;
 	    plan?: string;
 	    planCritique?: string;
+	    codeReview?: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1507,6 +1508,7 @@ export namespace task {
 	        this.body = source["body"];
 	        this.plan = source["plan"];
 	        this.planCritique = source["planCritique"];
+	        this.codeReview = source["codeReview"];
 	        this.filePath = source["filePath"];
 	    }
 	
@@ -1617,6 +1619,7 @@ export namespace workflow {
 	    waitForStatus: string;
 	    command: string;
 	    dir: string;
+	    sidecar: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new StepConfig(source);
@@ -1640,6 +1643,7 @@ export namespace workflow {
 	        this.waitForStatus = source["waitForStatus"];
 	        this.command = source["command"];
 	        this.dir = source["dir"];
+	        this.sidecar = source["sidecar"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
