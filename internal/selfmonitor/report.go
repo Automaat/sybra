@@ -3,7 +3,7 @@ package selfmonitor
 import (
 	"time"
 
-	"github.com/Automaat/synapse/internal/health"
+	"github.com/Automaat/sybra/internal/health"
 )
 
 // ReportSchemaVersion is bumped whenever the Report payload shape changes in
@@ -12,7 +12,7 @@ import (
 const ReportSchemaVersion = 1
 
 // Report is the full payload emitted at the end of each selfmonitor tick.
-// It's also what `synapse-cli selfmonitor scan` prints and what the Wails
+// It's also what `sybra-cli selfmonitor scan` prints and what the Wails
 // `selfmonitor:report` event carries to the frontend. All fields use
 // omitempty where appropriate so empty-run reports stay compact.
 type Report struct {

@@ -8,7 +8,7 @@ import {
   ListLoopAgentRuns,
 } from '$lib/api'
 import { loopagent } from '../../wailsjs/go/models.js'
-import type { synapse } from '../../wailsjs/go/models.js'
+import type { sybra } from '../../wailsjs/go/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
 class LoopStore extends EntityStore<loopagent.LoopAgent> {
@@ -49,7 +49,7 @@ class LoopStore extends EntityStore<loopagent.LoopAgent> {
     return agentId
   }
 
-  async runs(id: string, limit = 10): Promise<synapse.LoopAgentRun[]> {
+  async runs(id: string, limit = 10): Promise<sybra.LoopAgentRun[]> {
     return (await ListLoopAgentRuns(id, limit)) ?? []
   }
 }

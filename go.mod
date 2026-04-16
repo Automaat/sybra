@@ -1,4 +1,4 @@
-module github.com/Automaat/synapse
+module github.com/Automaat/sybra
 
 go 1.26.2
 

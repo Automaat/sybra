@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // configWithAutoAct returns a SelfMonitorConfig that auto-acts on the given categories.

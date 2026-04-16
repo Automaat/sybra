@@ -12,7 +12,7 @@ const minIntervalSec = 60
 
 // LoopAgent is a recurring headless agent: every IntervalSec seconds the
 // scheduler spawns a fresh `claude -p Prompt` process. Records are persisted
-// one-per-file under ~/.synapse/loop-agents/<id>.yaml.
+// one-per-file under ~/.sybra/loop-agents/<id>.yaml.
 type LoopAgent struct {
 	ID           string    `yaml:"id" json:"id"`
 	Name         string    `yaml:"name" json:"name"`

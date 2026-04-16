@@ -5,8 +5,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // makeInv builds a minimal InvestigatedFinding for correlator tests.

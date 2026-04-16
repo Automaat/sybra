@@ -14,7 +14,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/synapse
+  IMAGE_NAME: ${{ github.repository_owner }}/sybra
 
 jobs:
   build-and-push:

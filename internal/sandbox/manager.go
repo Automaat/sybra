@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // Instance is a running sandbox tied to a single task.
@@ -46,7 +46,7 @@ type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*Instance
 	logger    *slog.Logger
-	dataDir   string // e.g. ~/.synapse/sandboxes
+	dataDir   string // e.g. ~/.sybra/sandboxes
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.

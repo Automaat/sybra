@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/logging"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
 )
 
 // claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for

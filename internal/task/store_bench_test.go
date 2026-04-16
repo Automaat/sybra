@@ -7,7 +7,7 @@ import (
 
 // seedStore writes n tasks into a fresh store and returns the store plus the
 // list of IDs in insertion order. Used by all Store benchmarks to produce a
-// deterministic working set without touching the real ~/.synapse directory.
+// deterministic working set without touching the real ~/.sybra directory.
 func seedStore(b *testing.B, n int) (store *Store, ids []string) {
 	b.Helper()
 	s, err := NewStore(b.TempDir())

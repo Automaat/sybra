@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // githubURLRe matches a GitHub repo URL and captures owner/repo.

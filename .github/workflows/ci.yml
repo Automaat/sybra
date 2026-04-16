@@ -175,36 +175,36 @@ jobs:
 
       - name: Seed e2e fixtures
         run: |
-          mkdir -p "$SYNAPSE_HOME/tasks"
-          cp frontend/e2e/fixtures/*.md "$SYNAPSE_HOME/tasks/"
-          cat > "$SYNAPSE_HOME/config.yaml" <<EOF
+          mkdir -p "$SYBRA_HOME/tasks"
+          cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
+          cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
           EOF
         env:
-          SYNAPSE_HOME: /tmp/synapse-e2e
+          SYBRA_HOME: /tmp/sybra-e2e
 
       - name: Build web frontend
         run: cd frontend && npm run build:web
 
-      - name: Build synapse-server
-        run: go build -o bin/synapse-server ./cmd/synapse-server
+      - name: Build sybra-server
+        run: go build -o bin/sybra-server ./cmd/sybra-server
 
-      - name: Start synapse-server
+      - name: Start sybra-server
         run: |
-          SYNAPSE_HOME=/tmp/synapse-e2e \
-          SYNAPSE_STATIC_DIR=frontend/dist-web \
-          ./bin/synapse-server > /tmp/synapse-server.log 2>&1 &
+          SYBRA_HOME=/tmp/sybra-e2e \
+          SYBRA_STATIC_DIR=frontend/dist-web \
+          ./bin/sybra-server > /tmp/sybra-server.log 2>&1 &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
-          echo "Waiting for synapse-server..."
+          echo "Waiting for sybra-server..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
               echo "Ready after ${i}s"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "::error::synapse-server timed out"
-              cat /tmp/synapse-server.log
+              echo "::error::sybra-server timed out"
+              cat /tmp/sybra-server.log
               exit 1
             fi
             sleep 1
@@ -213,12 +213,12 @@ jobs:
       - name: Run e2e tests
         run: cd frontend && npx playwright test --reporter=github
         env:
-          SYNAPSE_HOME: /tmp/synapse-e2e
-          SYNAPSE_E2E_PROVIDER: ${{ matrix.provider }}
+          SYBRA_HOME: /tmp/sybra-e2e
+          SYBRA_E2E_PROVIDER: ${{ matrix.provider }}
 
       - name: Dump server log
         if: failure()
-        run: cat /tmp/synapse-server.log || true
+        run: cat /tmp/sybra-server.log || true
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()

@@ -10,18 +10,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
-	clusterName := "synapse-" + taskID
+	clusterName := "sybra-" + taskID
 	taskDir := filepath.Join(m.dataDir, taskID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		return nil, fmt.Errorf("sandbox dir: %w", err)
 	}
 	kubeconfigPath := filepath.Join(taskDir, "kubeconfig")
 
-	// Check if cluster already exists (survives Synapse restarts).
+	// Check if cluster already exists (survives Sybra restarts).
 	exists, err := k3dClusterExists(ctx, clusterName)
 	if err != nil {
 		m.logger.Warn("sandbox.k8s.cluster-check", "task_id", taskID, "err", err)

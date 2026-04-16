@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // TestE2E_NewChecksFireThroughChecker drives the full Checker.check pipeline
@@ -101,7 +101,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 		t.Errorf("Score = %q, want critical (a critical finding fired)", report.Score)
 	}
 
-	// The persisted JSON is what synapse-cli health reads. Verify the score
+	// The persisted JSON is what sybra-cli health reads. Verify the score
 	// and findings round-trip through the file the CLI consumes.
 	data, err := os.ReadFile(filepath.Join(home, "health-report.json"))
 	if err != nil {

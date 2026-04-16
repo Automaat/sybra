@@ -5,8 +5,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // costThresholds per agent role. Empty string key covers implementation agents.

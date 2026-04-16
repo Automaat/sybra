@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/fsutil"
-	"github.com/Automaat/synapse/internal/workflow"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/google/uuid"
 )
 

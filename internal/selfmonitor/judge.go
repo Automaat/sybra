@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/health"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Judge classifies a single health Finding given its distilled log summary
@@ -58,7 +58,7 @@ func (j *ClaudeJudge) Judge(ctx context.Context, f health.Finding, ls *LogSummar
 func buildJudgePrompt(f health.Finding, ls *LogSummary, t *task.Task) string {
 	var b strings.Builder
 
-	b.WriteString("You are diagnosing a Synapse agent workflow finding.\n")
+	b.WriteString("You are diagnosing a Sybra agent workflow finding.\n")
 	b.WriteString("Output ONLY a single JSON object on the final line.\n\n")
 
 	b.WriteString("Finding:\n")

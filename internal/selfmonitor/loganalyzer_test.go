@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/agent"
+	"github.com/Automaat/sybra/internal/agent"
 )
 
 // fixtureLines returns a hand-written NDJSON stream matching the Claude

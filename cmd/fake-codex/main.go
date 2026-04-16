@@ -200,9 +200,9 @@ func runCLI(taskID, subcmd string, args ...string) {
 	if taskID == "" {
 		return
 	}
-	bin, err := exec.LookPath("synapse-cli")
+	bin, err := exec.LookPath("sybra-cli")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "synapse-cli not found: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sybra-cli not found: %v\n", err)
 		return
 	}
 	cmdArgs := append([]string{"--json", subcmd}, args...)
@@ -213,6 +213,6 @@ func runCLI(taskID, subcmd string, args ...string) {
 		Stderr: os.Stderr,
 	}
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "synapse-cli failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "sybra-cli failed: %v\n", err)
 	}
 }

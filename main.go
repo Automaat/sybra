@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/config"
-	"github.com/Automaat/synapse/internal/events"
-	"github.com/Automaat/synapse/internal/logging"
-	"github.com/Automaat/synapse/internal/synapse"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
@@ -48,8 +48,8 @@ func main() {
 
 	startPprof(logger)
 
-	app := synapse.NewApp(logger, levelVar, cfg,
-		synapse.WithEmitFactory(func(ctx context.Context) func(string, any) {
+	app := sybra.NewApp(logger, levelVar, cfg,
+		sybra.WithEmitFactory(func(ctx context.Context) func(string, any) {
 			return func(event string, data any) {
 				wailsruntime.EventsEmit(ctx, event, data)
 			}
@@ -89,7 +89,7 @@ func main() {
 	})
 
 	err = wails.Run(&options.App{
-		Title:            "Synapse",
+		Title:            "Sybra",
 		Width:            1280,
 		Height:           800,
 		WindowStartState: options.Maximised,
@@ -119,10 +119,10 @@ func main() {
 	}
 }
 
-// startPprof launches a pprof HTTP server when SYNAPSE_PPROF is set.
+// startPprof launches a pprof HTTP server when SYBRA_PPROF is set.
 // Value "1"/"true" uses 127.0.0.1:6060; any other value is used as-is (host:port).
 func startPprof(logger *slog.Logger) {
-	addr := os.Getenv("SYNAPSE_PPROF")
+	addr := os.Getenv("SYBRA_PPROF")
 	if addr == "" {
 		return
 	}

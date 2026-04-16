@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-const SYNAPSE_HOME = process.env.SYNAPSE_HOME ?? join(homedir(), '.synapse')
-const WORKFLOWS_DIR = join(SYNAPSE_HOME, 'workflows')
+const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
 const FIXTURE_ID = 'wf-editor-e2e'
 const FIXTURE_DEST = join(WORKFLOWS_DIR, `${FIXTURE_ID}.yaml`)
 

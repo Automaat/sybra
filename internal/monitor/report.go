@@ -1,5 +1,5 @@
 // Package monitor runs the in-process anomaly detector + remediator that
-// replaces the legacy /loop 5m /synapse-monitor skill. The Service ticks every
+// replaces the legacy /loop 5m /sybra-monitor skill. The Service ticks every
 // MonitorConfig.IntervalSeconds, snapshots the board + audit window, runs a
 // pure Detect pass, applies idempotent remediations directly, and dispatches
 // a focused headless agent for the anomalies that need LLM judgment.

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/sybra/internal/events"
 )
 
 // ApprovalServer runs an HTTP server that handles PreToolUse hook requests

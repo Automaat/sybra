@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // Update carries optional field changes for Store.Update.

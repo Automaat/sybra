@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/sybra/internal/audit"
 )
 
 func TestIsAgentFailure(t *testing.T) {

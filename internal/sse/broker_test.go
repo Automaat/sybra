@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/sse"
+	"github.com/Automaat/sybra/internal/sse"
 )
 
 func TestBroker_EmitDelivers(t *testing.T) {

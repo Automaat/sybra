@@ -1351,7 +1351,7 @@ func startPlanReuseAtReviewPlan(t *testing.T) (*Engine, *memTasks, *mockAgents) 
 	}
 
 	// Simulate the plan agent flipping the task status — this is what
-	// the agent would do via `synapse-cli update --status plan-review`.
+	// the agent would do via `sybra-cli update --status plan-review`.
 	tasks.SetStatus("t1", "plan-review")
 	engine.HandleStatusChange("t1", "plan-review")
 
@@ -2634,7 +2634,7 @@ func TestExecLinkPRAndReview_ShortRefInAgentOutput(t *testing.T) {
 	wfExec := &Execution{
 		StepHistory: []StepRecord{
 			{StepID: "implement", Status: "completed", AgentID: "a1",
-				Output: "PR created: Automaat/synapse#444\n\nChanges applied."},
+				Output: "PR created: Automaat/sybra#444\n\nChanges applied."},
 		},
 	}
 

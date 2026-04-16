@@ -7,7 +7,7 @@ import type {
   project,
   github,
   loopagent,
-  synapse,
+  sybra,
   notification,
   stats,
   workflow,
@@ -40,7 +40,7 @@ export function SendMessage(arg1: string, arg2: string): Promise<void> { return 
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
 
 // App
-export function GetMonitorReport(): Promise<synapse.MonitorReportBinding> { return call('App', 'GetMonitorReport') }
+export function GetMonitorReport(): Promise<sybra.MonitorReportBinding> { return call('App', 'GetMonitorReport') }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<notification.Notification>> { return call('App', 'ListNotifications') }
 export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
@@ -50,11 +50,11 @@ export function StartChat(arg1: string, arg2: string, arg3: string): Promise<age
 export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 
 // ConfigService
-export function GetSettings(): Promise<synapse.AppSettings> { return call('ConfigService', 'GetSettings') }
-export function UpdateSettings(arg1: synapse.AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
+export function GetSettings(): Promise<sybra.AppSettings> { return call('ConfigService', 'GetSettings') }
+export function UpdateSettings(arg1: sybra.AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 
 // InfoService
-export function GetVersion(): Promise<synapse.VersionInfo> { return call('InfoService', 'GetVersion') }
+export function GetVersion(): Promise<sybra.VersionInfo> { return call('InfoService', 'GetVersion') }
 
 // IntegrationService
 export function ApproveRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'ApproveRenovatePR', arg1, arg2) }
@@ -73,7 +73,7 @@ export function TodoistEnabled(): Promise<boolean> { return call('IntegrationSer
 export function CreateLoopAgent(arg1: loopagent.LoopAgent): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'CreateLoopAgent', arg1) }
 export function DeleteLoopAgent(arg1: string): Promise<void> { return call('LoopAgentService', 'DeleteLoopAgent', arg1) }
 export function GetLoopAgent(arg1: string): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'GetLoopAgent', arg1) }
-export function ListLoopAgentRuns(arg1: string, arg2: number): Promise<Array<synapse.LoopAgentRun>> { return call('LoopAgentService', 'ListLoopAgentRuns', arg1, arg2) }
+export function ListLoopAgentRuns(arg1: string, arg2: number): Promise<Array<sybra.LoopAgentRun>> { return call('LoopAgentService', 'ListLoopAgentRuns', arg1, arg2) }
 export function ListLoopAgents(): Promise<Array<loopagent.LoopAgent>> { return call('LoopAgentService', 'ListLoopAgents') }
 export function RunLoopAgentNow(arg1: string): Promise<string> { return call('LoopAgentService', 'RunLoopAgentNow', arg1) }
 export function UpdateLoopAgent(arg1: loopagent.LoopAgent): Promise<loopagent.LoopAgent> { return call('LoopAgentService', 'UpdateLoopAgent', arg1) }

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func newTestManager(t *testing.T) *task.Manager {

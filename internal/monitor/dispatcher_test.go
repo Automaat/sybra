@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // recordingRunner captures every RunConfig handed to it and returns a fixed

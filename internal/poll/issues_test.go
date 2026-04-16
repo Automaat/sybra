@@ -6,9 +6,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/github"
-	"github.com/Automaat/synapse/internal/project"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // issuesFetcherEnv holds the fully-wired dependencies for a single-machine
@@ -188,7 +188,7 @@ func TestIssuesFetcher_SyncLabeledIssuesToTasks_HonorsClosure(t *testing.T) {
 			env.fetcher.fetchLabeled = func(repos []string, label string) ([]github.Issue, error) {
 				asked = true
 				askedRepos = append([]string(nil), repos...)
-				if label != "synapse" {
+				if label != "sybra" {
 					t.Errorf("label = %q, want %q", label, synapseIssueLabel)
 				}
 				return labeled, nil

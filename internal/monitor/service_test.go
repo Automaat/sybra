@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/audit"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 type fakeTasks struct {

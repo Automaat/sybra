@@ -196,7 +196,7 @@ func TestCreateAndRemoveWorktree(t *testing.T) {
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "worktree")
-	if err := CreateWorktree(bare, wtPath, "synapse/test-task", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test-task", branch); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
@@ -224,13 +224,13 @@ func TestParseWorktreePorcelain(t *testing.T) {
 	}{
 		{
 			name:    "old format bare id",
-			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/a1b2c3d4\n",
-			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/a1b2c3d4",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/sybra/a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "sybra/a1b2c3d4",
 		},
 		{
 			name:    "new format slug-id",
-			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/synapse/implement-auth-a1b2c3d4\n",
-			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "synapse/implement-auth-a1b2c3d4",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/sybra/implement-auth-a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "sybra/implement-auth-a1b2c3d4",
 		},
 		{
 			name:    "non-synapse branch",
@@ -278,7 +278,7 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	}
 	gitWt("add", ".")
 	gitWt("commit", "-m", "conflict")
-	gitWt("checkout", "synapse/test")
+	gitWt("checkout", "sybra/test")
 
 	// Start a rebase that will conflict.
 	cmd := exec.Command("git", "rebase", "conflict-base")
@@ -344,7 +344,7 @@ func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -384,7 +384,7 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -569,7 +569,7 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	content := "checks:\n  pre_commit:\n    - echo hello\n  pre_push:\n    - echo world\n"
-	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadRepoConfig(dir)
@@ -590,7 +590,7 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 func TestLoadRepoConfig_Invalid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(":\n  bad: [yaml"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(":\n  bad: [yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadRepoConfig(dir)
@@ -606,9 +606,9 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 	_, wtPath := initWorktree(t)
 
-	// Write .synapse.yaml with a failing pre-commit to prove repo config is used.
+	// Write .sybra.yaml with a failing pre-commit to prove repo config is used.
 	repoYAML := "checks:\n  pre_commit:\n    - exit 1\n"
-	if err := os.WriteFile(filepath.Join(wtPath, ".synapse.yaml"), []byte(repoYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte(repoYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

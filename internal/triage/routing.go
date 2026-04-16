@@ -1,6 +1,6 @@
 package triage
 
-import "github.com/Automaat/synapse/internal/task"
+import "github.com/Automaat/sybra/internal/task"
 
 // RouteStatus picks the next task status from the classifier verdict.
 //

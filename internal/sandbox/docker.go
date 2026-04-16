@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 	"gopkg.in/yaml.v3"
 )
 
@@ -155,7 +155,7 @@ func projectName(taskID string) string {
 		}
 		return '-'
 	}, taskID)
-	return "synapse-" + safe
+	return "sybra-" + safe
 }
 
 // extendArgs returns a new slice with extra elements appended to base,

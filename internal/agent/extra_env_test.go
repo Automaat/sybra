@@ -58,7 +58,7 @@ func TestRunConfig_ExtraEnv_MultipleVars(t *testing.T) {
 	t.Parallel()
 	extraEnv := []string{
 		"SANDBOX_URL=http://localhost:1111",
-		"KUBECONFIG=/tmp/synapse-task/kubeconfig",
+		"KUBECONFIG=/tmp/sybra-task/kubeconfig",
 	}
 	merged := append(os.Environ(), extraEnv...)
 

@@ -53,7 +53,7 @@ func DispatchPrompt(a Anomaly, issueRepo string) string {
 func prGapPrompt(a Anomaly) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
-	return fmt.Sprintf(`You are the synapse monitor PR-gap remediator.
+	return fmt.Sprintf(`You are the sybra monitor PR-gap remediator.
 
 Task: %s — %q
 This task is in 'in-review' but has no PR number recorded.
@@ -63,12 +63,12 @@ Run, in order:
 
 1. `+"`git status`"+` and `+"`git log --oneline -5 origin/main..HEAD`"+` to confirm there are commits ahead of origin/main.
 2. If there are no commits ahead:
-   `+"`synapse-cli update %s --status human-required --status-reason \"monitor: in-review with no commits\"`"+`
+   `+"`sybra-cli update %s --status human-required --status-reason \"monitor: in-review with no commits\"`"+`
    then exit.
 3. Otherwise:
    `+"`git push -u origin HEAD`"+`
    `+"`gh pr create --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
-4. On success, run `+"`synapse-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
+4. On success, run `+"`sybra-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
 
 Output exactly one final JSON line:
 {"action":"created"|"escalated"|"failed","prNumber":N,"reason":"..."}`,
@@ -82,14 +82,14 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 	status, _ := a.Evidence["status"].(string)
 	dwell, _ := a.Evidence["dwell_h"].(float64)
 	filePath, _ := a.Evidence["file_path"].(string)
-	return fmt.Sprintf(`You are the synapse monitor stuck-task investigator.
+	return fmt.Sprintf(`You are the sybra monitor stuck-task investigator.
 
 Task: %s — %q
 Status: %s   Dwell: %.1fh
 Task file: %s
 
 Read-only investigation:
-- Read the task file and the most recent agent log under ~/.synapse/logs/agents matching this task id.
+- Read the task file and the most recent agent log under ~/.sybra/logs/agents matching this task id.
 - Identify the actual blocker in one sentence and propose the next concrete step a human could take.
 - Then dedup against open issues and either create or comment one on the repo below.
 
@@ -110,14 +110,14 @@ Output exactly one final JSON line:
 func failureSpikePrompt(a Anomaly, issueRepo string) string {
 	rate, _ := a.Evidence["failure_rate"].(float64)
 	runs, _ := a.Evidence["agent_runs"].(int)
-	return fmt.Sprintf(`You are the synapse monitor failure-spike investigator.
+	return fmt.Sprintf(`You are the sybra monitor failure-spike investigator.
 
 Audit summary (last 1h):
   failure_rate=%.2f  agent_runs=%d
 
 Read-only investigation:
-- Run `+"`synapse-cli --json audit --since 1h --type agent.failed`"+` to list failed agents.
-- For up to 3 most recent failures, read the agent NDJSON log under ~/.synapse/logs/agents and identify the proximate cause.
+- Run `+"`sybra-cli --json audit --since 1h --type agent.failed`"+` to list failed agents.
+- For up to 3 most recent failures, read the agent NDJSON log under ~/.sybra/logs/agents and identify the proximate cause.
 - Look for a common pattern across failures (provider error, tool error, repeated tool loop, etc).
 
 GitHub issue handling:
@@ -137,12 +137,12 @@ func bottleneckPrompt(a Anomaly, issueRepo string) string {
 	status, _ := a.Evidence["status"].(string)
 	dwell, _ := a.Evidence["dwell_h"].(float64)
 	threshold, _ := a.Evidence["threshold"].(float64)
-	return fmt.Sprintf(`You are the synapse monitor bottleneck investigator.
+	return fmt.Sprintf(`You are the sybra monitor bottleneck investigator.
 
 Status %q has average dwell %.1fh, exceeding threshold %.1fh.
 
 Read-only investigation:
-- Run `+"`synapse-cli --json list --status %s`"+` and read the 3 oldest task bodies under ~/.synapse/tasks.
+- Run `+"`sybra-cli --json list --status %s`"+` and read the 3 oldest task bodies under ~/.sybra/tasks.
 - Identify whether the bottleneck is structural (workflow rule), human (waiting on a person), or process (slow handoff between statuses).
 
 GitHub issue handling:
@@ -161,14 +161,14 @@ Output exactly one final JSON line:
 // investigatePrompt is the catch-all handler for kinds that have no specific
 // template — should never run today, but keeps DispatchPrompt total.
 func investigatePrompt(a Anomaly, issueRepo string) string {
-	return fmt.Sprintf(`You are the synapse monitor anomaly investigator.
+	return fmt.Sprintf(`You are the sybra monitor anomaly investigator.
 
 Anomaly: %s
 Fingerprint: %s
 Evidence:
 %s
 
-Read the relevant logs under ~/.synapse/logs/, identify the proximate cause,
+Read the relevant logs under ~/.sybra/logs/, identify the proximate cause,
 and either create or comment an issue at %s with label "monitor".
 Always pass --repo %s to gh commands.
 
@@ -192,7 +192,7 @@ func suggestedInvestigation(kind AnomalyKind) string {
 	case KindLostAgent:
 		return "- Confirm the agent process actually exited; the watchdog has reset the task to `todo`.\n"
 	case KindUntriaged:
-		return "- Run `/synapse-triage` against the affected task to fill `agent_mode` and `tags`.\n"
+		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
 	default:
 		return "- See the dispatched agent's issue comment for proximate cause and next step.\n"
 	}

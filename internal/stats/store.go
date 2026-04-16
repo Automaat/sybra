@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/fsutil"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // Store persists RunRecords to a JSON file and computes aggregates in memory.

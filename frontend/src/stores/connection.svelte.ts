@@ -6,7 +6,7 @@ const POLL_MS = 15_000
 const OFFLINE_POLL_MS = 5_000
 
 class ConnectionStore {
-  /** True when the Synapse backend is reachable. */
+  /** True when the Sybra backend is reachable. */
   backendOnline = $state(true)
   /** True when the browser's network interface is up. */
   networkOnline = $state(typeof navigator !== 'undefined' ? navigator.onLine : true)

@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/project"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // TestK8sSandbox_StartStop creates a k3d cluster, deploys a minimal workload,
@@ -86,7 +86,7 @@ func TestK8sSandbox_ClusterExists(t *testing.T) {
 	ctx := context.Background()
 	m := newK8sManager(t)
 
-	clusterName := "synapse-task-k8s-exists"
+	clusterName := "sybra-task-k8s-exists"
 	// Pre-create cluster.
 	if out, err := runCmd(ctx, "", nil, "k3d", "cluster", "create", clusterName,
 		"--kubeconfig-update-default=false",

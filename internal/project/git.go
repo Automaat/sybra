@@ -8,23 +8,23 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Automaat/synapse/internal/executil"
+	"github.com/Automaat/sybra/internal/executil"
 	"gopkg.in/yaml.v3"
 )
 
-// LoadRepoConfig reads .synapse.yaml from the worktree root. Returns an empty
+// LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
 // RepoConfig (not an error) if the file does not exist.
 func LoadRepoConfig(worktreePath string) (*RepoConfig, error) {
-	data, err := os.ReadFile(filepath.Join(worktreePath, ".synapse.yaml"))
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".sybra.yaml"))
 	if os.IsNotExist(err) {
 		return &RepoConfig{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read .synapse.yaml: %w", err)
+		return nil, fmt.Errorf("read .sybra.yaml: %w", err)
 	}
 	var cfg RepoConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse .synapse.yaml: %w", err)
+		return nil, fmt.Errorf("parse .sybra.yaml: %w", err)
 	}
 	return &cfg, nil
 }
@@ -266,7 +266,7 @@ func parseWorktreePorcelain(raw string) []Worktree {
 			} else if ref, ok := strings.CutPrefix(line, "branch "); ok {
 				branch, _ := strings.CutPrefix(ref, "refs/heads/")
 				wt.Branch = branch
-				if name, ok := strings.CutPrefix(wt.Branch, "synapse/"); ok {
+				if name, ok := strings.CutPrefix(wt.Branch, "sybra/"); ok {
 					// Task ID is always the last 8 chars (uuid[:8])
 					if len(name) >= 8 {
 						wt.TaskID = name[len(name)-8:]

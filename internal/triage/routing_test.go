@@ -3,7 +3,7 @@ package triage
 import (
 	"testing"
 
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 func TestRouteStatus(t *testing.T) {

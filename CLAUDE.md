@@ -1,11 +1,11 @@
-# Synapse
+# Sybra
 
 Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v2 GUI.
 
 ## Project Structure
 
 ```
-synapse/
+sybra/
 ├── main.go                  # Wails bootstrap, embeds frontend/dist
 ├── app.go                   # Bound methods exposed to Svelte frontend
 ├── wails.json               # Wails config
@@ -30,12 +30,12 @@ synapse/
 │   └── github/
 │       └── interface.go     # Future: GitHub issue sync interface
 ├── cmd/
-│   └── synapse-cli/         # CLI for task CRUD (used by Claude Code skills)
+│   └── sybra-cli/         # CLI for task CRUD (used by Claude Code skills)
 │       └── main.go
 ├── .claude/
-│   └── skills/              # Claude Code skills (auto-copied to ~/.synapse/skills on start)
-│       ├── synapse-tasks.md # Task CRUD skill
-│       └── synapse-triage.md # Triage workflow skill
+│   └── skills/              # Claude Code skills (auto-copied to ~/.sybra/skills on start)
+│       ├── sybra-tasks.md # Task CRUD skill
+│       └── sybra-triage.md # Triage workflow skill
 ├── tasks/                   # Markdown task files (runtime data)
 ├── frontend/
 │   ├── src/
@@ -114,14 +114,14 @@ Parse with `task.Parse(path)` or `task.ParseBytes(data)`. Marshal with `task.Mar
 
 Projects mirror GitHub repos. Created from a GitHub URL, cloned as bare repos.
 
-**Storage:** `~/.synapse/projects/` (YAML metadata), `~/.synapse/clones/` (bare git repos), `~/.synapse/worktrees/` (per-task checkouts).
+**Storage:** `~/.sybra/projects/` (YAML metadata), `~/.sybra/clones/` (bare git repos), `~/.sybra/worktrees/` (per-task checkouts).
 
 **Flow:** Create project from URL → bare clone → assign `project_id` to tasks → agent start auto-creates worktree → worktree cleaned up on agent completion.
 
 **CLI:**
 ```bash
-synapse-cli project list|get|create|delete
-synapse-cli create --title "..." --project "owner/repo"
+sybra-cli project list|get|create|delete
+sybra-cli create --title "..." --project "owner/repo"
 ```
 
 ### Agent Execution Modes
@@ -136,20 +136,20 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 
 **Interactive** (tmux):
 ```bash
-tmux new-session -d -s synapse-<id> -x 200 -y 50 "claude"
+tmux new-session -d -s sybra-<id> -x 200 -y 50 "claude"
 ```
-- GUI polls `tmux capture-pane -t synapse-<id> -p` for preview
+- GUI polls `tmux capture-pane -t sybra-<id> -p` for preview
 - User attaches via terminal
 
 ### Per-Machine Automations
 
-Synapse can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.synapse/` and runs background automations independently. Two routing axes prevent duplicate work:
+Sybra can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.sybra/` and runs background automations independently. Two routing axes prevent duplicate work:
 
 **1. Per-feature `enabled` toggle** (kill-switch per machine):
-- `todoist.enabled` — Todoist polling (`internal/synapse/app_todoist.go`)
-- `github.enabled` — GitHub Issues fetcher (`internal/synapse/app.go`)
-- `renovate.enabled` — Renovate CI fixer (`internal/synapse/app_renovate.go`)
-- Loop agents are stored per-machine in `~/.synapse/loop-agents/<id>.yaml` with their own `enabled` field — already independent.
+- `todoist.enabled` — Todoist polling (`internal/sybra/app_todoist.go`)
+- `github.enabled` — GitHub Issues fetcher (`internal/sybra/app.go`)
+- `renovate.enabled` — Renovate CI fixer (`internal/sybra/app_renovate.go`)
+- Loop agents are stored per-machine in `~/.sybra/loop-agents/<id>.yaml` with their own `enabled` field — already independent.
 
 **2. Top-level `project_types` allowlist** (per-project-type routing):
 - Declares which `project.ProjectType` values this machine handles. Empty = all types.
@@ -174,14 +174,14 @@ renovate: { enabled: true }
 
 Startup logs an `app.automations` summary line so you can verify the role of each instance at a glance.
 
-**Out of scope:** the orchestrator brain (`/synapse-monitor` Claude Code cron) is external to Synapse — manage it independently per machine via the Claude Code `schedule` skill.
+**Out of scope:** the orchestrator brain (`/sybra-monitor` Claude Code cron) is external to Sybra — manage it independently per machine via the Claude Code `schedule` skill.
 
 ### Server Deployment (home-nas)
 
-Synapse also runs headless as a server, deployed from `~/sideprojects/home-nas`.
+Sybra also runs headless as a server, deployed from `~/sideprojects/home-nas`.
 
 - **Host:** `synapse` LXC (CT 114) on Proxmox, `192.168.20.219` (VLAN 20), Ubuntu 24.04, 6 cores / 16GB RAM
-- **Container:** `ghcr.io/automaat/synapse:<version>` via Docker Compose
+- **Container:** `ghcr.io/automaat/sybra:<version>` via Docker Compose
 - **Compose file:** `/opt/synapse/docker-compose.yml` on host (source: `ansible/docker-compose/synapse-stack.yml`)
 - **Volumes:** `/data/synapse/home` (→ `~/.synapse` inside container), `/data/synapse/claude` (Claude Code settings + hooks), `/data/synapse/codex` (Codex config)
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
@@ -270,12 +270,12 @@ go test ./...
 cd frontend && npm install
 ```
 
-## CLI (`synapse-cli`)
+## CLI (`sybra-cli`)
 
-Standalone binary for task CRUD, used by Claude Code skills. Installed via `go install ./cmd/synapse-cli`.
+Standalone binary for task CRUD, used by Claude Code skills. Installed via `go install ./cmd/sybra-cli`.
 
 ```bash
-synapse-cli [--json] <command> [flags]
+sybra-cli [--json] <command> [flags]
 
 list     [--status STATUS] [--tag TAG]
 get      <id>
@@ -291,14 +291,14 @@ delete   <id>
 ### Skills
 
 Project-local Claude Code skills in `.claude/skills/`:
-- `synapse-tasks.md` — task CRUD via CLI (`/synapse-tasks`)
-- `synapse-triage.md` — triage workflow (`/synapse-triage`)
+- `sybra-tasks.md` — task CRUD via CLI (`/sybra-tasks`)
+- `sybra-triage.md` — triage workflow (`/sybra-triage`)
 
-Skills are auto-copied to `~/.synapse/skills/` on app startup (via `syncSkills()` in `app.go`).
+Skills are auto-copied to `~/.sybra/skills/` on app startup (via `syncSkills()` in `app.go`).
 
 ### Orchestrator Brain
 
-`orchestrator/CLAUDE.md` — system instructions for Claude Code orchestrator sessions. Copied to `~/.synapse/CLAUDE.md` on app start. Covers: triage rules, dispatch logic, monitoring, failure handling, escalation criteria.
+`orchestrator/CLAUDE.md` — system instructions for Claude Code orchestrator sessions. Copied to `~/.sybra/CLAUDE.md` on app start. Covers: triage rules, dispatch logic, monitoring, failure handling, escalation criteria.
 
 ## Build Order
 
@@ -319,4 +319,4 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
 - ❌ Editing files in `frontend/wailsjs/` — these are auto-generated, changes get overwritten
 - ❌ Using `allowed_tools: []` without understanding it means all tools with `--dangerously-skip-permissions`
-- ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Synapse on multiple machines can route work without duplication
+- ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication

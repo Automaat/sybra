@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Automaat/synapse/internal/events"
+	"github.com/Automaat/sybra/internal/events"
 )
 
 func nopEmit(_ string, _ any) {}

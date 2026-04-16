@@ -3,7 +3,7 @@ package stats
 import (
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/sybra/internal/audit"
 )
 
 // Backfill imports historical agent runs from audit logs into the stats store.

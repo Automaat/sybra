@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/provider"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // AgentRunner is the subset of agent.Manager the scheduler depends on.

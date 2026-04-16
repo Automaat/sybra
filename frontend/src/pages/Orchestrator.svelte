@@ -7,7 +7,7 @@
     GetMonitorReport,
     EventsOn,
   } from '$lib/api'
-  import type { agent, monitor, synapse } from '../../wailsjs/go/models.js'
+  import type { agent, monitor, sybra } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import { MonitorReport, OrchestratorState } from '../lib/events.js'
@@ -20,7 +20,7 @@
   let error = $state('')
   let container: HTMLDivElement | undefined = $state()
   let convoUnsub: (() => void) | undefined
-  let monitorBinding = $state<synapse.MonitorReportBinding | null>(null)
+  let monitorBinding = $state<sybra.MonitorReportBinding | null>(null)
   let lastReportAt = $state<number | null>(null)
   let monitorTick = $state(0)
 
@@ -41,7 +41,7 @@
     return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
   }
 
-  function recordReport(binding: synapse.MonitorReportBinding | null) {
+  function recordReport(binding: sybra.MonitorReportBinding | null) {
     monitorBinding = binding
     if (binding && binding.ready) {
       const t = new Date(binding.report.generatedAt as unknown as string).getTime()
@@ -138,7 +138,7 @@
         enabled: true,
         ready: true,
         report,
-      } as synapse.MonitorReportBinding)
+      } as sybra.MonitorReportBinding)
     })
 
     // Tick the derived age every second so the UI counts up without waiting

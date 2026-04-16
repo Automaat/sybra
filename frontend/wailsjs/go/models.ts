@@ -1194,7 +1194,7 @@ export namespace stats {
 
 }
 
-export namespace synapse {
+export namespace sybra {
 	
 	export class LoggingSettings {
 	    level: string;

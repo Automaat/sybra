@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/synapse/internal/audit"
+	"github.com/Automaat/sybra/internal/audit"
 )
 
 func writeAuditFile(t *testing.T, dir, filename string, evts []audit.Event) {

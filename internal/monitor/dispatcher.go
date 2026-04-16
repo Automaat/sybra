@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Automaat/synapse/internal/agent"
-	"github.com/Automaat/synapse/internal/task"
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Dispatcher hands an anomaly to a focused headless Claude agent. The agent
@@ -111,7 +111,7 @@ func (d *agentDispatcher) resolveTarget(a Anomaly) (dir, taskID, name string) {
 	return d.repoDir, a.TaskID, taskName
 }
 
-// noopDispatcher is used by `synapse-cli monitor scan` and tests that need a
+// noopDispatcher is used by `sybra-cli monitor scan` and tests that need a
 // Dispatcher without spawning real agents.
 type noopDispatcher struct{}
 
