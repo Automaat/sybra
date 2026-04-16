@@ -3,7 +3,7 @@
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import * as yaml from 'js-yaml'
   import type { project } from '../../wailsjs/go/models.js'
-  import { SetProjectSandboxConfig } from '../../wailsjs/go/sybra/ProjectService.js'
+  import { SetProjectSandboxConfig, SetProjectSetupCommands } from '../../wailsjs/go/sybra/ProjectService.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
@@ -27,10 +27,15 @@
   let sandboxSaving = $state(false)
   let sandboxError = $state('')
   let sandboxSaved = $state(false)
+  let setupText = $state('')
+  let setupSaving = $state(false)
+  let setupError = $state('')
+  let setupSaved = $state(false)
 
   const tabs = [
     { value: 'tasks', label: 'Tasks' },
     { value: 'worktrees', label: 'Worktrees' },
+    { value: 'setup', label: 'Setup' },
     { value: 'sandbox', label: 'Sandbox' },
   ]
 
@@ -41,6 +46,7 @@
   $effect(() => {
     if (p) {
       sandboxYaml = p.sandbox ? yaml.dump(p.sandbox, { indent: 2 }) : ''
+      setupText = (p.setupCommands ?? []).join('\n')
     }
   })
 
@@ -49,6 +55,26 @@
       p = await projectStore.get(projectId)
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function saveSetupCommands() {
+    if (!p) return
+    setupSaving = true
+    setupError = ''
+    setupSaved = false
+    try {
+      const cmds = setupText
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith('#'))
+      p = await SetProjectSetupCommands(projectId, cmds)
+      setupSaved = true
+      setTimeout(() => { setupSaved = false }, 2000)
+    } catch (e) {
+      setupError = String(e)
+    } finally {
+      setupSaving = false
     }
   }
 
@@ -222,6 +248,41 @@
         </div>
       {:else if activeTab === 'worktrees'}
         <WorktreeList projectId={projectId} />
+      {:else if activeTab === 'setup'}
+        <div class="flex flex-col gap-3">
+          <p class="text-sm text-surface-500">
+            Machine-local shell commands run inside every newly created worktree for this project, <em>after</em>
+            the <code>setup:</code> block in the repo's <code>.sybra.yaml</code>. Use this only for host-specific extras
+            (e.g. copying a local <code>.env</code>); canonical toolchain bootstrap belongs in <code>.sybra.yaml</code>
+            so every machine behaves identically.
+          </p>
+          <p class="text-xs text-surface-500">
+            One command per line; lines starting with <code>#</code> are ignored. All commands share a 5-minute batch
+            timeout, and a non-zero exit blocks worktree creation. Output streams to
+            <code>~/.sybra/logs/worktrees/&lt;task-id&gt;-setup.log</code>.
+          </p>
+          <textarea
+            class="h-48 w-full rounded border border-surface-300 bg-surface-50 px-3 py-2 font-mono text-sm dark:border-surface-600 dark:bg-surface-900"
+            placeholder={'# one shell command per line\nmise install\nnpm ci --prefix frontend'}
+            bind:value={setupText}
+          ></textarea>
+          {#if setupError}
+            <p class="text-sm text-error-500">{setupError}</p>
+          {/if}
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              class="rounded bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+              onclick={saveSetupCommands}
+              disabled={setupSaving}
+            >
+              {setupSaving ? 'Saving...' : 'Save'}
+            </button>
+            {#if setupSaved}
+              <span class="text-sm text-success-500">Saved</span>
+            {/if}
+          </div>
+        </div>
       {:else if activeTab === 'sandbox'}
         <div class="flex flex-col gap-3">
           <p class="text-sm text-surface-500">

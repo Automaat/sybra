@@ -26,6 +26,7 @@ function pick<T>(desktop: T, web: T): T {
 // AgentService
 export const DiscoverAgents = pick(AgentSvc.DiscoverAgents, http.DiscoverAgents)
 export const GetAgentOutput = pick(AgentSvc.GetAgentOutput, http.GetAgentOutput)
+export const GetAgentRunConvoLog = pick(AgentSvc.GetAgentRunConvoLog, http.GetAgentRunConvoLog)
 export const GetAgentRunLog = pick(AgentSvc.GetAgentRunLog, http.GetAgentRunLog)
 export const GetConvoOutput = pick(AgentSvc.GetConvoOutput, http.GetConvoOutput)
 export const ListAgents = pick(AgentSvc.ListAgents, http.ListAgents)

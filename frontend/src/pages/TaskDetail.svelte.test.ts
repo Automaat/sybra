@@ -33,6 +33,7 @@ vi.mock('$lib/api', () => ({
   StartFixReview: vi.fn(),
   StartReview: vi.fn(),
   GetAgentRunLog: vi.fn(),
+  GetAgentRunConvoLog: vi.fn(),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({

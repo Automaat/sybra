@@ -67,33 +67,71 @@ func (s *AgentService) GetConvoOutput(agentID string) ([]agent.ConvoEvent, error
 // GetAgentRunLog returns stream events for a past or running agent.
 // Live agents return the in-memory buffer; completed agents are replayed
 // from the NDJSON log file on disk.
+//
+// Use this for headless-mode agents. Interactive agents persist a different
+// log format (raw Claude stream-json envelope); route those through
+// GetAgentRunConvoLog so the nested message content is preserved.
 func (s *AgentService) GetAgentRunLog(taskID, agentID string) ([]agent.StreamEvent, error) {
 	if ag, err := s.agents.GetAgent(agentID); err == nil {
 		return ag.Output(), nil
 	}
 
+	logFile, err := s.findAgentLogFile(taskID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents())
+}
+
+// GetAgentRunConvoLog returns conversation events for a past or running
+// interactive agent. Live agents return the in-memory convo buffer;
+// completed agents are replayed from the NDJSON log via the Claude stream
+// parser so tool_use/tool_result/text blocks survive.
+//
+// This exists because interactive logs are written in the raw Anthropic
+// envelope format; ParseLogFile (flat StreamEvent) silently drops the
+// nested `message.content[]` and the frontend renders empty bubbles.
+func (s *AgentService) GetAgentRunConvoLog(taskID, agentID string) ([]agent.ConvoEvent, error) {
+	if s.agents != nil {
+		if events, err := s.agents.GetConvoOutput(agentID); err == nil && len(events) > 0 {
+			return events, nil
+		}
+	}
+
+	logFile, err := s.findAgentLogFile(taskID, agentID)
+	if err != nil {
+		s.logger.Warn("agent.convo-log.not-found",
+			"task_id", taskID, "agent_id", agentID, "err", err)
+		return nil, err
+	}
+
+	s.logger.Info("agent.convo-log.replay",
+		"task_id", taskID, "agent_id", agentID, "log", logFile)
+	events, parseErr := agent.ParseConvoLogFile(logFile, s.cfg.DefaultMaxLogEvents(), s.logger)
+	if parseErr != nil {
+		s.logger.Error("agent.convo-log.parse-failed",
+			"task_id", taskID, "agent_id", agentID, "log", logFile, "err", parseErr)
+		return nil, parseErr
+	}
+	return events, nil
+}
+
+// findAgentLogFile resolves the NDJSON log path for an agent run, first
+// consulting the task's agent_runs history then falling back to filesystem
+// globbing by agent ID. Shared by GetAgentRunLog / GetAgentRunConvoLog.
+func (s *AgentService) findAgentLogFile(taskID, agentID string) (string, error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return nil, fmt.Errorf("task %s: %w", taskID, err)
+		return "", fmt.Errorf("task %s: %w", taskID, err)
 	}
 
-	var logFile string
 	for i := range t.AgentRuns {
-		if t.AgentRuns[i].AgentID == agentID {
-			logFile = t.AgentRuns[i].LogFile
-			break
+		if t.AgentRuns[i].AgentID == agentID && t.AgentRuns[i].LogFile != "" {
+			return t.AgentRuns[i].LogFile, nil
 		}
 	}
 
-	if logFile == "" {
-		var findErr error
-		logFile, findErr = agent.FindLogFile(s.logsDir, agentID)
-		if findErr != nil {
-			return nil, findErr
-		}
-	}
-
-	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents())
+	return agent.FindLogFile(s.logsDir, agentID)
 }
 
 // RespondEscalation sends a human decision to a guardrail-paused agent.

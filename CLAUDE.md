@@ -200,6 +200,24 @@ ssh root@192.168.20.219 "docker exec sybra sybra-cli list"           # CLI insid
 
 Bumping the deployed version = update image tag in `ansible/docker-compose/synapse-stack.yml`, run the deploy playbook.
 
+**Toolchain inside the server container.** The image ships `mise` only — no Go, Node extras, or lint tools are pre-installed. Every project declares its own bootstrap, resolved from two layers per worktree:
+
+1. `setup:` in the repo's `.sybra.yaml` — canonical toolchain, checked into git, identical on every machine.
+2. `SetupCommands []string` in `~/.sybra/projects/<id>.yaml` — machine-local extras (optional), editable from the Project → Setup tab in the UI.
+
+Commands from (1) run first, then (2). Sybra executes them in the worktree root with a 5-minute batch timeout; stdout/stderr stream to `~/.sybra/logs/worktrees/<task-id>-setup.log`. A non-zero exit aborts worktree creation (the agent never starts on a broken toolchain). The merge lives in `internal/project.MergeSetup` and is tested in `TestPrepareForTask_MergesRepoAndAppSetup`.
+
+Typical repo `setup:` examples:
+
+- Go/Node projects (e.g. synapse itself): `mise install` + `(cd frontend && npm ci)`
+- pure npm: `npm ci`
+- uv/Python: `uv sync`
+- multi-step: `./.sybra/bootstrap.sh`
+
+App-level `SetupCommands` should stay empty for most projects; use it only for host-specific extras such as copying a local `.env`.
+
+**Server-context quality gates.** On the server, do NOT treat `wails build` as a commit gate — webkit2gtk is not installed and desktop builds are a CI concern. Use `mise run build:server` (HTTP server) or `go build ./cmd/sybra-server` for a server-side build verification instead. Lint (`golangci-lint run ./...`, `hadolint Dockerfile`, `npx oxlint`) and tests (`go test ./...`) remain the authoritative gates — all installable via the project's `mise install` bootstrap.
+
 ## Development Workflow
 
 ### Running Locally
@@ -330,3 +348,5 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Editing files in `frontend/wailsjs/` — these are auto-generated, changes get overwritten
 - ❌ Using `allowed_tools: []` without understanding it means all tools with `--dangerously-skip-permissions`
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
+- ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.
+- ❌ Treating `wails build` as a server-context commit gate — Linux wails needs GTK/webkit (not installed server-side) and desktop builds are CI-owned. Use `mise run build:server` for server-side verification.
