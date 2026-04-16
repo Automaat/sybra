@@ -314,7 +314,28 @@ func (a *App) startBackgroundServices(
 
 	a.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
+	a.startAgentLogPruneLoop(ctx)
 	a.registerMetricsObservers()
+}
+
+// startAgentLogPruneLoop sweeps stale per-agent NDJSON files once a day.
+// Retention comes from Config.Agent.LogRetentionDays (default 14). The
+// startup call in runStartupCleanup catches the first pass; this goroutine
+// keeps the directory bounded on long-lived server deployments where a
+// single restart would otherwise be the only cleanup trigger.
+func (a *App) startAgentLogPruneLoop(ctx context.Context) {
+	a.wg.Go(func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.pruneAgentLogs()
+			}
+		}
+	})
 }
 
 // registerMetricsObservers wires the OTel observable gauge callbacks to
@@ -902,7 +923,21 @@ func (a *App) runStartupCleanup() {
 	a.gcOrphanChats()
 	a.worktrees.CleanupOrphaned()
 	a.cleanStaleRuns()
+	a.pruneAgentLogs()
 	a.restartStaleInProgress()
+}
+
+// pruneAgentLogs removes stale per-agent NDJSON files at startup. Safe
+// to call with an empty logDir (test setups) — the logging helper no-ops.
+// The periodic counterpart lives in startAgentLogPruneLoop.
+func (a *App) pruneAgentLogs() {
+	days := a.cfg.DefaultLogRetentionDays()
+	var maxAge time.Duration
+	if days > 0 {
+		maxAge = time.Duration(days) * 24 * time.Hour
+	}
+	r := logging.PruneAgentLogs(a.logDir, maxAge, time.Now())
+	logging.LogPruneReport(a.logger, r)
 }
 
 // gcOrphanChats deletes any chat-task that no longer has a running agent.

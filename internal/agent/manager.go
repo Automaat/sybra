@@ -569,15 +569,53 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	return false
 }
 
+// defaultShutdownGrace bounds how long Shutdown waits for in-flight agents
+// to notice the cancel signal and exit cleanly. Without this, agents get
+// SIGKILL'd mid-stream and the final `result` NDJSON line is truncated,
+// leaving operators with a half-written run log and a "signal: killed"
+// exit error that carries no diagnostic value.
+const defaultShutdownGrace = 20 * time.Second
+
+// Shutdown cancels all running agents and blocks until they exit or the
+// grace window elapses — whichever comes first. Subprocess runners use
+// SIGTERM + cmd.WaitDelay (see shutdownSignal in runner helpers) so this
+// grace gives claude/codex time to flush the final `result` event.
 func (m *Manager) Shutdown() {
+	m.ShutdownWithGrace(defaultShutdownGrace)
+}
+
+// ShutdownWithGrace is Shutdown with an explicit grace window. Used by
+// tests (short grace) and callers that want to override the default.
+func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	m.logger.Info("agent.shutdown", "count", len(m.agents))
+	count := len(m.agents)
+	dones := make([]chan struct{}, 0, count)
 	for _, a := range m.agents {
 		if a.cancel != nil {
 			a.cancel()
 		}
+		if a.done != nil {
+			dones = append(dones, a.done)
+		}
 	}
+	m.mu.RUnlock()
+
+	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones))
+	if len(dones) == 0 || grace <= 0 {
+		return
+	}
+
+	deadline := time.After(grace)
+	for i, done := range dones {
+		select {
+		case <-done:
+		case <-deadline:
+			m.logger.Warn("agent.shutdown.timeout",
+				"exited", i, "remaining", len(dones)-i, "grace", grace)
+			return
+		}
+	}
+	m.logger.Info("agent.shutdown.done", "exited", len(dones))
 }
 
 // safeArgRe matches only characters safe to embed in a shell command

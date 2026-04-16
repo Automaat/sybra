@@ -527,6 +527,30 @@ func (m *Manager) runSetup(taskID, wtPath string, commands []string) error {
 		taskID, wtPath, time.Now().UTC().Format(time.RFC3339), m.setupTimeout, len(commands),
 	))
 
+	// mise refuses to read an untrusted config, so a fresh worktree whose
+	// mise.toml has never been seen on this machine hard-fails `mise install`
+	// with "Config files ... are not trusted". Trust is persisted per-path in
+	// mise's state dir, so one call per worktree is enough and it is cheap
+	// when the file is already trusted. Skipped when the worktree has no
+	// mise config; failure is logged but non-fatal (the real setup command
+	// will raise a clearer error if mise is actually needed).
+	if hasMiseConfig(wtPath) {
+		trustCmd := exec.CommandContext(ctx, "mise", "trust", "--yes")
+		trustCmd.Dir = wtPath
+		if logFile != nil {
+			trustCmd.Stdout = logFile
+			trustCmd.Stderr = logFile
+		}
+		writeLog(fmt.Sprintf("\n--- [pre] %s\n$ mise trust --yes\n", time.Now().UTC().Format(time.RFC3339)))
+		if trustErr := trustCmd.Run(); trustErr != nil {
+			writeLog(fmt.Sprintf("\n!!! mise trust exit err=%v (non-fatal)\n", trustErr))
+			m.logger.Warn("worktree.mise-trust",
+				"task_id", taskID, "path", wtPath, "err", trustErr)
+		} else {
+			writeLog("\n<<< ok\n")
+		}
+	}
+
 	for i, raw := range commands {
 		if err := ctx.Err(); err != nil {
 			writeLog(fmt.Sprintf("\n!!! timeout before command %d (%s): %v\n", i+1, raw, err))
@@ -590,6 +614,19 @@ func (m *Manager) openSetupLog(path string) (*os.File, error) {
 	}
 	// Truncate: each worktree prep starts fresh, old log contents are stale.
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+}
+
+// hasMiseConfig reports whether the worktree root contains a mise config.
+// mise reads any of these names; the list mirrors mise's own discovery so
+// we only spend a trust call when mise will actually care.
+func hasMiseConfig(wtPath string) bool {
+	names := []string{"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml"}
+	for _, n := range names {
+		if _, err := os.Stat(filepath.Join(wtPath, n)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveSetupCommands loads the worktree's .sybra.yaml (if present) and

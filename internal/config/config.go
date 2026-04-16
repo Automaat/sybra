@@ -69,6 +69,11 @@ type AgentDefaults struct {
 	// MaxLogEvents caps how many NDJSON events are returned when replaying
 	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
 	MaxLogEvents int `yaml:"max_log_events" json:"maxLogEvents"`
+	// LogRetentionDays bounds how long per-agent NDJSON log files live
+	// under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte
+	// files, regardless of age) are swept on app startup and daily
+	// thereafter. 0 falls back to DefaultLogRetentionDays (14).
+	LogRetentionDays int `yaml:"log_retention_days" json:"logRetentionDays"`
 }
 
 // DefaultMaxLogEvents returns the configured cap or 500 if unset.
@@ -77,6 +82,22 @@ func (c *Config) DefaultMaxLogEvents() int {
 		return c.Agent.MaxLogEvents
 	}
 	return 500
+}
+
+// DefaultLogRetentionDays returns the configured retention window for
+// per-agent NDJSON logs, or 14 days if unset. A negative value disables
+// age-based pruning (0-byte files are still removed).
+func (c *Config) DefaultLogRetentionDays() int {
+	if c == nil {
+		return 14
+	}
+	if c.Agent.LogRetentionDays < 0 {
+		return c.Agent.LogRetentionDays
+	}
+	if c.Agent.LogRetentionDays == 0 {
+		return 14
+	}
+	return c.Agent.LogRetentionDays
 }
 
 // DefaultRequirePermissions returns the configured default, or true if unset.

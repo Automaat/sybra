@@ -77,6 +77,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}

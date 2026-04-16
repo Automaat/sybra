@@ -98,6 +98,7 @@ func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
 func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig) (*exec.Cmd, io.ReadCloser, *bytes.Buffer, error) {
 	args := m.buildConvoArgs(a, cfg)
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
