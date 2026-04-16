@@ -2385,6 +2385,36 @@ func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_GitErrorFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Path exists but is not a git repo — git log returns non-zero,
+	// simulating the broken-worktree scenario from the synapse→sybra rename.
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "git error") {
+		t.Errorf("Output = %q, want 'git error'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "worktree git error") {
+		t.Errorf("status reason = %q, want 'worktree git error'", reason)
+	}
+}
+
 func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
