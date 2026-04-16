@@ -518,7 +518,7 @@
   }
 
   const pastRuns = $derived(
-    (t?.agentRuns ?? []).slice().reverse()
+    (t?.agentRuns ?? []).filter((r) => r.state !== 'running').reverse()
   )
 
   function formatDate(date: any): string {
