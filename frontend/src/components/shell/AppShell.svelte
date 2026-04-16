@@ -40,7 +40,7 @@
 
   <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
     {#if viewport.isDesktop}
-      <header class="flex shrink-0 items-center justify-between gap-4 border-b border-surface-700 bg-surface-900 px-4 py-3">
+      <header class="flex shrink-0 items-center justify-between gap-4 border-b border-surface-200 bg-surface-50 px-4 py-3 dark:border-surface-700 dark:bg-surface-900">
         <h2 class="text-lg font-semibold">{navStore.pageTitle}</h2>
         <div class="flex items-center gap-2">
           <BgOpsIndicator />
