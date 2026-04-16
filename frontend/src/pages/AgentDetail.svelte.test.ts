@@ -11,6 +11,7 @@ const mockAgents = new Map()
 vi.mock('../stores/agents.svelte.js', () => ({
   agentStore: {
     agents: mockAgents,
+    list: [] as unknown[],
     outputs: new Map<string, unknown[]>(),
     stepTexts: new Map<string, string>(),
     stop: (...args: unknown[]) => mockStop(...args),
@@ -24,6 +25,7 @@ vi.mock('$lib/api', () => ({
 }))
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
+vi.mock('../components/agent-view/SessionWorkspace.svelte', () => ({ default: () => {} }))
 
 const AgentDetail = (await import('./AgentDetail.svelte')).default
 
