@@ -796,6 +796,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.agentSvc.tasks = a.tasks
 	a.agentSvc.cfg = a.cfg
 	a.agentSvc.logsDir = a.logDir
+	a.agentSvc.worktrees = a.worktrees
 	a.orchSvc.agents = a.agents
 	a.orchSvc.audit = a.audit
 	a.orchSvc.logger = a.logger

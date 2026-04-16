@@ -14,10 +14,11 @@
     outputTokens?: number
     bounded?: boolean
     highlightIndex?: number | null
+    suppressApprovals?: boolean
     onvisibleindex?: (index: number) => void
   }
 
-  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false, highlightIndex = null, onvisibleindex }: Props = $props()
+  const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false, highlightIndex = null, suppressApprovals = false, onvisibleindex }: Props = $props()
 
   let events = $state<agent.ConvoEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
@@ -169,15 +170,17 @@
       {/each}
     {/if}
 
-    <!-- Pending approvals -->
-    {#each approvals as approval (approval.toolUseId)}
-      <ToolApproval
-        toolUseId={approval.toolUseId}
-        toolName={approval.toolName}
-        input={approval.input}
-        onrespond={handleApproval}
-      />
-    {/each}
+    <!-- Pending approvals (suppressed when hoisted by BlockedLayout) -->
+    {#if !suppressApprovals}
+      {#each approvals as approval (approval.toolUseId)}
+        <ToolApproval
+          toolUseId={approval.toolUseId}
+          toolName={approval.toolName}
+          input={approval.input}
+          onrespond={handleApproval}
+        />
+      {/each}
+    {/if}
 
     <!-- Streaming indicator -->
     {#if isRunning && events.length > 0}

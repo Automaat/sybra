@@ -12,6 +12,8 @@ export function GetConvoOutput(arg1:string):Promise<Array<agent.ConvoEvent>>;
 
 export function ListAgents():Promise<Array<agent.Agent>>;
 
+export function OpenWorktree(arg1:string):Promise<void>;
+
 export function RespondApproval(arg1:string,arg2:boolean):Promise<void>;
 
 export function RespondEscalation(arg1:string,arg2:boolean):Promise<void>;

@@ -22,6 +22,10 @@ export function ListAgents() {
   return window['go']['sybra']['AgentService']['ListAgents']();
 }
 
+export function OpenWorktree(arg1) {
+  return window['go']['sybra']['AgentService']['OpenWorktree'](arg1);
+}
+
 export function RespondApproval(arg1, arg2) {
   return window['go']['sybra']['AgentService']['RespondApproval'](arg1, arg2);
 }

@@ -10,6 +10,8 @@ export type AgentPhase =
 export interface PhaseConfig {
   phase: AgentPhase
   label: string
+  /** One-sentence description of what this phase emphasises (used by empty-state copy). */
+  body: string
   /** Tailwind classes for the dot indicator */
   dotClasses: string
   /** Tailwind classes for the badge pill */
@@ -24,6 +26,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   queued: {
     phase: 'queued',
     label: 'Queued',
+    body: 'Task description and starting context.',
     dotClasses: 'bg-surface-400 dark:bg-surface-500',
     badgeClasses: 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400',
     animate: false,
@@ -32,6 +35,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   waiting: {
     phase: 'waiting',
     label: 'Waiting',
+    body: 'Agent has paused and is waiting for your reply.',
     dotClasses: 'bg-surface-400 dark:bg-surface-500',
     badgeClasses: 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300',
     animate: false,
@@ -40,6 +44,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   running: {
     phase: 'running',
     label: 'Running',
+    body: 'Live output stream and current step.',
     dotClasses: 'bg-primary-500',
     badgeClasses: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200',
     animate: true,
@@ -48,6 +53,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   blocked: {
     phase: 'blocked',
     label: 'Blocked',
+    body: 'Agent requires your approval before proceeding.',
     // tertiary = warm amber — distinct from primary amber, matches "amber dot" spec
     dotClasses: 'bg-tertiary-500',
     badgeClasses: 'bg-tertiary-200 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200',
@@ -57,6 +63,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   'human-required': {
     phase: 'human-required',
     label: 'Needs Input',
+    body: 'Agent has escalated and needs your explicit response.',
     // error = coral/orange — matches "orange dot" spec
     dotClasses: 'bg-error-500',
     badgeClasses: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
@@ -66,6 +73,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   reviewing: {
     phase: 'reviewing',
     label: 'Reviewing',
+    body: 'Branch and PR ready for review.',
     // warning = violet/purple in amber theme — matches "purple dot" spec
     dotClasses: 'bg-warning-500',
     badgeClasses: 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200',
@@ -75,6 +83,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
   done: {
     phase: 'done',
     label: 'Done',
+    body: 'Completion summary: actions taken, files changed, branch created.',
     dotClasses: 'bg-success-400',
     badgeClasses: 'bg-success-100 text-success-700 dark:bg-success-900 dark:text-success-300',
     animate: false,
