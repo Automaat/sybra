@@ -5,6 +5,7 @@
   import type { AgentPhase } from '$lib/agent-phases.js'
   import type { TimestampedStreamEvent, TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
+  import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import QueuedLayout from './QueuedLayout.svelte'
   import RunningLayout from './RunningLayout.svelte'
   import BlockedLayout from './BlockedLayout.svelte'
@@ -22,6 +23,10 @@
     planSteps: PlanStep[]
     selectedIndex: number | null
     onselect: (i: number) => void
+    // Three-panel props — only consumed by active-phase layouts.
+    allAgents: agent.Agent[]
+    latestToolUse: ToolUseSignal | undefined
+    onnavigate: (id: string) => void
   }
 
   const {
@@ -34,6 +39,9 @@
     planSteps,
     selectedIndex,
     onselect,
+    allAgents,
+    latestToolUse,
+    onnavigate,
   }: Props = $props()
 </script>
 
@@ -49,6 +57,11 @@
           {timelineEntries}
           {selectedIndex}
           {onselect}
+          {streamOutputs}
+          {convoEvents}
+          {allAgents}
+          {latestToolUse}
+          {onnavigate}
         />
       {:else if phase === 'blocked'}
         <BlockedLayout
@@ -57,6 +70,11 @@
           {timelineEntries}
           {selectedIndex}
           {onselect}
+          {streamOutputs}
+          {convoEvents}
+          {allAgents}
+          {latestToolUse}
+          {onnavigate}
         />
       {:else if phase === 'waiting' || phase === 'human-required'}
         <HumanRequiredLayout
@@ -66,6 +84,11 @@
           {timelineEntries}
           {selectedIndex}
           {onselect}
+          {streamOutputs}
+          {convoEvents}
+          {allAgents}
+          {latestToolUse}
+          {onnavigate}
         />
       {:else if phase === 'reviewing'}
         <ReviewingLayout {a} {linkedTask} {streamOutputs} {convoEvents} />

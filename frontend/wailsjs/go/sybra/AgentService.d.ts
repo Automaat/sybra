@@ -4,6 +4,8 @@ import {agent} from '../models';
 
 export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
+export function GetAgentDiff(arg1:string):Promise<string>;
+
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 
 export function GetAgentRunConvoLog(arg1:string,arg2:string):Promise<Array<agent.ConvoEvent>>;

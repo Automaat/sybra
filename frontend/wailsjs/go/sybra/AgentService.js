@@ -6,6 +6,10 @@ export function DiscoverAgents() {
   return window['go']['sybra']['AgentService']['DiscoverAgents']();
 }
 
+export function GetAgentDiff(arg1) {
+  return window['go']['sybra']['AgentService']['GetAgentDiff'](arg1);
+}
+
 export function GetAgentOutput(arg1) {
   return window['go']['sybra']['AgentService']['GetAgentOutput'](arg1);
 }

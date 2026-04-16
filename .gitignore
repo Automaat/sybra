@@ -30,3 +30,5 @@ frontend/playwright-report/
 /synapse-cli
 /fake-claude
 /synapse-server
+sybra-server
+core.*

@@ -395,6 +395,7 @@
         agentId={navStore.page.agentId}
         onback={() => navStore.back()}
         onviewtask={navTaskDetail}
+        onnavigate={navAgentDetail}
       />
     {:else if navStore.page.kind === 'github'}
       <GitHub />

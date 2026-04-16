@@ -3,10 +3,14 @@
   import type { agent } from '../../../wailsjs/go/models.js'
   import type { TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
+  import type { TimestampedStreamEvent } from '$lib/timeline.js'
+  import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import StreamOutput from '../StreamOutput.svelte'
   import ChatView from '../ChatView.svelte'
   import ActionTimeline from '../ActionTimeline.svelte'
-  import PlanSteps from '../PlanSteps.svelte'
+  import ThreePanelLayout from './ThreePanelLayout.svelte'
+  import SessionWorkspace from './SessionWorkspace.svelte'
+  import AgentSidebarList from './AgentSidebarList.svelte'
 
   interface Props {
     a: agent.Agent
@@ -14,20 +18,36 @@
     timelineEntries: TimelineEntry[]
     selectedIndex: number | null
     onselect: (i: number) => void
+    streamOutputs: TimestampedStreamEvent[]
+    convoEvents: agent.ConvoEvent[]
+    allAgents: agent.Agent[]
+    latestToolUse: ToolUseSignal | undefined
+    onnavigate: (id: string) => void
   }
 
-  const { a, planSteps, timelineEntries, selectedIndex, onselect }: Props = $props()
+  const {
+    a,
+    planSteps,
+    timelineEntries,
+    selectedIndex,
+    onselect,
+    streamOutputs,
+    convoEvents,
+    allAgents,
+    latestToolUse,
+    onnavigate,
+  }: Props = $props()
 
   let timelineOpen = $state(true)
-  let planCollapsed = $state(false)
 </script>
 
-<div class="flex flex-col gap-4">
-  {#if planSteps.length > 0}
-    <PlanSteps steps={planSteps} bind:collapsed={planCollapsed} />
-  {/if}
+<ThreePanelLayout>
+  {#snippet sidebar()}
+    <AgentSidebarList agents={allAgents} activeId={a.id} {onnavigate} />
+  {/snippet}
 
-  <div class="flex min-h-0 flex-1 flex-col gap-2">
+  <!-- Center: timeline + output stream -->
+  <div class="flex min-h-0 flex-col gap-2">
     <div class="flex items-center gap-2">
       <span class="text-sm font-medium text-surface-500">Output</span>
       <button
@@ -45,7 +65,7 @@
     </div>
     <div class="flex min-h-0 items-start gap-3">
       {#if timelineOpen}
-        <div class="hidden w-64 shrink-0 overflow-hidden rounded-lg border border-surface-300 dark:border-surface-700 md:flex md:flex-col" style="max-height: 600px; min-height: 300px;">
+        <div class="hidden w-56 shrink-0 overflow-hidden rounded-lg border border-surface-300 dark:border-surface-700 md:flex md:flex-col" style="max-height: 600px; min-height: 300px;">
           <ActionTimeline
             entries={timelineEntries}
             activeIndex={selectedIndex}
@@ -74,4 +94,15 @@
       </div>
     </div>
   </div>
-</div>
+
+  {#snippet workspace()}
+    <SessionWorkspace
+      agentId={a.id}
+      taskId={a.taskId}
+      {streamOutputs}
+      {convoEvents}
+      {planSteps}
+      {latestToolUse}
+    />
+  {/snippet}
+</ThreePanelLayout>
