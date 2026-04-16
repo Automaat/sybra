@@ -1,8 +1,34 @@
+# Repo-level sybra config. Every machine that checks out this repo applies
+# the `setup` commands in each new worktree and wires the `checks` as git
+# hooks — no per-machine UI tweaks required.
+
+# Setup commands run (in order) in every newly created worktree root with a
+# 5-min batch timeout; failures abort worktree creation so agents never
+# start on a broken toolchain. Repo-declared commands run first, then any
+# machine-local SetupCommands from ~/.sybra/projects/<id>.yaml.
+setup:
+  - mise install
+  - (cd frontend && npm ci)
+
+# Git hooks installed by sybra into every worktree on creation.
+#
+# Every command is routed through `mise exec --` so the hook resolves tools
+# via the project's mise.toml even when PATH isn't set up in the agent's
+# shell (e.g. on the headless server container, where mise activation is
+# not done per-invocation). For this to work the project's
+# SetupCommands must include `mise install` AND `(cd frontend && npm ci)` —
+# otherwise the hook fails with "tool not found" at commit time, which was
+# the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
+#
+# `wails generate module` runs on pre-commit as a drift guard for the Wails
+# bindings; it parses Go source (no webkit required) so it works on the
+# headless server too.
 checks:
   pre_commit:
-    - golangci-lint run ./...
+    - mise exec -- golangci-lint run ./...
     - (cd frontend && npx oxlint .)
-    - wails generate module && git diff --exit-code frontend/wailsjs/
+    - mise exec -- wails generate module && git diff --exit-code frontend/wailsjs/
+    - mise exec -- hadolint Dockerfile
   pre_push:
-    - go test ./...
+    - mise exec -- go test ./...
     - (cd frontend && npm run check)

@@ -6,6 +6,8 @@ export function DiscoverAgents():Promise<Array<agent.Agent>>;
 
 export function GetAgentOutput(arg1:string):Promise<Array<agent.StreamEvent>>;
 
+export function GetAgentRunConvoLog(arg1:string,arg2:string):Promise<Array<agent.ConvoEvent>>;
+
 export function GetAgentRunLog(arg1:string,arg2:string):Promise<Array<agent.StreamEvent>>;
 
 export function GetConvoOutput(arg1:string):Promise<Array<agent.ConvoEvent>>;

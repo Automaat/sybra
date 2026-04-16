@@ -631,6 +631,67 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfig_SetupBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := "setup:\n  - mise install\n  - (cd frontend && npm ci)\nchecks:\n  pre_commit:\n    - echo lint\n"
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadRepoConfig: %v", err)
+	}
+	if len(cfg.Setup) != 2 {
+		t.Fatalf("Setup len = %d, want 2", len(cfg.Setup))
+	}
+	if cfg.Setup[0] != "mise install" {
+		t.Errorf("Setup[0] = %q", cfg.Setup[0])
+	}
+	if cfg.Setup[1] != "(cd frontend && npm ci)" {
+		t.Errorf("Setup[1] = %q", cfg.Setup[1])
+	}
+	// Sanity: checks block still parses when setup is present.
+	if cfg.Checks == nil || len(cfg.Checks.PreCommit) != 1 {
+		t.Errorf("checks dropped when setup added: %+v", cfg.Checks)
+	}
+}
+
+func TestMergeSetup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		repo []string
+		app  []string
+		want []string
+	}{
+		{"both empty", nil, nil, nil},
+		{"repo only", []string{"mise install"}, nil, []string{"mise install"}},
+		{"app only", nil, []string{"cp .env.local .env"}, []string{"cp .env.local .env"}},
+		{
+			// Repo commands must run first so the canonical toolchain
+			// bootstrap happens before any per-machine additions.
+			name: "repo then app",
+			repo: []string{"mise install", "npm ci"},
+			app:  []string{"cp .env.local .env"},
+			want: []string{"mise install", "npm ci", "cp .env.local .env"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MergeSetup(tt.repo, tt.app)
+			if len(got) != len(tt.want) {
+				t.Fatalf("MergeSetup = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("MergeSetup[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestLoadRepoConfig_Invalid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

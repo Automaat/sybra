@@ -10,6 +10,10 @@ export function GetAgentOutput(arg1) {
   return window['go']['sybra']['AgentService']['GetAgentOutput'](arg1);
 }
 
+export function GetAgentRunConvoLog(arg1, arg2) {
+  return window['go']['sybra']['AgentService']['GetAgentRunConvoLog'](arg1, arg2);
+}
+
 export function GetAgentRunLog(arg1, arg2) {
   return window['go']['sybra']['AgentService']['GetAgentRunLog'](arg1, arg2);
 }

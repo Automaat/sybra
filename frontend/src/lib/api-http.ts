@@ -31,6 +31,7 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
 // AgentService
 export function DiscoverAgents(): Promise<Array<agent.Agent>> { return call('AgentService', 'DiscoverAgents') }
 export function GetAgentOutput(arg1: string): Promise<Array<agent.StreamEvent>> { return call('AgentService', 'GetAgentOutput', arg1) }
+export function GetAgentRunConvoLog(arg1: string, arg2: string): Promise<Array<agent.ConvoEvent>> { return call('AgentService', 'GetAgentRunConvoLog', arg1, arg2) }
 export function GetAgentRunLog(arg1: string, arg2: string): Promise<Array<agent.StreamEvent>> { return call('AgentService', 'GetAgentRunLog', arg1, arg2) }
 export function GetConvoOutput(arg1: string): Promise<Array<agent.ConvoEvent>> { return call('AgentService', 'GetConvoOutput', arg1) }
 export function ListAgents(): Promise<Array<agent.Agent>> { return call('AgentService', 'ListAgents') }

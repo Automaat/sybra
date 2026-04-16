@@ -61,7 +61,30 @@ RUN npm install -g \
         "@openai/codex@${CODEX_VERSION}" \
     && rm -rf /root/.npm
 
-# --- Layer D: non-root user + klaudiush server config (static) ---
+# --- Layer D: mise binary only (tools installed per-worktree) ---
+# The prod image intentionally does NOT bake language toolchains. Each
+# project declares its tools (e.g. synapse's mise.toml pins Go/Node/etc.)
+# and Sybra runs `mise install` in every worktree via SetupCommands on
+# creation — cached in ~/.sybra/mise-data, shared across worktrees, version
+# pinned per branch. This keeps the image lean and supports projects in any
+# language without Dockerfile rebuilds.
+#
+# Projects that don't use mise leave their SetupCommands pointing at their
+# own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
+#
+# renovate: datasource=github-releases depName=jdx/mise
+ARG MISE_VERSION=v2026.1.17
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "${ARCH}" in \
+         amd64) MISE_ARCH=x64 ;; \
+         arm64) MISE_ARCH=arm64 ;; \
+         *) echo "unsupported arch: ${ARCH}" >&2 && exit 1 ;; \
+       esac \
+    && curl -sSfL -o /usr/local/bin/mise \
+         "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-${MISE_ARCH}" \
+    && chmod +x /usr/local/bin/mise
+
+# --- Layer E: non-root user + klaudiush server config (static) ---
 # node:24-slim already defines a `node` user at uid 1000 — remove it before
 # creating `sybra` so we can reuse uid 1000 (a common bind-mount convention).
 # Server-tuned klaudiush config: drop -S (no GPG key on server),
@@ -98,7 +121,7 @@ RUN userdel -r node 2>/dev/null || true \
         > /home/sybra/.config/klaudiush/config.toml \
     && chown -R "${SYBRA_UID}:${SYBRA_GID}" /home/sybra
 
-# --- Layer E+F: thin, per-commit layers ---
+# --- Layer F+G: thin, per-commit layers ---
 COPY --from=go-builder /bin/sybra-server /usr/local/bin/sybra-server
 COPY --from=go-builder /bin/sybra-cli /usr/local/bin/sybra-cli
 COPY --from=frontend-builder /app/frontend/dist-web /app/web

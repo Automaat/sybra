@@ -20,6 +20,28 @@ type ChecksConfig struct {
 // .sybra.yaml file. Repo config takes priority over the app-level project config.
 type RepoConfig struct {
 	Checks *ChecksConfig `yaml:"checks,omitempty" json:"checks,omitempty"`
+	// Setup is the shell commands run in every newly created worktree before
+	// any agent starts. Declared in the repo so every machine that checks out
+	// this project gets identical bootstrap (tool installs, dependency fetches)
+	// without per-instance UI toil.
+	Setup []string `yaml:"setup,omitempty" json:"setup,omitempty"`
+}
+
+// MergeSetup combines repo-declared setup (.sybra.yaml) with app-level setup
+// commands (~/.sybra/projects/<id>.yaml → SetupCommands). Repo commands run
+// first so the canonical toolchain bootstrap happens before any per-machine
+// additions (e.g. "also copy my .env.local"). Either side may be empty.
+func MergeSetup(repo, app []string) []string {
+	if len(repo) == 0 {
+		return app
+	}
+	if len(app) == 0 {
+		return repo
+	}
+	merged := make([]string, 0, len(repo)+len(app))
+	merged = append(merged, repo...)
+	merged = append(merged, app...)
+	return merged
 }
 
 // MergeChecks returns a merged ChecksConfig where repo fields take priority over

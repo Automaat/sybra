@@ -1,12 +1,14 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -20,32 +22,47 @@ type PRBranchResolver func(repo string, prNumber int) (string, error)
 // Injected to avoid importing internal/agent.
 type AgentChecker func(taskID string) bool
 
+// defaultSetupTimeout caps the entire SetupCommands batch per worktree.
+// Accommodates cold `mise install` / `npm ci` runs on first use of a project
+// but prevents stuck commands from blocking worktree creation forever.
+const defaultSetupTimeout = 5 * time.Minute
+
 type Config struct {
 	WorktreesDir     string
 	Projects         *project.Store
 	Tasks            *task.Manager
 	Logger           *slog.Logger
+	LogsDir          string
+	SetupTimeout     time.Duration
 	PRBranchResolver PRBranchResolver
 	AgentChecker     AgentChecker
 }
 
 type Manager struct {
-	dir      string
-	projects *project.Store
-	tasks    *task.Manager
-	logger   *slog.Logger
-	prBranch PRBranchResolver
-	hasAgent AgentChecker
+	dir          string
+	projects     *project.Store
+	tasks        *task.Manager
+	logger       *slog.Logger
+	logsDir      string
+	setupTimeout time.Duration
+	prBranch     PRBranchResolver
+	hasAgent     AgentChecker
 }
 
 func New(cfg Config) *Manager {
+	timeout := cfg.SetupTimeout
+	if timeout <= 0 {
+		timeout = defaultSetupTimeout
+	}
 	return &Manager{
-		dir:      cfg.WorktreesDir,
-		projects: cfg.Projects,
-		tasks:    cfg.Tasks,
-		logger:   cfg.Logger,
-		prBranch: cfg.PRBranchResolver,
-		hasAgent: cfg.AgentChecker,
+		dir:          cfg.WorktreesDir,
+		projects:     cfg.Projects,
+		tasks:        cfg.Tasks,
+		logger:       cfg.Logger,
+		logsDir:      cfg.LogsDir,
+		setupTimeout: timeout,
+		prBranch:     cfg.PRBranchResolver,
+		hasAgent:     cfg.AgentChecker,
 	}
 }
 
@@ -161,7 +178,10 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 			}
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-		m.runSetup(wtPath, proj.SetupCommands)
+		callPhase(onPhase, "Running setup…")
+		if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+			return "", fmt.Errorf("setup on reused branch: %w", err)
+		}
 		m.installChecks(wtPath, proj)
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
@@ -172,7 +192,10 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
-	m.runSetup(wtPath, proj.SetupCommands)
+	callPhase(onPhase, "Running setup…")
+	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return "", fmt.Errorf("setup on new worktree: %w", err)
+	}
 	m.installChecks(wtPath, proj)
 
 	callPhase(onPhase, "Pushing upstream…")
@@ -226,7 +249,9 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 			return "", fmt.Errorf("checkout existing branch %s: %w", wtBranch, err)
 		}
 		m.logger.Info("chat.worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-		m.runSetup(wtPath, proj.SetupCommands)
+		if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+			return "", fmt.Errorf("chat setup on reused branch: %w", err)
+		}
 		m.ensureBranch(t, wtBranch)
 		return wtPath, nil
 	}
@@ -235,7 +260,9 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 		return "", fmt.Errorf("create chat worktree: %w", err)
 	}
 	m.logger.Info("chat.worktree.created", "task_id", t.ID, "path", wtPath)
-	m.runSetup(wtPath, proj.SetupCommands)
+	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return "", fmt.Errorf("chat setup on new worktree: %w", err)
+	}
 	m.ensureBranch(t, wtBranch)
 	return wtPath, nil
 }
@@ -265,7 +292,9 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	m.runSetup(wtPath, proj.SetupCommands)
+	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return "", fmt.Errorf("review setup: %w", err)
+	}
 	return wtPath, nil
 }
 
@@ -300,7 +329,9 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	m.runSetup(wtPath, proj.SetupCommands)
+	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return "", fmt.Errorf("fix setup: %w", err)
+	}
 	return wtPath, nil
 }
 
@@ -451,18 +482,141 @@ func (m *Manager) healOrRecreate(taskID, clonePath, wtPath string) (bool, error)
 }
 
 // runSetup executes a project's setup commands inside the worktree directory.
-// Failures are logged but do not block worktree preparation.
-func (m *Manager) runSetup(wtPath string, commands []string) {
-	for _, raw := range commands {
-		cmd := exec.Command("sh", "-c", raw)
-		cmd.Dir = wtPath
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			m.logger.Warn("worktree.setup-cmd", "cmd", raw, "path", wtPath, "err", err, "output", string(out))
-			continue
-		}
-		m.logger.Info("worktree.setup-cmd", "cmd", raw, "path", wtPath)
+// Every command runs via `sh -c` in wtPath with a shared batch timeout. All
+// stdout/stderr is streamed to a per-task log file so agents (and operators)
+// can inspect bootstrap failures without digging through the global log.
+//
+// Returns an error on the first non-zero exit or on timeout. Callers must
+// treat setup failure as blocking: an agent started on a worktree with a
+// broken toolchain will burn tokens hitting missing-tool errors.
+func (m *Manager) runSetup(taskID, wtPath string, commands []string) error {
+	if len(commands) == 0 {
+		return nil
 	}
+
+	logPath := m.setupLogPath(taskID)
+	var logFile *os.File
+	if logPath != "" {
+		f, logErr := m.openSetupLog(logPath)
+		if logErr != nil {
+			// Missing log dir is not fatal — fall back to slog only. Agents can
+			// still run; operators debug via sybra.log.
+			m.logger.Warn("worktree.setup-log-open", "task_id", taskID, "path", logPath, "err", logErr)
+		} else {
+			logFile = f
+		}
+	}
+	defer func() {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+	}()
+
+	writeLog := func(s string) {
+		if logFile == nil {
+			return
+		}
+		_, _ = logFile.WriteString(s)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), m.setupTimeout)
+	defer cancel()
+
+	writeLog(fmt.Sprintf(
+		"=== worktree setup: task=%s path=%s started_at=%s timeout=%s commands=%d ===\n",
+		taskID, wtPath, time.Now().UTC().Format(time.RFC3339), m.setupTimeout, len(commands),
+	))
+
+	for i, raw := range commands {
+		if err := ctx.Err(); err != nil {
+			writeLog(fmt.Sprintf("\n!!! timeout before command %d (%s): %v\n", i+1, raw, err))
+			m.logger.Error("worktree.setup-timeout",
+				"task_id", taskID, "path", wtPath, "cmd", raw, "err", err,
+				"log", logPath)
+			return fmt.Errorf("setup timeout before command %q: %w", raw, err)
+		}
+
+		started := time.Now()
+		writeLog(fmt.Sprintf("\n--- [%d/%d] %s\n$ %s\n", i+1, len(commands), started.UTC().Format(time.RFC3339), raw))
+
+		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
+		cmd.Dir = wtPath
+		if logFile != nil {
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		}
+
+		m.logger.Info("worktree.setup-start",
+			"task_id", taskID, "path", wtPath, "cmd", raw, "index", i+1, "total", len(commands))
+
+		err := cmd.Run()
+		dur := time.Since(started)
+
+		if err != nil {
+			writeLog(fmt.Sprintf("\n!!! exit err=%v duration=%s\n", err, dur))
+			m.logger.Error("worktree.setup-fail",
+				"task_id", taskID, "path", wtPath, "cmd", raw,
+				"index", i+1, "total", len(commands),
+				"duration", dur, "err", err, "log", logPath)
+			return fmt.Errorf("setup command %q failed after %s: %w (see %s)", raw, dur, err, logPath)
+		}
+
+		writeLog(fmt.Sprintf("\n<<< ok duration=%s\n", dur))
+		m.logger.Info("worktree.setup-ok",
+			"task_id", taskID, "path", wtPath, "cmd", raw,
+			"index", i+1, "total", len(commands), "duration", dur)
+	}
+
+	writeLog(fmt.Sprintf("\n=== worktree setup: task=%s completed_at=%s ===\n",
+		taskID, time.Now().UTC().Format(time.RFC3339)))
+	m.logger.Info("worktree.setup-complete",
+		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
+	return nil
+}
+
+// setupLogPath returns the per-task setup log file path. Empty logsDir
+// disables file logging (returns ""), keeping in-memory/test setups working
+// without needing to configure a log dir.
+func (m *Manager) setupLogPath(taskID string) string {
+	if m.logsDir == "" {
+		return ""
+	}
+	return filepath.Join(m.logsDir, "worktrees", taskID+"-setup.log")
+}
+
+func (m *Manager) openSetupLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir: %w", err)
+	}
+	// Truncate: each worktree prep starts fresh, old log contents are stale.
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+}
+
+// resolveSetupCommands loads the worktree's .sybra.yaml (if present) and
+// merges its `setup:` block with the project's app-level SetupCommands.
+// Repo commands run first (canonical toolchain bootstrap), app commands
+// second (per-machine additions). A missing or unparseable .sybra.yaml
+// falls back to app commands only — logged but non-fatal so an agent can
+// still start on a checkout without the file.
+func (m *Manager) resolveSetupCommands(wtPath string, proj project.Project) []string {
+	repoCfg, err := project.LoadRepoConfig(wtPath)
+	if err != nil {
+		m.logger.Warn("worktree.repo-config-setup",
+			"path", wtPath, "project", proj.ID, "err", err)
+		return proj.SetupCommands
+	}
+	var repoSetup []string
+	if repoCfg != nil {
+		repoSetup = repoCfg.Setup
+	}
+	merged := project.MergeSetup(repoSetup, proj.SetupCommands)
+	if len(merged) > 0 {
+		m.logger.Info("worktree.setup-resolved",
+			"path", wtPath, "project", proj.ID,
+			"repo_cmds", len(repoSetup), "app_cmds", len(proj.SetupCommands),
+			"total", len(merged))
+	}
+	return merged
 }
 
 func (m *Manager) installChecks(wtPath string, proj project.Project) {

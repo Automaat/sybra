@@ -188,7 +188,6 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.starting")
 
 	a.initAudit()
-
 	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)
@@ -252,6 +251,7 @@ func (a *App) Startup(ctx context.Context) error {
 		Projects:         a.projects,
 		Tasks:            a.tasks,
 		Logger:           a.logger,
+		LogsDir:          a.logDir,
 		PRBranchResolver: github.FetchPRBranch,
 		AgentChecker:     a.agents.HasRunningAgentForTask,
 	})

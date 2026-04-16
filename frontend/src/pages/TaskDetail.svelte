@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronLeft, CircleDot, GitPullRequest, ChevronDown, Copy } from '@lucide/svelte'
   import type { agent, task } from '../../wailsjs/go/models.js'
-  import { EventsOn, BrowserOpenURL, StartFixReview, StartReview, GetAgentRunLog } from '$lib/api'
+  import { EventsOn, BrowserOpenURL, StartFixReview, StartReview, GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
   import { agentState } from '../lib/events.js'
   import { renderMarkdown } from '../lib/markdown.js'
   import { taskStore } from '../stores/tasks.svelte.js'
@@ -11,6 +11,7 @@
   import { STATUS_OPTIONS, STATUS_MAP } from '../lib/statuses.js'
   import StreamOutput from '../components/StreamOutput.svelte'
   import ChatView from '../components/ChatView.svelte'
+  import MessageBubble from '../components/MessageBubble.svelte'
   import ProviderLogo from '../components/ProviderLogo.svelte'
 
   interface Props {
@@ -505,8 +506,14 @@
   }
 
   let expandedRun = $state<string | null>(null)
-  let runLogEvents = $state<Map<string, agent.StreamEvent[]>>(new Map())
+  // Headless agents persist StreamEvents (flat); interactive agents persist
+  // ConvoEvents (structured tool_use/tool_result blocks). Keep both keyed by
+  // agent ID — fetched only when the history row expands so we don't pay the
+  // parse cost for rows the user never opens.
+  let runLogStreamEvents = $state<Map<string, agent.StreamEvent[]>>(new Map())
+  let runLogConvoEvents = $state<Map<string, agent.ConvoEvent[]>>(new Map())
   let runLogLoading = $state<Set<string>>(new Set())
+  let runLogError = $state<Map<string, string>>(new Map())
 
   async function toggleRunLog(agentId: string) {
     if (expandedRun === agentId) {
@@ -514,18 +521,37 @@
       return
     }
     expandedRun = agentId
-    if (!runLogEvents.has(agentId) && !runLogLoading.has(agentId) && taskId) {
-      runLogLoading = new Set([...runLogLoading, agentId])
-      try {
+    const run = (t?.agentRuns ?? []).find((r) => r.agentId === agentId)
+    const isInteractive = run?.mode === 'interactive'
+    const alreadyLoaded = isInteractive
+      ? runLogConvoEvents.has(agentId)
+      : runLogStreamEvents.has(agentId)
+    if (alreadyLoaded || runLogLoading.has(agentId) || !taskId) return
+    runLogLoading = new Set([...runLogLoading, agentId])
+    try {
+      if (isInteractive) {
+        const events = await GetAgentRunConvoLog(taskId, agentId)
+        runLogConvoEvents = new Map([...runLogConvoEvents, [agentId, events ?? []]])
+      } else {
         const events = await GetAgentRunLog(taskId, agentId)
-        runLogEvents = new Map([...runLogEvents, [agentId, events ?? []]])
-      } catch {
-        runLogEvents = new Map([...runLogEvents, [agentId, []]])
+        runLogStreamEvents = new Map([...runLogStreamEvents, [agentId, events ?? []]])
       }
-      const next = new Set(runLogLoading)
-      next.delete(agentId)
-      runLogLoading = next
+      const nextErr = new Map(runLogError)
+      nextErr.delete(agentId)
+      runLogError = nextErr
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn('[task] failed to load run log', { agentId, isInteractive, err: msg })
+      runLogError = new Map([...runLogError, [agentId, msg]])
+      if (isInteractive) {
+        runLogConvoEvents = new Map([...runLogConvoEvents, [agentId, []]])
+      } else {
+        runLogStreamEvents = new Map([...runLogStreamEvents, [agentId, []]])
+      }
     }
+    const next = new Set(runLogLoading)
+    next.delete(agentId)
+    runLogLoading = next
   }
 
   const pastRuns = $derived(
@@ -1063,8 +1089,16 @@
                 <div class="border-t border-surface-300 px-3 py-2 dark:border-surface-600">
                   {#if runLogLoading.has(run.agentId)}
                     <p class="py-4 text-center text-xs text-surface-500">Loading log...</p>
-                  {:else if (runLogEvents.get(run.agentId)?.length ?? 0) > 0}
-                    <StreamOutput staticEvents={runLogEvents.get(run.agentId)} />
+                  {:else if run.mode === 'interactive' && (runLogConvoEvents.get(run.agentId)?.length ?? 0) > 0}
+                    <div class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-3 overflow-y-auto px-1 py-1">
+                      {#each runLogConvoEvents.get(run.agentId) ?? [] as event, i (i)}
+                        <MessageBubble {event} />
+                      {/each}
+                    </div>
+                  {:else if run.mode !== 'interactive' && (runLogStreamEvents.get(run.agentId)?.length ?? 0) > 0}
+                    <StreamOutput staticEvents={runLogStreamEvents.get(run.agentId)} />
+                  {:else if runLogError.has(run.agentId)}
+                    <p class="py-4 text-center text-xs text-error-600 dark:text-error-400">Failed to load log: {runLogError.get(run.agentId)}</p>
                   {:else if run.result}
                     <pre class="max-h-[60dvh] md:max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-100 p-3 text-xs text-surface-700 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-300">{run.result}</pre>
                   {:else}
