@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronLeft, CircleDot, GitPullRequest, ChevronDown } from '@lucide/svelte'
+  import { ChevronLeft, CircleDot, GitPullRequest, ChevronDown, Copy } from '@lucide/svelte'
   import type { agent, task } from '../../wailsjs/go/models.js'
   import { EventsOn, BrowserOpenURL, StartFixReview, StartReview, GetAgentRunLog } from '$lib/api'
   import { agentState } from '../lib/events.js'
@@ -36,6 +36,15 @@
       onback()
       return
     }
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === '.') {
+      e.preventDefault()
+      if (e.shiftKey) {
+        copyBranch()
+      } else {
+        copyId()
+      }
+      return
+    }
     const target = e.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -61,13 +70,7 @@
 
   let deleting = $state(false)
   let copied = $state(false)
-
-  async function copyId() {
-    if (!t) return
-    await navigator.clipboard.writeText(t.id)
-    copied = true
-    setTimeout(() => { copied = false }, 1500)
-  }
+  let copiedBranch = $state(false)
   let editingBody = $state(false)
   let bodyDraft = $state('')
   let editingTitle = $state(false)
@@ -99,6 +102,23 @@
 
   const renderedBody = $derived(renderMarkdown(t?.body))
   const renderedPlan = $derived(renderMarkdown(t?.plan))
+  const taskBranchName = $derived(
+    t ? 'sybra/' + (t.slug ? t.slug + '-' + t.id : t.id) : ''
+  )
+
+  async function copyId() {
+    if (!t) return
+    await navigator.clipboard.writeText(t.id)
+    copied = true
+    setTimeout(() => { copied = false }, 1500)
+  }
+
+  async function copyBranch() {
+    if (!t || !t.projectId) return
+    await navigator.clipboard.writeText(taskBranchName)
+    copiedBranch = true
+    setTimeout(() => { copiedBranch = false }, 1500)
+  }
 
   $effect(() => {
     loadTask()
@@ -627,9 +647,21 @@
             type="button"
             class="rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
             onclick={copyId}
+            title="Copy task ID (⌘.)"
           >
             {copied ? 'Copied!' : 'Copy ID'}
           </button>
+          {#if t.projectId}
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
+              onclick={copyBranch}
+              title="Copy branch name (⇧⌘.)"
+            >
+              <Copy size={12} />
+              {copiedBranch ? 'Copied!' : 'Copy branch'}
+            </button>
+          {/if}
           <button
             type="button"
             class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
@@ -700,10 +732,18 @@
           </div>
         {/if}
 
-        {#if t.branch}
+        {#if t.projectId}
           <div class="flex flex-col gap-1">
             <span class="font-medium text-surface-500">Branch</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono dark:bg-surface-700">{t.branch}</span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded bg-surface-200 px-2 py-0.5 font-mono text-left transition-colors hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
+              onclick={copyBranch}
+              title="Copy branch name (⇧⌘.)"
+            >
+              {taskBranchName}
+              <Copy size={12} class="shrink-0 text-surface-400" />
+            </button>
           </div>
         {/if}
 

@@ -57,7 +57,7 @@ func InstallHooks(worktreePath string, checks *ChecksConfig) error {
 			return nil
 		}
 		var sb strings.Builder
-		sb.WriteString("#!/bin/sh\nset -e\n")
+		sb.WriteString("#!/bin/sh\nset -e\nunset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
 		for _, c := range commands {
 			sb.WriteString(c)
 			sb.WriteByte('\n')
