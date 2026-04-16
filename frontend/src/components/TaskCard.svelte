@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy } from '@lucide/svelte'
   import type { task } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
@@ -21,6 +21,18 @@
   }
 
   let dragging = $state(false)
+  let copiedBranch = $state(false)
+
+  const taskBranchName = $derived(
+    'sybra/' + (t.slug ? t.slug + '-' + t.id : t.id)
+  )
+
+  async function copyBranch(e: MouseEvent) {
+    e.stopPropagation()
+    await navigator.clipboard.writeText(taskBranchName)
+    copiedBranch = true
+    setTimeout(() => { copiedBranch = false }, 1500)
+  }
 
   const triaging = $derived(
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('triage:') && a.state === 'running')
@@ -62,7 +74,7 @@
 
 <div
   data-focused-task={focused ? '' : undefined}
-  class="w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40 shadow-lg' : ''}"
+  class="group w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40 shadow-lg' : ''}"
 >
   <button
     type="button"
@@ -184,6 +196,19 @@
     <span class="ml-auto opacity-60">{timeAgo(t.updatedAt)}</span>
   </div>
   </button>
+  {#if t.projectId}
+    <div class="mt-1.5 flex items-center opacity-0 transition-opacity group-hover:opacity-100">
+      <button
+        type="button"
+        onclick={copyBranch}
+        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-surface-400 transition-colors hover:bg-surface-200 hover:text-surface-600 dark:hover:bg-surface-600 dark:hover:text-surface-300"
+        title="Copy branch name"
+      >
+        <Copy size={10} />
+        {copiedBranch ? 'Copied!' : taskBranchName.replace(/^sybra\//, '')}
+      </button>
+    </div>
+  {/if}
   {#if onstatuschange}
     <div class="mt-2 flex justify-end">
       <select

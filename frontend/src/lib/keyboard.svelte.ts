@@ -37,6 +37,8 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: 'S', description: 'Focus status selector' },
       { keys: 'D', description: 'Delete task' },
       { keys: 'Esc', description: 'Back to board' },
+      { keys: '⌘.', description: 'Copy task ID' },
+      { keys: '⇧⌘.', description: 'Copy branch name' },
     ],
   },
   {
