@@ -458,25 +458,19 @@ func TestRunSetup_NoLogsDir(t *testing.T) {
 
 // --- mise trust preflight -----------------------------------------------
 //
-// installFakeMise drops a tiny shim on PATH that logs invocation args to a
-// file the test can assert against, then returns the expected exit code.
-// Scoped to the test via t.Cleanup(os.Setenv) so it does not leak into
-// other tests.
-func installFakeMise(t *testing.T, exitCode int) (logPath string) {
+// installFakeMise writes a tiny mise shim that logs invocation args to a file
+// and exits with exitCode. Returns (shimPath, logPath). Tests pass shimPath via
+// Config.MisePath so parallel tests don't race on os.Setenv(PATH).
+func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath string) {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath = filepath.Join(binDir, "invocations.log")
 	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit " + fmt.Sprintf("%d", exitCode) + "\n"
-	shim := filepath.Join(binDir, "mise")
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+	shimPath = filepath.Join(binDir, "mise")
+	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)
 	}
-	prev := os.Getenv("PATH")
-	if err := os.Setenv("PATH", binDir+string(os.PathListSeparator)+prev); err != nil {
-		t.Fatalf("setenv PATH: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Setenv("PATH", prev) })
-	return logPath
+	return shimPath, logPath
 }
 
 // TestRunSetup_TrustsMiseConfig guards the fix for the 2026-04-16 server
@@ -491,9 +485,9 @@ func TestRunSetup_TrustsMiseConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
 		t.Fatalf("seed mise.toml: %v", err)
 	}
-	miseLog := installFakeMise(t, 0)
+	miseBin, miseLog := installFakeMise(t, 0)
 
-	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	if err := m.runSetup("task-trust", wtDir, []string{"true"}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
@@ -522,9 +516,9 @@ func TestRunSetup_SkipsTrustWithoutMiseConfig(t *testing.T) {
 	t.Parallel()
 	logsDir := t.TempDir()
 	wtDir := t.TempDir()
-	miseLog := installFakeMise(t, 0)
+	miseBin, miseLog := installFakeMise(t, 0)
 
-	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	if err := m.runSetup("task-no-mise", wtDir, []string{"true"}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
@@ -545,9 +539,9 @@ func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wtDir, ".mise.toml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("seed .mise.toml: %v", err)
 	}
-	installFakeMise(t, 3)
+	miseBin, _ := installFakeMise(t, 3)
 
-	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	marker := filepath.Join(wtDir, "did-run")
 	if err := m.runSetup("task-trust-fail", wtDir, []string{"touch " + marker}); err != nil {
 		t.Fatalf("runSetup should succeed despite trust failure: %v", err)
