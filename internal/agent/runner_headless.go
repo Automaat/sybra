@@ -65,9 +65,7 @@ done:
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, a.GetExitErr() == nil)
-	if m.onComplete != nil {
-		m.onComplete(a)
-	}
+	m.callOnComplete(a)
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
@@ -621,9 +619,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, false)
-	if m.onComplete != nil {
-		m.onComplete(a)
-	}
+	m.callOnComplete(a)
 }
 
 // classifyAgentError maps a fatal agent error to a canonical kind string.

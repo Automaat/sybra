@@ -38,6 +38,8 @@ type Manager struct {
 	approvalAddr  string // localhost:port for the HTTP tool approval server
 	guardrails    Guardrails
 	gate          provider.HealthGate
+	drainMu       sync.Mutex
+	draining      map[string]int // taskID → count of in-flight onComplete calls
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -48,6 +50,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		logger:      logger,
 		logDir:      logDir,
 		defaultProv: "claude",
+		draining:    make(map[string]int),
 	}
 }
 
@@ -249,6 +252,38 @@ func (m *Manager) markAgentDone(a *Agent) {
 		}
 		m.mu.Unlock()
 	})
+}
+
+// callOnComplete invokes the registered onComplete callback while tracking
+// it in the draining map. HasOnCompleteInflight returns true for the task
+// between this call and when onComplete returns, letting the chaos settle
+// predicate gate on the full drain rather than just goroutine exit.
+func (m *Manager) callOnComplete(a *Agent) {
+	if m.onComplete == nil {
+		return
+	}
+	m.drainMu.Lock()
+	m.draining[a.TaskID]++
+	m.drainMu.Unlock()
+	defer func() {
+		m.drainMu.Lock()
+		m.draining[a.TaskID]--
+		if m.draining[a.TaskID] <= 0 {
+			delete(m.draining, a.TaskID)
+		}
+		m.drainMu.Unlock()
+	}()
+	m.onComplete(a)
+}
+
+// HasOnCompleteInflight returns true if an onComplete callback is currently
+// executing for the given task. markAgentDone (which clears
+// HasRunningAgentForTask) runs before onComplete fires, so callers that need
+// to wait until the workflow has fully advanced must also gate on this.
+func (m *Manager) HasOnCompleteInflight(taskID string) bool {
+	m.drainMu.Lock()
+	defer m.drainMu.Unlock()
+	return m.draining[taskID] > 0
 }
 
 func (m *Manager) buildCommand(cfg RunConfig) (string, error) {

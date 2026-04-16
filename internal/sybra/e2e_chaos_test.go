@@ -7,9 +7,11 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -128,27 +130,21 @@ func runChaosSeed(t *testing.T, seed uint64) {
 	}
 
 	// Invariant 1: task file parses cleanly (no torn writes).
+	// isChaosSettled gates on HasOnCompleteInflight, so by the time settle
+	// returns, onComplete has fully drained and StepHistory is written.
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatalf("seed %d: post-settle task parse: %v", seed, err)
 	}
 
 	// Invariant 2: no live agents for this task (no leaked subprocess).
-	// Wait briefly — onComplete callback may be in flight.
-	waitForCondition(2*time.Second, func() bool {
-		return !env.agents.HasRunningAgentForTask(created.ID)
-	})
+	// Guaranteed by the drain gate in isChaosSettled — no poll needed.
 	if env.agents.HasRunningAgentForTask(created.ID) {
 		t.Errorf("seed %d: task has lingering running agent after settle", seed)
 	}
-
-	// Poll until StepHistory is populated. The agent.Manager's
-	// markAgentDone (which decrements liveCount and so flips
-	// HasRunningAgentForTask to false) runs BEFORE onComplete fires, so a
-	// "no running agent" observation in settle does not guarantee
-	// AdvanceStep has recorded the step yet. Give the callback a generous
-	// window — the assertion still catches real "workflow never ran" bugs.
-	tk = pollUntilHistoryPopulated(t, env, created.ID, 10*time.Second)
+	if env.agents.HasOnCompleteInflight(created.ID) {
+		t.Errorf("seed %d: onComplete still in-flight after settle — drain gate broken", seed)
+	}
 
 	// Invariant 3: workflow has step history (triage at minimum).
 	if tk.Workflow == nil {
@@ -206,11 +202,21 @@ func waitForChaosSettle(t *testing.T, env *e2eEnv, taskID string, timeout time.D
 }
 
 // isChaosSettled returns true when the task is in a coherent paused or
-// terminal state with no live agent. Used by waitForChaosSettle as a
-// per-poll predicate; the caller requires sustained truth before declaring
-// settlement to filter out transient between-step observations.
+// terminal state with no live agent AND no onComplete callback in-flight.
+// Used by waitForChaosSettle as a per-poll predicate; the caller requires
+// sustained truth before declaring settlement to filter out transient
+// between-step observations.
+//
+// The drain gate (HasOnCompleteInflight) is required because markAgentDone
+// — which closes the done channel and makes HasRunningAgentForTask return
+// false — runs BEFORE onComplete fires. Without gating on the drain,
+// settlement can be declared while HandleAgentComplete is still executing
+// and StepHistory has not yet been written.
 func isChaosSettled(env *e2eEnv, taskID string) bool {
 	if env.agents.HasRunningAgentForTask(taskID) {
+		return false
+	}
+	if env.agents.HasOnCompleteInflight(taskID) {
 		return false
 	}
 	tk, err := env.tasks.Get(taskID)
@@ -228,47 +234,6 @@ func isChaosSettled(env *e2eEnv, taskID string) bool {
 		return true
 	}
 	return false
-}
-
-// waitForCondition polls fn until it returns true or the deadline expires.
-// Returns true if fn fired, false on timeout. Used for short polls where
-// failure is informational rather than fatal.
-func waitForCondition(timeout time.Duration, fn func() bool) bool {
-	deadline := time.After(timeout)
-	for {
-		select {
-		case <-deadline:
-			return false
-		case <-time.After(20 * time.Millisecond):
-			if fn() {
-				return true
-			}
-		}
-	}
-}
-
-// pollUntilHistoryPopulated re-fetches the task until StepHistory has at
-// least one entry, returning the most recent fetch on timeout. Used to
-// bridge the markAgentDone-vs-onComplete window where a settled-looking
-// snapshot can briefly show empty history.
-func pollUntilHistoryPopulated(t *testing.T, env *e2eEnv, taskID string, timeout time.Duration) task.Task {
-	t.Helper()
-	deadline := time.After(timeout)
-	var last task.Task
-	for {
-		tk, err := env.tasks.Get(taskID)
-		if err == nil {
-			last = tk
-			if tk.Workflow != nil && len(tk.Workflow.StepHistory) > 0 {
-				return tk
-			}
-		}
-		select {
-		case <-deadline:
-			return last
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
 }
 
 // dumpChaosState writes diagnostic info to test logs when a seed fails to
@@ -303,4 +268,96 @@ func truncateForLog(s string, limit int) string {
 		return s
 	}
 	return s[:limit] + "…"
+}
+
+// TestE2E_ChaosSettleGatedOnOnCompleteDrain verifies that isChaosSettled
+// returns false while an onComplete callback is executing, even though
+// HasRunningAgentForTask is already false at that point.
+//
+// The race being tested: markAgentDone closes the agent's done channel
+// (making HasRunningAgentForTask return false) before onComplete fires.
+// Without the HasOnCompleteInflight gate, a settle poll during that window
+// would incorrectly declare the workflow settled — potentially before
+// HandleAgentComplete has written StepHistory.
+//
+// The test intercepts the first onComplete call with a gate channel, asserts
+// the invariants during the blocked window, then releases the gate and
+// verifies that settle completes with a populated StepHistory.
+func TestE2E_ChaosSettleGatedOnOnCompleteDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("drain-gate test requires live agents; skipped in -short mode")
+	}
+
+	env := setupE2E(t, "success")
+
+	// Gate the first onComplete call so we can observe the drain window.
+	gate := make(chan struct{})
+	ready := make(chan struct{})
+	var readyOnce, gateOnce sync.Once
+
+	env.agents.SetOnComplete(func(ag *agent.Agent) {
+		// Signal that onComplete has started (goroutine exited, drain begun).
+		readyOnce.Do(func() { close(ready) })
+		// Block only the first call; subsequent calls pass through.
+		gateOnce.Do(func() { <-gate })
+		// Advance the workflow — this writes StepHistory.
+		var result string
+		for _, ev := range ag.Output() {
+			if ev.Type == "result" {
+				result = ev.Content
+			}
+		}
+		env.engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+			AgentID:  ag.ID,
+			Result:   result,
+			Success:  ag.GetExitErr() == nil,
+			Provider: ag.Provider,
+		})
+	})
+
+	created, err := env.tasks.Create("drain-gate-test", "body", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatalf("startWorkflow: %v", err)
+	}
+
+	// Wait for the first agent goroutine to exit and onComplete to start.
+	select {
+	case <-ready:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for first onComplete to start")
+	}
+
+	// Drain window: goroutine done, onComplete executing (blocked on gate).
+	if env.agents.HasRunningAgentForTask(created.ID) {
+		t.Error("expected HasRunningAgentForTask=false while onComplete blocked")
+	}
+	if !env.agents.HasOnCompleteInflight(created.ID) {
+		t.Error("expected HasOnCompleteInflight=true while onComplete blocked")
+	}
+	// The settle predicate must return false — gated on drain.
+	if isChaosSettled(env, created.ID) {
+		t.Error("isChaosSettled returned true while onComplete was in-flight — drain gate missing")
+	}
+
+	// Release the gate; onComplete proceeds and HandleAgentComplete runs.
+	close(gate)
+
+	if !waitForChaosSettle(t, env, created.ID, 15*time.Second) {
+		dumpChaosState(t, env, created.ID)
+		t.Fatal("workflow never settled after onComplete drained")
+	}
+
+	// StepHistory must be populated — no poll needed because the drain gate
+	// ensures HandleAgentComplete has already returned before settle fires.
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatalf("post-settle task get: %v", err)
+	}
+	if tk.Workflow == nil || len(tk.Workflow.StepHistory) == 0 {
+		dumpChaosState(t, env, created.ID)
+		t.Error("StepHistory empty after settle — drain gate should have ensured it was written")
+	}
 }
