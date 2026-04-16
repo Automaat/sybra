@@ -20,6 +20,8 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path"
+	"strings"
 	"syscall"
 	"time"
 
@@ -184,12 +186,18 @@ type spaHandler struct {
 }
 
 func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if path == "" {
-		path = "/"
+	urlPath := r.URL.Path
+	if urlPath == "" {
+		urlPath = "/"
 	}
-	// Check if the file exists; fall back to index.html if not.
-	if _, err := os.Stat(h.staticDir + path); os.IsNotExist(err) {
+	if _, err := os.Stat(h.staticDir + urlPath); os.IsNotExist(err) {
+		// Paths with a file extension (e.g. /favicon.ico) are static asset
+		// requests, not SPA routes — return 404 so browsers don't treat an
+		// HTML index.html response as a broken asset.
+		if strings.Contains(path.Base(urlPath), ".") {
+			http.NotFound(w, r)
+			return
+		}
 		r2 := *r
 		r2.URL.Path = "/"
 		h.fs.ServeHTTP(w, &r2)
