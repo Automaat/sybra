@@ -12,6 +12,7 @@
   import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
   import AgentHeader from '../components/agent-view/AgentHeader.svelte'
   import AgentViewBody from '../components/agent-view/AgentViewBody.svelte'
+  import type { ToolUseSignal } from '$lib/workspace-tabs.js'
 
   interface EscalationEvent {
     reason: string
@@ -29,9 +30,10 @@
     agentId: string
     onback: () => void
     onviewtask: (taskId: string) => void
+    onnavigate?: (id: string) => void
   }
 
-  const { agentId, onback, onviewtask }: Props = $props()
+  const { agentId, onback, onviewtask, onnavigate }: Props = $props()
 
   let a = $state<agent.Agent | null>(null)
   let error = $state('')
@@ -75,6 +77,34 @@
       ? extractLatestPlanStepsFromConvo(convoEvents)
       : extractLatestPlanSteps(streamOutputs),
   )
+
+  const allAgents = $derived(agentStore.list)
+
+  const latestToolUse = $derived.by<ToolUseSignal | undefined>(() => {
+    if (a?.mode === 'interactive') {
+      for (let i = convoEvents.length - 1; i >= 0; i--) {
+        const ev = convoEvents[i]
+        if (ev.type === 'assistant' && ev.toolUses?.length) {
+          const tu = ev.toolUses[ev.toolUses.length - 1]
+          return { id: tu.id, name: tu.name, ts: new Date(ev.timestamp) }
+        }
+      }
+    } else {
+      for (let i = streamOutputs.length - 1; i >= 0; i--) {
+        const ev = streamOutputs[i].event
+        if (ev.type === 'assistant' && ev.content) {
+          const lines = ev.content.split('\n')
+          for (let j = lines.length - 1; j >= 0; j--) {
+            const m = lines[j].match(/^\[(\w+)\]\s+(.+)$/)
+            if (m) {
+              return { id: `stream-${i}-${j}`, name: m[1], ts: streamOutputs[i].receivedAt }
+            }
+          }
+        }
+      }
+    }
+    return undefined
+  })
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -240,6 +270,9 @@
         {planSteps}
         {selectedIndex}
         onselect={(i) => { selectedIndex = i }}
+        {allAgents}
+        {latestToolUse}
+        onnavigate={onnavigate ?? (() => {})}
       />
     </div>
   {:else if !error}

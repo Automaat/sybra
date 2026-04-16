@@ -1,8 +1,14 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
@@ -138,6 +144,74 @@ func (s *AgentService) findAgentLogFile(taskID, agentID string) (string, error) 
 // continueRun=true lets the agent keep running; false kills it.
 func (s *AgentService) RespondEscalation(agentID string, continueRun bool) error {
 	return s.agents.RespondEscalation(agentID, continueRun)
+}
+
+// GetAgentDiff returns a unified diff of uncommitted changes in the task
+// worktree. Returns an empty string when the worktree does not exist or
+// there are no changes. Untracked files are appended as synthetic new-file
+// diff blocks so the Editor tab can show them alongside modified files.
+func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
+	if s.worktrees == nil {
+		return "", nil
+	}
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return "", fmt.Errorf("task %s: %w", taskID, err)
+	}
+	if !s.worktrees.Exists(t) {
+		return "", nil
+	}
+	dir := s.worktrees.PathFor(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat")
+
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "HEAD", "--patch", "-M", "--no-color")
+	diffCmd.Dir = dir
+	diffCmd.Env = env
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		s.logger.Warn("agent.diff.git-diff-failed", "task_id", taskID, "err", err)
+		return "", nil
+	}
+
+	lsCmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
+	lsCmd.Dir = dir
+	lsCmd.Env = env
+	lsOut, err := lsCmd.Output()
+	if err != nil {
+		s.logger.Warn("agent.diff.ls-files-failed", "task_id", taskID, "err", err)
+		return string(diffOut), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(string(diffOut))
+	for relPath := range strings.SplitSeq(strings.TrimSpace(string(lsOut)), "\n") {
+		if relPath == "" {
+			continue
+		}
+		absPath := filepath.Join(dir, relPath)
+		data, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			fmt.Fprintf(&sb, "\n--- /dev/null\n+++ b/%s\n", relPath)
+			continue
+		}
+		const maxBytes = 100 * 1024
+		if len(data) > maxBytes {
+			data = data[:maxBytes]
+		}
+		lines := strings.Split(string(data), "\n")
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		fmt.Fprintf(&sb, "\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", relPath, len(lines))
+		for _, line := range lines {
+			sb.WriteString("+" + line + "\n")
+		}
+	}
+	return sb.String(), nil
 }
 
 // OpenWorktree opens the git worktree for taskID in the OS file manager.
