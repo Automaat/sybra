@@ -31,20 +31,15 @@
   import QuickAddTask from './components/QuickAddTask.svelte'
   import ToastContainer from './components/ToastContainer.svelte'
   import CommandPalette from './components/CommandPalette.svelte'
+  import type { PaletteCtx } from './lib/palette-commands.js'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
   import { Cloud, AlertTriangle } from '@lucide/svelte'
 
-  type SimplePageKind = 'dashboard' | 'task-list' | 'project-list' | 'chats' | 'agents' | 'github' | 'reviews' | 'stats' | 'settings' | 'workflows'
-
-  function handlePaletteNavigate(kind: string, params?: { taskId?: string; projectId?: string }): void {
-    commandPaletteOpen = false
-    if (kind === 'task-detail' && params?.taskId) {
-      navStore.navigate({ kind: 'task-detail', taskId: params.taskId })
-    } else if (kind === 'project-detail' && params?.projectId) {
-      navStore.navigate({ kind: 'project-detail', projectId: params.projectId })
-    } else {
-      navStore.reset({ kind: kind as SimplePageKind })
-    }
+  const paletteCtx: PaletteCtx = {
+    navigate: (page) => { commandPaletteOpen = false; navStore.reset(page) },
+    openNewTask: () => { commandPaletteOpen = false; dialogOpen = true },
+    openNewProject: () => { commandPaletteOpen = false; projectDialogOpen = true },
+    openKeyboardHelp: () => { commandPaletteOpen = false; helpOpen = true },
   }
 
   type DegradedWarning = { subsystem: string; reason: string }
@@ -160,7 +155,16 @@
     const hasFinePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches
     let removeKeyHandler: (() => void) | undefined
     if (hasFinePointer) {
+      let pendingG = false
+      let gTimer: ReturnType<typeof setTimeout> | null = null
+
       function handleKeydown(e: KeyboardEvent) {
+        // Clear G-chord when a modifier key combo fires
+        if ((e.metaKey || e.ctrlKey || e.altKey) && pendingG) {
+          pendingG = false
+          if (gTimer) { clearTimeout(gTimer); gTimer = null }
+        }
+
         if (e.metaKey && e.key === 'n') {
           e.preventDefault()
           quickAddOpen = true
@@ -210,9 +214,36 @@
           navStore.reset({ kind: 'task-list' })
           requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
         }
+
+        // G-chord navigation: bare keypresses only, not in input/textarea/contenteditable
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+          const target = e.target as HTMLElement
+          const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+          if (!inInput) {
+            if (pendingG) {
+              pendingG = false
+              if (gTimer) { clearTimeout(gTimer); gTimer = null }
+              if (e.key === 'i') { e.preventDefault(); navStore.reset({ kind: 'task-list' }) }
+              else if (e.key === 'a') { e.preventDefault(); navStore.reset({ kind: 'task-list', filter: 'in-progress' }) }
+              else if (e.key === 'p') { e.preventDefault(); navStore.reset({ kind: 'project-list' }) }
+              else if (e.key === 's') { e.preventDefault(); navStore.reset({ kind: 'settings' }) }
+              // unmapped letters: clear pendingG silently, no navigation
+              return
+            }
+            if (e.key === 'g') {
+              e.preventDefault()
+              pendingG = true
+              gTimer = setTimeout(() => { pendingG = false; gTimer = null }, 1500)
+              return
+            }
+          }
+        }
       }
       window.addEventListener('keydown', handleKeydown)
-      removeKeyHandler = () => window.removeEventListener('keydown', handleKeydown)
+      removeKeyHandler = () => {
+        window.removeEventListener('keydown', handleKeydown)
+        if (gTimer) clearTimeout(gTimer)
+      }
     }
 
     return () => {
@@ -286,7 +317,7 @@
     {#if navStore.page.kind === 'dashboard'}
       <Dashboard onviewagent={navAgentDetail} />
     {:else if navStore.page.kind === 'task-list'}
-      <TaskList onselect={navTaskDetail} />
+      <TaskList onselect={navTaskDetail} filter={navStore.page.filter} />
     {:else if navStore.page.kind === 'task-detail'}
       <TaskDetail
         taskId={navStore.page.taskId}
@@ -364,7 +395,7 @@
 <CommandPalette
   open={commandPaletteOpen}
   onclose={() => (commandPaletteOpen = false)}
-  onnavigate={handlePaletteNavigate}
+  ctx={paletteCtx}
 />
 
 {#if !viewport.hasCoarsePointer}

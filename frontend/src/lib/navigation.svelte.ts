@@ -3,7 +3,7 @@
 
 export type Page =
   | { kind: 'dashboard' }
-  | { kind: 'task-list' }
+  | { kind: 'task-list'; filter?: 'in-progress' }
   | { kind: 'task-detail'; taskId: string }
   | { kind: 'project-list' }
   | { kind: 'project-detail'; projectId: string }
@@ -98,6 +98,7 @@ class NavStore {
 
 function samePage(a: Page, b: Page): boolean {
   if (a.kind !== b.kind) return false
+  if (a.kind === 'task-list' && b.kind === 'task-list') return (a.filter ?? '') === (b.filter ?? '')
   if (a.kind === 'task-detail' && b.kind === 'task-detail') return a.taskId === b.taskId
   if (a.kind === 'project-detail' && b.kind === 'project-detail') return a.projectId === b.projectId
   if (a.kind === 'chat-detail' && b.kind === 'chat-detail') return a.agentId === b.agentId

@@ -14,9 +14,10 @@
 
   interface Props {
     onselect: (id: string) => void
+    filter?: 'in-progress'
   }
 
-  const { onselect }: Props = $props()
+  const { onselect, filter }: Props = $props()
 
   let dragOverStatus = $state<string | null>(null)
   let addingToColumn = $state<string | null>(null)
@@ -159,6 +160,19 @@
     }
     window.addEventListener('focus-search', onFocusSearch)
     return () => window.removeEventListener('focus-search', onFocusSearch)
+  })
+
+  $effect(() => {
+    if (filter !== 'in-progress') return
+    requestAnimationFrame(() => {
+      document.querySelector('[data-col-status="in-progress"]')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'start',
+      })
+      const idx = BOARD_COLUMNS.findIndex((c) => c.status === 'in-progress')
+      if (idx >= 0) focusedColIdx = idx
+    })
   })
 
   // Filter state
@@ -463,6 +477,7 @@
         {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
+          data-col-status={col.status}
           class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[260px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
           ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
           ondragleave={() => { dragOverStatus = null }}
