@@ -27,14 +27,14 @@ steps:
         {{ $feedback }}
 
         Revise the manual test plan for task {{.Task.ID}} to address these points
-        using the /synapse-test-plan skill. Update --plan and set status back to
+        using the /sybra-test-plan skill. Update --plan and set status back to
         test-plan-review when done.
         {{- else }}
-        Prepare a manual test plan for task {{.Task.ID}} using the /synapse-test-plan skill.
+        Prepare a manual test plan for task {{.Task.ID}} using the /sybra-test-plan skill.
 
         When the plan is ready:
-          1. synapse-cli update {{.Task.ID}} --plan "<full plan markdown>"
-          2. synapse-cli update {{.Task.ID}} --status test-plan-review
+          1. sybra-cli update {{.Task.ID}} --plan "<full plan markdown>"
+          2. sybra-cli update {{.Task.ID}} --status test-plan-review
 
         Then STOP and wait. Do NOT exit. Do NOT execute the tests yet.
 
@@ -83,16 +83,16 @@ steps:
         Critique the test plan for task {{.Task.ID}} using the /plan-critic skill.
 
         Steps:
-          1. Run: synapse-cli --json get {{.Task.ID}}
+          1. Run: sybra-cli --json get {{.Task.ID}}
           2. Extract the .plan field from the JSON output and write it to
-             /tmp/synapse-plan-{{.Task.ID}}.md
-          3. Invoke: /plan-critic /tmp/synapse-plan-{{.Task.ID}}.md
+             /tmp/sybra-plan-{{.Task.ID}}.md
+          3. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
           4. Capture the full markdown Plan Review report you produce and
-             write it to /tmp/synapse-critique-{{.Task.ID}}.md
-          5. Save it: synapse-cli update {{.Task.ID}} --plan-critique-file /tmp/synapse-critique-{{.Task.ID}}.md
+             write it to /tmp/sybra-critique-{{.Task.ID}}.md
+          5. Save it: sybra-cli update {{.Task.ID}} --plan-critique-file /tmp/sybra-critique-{{.Task.ID}}.md
 
         Do NOT modify the plan. Do NOT change the task status. Your only
-        side effect is writing the critique sidecar via synapse-cli.
+        side effect is writing the critique sidecar via sybra-cli.
       allowed_tools:
         - Bash
         - Read
@@ -143,12 +143,12 @@ steps:
       prompt: >-
         Execute the approved manual test plan for task {{.Task.ID}}.
 
-        1. synapse-cli --json get {{.Task.ID}}  (the .plan field contains the approved test plan)
+        1. sybra-cli --json get {{.Task.ID}}  (the .plan field contains the approved test plan)
         2. Run each test case. Start the app/CLI as needed, interact with it,
            capture observed vs expected results.
         3. Append a "## Test Results" section to the task body documenting
            pass/fail for each case plus any reproduction notes.
-        4. synapse-cli update {{.Task.ID}} --status human-required
+        4. sybra-cli update {{.Task.ID}} --status human-required
            --status-reason "manual testing complete - verify results"
     next:
       - goto: ""

@@ -1,14 +1,14 @@
 ---
-name: synapse-test-plan
-description: Build a manual test plan for a Synapse task in the testing phase — spawns three distinct expert-tester personas (Bach, Kaner, Hendrickson) in parallel, each drafting test cases from their own frame, then merges before publishing. Critique is handled by a separate cross-provider workflow step. Covers Kubernetes and GUI app changes. Use whenever a task enters the testing status, when asked to "write a test plan", "plan manual tests", "figure out how to test X", or when reviewing a change that needs manual verification before merge.
+name: sybra-test-plan
+description: Build a manual test plan for a Sybra task in the testing phase — spawns three distinct expert-tester personas (Bach, Kaner, Hendrickson) in parallel, each drafting test cases from their own frame, then merges before publishing. Critique is handled by a separate cross-provider workflow step. Covers Kubernetes and GUI app changes. Use whenever a task enters the testing status, when asked to "write a test plan", "plan manual tests", "figure out how to test X", or when reviewing a change that needs manual verification before merge.
 allowed-tools: Bash, Read, Agent
 user-invocable: true
 ---
 
-<!-- justify: I2 flat single-file convention matches sibling synapse skills and the runtime ~/.synapse/skills/ sync; extracting to references/ would break parity -->
+<!-- justify: I2 flat single-file convention matches sibling sybra skills and the runtime ~/.sybra/skills/ sync; extracting to references/ would break parity -->
 <!-- justify: I17 side-effect signals appear inside domain checklists as example cases the human runs during manual testing, not commands the skill itself executes -->
 
-# Synapse Test Plan
+# Sybra Test Plan
 
 Produce a rigorous manual test plan for a task by spawning three expert-tester personas in parallel, merging their outputs, and publishing. Critique is handled by a separate cross-provider workflow step. Plan manual verification only — do not execute tests and do not write automated tests.
 
@@ -33,7 +33,7 @@ Parallel drafting (not parallel reviewing of a shared draft) preserves each pers
 
 ## CLI reference
 
-Test plan lives in the task's `--plan` field (same mechanism as `synapse-plan`). Valid `synapse-cli update` flags: `--title`, `--status`, `--body`, `--plan`, `--plan-file`, `--plan-critique`, `--plan-critique-file`, `--mode`, `--tags`, `--project`.
+Test plan lives in the task's `--plan` field (same mechanism as `sybra-plan`). Valid `sybra-cli update` flags: `--title`, `--status`, `--body`, `--plan`, `--plan-file`, `--plan-critique`, `--plan-critique-file`, `--mode`, `--tags`, `--project`.
 
 Status flow: `testing` → (parallel drafts + merge + review) → `test-plan-review`.
 
@@ -42,7 +42,7 @@ Status flow: `testing` → (parallel drafts + merge + review) → `test-plan-rev
 ### 1. Read the task and the change
 
 ```bash
-synapse-cli --json get <id>
+sybra-cli --json get <id>
 ```
 
 Read the task body, `plan` field, and any linked PR (`gh pr view <n> --json title,body,files`). Then read the changed files directly, because a plan written against a prose description misses real behavior — the code is the only reliable source of the actual surface area. Build a short "change under test" summary to hand to every persona.
@@ -164,8 +164,8 @@ Merge in the main context, not a subagent — a merge needs all three outputs he
 ### 5. Publish and hand off
 
 ```bash
-synapse-cli --json update <id> --plan "<final plan>"
-synapse-cli --json update <id> --status test-plan-review
+sybra-cli --json update <id> --plan "<final plan>"
+sybra-cli --json update <id> --status test-plan-review
 ```
 
 After publishing, stay at the chat prompt. Do not execute tests and do not exit, because the human reviewer will send feedback in the same chat session and needs the agent alive to receive it.
@@ -242,7 +242,7 @@ Share with every persona as context. Not every item applies to every change — 
 
 ## GUI app checklist
 
-Synapse frontend is Svelte 5 + Wails v2 in a desktop window. Share with every persona.
+Sybra frontend is Svelte 5 + Wails v2 in a desktop window. Share with every persona.
 
 - **Visual & layout**: components render without overlap at default size; no typos/Lorem Ipsum/debug text; loading/empty/error states distinct; dark + light theme (Skeleton UI); consistent font sizes.
 - **Responsiveness & resize**: resize to ~800×600 and very large; content reflows, no clipped text or unintended scrollbars; split panes snap to min/max.
@@ -272,16 +272,16 @@ Classify as GUI change. Read `TaskDetail.svelte` and `app.go`. Spawn three perso
 
 **Publish:**
 ```bash
-synapse-cli --json update task-xyz --plan "<merged plan>"
-synapse-cli --json update task-xyz --status test-plan-review
+sybra-cli --json update task-xyz --plan "<merged plan>"
+sybra-cli --json update task-xyz --status test-plan-review
 ```
 Stay at prompt.
 </example>
 
 <example>
-**Kubernetes change** — task `task-k8s-42`: "Add PodDisruptionBudget to synapse-agent Helm chart with `minAvailable: 1`; bump chart version to 0.4.0."
+**Kubernetes change** — task `task-k8s-42`: "Add PodDisruptionBudget to sybra-agent Helm chart with `minAvailable: 1`; bump chart version to 0.4.0."
 
-Classify as Kubernetes change. Read `charts/synapse-agent/templates/pdb.yaml`, `values.yaml`, and `Chart.yaml`. Spawn three personas in parallel with k8s checklist.
+Classify as Kubernetes change. Read `charts/sybra-agent/templates/pdb.yaml`, `values.yaml`, and `Chart.yaml`. Spawn three personas in parallel with k8s checklist.
 
 **Bach returns:** drain a node with only 1 replica running (does drain block forever?), set `minAvailable` higher than replicas (`helm lint` should catch), upgrade from 0.3.x → 0.4.0 then rollback, PDB with 0 replicas at time of drain, concurrent drain of 2 nodes.
 
@@ -308,8 +308,8 @@ Verify the word "Received" renders correctly in the task detail panel header.
 ```
 
 ```bash
-synapse-cli --json update task-typo-7 --plan "<smoke plan>"
-synapse-cli --json update task-typo-7 --status test-plan-review
+sybra-cli --json update task-typo-7 --plan "<smoke plan>"
+sybra-cli --json update task-typo-7 --status test-plan-review
 ```
 </example>
 

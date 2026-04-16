@@ -1198,10 +1198,12 @@ func (a *App) syncSkills() {
 
 	if useEmbedded {
 		a.logger.Info("skills.sync.embedded", "dst", a.skillsDir)
-		a.syncFSDir(a.skillsFS, "data", a.skillsDir)
+		a.syncFSSkillsDir(a.skillsFS, "data", a.skillsDir)
+		if userHome, err2 := os.UserHomeDir(); err2 == nil && filepath.Clean(a.skillsDir) != filepath.Clean(filepath.Join(userHome, ".claude", "skills")) {
+			a.syncFSSkillsDir(a.skillsFS, "data", filepath.Join(userHome, ".claude", "skills"))
+		}
 		if userHome, err2 := os.UserHomeDir(); err2 == nil {
-			a.syncFSDir(a.skillsFS, "data", filepath.Join(userHome, ".claude", "skills"))
-			a.syncFSToCodexDir(a.skillsFS, "data", filepath.Join(userHome, ".codex", "skills"))
+			a.syncFSSkillsDir(a.skillsFS, "data", filepath.Join(userHome, ".codex", "skills"))
 		}
 		a.logger.Info("skills.sync.done")
 		return
@@ -1209,13 +1211,15 @@ func (a *App) syncSkills() {
 
 	a.logger.Info("skills.sync.start", "src", repoDir, "dst", a.skillsDir)
 
-	a.syncDir(skillsSrc, a.skillsDir)
+	a.syncSkillsDir(skillsSrc, a.skillsDir)
 
 	// Also sync to the system Claude Code and Codex skills dirs so headless
 	// agents launched via `claude -p` or `codex exec` can discover skills.
 	if userHome, err := os.UserHomeDir(); err == nil {
-		a.syncDir(skillsSrc, filepath.Join(userHome, ".claude", "skills"))
-		a.syncToCodexDir(skillsSrc, filepath.Join(userHome, ".codex", "skills"))
+		if filepath.Clean(a.skillsDir) != filepath.Clean(filepath.Join(userHome, ".claude", "skills")) {
+			a.syncSkillsDir(skillsSrc, filepath.Join(userHome, ".claude", "skills"))
+		}
+		a.syncSkillsDir(skillsSrc, filepath.Join(userHome, ".codex", "skills"))
 	}
 
 	claudeSrc := filepath.Join(repoDir, "orchestrator", "CLAUDE.md")
@@ -1224,103 +1228,6 @@ func (a *App) syncSkills() {
 	a.syncFile(claudeSrc, filepath.Join(config.HomeDir(), "AGENTS.md"))
 
 	a.logger.Info("skills.sync.done")
-}
-
-func (a *App) syncDir(src, dst string) {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		a.logger.Debug("sync.skip", "src", src, "reason", err)
-		return
-	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		a.logger.Error("sync.mkdir", "dst", dst, "err", err)
-		return
-	}
-	cleanSrc := filepath.Clean(src) + string(filepath.Separator)
-	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
-
-	srcNames := make(map[string]struct{}, len(entries))
-	srcDirs := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		if e.Type()&fs.ModeSymlink != 0 {
-			a.logger.Debug("sync.skip.symlink", "name", e.Name())
-			continue
-		}
-		if e.IsDir() {
-			if a.copySkillDir(src, dst, cleanSrc, cleanDst, e.Name(), "sync") {
-				a.logger.Info("sync.copied", "dir", e.Name())
-				srcDirs[e.Name()] = struct{}{}
-			}
-			continue
-		}
-		if filepath.Ext(e.Name()) != ".md" {
-			continue
-		}
-		srcPath := filepath.Join(filepath.Clean(src), e.Name())
-		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
-		if !strings.HasPrefix(srcPath+string(filepath.Separator), cleanSrc) ||
-			!strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
-			a.logger.Warn("sync.skip.traversal", "name", e.Name())
-			continue
-		}
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			a.logger.Warn("sync.read.fail", "name", e.Name(), "err", err)
-			continue
-		}
-		if !hasYAMLFrontmatter(data) {
-			a.logger.Warn("sync.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-			a.logger.Error("sync.mkdir", "dst", dstPath, "err", err)
-			continue
-		}
-		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
-			a.logger.Error("sync.write", "dst", dstPath, "err", err)
-			continue
-		}
-		a.logger.Info("sync.copied", "file", e.Name())
-		srcNames[e.Name()] = struct{}{}
-	}
-
-	// Remove orphan .md files and directory skills in dst.
-	dstEntries, err := os.ReadDir(dst)
-	if err != nil {
-		return
-	}
-	for _, e := range dstEntries {
-		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
-		if !strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
-			continue
-		}
-		if e.IsDir() {
-			if _, ok := srcDirs[e.Name()]; ok {
-				continue
-			}
-			// Only remove orphan dirs that look like skill dirs (have SKILL.md).
-			if _, statErr := os.Stat(filepath.Join(dstPath, "SKILL.md")); statErr != nil {
-				continue
-			}
-			if err := os.RemoveAll(dstPath); err != nil {
-				a.logger.Warn("sync.orphan.remove.fail", "dir", e.Name(), "err", err)
-			} else {
-				a.logger.Info("sync.orphan.removed", "dir", e.Name())
-			}
-			continue
-		}
-		if filepath.Ext(e.Name()) != ".md" {
-			continue
-		}
-		if _, ok := srcNames[e.Name()]; ok {
-			continue
-		}
-		if err := os.Remove(dstPath); err != nil {
-			a.logger.Warn("sync.orphan.remove.fail", "file", e.Name(), "err", err)
-		} else {
-			a.logger.Info("sync.orphan.removed", "file", e.Name())
-		}
-	}
 }
 
 func (a *App) syncFile(src, dst string) {
@@ -1338,71 +1245,6 @@ func (a *App) syncFile(src, dst string) {
 		return
 	}
 	a.logger.Info("sync.copied", "file", filepath.Base(dst))
-}
-
-// syncFSDir copies .md files from srcDir inside fsys to the dst filesystem path.
-// It mirrors syncDir but reads from an fs.FS instead of the host filesystem.
-func (a *App) syncFSDir(fsys fs.FS, srcDir, dst string) {
-	entries, err := fs.ReadDir(fsys, srcDir)
-	if err != nil {
-		a.logger.Debug("sync.fs.skip", "src", srcDir, "reason", err)
-		return
-	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		a.logger.Error("sync.mkdir", "dst", dst, "err", err)
-		return
-	}
-	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
-
-	srcNames := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
-			continue
-		}
-		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
-		if !strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
-			a.logger.Warn("sync.skip.traversal", "name", e.Name())
-			continue
-		}
-		data, err := fs.ReadFile(fsys, srcDir+"/"+e.Name())
-		if err != nil {
-			a.logger.Warn("sync.fs.read.fail", "name", e.Name(), "err", err)
-			continue
-		}
-		if !hasYAMLFrontmatter(data) {
-			a.logger.Warn("sync.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
-			continue
-		}
-		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
-			a.logger.Error("sync.write", "dst", dstPath, "err", err)
-			continue
-		}
-		a.logger.Info("sync.copied", "file", e.Name())
-		srcNames[e.Name()] = struct{}{}
-	}
-
-	// Remove orphan .md files in dst that are not in the embedded bundle.
-	dstEntries, err := os.ReadDir(dst)
-	if err != nil {
-		return
-	}
-	for _, e := range dstEntries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
-			continue
-		}
-		if _, ok := srcNames[e.Name()]; ok {
-			continue
-		}
-		dstPath := filepath.Join(filepath.Clean(dst), e.Name())
-		if !strings.HasPrefix(dstPath+string(filepath.Separator), cleanDst) {
-			continue
-		}
-		if err := os.Remove(dstPath); err != nil {
-			a.logger.Warn("sync.orphan.remove.fail", "file", e.Name(), "err", err)
-		} else {
-			a.logger.Info("sync.orphan.removed", "file", e.Name())
-		}
-	}
 }
 
 // hasYAMLFrontmatter reports whether data begins with a YAML frontmatter
@@ -1487,17 +1329,19 @@ func (a *App) copySkillDir(src, dst, cleanSrc, cleanDst, name, logPrefix string)
 	return true
 }
 
-// syncToCodexDir reads flat .md skill files from src and writes each one as
-// dst/<name>/SKILL.md — the subdirectory layout expected by the Codex CLI.
+// syncSkillsDir reads flat .md skill files (and directory-style skills) from
+// src and writes each one as dst/<name>/SKILL.md — the subdirectory layout
+// Claude Code and Codex both expect. Flat files in dst are NOT discovered by
+// Claude Code's skill loader, so this layout is mandatory.
 // Orphan skill subdirs (present in dst but absent from src) are removed.
-func (a *App) syncToCodexDir(src, dst string) {
+func (a *App) syncSkillsDir(src, dst string) {
 	entries, err := os.ReadDir(src)
 	if err != nil {
-		a.logger.Debug("sync.codex.skip", "src", src, "reason", err)
+		a.logger.Debug("sync.skill.skip", "src", src, "reason", err)
 		return
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
-		a.logger.Error("sync.codex.mkdir", "dst", dst, "err", err)
+		a.logger.Error("sync.skill.mkdir", "dst", dst, "err", err)
 		return
 	}
 	cleanSrc := filepath.Clean(src) + string(filepath.Separator)
@@ -1509,8 +1353,8 @@ func (a *App) syncToCodexDir(src, dst string) {
 			continue
 		}
 		if e.IsDir() {
-			if a.copySkillDir(src, dst, cleanSrc, cleanDst, e.Name(), "sync.codex") {
-				a.logger.Info("sync.codex.copied", "skill", e.Name())
+			if a.copySkillDir(src, dst, cleanSrc, cleanDst, e.Name(), "sync.skill") {
+				a.logger.Info("sync.skill.copied", "skill", e.Name())
 				srcNames[e.Name()] = struct{}{}
 			}
 			continue
@@ -1520,34 +1364,34 @@ func (a *App) syncToCodexDir(src, dst string) {
 		}
 		srcPath := filepath.Join(filepath.Clean(src), e.Name())
 		if !strings.HasPrefix(srcPath+string(filepath.Separator), cleanSrc) {
-			a.logger.Warn("sync.codex.skip.traversal", "name", e.Name())
+			a.logger.Warn("sync.skill.skip.traversal", "name", e.Name())
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".md")
 		skillDir := filepath.Join(filepath.Clean(dst), name)
 		if !strings.HasPrefix(skillDir+string(filepath.Separator), cleanDst) {
-			a.logger.Warn("sync.codex.skip.traversal", "name", e.Name())
+			a.logger.Warn("sync.skill.skip.traversal", "name", e.Name())
 			continue
 		}
 		dstPath := filepath.Join(skillDir, "SKILL.md")
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
-			a.logger.Warn("sync.codex.read.fail", "name", e.Name(), "err", err)
+			a.logger.Warn("sync.skill.read.fail", "name", e.Name(), "err", err)
 			continue
 		}
 		if !hasYAMLFrontmatter(data) {
-			a.logger.Warn("sync.codex.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
+			a.logger.Warn("sync.skill.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
 			continue
 		}
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			a.logger.Error("sync.codex.mkdir.skill", "dir", skillDir, "err", err)
+			a.logger.Error("sync.skill.mkdir.skill", "dir", skillDir, "err", err)
 			continue
 		}
 		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
-			a.logger.Error("sync.codex.write", "dst", dstPath, "err", err)
+			a.logger.Error("sync.skill.write", "dst", dstPath, "err", err)
 			continue
 		}
-		a.logger.Info("sync.codex.copied", "skill", name)
+		a.logger.Info("sync.skill.copied", "skill", name)
 		srcNames[name] = struct{}{}
 	}
 
@@ -1572,22 +1416,22 @@ func (a *App) syncToCodexDir(src, dst string) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(filepath.Clean(dst), e.Name())); err != nil {
-			a.logger.Warn("sync.codex.orphan.remove.fail", "skill", e.Name(), "err", err)
+			a.logger.Warn("sync.skill.orphan.remove.fail", "skill", e.Name(), "err", err)
 		} else {
-			a.logger.Info("sync.codex.orphan.removed", "skill", e.Name())
+			a.logger.Info("sync.skill.orphan.removed", "skill", e.Name())
 		}
 	}
 }
 
-// syncFSToCodexDir mirrors syncToCodexDir but reads source files from an fs.FS.
-func (a *App) syncFSToCodexDir(fsys fs.FS, srcDir, dst string) {
+// syncFSSkillsDir mirrors syncSkillsDir but reads source files from an fs.FS.
+func (a *App) syncFSSkillsDir(fsys fs.FS, srcDir, dst string) {
 	entries, err := fs.ReadDir(fsys, srcDir)
 	if err != nil {
-		a.logger.Debug("sync.codex.fs.skip", "src", srcDir, "reason", err)
+		a.logger.Debug("sync.skill.fs.skip", "src", srcDir, "reason", err)
 		return
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
-		a.logger.Error("sync.codex.mkdir", "dst", dst, "err", err)
+		a.logger.Error("sync.skill.mkdir", "dst", dst, "err", err)
 		return
 	}
 	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
@@ -1600,28 +1444,28 @@ func (a *App) syncFSToCodexDir(fsys fs.FS, srcDir, dst string) {
 		name := strings.TrimSuffix(e.Name(), ".md")
 		skillDir := filepath.Join(filepath.Clean(dst), name)
 		if !strings.HasPrefix(skillDir+string(filepath.Separator), cleanDst) {
-			a.logger.Warn("sync.codex.skip.traversal", "name", e.Name())
+			a.logger.Warn("sync.skill.skip.traversal", "name", e.Name())
 			continue
 		}
 		dstPath := filepath.Join(skillDir, "SKILL.md")
 		data, err := fs.ReadFile(fsys, srcDir+"/"+e.Name())
 		if err != nil {
-			a.logger.Warn("sync.codex.fs.read.fail", "name", e.Name(), "err", err)
+			a.logger.Warn("sync.skill.fs.read.fail", "name", e.Name(), "err", err)
 			continue
 		}
 		if !hasYAMLFrontmatter(data) {
-			a.logger.Warn("sync.codex.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
+			a.logger.Warn("sync.skill.skip.invalid", "name", e.Name(), "reason", "missing YAML frontmatter")
 			continue
 		}
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			a.logger.Error("sync.codex.mkdir.skill", "dir", skillDir, "err", err)
+			a.logger.Error("sync.skill.mkdir.skill", "dir", skillDir, "err", err)
 			continue
 		}
 		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
-			a.logger.Error("sync.codex.write", "dst", dstPath, "err", err)
+			a.logger.Error("sync.skill.write", "dst", dstPath, "err", err)
 			continue
 		}
-		a.logger.Info("sync.codex.copied", "skill", name)
+		a.logger.Info("sync.skill.copied", "skill", name)
 		srcNames[name] = struct{}{}
 	}
 
@@ -1645,9 +1489,9 @@ func (a *App) syncFSToCodexDir(fsys fs.FS, srcDir, dst string) {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(filepath.Clean(dst), e.Name())); err != nil {
-			a.logger.Warn("sync.codex.orphan.remove.fail", "skill", e.Name(), "err", err)
+			a.logger.Warn("sync.skill.orphan.remove.fail", "skill", e.Name(), "err", err)
 		} else {
-			a.logger.Info("sync.codex.orphan.removed", "skill", e.Name())
+			a.logger.Info("sync.skill.orphan.removed", "skill", e.Name())
 		}
 	}
 }

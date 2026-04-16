@@ -16,7 +16,7 @@ type ChecksConfig struct {
 	PrePush   []string `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
 }
 
-// RepoConfig is the subset of Synapse config that can be defined in a repo's
+// RepoConfig is the subset of Sybra config that can be defined in a repo's
 // .sybra.yaml file. Repo config takes priority over the app-level project config.
 type RepoConfig struct {
 	Checks *ChecksConfig `yaml:"checks,omitempty" json:"checks,omitempty"`

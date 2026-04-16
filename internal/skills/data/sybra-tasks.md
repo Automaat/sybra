@@ -1,39 +1,39 @@
 ---
-name: synapse-tasks
-description: Manage Synapse tasks (list, create, update, delete) via synapse-cli. Use when user mentions tasks, work items, TODOs, or asks to track/create/update work.
+name: sybra-tasks
+description: Manage Sybra tasks (list, create, update, delete) via sybra-cli. Use when user mentions tasks, work items, TODOs, or asks to track/create/update work.
 allowed-tools: Bash
 user-invocable: true
 argument-hint: "[list|create|update|delete] [args]"
 ---
 
-# Synapse Task Management
+# Sybra Task Management
 
-Use `synapse-cli` to manage tasks. Always use `--json` for machine-parseable output.
+Use `sybra-cli` to manage tasks. Always use `--json` for machine-parseable output.
 
 ## Commands
 
 ```bash
 # List all tasks
-synapse-cli --json list
+sybra-cli --json list
 
 # Filter by status (todo, in-progress, in-review, done)
-synapse-cli --json list --status todo
+sybra-cli --json list --status todo
 
 # Filter by tag
-synapse-cli --json list --tag backend
+sybra-cli --json list --tag backend
 
 # Get single task
-synapse-cli --json get <id>
+sybra-cli --json get <id>
 
 # Create task
-synapse-cli --json create --title "task title" --body "markdown body" --mode headless --tags "tag1,tag2"
+sybra-cli --json create --title "task title" --body "markdown body" --mode headless --tags "tag1,tag2"
 
 # Update task fields (only specify what changes)
-synapse-cli --json update <id> --status in-progress
-synapse-cli --json update <id> --title "new title" --tags "new,tags"
+sybra-cli --json update <id> --status in-progress
+sybra-cli --json update <id> --title "new title" --tags "new,tags"
 
 # Delete task
-synapse-cli --json delete <id>
+sybra-cli --json delete <id>
 ```
 
 ## Task Fields
@@ -44,10 +44,10 @@ synapse-cli --json delete <id>
 
 ## Workflow
 
-1. `synapse-cli --json list --status todo` — see open tasks
-2. `synapse-cli --json update <id> --status in-progress` — pick up task
+1. `sybra-cli --json list --status todo` — see open tasks
+2. `sybra-cli --json update <id> --status in-progress` — pick up task
 3. Do the work
-4. `synapse-cli --json update <id> --status done` — mark complete
+4. `sybra-cli --json update <id> --status done` — mark complete
 
 ## Output Format
 
@@ -59,7 +59,7 @@ Errors: stderr `{"error": "message"}` with non-zero exit.
 <example>
 Input: User says "show me all open backend tasks".
 
-Command: `synapse-cli --json list --status todo --tag backend`
+Command: `sybra-cli --json list --status todo --tag backend`
 
 Output: JSON array of tasks matching both filters.
 </example>
@@ -69,7 +69,7 @@ Input: User says "create a task to fix the login bug, tag as auth, headless mode
 
 Command:
 ```bash
-synapse-cli --json create --title "fix login bug" --mode headless --tags "auth,bug"
+sybra-cli --json create --title "fix login bug" --mode headless --tags "auth,bug"
 ```
 
 Output: `{"id": "task-xyz", "title": "fix login bug", "status": "new", ...}`
@@ -78,7 +78,7 @@ Output: `{"id": "task-xyz", "title": "fix login bug", "status": "new", ...}`
 <example>
 Input: User says "mark task-abc as in progress".
 
-Command: `synapse-cli --json update task-abc --status in-progress`
+Command: `sybra-cli --json update task-abc --status in-progress`
 
 Output: Updated task JSON.
 </example>
