@@ -56,6 +56,8 @@ jobs:
 
       - name: Generate screenshots
         run: cd frontend && npx playwright test e2e/screenshots.spec.ts --reporter=github
+        env:
+          PLAYWRIGHT_SCREENSHOTS: '1'
 
       - name: Dump server log
         if: failure()
