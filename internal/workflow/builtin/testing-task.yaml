@@ -44,6 +44,11 @@ steps:
     next:
       - goto: maybe_critique_test
 
+  # Skip critique on replan iterations (after a human reject) — the plan has
+  # already been critiqued once; re-critiquing each revision just burns tokens.
+  # `vars.step.review_test_plan.output` only exists after wait_human produced
+  # a verdict, which is the reliable marker for "this is a replan, not the
+  # first pass".
   - id: maybe_critique_test
     name: Test Critique Decision
     type: condition
@@ -53,6 +58,10 @@ steps:
         operator: not_contains
         value: nocritic
     next:
+      - when:
+          field: vars.step.review_test_plan.output
+          operator: exists
+        goto: review_test_plan
       - when:
           field: task.tags
           operator: not_contains

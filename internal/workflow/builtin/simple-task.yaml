@@ -94,8 +94,12 @@ steps:
     next:
       - goto: maybe_critique
 
-  # Branch around critique_plan when the task is tagged `nocritic`.
-  # Substring match on the comma-joined tag list (see workflow/condition.go).
+  # Branch around critique_plan when the task is tagged `nocritic`, and also
+  # on replan iterations after a human reject — the plan has already been
+  # critiqued and addressed once; re-critiquing each revision just burns
+  # tokens and delays the human review loop. `vars.step.review_plan.output`
+  # only exists after the wait_human step has produced a verdict, which is
+  # the reliable marker for "this is a replan, not the first pass".
   - id: maybe_critique
     name: Critique Decision
     type: condition
@@ -105,6 +109,10 @@ steps:
         operator: not_contains
         value: nocritic
     next:
+      - when:
+          field: vars.step.review_plan.output
+          operator: exists
+        goto: review_plan
       - when:
           field: task.tags
           operator: not_contains
