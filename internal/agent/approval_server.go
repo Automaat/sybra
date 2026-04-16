@@ -203,6 +203,9 @@ func writeHookResponse(w http.ResponseWriter, out hookOutput) {
 }
 
 // RespondApproval handles a user's approval/denial decision from the frontend.
+// Send is non-blocking: a double-click race where the handler has already
+// consumed the channel but the deferred cleanup hasn't run yet would
+// otherwise deadlock the UI thread on the buffered (size 1) channel.
 func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error {
 	s.mu.Lock()
 	ch, ok := s.pending[toolUseID]
@@ -210,8 +213,12 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 	if !ok {
 		return fmt.Errorf("no pending approval for tool_use_id %s", toolUseID)
 	}
-	ch <- ApprovalResponse{ToolUseID: toolUseID, Approved: approved}
-	return nil
+	select {
+	case ch <- ApprovalResponse{ToolUseID: toolUseID, Approved: approved}:
+		return nil
+	default:
+		return fmt.Errorf("approval for tool_use_id %s already consumed or channel full", toolUseID)
+	}
 }
 
 func (s *ApprovalServer) findAgentBySession(sessionID string) string {

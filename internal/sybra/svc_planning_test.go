@@ -3,10 +3,34 @@ package sybra
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+// waitForWorkflow polls until the task has a non-nil workflow attached or
+// the deadline expires. CreateTask auto-spawns a workflow in a goroutine,
+// and PlanTask/TriageTask are now idempotent (return nil if a concurrent
+// start is already in progress). Either path eventually sets the workflow,
+// so tests must wait for the observable end state rather than rely on
+// synchronous completion of any single call.
+func waitForWorkflow(t *testing.T, taskSvc *TaskService, id string) task.Task {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tk, err := taskSvc.GetTask(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tk.Workflow != nil {
+			return tk
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("workflow never became attached to task")
+	return task.Task{}
+}
 
 func TestPlanningService_TriageTask(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
@@ -20,10 +44,7 @@ func TestPlanningService_TriageTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tk, err := taskSvc.GetTask(created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tk := waitForWorkflow(t, taskSvc, created.ID)
 	if tk.Workflow == nil {
 		t.Fatal("expected workflow to be set after TriageTask")
 	}
@@ -65,10 +86,7 @@ func TestPlanningService_PlanTask_StartsWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tk, err := taskSvc.GetTask(created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tk := waitForWorkflow(t, taskSvc, created.ID)
 	if tk.Workflow == nil {
 		t.Fatal("expected workflow to be set after PlanTask")
 	}

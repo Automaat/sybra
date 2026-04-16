@@ -1,10 +1,12 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -856,5 +858,169 @@ func TestInstallHooks_Overwrites(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "v2") {
 		t.Errorf("hook should contain v2: %s", content)
+	}
+}
+
+// TestCreateWorktree_PathExistsWithFiles covers a crashed-session recovery
+// scenario: the worktree directory still contains leftover files from a
+// previous run, but the `.git/worktrees/<name>/` admin dir is gone. Sybra
+// calls CreateWorktree on the path, expecting a clean checkout. Git refuses
+// because the destination is not empty — the error must propagate clearly so
+// the caller can surface a "clean up stale path" hint rather than silently
+// failing to start the agent.
+func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "stale-wt")
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "leftover.txt"), []byte("crashed session debris"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = CreateWorktree(bare, wtPath, "sybra/stale-path", branch)
+	if err == nil {
+		t.Fatal("CreateWorktree into non-empty directory should error; got nil")
+	}
+	// The error text from `git worktree add` references the path; confirm
+	// callers get actionable context rather than a generic exec failure.
+	if !strings.Contains(err.Error(), wtPath) && !strings.Contains(err.Error(), "exists") {
+		t.Errorf("error should reference the conflicting path or say 'exists'; got %v", err)
+	}
+}
+
+// TestCreateWorktree_ConcurrentSamePath verifies that two goroutines racing
+// to create a worktree at the same path land on a deterministic outcome: one
+// wins, the other gets an error. Without git's internal locking, a regression
+// that papers over the error (retry loop, swallow) would leave the bare repo
+// with phantom worktree metadata. The test confirms at least one creation
+// fails, and the successful one leaves a usable worktree.
+func TestCreateWorktree_ConcurrentSamePath(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "race-wt")
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	for i := range 2 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			errs[idx] = CreateWorktree(bare, wtPath, fmt.Sprintf("sybra/race-%d", idx), branch)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successCount := 0
+	for _, e := range errs {
+		if e == nil {
+			successCount++
+		}
+	}
+	if successCount == 0 {
+		t.Errorf("both concurrent CreateWorktree calls failed; expected exactly one to win. errs=%v", errs)
+	}
+	if successCount == 2 {
+		t.Errorf("both concurrent CreateWorktree calls succeeded against the same path; git should reject the second. errs=%v", errs)
+	}
+
+	// The winning worktree must be usable (has the expected file).
+	if _, err := os.Stat(filepath.Join(wtPath, "README.md")); err != nil {
+		t.Errorf("winning worktree is missing README.md: %v", err)
+	}
+}
+
+// TestListWorktrees_OrphanedAdminDir covers the recovery mismatch where a
+// user manually rm -rfs the working tree directory but leaves the
+// `.git/worktrees/<name>/` admin entry. `git worktree list` still reports the
+// orphan. Sybra's ListWorktrees passes through this output — downstream code
+// must be prepared to stat-check each returned path and prune those that are
+// missing on disk. The test pins the current semantics so a regression that
+// silently drops (or crashes on) orphaned entries is visible.
+func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "orphan-wt")
+	if err := CreateWorktree(bare, wtPath, "sybra/orphan", branch); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Nuke the working tree directory without informing git. The admin dir
+	// under bare/.git/worktrees/orphan-wt remains in place.
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatal(err)
+	}
+
+	wts, err := ListWorktrees(bare)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+
+	// Admin entry still present — git lists the missing path. Callers must
+	// stat-check. After PruneWorktrees the orphan is gone.
+	found := false
+	for _, wt := range wts {
+		if wt.Path == wtPath {
+			found = true
+			if _, statErr := os.Stat(wt.Path); statErr == nil {
+				t.Errorf("orphan path %s still exists on disk; test setup failed", wt.Path)
+			}
+		}
+	}
+	if !found {
+		t.Logf("git already pruned orphan entry (version-dependent); this is acceptable")
+	}
+
+	// PruneWorktrees must succeed and leave no orphan entry behind.
+	if err := PruneWorktrees(bare); err != nil {
+		t.Fatalf("PruneWorktrees: %v", err)
+	}
+	wts2, err := ListWorktrees(bare)
+	if err != nil {
+		t.Fatalf("ListWorktrees after prune: %v", err)
+	}
+	for _, wt := range wts2 {
+		if wt.Path == wtPath {
+			t.Errorf("orphan %s still listed after prune", wt.Path)
+		}
 	}
 }

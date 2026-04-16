@@ -167,6 +167,80 @@ func TestEvalConditions_AllMustMatch(t *testing.T) {
 	}
 }
 
+// TestEvalCondition_UndefinedField pins the "missing field" semantics: each
+// operator treats absent fields as the zero value ("") rather than raising
+// an error. This is intentional — workflow authors can write conditions
+// against optional fields without guarding — but the exact behavior per
+// operator is non-obvious and worth locking down.
+//
+//   - equals ""       → true  (absent == "")
+//   - equals "anything"→ false (absent != "anything")
+//   - not_equals "x"  → true  ("" != "x")
+//   - contains ""     → true  (every string contains empty substring)
+//   - contains "x"    → false
+//   - exists          → false (presence-check)
+//   - in "a,b"        → false (zero value not in list)
+//   - in ",a,b"       → true  (empty string IS in the csv-list containing "")
+//
+// A regression that flipped any of these would silently change which
+// workflow branches fire — surface it here rather than at runtime.
+func TestEvalCondition_UndefinedField(t *testing.T) {
+	t.Parallel()
+	fields := map[string]string{} // nothing defined
+
+	cases := []struct {
+		op, val string
+		want    bool
+	}{
+		{"equals", "", true},
+		{"equals", "x", false},
+		{"not_equals", "", false},
+		{"not_equals", "x", true},
+		{"contains", "", true},
+		{"contains", "x", false},
+		{"not_contains", "x", true},
+		{"not_contains", "", false},
+		{"exists", "", false},
+		{"exists", "x", false},
+		{"in", "a,b,c", false},
+		{"in", ",a,b", true}, // empty entry in csv matches zero-value field
+		{"not_in", "a,b,c", true},
+		{"unknown_op", "x", false},
+	}
+	for _, c := range cases {
+		t.Run(c.op+"_"+c.val, func(t *testing.T) {
+			t.Parallel()
+			got := EvalCondition(Condition{Field: "vars.missing", Operator: c.op, Value: c.val}, fields)
+			if got != c.want {
+				t.Errorf("EvalCondition(%s %q) on missing field = %v, want %v", c.op, c.val, got, c.want)
+			}
+		})
+	}
+}
+
+// TestEvalCondition_UnicodeValues documents behavior under non-ASCII input:
+// contains/equals compare raw bytes, so NFC-vs-NFD variants of the same
+// user-visible character compare as different. A workflow author who writes
+// `contains "café"` (NFC) will not match an agent output that emits "café"
+// (NFD). The test pins this, so if future work adds normalization the
+// assertions flip explicitly.
+func TestEvalCondition_UnicodeValues(t *testing.T) {
+	t.Parallel()
+	nfc := "caf\u00e9"  // precomposed é
+	nfd := "cafe\u0301" // e + combining acute
+	fields := map[string]string{"task.title": nfc}
+
+	if !EvalCondition(Condition{Field: "task.title", Operator: "equals", Value: nfc}, fields) {
+		t.Error("NFC equals NFC should be true")
+	}
+	if EvalCondition(Condition{Field: "task.title", Operator: "equals", Value: nfd}, fields) {
+		t.Error("NFC equals NFD currently returns true — normalization was added; update test")
+	}
+	if !EvalCondition(Condition{Field: "task.title", Operator: "contains", Value: "caf"}, fields) {
+		t.Error("ASCII prefix 'caf' should be found in NFC 'café'")
+	}
+}
+
 func TestResolveTransition(t *testing.T) {
 	fields := map[string]string{
 		"task.status":       "planning",

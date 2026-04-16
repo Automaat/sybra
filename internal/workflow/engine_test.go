@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1081,6 +1082,106 @@ func TestShellStep_ExecutesCommand(t *testing.T) {
 	}
 	if output.Output != "hello-from-shell\n" {
 		t.Fatalf("expected 'hello-from-shell\\n', got %q", output.Output)
+	}
+}
+
+// TestShellStep_StdinReaderExitsOnEOF covers a subtle deadlock: execShell
+// does not wire stdin, so commands that call `read` or `cat` inherit a
+// nil/closed stdin and should exit immediately with EOF. A regression that
+// passed through os.Stdin (or left the pipe dangling) would cause the shell
+// step to hang for the full shellTimeout (30s). The 5-second deadline here
+// proves the command exits promptly.
+func TestShellStep_StdinReaderExitsOnEOF(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	step := &Step{
+		ID:   "stdin-reader",
+		Type: StepShell,
+		Config: StepConfig{
+			// `read` exits non-zero on EOF. `cat` exits 0 immediately since
+			// its stdin is empty. Both should be fast.
+			Command: "cat",
+		},
+	}
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Step: *step,
+		Vars: make(map[string]string),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := engine.execShell(step, ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execShell: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("execShell hung on stdin-reading command — sybra provides no stdin, `cat` should EOF immediately")
+	}
+}
+
+// TestShellStep_ContextCancelKillsCommand verifies that cancelling the
+// engine's parent context terminates a long-running shell step promptly
+// rather than waiting out the 30s shellTimeout. execShell derives its own
+// context via context.WithTimeout(e.ctx, shellTimeout); cancelling e.ctx
+// must propagate down and kill the subprocess via exec.CommandContext.
+// A regression that used context.Background() instead of e.ctx would
+// leave the command running after app shutdown.
+func TestShellStep_ContextCancelKillsCommand(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	engine.SetContext(parentCtx)
+
+	step := &Step{
+		ID:   "long-sleep",
+		Type: StepShell,
+		Config: StepConfig{
+			Command: "sleep 30",
+		},
+	}
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Step: *step,
+		Vars: make(map[string]string),
+	}
+
+	// Cancel after 200ms; the sleep would otherwise run 30 seconds.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	output, err := engine.execShell(step, ctx)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("execShell: %v", err)
+	}
+	// Killed subprocess is "failed", not "completed".
+	if output.Status != "failed" {
+		t.Errorf("status = %q, want failed (subprocess killed by ctx cancel)", output.Status)
+	}
+	// Must return within a handful of seconds — certainly well under 30s
+	// shellTimeout. 10s is plenty of slack for slow CI.
+	if elapsed > 10*time.Second {
+		t.Errorf("execShell took %v after ctx cancel — should return promptly", elapsed)
 	}
 }
 
@@ -2740,5 +2841,109 @@ func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
 	ti, _ = tasks.GetTask("t1")
 	if !ti.Reviewed {
 		t.Error("task.Reviewed = false after review-role step completed; want true")
+	}
+}
+
+// TestAdvanceStep_WorkflowDefinitionDeletedMidRun covers the case where a
+// workflow YAML file is removed from disk while an execution is in flight.
+// loadAdvanceContext re-reads the definition from the store for every
+// AdvanceStep call, so a deleted file must surface a clear error instead of
+// panicking or silently reusing stale state. The task's workflow reference
+// stays put — the caller decides whether to reset it.
+func TestAdvanceStep_WorkflowDefinitionDeletedMidRun(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The definition file disappears (user-edit, git clean, rm -rf).
+	if err := store.Delete("test-simple"); err != nil {
+		t.Fatalf("Delete definition: %v", err)
+	}
+
+	agents.SimulateComplete("t1")
+	err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed", Output: "triaged"})
+	if err == nil {
+		t.Fatal("AdvanceStep after definition delete returned nil; expected error")
+	}
+	if !strings.Contains(err.Error(), "test-simple") && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("error should reference the missing workflow; got %q", err)
+	}
+
+	// Task workflow reference must remain intact so the caller can inspect /
+	// recover from the error rather than silently losing state.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow == nil {
+		t.Error("task.Workflow was cleared on definition-delete error; callers need it for recovery")
+	}
+	if ti.Workflow.WorkflowID != "test-simple" {
+		t.Errorf("task.Workflow.WorkflowID = %q, want %q", ti.Workflow.WorkflowID, "test-simple")
+	}
+}
+
+// TestStartWorkflow_ConcurrentSameTaskSingleWinner verifies the per-task
+// `starting` mutex serializes concurrent StartWorkflowWithVars calls for
+// the same task. Exactly one caller wins; the others get
+// ErrWorkflowAlreadyActive. Without the lock, both callers would spawn
+// duplicate agents for the same task (the original bug this test pins).
+func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+
+	const callers = 5
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = engine.StartWorkflow("t1", "test-simple")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successCount := 0
+	rejectedCount := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, ErrWorkflowAlreadyActive):
+			rejectedCount++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("got %d successful starts, want exactly 1", successCount)
+	}
+	if rejectedCount != callers-1 {
+		t.Errorf("got %d rejections, want %d (all losers must be rejected with ErrWorkflowAlreadyActive)", rejectedCount, callers-1)
+	}
+
+	// Exactly one agent was spawned — the bug this test guards against is
+	// two concurrent callers both reaching executeSteps.
+	if got := agents.CallCount(); got != 1 {
+		t.Errorf("agent spawn count = %d, want 1 (lock should prevent duplicate spawns)", got)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Workflow == nil || ti.Workflow.WorkflowID != "test-simple" {
+		t.Errorf("task workflow not set correctly: %+v", ti.Workflow)
 	}
 }

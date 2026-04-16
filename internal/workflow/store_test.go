@@ -170,6 +170,36 @@ func TestStore_SafePath_Valid(t *testing.T) {
 	}
 }
 
+// TestStore_SafePath_AbsoluteAndWeirdPaths covers path-like IDs that don't
+// start with ../ but could still escape the store directory: absolute Unix
+// paths and chained traversal like "./../escape". All must be rejected via
+// the safePath prefix check on both Get and Save. A regression that trusted
+// filepath.Clean alone would let "/etc/passwd" resolve outside the store.
+func TestStore_SafePath_AbsoluteAndWeirdPaths(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(t.TempDir())
+
+	badIDs := []string{
+		"/etc/passwd",
+		"/absolute/path",
+		"~/evil", // tilde is not expanded by filepath, but nested "/" escapes via symlink race concerns — test documents rejection.
+		"./../escape",
+	}
+	for _, id := range badIDs {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			// Get and Save must both reject — otherwise a malicious caller
+			// could write workflow files anywhere on disk.
+			if _, err := s.Get(id); err == nil {
+				t.Errorf("Get(%q) must reject path-escaping id", id)
+			}
+			if err := s.Save(Definition{ID: id, Steps: []Step{{ID: "s", Type: StepSetStatus, Config: StepConfig{Status: "todo"}}}}); err == nil {
+				t.Errorf("Save(%q) must reject path-escaping id", id)
+			}
+		})
+	}
+}
+
 // TestStore_ParseFile_WarnOnInvalidFieldsButReturn confirms the read path
 // stays non-disruptive: a hand-edited user workflow with an unknown field
 // still loads (so the app boots and the user can fix it in the GUI),

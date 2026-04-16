@@ -80,7 +80,10 @@ func (s *Store) List() ([]Task, error) {
 }
 
 func (s *Store) Get(id string) (Task, error) {
-	path := filepath.Join(s.dir, id+".md")
+	path, err := s.safePath(id)
+	if err != nil {
+		return Task{}, err
+	}
 	t, err := Parse(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -91,6 +94,19 @@ func (s *Store) Get(id string) (Task, error) {
 	t.Plan, _ = s.plans.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 	return t, nil
+}
+
+// safePath joins id to the store directory and confirms the resolved path
+// stays inside it. Without this guard a CLI caller could pass `../../etc/x`
+// and Get/Delete/Update would happily walk outside the tasks dir — agents
+// routinely call sybra-cli with task IDs they parsed from prompts, so the
+// untrusted-input surface is real even though the GUI generates IDs itself.
+func (s *Store) safePath(id string) (string, error) {
+	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
+	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid task ID %q", id)
+	}
+	return path, nil
 }
 
 func (s *Store) Create(title, body, mode string) (Task, error) {

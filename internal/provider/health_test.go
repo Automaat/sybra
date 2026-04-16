@@ -267,3 +267,120 @@ func TestUnhealthyErrorIs(t *testing.T) {
 		t.Fatalf("errors.Is should match sentinel")
 	}
 }
+
+// TestChecker_FlapEmitsPerFlipNotPerProbe exercises rapid health flapping:
+// four probes alternating healthy → unhealthy → healthy → unhealthy. The
+// checker must emit exactly once per state change (4 flips = 4 events), not
+// once per probe (which would storm the UI). A regression that skipped the
+// statusChanged guard would produce 8 events; a regression that missed a flip
+// would produce fewer than 4.
+func TestChecker_FlapEmitsPerFlipNotPerProbe(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+
+	healthy := true
+	c.probeClaude = func(context.Context) (Status, error) {
+		if healthy {
+			return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+		}
+		return Status{Provider: "claude", Healthy: false, Reason: "logged_out"}, nil
+	}
+
+	ctx := context.Background()
+	// Seed first probe as healthy — this is a flip from the initial "unknown"
+	// reason seeded in New(), so it counts as one emission.
+	c.checkAll(ctx)
+	seed := fe.count()
+
+	// Four alternating probes, each must be one flip.
+	healthy = false
+	c.checkAll(ctx)
+	healthy = true
+	c.checkAll(ctx)
+	healthy = false
+	c.checkAll(ctx)
+	healthy = true
+	c.checkAll(ctx)
+
+	flips := fe.count() - seed
+	if flips != 4 {
+		t.Errorf("flap emissions = %d, want exactly 4 (one per state change). total=%d seed=%d", flips, fe.count(), seed)
+	}
+
+	// Repeat the last state — must NOT emit, since nothing changed.
+	c.checkAll(ctx)
+	if extra := fe.count() - seed - flips; extra != 0 {
+		t.Errorf("repeated healthy probe emitted %d extra events; want 0 (same-state probe should be a no-op)", extra)
+	}
+}
+
+// TestChecker_ProbeHealthyPreservesActiveRateLimit pins the rate-limit
+// precedence rule at setStatus line ~217: when a probe reports the provider
+// as healthy but a rate-limit window is still active, the probe result is
+// overridden with Reason=rate_limited and the window is preserved. A
+// regression that cleared the window on successful probe would release the
+// gate early and let the agent hit the real rate limit again.
+func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
+	c, _, clock := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
+
+	// Mark rate-limited for 10m.
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	if c.IsHealthy("claude") {
+		t.Fatalf("claude should be rate-limited immediately after ReportRateLimit")
+	}
+
+	// Advance only 1 minute, well within the window.
+	clock.advance(1 * time.Minute)
+
+	// Simulate an active probe that would otherwise flip us to healthy —
+	// the window must override it.
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	c.checkAll(context.Background())
+
+	if c.IsHealthy("claude") {
+		t.Fatalf("probe-healthy during active rate-limit window must not release the gate")
+	}
+	if got := c.Reason("claude"); got != "rate_limited" {
+		t.Errorf("Reason = %q, want rate_limited (window should have overridden probe's 'ok' reason)", got)
+	}
+
+	// Advance past the window; clearExpiredRateLimits must release.
+	clock.advance(20 * time.Minute)
+	c.clearExpiredRateLimits()
+	if !c.IsHealthy("claude") {
+		t.Errorf("claude should be healthy after rate-limit window expires")
+	}
+}
+
+// TestFailover_BothUnhealthySymmetric covers the "both providers down at the
+// same time" scenario explicitly from both sides. With no healthy peer,
+// Failover must return the empty string from either direction — the caller
+// then surfaces an UnhealthyError instead of looping between two dead
+// providers. A regression that returned the unhealthy provider itself (or
+// the other unhealthy provider) would cause agents to retry in a tight loop.
+func TestFailover_BothUnhealthySymmetric(t *testing.T) {
+	c, _, _ := newTestChecker(t)
+	c.setStatus("claude", Status{Provider: "claude", Healthy: false, Reason: "logged_out"}, true)
+	c.setStatus("codex", Status{Provider: "codex", Healthy: false, Reason: "rate_limited"}, true)
+
+	if peer := c.Failover("claude"); peer != "" {
+		t.Errorf("Failover(claude) with both unhealthy = %q, want \"\"", peer)
+	}
+	if peer := c.Failover("codex"); peer != "" {
+		t.Errorf("Failover(codex) with both unhealthy = %q, want \"\"", peer)
+	}
+
+	// Recovery path: one provider comes back healthy → failover resolves to it.
+	c.setStatus("codex", Status{Provider: "codex", Healthy: true, Reason: "ok"}, true)
+	if peer := c.Failover("claude"); peer != "codex" {
+		t.Errorf("Failover(claude) after codex recovery = %q, want codex", peer)
+	}
+}

@@ -7,7 +7,9 @@ import (
 )
 
 // AtomicWrite writes data to path via a temp file + rename to prevent
-// partial reads from concurrent goroutines.
+// partial reads from concurrent goroutines. The temp file is removed on
+// every error path — including a failed rename into a read-only target
+// directory — so repeated write failures don't fill the disk with orphans.
 func AtomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
@@ -24,7 +26,11 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ListFiles returns absolute paths of non-directory entries in dir whose
