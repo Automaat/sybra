@@ -36,6 +36,9 @@ type Config struct {
 	SetupTimeout     time.Duration
 	PRBranchResolver PRBranchResolver
 	AgentChecker     AgentChecker
+	// MisePath is the path to the mise binary. Defaults to "mise" (PATH lookup).
+	// Tests inject a concrete path so parallel tests don't race on os.Setenv(PATH).
+	MisePath string
 }
 
 type Manager struct {
@@ -47,12 +50,18 @@ type Manager struct {
 	setupTimeout time.Duration
 	prBranch     PRBranchResolver
 	hasAgent     AgentChecker
+	misePath     string
 }
 
 func New(cfg Config) *Manager {
 	timeout := cfg.SetupTimeout
 	if timeout <= 0 {
 		timeout = defaultSetupTimeout
+	}
+	mp := cfg.MisePath
+	// Accept bare name "mise" or absolute paths only; reject relative paths.
+	if mp == "" || (mp != "mise" && !filepath.IsAbs(mp)) {
+		mp = "mise"
 	}
 	return &Manager{
 		dir:          cfg.WorktreesDir,
@@ -63,6 +72,7 @@ func New(cfg Config) *Manager {
 		setupTimeout: timeout,
 		prBranch:     cfg.PRBranchResolver,
 		hasAgent:     cfg.AgentChecker,
+		misePath:     mp,
 	}
 }
 
@@ -535,7 +545,7 @@ func (m *Manager) runSetup(taskID, wtPath string, commands []string) error {
 	// mise config; failure is logged but non-fatal (the real setup command
 	// will raise a clearer error if mise is actually needed).
 	if hasMiseConfig(wtPath) {
-		trustCmd := exec.CommandContext(ctx, "mise", "trust", "--yes")
+		trustCmd := exec.CommandContext(ctx, m.misePath, "trust", "--yes")
 		trustCmd.Dir = wtPath
 		if logFile != nil {
 			trustCmd.Stdout = logFile

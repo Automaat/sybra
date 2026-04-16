@@ -31,6 +31,7 @@ linters:
 
     gosec:
       excludes:
+        - G204 # subprocess args — validated at construction (abs path or bare "mise"); gosec taint cannot verify the guard
         - G301 # dir permissions 0755 — intentional for local app dirs
         - G302 # file permissions 0644 — intentional for user-readable data files
         - G304 # file inclusion via variable — intentional in this app
