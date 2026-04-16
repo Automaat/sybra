@@ -174,6 +174,20 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 		e.mu.Unlock()
 	}()
 
+	// Guard against sequential duplicate starts: the starting map only prevents
+	// overlapping entries. If caller A has completed its Start* call (defer
+	// removed the marker) while caller B is queued behind the mutex, B would
+	// otherwise see an empty map and overwrite A's workflow. Mirror the check
+	// DispatchEvent already performs so both entry points agree that a task
+	// can only have one non-terminal workflow at a time.
+	if t, getErr := e.tasks.GetTask(taskID); getErr == nil &&
+		t.Workflow != nil &&
+		t.Workflow.State != ExecCompleted &&
+		t.Workflow.State != ExecFailed {
+		return fmt.Errorf("%w: %s (state=%s)",
+			ErrWorkflowAlreadyActive, t.Workflow.WorkflowID, t.Workflow.State)
+	}
+
 	def, err := e.store.Get(workflowID)
 	if err != nil {
 		return fmt.Errorf("get workflow %s: %w", workflowID, err)
