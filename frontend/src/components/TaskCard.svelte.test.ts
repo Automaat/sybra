@@ -23,6 +23,7 @@ const mockTask = {
   body: '',
   plan: '',
   planCritique: '',
+  codeReview: '',
   filePath: '',
   taskType: '',
   todoistId: '',

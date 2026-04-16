@@ -32,6 +32,7 @@ type Update struct {
 	Workflow     **workflow.Execution
 	Plan         *string
 	PlanCritique *string
+	CodeReview   *string
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -57,7 +58,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "body",
-		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique":
+		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review":
 		return applyPlainStringField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
@@ -119,6 +120,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.Plan = &s
 	case "plan_critique":
 		u.PlanCritique = &s
+	case "code_review":
+		u.CodeReview = &s
 	}
 	return nil
 }

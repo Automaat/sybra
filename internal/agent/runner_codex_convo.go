@@ -173,11 +173,7 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	args := []string{"exec", "--json", "--skip-git-repo-check"}
-	if !cfg.RequirePermissions {
-		args = append(args, "--full-auto")
-	} else {
-		args = append(args, "--sandbox", "workspace-write")
-	}
+	args = append(args, codexSandboxArgs(cfg.RequirePermissions)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}

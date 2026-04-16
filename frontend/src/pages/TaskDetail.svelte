@@ -114,6 +114,7 @@
 
   const renderedBody = $derived(renderMarkdown(t?.body))
   const renderedPlan = $derived(renderMarkdown(t?.plan))
+  const renderedCodeReview = $derived(renderMarkdown(t?.codeReview))
   const taskBranchName = $derived(
     t ? 'sybra/' + (t.slug ? t.slug + '-' + t.id : t.id) : ''
   )
@@ -909,6 +910,17 @@
             <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedPlan}</div>
           </div>
         </div>
+      {/if}
+
+      {#if t.codeReview}
+        <details open class="rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
+          <summary class="cursor-pointer px-4 py-2 text-sm font-semibold text-warning-800 dark:text-warning-200">
+            Code Review (auto-generated)
+          </summary>
+          <div class="markdown-body px-4 pb-4 text-sm text-surface-900 dark:text-surface-100">
+            {@html renderedCodeReview}
+          </div>
+        </details>
       {/if}
 
       <div class="flex flex-wrap items-center gap-4 text-xs text-surface-400">

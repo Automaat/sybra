@@ -2542,6 +2542,119 @@ func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+// --- require_sidecar step ---
+
+func newRequireSidecarStep(kind string) *Step {
+	return &Step{
+		ID:     "require",
+		Type:   StepRequireSidecar,
+		Config: StepConfig{Sidecar: kind},
+	}
+}
+
+func TestExecRequireSidecar_PlanCritiquePresent(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# critique\n"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarStep("plan_critique"), TaskInfo{ID: "t1", PlanCritique: "# critique\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "present") {
+		t.Errorf("Output = %q, want 'present'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Errorf("unexpected status flip to human-required")
+	}
+}
+
+func TestExecRequireSidecar_PlanCritiqueMissingFlipsHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarStep("plan_critique"), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed (mechanical step)", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(tasks.Reason("t1"), "plan critique") {
+		t.Errorf("reason = %q, want substring 'plan critique'", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRequireSidecar_CodeReviewMissingFlipsHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarStep("code_review"), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(tasks.Reason("t1"), "code review") {
+		t.Errorf("reason = %q, want substring 'code review'", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRequireSidecar_WhitespaceOnlyTreatedAsMissing(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarStep("plan_critique"), TaskInfo{ID: "t1", PlanCritique: "   \n\t  \n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecRequireSidecar_UnknownSidecarErrors(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execRequireSidecar("t1", newRequireSidecarStep("bogus"), TaskInfo{ID: "t1"})
+	if err == nil {
+		t.Fatal("expected error for unknown sidecar, got nil")
+	}
+}
+
+func TestExecRequireSidecar_EmptySidecarConfigErrors(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	_, err := engine.execRequireSidecar("t1", newRequireSidecarStep(""), TaskInfo{ID: "t1"})
+	if err == nil {
+		t.Fatal("expected error for empty sidecar config, got nil")
+	}
+}
+
 // --- evaluate step ---
 
 func newEvaluateStep() *Step {

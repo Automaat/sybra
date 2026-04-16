@@ -287,15 +287,27 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 // buildCodexCommand builds the display command string for a Codex agent.
 func buildCodexCommand(model string, requirePerms bool) string {
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
-	if !requirePerms {
-		parts = append(parts, "--full-auto")
-	} else {
-		parts = append(parts, "--sandbox", "workspace-write")
-	}
+	parts = append(parts, codexSandboxArgs(requirePerms)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
 	return strings.Join(parts, " ")
+}
+
+// codexSandboxArgs returns the sandbox/permission flags for `codex exec`.
+// When SYBRA_DISABLE_CODEX_SANDBOX=1 is set, the bwrap-backed sandbox is
+// replaced with `--sandbox danger-full-access`. Required when running
+// inside a Docker/LXC container whose kernel blocks unprivileged user
+// namespaces (kernel.unprivileged_userns_clone=0), where bwrap crashes
+// before the agent can execute any command.
+func codexSandboxArgs(requirePerms bool) []string {
+	if os.Getenv("SYBRA_DISABLE_CODEX_SANDBOX") == "1" {
+		return []string{"--sandbox", "danger-full-access"}
+	}
+	if !requirePerms {
+		return []string{"--full-auto"}
+	}
+	return []string{"--sandbox", "workspace-write"}
 }
 
 // gateProvider resolves the run's provider through the health gate. If the

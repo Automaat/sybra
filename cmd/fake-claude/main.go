@@ -103,6 +103,12 @@ func runScenario(scenario, taskID string) bool {
 		runTriage(taskID, "planning", "large")
 	case "triage_to_planning_nocritic":
 		runTriage(taskID, "planning", "large,nocritic")
+	case "plan_critic_success":
+		runPlanCriticSuccess(taskID)
+	case "plan_critic_no_save":
+		runPlanCriticNoSave()
+	case "code_review_success":
+		runCodeReviewSuccess(taskID)
 	case "triage_to_done":
 		runTriage(taskID, "done", "")
 	case "triage_to_in_review":
@@ -151,6 +157,30 @@ func runScenario(scenario, taskID string) bool {
 		return false
 	}
 	return true
+}
+
+func runPlanCriticSuccess(taskID string) {
+	emitSystem()
+	emitAssistant("Critiquing plan...")
+	if taskID != "" {
+		runCLI("update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
+	}
+	emitResult("Critique saved.")
+}
+
+func runPlanCriticNoSave() {
+	emitSystem()
+	emitAssistant("Blocked by env. Did not save critique.")
+	emitResult("Blocked by env.")
+}
+
+func runCodeReviewSuccess(taskID string) {
+	emitSystem()
+	emitAssistant("Reviewing code...")
+	if taskID != "" {
+		runCLI("update", taskID, "--code-review", "# Code Review\n\nLooks good.\n")
+	}
+	emitResult("Review saved.")
 }
 
 func runTriage(taskID, status, tags string) {

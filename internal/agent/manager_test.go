@@ -517,6 +517,11 @@ func TestBuildCommand(t *testing.T) {
 			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
 			wantCmd: "codex exec --json --skip-git-repo-check --full-auto --model gpt-5.4-mini",
 		},
+		{
+			name:    "codex with RequirePermissions uses workspace-write sandbox",
+			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4",
+		},
 	}
 
 	for _, tt := range tests {
@@ -528,6 +533,40 @@ func TestBuildCommand(t *testing.T) {
 				}
 				return
 			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
+			}
+		})
+	}
+}
+
+func TestCodexSandboxDisabledViaEnv(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "1")
+	m, _ := newTestManager(t)
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantCmd string
+	}{
+		{
+			name:    "codex default with sandbox disabled",
+			cfg:     RunConfig{Provider: "codex"},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox danger-full-access --model gpt-5.4",
+		},
+		{
+			name:    "codex RequirePermissions honored as danger-full-access when sandbox disabled",
+			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox danger-full-access --model gpt-5.4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.buildCommand(tt.cfg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

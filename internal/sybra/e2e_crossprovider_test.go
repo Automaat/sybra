@@ -112,6 +112,60 @@ func TestE2E_CrossProvider_ReviewThenFix(t *testing.T) {
 	}
 }
 
+// TestE2E_CrossProvider_ReviewSidecarPersisted drives the cross-provider
+// review flow but uses the code_review_success scenario so the review
+// agent calls `sybra-cli update --code-review`. Asserts the CodeReview
+// sidecar is populated on the task once the workflow completes — proving
+// the end-to-end save path works: scenario → sybra-cli flag → Update →
+// CodeReviewStore → Store.Get → Task.CodeReview → frontend JSON.
+func TestE2E_CrossProvider_ReviewSidecarPersisted(t *testing.T) {
+	env := setupCrossProviderEnv(t, "claude",
+		[]string{"success", "success"},  // claude: implement, fix_review
+		[]string{"code_review_success"}, // codex: code_review writes sidecar via CLI
+	)
+
+	created, err := env.tasks.Create("review sidecar persisted", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			(tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed)
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
+	}
+
+	if tk.CodeReview == "" {
+		t.Fatalf("CodeReview sidecar empty after workflow completed — expected scenario to persist it")
+	}
+	if !strings.Contains(tk.CodeReview, "Code Review") {
+		t.Errorf("CodeReview content unexpected: %q", tk.CodeReview)
+	}
+
+	// Sidecar file must exist on disk under the configured tasks dir.
+	sidecar := filepath.Join(env.taskDir, "tasks", created.ID+".review.md")
+	if _, statErr := os.Stat(sidecar); os.IsNotExist(statErr) {
+		t.Errorf("expected sidecar at %s, file does not exist", sidecar)
+	} else if statErr != nil {
+		t.Errorf("stat sidecar %s: %v", sidecar, statErr)
+	}
+}
+
 // TestE2E_CrossProvider_NoreviewTagSkipsReview verifies that a task tagged
 // "noreview" bypasses code_review and fix_review via the maybe_review
 // condition step.
