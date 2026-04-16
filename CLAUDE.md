@@ -181,12 +181,22 @@ Startup logs an `app.automations` summary line so you can verify the role of eac
 Sybra also runs headless as a server, deployed from `~/sideprojects/home-nas`.
 
 - **Host:** `synapse` LXC (CT 114) on Proxmox, `192.168.20.219` (VLAN 20), Ubuntu 24.04, 6 cores / 16GB RAM
-- **Container:** `ghcr.io/automaat/sybra:<version>` via Docker Compose
+- **Container:** `ghcr.io/automaat/sybra:<version>` via Docker Compose (container name: `sybra`)
 - **Compose file:** `/opt/synapse/docker-compose.yml` on host (source: `ansible/docker-compose/synapse-stack.yml`)
-- **Volumes:** `/data/synapse/home` (→ `~/.synapse` inside container), `/data/synapse/claude` (Claude Code settings + hooks), `/data/synapse/codex` (Codex config)
+- **Volumes:** `/data/sybra/home` (→ `~/.sybra` inside container), `/data/sybra/claude` (Claude Code settings + hooks), `/data/sybra/codex` (Codex config)
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
 - **Deploy:** `ansible/playbooks/setup-synapse-lxc.yml` (provision LXC), `ansible/playbooks/deploy-synapse.yml` (push compose + restart)
 - **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring
+
+**SSH access:** `ssh root@192.168.20.219` (no DNS for `synapse`/`synapse.mskalski.dev` from outside LAN — use IP). Inventory: `home-nas/ansible/inventory.yml` → group `synapse_lxc`. Common debug commands:
+
+```bash
+ssh root@192.168.20.219 "docker ps"                                  # container status
+ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server logs
+ssh root@192.168.20.219 "ls /data/sybra/home/tasks/"                 # task files
+ssh root@192.168.20.219 "cat /data/sybra/home/config.yaml"           # server config
+ssh root@192.168.20.219 "docker exec sybra sybra-cli list"           # CLI inside container
+```
 
 Bumping the deployed version = update image tag in `ansible/docker-compose/synapse-stack.yml`, run the deploy playbook.
 
