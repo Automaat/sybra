@@ -186,6 +186,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		Mode:        cfg.Mode,
 		Provider:    resolvedProvider,
 		Model:       normalizeModel(resolvedProvider, cfg.Model),
+		Prompt:      cfg.Prompt,
 		State:       StateRunning,
 		StartedAt:   now,
 		LastEventAt: now,

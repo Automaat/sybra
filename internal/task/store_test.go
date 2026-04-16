@@ -440,6 +440,7 @@ func TestStoreAddRun(t *testing.T) {
 		Mode:      "headless",
 		State:     "running",
 		StartedAt: time.Now().UTC(),
+		Prompt:    "# Task: Foo\n\nDo the thing\n\n---\n\nuser prompt",
 	}
 
 	if err := store.AddRun(created.ID, run); err != nil {
@@ -458,6 +459,9 @@ func TestStoreAddRun(t *testing.T) {
 	}
 	if got.AgentRuns[0].State != "running" {
 		t.Errorf("State = %q, want %q", got.AgentRuns[0].State, "running")
+	}
+	if got.AgentRuns[0].Prompt != run.Prompt {
+		t.Errorf("Prompt = %q, want %q", got.AgentRuns[0].Prompt, run.Prompt)
 	}
 }
 

@@ -221,6 +221,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
+		Prompt:    cfg.Prompt,
 	}); addErr != nil {
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}

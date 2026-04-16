@@ -136,6 +136,7 @@ type AgentRun struct {
 	State     string    `yaml:"state" json:"state"`
 	StartedAt time.Time `yaml:"started_at" json:"startedAt"`
 	CostUSD   float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
+	Prompt    string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Result    string    `yaml:"result,omitempty" json:"result"`
 	LogFile   string    `yaml:"log_file,omitempty" json:"logFile"`
 	SessionID string    `yaml:"session_id,omitempty" json:"sessionId,omitempty"`

@@ -48,6 +48,7 @@ type Agent struct {
 	Project      string    `json:"project,omitempty"`
 	Provider     string    `json:"provider,omitempty"`
 	Model        string    `json:"model,omitempty"`
+	Prompt       string    `json:"prompt,omitempty"`
 
 	TurnCount        int    `json:"turnCount,omitempty"`
 	EscalationReason string `json:"escalationReason,omitempty"`

@@ -1025,6 +1025,12 @@
               </button>
             {/if}
           </div>
+          {#if runningAgent.prompt}
+            <details class="rounded-lg border border-surface-300 bg-surface-50 dark:border-surface-600 dark:bg-surface-800">
+              <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 dark:text-surface-300">Prompt</summary>
+              <pre class="max-h-64 overflow-y-auto whitespace-pre-wrap border-t border-surface-300 px-3 py-2 text-xs text-surface-700 dark:border-surface-600 dark:text-surface-300">{runningAgent.prompt}</pre>
+            </details>
+          {/if}
           {#if runningAgent.mode === 'interactive'}
             <ChatView agentId={runningAgent.id} agentState={runningAgent.state} costUsd={runningAgent.costUsd} inputTokens={runningAgent.inputTokens ?? 0} outputTokens={runningAgent.outputTokens ?? 0} bounded={true} />
           {:else}
@@ -1099,6 +1105,12 @@
               </button>
               {#if expandedRun === run.agentId}
                 <div class="border-t border-surface-300 px-3 py-2 dark:border-surface-600">
+                  {#if run.prompt}
+                    <details class="mb-3 rounded-lg border border-surface-300 bg-surface-100 dark:border-surface-600 dark:bg-surface-900">
+                      <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 dark:text-surface-300">Prompt</summary>
+                      <pre class="max-h-64 overflow-y-auto whitespace-pre-wrap border-t border-surface-300 px-3 py-2 text-xs text-surface-700 dark:border-surface-600 dark:text-surface-300">{run.prompt}</pre>
+                    </details>
+                  {/if}
                   {#if runLogLoading.has(run.agentId)}
                     <p class="py-4 text-center text-xs text-surface-500">Loading log...</p>
                   {:else if run.mode === 'interactive' && (runLogConvoEvents.get(run.agentId)?.length ?? 0) > 0}
