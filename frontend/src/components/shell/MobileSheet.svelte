@@ -7,10 +7,11 @@
     onOpenChange: (open: boolean) => void
     variant?: 'bottom' | 'top' | 'center'
     title?: string
+    backdropClass?: string
     children: Snippet
   }
 
-  const { open, onOpenChange, variant = 'bottom', title, children }: Props = $props()
+  const { open, onOpenChange, variant = 'bottom', title, backdropClass, children }: Props = $props()
 
   const positionerClass = $derived(
     variant === 'bottom'
@@ -33,7 +34,7 @@
   {open}
   onOpenChange={(d) => onOpenChange(d.open)}
 >
-  <Dialog.Backdrop class="fixed inset-0 z-40 bg-black/50" />
+  <Dialog.Backdrop class={backdropClass ?? 'fixed inset-0 z-40 bg-black/50'} />
   <Dialog.Positioner class={positionerClass}>
     <Dialog.Content class={contentClass}>
       {#if open}

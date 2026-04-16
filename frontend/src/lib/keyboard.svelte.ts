@@ -51,4 +51,14 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: 'C', description: 'Focus feedback input' },
     ],
   },
+  {
+    scope: 'global',
+    label: 'Quick Navigation',
+    shortcuts: [
+      { keys: 'G  I', description: 'All Tasks' },
+      { keys: 'G  A', description: 'Active (In Progress)' },
+      { keys: 'G  P', description: 'Projects' },
+      { keys: 'G  S', description: 'Settings' },
+    ],
+  },
 ]
