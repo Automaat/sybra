@@ -38,6 +38,7 @@ export function RespondApproval(arg1: string, arg2: boolean): Promise<void> { re
 export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { return call('AgentService', 'RespondEscalation', arg1, arg2) }
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
+export function OpenWorktree(arg1: string): Promise<void> { return call('AgentService', 'OpenWorktree', arg1) }
 
 // App
 export function GetMonitorReport(): Promise<sybra.MonitorReportBinding> { return call('App', 'GetMonitorReport') }

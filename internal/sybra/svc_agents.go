@@ -6,17 +6,20 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/sysopen"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // AgentService exposes agent operations as Wails-bound methods.
 type AgentService struct {
-	agents   *agent.Manager
-	logger   *slog.Logger
-	approval *agent.ApprovalServer
-	tasks    *task.Manager
-	cfg      *config.Config
-	logsDir  string
+	agents    *agent.Manager
+	logger    *slog.Logger
+	approval  *agent.ApprovalServer
+	tasks     *task.Manager
+	cfg       *config.Config
+	logsDir   string
+	worktrees *worktree.Manager
 }
 
 // StopAgent sends a stop signal to the given agent.
@@ -97,4 +100,20 @@ func (s *AgentService) GetAgentRunLog(taskID, agentID string) ([]agent.StreamEve
 // continueRun=true lets the agent keep running; false kills it.
 func (s *AgentService) RespondEscalation(agentID string, continueRun bool) error {
 	return s.agents.RespondEscalation(agentID, continueRun)
+}
+
+// OpenWorktree opens the git worktree for taskID in the OS file manager.
+// Returns an error if the worktree does not exist or the OS command fails.
+func (s *AgentService) OpenWorktree(taskID string) error {
+	if s.worktrees == nil {
+		return fmt.Errorf("worktree manager not available")
+	}
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return fmt.Errorf("task %s: %w", taskID, err)
+	}
+	if !s.worktrees.Exists(t) {
+		return fmt.Errorf("no worktree for task %s", taskID)
+	}
+	return sysopen.Dir(s.worktrees.PathFor(t))
 }

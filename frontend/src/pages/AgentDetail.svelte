@@ -1,19 +1,17 @@
 <script lang="ts">
-  import { ChevronLeft, PanelLeft } from '@lucide/svelte'
+  import { ChevronLeft } from '@lucide/svelte'
   import type { agent } from '../../wailsjs/go/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError } from '../lib/events.js'
-  import StreamOutput from '../components/StreamOutput.svelte'
-  import ChatView from '../components/ChatView.svelte'
-  import ActionTimeline from '../components/ActionTimeline.svelte'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
-  import PlanSteps from '../components/PlanSteps.svelte'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
   import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
+  import AgentHeader from '../components/agent-view/AgentHeader.svelte'
+  import AgentViewBody from '../components/agent-view/AgentViewBody.svelte'
 
   interface EscalationEvent {
     reason: string
@@ -41,11 +39,7 @@
   let escalation = $state<EscalationEvent | null>(null)
   let escalationResponding = $state(false)
   let errorDismissed = $state(false)
-  let timelineOpen = $state(true)
   let selectedIndex = $state<number | null>(null)
-  let planCollapsed = $state(false)
-
-  const isRunning = $derived(a?.state === 'running')
 
   // Seed error from cached agent state (already stopped with errorKind set).
   const cachedError = $derived(
@@ -81,11 +75,6 @@
       ? extractLatestPlanStepsFromConvo(convoEvents)
       : extractLatestPlanSteps(streamOutputs),
   )
-
-  // Auto-expand plan when agent starts running, collapse when done.
-  $effect(() => {
-    if (a?.state === 'running') planCollapsed = false
-  })
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
@@ -142,11 +131,6 @@
       escalation = null
       escalationResponding = false
     }
-  }
-
-  function formatDate(date: any): string {
-    if (!date) return '-'
-    return new Date(date).toLocaleString()
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -236,177 +220,27 @@
 
   {#if a}
     <div class="flex flex-col gap-6">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h1 class="text-2xl font-bold">{a.project || a.id}</h1>
-          {#if a.name}
-            <span class="text-sm text-surface-400">{a.name}</span>
-          {/if}
-          {#if phase === 'running'}
-            <p class="mt-0.5 text-sm italic text-surface-400">
-              {agentStore.stepTexts.get(agentId) ?? 'Working...'}
-            </p>
-          {:else if phase === 'waiting'}
-            <p class="mt-0.5 text-sm text-surface-400">
-              Waiting for reply
-            </p>
-          {:else if phase === 'blocked'}
-            <p class="mt-0.5 text-sm text-tertiary-600 dark:text-tertiary-400">
-              Awaiting tool approval
-            </p>
-          {:else if phase === 'human-required'}
-            <p class="mt-0.5 text-sm font-medium text-error-600 dark:text-error-400">
-              Waiting for human input
-            </p>
-          {:else if phase === 'reviewing'}
-            <p class="mt-0.5 text-sm text-warning-600 dark:text-warning-400">
-              Under review
-            </p>
-          {/if}
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium {phaseConfig.badgeClasses}">
-            {#if phaseConfig.animate}
-              <span class="h-2 w-2 animate-pulse-subtle rounded-full {phaseConfig.dotClasses}"></span>
-            {:else if phase !== 'queued' && phase !== 'done'}
-              <span class="h-2 w-2 rounded-full {phaseConfig.dotClasses}"></span>
-            {/if}
-            {phaseConfig.label}
-          </span>
-          {#if isRunning}
-            <button
-              type="button"
-              class="rounded-lg bg-error-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-error-600"
-              onclick={handleStop}
-            >
-              Stop
-            </button>
-          {/if}
-        </div>
-      </div>
+      <AgentHeader
+        {a}
+        {phase}
+        {phaseConfig}
+        stepText={agentStore.stepTexts.get(agentId)}
+        {linkedTask}
+        onstop={handleStop}
+        {onviewtask}
+      />
 
-      <div class="flex flex-wrap gap-6 text-sm">
-        {#if a.taskId}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Task</span>
-            <button
-              type="button"
-              class="text-left text-primary-500 hover:underline"
-              onclick={() => onviewtask(a!.taskId)}
-            >
-              {linkedTask?.title ?? a.taskId}
-            </button>
-          </div>
-        {/if}
-        {#if linkedTask?.branch}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Branch</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono text-xs dark:bg-surface-700">{linkedTask.branch}</span>
-          </div>
-        {/if}
-        <div class="flex flex-col gap-1">
-          <span class="font-medium text-surface-500">Mode</span>
-          <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{a.mode}</span>
-        </div>
-        {#if a.project}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Project</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{a.project}</span>
-          </div>
-        {/if}
-        {#if a.name}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Session Name</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{a.name}</span>
-          </div>
-        {/if}
-        {#if a.external}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Source</span>
-            <span class="rounded bg-warning-200 px-2 py-0.5 text-warning-800 dark:bg-warning-700 dark:text-warning-200">external</span>
-          </div>
-        {/if}
-        {#if a.pid}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">PID</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono text-xs dark:bg-surface-700">{a.pid}</span>
-          </div>
-        {/if}
-        {#if a.command}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Command</span>
-            <span class="max-w-md truncate rounded bg-surface-200 px-2 py-0.5 font-mono text-xs dark:bg-surface-700">{a.command}</span>
-          </div>
-        {/if}
-        {#if a.sessionId}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Session</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 font-mono text-xs dark:bg-surface-700">{a.sessionId}</span>
-          </div>
-        {/if}
-        {#if a.costUsd > 0}
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-surface-500">Cost</span>
-            <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">${a.costUsd.toFixed(2)}</span>
-          </div>
-        {/if}
-        <div class="flex flex-col gap-1">
-          <span class="font-medium text-surface-500">Started</span>
-          <span>{formatDate(a.startedAt)}</span>
-        </div>
-      </div>
-
-      {#if planSteps.length > 0}
-        <PlanSteps steps={planSteps} bind:collapsed={planCollapsed} />
-      {/if}
-
-      <div class="flex min-h-0 flex-1 flex-col gap-2">
-        <div class="flex items-center gap-2">
-          <span class="text-sm font-medium text-surface-500">Output</span>
-          <button
-            type="button"
-            title={timelineOpen ? 'Hide timeline' : 'Show timeline'}
-            onclick={() => { timelineOpen = !timelineOpen }}
-            class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors
-              {timelineOpen
-                ? 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200'
-                : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
-          >
-            <PanelLeft size={12} />
-            Timeline
-          </button>
-        </div>
-        <div class="flex min-h-0 items-start gap-3">
-          {#if timelineOpen}
-            <div class="hidden w-64 shrink-0 overflow-hidden rounded-lg border border-surface-300 dark:border-surface-700 md:flex md:flex-col" style="max-height: 600px; min-height: 300px;">
-              <ActionTimeline
-                entries={timelineEntries}
-                activeIndex={selectedIndex}
-                onselect={(i) => { selectedIndex = i }}
-              />
-            </div>
-          {/if}
-          <div class="min-w-0 flex-1">
-            {#if a.mode === 'interactive'}
-              <ChatView
-                agentId={agentId}
-                agentState={a.state}
-                costUsd={a.costUsd}
-                inputTokens={a.inputTokens ?? 0}
-                outputTokens={a.outputTokens ?? 0}
-                highlightIndex={selectedIndex}
-                onvisibleindex={(i) => { if (selectedIndex === null) selectedIndex = i }}
-              />
-            {:else}
-              <StreamOutput
-                agentId={agentId}
-                highlightIndex={selectedIndex}
-                onvisibleindex={(i) => { if (selectedIndex === null) selectedIndex = i }}
-              />
-            {/if}
-          </div>
-        </div>
-      </div>
+      <AgentViewBody
+        {phase}
+        {a}
+        {linkedTask}
+        {streamOutputs}
+        {convoEvents}
+        {timelineEntries}
+        {planSteps}
+        {selectedIndex}
+        onselect={(i) => { selectedIndex = i }}
+      />
     </div>
   {:else if !error}
     <p class="text-sm opacity-60">Loading...</p>
