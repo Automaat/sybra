@@ -569,7 +569,7 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	content := "checks:\n  pre_commit:\n    - echo hello\n  pre_push:\n    - echo world\n"
-	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadRepoConfig(dir)
@@ -590,7 +590,7 @@ func TestLoadRepoConfig_Valid(t *testing.T) {
 func TestLoadRepoConfig_Invalid(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".synapse.yaml"), []byte(":\n  bad: [yaml"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(":\n  bad: [yaml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadRepoConfig(dir)
@@ -606,9 +606,9 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 	_, wtPath := initWorktree(t)
 
-	// Write .synapse.yaml with a failing pre-commit to prove repo config is used.
+	// Write .sybra.yaml with a failing pre-commit to prove repo config is used.
 	repoYAML := "checks:\n  pre_commit:\n    - exit 1\n"
-	if err := os.WriteFile(filepath.Join(wtPath, ".synapse.yaml"), []byte(repoYAML), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte(repoYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

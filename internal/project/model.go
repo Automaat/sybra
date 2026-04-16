@@ -17,7 +17,7 @@ type ChecksConfig struct {
 }
 
 // RepoConfig is the subset of Synapse config that can be defined in a repo's
-// .synapse.yaml file. Repo config takes priority over the app-level project config.
+// .sybra.yaml file. Repo config takes priority over the app-level project config.
 type RepoConfig struct {
 	Checks *ChecksConfig `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
