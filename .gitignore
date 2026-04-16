@@ -32,3 +32,4 @@ frontend/playwright-report/
 /sybra-perf
 /fake-claude
 /fake-codex
+core.*
