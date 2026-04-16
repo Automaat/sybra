@@ -5,6 +5,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
+  import { navStore } from '../lib/navigation.svelte.js'
   import TaskCard from '../components/TaskCard.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
@@ -310,8 +311,6 @@
   let selectedProjectId = $state('')
   let selectedTags = $state<string[]>([])
   let selectedAgentMode = $state('')
-  let showDone = $state(false)
-
   // Derived: unique tags across all tasks
   const allTags = $derived(
     [...new Set(taskStore.list.flatMap((t: task.Task) => t.tags ?? []))].sort()
@@ -345,7 +344,7 @@
   const allFilteredTasks = $derived.by(() => {
     const query = searchQuery.toLowerCase().trim()
     return taskStore.list.filter((t: task.Task) => {
-      if (!showDone && t.status === 'done') return false
+      if (t.status === 'done' || t.status === 'cancelled') return false
       if (query && !t.title.toLowerCase().includes(query)
           && !(t.body ?? '').toLowerCase().includes(query)
           && !(t.issue ?? '').toLowerCase().includes(query)) return false
@@ -360,9 +359,7 @@
     })
   })
 
-  const visibleColumns = $derived(
-    showDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
-  )
+  const visibleColumns = $derived(BOARD_COLUMNS)
 
   const hasActiveFilters = $derived(
     searchQuery || selectedProjectId || selectedTags.length > 0 || selectedAgentMode
@@ -649,10 +646,13 @@
           Clear filters
         </button>
       {/if}
-      <label class="flex items-center gap-1.5 text-xs text-surface-500">
-        <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
-        Show done
-      </label>
+      <button
+        type="button"
+        class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
+        onclick={() => navStore.reset({ kind: 'logbook' })}
+      >
+        Logbook →
+      </button>
       <button
         type="button"
         class="flex items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 py-1 text-xs font-medium transition-colors hover:bg-surface-200 dark:border-surface-700 dark:bg-surface-800 dark:hover:bg-surface-700"
@@ -859,11 +859,6 @@
         </div>
       </div>
     {/if}
-
-    <label class="tap flex items-center gap-3 rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 dark:border-surface-600 dark:bg-surface-700">
-      <input type="checkbox" bind:checked={showDone} class="h-5 w-5 accent-primary-500" />
-      <span class="text-sm font-medium">Show done</span>
-    </label>
 
     <div class="sticky bottom-0 -mx-5 -mb-5 flex gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95">
       <button

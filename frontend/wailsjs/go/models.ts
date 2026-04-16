@@ -1460,6 +1460,8 @@ export namespace task {
 	    priority?: string;
 	    // Go type: time
 	    dueDate?: any;
+	    // Go type: time
+	    closedAt?: any;
 	    requirePermissions?: boolean;
 	    agentRuns: AgentRun[];
 	    workflow?: workflow.Execution;
@@ -1496,6 +1498,7 @@ export namespace task {
 	        this.todoistId = source["todoistId"];
 	        this.priority = source["priority"];
 	        this.dueDate = this.convertValues(source["dueDate"], null);
+	        this.closedAt = this.convertValues(source["closedAt"], null);
 	        this.requirePermissions = source["requirePermissions"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);

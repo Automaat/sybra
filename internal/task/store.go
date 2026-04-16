@@ -75,6 +75,15 @@ func (s *Store) List() ([]Task, error) {
 		}
 		t.Plan, _ = s.plans.Read(t.ID)
 		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
+		// One-time migration: stamp ClosedAt for legacy terminal tasks that
+		// predate the ClosedAt field. UpdatedAt is the best approximation.
+		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+			ts := t.UpdatedAt
+			t.ClosedAt = &ts
+			if data, merr := Marshal(t); merr == nil {
+				_ = fsutil.AtomicWrite(p, data)
+			}
+		}
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
@@ -210,11 +219,22 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 		t.Slug = *u.Slug
 	}
 	if u.Status != nil {
+		oldStatus := t.Status
 		t.Status = *u.Status
 		// Clear reason when status changes unless a new reason is also provided.
 		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
+		// Stamp ClosedAt on transition into a terminal status; clear on exit.
+		wasTerminal := IsTerminalStatus(oldStatus)
+		isTerminal := IsTerminalStatus(t.Status)
+		if !wasTerminal && isTerminal {
+			now := time.Now().UTC()
+			t.ClosedAt = &now
+		} else if wasTerminal && !isTerminal {
+			t.ClosedAt = nil
+		}
+		// both terminal → preserve existing ClosedAt; both non-terminal → no-op
 	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
@@ -378,6 +398,10 @@ func cloneTask(t Task) Task {
 		d := *t.DueDate
 		clone.DueDate = &d
 	}
+	if t.ClosedAt != nil {
+		c := *t.ClosedAt
+		clone.ClosedAt = &c
+	}
 	if t.Workflow != nil {
 		wfClone := cloneWorkflow(*t.Workflow)
 		clone.Workflow = &wfClone
@@ -423,7 +447,16 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		return err
 	}
 	if status != nil {
+		oldStatus := t.Status
 		t.Status = *status
+		wasTerminal := IsTerminalStatus(oldStatus)
+		isTerminal := IsTerminalStatus(t.Status)
+		if !wasTerminal && isTerminal {
+			now := time.Now().UTC()
+			t.ClosedAt = &now
+		} else if wasTerminal && !isTerminal {
+			t.ClosedAt = nil
+		}
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
 	d, err := Marshal(t)

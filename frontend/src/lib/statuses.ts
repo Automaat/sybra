@@ -9,6 +9,7 @@ export type TaskStatus =
   | 'test-plan-review'
   | 'human-required'
   | 'done'
+  | 'cancelled'
 
 export interface StatusMeta {
   value: TaskStatus
@@ -79,6 +80,12 @@ export const ALL_STATUSES: StatusMeta[] = [
     badgeClasses: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200',
     pillClasses: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200',
   },
+  {
+    value: 'cancelled',
+    label: 'Cancelled',
+    badgeClasses: 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400',
+    pillClasses: 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400',
+  },
 ]
 
 /** O(1) lookup by status value */
@@ -99,7 +106,7 @@ export interface BoardColumn {
   includes: TaskStatus[]
 }
 
-/** Kanban board columns — used by TaskList and ProjectDetail */
+/** Kanban board columns — active work only; terminal tasks live in Logbook */
 export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500', includes: ['new', 'todo'] },
   { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400', includes: ['planning', 'plan-review'] },
@@ -107,5 +114,4 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: [] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: [] },
-  { status: 'done', label: 'Done', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
 ]

@@ -26,6 +26,7 @@
   import ChatDetail from './pages/ChatDetail.svelte'
   import WorkflowList from './pages/WorkflowList.svelte'
   import WorkflowDetail from './pages/WorkflowDetail.svelte'
+  import Logbook from './pages/Logbook.svelte'
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
   import CreateProjectDialog from './components/CreateProjectDialog.svelte'
   import QuickAddTask from './components/QuickAddTask.svelte'
@@ -409,6 +410,8 @@
         workflowId={navStore.page.workflowId}
         onback={() => navStore.back()}
       />
+    {:else if navStore.page.kind === 'logbook'}
+      <Logbook onviewtask={navTaskDetail} />
     {:else if navStore.page.kind === 'settings'}
       <Settings />
     {/if}
