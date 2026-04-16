@@ -61,6 +61,7 @@ func (s *Store) List() ([]Task, error) {
 	}
 
 	var tasks []Task
+	var parseErr bool
 	for _, p := range paths {
 		base := filepath.Base(p)
 		if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
@@ -69,13 +70,16 @@ func (s *Store) List() ([]Task, error) {
 		t, err := Parse(p)
 		if err != nil {
 			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
+			parseErr = true
 			continue
 		}
 		t.Plan, _ = s.plans.Read(t.ID)
 		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 		tasks = append(tasks, t)
 	}
-	s.storeListCache(tasks)
+	if !parseErr {
+		s.storeListCache(tasks)
+	}
 	return tasks, nil
 }
 
