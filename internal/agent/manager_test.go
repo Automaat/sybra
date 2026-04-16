@@ -434,6 +434,7 @@ func TestHasRunningAgentForTask(t *testing.T) {
 }
 
 func TestBuildCommand(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
 	m, _ := newTestManager(t)
 
 	tests := []struct {
