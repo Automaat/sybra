@@ -1,6 +1,5 @@
 <script lang="ts">
   import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive } from '@lucide/svelte'
-  import { Navigation } from '@skeletonlabs/skeleton-svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
@@ -16,105 +15,81 @@
   const reviewCount = $derived(
     taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length
   )
+
+  interface NavItem {
+    kind: string[]
+    label: string
+    title?: string
+    onclick: () => void
+  }
+
+  const items: NavItem[] = [
+    { kind: ['dashboard'], label: 'Dashboard', onclick: () => navStore.reset({ kind: 'dashboard' }) },
+    { kind: ['task-list', 'task-detail'], label: 'Board', onclick: () => navStore.reset({ kind: 'task-list' }) },
+    { kind: ['project-list', 'project-detail'], label: 'Projects', onclick: () => navStore.reset({ kind: 'project-list' }) },
+    { kind: ['chats', 'chat-detail'], label: 'Chats', onclick: () => navStore.reset({ kind: 'chats' }) },
+    { kind: ['agents', 'agent-detail'], label: 'Agents', onclick: () => navStore.reset({ kind: 'agents' }) },
+    { kind: ['github'], label: 'GitHub', onclick: () => navStore.reset({ kind: 'github' }) },
+    { kind: ['reviews'], label: 'Reviews', onclick: () => navStore.reset({ kind: 'reviews' }) },
+    { kind: ['logbook'], label: 'Logbook', onclick: () => navStore.reset({ kind: 'logbook' }) },
+    { kind: ['workflows', 'workflow-detail'], label: 'Workflows', onclick: () => navStore.reset({ kind: 'workflows' }) },
+    { kind: ['stats'], label: 'Stats', onclick: () => navStore.reset({ kind: 'stats' }) },
+    { kind: ['settings'], label: 'Settings', title: 'Settings (Cmd+,)', onclick: () => navStore.reset({ kind: 'settings' }) },
+  ]
 </script>
 
-<Navigation layout="rail">
-  <Navigation.Header>
-    <span class="p-2 text-lg font-bold">S</span>
-  </Navigation.Header>
-  <Navigation.Content>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'dashboard' })}
-      data-active={navStore.page.kind === 'dashboard' || undefined}
-    >
-      <LayoutGrid size={20} />
-      <Navigation.TriggerText>Dashboard</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'task-list' })}
-      data-active={navStore.page.kind === 'task-list' || navStore.page.kind === 'task-detail' || undefined}
-    >
-      <ClipboardList size={20} />
-      <Navigation.TriggerText>Board</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'project-list' })}
-      data-active={navStore.page.kind === 'project-list' || navStore.page.kind === 'project-detail' || undefined}
-    >
-      <Folder size={20} />
-      <Navigation.TriggerText>Projects</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'chats' })}
-      data-active={navStore.page.kind === 'chats' || navStore.page.kind === 'chat-detail' || undefined}
-    >
-      <div class="relative">
-        <MessageCircle size={20} />
-        {#if interactiveAgentCount > 0}
-          <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary-500 text-[9px] font-bold text-white">{interactiveAgentCount}</span>
-        {/if}
-      </div>
-      <Navigation.TriggerText>Chats</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'agents' })}
-      data-active={navStore.page.kind === 'agents' || navStore.page.kind === 'agent-detail' || undefined}
-    >
-      <div class="relative">
-        <UserCircle size={20} />
-        {#if runningAgentCount > 0}
-          <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-success-500 text-[9px] font-bold text-white">{runningAgentCount}</span>
-        {/if}
-      </div>
-      <Navigation.TriggerText>Agents</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'github' })}
-      data-active={navStore.page.kind === 'github' || undefined}
-    >
-      <GitBranch size={20} />
-      <Navigation.TriggerText>GitHub</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'reviews' })}
-      data-active={navStore.page.kind === 'reviews' || undefined}
-    >
-      <div class="relative">
-        <ClipboardCheck size={20} />
-        {#if reviewCount > 0}
-          <span class="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning-500 text-[9px] font-bold text-white">{reviewCount}</span>
-        {/if}
-      </div>
-      <Navigation.TriggerText>Reviews</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'logbook' })}
-      data-active={navStore.page.kind === 'logbook' || undefined}
-    >
-      <Archive size={20} />
-      <Navigation.TriggerText>Logbook</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'workflows' })}
-      data-active={navStore.page.kind === 'workflows' || navStore.page.kind === 'workflow-detail' || undefined}
-    >
-      <LayoutDashboard size={20} />
-      <Navigation.TriggerText>Workflows</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'stats' })}
-      data-active={navStore.page.kind === 'stats' || undefined}
-    >
-      <BarChart3 size={20} />
-      <Navigation.TriggerText>Stats</Navigation.TriggerText>
-    </Navigation.Trigger>
-    <Navigation.Trigger
-      onclick={() => navStore.reset({ kind: 'settings' })}
-      data-active={navStore.page.kind === 'settings' || undefined}
-      title="Settings (Cmd+,)"
-    >
-      <Settings size={20} />
-      <Navigation.TriggerText>Settings</Navigation.TriggerText>
-    </Navigation.Trigger>
-  </Navigation.Content>
-</Navigation>
+<nav class="flex h-full w-16 flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-900">
+  <div class="flex shrink-0 items-center justify-center py-3">
+    <span class="text-lg font-bold">S</span>
+  </div>
+  <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1">
+    {#each items as item}
+      {@const active = item.kind.includes(navStore.page.kind)}
+      <button
+        type="button"
+        onclick={item.onclick}
+        title={item.title ?? item.label}
+        class="flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[10px] font-medium transition-colors
+          {active
+            ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
+            : 'text-surface-600 hover:bg-surface-200 dark:text-surface-400 dark:hover:bg-surface-700'}"
+      >
+        <div class="relative">
+          {#if item.label === 'Dashboard'}
+            <LayoutGrid size={18} />
+          {:else if item.label === 'Board'}
+            <ClipboardList size={18} />
+          {:else if item.label === 'Projects'}
+            <Folder size={18} />
+          {:else if item.label === 'Chats'}
+            <MessageCircle size={18} />
+            {#if interactiveAgentCount > 0}
+              <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary-500 text-[8px] font-bold text-white">{interactiveAgentCount}</span>
+            {/if}
+          {:else if item.label === 'Agents'}
+            <UserCircle size={18} />
+            {#if runningAgentCount > 0}
+              <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-success-500 text-[8px] font-bold text-white">{runningAgentCount}</span>
+            {/if}
+          {:else if item.label === 'GitHub'}
+            <GitBranch size={18} />
+          {:else if item.label === 'Reviews'}
+            <ClipboardCheck size={18} />
+            {#if reviewCount > 0}
+              <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-warning-500 text-[8px] font-bold text-white">{reviewCount}</span>
+            {/if}
+          {:else if item.label === 'Logbook'}
+            <Archive size={18} />
+          {:else if item.label === 'Workflows'}
+            <LayoutDashboard size={18} />
+          {:else if item.label === 'Stats'}
+            <BarChart3 size={18} />
+          {:else if item.label === 'Settings'}
+            <Settings size={18} />
+          {/if}
+        </div>
+        <span class="leading-tight">{item.label}</span>
+      </button>
+    {/each}
+  </div>
+</nav>
