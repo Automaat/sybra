@@ -409,12 +409,21 @@ func TestSyncDir(t *testing.T) {
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"a.md", "b.md", "c.txt"} {
-		if err := os.WriteFile(filepath.Join(srcDir, name), []byte("content-"+name), 0o644); err != nil {
+	frontmatter := func(name string) []byte {
+		return []byte("---\nname: " + name + "\ndescription: test\n---\n\n# " + name)
+	}
+	for _, name := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), frontmatter(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Add a subdirectory that should be skipped
+	// Non-.md, subdir, and a malformed .md without frontmatter must all be skipped.
+	if err := os.WriteFile(filepath.Join(srcDir, "c.txt"), []byte("content-c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "no-frontmatter.md"), []byte("# nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -422,13 +431,12 @@ func TestSyncDir(t *testing.T) {
 	dstDir := filepath.Join(t.TempDir(), "dst-skills")
 	a.syncDir(srcDir, dstDir)
 
-	// Only .md files should be copied
 	entries, err := os.ReadDir(dstDir)
 	if err != nil {
 		t.Fatalf("read dst: %v", err)
 	}
 	if len(entries) != 2 {
-		t.Errorf("got %d files, want 2 (.md only)", len(entries))
+		t.Errorf("got %d files, want 2 (only valid .md with frontmatter)", len(entries))
 	}
 }
 
@@ -439,7 +447,8 @@ func TestSyncDirRemovesOrphans(t *testing.T) {
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(srcDir, "keep.md"), []byte("# keep"), 0o644); err != nil {
+	keep := []byte("---\nname: keep\ndescription: test\n---\n\n# keep")
+	if err := os.WriteFile(filepath.Join(srcDir, "keep.md"), keep, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -448,7 +457,7 @@ func TestSyncDirRemovesOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pre-populate orphan file that should be removed.
-	if err := os.WriteFile(filepath.Join(dstDir, "orphan.md"), []byte("# orphan"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dstDir, "orphan.md"), []byte("---\nname: orphan\ndescription: test\n---\n\n# orphan"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -463,6 +472,212 @@ func TestSyncDirRemovesOrphans(t *testing.T) {
 	}
 	if entries[0].Name() != "keep.md" {
 		t.Errorf("expected keep.md, got %s", entries[0].Name())
+	}
+}
+
+func TestSyncDirCopiesDirectoryStyleSkill(t *testing.T) {
+	a := setupApp(t)
+
+	srcDir := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(srcDir, "plan-critic")
+	refDir := filepath.Join(skillDir, "references")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillMD := []byte("---\nname: plan-critic\ndescription: test\n---\n\n# plan-critic")
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), skillMD, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refDir, "checklist.md"), []byte("# checklist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed directory skill (no frontmatter) must be skipped.
+	badDir := filepath.Join(srcDir, "bad-skill")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte("# no frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(t.TempDir(), "dst-skills")
+	a.syncDir(srcDir, dstDir)
+
+	if _, err := os.Stat(filepath.Join(dstDir, "plan-critic", "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md missing at dst: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "plan-critic", "references", "checklist.md")); err != nil {
+		t.Errorf("nested reference missing at dst: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "bad-skill")); !os.IsNotExist(err) {
+		t.Errorf("bad skill dir should not be copied: stat err=%v", err)
+	}
+}
+
+func TestSyncDirRemovesOrphanSkillDir(t *testing.T) {
+	a := setupApp(t)
+
+	srcDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(t.TempDir(), "dst-skills")
+	orphan := filepath.Join(dstDir, "orphan-skill")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, "SKILL.md"), []byte("---\nname: orphan\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A non-skill dir (no SKILL.md) must be preserved.
+	keepDir := filepath.Join(dstDir, "not-a-skill")
+	if err := os.MkdirAll(keepDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keepDir, "hello.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.syncDir(srcDir, dstDir)
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("orphan skill dir should be removed: stat err=%v", err)
+	}
+	if _, err := os.Stat(keepDir); err != nil {
+		t.Errorf("non-skill dir should be preserved: %v", err)
+	}
+}
+
+func TestSyncToCodexDirDirectoryStyleAndFrontmatter(t *testing.T) {
+	a := setupApp(t)
+
+	srcDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Valid flat skill.
+	flat := []byte("---\nname: good-flat\ndescription: t\n---\n\n# flat")
+	if err := os.WriteFile(filepath.Join(srcDir, "good-flat.md"), flat, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed flat skill — must NOT overwrite a valid dst skill of same name.
+	if err := os.WriteFile(filepath.Join(srcDir, "bad-flat.md"), []byte("# no-fm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Valid directory-style skill.
+	dirSkill := filepath.Join(srcDir, "good-dir")
+	if err := os.MkdirAll(dirSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirMD := []byte("---\nname: good-dir\ndescription: t\n---\n\n# dir")
+	if err := os.WriteFile(filepath.Join(dirSkill, "SKILL.md"), dirMD, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dstDir := filepath.Join(t.TempDir(), "codex-skills")
+	// Pre-populate a valid bad-flat entry in the dst to verify it survives.
+	preExisting := filepath.Join(dstDir, "bad-flat")
+	if err := os.MkdirAll(preExisting, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	preExistingContent := []byte("---\nname: bad-flat\ndescription: valid\n---\n\n# valid")
+	if err := os.WriteFile(filepath.Join(preExisting, "SKILL.md"), preExistingContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.syncToCodexDir(srcDir, dstDir)
+
+	if _, err := os.Stat(filepath.Join(dstDir, "good-flat", "SKILL.md")); err != nil {
+		t.Errorf("good-flat not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "good-dir", "SKILL.md")); err != nil {
+		t.Errorf("good-dir not written: %v", err)
+	}
+	// bad-flat must be treated as orphan (invalid src) and removed, OR preserved
+	// unchanged. The key invariant: dst must not contain the malformed payload.
+	got, err := os.ReadFile(filepath.Join(dstDir, "bad-flat", "SKILL.md"))
+	if err == nil && string(got) == "# no-fm" {
+		t.Errorf("malformed skill overwrote valid dst: %q", got)
+	}
+}
+
+func TestSyncSkillsPrefersEmbeddedWhenNoGoMod(t *testing.T) {
+	a := setupApp(t)
+	// Use in-memory FS stand-in: point skillsFS at a real testdata dir.
+	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
+	dataDir := filepath.Join(embeddedSrc, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	embedded := []byte("---\nname: embedded-skill\ndescription: from embed\n---\n\n# embed")
+	if err := os.WriteFile(filepath.Join(dataDir, "embedded-skill.md"), embedded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.skillsFS = os.DirFS(embeddedSrc)
+
+	// repoDir with a skills dir but NO go.mod — simulates container where
+	// cwd=/home/sybra. The embedded bundle must take precedence even though
+	// the skills dir already exists with a rogue file.
+	repoDir := t.TempDir()
+	a.repoDir = repoDir
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "rogue.md"), []byte("# no-fm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.skillsDir = filepath.Join(t.TempDir(), "app-skills")
+
+	a.syncSkills()
+
+	// Embedded content should be present in a.skillsDir (not rogue).
+	if _, err := os.Stat(filepath.Join(a.skillsDir, "embedded-skill.md")); err != nil {
+		t.Errorf("embedded skill missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(a.skillsDir, "rogue.md")); !os.IsNotExist(err) {
+		t.Errorf("rogue skill leaked into app skills dir")
+	}
+}
+
+func TestSyncSkillsUsesRepoSourceWhenGoModPresent(t *testing.T) {
+	a := setupApp(t)
+
+	repoDir := t.TempDir()
+	a.repoDir = repoDir
+	// Marker that this is the actual sybra source repo.
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoSkill := []byte("---\nname: repo-skill\ndescription: t\n---\n")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "repo-skill.md"), repoSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Even with an embedded FS available, go.mod presence selects repo source.
+	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
+	dataDir := filepath.Join(embeddedSrc, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "embed-only.md"), []byte("---\nname: embed-only\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.skillsFS = os.DirFS(embeddedSrc)
+	a.skillsDir = filepath.Join(t.TempDir(), "app-skills")
+
+	a.syncSkills()
+
+	if _, err := os.Stat(filepath.Join(a.skillsDir, "repo-skill.md")); err != nil {
+		t.Errorf("repo skill missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(a.skillsDir, "embed-only.md")); !os.IsNotExist(err) {
+		t.Errorf("embedded skill should not be written in repo-source mode")
 	}
 }
 
@@ -494,7 +709,8 @@ func TestSyncSkillsWithRepoDir(t *testing.T) {
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillsSrc, "skill.md"), []byte("# skill"), 0o644); err != nil {
+	skillContent := []byte("---\nname: skill\ndescription: test\n---\n\n# skill")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "skill.md"), skillContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
