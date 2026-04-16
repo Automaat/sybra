@@ -182,6 +182,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.PlanCritique != "" {
 		fmt.Printf("\n## Plan Critique\n\n%s\n", t.PlanCritique)
 	}
+	if t.CodeReview != "" {
+		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
+	}
 	return 0
 }
 
@@ -270,6 +273,8 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	planFile := fs.String("plan-file", "", "path to file with plan content")
 	planCritique := fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)")
 	planCritiqueFile := fs.String("plan-critique-file", "", "path to file with plan critique content")
+	codeReview := fs.String("code-review", "", "code review markdown (empty string clears review)")
+	codeReviewFile := fs.String("code-review-file", "", "path to file with code review content")
 	mode := fs.String("mode", "", "new agent mode")
 	ttype := fs.String("type", "", "new task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
@@ -299,6 +304,9 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 	if err := applyFileOrStringUpdate(fs, updates, "plan-critique", "plan_critique", *planCritique, *planCritiqueFile); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if err := applyFileOrStringUpdate(fs, updates, "code-review", "code_review", *codeReview, *codeReviewFile); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if *mode != "" {
@@ -894,7 +902,7 @@ func usage() {
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
-           STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done
+           STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done|cancelled
   get      <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
            TYPE: normal|debug|research

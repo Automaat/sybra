@@ -20,13 +20,14 @@ const (
 	StatusTestPlanReview Status = "test-plan-review"
 	StatusHumanRequired  Status = "human-required"
 	StatusDone           Status = "done"
+	StatusCancelled      Status = "cancelled"
 )
 
 var validStatuses = map[Status]bool{
 	StatusNew: true, StatusTodo: true, StatusInProgress: true,
 	StatusInReview: true, StatusPlanning: true, StatusPlanReview: true,
 	StatusTesting: true, StatusTestPlanReview: true,
-	StatusHumanRequired: true, StatusDone: true,
+	StatusHumanRequired: true, StatusDone: true, StatusCancelled: true,
 }
 
 // AllStatuses returns every valid status in display order.
@@ -35,8 +36,13 @@ func AllStatuses() []Status {
 		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
 		StatusInProgress, StatusInReview,
 		StatusTesting, StatusTestPlanReview,
-		StatusHumanRequired, StatusDone,
+		StatusHumanRequired, StatusDone, StatusCancelled,
 	}
+}
+
+// IsTerminalStatus reports whether s is a terminal (closed) status.
+func IsTerminalStatus(s Status) bool {
+	return s == StatusDone || s == StatusCancelled
 }
 
 func ValidateStatus(s string) (Status, error) {
@@ -154,6 +160,7 @@ type Task struct {
 	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
 	Priority     Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
 	DueDate      *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
+	ClosedAt     *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).
 	RequirePermissions *bool               `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
@@ -165,6 +172,7 @@ type Task struct {
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`
 	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
+	CodeReview   string `yaml:"-" json:"codeReview,omitempty"`
 	FilePath     string `yaml:"-" json:"filePath"`
 }
 

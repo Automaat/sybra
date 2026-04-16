@@ -21,6 +21,7 @@ type Store struct {
 	comments      *CommentStore
 	plans         *PlanStore
 	planCritiques *PlanCritiqueStore
+	codeReviews   *CodeReviewStore
 	cacheMu       sync.RWMutex
 	listCache     []Task
 	listValid     bool
@@ -35,6 +36,7 @@ func NewStore(dir string) (*Store, error) {
 		comments:      NewCommentStore(dir),
 		plans:         NewPlanStore(dir),
 		planCritiques: NewPlanCritiqueStore(dir),
+		codeReviews:   NewCodeReviewStore(dir),
 	}, nil
 }
 
@@ -48,6 +50,10 @@ func (s *Store) Plans() *PlanStore {
 
 func (s *Store) PlanCritiques() *PlanCritiqueStore {
 	return s.planCritiques
+}
+
+func (s *Store) CodeReviews() *CodeReviewStore {
+	return s.codeReviews
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -64,7 +70,7 @@ func (s *Store) List() ([]Task, error) {
 	var parseErr bool
 	for _, p := range paths {
 		base := filepath.Base(p)
-		if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+		if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
 			continue
 		}
 		t, err := Parse(p)
@@ -75,6 +81,16 @@ func (s *Store) List() ([]Task, error) {
 		}
 		t.Plan, _ = s.plans.Read(t.ID)
 		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
+		t.CodeReview, _ = s.codeReviews.Read(t.ID)
+		// One-time migration: stamp ClosedAt for legacy terminal tasks that
+		// predate the ClosedAt field. UpdatedAt is the best approximation.
+		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+			ts := t.UpdatedAt
+			t.ClosedAt = &ts
+			if data, merr := Marshal(t); merr == nil {
+				_ = fsutil.AtomicWrite(p, data)
+			}
+		}
 		tasks = append(tasks, t)
 	}
 	if !parseErr {
@@ -97,6 +113,7 @@ func (s *Store) Get(id string) (Task, error) {
 	}
 	t.Plan, _ = s.plans.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
+	t.CodeReview, _ = s.codeReviews.Read(t.ID)
 	return t, nil
 }
 
@@ -193,7 +210,30 @@ func (s *Store) Delete(id string) error {
 	_ = s.comments.DeleteAll(id)
 	_ = s.plans.Delete(id)
 	_ = s.planCritiques.Delete(id)
+	_ = s.codeReviews.Delete(id)
 	s.deleteCachedTask(id)
+	return nil
+}
+
+func (s *Store) writeSidecars(id string, u Update, t *Task) error {
+	if u.Plan != nil {
+		if err := s.plans.Write(id, *u.Plan); err != nil {
+			return fmt.Errorf("write plan: %w", err)
+		}
+		t.Plan = *u.Plan
+	}
+	if u.PlanCritique != nil {
+		if err := s.planCritiques.Write(id, *u.PlanCritique); err != nil {
+			return fmt.Errorf("write plan critique: %w", err)
+		}
+		t.PlanCritique = *u.PlanCritique
+	}
+	if u.CodeReview != nil {
+		if err := s.codeReviews.Write(id, *u.CodeReview); err != nil {
+			return fmt.Errorf("write code review: %w", err)
+		}
+		t.CodeReview = *u.CodeReview
+	}
 	return nil
 }
 
@@ -210,11 +250,22 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 		t.Slug = *u.Slug
 	}
 	if u.Status != nil {
+		oldStatus := t.Status
 		t.Status = *u.Status
 		// Clear reason when status changes unless a new reason is also provided.
 		if u.StatusReason == nil {
 			t.StatusReason = ""
 		}
+		// Stamp ClosedAt on transition into a terminal status; clear on exit.
+		wasTerminal := IsTerminalStatus(oldStatus)
+		isTerminal := IsTerminalStatus(t.Status)
+		if !wasTerminal && isTerminal {
+			now := time.Now().UTC()
+			t.ClosedAt = &now
+		} else if wasTerminal && !isTerminal {
+			t.ClosedAt = nil
+		}
+		// both terminal → preserve existing ClosedAt; both non-terminal → no-op
 	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
@@ -264,17 +315,8 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
-	if u.Plan != nil {
-		if wErr := s.plans.Write(id, *u.Plan); wErr != nil {
-			return Task{}, fmt.Errorf("write plan: %w", wErr)
-		}
-		t.Plan = *u.Plan
-	}
-	if u.PlanCritique != nil {
-		if wErr := s.planCritiques.Write(id, *u.PlanCritique); wErr != nil {
-			return Task{}, fmt.Errorf("write plan critique: %w", wErr)
-		}
-		t.PlanCritique = *u.PlanCritique
+	if err := s.writeSidecars(id, u, &t); err != nil {
+		return Task{}, err
 	}
 
 	data, err := Marshal(t)
@@ -295,7 +337,7 @@ func (s *Store) InvalidatePath(path string) {
 		return
 	}
 	base := filepath.Base(path)
-	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") {
+	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
 		s.invalidateListCache()
 		return
 	}
@@ -378,6 +420,10 @@ func cloneTask(t Task) Task {
 		d := *t.DueDate
 		clone.DueDate = &d
 	}
+	if t.ClosedAt != nil {
+		c := *t.ClosedAt
+		clone.ClosedAt = &c
+	}
 	if t.Workflow != nil {
 		wfClone := cloneWorkflow(*t.Workflow)
 		clone.Workflow = &wfClone
@@ -423,7 +469,16 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		return err
 	}
 	if status != nil {
+		oldStatus := t.Status
 		t.Status = *status
+		wasTerminal := IsTerminalStatus(oldStatus)
+		isTerminal := IsTerminalStatus(t.Status)
+		if !wasTerminal && isTerminal {
+			now := time.Now().UTC()
+			t.ClosedAt = &now
+		} else if wasTerminal && !isTerminal {
+			t.ClosedAt = nil
+		}
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
 	d, err := Marshal(t)

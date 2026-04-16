@@ -287,15 +287,27 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 // buildCodexCommand builds the display command string for a Codex agent.
 func buildCodexCommand(model string, requirePerms bool) string {
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
-	if !requirePerms {
-		parts = append(parts, "--full-auto")
-	} else {
-		parts = append(parts, "--sandbox", "workspace-write")
-	}
+	parts = append(parts, codexSandboxArgs(requirePerms)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
 	return strings.Join(parts, " ")
+}
+
+// codexSandboxArgs returns the sandbox/permission flags for `codex exec`.
+// When SYBRA_DISABLE_CODEX_SANDBOX=1 is set, the bwrap-backed sandbox is
+// replaced with `--sandbox danger-full-access`. Required when running
+// inside a Docker/LXC container whose kernel blocks unprivileged user
+// namespaces (kernel.unprivileged_userns_clone=0), where bwrap crashes
+// before the agent can execute any command.
+func codexSandboxArgs(requirePerms bool) []string {
+	if os.Getenv("SYBRA_DISABLE_CODEX_SANDBOX") == "1" {
+		return []string{"--sandbox", "danger-full-access"}
+	}
+	if !requirePerms {
+		return []string{"--full-auto"}
+	}
+	return []string{"--sandbox", "workspace-write"}
 }
 
 // gateProvider resolves the run's provider through the health gate. If the
@@ -557,15 +569,53 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	return false
 }
 
+// defaultShutdownGrace bounds how long Shutdown waits for in-flight agents
+// to notice the cancel signal and exit cleanly. Without this, agents get
+// SIGKILL'd mid-stream and the final `result` NDJSON line is truncated,
+// leaving operators with a half-written run log and a "signal: killed"
+// exit error that carries no diagnostic value.
+const defaultShutdownGrace = 20 * time.Second
+
+// Shutdown cancels all running agents and blocks until they exit or the
+// grace window elapses — whichever comes first. Subprocess runners use
+// SIGTERM + cmd.WaitDelay (see shutdownSignal in runner helpers) so this
+// grace gives claude/codex time to flush the final `result` event.
 func (m *Manager) Shutdown() {
+	m.ShutdownWithGrace(defaultShutdownGrace)
+}
+
+// ShutdownWithGrace is Shutdown with an explicit grace window. Used by
+// tests (short grace) and callers that want to override the default.
+func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	m.logger.Info("agent.shutdown", "count", len(m.agents))
+	count := len(m.agents)
+	dones := make([]chan struct{}, 0, count)
 	for _, a := range m.agents {
 		if a.cancel != nil {
 			a.cancel()
 		}
+		if a.done != nil {
+			dones = append(dones, a.done)
+		}
 	}
+	m.mu.RUnlock()
+
+	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones))
+	if len(dones) == 0 || grace <= 0 {
+		return
+	}
+
+	deadline := time.After(grace)
+	for i, done := range dones {
+		select {
+		case <-done:
+		case <-deadline:
+			m.logger.Warn("agent.shutdown.timeout",
+				"exited", i, "remaining", len(dones)-i, "grace", grace)
+			return
+		}
+	}
+	m.logger.Info("agent.shutdown.done", "exited", len(dones))
 }
 
 // safeArgRe matches only characters safe to embed in a shell command

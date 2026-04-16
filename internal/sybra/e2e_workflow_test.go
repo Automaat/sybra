@@ -2298,9 +2298,10 @@ func agentRunRoles(t task.Task) []string {
 // agent runs is the externally observable proof the step ran.
 func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning", // triage flips status=planning, tags=large
-		"success",            // plan agent (interactive) — exits, advances
-		"success",            // critique_plan agent (headless plan-critic)
+		"triage_to_planning",  // triage flips status=planning, tags=large
+		"success",             // plan agent (interactive) — exits, advances
+		"plan_critic_success", // critique_plan agent saves sidecar via sybra-cli
+		"success",             // address_critique agent
 	})
 	loadBuiltinWorkflow(t, env, "simple-task")
 
@@ -2348,6 +2349,69 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	roles := agentRunRoles(tk)
 	if !slices.Contains(roles, "plan-critic") {
 		t.Errorf("plan-critic agent role missing from task agent runs\nroles: %v", roles)
+	}
+
+	if tk.PlanCritique == "" {
+		t.Errorf("task PlanCritique sidecar empty; expected critic scenario to save it via sybra-cli")
+	}
+	if !slices.Contains(stepIDs, "require_plan_critique") {
+		t.Errorf("require_plan_critique missing from step history\nhistory: %v", stepIDs)
+	}
+}
+
+// TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired covers the
+// failure mode that motivated the require_sidecar guard: the critic agent
+// exits cleanly (no process error) but never ran `sybra-cli update
+// --plan-critique-file` — e.g. because its shell was sandboxed away inside
+// a Docker container. Without the guard the workflow would silently advance
+// to address_critique with nothing to address and the human review page
+// would render only the plan. The guard must flip the task to human-required
+// and halt the workflow.
+func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
+	env := setupE2EMulti(t, []string{
+		"triage_to_planning",  // triage flips status=planning, tags=large
+		"success",             // plan agent (interactive) — exits, advances
+		"plan_critic_no_save", // critic agent completes without writing sidecar
+	})
+	loadBuiltinWorkflow(t, env, "simple-task")
+
+	created, err := env.tasks.Create("missing critique e2e", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "task flips to human-required via require_plan_critique", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Status == task.StatusHumanRequired
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	if !slices.Contains(stepIDs, "critique_plan") {
+		t.Errorf("critique_plan missing from history before the guard fired\nhistory: %v", stepIDs)
+	}
+	if !slices.Contains(stepIDs, "require_plan_critique") {
+		t.Errorf("require_plan_critique guard did not execute\nhistory: %v", stepIDs)
+	}
+	if slices.Contains(stepIDs, "address_critique") {
+		t.Errorf("address_critique ran despite missing critique — guard failed to halt\nhistory: %v", stepIDs)
+	}
+	if tk.PlanCritique != "" {
+		t.Errorf("PlanCritique unexpectedly non-empty after no_save scenario: %q", tk.PlanCritique)
+	}
+	if !strings.Contains(strings.ToLower(tk.StatusReason), "plan critique") {
+		t.Errorf("status reason does not mention plan critique: %q", tk.StatusReason)
 	}
 }
 

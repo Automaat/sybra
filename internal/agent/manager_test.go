@@ -517,6 +517,11 @@ func TestBuildCommand(t *testing.T) {
 			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
 			wantCmd: "codex exec --json --skip-git-repo-check --full-auto --model gpt-5.4-mini",
 		},
+		{
+			name:    "codex with RequirePermissions uses workspace-write sandbox",
+			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4",
+		},
 	}
 
 	for _, tt := range tests {
@@ -528,6 +533,40 @@ func TestBuildCommand(t *testing.T) {
 				}
 				return
 			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
+			}
+		})
+	}
+}
+
+func TestCodexSandboxDisabledViaEnv(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "1")
+	m, _ := newTestManager(t)
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantCmd string
+	}{
+		{
+			name:    "codex default with sandbox disabled",
+			cfg:     RunConfig{Provider: "codex"},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox danger-full-access --model gpt-5.4",
+		},
+		{
+			name:    "codex RequirePermissions honored as danger-full-access when sandbox disabled",
+			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
+			wantCmd: "codex exec --json --skip-git-repo-check --sandbox danger-full-access --model gpt-5.4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.buildCommand(tt.cfg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -553,6 +592,84 @@ func TestShutdown(t *testing.T) {
 	// All agents should still be in the map (shutdown doesn't remove them)
 	if len(m.ListAgents()) != 3 {
 		t.Errorf("got %d agents, want 3", len(m.ListAgents()))
+	}
+}
+
+// TestShutdownWithGrace_WaitsForDoneChannels locks in the graceful-shutdown
+// contract introduced after the 2026-04-16 "signal: killed" wave: once the
+// agent manager cancels running agents, it must block on their done
+// channels until either they close or the grace window elapses. Before
+// this fix, Shutdown returned immediately and the server process exited
+// mid-stream, truncating NDJSON result lines.
+func TestShutdownWithGrace_WaitsForDoneChannels(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	// Seed a fake running agent: registered in m.agents with a done
+	// channel the test closes from a goroutine to simulate clean exit.
+	done := make(chan struct{})
+	_, agCancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.agents["ag1"] = &Agent{
+		ID:     "ag1",
+		cancel: agCancel,
+		done:   done,
+	}
+	m.mu.Unlock()
+
+	// Close done after a short delay — models a well-behaved subprocess
+	// noticing SIGTERM and flushing its result before exiting.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		close(done)
+	}()
+
+	start := time.Now()
+	m.ShutdownWithGrace(500 * time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("shutdown took %s, expected it to return shortly after done close", elapsed)
+	}
+	if elapsed < 30*time.Millisecond {
+		t.Errorf("shutdown took %s, must have waited for done channel", elapsed)
+	}
+}
+
+// TestShutdownWithGrace_RespectsGraceDeadline guards against the opposite
+// failure: a hung agent must not block shutdown forever. After the grace
+// window the helper returns and the outer server shutdown can complete.
+func TestShutdownWithGrace_RespectsGraceDeadline(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	done := make(chan struct{})
+	_, agCancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.agents["stuck"] = &Agent{
+		ID:     "stuck",
+		cancel: agCancel,
+		done:   done, // never closed
+	}
+	m.mu.Unlock()
+
+	start := time.Now()
+	m.ShutdownWithGrace(80 * time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed < 80*time.Millisecond {
+		t.Errorf("returned early at %s, expected to wait the full grace", elapsed)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("waited %s, expected to bail around the grace window", elapsed)
+	}
+}
+
+func TestShutdownWithGrace_NoAgents(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+	start := time.Now()
+	m.ShutdownWithGrace(5 * time.Second)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("empty shutdown took %s, should return immediately", elapsed)
 	}
 }
 

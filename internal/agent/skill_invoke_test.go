@@ -8,7 +8,7 @@ import (
 
 func TestRewriteSkillInvocations(t *testing.T) {
 	t.Parallel()
-	skills := []string{"plan-critic", "synapse-triage", "synapse-plan", "staff-code-review"}
+	skills := []string{"plan-critic", "sybra-triage", "sybra-plan", "staff-code-review"}
 	tests := []struct {
 		name string
 		in   string
@@ -16,13 +16,13 @@ func TestRewriteSkillInvocations(t *testing.T) {
 	}{
 		{
 			name: "leading slash invocation",
-			in:   "/plan-critic /tmp/synapse-plan-abc.md",
-			want: "$plan-critic /tmp/synapse-plan-abc.md",
+			in:   "/plan-critic /tmp/sybra-plan-abc.md",
+			want: "$plan-critic /tmp/sybra-plan-abc.md",
 		},
 		{
 			name: "mid-sentence invocation",
-			in:   "Triage task 123 using /synapse-triage skill.",
-			want: "Triage task 123 using $synapse-triage skill.",
+			in:   "Triage task 123 using /sybra-triage skill.",
+			want: "Triage task 123 using $sybra-triage skill.",
 		},
 		{
 			name: "multiple invocations",
@@ -31,8 +31,8 @@ func TestRewriteSkillInvocations(t *testing.T) {
 		},
 		{
 			name: "path must not be rewritten",
-			in:   "Save to /tmp/synapse-plan-xxx.md and read /home/user/synapse-triage/log",
-			want: "Save to /tmp/synapse-plan-xxx.md and read /home/user/synapse-triage/log",
+			in:   "Save to /tmp/sybra-plan-xxx.md and read /home/user/sybra-triage/log",
+			want: "Save to /tmp/sybra-plan-xxx.md and read /home/user/sybra-triage/log",
 		},
 		{
 			name: "unknown slash command left alone",

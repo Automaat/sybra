@@ -13,7 +13,7 @@ import (
 // Only exact matches against the given skill names are rewritten, and the
 // invocation must be preceded by start-of-line or a non-word, non-`/`
 // character, and followed by a non-identifier char or end — so path
-// segments like `/tmp/synapse-plan-xxx.md` are never touched.
+// segments like `/tmp/sybra-plan-xxx.md` are never touched.
 func rewriteSkillInvocations(prompt string, skillNames []string) string {
 	if len(skillNames) == 0 || prompt == "" {
 		return prompt

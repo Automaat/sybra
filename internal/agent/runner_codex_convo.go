@@ -129,6 +129,7 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
 	args := buildCodexConvoArgs(a, cfg, prompt)
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
@@ -173,11 +174,7 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	args := []string{"exec", "--json", "--skip-git-repo-check"}
-	if !cfg.RequirePermissions {
-		args = append(args, "--full-auto")
-	} else {
-		args = append(args, "--sandbox", "workspace-write")
-	}
+	args = append(args, codexSandboxArgs(cfg.RequirePermissions)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}

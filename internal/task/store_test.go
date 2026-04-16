@@ -717,10 +717,11 @@ func TestStoreListSkipsPlanSidecars(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write plan and plan-critique sidecars
+	// Write plan, plan-critique, and code-review sidecars
 	for _, name := range []string{
 		task.ID + ".plan.md",
 		task.ID + ".plan-critique.md",
+		task.ID + ".review.md",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("# plan content"), 0o644); err != nil {
 			t.Fatal(err)
@@ -1048,5 +1049,219 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	}
 	if reloaded.ID != created.ID {
 		t.Errorf("reloaded ID = %q, want %q", reloaded.ID, created.ID)
+	}
+}
+
+func TestClosedAtTransitions(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		from       Status
+		to         Status
+		wantNil    bool
+		wantChange bool // whether ClosedAt pointer value should change
+	}{
+		{name: "todo→done stamps", from: StatusTodo, to: StatusDone, wantNil: false, wantChange: true},
+		{name: "todo→cancelled stamps", from: StatusTodo, to: StatusCancelled, wantNil: false, wantChange: true},
+		{name: "done→in-progress clears", from: StatusDone, to: StatusInProgress, wantNil: true, wantChange: true},
+		{name: "done→cancelled preserves", from: StatusDone, to: StatusCancelled, wantNil: false, wantChange: false},
+		{name: "title edit preserves", from: StatusDone, to: StatusDone, wantNil: false, wantChange: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			task, err := store.Create("t", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Move to 'from' status first.
+			if tc.from != StatusTodo {
+				task, err = store.Update(task.ID, Update{Status: Ptr(tc.from)})
+				if err != nil {
+					t.Fatalf("setup to %q: %v", tc.from, err)
+				}
+			}
+			origClosedAt := task.ClosedAt
+
+			if tc.to == tc.from {
+				// Title-only edit — status unchanged.
+				task, err = store.Update(task.ID, Update{Title: Ptr("updated title")})
+			} else {
+				task, err = store.Update(task.ID, Update{Status: Ptr(tc.to)})
+			}
+			if err != nil {
+				t.Fatalf("update to %q: %v", tc.to, err)
+			}
+
+			if tc.wantNil && task.ClosedAt != nil {
+				t.Errorf("ClosedAt = %v, want nil", task.ClosedAt)
+			}
+			if !tc.wantNil && task.ClosedAt == nil {
+				t.Error("ClosedAt is nil, want non-nil")
+			}
+			switch {
+			case tc.wantChange:
+				if origClosedAt == task.ClosedAt && (origClosedAt != nil && origClosedAt.Equal(*task.ClosedAt)) {
+					t.Error("ClosedAt pointer unchanged, expected change")
+				}
+			case IsTerminalStatus(tc.from) && task.ClosedAt == nil:
+				t.Error("ClosedAt cleared unexpectedly on both-terminal transition")
+			case IsTerminalStatus(tc.from) && origClosedAt != nil && task.ClosedAt != nil &&
+				!origClosedAt.Equal(*task.ClosedAt):
+				t.Errorf("ClosedAt changed on both-terminal transition: %v → %v", origClosedAt, task.ClosedAt)
+			}
+		})
+	}
+}
+
+func TestLegacyMigrationStampsClosedAt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create task and force status=done without ClosedAt (simulate legacy file).
+	tk, err := store.Create("legacy", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Directly write a done-status file with no closed_at field.
+	tk.Status = StatusDone
+	tk.ClosedAt = nil
+	data, err := Marshal(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tk.FilePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.invalidateListCache()
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if task.ID == tk.ID {
+			if task.ClosedAt == nil {
+				t.Error("legacy migration: ClosedAt still nil after List()")
+			}
+			if !task.ClosedAt.Equal(task.UpdatedAt) {
+				t.Errorf("legacy migration: ClosedAt=%v, want UpdatedAt=%v", task.ClosedAt, task.UpdatedAt)
+			}
+			return
+		}
+	}
+	t.Fatal("task not found in List()")
+}
+
+func TestCloneTaskClosedAtNonAliased(t *testing.T) {
+	t.Parallel()
+	ts := time.Now().UTC()
+	orig := Task{
+		ID:        "x",
+		ClosedAt:  &ts,
+		CreatedAt: ts,
+		UpdatedAt: ts,
+	}
+	clone := cloneTask(orig)
+	if clone.ClosedAt == orig.ClosedAt {
+		t.Error("clone.ClosedAt shares pointer with original")
+	}
+	if !clone.ClosedAt.Equal(*orig.ClosedAt) {
+		t.Errorf("clone.ClosedAt=%v, want %v", clone.ClosedAt, orig.ClosedAt)
+	}
+	// Mutating clone must not affect original.
+	newTs := ts.Add(time.Hour)
+	*clone.ClosedAt = newTs
+	if orig.ClosedAt.Equal(newTs) {
+		t.Error("mutating clone.ClosedAt affected original")
+	}
+}
+
+func TestClosedAtYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.Create("roundtrip", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := store.Update(task.ID, Update{Status: Ptr(StatusDone)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.ClosedAt == nil {
+		t.Fatal("ClosedAt not set")
+	}
+	reloaded, err := Parse(done.FilePath)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if reloaded.ClosedAt == nil {
+		t.Fatal("ClosedAt lost on parse")
+	}
+	if !reloaded.ClosedAt.Equal(*done.ClosedAt) {
+		t.Errorf("ClosedAt mismatch: got %v, want %v", *reloaded.ClosedAt, *done.ClosedAt)
+	}
+	// Nil case: active task has no ClosedAt.
+	active, err := store.Create("active", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded2, err := Parse(active.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded2.ClosedAt != nil {
+		t.Errorf("active task should have nil ClosedAt, got %v", reloaded2.ClosedAt)
+	}
+}
+
+func TestClosedAtLegacyMigration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Manually write a task file with status done but no closed_at field.
+	legacyContent := `---
+id: legacy01
+title: Legacy done task
+status: done
+agent_mode: headless
+allowed_tools: []
+tags: []
+created_at: 2025-01-01T10:00:00Z
+updated_at: 2025-06-01T12:00:00Z
+---
+body
+`
+	if err := os.WriteFile(filepath.Join(dir, "legacy01.md"), []byte(legacyContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].ClosedAt == nil {
+		t.Fatal("legacy task ClosedAt should be migrated")
+	}
+	want := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	if !tasks[0].ClosedAt.Equal(want) {
+		t.Errorf("ClosedAt = %v, want %v", *tasks[0].ClosedAt, want)
 	}
 }

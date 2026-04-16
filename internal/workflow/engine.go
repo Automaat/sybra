@@ -49,6 +49,7 @@ type TaskInfo struct {
 	Body         string
 	Plan         string
 	PlanCritique string
+	CodeReview   string
 	Issue        string
 	Reviewed     bool
 	Workflow     *Execution
@@ -784,7 +785,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -854,6 +855,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execLinkPRAndReview(taskID, step, wfExec, t)
 	case StepEvaluate:
 		return e.execEvaluate(taskID, step, wfExec, t)
+	case StepRequireSidecar:
+		return e.execRequireSidecar(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
@@ -1167,6 +1170,36 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // Treating git failures as a hard gate prevents the workflow from wasting
 // `code_review`/`fix_review`/`create_pr` cycles on a worktree the agent
 // cannot operate in.
+// execRequireSidecar verifies that the configured sidecar was actually
+// written for the task. When empty, flips the task to human-required
+// with a descriptive reason instead of silently advancing the workflow.
+// Catches the codex-sandbox-blocked class of failure where the agent
+// exits cleanly without producing its expected output file.
+func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	var content, label string
+	switch step.Config.Sidecar {
+	case "plan_critique":
+		content = t.PlanCritique
+		label = "plan critique"
+	case "code_review":
+		content = t.CodeReview
+		label = "code review"
+	case "":
+		return StepOutput{}, fmt.Errorf("require_sidecar: config.sidecar is required")
+	default:
+		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan_critique|code_review)", step.Config.Sidecar)
+	}
+	if strings.TrimSpace(content) == "" {
+		reason := label + " missing — upstream agent step completed without writing its sidecar"
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)
+		}
+		e.logger.Warn("workflow.require-sidecar.missing", "task_id", taskID, "sidecar", step.Config.Sidecar)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+	}
+	return StepOutput{StepID: step.ID, Status: "completed", Output: label + " present"}, nil
+}
+
 func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if e.worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil

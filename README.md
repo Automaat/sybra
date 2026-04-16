@@ -1,10 +1,10 @@
-# Synapse
+# Sybra
 
 Autonomous Claude Code orchestrator. Local desktop app that manages a swarm of AI agents: triage incoming work, spawn agents, monitor progress, handle failures — all through a markdown-based task board.
 
 ## What it does
 
-You create tasks. Synapse triages them, spawns Claude Code agents to implement them, monitors progress, reviews results, and keeps the board healthy. Each agent gets an isolated git worktree so parallel work never steps on itself.
+You create tasks. Sybra triages them, spawns Claude Code agents to implement them, monitors progress, reviews results, and keeps the board healthy. Each agent gets an isolated git worktree so parallel work never steps on itself.
 
 ```
 new → todo → in-progress → in-review → done
@@ -26,7 +26,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 - **Spotlight** — keyboard-driven task creation from anywhere in the app
 - **Todoist sync** — bidirectional sync with configurable polling
 - **Audit log** — structured NDJSON event log for failure analysis and cycle-time tracking
-- **CLI** (`synapse-cli`) — task CRUD from the terminal, used by Claude Code skills
+- **CLI** (`sybra-cli`) — task CRUD from the terminal, used by Claude Code skills
 
 ## Tech stack
 
@@ -53,13 +53,13 @@ mise run dev
 mise run build
 
 # Install CLI
-go install ./cmd/synapse-cli
+go install ./cmd/sybra-cli
 ```
 
 ## CLI
 
 ```bash
-synapse-cli [--json] <command> [flags]
+sybra-cli [--json] <command> [flags]
 
 list     [--status STATUS] [--tag TAG] [--project PROJECT]
 get      <id>
@@ -87,22 +87,22 @@ project_id: owner/repo
 What needs to be done.
 ```
 
-Tasks live in `~/.synapse/tasks/`. The app watches for file changes and updates the board in real time.
+Tasks live in `~/.sybra/tasks/`. The app watches for file changes and updates the board in real time.
 
 ## Projects
 
-Projects mirror GitHub repos as bare clones. Assign a `project_id` to a task and Synapse automatically creates an isolated worktree when the agent starts.
+Projects mirror GitHub repos as bare clones. Assign a `project_id` to a task and Sybra automatically creates an isolated worktree when the agent starts.
 
 ```bash
-synapse-cli project create --url https://github.com/owner/repo
-synapse-cli create --title "Add feature" --project "owner/repo"
+sybra-cli project create --url https://github.com/owner/repo
+sybra-cli create --title "Add feature" --project "owner/repo"
 ```
 
 ## Orchestrator
 
-Synapse ships with a Claude Code system prompt (`orchestrator/CLAUDE.md`) that turns a Claude Code session into the orchestration brain — triage, dispatch, monitor, resolve. Load it in any Claude Code session pointed at `~/.synapse/`.
+Sybra ships with a Claude Code system prompt (`orchestrator/CLAUDE.md`) that turns a Claude Code session into the orchestration brain — triage, dispatch, monitor, resolve. Load it in any Claude Code session pointed at `~/.sybra/`.
 
-Claude Code skills (`synapse-tasks`, `synapse-triage`, `synapse-plan`, `synapse-evaluate`) are auto-installed to `~/.synapse/skills/` on app startup.
+Claude Code skills (`sybra-tasks`, `sybra-triage`, `sybra-plan`, `sybra-evaluate`) are auto-installed to `~/.claude/skills/` on app startup, laid out as `<skill-name>/SKILL.md` subdirectories — the format Claude Code's skill loader requires.
 
 ## File naming conventions
 

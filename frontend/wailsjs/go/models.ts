@@ -301,6 +301,7 @@ export namespace config {
 	    maxTurns: number;
 	    requirePermissions?: boolean;
 	    maxLogEvents: number;
+	    logRetentionDays: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AgentDefaults(source);
@@ -317,6 +318,7 @@ export namespace config {
 	        this.maxTurns = source["maxTurns"];
 	        this.requirePermissions = source["requirePermissions"];
 	        this.maxLogEvents = source["maxLogEvents"];
+	        this.logRetentionDays = source["logRetentionDays"];
 	    }
 	}
 	export class AuditConfig {
@@ -1460,6 +1462,8 @@ export namespace task {
 	    priority?: string;
 	    // Go type: time
 	    dueDate?: any;
+	    // Go type: time
+	    closedAt?: any;
 	    requirePermissions?: boolean;
 	    agentRuns: AgentRun[];
 	    workflow?: workflow.Execution;
@@ -1470,6 +1474,7 @@ export namespace task {
 	    body: string;
 	    plan?: string;
 	    planCritique?: string;
+	    codeReview?: string;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1496,6 +1501,7 @@ export namespace task {
 	        this.todoistId = source["todoistId"];
 	        this.priority = source["priority"];
 	        this.dueDate = this.convertValues(source["dueDate"], null);
+	        this.closedAt = this.convertValues(source["closedAt"], null);
 	        this.requirePermissions = source["requirePermissions"];
 	        this.agentRuns = this.convertValues(source["agentRuns"], AgentRun);
 	        this.workflow = this.convertValues(source["workflow"], workflow.Execution);
@@ -1504,6 +1510,7 @@ export namespace task {
 	        this.body = source["body"];
 	        this.plan = source["plan"];
 	        this.planCritique = source["planCritique"];
+	        this.codeReview = source["codeReview"];
 	        this.filePath = source["filePath"];
 	    }
 	
@@ -1614,6 +1621,7 @@ export namespace workflow {
 	    waitForStatus: string;
 	    command: string;
 	    dir: string;
+	    sidecar: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new StepConfig(source);
@@ -1637,6 +1645,7 @@ export namespace workflow {
 	        this.waitForStatus = source["waitForStatus"];
 	        this.command = source["command"];
 	        this.dir = source["dir"];
+	        this.sidecar = source["sidecar"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

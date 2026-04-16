@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings } from '@lucide/svelte'
+  import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive } from '@lucide/svelte'
   import { Navigation } from '@skeletonlabs/skeleton-svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
@@ -86,6 +86,13 @@
         {/if}
       </div>
       <Navigation.TriggerText>Reviews</Navigation.TriggerText>
+    </Navigation.Trigger>
+    <Navigation.Trigger
+      onclick={() => navStore.reset({ kind: 'logbook' })}
+      data-active={navStore.page.kind === 'logbook' || undefined}
+    >
+      <Archive size={20} />
+      <Navigation.TriggerText>Logbook</Navigation.TriggerText>
     </Navigation.Trigger>
     <Navigation.Trigger
       onclick={() => navStore.reset({ kind: 'workflows' })}

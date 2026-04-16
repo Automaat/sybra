@@ -107,7 +107,12 @@ func run() error {
 	select {
 	case <-ctx.Done():
 		logger.Info("server.shutdown")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
+		// claude/codex processes a chance to flush their final result event)
+		// plus headroom for HTTP handlers to drain. Previously 10s, which
+		// caused server.shutdown.err: context deadline exceeded on every
+		// restart because HTTP + agent drains both ran inside that window.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if shutErr := srv.Shutdown(shutCtx); shutErr != nil {
 			logger.Error("server.shutdown.err", "err", shutErr)

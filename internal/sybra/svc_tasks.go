@@ -106,11 +106,12 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 
 	if status, ok := updates["status"].(string); ok {
 		// Reject status regressions while an agent is running on this task.
-		// Moving back to todo/new/done while an agent is active loses in-flight work.
+		// Moving back to todo/new/done/cancelled while an agent is active loses in-flight work.
 		agentBlockedStatuses := map[string]bool{
-			string(task.StatusNew):  true,
-			string(task.StatusTodo): true,
-			string(task.StatusDone): true,
+			string(task.StatusNew):       true,
+			string(task.StatusTodo):      true,
+			string(task.StatusDone):      true,
+			string(task.StatusCancelled): true,
 		}
 		if agentBlockedStatuses[status] && s.agents.HasRunningAgentForTask(id) {
 			return cur, fmt.Errorf("cannot move to %q: stop the running agent first", status)
@@ -129,7 +130,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
-	if t.Status == task.StatusDone {
+	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
 			s.worktrees.Remove(t.ID)
 			if s.sandboxes != nil {

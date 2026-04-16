@@ -70,6 +70,7 @@ const (
 	StepVerifyCommits       StepType = "verify_commits"
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"
+	StepRequireSidecar      StepType = "require_sidecar"
 )
 
 // Step is one node in the workflow graph.
@@ -126,6 +127,10 @@ type StepConfig struct {
 	// shell
 	Command string `yaml:"command,omitempty" json:"command"`
 	Dir     string `yaml:"dir,omitempty" json:"dir"`
+
+	// require_sidecar: which sidecar must be non-empty for the step to pass.
+	// Valid values: "plan_critique", "code_review".
+	Sidecar string `yaml:"sidecar,omitempty" json:"sidecar"`
 }
 
 const maxRetries = 10

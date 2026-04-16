@@ -96,7 +96,7 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 	for i := range tasks {
 		t := &tasks[i]
 		if t.PRNumber == number && t.ProjectID == repo && slices.Contains(t.Tags, "renovate-fix") {
-			if t.Status != task.StatusDone && s.agents.HasRunningAgentForTask(t.ID) {
+			if !task.IsTerminalStatus(t.Status) && s.agents.HasRunningAgentForTask(t.ID) {
 				return nil // already being fixed
 			}
 		}

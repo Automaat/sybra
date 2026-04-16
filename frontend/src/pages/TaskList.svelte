@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { Search, Filter, ChevronDown, List, Columns } from '@lucide/svelte'
+  import { Search, Filter, ChevronDown, List, Columns, GanttChart } from '@lucide/svelte'
   import type { task } from '../../wailsjs/go/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
+  import { navStore } from '../lib/navigation.svelte.js'
   import TaskCard from '../components/TaskCard.svelte'
+  import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
   import AssignProjectDialog from '../components/AssignProjectDialog.svelte'
@@ -15,16 +17,16 @@
   import { flip } from 'svelte/animate'
   import { cubicOut } from 'svelte/easing'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import { viewModeStore } from '../lib/view-mode.svelte.js'
 
   interface Props {
     onselect: (id: string) => void
     filter?: 'in-progress'
     onnewTask?: () => void
     onfocusedtaskchange?: (taskId: string | null) => void
-    viewMode?: 'board' | 'list'
   }
 
-  const { onselect, filter, onnewTask, onfocusedtaskchange, viewMode: viewModeProp }: Props = $props()
+  const { onselect, filter, onnewTask, onfocusedtaskchange }: Props = $props()
 
   let dragOverStatus = $state<string | null>(null)
   let addingToColumn = $state<string | null>(null)
@@ -32,9 +34,10 @@
   let inputRef = $state<HTMLInputElement | null>(null)
   let filtersOpen = $state(false)
   let collapsedColumns = $state<Set<string>>(new Set(['testing', 'done']))
-  let internalViewMode = $state<'board' | 'list'>('board')
 
-  const viewMode = $derived(viewModeProp ?? internalViewMode)
+  let timelineRef = $state<TaskTimeline | null>(null)
+
+  const viewMode = $derived(viewModeStore.mode)
 
   function toggleColumn(status: string) {
     const next = new Set(collapsedColumns)
@@ -71,7 +74,7 @@
 
   const focusedTaskId = $derived.by((): string | null => {
     if (focusedColIdx < 0 || focusedRowIdx < 0) return null
-    const tasks = viewMode === 'list'
+    const tasks = viewMode === 'list' || viewMode === 'timeline'
       ? allFilteredTasks
       : getColumnTasks(focusedColIdx)
     return tasks[focusedRowIdx]?.id ?? null
@@ -84,7 +87,7 @@
   })
 
   function focusFirstTask(): void {
-    if (viewMode === 'list') {
+    if (viewMode === 'list' || viewMode === 'timeline') {
       if (allFilteredTasks.length > 0) { focusedColIdx = 0; focusedRowIdx = 0 }
       return
     }
@@ -161,7 +164,7 @@
       return
     }
 
-    if (viewMode === 'list') {
+    if (viewMode === 'list' || viewMode === 'timeline') {
       if (key === 'j' || key === 'ArrowDown') {
         e.preventDefault()
         if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
@@ -175,6 +178,18 @@
         focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
         scrollFocusedIntoView()
         return
+      }
+      if (viewMode === 'timeline') {
+        if (key === '+' || key === '=') {
+          e.preventDefault()
+          timelineRef?.cycleZoomIn()
+          return
+        }
+        if (key === '-') {
+          e.preventDefault()
+          timelineRef?.cycleZoomOut()
+          return
+        }
       }
     } else {
       if (key === 'j' || key === 'ArrowDown') {
@@ -273,7 +288,7 @@
   // Listen for toggle-view event from App.svelte (Cmd+B)
   $effect(() => {
     function onToggleView() {
-      internalViewMode = internalViewMode === 'board' ? 'list' : 'board'
+      viewModeStore.cycle()
       focusedColIdx = -1
       focusedRowIdx = -1
     }
@@ -311,7 +326,6 @@
   let selectedTags = $state<string[]>([])
   let selectedAgentMode = $state('')
   let showDone = $state(false)
-
   // Derived: unique tags across all tasks
   const allTags = $derived(
     [...new Set(taskStore.list.flatMap((t: task.Task) => t.tags ?? []))].sort()
@@ -345,7 +359,7 @@
   const allFilteredTasks = $derived.by(() => {
     const query = searchQuery.toLowerCase().trim()
     return taskStore.list.filter((t: task.Task) => {
-      if (!showDone && t.status === 'done') return false
+      if (!showDone && (t.status === 'done' || t.status === 'cancelled')) return false
       if (query && !t.title.toLowerCase().includes(query)
           && !(t.body ?? '').toLowerCase().includes(query)
           && !(t.issue ?? '').toLowerCase().includes(query)) return false
@@ -649,24 +663,43 @@
           Clear filters
         </button>
       {/if}
+      <button
+        type="button"
+        class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
+        onclick={() => navStore.reset({ kind: 'logbook' })}
+      >
+        Logbook →
+      </button>
       <label class="flex items-center gap-1.5 text-xs text-surface-500">
         <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
         Show done
       </label>
-      <button
-        type="button"
-        class="flex items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 py-1 text-xs font-medium transition-colors hover:bg-surface-200 dark:border-surface-700 dark:bg-surface-800 dark:hover:bg-surface-700"
-        onclick={() => { internalViewMode = internalViewMode === 'board' ? 'list' : 'board'; focusedColIdx = -1; focusedRowIdx = -1 }}
-        title="Toggle list/board view (⌘B)"
-      >
-        {#if viewMode === 'board'}
+      <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">
+        <button
+          type="button"
+          class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'list' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+          onclick={() => { viewModeStore.set('list'); focusedColIdx = -1; focusedRowIdx = -1 }}
+        >
           <List size={14} />
           List
-        {:else}
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1 border-x border-surface-300 px-2 py-1 text-xs font-medium transition-colors dark:border-surface-700 {viewMode === 'board' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+          onclick={() => { viewModeStore.set('board'); focusedColIdx = -1; focusedRowIdx = -1 }}
+        >
           <Columns size={14} />
           Board
-        {/if}
-      </button>
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'timeline' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+          onclick={() => { viewModeStore.set('timeline'); focusedColIdx = -1; focusedRowIdx = -1 }}
+        >
+          <GanttChart size={14} />
+          Timeline
+        </button>
+      </div>
     </div>
   </div>
 
@@ -717,6 +750,18 @@
         </tbody>
       </table>
     </div>
+  {:else if viewMode === 'timeline'}
+    <!-- Timeline / Gantt view -->
+    <TaskTimeline
+      bind:this={timelineRef}
+      tasks={allFilteredTasks}
+      focusedTaskId={focusedTaskId}
+      onselect={(id) => onselect(id)}
+      onfocus={(id) => {
+        const idx = allFilteredTasks.findIndex(t => t.id === id)
+        if (idx >= 0) { focusedColIdx = 0; focusedRowIdx = idx }
+      }}
+    />
   {:else}
     <!-- Board columns -->
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">

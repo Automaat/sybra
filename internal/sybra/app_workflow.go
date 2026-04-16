@@ -100,6 +100,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Body:         t.Body,
 		Plan:         t.Plan,
 		PlanCritique: t.PlanCritique,
+		CodeReview:   t.CodeReview,
 		Issue:        t.Issue,
 		Reviewed:     t.Reviewed,
 		Workflow:     t.Workflow,
