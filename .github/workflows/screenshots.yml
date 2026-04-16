@@ -78,31 +78,46 @@ jobs:
           path: sybra-website
           token: ${{ secrets.WEBSITE_DEPLOY_PAT }}
 
-      - name: Copy screenshots to website
-        run: |
-          mkdir -p sybra-website/public/screenshots
-          cp -r docs/screenshots/. sybra-website/public/screenshots/
-
-      - name: Open PR if changed
+      - name: Open or update PR if changed
         env:
           GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_PAT }}
         run: |
           cd sybra-website
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="screenshots/sync"
+          git fetch origin "$BRANCH" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+          mkdir -p public/screenshots
+          rm -rf public/screenshots
+          cp -r ../docs/screenshots public/screenshots
+
           git add public/screenshots/
           if git diff --cached --quiet; then
-            echo "No screenshot changes — skipping PR"
+            echo "No screenshot changes vs $BRANCH — skipping PR"
             exit 0
           fi
+
           SYBRA_SHA=$(git -C .. rev-parse --short HEAD)
-          BRANCH="screenshots/sync-${SYBRA_SHA}"
-          git checkout -b "$BRANCH"
           git commit -m "chore(screenshots): sync from sybra@${SYBRA_SHA}"
-          git push origin "$BRANCH"
-          gh pr create \
-            --repo Automaat/sybra-website \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
-            --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
+          git push --force-with-lease origin "$BRANCH"
+
+          if gh pr view "$BRANCH" --repo Automaat/sybra-website >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" \
+              --repo Automaat/sybra-website \
+              --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
+              --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
+          else
+            gh pr create \
+              --repo Automaat/sybra-website \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
+              --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
+          fi
