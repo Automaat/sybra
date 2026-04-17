@@ -178,7 +178,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	taskMgr := task.NewManager(store, nil)
 
 	logger := e2eLogger()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
