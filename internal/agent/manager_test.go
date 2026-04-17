@@ -434,6 +434,7 @@ func TestHasRunningAgentForTask(t *testing.T) {
 }
 
 func TestBuildCommand(t *testing.T) {
+	// Reset server-side env override so tests see the default sandbox logic.
 	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
 	m, _ := newTestManager(t)
 
