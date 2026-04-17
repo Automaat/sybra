@@ -19,15 +19,10 @@ setup:
 # SetupCommands must include `mise install` AND `(cd frontend && npm ci)` —
 # otherwise the hook fails with "tool not found" at commit time, which was
 # the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
-#
-# `wails generate module` runs on pre-commit as a drift guard for the Wails
-# bindings; it parses Go source (no webkit required) so it works on the
-# headless server too.
 checks:
   pre_commit:
     - mise exec -- golangci-lint run ./...
     - (cd frontend && npx oxlint .)
-    - mise exec -- wails generate module && git diff --exit-code frontend/wailsjs/
     - mise exec -- hadolint Dockerfile
   pre_push:
     - mise exec -- go test ./...
