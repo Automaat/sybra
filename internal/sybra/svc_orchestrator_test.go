@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -10,9 +9,9 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 )
 
-func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, context.CancelFunc) {
+func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := t.Context()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	emitted := make(chan struct{}, 16)
 	emit := func(string, any) { emitted <- struct{}{} }
@@ -22,7 +21,7 @@ func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager, cont
 		logger: logger,
 		emit:   func(string, any) {},
 	}
-	return svc, mgr, cancel
+	return svc, mgr
 }
 
 func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
@@ -31,8 +30,7 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
 	t.Setenv("SYBRA_HOME", t.TempDir())
 
-	svc, _, cancel := newOrchSvcForTest(t)
-	defer cancel()
+	svc, _ := newOrchSvcForTest(t)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
 	if err := svc.StartOrchestrator(); err != nil {
@@ -79,8 +77,7 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 }
 
 func TestOrchestratorService_StopWhenNotRunning(t *testing.T) {
-	svc, _, cancel := newOrchSvcForTest(t)
-	defer cancel()
+	svc, _ := newOrchSvcForTest(t)
 
 	if err := svc.StopOrchestrator(); err == nil {
 		t.Error("expected error stopping an orchestrator that was never started")
@@ -93,8 +90,7 @@ func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
 	t.Setenv("SYBRA_HOME", t.TempDir())
 
-	svc, mgr, cancel := newOrchSvcForTest(t)
-	defer cancel()
+	svc, mgr := newOrchSvcForTest(t)
 	mgr.SetMaxConcurrent(1)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 

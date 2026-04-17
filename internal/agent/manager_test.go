@@ -50,8 +50,7 @@ func (r *eventRecorder) Snapshot() []string {
 
 func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := t.Context()
 
 	emitted = &eventRecorder{}
 	emit := func(event string, _ any) {

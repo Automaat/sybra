@@ -64,7 +64,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	silent := slog.New(slog.NewTextHandler(io.Discard, nil))
 	c := New(auditDir, tasks, home, silent, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	c.Run(ctx)
 
@@ -164,7 +164,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	silent := slog.New(slog.NewTextHandler(io.Discard, nil))
 	c := New(auditDir, tasks, home, silent, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	c.Run(ctx)
 
