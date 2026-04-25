@@ -22,7 +22,7 @@
     "@skeletonlabs/skeleton": "4.15.2",
     "@skeletonlabs/skeleton-svelte": "4.15.2",
     "@sveltejs/vite-plugin-svelte": "7.0.0",
-    "@tailwindcss/vite": "4.2.3",
+    "@tailwindcss/vite": "4.2.4",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/svelte": "5.3.1",
     "@types/js-yaml": "^4.0.9",
@@ -31,7 +31,7 @@
     "oxlint": "1.61.0",
     "svelte": "5.55.4",
     "svelte-check": "4.4.6",
-    "tailwindcss": "4.2.3",
+    "tailwindcss": "4.2.4",
     "typescript": "6.0.3",
     "vite": "8.0.9",
     "vitest": "4.1.4"
