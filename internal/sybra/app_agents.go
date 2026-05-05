@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -66,8 +67,8 @@ func resolvePermission(t task.Task, cfg *config.Config) bool {
 //     running the implementation prompt. workflowStart=zero disables the
 //     time filter (useful for callers that have no execution context).
 func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time) string {
-	for i := len(runs) - 1; i >= 0; i-- {
-		run := runs[i]
+	for i := range slices.Backward(runs) {
+		run := &runs[i]
 		if run.SessionID == "" {
 			continue
 		}

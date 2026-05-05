@@ -1728,7 +1728,7 @@ func lastStepStatus(tk task.Task, stepID string) string {
 	if tk.Workflow == nil {
 		return ""
 	}
-	for i := len(tk.Workflow.StepHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(tk.Workflow.StepHistory) {
 		if tk.Workflow.StepHistory[i].StepID == stepID {
 			return tk.Workflow.StepHistory[i].Status
 		}

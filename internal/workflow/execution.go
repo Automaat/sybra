@@ -1,6 +1,9 @@
 package workflow
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // ExecState tracks the overall execution state.
 type ExecState string
@@ -65,7 +68,7 @@ func (e *Execution) CountStep(stepID string) int {
 
 // RecordForStep returns the latest record for a given step ID, or nil.
 func (e *Execution) RecordForStep(stepID string) *StepRecord {
-	for i := len(e.StepHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(e.StepHistory) {
 		if e.StepHistory[i].StepID == stepID {
 			return &e.StepHistory[i]
 		}

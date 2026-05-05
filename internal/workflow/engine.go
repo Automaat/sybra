@@ -995,7 +995,7 @@ func flipProvider(p string) string {
 func resolveProvider(stepProv string, wfExec *Execution, defaultProv string) string {
 	switch stepProv {
 	case "cross":
-		for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+		for i := range slices.Backward(wfExec.StepHistory) {
 			if p := wfExec.StepHistory[i].Provider; p != "" {
 				return flipProvider(p)
 			}
@@ -1288,7 +1288,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 	}
 
 	// Path 2: Scan step history for a GitHub PR URL or owner/repo#N in agent output.
-	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(wfExec.StepHistory) {
 		rec := wfExec.StepHistory[i]
 		if rec.Status != "completed" || rec.Output == "" {
 			continue
@@ -1373,7 +1373,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 	}
 
 	var last *StepRecord
-	for i := len(wfExec.StepHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(wfExec.StepHistory) {
 		if wfExec.StepHistory[i].AgentID != "" {
 			last = &wfExec.StepHistory[i]
 			break

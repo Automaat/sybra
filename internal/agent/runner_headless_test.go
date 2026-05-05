@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +26,7 @@ func newParseTestManager(t *testing.T) *Manager {
 // or nil if none.
 func lastResult(a *Agent) *StreamEvent {
 	out := a.Output()
-	for i := len(out) - 1; i >= 0; i-- {
+	for i := range slices.Backward(out) {
 		if out[i].Type == "result" {
 			return &out[i]
 		}
