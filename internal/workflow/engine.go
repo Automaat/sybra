@@ -33,6 +33,13 @@ const (
 var (
 	prVerifyBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 6 * time.Second}
 	prVerifySleep    = time.Sleep
+
+	// verifyCommitsRetryBackoff is the delay before a single retry of
+	// `git log` in verify_commits — verify_commits runs immediately after
+	// the agent process exits, so a leftover .git/index.lock can transiently
+	// fail the first call. Indirected for tests.
+	verifyCommitsRetryBackoff = 500 * time.Millisecond
+	verifyCommitsRetrySleep   = time.Sleep
 )
 
 // TaskInfo is the subset of task data the engine needs.
@@ -1224,22 +1231,24 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
-	defer cancel()
-
-	baseRef := resolveOriginBase(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
-	cmd.Dir = wtPath
-	output, err := cmd.Output()
+	output, err := e.gitLogAheadOfBase(wtPath)
+	if err != nil && !errors.Is(e.ctx.Err(), context.Canceled) && !errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+		verifyCommitsRetrySleep(verifyCommitsRetryBackoff)
+		output, err = e.gitLogAheadOfBase(wtPath)
+	}
 	if err != nil {
 		// Context cancellation indicates engine shutdown, not a worktree
 		// problem — leave task status alone so it resumes on next boot.
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 			e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", err)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
 		}
-		e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err)
+		diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
+		e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", err, "diagnosis", diagnosis)
 		reason := "worktree git error: " + err.Error()
+		if diagnosis != "" {
+			reason += " (" + diagnosis + ")"
+		}
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
@@ -1255,6 +1264,42 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	}
 
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
+}
+
+func (e *Engine) gitLogAheadOfBase(wtPath string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	baseRef := resolveOriginBase(ctx, wtPath)
+	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
+	cmd.Dir = wtPath
+	return cmd.Output()
+}
+
+// diagnoseWorktreeState produces a short human-readable hint about why a
+// worktree's `git log` failed. Returns "" when nothing concrete is found.
+// Used to enrich the human-required status_reason so triage doesn't have
+// to grep agent logs to figure out whether the worktree was missing,
+// dirty, or just had a stale lock.
+func diagnoseWorktreeState(parentCtx context.Context, wtPath string) string {
+	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+		first = strings.TrimSpace(first)
+		if first == "" {
+			return "git status failed: " + err.Error()
+		}
+		return "git status: " + first
+	}
+	if dirty := strings.TrimSpace(string(out)); dirty != "" {
+		entries := strings.Count(dirty, "\n") + 1
+		return fmt.Sprintf("dirty worktree (%d uncommitted entries)", entries)
+	}
+	return "clean tree, no commits ahead"
 }
 
 var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
