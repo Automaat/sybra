@@ -3,7 +3,6 @@ package github
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // renovatePRQuery includes individual check run contexts for rerun support.
@@ -94,7 +93,7 @@ func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
 		"-f", "query="+renovatePRQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
 	}
 
 	var resp gqlResponse

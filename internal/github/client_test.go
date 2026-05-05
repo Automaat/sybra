@@ -636,3 +636,46 @@ func TestParseIssueURL(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeGHOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain text passthrough",
+			in:   "  gh: not logged in  ",
+			want: "gh: not logged in",
+		},
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "html unicorn 504 collapses to status line",
+			in:   "<!DOCTYPE html>\n<html><body>Unicorn</body></html>\ngh: HTTP 504",
+			want: "gh: HTTP 504",
+		},
+		{
+			name: "html with no trailing gh line",
+			in:   "<!DOCTYPE html><html><body>Unicorn</body></html>",
+			want: "GitHub returned an HTML error page",
+		},
+		{
+			name: "lowercase html tag",
+			in:   "<html><body>x</body></html>\ngh: HTTP 502",
+			want: "gh: HTTP 502",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeGHOutput([]byte(tt.in)); got != tt.want {
+				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

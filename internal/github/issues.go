@@ -89,7 +89,7 @@ func searchIssuesWith(e execer, query string) ([]Issue, error) {
 		"-f", "query="+issueQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
 	}
 
 	var resp gqlIssueResponse

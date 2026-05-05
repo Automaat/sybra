@@ -178,7 +178,17 @@
       {#if renovateStore.loading && renovateStore.count === 0}
         <p class="text-center text-sm opacity-60">Loading...</p>
       {:else if renovateStore.error}
-        <p class="text-center text-sm text-error-500">{renovateStore.error}</p>
+        <div class="flex flex-col items-center gap-2 py-8">
+          <p class="text-center text-sm text-error-500">Failed to load Renovate PRs</p>
+          <p class="max-w-lg break-words text-center text-xs opacity-70">{renovateStore.error}</p>
+          <button
+            type="button"
+            class="btn btn-sm preset-tonal"
+            onclick={() => renovateStore.load()}
+          >
+            Retry
+          </button>
+        </div>
       {:else if renovateStore.count === 0}
         <p class="py-8 text-center text-sm opacity-50">No Renovate PRs</p>
       {:else}

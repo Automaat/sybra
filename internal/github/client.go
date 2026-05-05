@@ -58,6 +58,27 @@ func resetCachedViewerForTest() {
 	viewerMu.Unlock()
 }
 
+// sanitizeGHOutput trims the `gh` CLI's combined output for use in error
+// messages. When GitHub returns a 5xx with an HTML error page (e.g. the
+// "Unicorn!" 504 page), gh prints the entire HTML body followed by a
+// "gh: HTTP <code>" status line. Returning that wall of HTML to the UI
+// is unreadable, so collapse it to just the status line.
+func sanitizeGHOutput(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if !strings.Contains(s, "<!DOCTYPE html") && !strings.Contains(s, "<html") {
+		return s
+	}
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] != '\n' {
+			continue
+		}
+		if line := strings.TrimSpace(s[i+1:]); strings.HasPrefix(line, "gh:") {
+			return line
+		}
+	}
+	return "GitHub returned an HTML error page"
+}
+
 const prQuery = `query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes {
@@ -173,7 +194,7 @@ func searchPRsWith(e execer, query string) ([]PullRequest, error) {
 		"-f", "query="+prQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
 	}
 
 	var resp gqlResponse
