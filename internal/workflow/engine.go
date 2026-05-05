@@ -1200,6 +1200,21 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 	return StepOutput{StepID: step.ID, Status: "completed", Output: label + " present"}, nil
 }
 
+// resolveOriginBase returns the remote ref to use as the base for commit
+// range comparisons. It checks for origin/HEAD (set when the remote HEAD
+// symbolic ref is configured), then falls back to probing master and main.
+// Returns "origin/main" if nothing resolves.
+func resolveOriginBase(ctx context.Context, wtPath string) string {
+	for _, candidate := range []string{"origin/HEAD", "origin/master", "origin/main"} {
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", candidate)
+		cmd.Dir = wtPath
+		if cmd.Run() == nil {
+			return candidate
+		}
+	}
+	return "origin/main"
+}
+
 func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if e.worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
@@ -1212,7 +1227,8 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "log", "origin/main..HEAD", "--oneline")
+	baseRef := resolveOriginBase(ctx, wtPath)
+	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
 	cmd.Dir = wtPath
 	output, err := cmd.Output()
 	if err != nil {
