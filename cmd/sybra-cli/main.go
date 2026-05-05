@@ -615,8 +615,8 @@ func cmdBoard(s *task.Manager, jsonOut bool) int {
 			StatusReason: t.StatusReason,
 		}
 		// Find the latest running agent run.
-		for j := len(t.AgentRuns) - 1; j >= 0; j-- {
-			run := t.AgentRuns[j]
+		for i := range slices.Backward(t.AgentRuns) {
+			run := &t.AgentRuns[i]
 			if run.State == "running" || (!run.StartedAt.IsZero() && bt.AgentID == "") {
 				bt.AgentID = run.AgentID
 				bt.StartedAt = run.StartedAt
