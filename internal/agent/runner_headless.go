@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -174,8 +175,8 @@ func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attempt
 
 func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.ErrorSample {
 	sample := provider.ErrorSample{Stderr: stderrOut}
-	for i := len(attemptEvents) - 1; i >= 0; i-- {
-		e := attemptEvents[i]
+	for i := range slices.Backward(attemptEvents) {
+		e := &attemptEvents[i]
 		if e.Type != "result" || e.Subtype != "error" {
 			continue
 		}
@@ -213,8 +214,8 @@ func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, at
 
 func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {
 	sample := provider.ErrorSample{Stderr: stderrOut}
-	for i := len(attemptEvents) - 1; i >= 0; i-- {
-		e := attemptEvents[i]
+	for i := range slices.Backward(attemptEvents) {
+		e := &attemptEvents[i]
 		if e.Type != "result" || e.Subtype != "error" {
 			continue
 		}
