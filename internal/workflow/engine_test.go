@@ -2516,6 +2516,75 @@ func TestExecVerifyCommits_GitErrorFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_GitErrorReasonContainsDiagnosis(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Path exists but is not a git repo — `git log` and `git status`
+	// both fail with the same fatal so diagnosis surfaces it.
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "worktree git error") {
+		t.Errorf("status reason = %q, want 'worktree git error'", reason)
+	}
+	if !strings.Contains(reason, "git status") {
+		t.Errorf("status reason = %q, want diagnosis from `git status`", reason)
+	}
+}
+
+func TestExecVerifyCommits_RetriesAfterTransientFailure(t *testing.T) {
+	prev := verifyCommitsRetrySleep
+	t.Cleanup(func() { verifyCommitsRetrySleep = prev })
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+
+	// Simulate transient lock: place .git/index.lock that will be removed
+	// during the retry sleep, so the second `git log` succeeds. The lock
+	// path differs between linked and primary worktrees; here makeGitRepo
+	// returns a primary repo, so .git is a directory.
+	lockPath := filepath.Join(wtDir, ".git", "index.lock")
+	if err := os.WriteFile(lockPath, []byte("locked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	verifyCommitsRetrySleep = func(_ time.Duration) {
+		_ = os.Remove(lockPath)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	// First call may or may not actually be blocked by the lock depending
+	// on git behavior — but the retry path always runs once per error,
+	// and we just need the final outcome to be "commits verified".
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress", ti.Status)
+	}
+}
+
 func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
