@@ -87,6 +87,20 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	return err
 }
 
+func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
+	var u task.Update
+	switch kind {
+	case "code_review":
+		u.CodeReview = &content
+	case "plan_critique":
+		u.PlanCritique = &content
+	default:
+		return fmt.Errorf("unknown sidecar kind %q (want code_review|plan_critique)", kind)
+	}
+	_, err := a.tasks.Update(id, u)
+	return err
+}
+
 func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
 		ID:           t.ID,

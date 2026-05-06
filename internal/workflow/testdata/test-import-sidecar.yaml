@@ -1,0 +1,18 @@
+id: test-import-sidecar
+name: Test Import Sidecar
+description: Single-step workflow exercising import_sidecar
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Code Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      prompt: "review {{.Task.ID}}"
+      import_sidecar:
+        kind: code_review
+        from: '{{getvar .Vars "sidecar_path"}}'
+    next:
+      - goto: ""
