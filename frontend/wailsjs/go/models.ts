@@ -1608,6 +1608,20 @@ export namespace workflow {
 		    return a;
 		}
 	}
+	export class ImportSidecar {
+	    kind: string;
+	    from: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportSidecar(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.from = source["from"];
+	    }
+	}
 	export class StepConfig {
 	    role: string;
 	    mode: string;
@@ -1626,6 +1640,7 @@ export namespace workflow {
 	    command: string;
 	    dir: string;
 	    sidecar: string;
+	    importSidecar?: ImportSidecar;
 	
 	    static createFrom(source: any = {}) {
 	        return new StepConfig(source);
@@ -1650,6 +1665,7 @@ export namespace workflow {
 	        this.command = source["command"];
 	        this.dir = source["dir"];
 	        this.sidecar = source["sidecar"];
+	        this.importSidecar = this.convertValues(source["importSidecar"], ImportSidecar);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1898,6 +1914,7 @@ export namespace workflow {
 		    return a;
 		}
 	}
+	
 	
 	
 	
