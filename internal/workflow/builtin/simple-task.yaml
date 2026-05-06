@@ -322,10 +322,10 @@ steps:
           1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
           3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
-          4. synapse-cli update {{.Task.ID}} --code-review-file /tmp/sybra-review-{{.Task.ID}}.md
+          4. sybra-cli update {{.Task.ID}} --code-review-file /tmp/sybra-review-{{.Task.ID}}.md
 
         Do NOT submit anything to GitHub. The /tmp file remains for the
-        next step (fix_review) to read; the synapse-cli call preserves
+        next step (fix_review) to read; the sybra-cli call preserves
         the review as a task sidecar visible in the GUI.
     next:
       - goto: require_code_review
