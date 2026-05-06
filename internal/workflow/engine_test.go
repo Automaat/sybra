@@ -148,6 +148,24 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	return nil
 }
 
+func (m *memTasks) WriteSidecar(id, kind, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	switch kind {
+	case "code_review":
+		t.CodeReview = content
+	case "plan_critique":
+		t.PlanCritique = content
+	default:
+		return fmt.Errorf("unknown sidecar kind %q", kind)
+	}
+	return nil
+}
+
 // SetStatus is a test helper to simulate an agent changing task status.
 func (m *memTasks) SetStatus(id, status string) {
 	m.mu.Lock()

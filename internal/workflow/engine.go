@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -70,6 +71,12 @@ type TaskProvider interface {
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	SetWorkflow(id string, wf *Execution) error
+	// WriteSidecar stores content as the named sidecar (`code_review` or
+	// `plan_critique`) for the task. Used by run_agent steps that declare
+	// import_sidecar so the engine can ingest the agent's output file
+	// without depending on the agent's sandbox being able to write to
+	// ~/.sybra/tasks/.
+	WriteSidecar(id, kind, content string) error
 }
 
 // WorktreeGetter resolves the filesystem path of a task's git worktree.
@@ -625,6 +632,10 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		status = "failed"
 	}
 
+	if c.Success {
+		e.importSidecarIfConfigured(taskID, spawnedStep, t)
+	}
+
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID:   spawnedStep,
 		Status:   status,
@@ -635,6 +646,48 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 	}
 	e.clearAgentStep(c.AgentID)
+}
+
+// importSidecarIfConfigured reads the file the agent produced (template
+// rendered from step.config.import_sidecar.from) and stores its content
+// as the configured task sidecar. Called from HandleAgentComplete on
+// success so the host — which can write anywhere — closes the gap when
+// the agent's sandbox blocks ~/.sybra/tasks/. Errors are logged, not
+// returned: the require_sidecar guard surfaces an empty sidecar by
+// flipping the task to human-required, which is the correct UX.
+func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo) {
+	if info.Workflow == nil {
+		return
+	}
+	def, err := e.store.Get(info.Workflow.WorkflowID)
+	if err != nil {
+		return
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent || step.Config.ImportSidecar == nil {
+		return
+	}
+	cfg := step.Config.ImportSidecar
+	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     info.Workflow.Variables,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		e.logger.Warn("workflow.import-sidecar.render", "task_id", taskID, "step", stepID, "err", rErr)
+		return
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+		return
+	}
+	if writeErr := e.tasks.WriteSidecar(taskID, cfg.Kind, string(content)); writeErr != nil {
+		e.logger.Error("workflow.import-sidecar.write", "task_id", taskID, "step", stepID, "kind", cfg.Kind, "err", writeErr)
+		return
+	}
+	e.logger.Info("workflow.import-sidecar", "task_id", taskID, "step", stepID, "kind", cfg.Kind, "path", path, "bytes", len(content))
 }
 
 // lookupAgentStep returns the stepID an agent was spawned for and whether it

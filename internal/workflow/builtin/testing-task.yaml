@@ -89,10 +89,10 @@ steps:
           3. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
           4. Capture the full markdown Plan Review report you produce and
              write it to /tmp/sybra-critique-{{.Task.ID}}.md
-          5. Save it: sybra-cli update {{.Task.ID}} --plan-critique-file /tmp/sybra-critique-{{.Task.ID}}.md
 
-        Do NOT modify the plan. Do NOT change the task status. Your only
-        side effect is writing the critique sidecar via sybra-cli.
+        Do NOT modify the plan. Do NOT change the task status. Sybra
+        ingests /tmp/sybra-critique-{{.Task.ID}}.md as the plan_critique
+        sidecar after you exit — no need to call sybra-cli.
       allowed_tools:
         - Bash
         - Read
@@ -101,6 +101,9 @@ steps:
         - Write
         - Skill
         - Agent
+      import_sidecar:
+        kind: plan_critique
+        from: /tmp/sybra-critique-{{.Task.ID}}.md
     next:
       - goto: review_test_plan
 

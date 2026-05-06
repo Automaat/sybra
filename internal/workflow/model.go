@@ -131,6 +131,26 @@ type StepConfig struct {
 	// require_sidecar: which sidecar must be non-empty for the step to pass.
 	// Valid values: "plan_critique", "code_review".
 	Sidecar string `yaml:"sidecar,omitempty" json:"sidecar"`
+
+	// run_agent: when set, the engine ingests a file produced by the agent
+	// (typically under /tmp) and stores its content as the named task
+	// sidecar after the agent exits. Lets review/critique steps work with
+	// codex agents whose sandbox blocks writes outside the worktree —
+	// the engine runs on the host with full filesystem access and closes
+	// the gap. Read failures are logged, not fatal: the require_sidecar
+	// guard still flips the task to human-required when the sidecar ends
+	// up empty, preserving the existing safety net.
+	ImportSidecar *ImportSidecar `yaml:"import_sidecar,omitempty" json:"importSidecar,omitempty"`
+}
+
+// ImportSidecar describes a sidecar file the engine should ingest after a
+// run_agent step succeeds.
+type ImportSidecar struct {
+	// Kind is the sidecar slot to populate: "code_review" or "plan_critique".
+	Kind string `yaml:"kind" json:"kind"`
+	// From is a Go template path the engine renders against the run's
+	// TemplateContext (e.g. /tmp/sybra-review-{{.Task.ID}}.md).
+	From string `yaml:"from" json:"from"`
 }
 
 const maxRetries = 10
