@@ -1,0 +1,306 @@
+package workflow
+
+import (
+	"fmt"
+	"slices"
+)
+
+// HandleHumanAction processes approve/reject/input from the UI.
+func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string) error {
+	// Serialize concurrent human actions per task so double-click races do not
+	// both mutate workflow vars and attempt to advance the same wait_human step.
+	e.mu.Lock()
+	if _, busy := e.humanAction[taskID]; busy {
+		e.mu.Unlock()
+		return fmt.Errorf("task %s human action already in progress", taskID)
+	}
+	e.humanAction[taskID] = struct{}{}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.humanAction, taskID)
+		e.mu.Unlock()
+	}()
+
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
+		return fmt.Errorf("task %s is not waiting for human action", taskID)
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return err
+	}
+	currentStep := def.StepByID(t.Workflow.CurrentStep)
+	if currentStep == nil {
+		return fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
+	}
+	if currentStep.Type != StepWaitHuman {
+		return fmt.Errorf("task %s is not at a wait_human step", taskID)
+	}
+	if len(currentStep.Config.HumanActions) > 0 && !slices.Contains(currentStep.Config.HumanActions, action) {
+		return fmt.Errorf("invalid human action %q for step %q", action, currentStep.ID)
+	}
+
+	wfExec := t.Workflow
+	wfExec.SetVar("human_action", action)
+	for k, v := range data {
+		wfExec.SetVar("human."+k, v)
+	}
+
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return err
+	}
+
+	return e.AdvanceStep(taskID, StepOutput{
+		StepID: wfExec.CurrentStep,
+		Status: "completed",
+		Output: action,
+	})
+}
+
+// HandleStatusChange is called when a task's status transitions. If the
+// current workflow step is a run_agent configured with a matching
+// wait_for_status, the workflow advances past it. This is how interactive /
+// conversational agents (which don't exit between turns) signal step
+// completion: they update the task status via the CLI, the task manager
+// fires the status-change hook, and the engine advances the workflow.
+//
+// Safe to call for any status change — no-ops when the current step does
+// not declare wait_for_status or when the status does not match.
+func (e *Engine) HandleStatusChange(taskID, newStatus string) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Debug("workflow.status-change.get", "task_id", taskID, "err", err)
+		return
+	}
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return
+	}
+	if t.Workflow.State != ExecWaiting && t.Workflow.State != ExecRunning {
+		return
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		return
+	}
+	if step.Config.WaitForStatus == "" || step.Config.WaitForStatus != newStatus {
+		return
+	}
+
+	e.logger.Info("workflow.status-advance",
+		"task_id", taskID, "step", step.ID, "status", newStatus)
+
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: "status:" + newStatus,
+	}); err != nil {
+		e.logger.Error("workflow.status-advance.err", "task_id", taskID, "err", err)
+	}
+}
+
+// HandleAgentComplete is called when an agent finishes. It maps the agent
+// back to the workflow step and advances.
+//
+// Silently skips (Debug log) when the task's workflow is already terminal or
+// has no current step. Agents that were started outside the workflow engine
+// (e.g. manual pr-fix retries, recovery spawns) land here on completion; the
+// guard avoids the "step not found" error loop that followed workflow
+// completion in older versions.
+func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
+		return
+	}
+	if t.Workflow == nil {
+		e.logger.Debug("workflow.agent-complete.no-workflow", "task_id", taskID)
+		return
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		// Still import sidecar for tracked agents that finish after the
+		// workflow turns terminal (e.g. an untracked agent advanced the step
+		// first, leaving the real agent's output file unread).
+		if c.Success {
+			if spawnedStep, tracked := e.lookupAgentStep(c.AgentID); tracked {
+				e.importSidecarIfConfigured(taskID, spawnedStep, t)
+			}
+		}
+		e.logger.Debug("workflow.agent-complete.terminal",
+			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(c.AgentID)
+		return
+	}
+	if t.Workflow.CurrentStep == "" {
+		e.logger.Debug("workflow.agent-complete.no-current-step",
+			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.clearAgentStep(c.AgentID)
+		return
+	}
+
+	// Resolve the step this agent was actually spawned for. For untracked
+	// agents (post-restart recovery or manually-dispatched), fall back to the
+	// workflow's current step — but only when no tracked agent is already in
+	// flight for that task+step. If one is, this is a phantom completion (e.g.
+	// a manual implementation agent completing during a code_review step) and
+	// must be dropped to prevent it from advancing the wrong step.
+	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
+	if !tracked {
+		spawnedStep = t.Workflow.CurrentStep
+		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
+			e.logger.Debug("workflow.agent-complete.untracked-ignored",
+				"task_id", taskID, "agent_id", c.AgentID, "current_step", spawnedStep)
+			e.clearAgentStep(c.AgentID)
+			return
+		}
+	}
+
+	status := "completed"
+	if !c.Success {
+		status = "failed"
+	}
+
+	if c.Success {
+		e.importSidecarIfConfigured(taskID, spawnedStep, t)
+	}
+
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID:   spawnedStep,
+		Status:   status,
+		Output:   c.Result,
+		AgentID:  c.AgentID,
+		Provider: c.Provider,
+	}); err != nil {
+		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
+	}
+	e.clearAgentStep(c.AgentID)
+}
+
+// lookupAgentStep returns the stepID an agent was spawned for and whether it
+// was tracked. Untracked agents fall back to the workflow's current step.
+func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entry, ok := e.agentSteps[agentID]
+	return entry.stepID, ok
+}
+
+// hasTrackedAgentForTaskStep returns true when a tracked agent is already in
+// flight for the given task+step pair. Used to detect phantom completions from
+// untracked (manually-dispatched) agents.
+func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, entry := range e.agentSteps {
+		if entry.taskID == taskID && entry.stepID == stepID {
+			return true
+		}
+	}
+	return false
+}
+
+// clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.
+func (e *Engine) clearAgentStep(agentID string) {
+	if agentID == "" {
+		return
+	}
+	e.mu.Lock()
+	delete(e.agentSteps, agentID)
+	e.mu.Unlock()
+}
+
+// ResumeStalled finds tasks with running/waiting workflows where no agent
+// is active, and attempts to re-execute the current step.
+func (e *Engine) ResumeStalled() {
+	tasks, err := e.tasks.ListTasks()
+	if err != nil {
+		e.logger.Error("workflow.resume-stalled.list", "err", err)
+		return
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+			continue
+		}
+		switch t.Workflow.State {
+		case ExecCompleted, ExecFailed:
+			continue
+		case ExecRunning, ExecWaiting:
+			// fall through to resume logic
+		}
+
+		def, dErr := e.store.Get(t.Workflow.WorkflowID)
+		if dErr != nil {
+			continue
+		}
+		step := def.StepByID(t.Workflow.CurrentStep)
+		if step == nil {
+			continue
+		}
+
+		// Only resume run_agent steps where no agent is running.
+		if step.Type != StepRunAgent {
+			continue
+		}
+		if e.agents.HasRunningAgent(t.ID) {
+			continue
+		}
+		// Skip tasks whose step is currently being dispatched. Interactive
+		// spawns (worktree creation, rebase, agent process start) take
+		// several seconds during which no agent is yet registered — without
+		// this guard the ticker would spawn a duplicate and the second
+		// agent's completion would corrupt the workflow at the wait_human
+		// gate.
+		// inflightMutexes is a non-blocking probe: TryLock distinguishes
+		// "another goroutine currently holds the advance lock" from "free".
+		// We only set dispatching when both the advance lock and prior
+		// dispatching guard are free.
+		mu := e.taskInflightMutex(t.ID)
+		advancing := !mu.TryLock()
+		if !advancing {
+			mu.Unlock()
+		}
+		e.mu.Lock()
+		_, dispatching := e.dispatching[t.ID]
+		if !advancing && !dispatching {
+			e.dispatching[t.ID] = struct{}{}
+		}
+		e.mu.Unlock()
+		if advancing || dispatching {
+			reason := "dispatching"
+			if advancing {
+				reason = "inflight"
+			}
+			e.logger.Debug("workflow.resume-stalled.skip",
+				"task_id", t.ID, "reason", reason, "step", step.ID)
+			continue
+		}
+
+		// Re-read to guard against stale snapshots from concurrent ResumeStalled
+		// calls: by the time we acquire dispatching, a prior goroutine may have
+		// already advanced the workflow past this step.
+		fresh, fErr := e.tasks.GetTask(t.ID)
+		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed {
+			e.mu.Lock()
+			delete(e.dispatching, t.ID)
+			e.mu.Unlock()
+			continue
+		}
+
+		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
+		rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
+		e.mu.Lock()
+		delete(e.dispatching, t.ID)
+		e.mu.Unlock()
+		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
+	}
+}
