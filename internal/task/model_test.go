@@ -28,8 +28,8 @@ func TestValidateStatus_Invalid(t *testing.T) {
 func TestAllStatuses(t *testing.T) {
 	t.Parallel()
 	statuses := AllStatuses()
-	if len(statuses) != 11 {
-		t.Errorf("got %d statuses, want 11", len(statuses))
+	if len(statuses) != 12 {
+		t.Errorf("got %d statuses, want 12", len(statuses))
 	}
 	seen := make(map[Status]bool)
 	for _, s := range statuses {
@@ -37,6 +37,9 @@ func TestAllStatuses(t *testing.T) {
 			t.Errorf("duplicate status %q", s)
 		}
 		seen[s] = true
+	}
+	if !seen[StatusBlocked] {
+		t.Errorf("StatusBlocked missing from AllStatuses()")
 	}
 }
 

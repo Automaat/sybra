@@ -1460,6 +1460,7 @@ export namespace task {
 	    prNumber: number;
 	    issue: string;
 	    statusReason: string;
+	    blockedByIssue?: string;
 	    reviewed: boolean;
 	    runRole: string;
 	    todoistId: string;
@@ -1501,6 +1502,7 @@ export namespace task {
 	        this.prNumber = source["prNumber"];
 	        this.issue = source["issue"];
 	        this.statusReason = source["statusReason"];
+	        this.blockedByIssue = source["blockedByIssue"];
 	        this.reviewed = source["reviewed"];
 	        this.runRole = source["runRole"];
 	        this.todoistId = source["todoistId"];

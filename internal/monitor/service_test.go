@@ -283,16 +283,25 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestParseFirstMatchingIssueNumber(t *testing.T) {
-	out := []byte(`[{"number":42,"title":"unrelated"},{"number":87,"title":"[monitor] failure_spike"}]`)
-	got := parseFirstMatchingIssueNumber(out, "[monitor] failure_spike")
-	if got != 87 {
-		t.Errorf("want 87, got %d", got)
+func TestParseFirstMatchingIssue(t *testing.T) {
+	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
+	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")
+	if num != 87 {
+		t.Errorf("want number 87, got %d", num)
 	}
-	if parseFirstMatchingIssueNumber(out, "no such title") != 0 {
-		t.Errorf("expected zero for no match")
+	if url != "https://github.com/o/r/issues/87" {
+		t.Errorf("want url=.../issues/87, got %q", url)
 	}
-	if parseFirstMatchingIssueNumber([]byte("[]"), "anything") != 0 {
-		t.Errorf("expected zero for empty array")
+	if n, _ := parseFirstMatchingIssue(out, "no such title"); n != 0 {
+		t.Errorf("expected zero number for no match")
+	}
+	if n, _ := parseFirstMatchingIssue([]byte("[]"), "anything"); n != 0 {
+		t.Errorf("expected zero number for empty array")
+	}
+	// Backward-compat: number-only input (no url field) still matches.
+	bareOut := []byte(`[{"number":99,"title":"[monitor] failure_spike"}]`)
+	num2, url2 := parseFirstMatchingIssue(bareOut, "[monitor] failure_spike")
+	if num2 != 99 || url2 != "" {
+		t.Errorf("bare input: want (99, \"\"), got (%d, %q)", num2, url2)
 	}
 }

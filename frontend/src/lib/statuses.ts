@@ -8,6 +8,7 @@ export type TaskStatus =
   | 'testing'
   | 'test-plan-review'
   | 'human-required'
+  | 'blocked'
   | 'done'
   | 'cancelled'
 
@@ -75,6 +76,12 @@ export const ALL_STATUSES: StatusMeta[] = [
     pillClasses: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
   },
   {
+    value: 'blocked',
+    label: 'Blocked',
+    badgeClasses: 'bg-error-100 text-error-700 dark:bg-error-800 dark:text-error-300',
+    pillClasses: 'bg-error-100 text-error-700 dark:bg-error-800 dark:text-error-300',
+  },
+  {
     value: 'done',
     label: 'Done',
     badgeClasses: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200',
@@ -113,5 +120,5 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400', includes: [] },
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: [] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
-  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: [] },
+  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]

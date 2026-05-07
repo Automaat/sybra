@@ -67,7 +67,7 @@ func countByStatus(tasks []task.Task) Counts {
 		case task.StatusDone:
 			c.Done++
 		case task.StatusPlanning, task.StatusTesting, task.StatusTestPlanReview,
-			task.StatusCancelled:
+			task.StatusBlocked, task.StatusCancelled:
 			// Tracked in ByStatus only — not promoted to a top-level counter.
 		}
 	}

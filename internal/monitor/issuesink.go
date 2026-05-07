@@ -60,27 +60,68 @@ func NewGHIssueSink(label, repo string) *GHIssueSink {
 // (created=true) when a new issue was created, (false) when an existing issue
 // was commented.
 func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool, error) {
+	created, _, err := s.SubmitIssue(ctx, IssueTitle(a.Kind, a.Fingerprint), body, []string{"bug"})
+	return created, err
+}
+
+// SubmitIssue is the generic, anomaly-agnostic dedup-and-file primitive used
+// by Submit and by other in-process automations (e.g. human-review). Behavior
+// is identical to Submit: finds an open issue with the sink's primary label
+// and matching title, comments on hit, creates on miss.
+//
+// extraLabels are appended to the sink's primary label on create. The dedup
+// search still filters by the primary label, so callers that want a separate
+// issue stream should construct their own sink with a dedicated label.
+//
+// Returns (created, url, err): url is the GitHub URL of the existing
+// (commented) or newly created issue, parsed from gh's stdout. url may be
+// empty if gh's output cannot be parsed but the operation otherwise
+// succeeded.
+func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extraLabels []string) (created bool, url string, err error) {
 	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
 
-	title := IssueTitle(a.Kind, a.Fingerprint)
-	num, err := s.findOpenIssue(ctx, title)
+	num, foundURL, err := s.findOpenIssue(ctx, title)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if num > 0 {
-		if _, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", fmt.Sprint(num), "--body", body)...); err != nil {
-			return false, classifyGHError(err)
+		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", fmt.Sprint(num), "--body", body)...); runErr != nil {
+			return false, foundURL, classifyGHError(runErr)
 		}
-		return false, nil
+		return false, foundURL, nil
 	}
-	if _, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "create",
+	var lb strings.Builder
+	lb.WriteString(s.label)
+	for _, extra := range extraLabels {
+		extra = strings.TrimSpace(extra)
+		if extra == "" || extra == s.label {
+			continue
+		}
+		lb.WriteString(",")
+		lb.WriteString(extra)
+	}
+	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "create",
 		"--title", title,
 		"--body", body,
-		"--label", s.label+",bug",
-	)...); err != nil {
-		return false, classifyGHError(err)
+		"--label", lb.String(),
+	)...)
+	if err != nil {
+		return false, "", classifyGHError(err)
 	}
-	return true, nil
+	return true, parseIssueCreateURL(out), nil
+}
+
+// parseIssueCreateURL pulls the first line of `gh issue create` stdout that
+// looks like a github.com issue URL. gh prints the URL on its own line; on
+// older versions it may also emit a "Creating issue ..." prefix.
+func parseIssueCreateURL(raw []byte) string {
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "https://") && strings.Contains(line, "/issues/") {
+			return line
+		}
+	}
+	return ""
 }
 
 // repoArgs returns ["--repo", s.repo] when a repo is configured, or nil.
@@ -99,32 +140,36 @@ func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")...)
 }
 
-func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (int, error) {
+func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number int, url string, err error) {
 	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list",
 		"--state", "open",
 		"--label", s.label,
 		"--search", "in:title \""+title+"\"",
-		"--json", "number,title",
+		"--json", "number,title,url",
 		"--limit", "5",
 	)...)
 	if err != nil {
-		return 0, classifyGHError(err)
+		return 0, "", classifyGHError(err)
 	}
-	return parseFirstMatchingIssueNumber(out, title), nil
+	num, url := parseFirstMatchingIssue(out, title)
+	return num, url, nil
 }
 
-// parseFirstMatchingIssueNumber scans gh's `--json number,title` output and
-// returns the number of the first issue whose title equals (case-sensitive)
-// the requested title. Avoids importing encoding/json indirectly via a
-// generic struct just for the test path.
-func parseFirstMatchingIssueNumber(raw []byte, want string) int {
-	// gh emits `[{"number":N,"title":"..."},...]` — minimal handcrafted
-	// scan: find each "number":N followed by "title":"..." pair.
+// parseFirstMatchingIssue scans gh's `--json number,title,url` output and
+// returns the (number, url) of the first issue whose title equals
+// (case-sensitive) the requested title. Returns (0, "") on no match.
+// Avoids importing encoding/json indirectly via a generic struct just for
+// the test path.
+func parseFirstMatchingIssue(raw []byte, want string) (number int, url string) {
+	// gh emits `[{"number":N,"title":"...","url":"..."},...]` —
+	// minimal handcrafted scan: read each object's number, title, and (if
+	// the title matches) url. Field order in gh's output is alphabetical
+	// (number, title, url).
 	s := string(raw)
 	for {
 		nIdx := strings.Index(s, "\"number\":")
 		if nIdx < 0 {
-			return 0
+			return 0, ""
 		}
 		s = s[nIdx+len("\"number\":"):]
 		// Skip whitespace.
@@ -137,7 +182,7 @@ func parseFirstMatchingIssueNumber(raw []byte, want string) int {
 			end++
 		}
 		if end == 0 {
-			return 0
+			return 0, ""
 		}
 		num := 0
 		for i := range end {
@@ -147,18 +192,29 @@ func parseFirstMatchingIssueNumber(raw []byte, want string) int {
 		// Find the matching title field.
 		tIdx := strings.Index(s, "\"title\":\"")
 		if tIdx < 0 {
-			return 0
+			return 0, ""
 		}
 		s = s[tIdx+len("\"title\":\""):]
 		closing := strings.Index(s, "\"")
 		if closing < 0 {
-			return 0
+			return 0, ""
 		}
 		got := s[:closing]
-		if got == want {
-			return num
-		}
 		s = s[closing:]
+		if got != want {
+			continue
+		}
+		// Title matched — pull url if present (alphabetical, so it follows).
+		uIdx := strings.Index(s, "\"url\":\"")
+		if uIdx < 0 {
+			return num, ""
+		}
+		s = s[uIdx+len("\"url\":\""):]
+		urlPart, _, ok := strings.Cut(s, "\"")
+		if !ok {
+			return num, ""
+		}
+		return num, urlPart
 	}
 }
 
