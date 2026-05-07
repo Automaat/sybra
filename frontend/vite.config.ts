@@ -13,6 +13,20 @@ export default defineConfig({
   ],
   build: {
     outDir,
+    target: 'esnext',
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('@xyflow')) return 'vendor-flow'
+          if (id.includes('highlight.js')) return 'vendor-highlight'
+          if (id.includes('/marked')) return 'vendor-markdown'
+        },
+      },
+    },
+  },
+  optimizeDeps: {
+    include: ['highlight.js', 'marked', 'marked-highlight', 'js-yaml', 'snarkdown'],
   },
   define: {
     'import.meta.env.VITE_MODE': JSON.stringify(mode),

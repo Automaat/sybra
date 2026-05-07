@@ -1,5 +1,29 @@
 # Contributing
 
+## Dev Workflow
+
+### Hot Module Replacement (HMR)
+
+`mise run dev` starts `wails dev`, which launches a Vite dev server with Svelte HMR and opens the Wails window proxied to that server. Svelte file saves trigger HMR — typically < 500 ms — not a full rebuild.
+
+### `.env.development` for local dev overrides
+
+Vite loads `frontend/.env.development` automatically in dev mode (`vite dev`). The file is committed and holds shared dev defaults. Use `frontend/.env.local` for machine-local values that must not be committed (Vite gitignores `*.local` automatically).
+
+Example `frontend/.env.development`:
+
+```
+# Explicit desktop mode (default). Switch to "web" for browser-only iteration.
+VITE_MODE=desktop
+```
+
+### Profiling build performance
+
+```bash
+cd frontend && npx vite build --profile
+# Generates vite-profile-<timestamp>.json — open in speedscope.app
+```
+
 ## Frontend Dependency Pin Strategy
 
 ### Caret (`^`) — public UI libraries
