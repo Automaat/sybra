@@ -6,6 +6,13 @@
 // + a single v3 service compile and run end-to-end against the existing
 // embedded asset pattern. The frontend page calls InfoService.GetVersion
 // via the v3 runtime (Call.ByName) — no generated bindings needed.
+//
+// Gated darwin-only because Wails v3 alpha needs gtk3/webkit2gtk-4.1 to
+// compile on Linux; CI runners lack those headers. See main_other.go for
+// the no-op stub that keeps `go build ./...` green on Linux.
+
+//go:build darwin
+
 package main
 
 import (
