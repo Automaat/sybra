@@ -21,12 +21,21 @@ Phase 1 spike for the Wails v2 → v3 migration. See
 ## Run
 
 ```bash
+mise run dev:v3
+# or, equivalently:
 go run ./cmd/sybra-v3-poc
 ```
 
 A 640×360 window opens. The page should render:
 
 > OK — server version: `<commit-sha-or-dev>`
+
+`mise run dev` (without the `:v3` suffix) still launches the **v2** app
+via `wails dev` — that is the production code path on `main` and stays
+the default until Phase 5 cutover. There is no `wails3 dev`-style hot
+reload for the spike: the POC has no Vite frontend (just a static HTML
+file), so a plain `go run` is the right tool. Hot reload comes back in
+Phase 4 once the real Svelte frontend is wired to v3 bindings.
 
 ## Caveats
 

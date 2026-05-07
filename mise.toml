@@ -14,6 +14,10 @@ run = ["go install ./cmd/sybra-cli", "wails dev"]
 description = "Install CLI and run wails dev server"
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
+[tasks."dev:v3"]
+run = "go run ./cmd/sybra-v3-poc"
+description = "Run the Wails v3 alpha spike (darwin-only). See docs/migrations/wails-v3.md."
+
 [tasks.build]
 run = "wails build"
 description = "Build production binary"
