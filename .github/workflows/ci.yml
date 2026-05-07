@@ -256,7 +256,7 @@ jobs:
         working-directory: frontend
         run: |
           echo "### Fast Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
-          test -f test-results/results.json && node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY" || true
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Clear results before integration phase
         if: always()
@@ -273,7 +273,7 @@ jobs:
         working-directory: frontend
         run: |
           echo "### Integration Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
-          test -f test-results/results.json && node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY" || true
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Dump server log
         if: failure()
@@ -348,7 +348,7 @@ jobs:
         working-directory: frontend
         run: |
           echo "### Flaky Tests" >> "$GITHUB_STEP_SUMMARY"
-          test -f test-results/results.json && node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY" || true
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Dump server log
         if: always()
