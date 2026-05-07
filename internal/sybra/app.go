@@ -1,5 +1,12 @@
 package sybra
 
+// Dependency graph (startup order):
+//
+//	config → audit/stats → task.Store → project.Store → loopagent.Store
+//	→ emit/bgops → task.Manager → agent.Manager → providerHealth
+//	→ worktrees → sandboxes → agentOrch → reviewer → workflowEngine
+//	→ wireServices → [LifecycleManager: StartManagers → StartPollers → StartWatchers]
+
 import (
 	"context"
 	"encoding/json"
@@ -20,7 +27,6 @@ import (
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -34,7 +40,6 @@ import (
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/watchdog"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -127,27 +132,6 @@ func WithEmit(fn func(string, any)) Option {
 // Typically populated from the internal/skills package in the server binary.
 func WithSkillsFS(skillsFS fs.FS) Option {
 	return func(a *App) { a.skillsFS = skillsFS }
-}
-
-// ServiceRegistry returns the named service instances for HTTP dispatch.
-// All values are the concrete pointers Wails binds; the HTTP handler uses
-// reflection to call their exported methods.
-func (a *App) ServiceRegistry() map[string]any {
-	return map[string]any{
-		"App":                 a,
-		"AgentService":        a.agentSvc,
-		"ConfigService":       a.configSvc,
-		"InfoService":         a.infoSvc,
-		"IntegrationService":  a.intgSvc,
-		"LoopAgentService":    a.loopAgentSvc,
-		"OrchestratorService": a.orchSvc,
-		"PlanningService":     a.planSvc,
-		"ProjectService":      a.projectSvc,
-		"ReviewService":       a.reviewSvc,
-		"StatsService":        a.statsSvc,
-		"TaskService":         a.taskSvc,
-		"WorkflowService":     a.workflowSvc,
-	}
 }
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, opts ...Option) *App {
@@ -273,11 +257,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agents.SetOnComplete(a.onAgentComplete)
 
 	a.initLoopScheduler(ctx, emit)
-	w := watcher.New(a.tasksDir, emit, a.logger)
-	a.watcher = w
-	if err := w.Start(ctx); err != nil {
-		a.logger.Error("watcher.start", "err", err)
-	}
+	a.initFileWatcher(ctx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
@@ -285,7 +265,12 @@ func (a *App) Startup(ctx context.Context) error {
 	a.syncSkills()
 	a.runStartupCleanup()
 	a.RegisterSpotlightHotkey()
-	a.startBackgroundServices(ctx, emit, issuesFetcher)
+
+	lm := newLifecycleManager(a)
+	lm.StartManagers(ctx, emit)
+	lm.StartPollers(ctx, emit, issuesFetcher)
+	lm.StartWatchers(ctx)
+
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
 	return nil
@@ -296,211 +281,12 @@ func (a *App) initBgops(emit func(string, any)) {
 	a.bgops.LoadFromDisk()
 }
 
-func (a *App) startConfigWatcher(ctx context.Context) {
-	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
-	cw := confighot.New(cfgPath, func() {
-		changed, err := a.configSvc.ReloadFromDisk()
-		if err != nil {
-			a.logger.Error("config.reload.failed", "err", err)
-			return
-		}
-		if len(changed) > 0 {
-			a.logger.Info("config.reloaded", "changed", changed)
-		}
-	}, a.logger)
-	if err := cw.Start(ctx); err != nil {
-		a.logger.Error("config.watcher.start", "err", err)
-		return
+func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
+	w := watcher.New(a.tasksDir, emit, a.logger)
+	a.watcher = w
+	if err := w.Start(ctx); err != nil {
+		a.logger.Error("watcher.start", "err", err)
 	}
-	a.configWatcher = cw
-}
-
-func (a *App) startBackgroundServices(
-	ctx context.Context,
-	emit func(string, any),
-	issuesFetcher *poll.IssuesFetcher,
-) {
-	a.startConfigWatcher(ctx)
-	a.wg.Go(func() { a.orchestratorLoop(ctx) })
-
-	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
-	a.wg.Go(func() { wdog.Run(ctx) })
-
-	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
-	a.wg.Go(func() { hcheck.Run(ctx) })
-
-	a.startMonitorService(ctx, emit)
-	a.startSelfMonitorService(ctx, emit)
-
-	a.startPollHub(ctx, issuesFetcher)
-	a.startTodoistLoop(ctx)
-	a.startAgentLogPruneLoop(ctx)
-	a.registerMetricsObservers()
-	a.startConfigWatcher(ctx)
-}
-
-// startAgentLogPruneLoop sweeps stale per-agent NDJSON files once a day.
-// Retention comes from Config.Agent.LogRetentionDays (default 14). The
-// startup call in runStartupCleanup catches the first pass; this goroutine
-// keeps the directory bounded on long-lived server deployments where a
-// single restart would otherwise be the only cleanup trigger.
-func (a *App) startAgentLogPruneLoop(ctx context.Context) {
-	a.wg.Go(func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				a.pruneAgentLogs()
-			}
-		}
-	})
-}
-
-// registerMetricsObservers wires the OTel observable gauge callbacks to
-// live subsystem state. No-op when metrics are disabled — the metrics
-// package holds nil callbacks and the observe() loop returns cheaply.
-func (a *App) registerMetricsObservers() {
-	metrics.RegisterTasksByStatus(func() map[string]int64 {
-		tasks, err := a.tasks.List()
-		if err != nil {
-			return nil
-		}
-		out := make(map[string]int64, len(task.AllStatuses()))
-		for _, s := range task.AllStatuses() {
-			out[string(s)] = 0
-		}
-		for i := range tasks {
-			out[string(tasks[i].Status)]++
-		}
-		return out
-	})
-	metrics.RegisterAgentsActive(func() map[string]int64 {
-		snapshot := a.agents.ListAgents()
-		out := map[string]int64{
-			string(agent.StateIdle):    0,
-			string(agent.StateRunning): 0,
-			string(agent.StatePaused):  0,
-			string(agent.StateStopped): 0,
-		}
-		for _, ag := range snapshot {
-			out[string(ag.GetState())]++
-		}
-		return out
-	})
-	if a.renovateHandler != nil {
-		metrics.RegisterRenovatePRsFetched(a.renovateHandler.LastFetchedCount)
-	}
-	if a.providerHealth != nil {
-		metrics.RegisterProviderHealth(func() map[string]int64 {
-			out := make(map[string]int64, 2)
-			for name, s := range a.providerHealth.Snapshot() {
-				if s.Healthy {
-					out[name] = 1
-				} else {
-					out[name] = 0
-				}
-			}
-			return out
-		})
-	}
-}
-
-// startMonitorService wires the in-process monitor loop when enabled. Does
-// nothing when cfg.Monitor.Enabled is false, which keeps the legacy
-// /sybra-monitor /loop flow intact for rollout.
-func (a *App) startMonitorService(ctx context.Context, emit func(string, any)) {
-	if !a.cfg.Monitor.Enabled {
-		return
-	}
-	disp := monitor.NewAgentDispatcher(monitor.AgentDispatcherDeps{
-		Agents: a.agents,
-		Tasks:  a.tasks,
-		WorktreePath: func(t task.Task) (string, bool) {
-			if a.worktrees == nil {
-				return "", false
-			}
-			if !a.worktrees.Exists(t) {
-				return "", false
-			}
-			return a.worktrees.PathFor(t), true
-		},
-		RepoDir:   a.repoDir,
-		Model:     a.cfg.Monitor.Model,
-		IssueRepo: a.cfg.Monitor.IssueRepo,
-	})
-	svc := monitor.NewService(monitor.Deps{
-		Cfg:        a.cfg.Monitor,
-		Tasks:      a.tasks,
-		Audit:      monitor.AuditDirReader(a.cfg.AuditDir()),
-		Agents:     a.agents,
-		Dispatcher: disp,
-		Sink:       monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo),
-		Emit:       emit,
-		Logger:     a.logger,
-		AllowsProject: func(projectID string) bool {
-			if projectID == "" {
-				return true
-			}
-			p, err := a.projects.Get(projectID)
-			if err != nil {
-				return true
-			}
-			return a.allowsProjectType(p.Type)
-		},
-	})
-	a.monitorSvc = svc
-	a.wg.Go(func() { svc.Run(ctx) })
-}
-
-// startSelfMonitorService wires the in-process deep-analysis loop that ticks
-// every cfg.SelfMonitor.IntervalHours, distills agent logs via loganalyzer,
-// and persists a Report to ~/.sybra/selfmonitor/last-report.json. Does
-// nothing when cfg.SelfMonitor.Enabled is false, matching the
-// startMonitorService gating pattern.
-func (a *App) startSelfMonitorService(ctx context.Context, emit func(string, any)) {
-	if !a.cfg.SelfMonitor.Enabled {
-		return
-	}
-	ledger, err := selfmonitor.Open(config.SelfMonitorLedgerPath())
-	if err != nil {
-		a.logger.Error("selfmonitor.ledger_open", "err", err)
-		return
-	}
-	svc := selfmonitor.NewService(selfmonitor.Deps{
-		Cfg:            a.cfg.SelfMonitor,
-		Tasks:          a.tasks,
-		Health:         selfmonitor.DiskHealthReader{Path: config.HealthReportPath()},
-		Ledger:         ledger,
-		LogsDir:        a.cfg.Logging.Dir,
-		LastReportPath: config.SelfMonitorLastReportPath(),
-		Emit:           emit,
-		Logger:         a.logger,
-		AllowsProject: func(projectID string) bool {
-			if projectID == "" {
-				return true
-			}
-			p, err := a.projects.Get(projectID)
-			if err != nil {
-				return true
-			}
-			return a.allowsProjectType(p.Type)
-		},
-		Judge: &selfmonitor.ClaudeJudge{
-			Model:  a.cfg.SelfMonitor.JudgeModel,
-			Logger: a.logger,
-		},
-		Actor: &selfmonitor.Actor{
-			Tasks:  a.tasks,
-			DryRun: a.cfg.SelfMonitor.DryRun,
-			Logger: a.logger,
-		},
-		ProviderGate: a.providerHealth,
-	})
-	a.selfMonitorSvc = svc
-	a.wg.Go(func() { svc.Run(ctx) })
 }
 
 // GetMonitorReport returns the most recent finished report from the
@@ -523,22 +309,6 @@ type MonitorReportBinding struct {
 	Enabled bool           `json:"enabled"`
 	Ready   bool           `json:"ready"`
 	Report  monitor.Report `json:"report"`
-}
-
-// startPollHub registers all enabled poll handlers and starts the hub.
-func (a *App) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
-	hub := poll.NewHub()
-	hub.Register(a.reviewer, 10*time.Second)
-	if issuesFetcher != nil {
-		hub.Register(issuesFetcher, 20*time.Second)
-	}
-	if a.renovateHandler != nil {
-		hub.Register(a.renovateHandler, 15*time.Second)
-	}
-	if a.triageHandler != nil {
-		hub.Register(a.triageHandler, 30*time.Second)
-	}
-	hub.Start(ctx, &a.wg, a.logger)
 }
 
 // allowsProjectType reports whether project-scoped automations on this machine
@@ -641,8 +411,6 @@ func (a *App) initStatusHook() {
 	})
 }
 
-// wireServices populates the Wails-bound service structs that were pre-allocated
-// in NewApp(). Must be called after all dependencies are initialized.
 func (a *App) initAudit() {
 	al, err := audit.NewLogger(a.auditDir)
 	if err != nil {
@@ -882,66 +650,6 @@ func (a *App) initApprovalServer(emit func(string, any)) {
 	srv.SetManager(a.agents)
 	a.agents.SetApprovalAddr(srv.Addr())
 	a.agentSvc.approval = srv
-}
-
-func (a *App) wireServices(emit func(string, any)) {
-	a.reviewer.workflowEngine = a.workflowEngine
-	a.reviewSvc.reviewer = a.reviewer
-	a.reviewSvc.tasks = a.tasks
-	a.taskSvc.tasks = a.tasks
-	a.taskSvc.agents = a.agents
-	a.taskSvc.workflowEngine = a.workflowEngine
-	a.taskSvc.worktrees = a.worktrees
-	a.taskSvc.sandboxes = a.sandboxes
-	a.taskSvc.wg = &a.wg
-	a.taskSvc.logger = a.logger
-	a.taskSvc.audit = a.audit
-	a.planSvc.engine = a.workflowEngine
-	a.planSvc.tasks = a.tasks
-	a.planSvc.agents = a.agents
-	a.agentSvc.agents = a.agents
-	a.agentSvc.logger = a.logger
-	a.agentSvc.tasks = a.tasks
-	a.agentSvc.cfg = a.cfg
-	a.agentSvc.logsDir = a.logDir
-	a.agentSvc.worktrees = a.worktrees
-	a.orchSvc.agents = a.agents
-	a.orchSvc.audit = a.audit
-	a.orchSvc.logger = a.logger
-	a.orchSvc.emit = emit
-	a.agentOrch.sandboxes = a.sandboxes
-	a.projectSvc.projects = a.projects
-	a.projectSvc.worktrees = a.worktrees
-	a.projectSvc.logger = a.logger
-	a.projectSvc.notifier = a.notifier
-	a.projectSvc.bgops = a.bgops
-	a.projectSvc.wg = &a.wg
-	a.agentOrch.bgops = a.bgops
-	a.loopAgentSvc.store = a.loopAgents
-	a.loopAgentSvc.sched = a.loopSched
-	a.loopAgentSvc.auditDir = a.auditDir
-	a.loopAgentSvc.logger = a.logger
-	a.configSvc.cfg = a.cfg
-	a.configSvc.logLevel = a.logLevel
-	a.configSvc.notifier = a.notifier
-	a.configSvc.agents = a.agents
-	a.configSvc.logger = a.logger
-	a.configSvc.reloadHook = a.reloadTodoist
-	a.intgSvc.tasks = a.tasks
-	a.intgSvc.projects = a.projects
-	a.intgSvc.agents = a.agents
-	a.intgSvc.worktrees = a.worktrees
-	a.intgSvc.audit = a.audit
-	a.intgSvc.cfg = a.cfg
-	a.intgSvc.logger = a.logger
-	a.intgSvc.todoistHandler = a.todoistHandler
-	a.intgSvc.renovateHandler = a.renovateHandler
-	a.intgSvc.workflowEngine = a.workflowEngine
-	a.intgSvc.providerHealth = a.providerHealth
-	a.intgSvc.saveConfig = func() error { return a.cfg.Save() }
-	a.statsSvc.stats = a.stats
-	a.workflowSvc.engine = a.workflowEngine
-	a.workflowSvc.store = a.workflowStore
 }
 
 func (a *App) Shutdown(_ context.Context) {
@@ -1668,16 +1376,6 @@ func (a *App) RegisterSpotlightHotkey() {
 		return
 	}
 	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
-}
-
-// BindTargets returns the objects to bind for Wails IPC.
-func (a *App) BindTargets() []any {
-	return []any{
-		a,
-		a.taskSvc, a.planSvc, a.agentSvc, a.orchSvc,
-		a.projectSvc, a.loopAgentSvc, a.configSvc, a.intgSvc,
-		a.statsSvc, a.reviewSvc, a.workflowSvc, a.infoSvc,
-	}
 }
 
 // Context returns the app's running context.
