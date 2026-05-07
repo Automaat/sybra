@@ -140,7 +140,7 @@ func parseFirstMatchingIssueNumber(raw []byte, want string) int {
 			return 0
 		}
 		num := 0
-		for i := 0; i < end; i++ {
+		for i := range end {
 			num = num*10 + int(s[i]-'0')
 		}
 		s = s[end:]
