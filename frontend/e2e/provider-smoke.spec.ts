@@ -23,7 +23,7 @@ test.describe.configure({ mode: 'serial' })
 // Smoke: core pages render for each provider in the matrix.
 // When SYNAPSE_E2E_PROVIDER is set (CI), only the matching spec runs.
 // ---------------------------------------------------------------------------
-test.describe('Provider smoke: board', () => {
+test.describe('Provider smoke: board', { tag: '@integration' }, () => {
   for (const spec of selectedProviders()) {
     test(`board loads [${spec.provider}]`, async ({ page }) => {
       await page.goto('/')
@@ -48,7 +48,7 @@ test.describe('Provider smoke: board', () => {
 // run is reflected in the Settings UI.  Only meaningful in CI where
 // SYNAPSE_E2E_PROVIDER is set and config.yaml is pre-seeded.
 // ---------------------------------------------------------------------------
-test.describe('Provider config reflected in Settings', () => {
+test.describe('Provider config reflected in Settings', { tag: '@integration' }, () => {
   test('active provider matches SYNAPSE_E2E_PROVIDER', async ({ page }) => {
     const envProvider = process.env.SYNAPSE_E2E_PROVIDER?.trim()
     test.skip(!envProvider, 'SYNAPSE_E2E_PROVIDER not set — skipped on local runs')
