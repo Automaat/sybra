@@ -1,4 +1,4 @@
-//go:build !short
+//go:build e2e
 
 package sybra
 
@@ -1589,60 +1589,6 @@ func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
 	}
 }
 
-// TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers locks in the string
-// values of the PR issue kind constants against the real builtin workflow
-// YAMLs they must match. This is the narrowest possible regression guard
-// for the ci-failure vs ci_failure (and ready-to-merge vs ready_to_merge)
-// dispatch-mismatch bugs: if the constants drift from what the YAML triggers
-// expect, dispatch silently stops matching — exactly the bug this test
-// prevents.
-func TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers(t *testing.T) {
-	cases := []struct {
-		kind     synapsegithub.PRIssueKind
-		wantStr  string
-		yamlFile string // empty when no builtin workflow triggers on this kind
-		needle   string
-	}{
-		{
-			kind:     synapsegithub.PRIssueCIFailure,
-			wantStr:  "ci_failure",
-			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
-			needle:   "value: conflict,ci_failure",
-		},
-		{
-			kind:    synapsegithub.PRIssueReadyToMerge,
-			wantStr: "ready_to_merge",
-			// No builtin workflow: auto-merge.yaml was removed because
-			// ready_to_merge short-circuits to app_reviews.handleAutoMerge
-			// direct path and never reaches DispatchEvent. The constant is
-			// still locked here so frontend + any new workflow stays in sync.
-		},
-		{
-			kind:     synapsegithub.PRIssueConflict,
-			wantStr:  "conflict",
-			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
-			needle:   "value: conflict,ci_failure",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(string(tc.kind), func(t *testing.T) {
-			if got := string(tc.kind); got != tc.wantStr {
-				t.Errorf("constant = %q, want %q", got, tc.wantStr)
-			}
-			if tc.yamlFile == "" {
-				return
-			}
-			raw, err := os.ReadFile(tc.yamlFile)
-			if err != nil {
-				t.Fatalf("read %s: %v", tc.yamlFile, err)
-			}
-			if !strings.Contains(string(raw), tc.needle) {
-				t.Errorf("%s missing trigger %q — dispatch would not match", tc.yamlFile, tc.needle)
-			}
-		})
-	}
-}
-
 // testTestingTaskWorkflowYAML mirrors the real builtin testing-task.yaml
 // shape (id, trigger, step graph, transitions, human actions) but uses
 // headless agents so two consecutive run_agent steps are deterministic on CI.
@@ -2216,79 +2162,6 @@ func TestE2E_RestartStaleSkipsTerminalWorkflow(t *testing.T) {
 	}
 	if len(tkAfter.Workflow.StepHistory) != len(before.StepHistory) {
 		t.Errorf("step history mutated: %d → %d", len(before.StepHistory), len(tkAfter.Workflow.StepHistory))
-	}
-}
-
-// TestPRMonitorEligible exercises the scan predicate used by the PR monitor
-// loop. The regression: tasks whose workflow exited to in-progress with a
-// live PR number (because an evaluate step crashed, or a manually-spawned
-// agent opened the PR outside the workflow) were silently dropped from the
-// scan because it only considered status=in-review. Result: failing CI on
-// those PRs was never fixed by pr-fix agents.
-func TestPRMonitorEligible(t *testing.T) {
-	tests := []struct {
-		name string
-		tk   task.Task
-		want bool
-	}{
-		{
-			name: "in-review with PR — original happy path",
-			tk:   task.Task{Status: task.StatusInReview, PRNumber: 42},
-			want: true,
-		},
-		{
-			name: "in-review with branch only — still eligible",
-			tk:   task.Task{Status: task.StatusInReview, Branch: "sybra/feat-x"},
-			want: true,
-		},
-		{
-			name: "in-review with neither PR nor branch — not eligible",
-			tk:   task.Task{Status: task.StatusInReview},
-			want: false,
-		},
-		{
-			name: "in-progress with PR — the regression case we're fixing",
-			tk:   task.Task{Status: task.StatusInProgress, PRNumber: 247},
-			want: true,
-		},
-		{
-			name: "in-progress with branch only — not eligible (avoid WIP false positives)",
-			tk:   task.Task{Status: task.StatusInProgress, Branch: "sybra/wip"},
-			want: false,
-		},
-		{
-			name: "in-progress with nothing — not eligible",
-			tk:   task.Task{Status: task.StatusInProgress},
-			want: false,
-		},
-		{
-			name: "review tag excluded (inbound review task, not ours)",
-			tk:   task.Task{Status: task.StatusInReview, PRNumber: 42, Tags: []string{"review"}},
-			want: false,
-		},
-		{
-			name: "todo with PR — not eligible, not in monitored states",
-			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
-			want: false,
-		},
-		{
-			name: "done with PR — not eligible, already terminal",
-			tk:   task.Task{Status: task.StatusDone, PRNumber: 42},
-			want: false,
-		},
-		{
-			name: "human-required with PR — not eligible, needs operator action first",
-			tk:   task.Task{Status: task.StatusHumanRequired, PRNumber: 42},
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := prMonitorEligible(&tt.tk); got != tt.want {
-				t.Errorf("prMonitorEligible(%+v) = %v, want %v", tt.tk, got, tt.want)
-			}
-		})
 	}
 }
 

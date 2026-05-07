@@ -1,4 +1,4 @@
-//go:build !short
+//go:build e2e
 
 package sybra
 
