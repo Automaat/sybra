@@ -124,11 +124,11 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return fmt.Errorf("start agent: %w", err)
 	}
 
-	// Track which step this agent was spawned for so HandleAgentComplete
+	// Track which task+step this agent was spawned for so HandleAgentComplete
 	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
 	// race) rather than blindly crediting the current step.
 	e.mu.Lock()
-	e.agentSteps[agentID] = step.ID
+	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: step.ID}
 	e.mu.Unlock()
 
 	wfExec.State = ExecWaiting
@@ -256,7 +256,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
 	// returns the right step config.
 	e.mu.Lock()
-	e.agentSteps[agentID] = child.ID
+	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: child.ID}
 	e.mu.Unlock()
 
 	status.AgentID = agentID
