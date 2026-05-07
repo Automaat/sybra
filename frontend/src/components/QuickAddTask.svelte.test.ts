@@ -21,6 +21,13 @@ vi.mock('../lib/detectProject.js', () => ({
   detectProject: vi.fn().mockReturnValue(null),
 }))
 
+vi.mock('../stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    pushLocal: vi.fn(),
+  },
+}))
+
+const { notificationStore } = await import('../stores/notifications.svelte.js')
 const QuickAddTask = (await import('./QuickAddTask.svelte')).default
 
 describe('QuickAddTask', () => {
@@ -30,6 +37,7 @@ describe('QuickAddTask', () => {
 
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
   })
 
   it('renders nothing when closed', () => {
@@ -83,5 +91,42 @@ describe('QuickAddTask', () => {
       props: { open: true, onclose: vi.fn(), oncreated: vi.fn() },
     })
     expect(container).toBeDefined()
+  })
+
+  describe('partial-success: create succeeds but update fails', () => {
+    it('closes dialog and calls oncreated even when project update fails', async () => {
+      const onclose = vi.fn()
+      const oncreated = vi.fn()
+      const created = { id: 'task-new' }
+      mockCreate.mockResolvedValue(created)
+      mockUpdate.mockRejectedValue(new Error('update failed'))
+
+      render(QuickAddTask, { props: { open: true, onclose, oncreated } })
+      const input = screen.getByPlaceholderText('Task title, link, or note...')
+      await fireEvent.input(input, { target: { value: 'My task' } })
+      await fireEvent.submit(input.closest('form')!)
+
+      await vi.waitFor(() => {
+        expect(onclose).toHaveBeenCalledOnce()
+      })
+      expect(oncreated).toHaveBeenCalledWith('task-new')
+    })
+
+    it('shows create error and keeps dialog open when create fails', async () => {
+      const onclose = vi.fn()
+      mockCreate.mockRejectedValue(new Error('network error'))
+
+      render(QuickAddTask, { props: { open: true, onclose } })
+      const input = screen.getByPlaceholderText('Task title, link, or note...')
+      await fireEvent.input(input, { target: { value: 'My task' } })
+      await fireEvent.submit(input.closest('form')!)
+
+      await vi.waitFor(() => {
+        expect(notificationStore.pushLocal).toHaveBeenCalledWith(
+          'error', 'Create failed', 'Error: network error'
+        )
+      })
+      expect(onclose).not.toHaveBeenCalled()
+    })
   })
 })

@@ -92,19 +92,27 @@
     if (!value.trim() || submitting) return
 
     submitting = true
+    let t
     try {
-      let t = await taskStore.create(value.trim(), '', 'interactive')
-      if (selectedProject) {
-        t = await taskStore.update(t.id, { project_id: selectedProject })
-      }
-      value = ''
-      onclose()
-      oncreated?.(t.id)
+      t = await taskStore.create(value.trim(), '', 'interactive')
     } catch (err) {
       notificationStore.pushLocal('error', 'Create failed', String(err))
-    } finally {
       submitting = false
+      return
     }
+
+    if (selectedProject) {
+      try {
+        t = await taskStore.update(t.id, { project_id: selectedProject })
+      } catch (err) {
+        notificationStore.pushLocal('error', 'Failed to assign project', String(err))
+      }
+    }
+
+    value = ''
+    onclose()
+    oncreated?.(t.id)
+    submitting = false
   }
 
   function dismissDetection() {

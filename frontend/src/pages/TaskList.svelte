@@ -475,15 +475,21 @@
     const title = newTaskTitle.trim()
     if (!title) return
     newTaskTitle = ''
+    let created
     try {
-      const created = await taskStore.create(title, '', 'headless')
-      if (status !== 'new') {
-        await taskStore.update(created.id, { status })
-      }
-      requestAnimationFrame(() => inputRef?.focus())
+      created = await taskStore.create(title, '', 'headless')
     } catch (err) {
       notificationStore.pushLocal('error', 'Create failed', String(err))
+      return
     }
+    if (status !== 'new') {
+      try {
+        await taskStore.update(created.id, { status })
+      } catch (err) {
+        notificationStore.pushLocal('error', 'Failed to set status', String(err))
+      }
+    }
+    requestAnimationFrame(() => inputRef?.focus())
   }
 
   function handleInputKeydown(e: KeyboardEvent, status: string) {
