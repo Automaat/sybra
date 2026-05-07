@@ -5,6 +5,10 @@ hadolint = "2.14.0"
 golangci-lint = "2.12.1"
 "go:github.com/wailsapp/wails/v2/cmd/wails" = "v2.12.0"
 
+[tasks."hooks:install"]
+run = "git config core.hooksPath .githooks"
+description = "Configure git to use project hooks from .githooks/"
+
 [tasks.dev]
 run = ["go install ./cmd/sybra-cli", "wails dev"]
 description = "Install CLI and run wails dev server"

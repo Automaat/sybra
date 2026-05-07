@@ -140,6 +140,20 @@ jobs:
           git diff --exit-code go.mod go.sum || \
             (echo "::error::go.mod or go.sum is out of sync. Run 'go mod tidy'." && exit 1)
 
+  npm-lockfile-integrity:
+    name: npm Lockfile Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Verify lockfile is in sync with package.json
+        run: |
+          cd frontend && npm install --package-lock-only --ignore-scripts
+          git diff --exit-code package-lock.json || \
+            (echo "::error::frontend/package-lock.json out of sync. Run 'cd frontend && npm install' and commit the lockfile." && exit 1)
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest
