@@ -258,6 +258,10 @@ jobs:
           echo "### Fast Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
           test -f test-results/results.json && node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY" || true
 
+      - name: Clear results before integration phase
+        if: always()
+        run: rm -f frontend/test-results/results.json
+
       - name: Run integration e2e tests (target ≤10 min)
         run: cd frontend && npx playwright test --grep "@integration"
         env:
