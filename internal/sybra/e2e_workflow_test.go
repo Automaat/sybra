@@ -4397,15 +4397,13 @@ func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range 120 {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			if i%3 == 0 {
 				env.engine.HandleStatusChange(created.ID, "plan-review")
 			} else {
 				env.engine.HandleStatusChange(created.ID, "todo")
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 
@@ -4571,11 +4569,9 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 50)
 	for i := range 50 {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			errCh <- env.agents.SendPromptToAgent(ag.ID, fmt.Sprintf("msg-%d", i))
-		}(i)
+		})
 	}
 	wg.Wait()
 	close(errCh)
