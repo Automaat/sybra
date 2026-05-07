@@ -37,7 +37,7 @@ async function restoreAgentSettings(page: Page, original: { provider: string; mo
 
 test.describe.configure({ mode: 'serial' })
 
-test.describe('Settings provider matrix', () => {
+test.describe('Settings provider matrix', { tag: '@integration' }, () => {
   for (const spec of selectedProviders()) {
     test(`switches model options for ${spec.provider}`, async ({ page }) => {
       await goToSettings(page)

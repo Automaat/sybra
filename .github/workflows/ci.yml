@@ -192,7 +192,7 @@ jobs:
   e2e:
     name: E2E Tests (${{ matrix.provider }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -245,11 +245,35 @@ jobs:
             sleep 1
           done
 
-      - name: Run e2e tests
-        run: cd frontend && npx playwright test --reporter=github
+      - name: Run fast e2e tests (target ≤5 min)
+        run: cd frontend && npx playwright test --grep-invert "@integration|@flaky"
         env:
           SYBRA_HOME: /tmp/sybra-e2e
           SYBRA_E2E_PROVIDER: ${{ matrix.provider }}
+
+      - name: Write fast test timing summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "### Fast Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Clear results before integration phase
+        if: always()
+        run: rm -f frontend/test-results/results.json
+
+      - name: Run integration e2e tests (target ≤10 min)
+        run: cd frontend && npx playwright test --grep "@integration"
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+          SYBRA_E2E_PROVIDER: ${{ matrix.provider }}
+
+      - name: Write integration test timing summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "### Integration Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Dump server log
         if: failure()
@@ -259,5 +283,80 @@ jobs:
         if: failure()
         with:
           name: playwright-report-${{ matrix.provider }}
+          path: frontend/test-results/
+          retention-days: 7
+
+  e2e-flaky:
+    name: E2E Flaky (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install chromium
+
+      - name: Seed e2e fixtures
+        run: |
+          mkdir -p "$SYBRA_HOME/tasks"
+          cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
+          cat > "$SYBRA_HOME/config.yaml" <<EOF
+          agent:
+            provider: claude
+          EOF
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+
+      - name: Build web frontend
+        run: cd frontend && npm run build:web
+
+      - name: Build sybra-server
+        run: go build -o bin/sybra-server ./cmd/sybra-server
+
+      - name: Start sybra-server
+        run: |
+          SYBRA_HOME=/tmp/sybra-e2e \
+          SYBRA_STATIC_DIR=frontend/dist-web \
+          ./bin/sybra-server > /tmp/sybra-server.log 2>&1 &
+          echo "Waiting for sybra-server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::sybra-server timed out"
+              cat /tmp/sybra-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run flaky e2e tests
+        run: cd frontend && npx playwright test --grep "@flaky" --retries=5
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+
+      - name: Write flaky test timing summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "### Flaky Tests" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Dump server log
+        if: always()
+        run: cat /tmp/sybra-server.log || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: playwright-report-flaky
           path: frontend/test-results/
           retention-days: 7

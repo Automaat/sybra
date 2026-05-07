@@ -5,7 +5,9 @@ export default defineConfig({
   testIgnore: process.env.PLAYWRIGHT_SCREENSHOTS ? [] : ['**/screenshots.spec.ts'],
   timeout: 10_000,
   retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? 'github' : 'list',
+  reporter: process.env.CI
+    ? [['github'], ['json', { outputFile: 'test-results/results.json' }]]
+    : [['list']],
   use: {
     baseURL: 'http://localhost:8080',
     screenshot: 'only-on-failure',
