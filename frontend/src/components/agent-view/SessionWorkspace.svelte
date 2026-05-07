@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Tabs } from '@skeletonlabs/skeleton-svelte'
-  import type { agent } from '../../../wailsjs/go/models.js'
+  import type { ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import { tabForTool, type TabKey, type ToolUseSignal } from '$lib/workspace-tabs.js'
@@ -12,7 +12,7 @@
     agentId: string
     taskId: string
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: agent.ConvoEvent[]
+    convoEvents: ConvoEvent[]
     planSteps: PlanStep[]
     latestToolUse: ToolUseSignal | undefined
   }

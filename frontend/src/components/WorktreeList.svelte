@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { project } from '../../wailsjs/go/models.js'
+  import type { Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
   import { ListWorktrees, OpenInTerminal, OpenInEditor } from '$lib/api'
   import { Terminal, Code } from '@lucide/svelte'
 
@@ -9,7 +9,7 @@
 
   const { projectId }: Props = $props()
 
-  let worktrees = $state<project.Worktree[]>([])
+  let worktrees = $state<Worktree[]>([])
   let loading = $state(true)
   let error = $state('')
 

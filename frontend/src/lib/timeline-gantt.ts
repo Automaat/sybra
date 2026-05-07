@@ -1,4 +1,4 @@
-import type { task } from '../../wailsjs/go/models.js'
+import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 export type Zoom = 'day' | 'week' | 'month'
 
@@ -20,7 +20,7 @@ export interface BarPosition {
 
 const DAY_MS = 86_400_000
 
-export function getTaskRange(t: task.Task, now = new Date()): { start: Date; end: Date } {
+export function getTaskRange(t: Task, now = new Date()): { start: Date; end: Date } {
   const start = new Date(t.createdAt)
   let end: Date
   if (t.dueDate) {
@@ -36,7 +36,7 @@ export function getTaskRange(t: task.Task, now = new Date()): { start: Date; end
   return { start, end }
 }
 
-export function computeTimelineDomain(tasks: task.Task[], now = new Date()): TimelineDomain {
+export function computeTimelineDomain(tasks: Task[], now = new Date()): TimelineDomain {
   if (tasks.length === 0) {
     return {
       min: new Date(now.getTime() - 30 * DAY_MS),
@@ -105,7 +105,7 @@ export function bucketTicks(domain: TimelineDomain, zoom: Zoom): Tick[] {
   return ticks
 }
 
-export function taskBarPosition(t: task.Task, domain: TimelineDomain, now = new Date()): BarPosition {
+export function taskBarPosition(t: Task, domain: TimelineDomain, now = new Date()): BarPosition {
   const { start, end } = getTaskRange(t, now)
   const totalMs = domain.max.getTime() - domain.min.getTime()
   if (totalMs <= 0) return { leftPct: 0, widthPct: 0 }
@@ -114,7 +114,7 @@ export function taskBarPosition(t: task.Task, domain: TimelineDomain, now = new 
   return { leftPct, widthPct: Math.max(0.5, rightPct - leftPct) }
 }
 
-export function dueDateMarkerPosition(t: task.Task, domain: TimelineDomain): number | null {
+export function dueDateMarkerPosition(t: Task, domain: TimelineDomain): number | null {
   if (!t.dueDate) return null
   const due = new Date(t.dueDate)
   const totalMs = domain.max.getTime() - domain.min.getTime()

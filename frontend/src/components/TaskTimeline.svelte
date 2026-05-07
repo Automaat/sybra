@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { task } from '../../wailsjs/go/models.js'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import {
     computeTimelineDomain,
     bucketTicks,
@@ -11,7 +11,7 @@
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
-    tasks: task.Task[]
+    tasks: Task[]
     focusedTaskId: string | null
     onselect: (id: string) => void
     onfocus: (id: string) => void

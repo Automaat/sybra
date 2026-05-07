@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { project } from '../../wailsjs/go/models.js'
+import { Project } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 
 const mockListProjects = vi.fn()
 const mockGetProject = vi.fn()
@@ -17,8 +17,8 @@ vi.mock('$lib/api', () => ({
 
 const { projectStore } = await import('./projects.svelte.js')
 
-function makeProject(overrides: Partial<project.Project> = {}): project.Project {
-  return project.Project.createFrom({
+function makeProject(overrides: Record<string, unknown> = {}): Project {
+  return Project.createFrom({
     id: 'proj-1',
     name: 'my-repo',
     owner: 'org',

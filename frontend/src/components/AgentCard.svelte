@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { fade } from 'svelte/transition'
@@ -8,7 +8,7 @@
   import { formatElapsed } from '$lib/elapsed.js'
 
   interface Props {
-    agent: agent.Agent
+    agent: Agent
     onclick: () => void
   }
 

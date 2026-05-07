@@ -1,24 +1,24 @@
 <script lang="ts">
   import { Trash2, X } from '@lucide/svelte'
-  import { workflow } from '../../../wailsjs/go/models.js'
+  import { Condition, Step, StepConfig, Transition } from '../../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import ConditionRow from './ConditionRow.svelte'
 
   interface Props {
-    step: workflow.Step | null
+    step: Step | null
     allStepIds: string[]
-    onupdate: (step: workflow.Step) => void
+    onupdate: (step: Step) => void
     ondelete: (stepId: string) => void
   }
 
   const { step, allStepIds, onupdate, ondelete }: Props = $props()
 
-  function emit(updated: workflow.Step) {
+  function emit(updated: Step) {
     onupdate(updated)
   }
 
   function updateField(field: string, value: unknown) {
     if (!step) return
-    const updated = structuredClone($state.snapshot(step)) as workflow.Step
+    const updated = structuredClone($state.snapshot(step)) as Step
     const parts = field.split('.')
     let obj: Record<string, unknown> = updated as unknown as Record<string, unknown>
     for (let i = 0; i < parts.length - 1; i++) {
@@ -29,41 +29,41 @@
     emit(updated)
   }
 
-  function updateConfig(patch: Partial<workflow.StepConfig>) {
+  function updateConfig(patch: Partial<StepConfig>) {
     if (!step) return
-    const snap = $state.snapshot(step) as workflow.Step
-    const updated = new workflow.Step({
+    const snap = $state.snapshot(step) as Step
+    const updated = new Step({
       ...snap,
-      config: new workflow.StepConfig({ ...snap.config, ...patch }),
+      config: new StepConfig({ ...snap.config, ...patch }),
     })
     emit(updated)
   }
 
-  function updateTransition(idx: number, t: workflow.Transition) {
+  function updateTransition(idx: number, t: Transition) {
     if (!step) return
     const next = [...(step.next ?? [])]
     next[idx] = t
-    emit(new workflow.Step({ ...($state.snapshot(step) as workflow.Step), next }))
+    emit(new Step({ ...($state.snapshot(step) as Step), next }))
   }
 
   function removeTransition(idx: number) {
     if (!step) return
     const next = [...(step.next ?? [])]
     next.splice(idx, 1)
-    emit(new workflow.Step({ ...($state.snapshot(step) as workflow.Step), next }))
+    emit(new Step({ ...($state.snapshot(step) as Step), next }))
   }
 
   function addTransition() {
     if (!step) return
     const next = [...(step.next ?? [])]
-    next.push(new workflow.Transition({ goto: '' }))
-    emit(new workflow.Step({ ...($state.snapshot(step) as workflow.Step), next }))
+    next.push(new Transition({ goto: '' }))
+    emit(new Step({ ...($state.snapshot(step) as Step), next }))
   }
 
   function setTransitionGoto(idx: number, goto: string) {
     const t = step?.next?.[idx]
     if (!t) return
-    updateTransition(idx, new workflow.Transition({ when: t.when, goto }))
+    updateTransition(idx, new Transition({ when: t.when, goto }))
   }
 
   function toggleTransitionWhen(idx: number, enabled: boolean) {
@@ -71,17 +71,17 @@
     if (!t) return
     updateTransition(
       idx,
-      new workflow.Transition({
-        when: enabled ? new workflow.Condition({ field: '', operator: 'equals', value: '' }) : undefined,
+      new Transition({
+        when: enabled ? new Condition({ field: '', operator: 'equals', value: '' }) : undefined,
         goto: t.goto,
       }),
     )
   }
 
-  function updateTransitionWhen(idx: number, c: workflow.Condition) {
+  function updateTransitionWhen(idx: number, c: Condition) {
     const t = step?.next?.[idx]
     if (!t) return
-    updateTransition(idx, new workflow.Transition({ when: c, goto: t.goto }))
+    updateTransition(idx, new Transition({ when: c, goto: t.goto }))
   }
 
   function joinTools(tools?: string[]): string {
@@ -95,7 +95,7 @@
       .filter((s) => s.length > 0)
   }
 
-  function updateCheck(c: workflow.Condition) {
+  function updateCheck(c: Condition) {
     updateConfig({ check: c })
   }
 </script>
@@ -328,7 +328,7 @@
       <div class="flex flex-col gap-1">
         <span class="text-xs font-medium text-surface-500">Check</span>
         <ConditionRow
-          condition={step.config?.check ?? new workflow.Condition({ field: '', operator: 'equals', value: '' })}
+          condition={step.config?.check ?? new Condition({ field: '', operator: 'equals', value: '' })}
           onupdate={updateCheck}
         />
       </div>

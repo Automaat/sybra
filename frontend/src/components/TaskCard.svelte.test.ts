@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import TaskCard from './TaskCard.svelte'
+import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 vi.mock('../stores/notifications.svelte.js', () => ({
   notificationStore: {
@@ -36,7 +37,7 @@ const mockTask = {
   taskType: '',
   todoistId: '',
   convertValues: () => {},
-}
+} as unknown as Task
 
 describe('TaskCard', () => {
   afterEach(() => {
@@ -110,7 +111,7 @@ describe('TaskCard', () => {
   })
 
   it('shows Needs Review badge for plan-review status', () => {
-    render(TaskCard, { props: { task: { ...mockTask, status: 'plan-review' }, onclick: () => {} } })
+    render(TaskCard, { props: { task: { ...mockTask, status: 'plan-review' as Task['status'] }, onclick: () => {} } })
     expect(screen.getByText('Needs Review')).toBeDefined()
   })
 

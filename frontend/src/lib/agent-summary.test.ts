@@ -1,23 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { summarizeAgent } from './agent-summary.js'
 import type { TimestampedStreamEvent } from './timeline.js'
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent, StreamEvent, ToolUseBlock } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 function makeStreamEvent(type: string, content?: string): TimestampedStreamEvent {
   return {
-    event: { type, content } as agent.StreamEvent,
+    event: { type, content } as StreamEvent,
     receivedAt: new Date(),
   }
 }
 
-function makeConvoEvent(overrides: Partial<agent.ConvoEvent>): agent.ConvoEvent {
+function makeConvoEvent(overrides: Record<string, unknown>): ConvoEvent {
   return {
     type: 'assistant',
     timestamp: new Date().toISOString(),
     toolUses: [],
     toolResults: [],
     ...overrides,
-  } as agent.ConvoEvent
+  } as unknown as ConvoEvent
 }
 
 describe('summarizeAgent', () => {
@@ -93,7 +93,7 @@ describe('summarizeAgent', () => {
           toolUses: [
             { id: '1', name: 'Edit', input: { file_path: 'src/app.ts' } },
             { id: '2', name: 'Write', input: { file_path: 'src/new.ts' } },
-          ] as agent.ToolUseBlock[],
+          ] as ToolUseBlock[],
         }),
       ]
       const result = summarizeAgent([], convoEvents)
@@ -107,7 +107,7 @@ describe('summarizeAgent', () => {
           type: 'assistant',
           toolUses: [
             { id: '1', name: 'Bash', input: { command: 'npm test' } },
-          ] as agent.ToolUseBlock[],
+          ] as ToolUseBlock[],
         }),
       ]
       const result = summarizeAgent([], convoEvents)
@@ -138,7 +138,7 @@ describe('summarizeAgent', () => {
           type: 'assistant',
           toolUses: [
             { id: '1', name: 'Edit', input: {} },
-          ] as agent.ToolUseBlock[],
+          ] as ToolUseBlock[],
         }),
       ]
       const result = summarizeAgent([], convoEvents)
@@ -150,7 +150,7 @@ describe('summarizeAgent', () => {
     const stream = [makeStreamEvent('assistant', '[Edit] stream-file.ts')]
     const convo = [
       makeConvoEvent({
-        toolUses: [{ id: '1', name: 'Edit', input: { file_path: 'convo-file.ts' } }] as agent.ToolUseBlock[],
+        toolUses: [{ id: '1', name: 'Edit', input: { file_path: 'convo-file.ts' } }] as ToolUseBlock[],
       }),
     ]
     const result = summarizeAgent(stream, convo)

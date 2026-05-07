@@ -1,10 +1,10 @@
 import { FetchReviews, EventsOn } from '$lib/api'
 import { ReviewsUpdated } from '../lib/events.js'
-import type { github } from '../../wailsjs/go/models.js'
+import type { PullRequest, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 class ReviewStore {
-  createdByMe = $state<github.PullRequest[]>([])
-  reviewRequested = $state<github.PullRequest[]>([])
+  createdByMe = $state<PullRequest[]>([])
+  reviewRequested = $state<PullRequest[]>([])
   loading = $state(false)
   error = $state('')
   private cancelListener: (() => void) | null = null
@@ -13,9 +13,9 @@ class ReviewStore {
     return this.createdByMe.length + this.reviewRequested.length
   }
 
-  get allPRs(): github.PullRequest[] {
+  get allPRs(): PullRequest[] {
     const seen = new Set<string>()
-    const result: github.PullRequest[] = []
+    const result: PullRequest[] = []
     for (const pr of [...this.createdByMe, ...this.reviewRequested]) {
       const key = `${pr.repository}#${pr.number}`
       if (!seen.has(key)) {
@@ -26,11 +26,11 @@ class ReviewStore {
     return result
   }
 
-  byRepo(repo: string): github.PullRequest[] {
+  byRepo(repo: string): PullRequest[] {
     return this.allPRs.filter((pr) => pr.repository === repo)
   }
 
-  byTask(task: { projectId?: string; prNumber?: number; branch?: string }): github.PullRequest[] {
+  byTask(task: { projectId?: string; prNumber?: number; branch?: string }): PullRequest[] {
     if (!task.projectId) return []
     const repoPRs = this.byRepo(task.projectId)
     if (task.prNumber) {
@@ -60,7 +60,7 @@ class ReviewStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(ReviewsUpdated, (summary: github.ReviewSummary) => {
+    this.cancelListener = EventsOn(ReviewsUpdated, (summary: ReviewSummary) => {
       this.createdByMe = summary.createdByMe ?? []
       this.reviewRequested = summary.reviewRequested ?? []
     })

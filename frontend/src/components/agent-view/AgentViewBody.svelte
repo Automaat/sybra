@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fade } from 'svelte/transition'
-  import type { agent } from '../../../wailsjs/go/models.js'
-  import type { task } from '../../../wailsjs/go/models.js'
+  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { AgentPhase } from '$lib/agent-phases.js'
   import type { TimestampedStreamEvent, TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
@@ -15,16 +15,16 @@
 
   interface Props {
     phase: AgentPhase
-    a: agent.Agent
-    linkedTask?: task.Task | null
+    a: Agent
+    linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: agent.ConvoEvent[]
+    convoEvents: ConvoEvent[]
     timelineEntries: TimelineEntry[]
     planSteps: PlanStep[]
     selectedIndex: number | null
     onselect: (i: number) => void
     // Three-panel props — only consumed by active-phase layouts.
-    allAgents: agent.Agent[]
+    allAgents: Agent[]
     latestToolUse: ToolUseSignal | undefined
     onnavigate: (id: string) => void
   }

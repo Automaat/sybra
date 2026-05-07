@@ -1,6 +1,6 @@
 <script lang="ts">
   import { commentStore } from '../stores/comments.svelte.js'
-  import { task } from '../../wailsjs/go/models.js'
+
 
   let { taskId, planBody } = $props<{ taskId: string; planBody: string }>()
 

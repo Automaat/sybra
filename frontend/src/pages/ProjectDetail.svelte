@@ -2,8 +2,8 @@
   import { ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import * as yaml from 'js-yaml'
-  import type { project } from '../../wailsjs/go/models.js'
-  import { SetProjectSandboxConfig, SetProjectSetupCommands } from '../../wailsjs/go/sybra/ProjectService.js'
+  import type { Project, SandboxConfig } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
+  import { SetProjectSandboxConfig, SetProjectSetupCommands } from '../../bindings/github.com/Automaat/sybra/internal/sybra/projectservice.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
@@ -18,7 +18,7 @@
 
   const { projectId, onback, onviewtask }: Props = $props()
 
-  let p = $state<project.Project | null>(null)
+  let p = $state<Project | null>(null)
   let error = $state('')
   let deleting = $state(false)
   let updatingType = $state(false)
@@ -85,9 +85,9 @@
     sandboxSaved = false
     try {
       const parsed = sandboxYaml.trim()
-        ? (yaml.load(sandboxYaml) as project.SandboxConfig)
+        ? (yaml.load(sandboxYaml) as SandboxConfig)
         : null
-      p = await SetProjectSandboxConfig(projectId, parsed as project.SandboxConfig)
+      p = await SetProjectSandboxConfig(projectId, parsed as SandboxConfig)
       sandboxSaved = true
       setTimeout(() => { sandboxSaved = false }, 2000)
     } catch (e) {

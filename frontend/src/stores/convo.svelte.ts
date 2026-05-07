@@ -5,7 +5,7 @@ import {
   RespondApproval,
   EventsOn,
 } from '$lib/api'
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { agentConvo, agentApproval } from '../lib/events.js'
 
 export interface ApprovalRequest {
@@ -15,16 +15,16 @@ export interface ApprovalRequest {
 }
 
 class ConvoStore {
-  conversations = new SvelteMap<string, agent.ConvoEvent[]>()
+  conversations = new SvelteMap<string, ConvoEvent[]>()
   pendingApprovals = new SvelteMap<string, ApprovalRequest>()
 
-  async getOutput(agentId: string): Promise<agent.ConvoEvent[]> {
+  async getOutput(agentId: string): Promise<ConvoEvent[]> {
     const events = (await GetConvoOutput(agentId)) ?? []
     this.conversations.set(agentId, events)
     return events
   }
 
-  appendEvent(agentId: string, event: agent.ConvoEvent): void {
+  appendEvent(agentId: string, event: ConvoEvent): void {
     const existing = this.conversations.get(agentId) ?? []
     this.conversations.set(agentId, [...existing, event])
   }
@@ -41,7 +41,7 @@ class ConvoStore {
   subscribe(agentId: string): () => void {
     const unsubConvo = EventsOn(
       agentConvo(agentId),
-      (event: agent.ConvoEvent) => {
+      (event: ConvoEvent) => {
         this.appendEvent(agentId, event)
       },
     )

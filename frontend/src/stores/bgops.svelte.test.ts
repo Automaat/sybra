@@ -15,7 +15,7 @@ vi.mock('$lib/api', () => ({
 
 const { bgopStore } = await import('./bgops.svelte.js')
 
-function makeOp(overrides: Partial<Operation> = {}): Operation {
+function makeOp(overrides: Record<string, unknown> = {}): Operation {
   return {
     id: 'op-1',
     type: 'clone',

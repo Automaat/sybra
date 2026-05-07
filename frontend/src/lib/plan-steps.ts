@@ -1,5 +1,5 @@
 import type { TimestampedStreamEvent } from './timeline.js'
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 export interface PlanStep {
   content: string
@@ -24,7 +24,7 @@ export function extractLatestPlanSteps(events: TimestampedStreamEvent[]): PlanSt
  * Walk ConvoEvents in reverse to find the most recent TodoWrite tool use and
  * parse its todos array.
  */
-export function extractLatestPlanStepsFromConvo(events: agent.ConvoEvent[]): PlanStep[] {
+export function extractLatestPlanStepsFromConvo(events: ConvoEvent[]): PlanStep[] {
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i]
     if (!ev.toolUses) continue

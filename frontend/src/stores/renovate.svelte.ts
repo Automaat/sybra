@@ -1,9 +1,9 @@
 import { FetchRenovatePRs, EventsOn } from '$lib/api'
 import { RenovateUpdated } from '../lib/events.js'
-import type { github } from '../../wailsjs/go/models.js'
+import type { RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 class RenovateStore {
-  prs = $state<github.RenovatePR[]>([])
+  prs = $state<RenovatePR[]>([])
   loading = $state(false)
   error = $state('')
   private cancelListener: (() => void) | null = null
@@ -12,7 +12,7 @@ class RenovateStore {
     return this.prs.length
   }
 
-  get eligible(): github.RenovatePR[] {
+  get eligible(): RenovatePR[] {
     return this.prs.filter(
       (pr) =>
         !pr.isDraft &&
@@ -21,7 +21,7 @@ class RenovateStore {
     )
   }
 
-  get failing(): github.RenovatePR[] {
+  get failing(): RenovatePR[] {
     return this.prs.filter((pr) => pr.ciStatus === 'FAILURE')
   }
 
@@ -40,7 +40,7 @@ class RenovateStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(RenovateUpdated, (prs: github.RenovatePR[]) => {
+    this.cancelListener = EventsOn(RenovateUpdated, (prs: RenovatePR[]) => {
       this.prs = prs ?? []
     })
   }

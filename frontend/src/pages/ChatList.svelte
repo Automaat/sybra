@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
@@ -25,10 +25,10 @@
   }
 
   const interactiveAgents = $derived(
-    agentStore.list.filter((a: agent.Agent) => a.mode === 'interactive'),
+    agentStore.list.filter((a: Agent) => a.mode === 'interactive'),
   )
 
-  function agentPhaseConfig(a: agent.Agent) {
+  function agentPhaseConfig(a: Agent) {
     return PHASE_CONFIG[getAgentPhase(a.state, a.escalationReason, undefined, a.awaitingApproval)]
   }
 

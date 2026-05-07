@@ -7,11 +7,11 @@ import {
   RunLoopAgentNow,
   ListLoopAgentRuns,
 } from '$lib/api'
-import { loopagent } from '../../wailsjs/go/models.js'
-import type { sybra } from '../../wailsjs/go/models.js'
+import { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
+import type { LoopAgentRun } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
-class LoopStore extends EntityStore<loopagent.LoopAgent> {
+class LoopStore extends EntityStore<LoopAgent> {
   constructor() {
     super(
       () => ListLoopAgents(),
@@ -19,20 +19,20 @@ class LoopStore extends EntityStore<loopagent.LoopAgent> {
     )
   }
 
-  async get(id: string): Promise<loopagent.LoopAgent> {
+  async get(id: string): Promise<LoopAgent> {
     const result = await GetLoopAgent(id)
     this.set(result.id, result)
     return result
   }
 
-  async create(la: Partial<loopagent.LoopAgent>): Promise<loopagent.LoopAgent> {
-    const input = new loopagent.LoopAgent(la)
+  async create(la: Partial<LoopAgent>): Promise<LoopAgent> {
+    const input = new LoopAgent(la)
     const result = await CreateLoopAgent(input)
     this.set(result.id, result)
     return result
   }
 
-  async update(la: loopagent.LoopAgent): Promise<loopagent.LoopAgent> {
+  async update(la: LoopAgent): Promise<LoopAgent> {
     const result = await UpdateLoopAgent(la)
     this.set(result.id, result)
     return result
@@ -49,7 +49,7 @@ class LoopStore extends EntityStore<loopagent.LoopAgent> {
     return agentId
   }
 
-  async runs(id: string, limit = 10): Promise<sybra.LoopAgentRun[]> {
+  async runs(id: string, limit = 10): Promise<LoopAgentRun[]> {
     return (await ListLoopAgentRuns(id, limit)) ?? []
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { task } from '../../wailsjs/go/models.js'
+import { ReviewComment } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 const mockListReviewComments = vi.fn()
 const mockAddReviewComment = vi.fn()
@@ -15,8 +15,8 @@ vi.mock('$lib/api', () => ({
 
 const { commentStore } = await import('./comments.svelte.js')
 
-function makeComment(overrides: Partial<task.ReviewComment> = {}): task.ReviewComment {
-  return task.ReviewComment.createFrom({
+function makeComment(overrides: Record<string, unknown> = {}): ReviewComment {
+  return ReviewComment.createFrom({
     id: 'c-1',
     line: 10,
     body: 'Looks good',

@@ -2,7 +2,7 @@
   import { ChevronLeft } from '@lucide/svelte'
   import type { Node, Edge } from '@xyflow/svelte'
   import { workflowStore } from '../stores/workflows.svelte.js'
-  import { workflow } from '../../wailsjs/go/models.js'
+  import { Definition, Position, Step, StepConfig, StepType, Trigger } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import WorkflowGraph from '../components/workflow/WorkflowGraph.svelte'
   import StepConfigPanel from '../components/workflow/StepConfigPanel.svelte'
   import TriggerConfigPanel from '../components/workflow/TriggerConfigPanel.svelte'
@@ -15,7 +15,7 @@
     type StepNodeData,
   } from '../lib/workflow-graph.js'
 
-  type Selection = { kind: 'step'; step: workflow.Step } | { kind: 'trigger' } | null
+  type Selection = { kind: 'step'; step: Step } | { kind: 'trigger' } | null
 
   interface Props {
     workflowId: string
@@ -24,7 +24,7 @@
 
   const { workflowId, onback }: Props = $props()
 
-  let def = $state<workflow.Definition | null>(null)
+  let def = $state<Definition | null>(null)
   let nodes = $state<Node[]>([])
   let edges = $state<Edge[]>([])
   let selected = $state<Selection>(null)
@@ -57,7 +57,7 @@
     selected = { kind: 'step', step: data.step }
   }
 
-  function rebuildGraphFrom(updated: workflow.Definition) {
+  function rebuildGraphFrom(updated: Definition) {
     const graph = definitionToGraph(updated)
     // Preserve current node positions from existing nodes where possible
     const posByKey = new Map<string, { x: number; y: number }>()
@@ -71,7 +71,7 @@
     edges = graph.edges
   }
 
-  function handleStepUpdate(updated: workflow.Step) {
+  function handleStepUpdate(updated: Step) {
     if (!def) return
     const idx = def.steps.findIndex((s) => s.id === selectedStep?.id)
     if (idx < 0) return
@@ -98,14 +98,14 @@
   function handleStepAdd() {
     if (!def) return
     const id = `step-${crypto.randomUUID().slice(0, 8)}`
-    const newStep = new workflow.Step({
+    const newStep = new Step({
       id,
       name: 'New step',
-      type: 'run_agent',
-      config: new workflow.StepConfig({}),
+      type: StepType.StepRunAgent,
+      config: new StepConfig({}),
       next: [],
       parallel: [],
-      position: new workflow.Position({ x: 100 + def.steps.length * 40, y: 100 + def.steps.length * 40 }),
+      position: new Position({ x: 100 + def.steps.length * 40, y: 100 + def.steps.length * 40 }),
     })
     def.steps = [...def.steps, newStep]
     rebuildGraphFrom(def)
@@ -113,9 +113,9 @@
     dirty = true
   }
 
-  function handleTriggerUpdate(trigger: workflow.Trigger) {
+  function handleTriggerUpdate(trigger: Trigger) {
     if (!def) return
-    def = new workflow.Definition({ ...def, trigger })
+    def = new Definition({ ...def, trigger })
     rebuildGraphFrom(def)
     dirty = true
   }
@@ -210,7 +210,7 @@
 
     {#if selected?.kind === 'trigger' && def}
       <TriggerConfigPanel
-        trigger={def.trigger ?? new workflow.Trigger({ on: '', conditions: [] })}
+        trigger={def.trigger ?? new Trigger({ on: '', conditions: [] })}
         onupdate={handleTriggerUpdate}
       />
     {:else}

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { ChevronLeft } from '@lucide/svelte'
-  import type { workflow } from '../../wailsjs/go/models.js'
+  import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 
   interface Props {
-    def: workflow.Definition | null
+    def: Definition | null
     onback: () => void
   }
 

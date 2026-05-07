@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Search, X } from '@lucide/svelte'
-  import type { task } from '../../wailsjs/go/models.js'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { STATUS_MAP } from '../lib/statuses.js'
@@ -27,11 +27,11 @@
   ]
 
   const logbookTasks = $derived(
-    taskStore.list.filter((t: task.Task) => t.status === 'done' || t.status === 'cancelled')
+    taskStore.list.filter((t: Task) => t.status === 'done' || t.status === 'cancelled')
   )
 
   const allTags = $derived(
-    [...new Set(logbookTasks.flatMap((t: task.Task) => t.tags ?? []))].sort()
+    [...new Set(logbookTasks.flatMap((t: Task) => t.tags ?? []))].sort()
   )
 
   function toUtcDayStart(dateStr: string): Date | null {
@@ -52,7 +52,7 @@
     const to = toUtcDayEnd(dateTo)
 
     return logbookTasks
-      .filter((t: task.Task) => {
+      .filter((t: Task) => {
         if (selectedStatus !== 'all' && t.status !== selectedStatus) return false
         if (query && !t.title.toLowerCase().includes(query)
             && !(t.body ?? '').toLowerCase().includes(query)) return false
@@ -66,7 +66,7 @@
         }
         return true
       })
-      .sort((a: task.Task, b: task.Task) => {
+      .sort((a: Task, b: Task) => {
         const aTime = a.closedAt ? new Date(a.closedAt).getTime() : 0
         const bTime = b.closedAt ? new Date(b.closedAt).getTime() : 0
         const diff = sortAsc ? aTime - bTime : bTime - aTime

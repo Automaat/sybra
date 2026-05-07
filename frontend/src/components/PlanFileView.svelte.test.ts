@@ -17,7 +17,7 @@ vi.mock('$lib/api', () => ({
 
 const { commentStore } = await import('../stores/comments.svelte.js')
 const { default: PlanFileView } = await import('./PlanFileView.svelte')
-const { task } = await import('../../wailsjs/go/models.js')
+const { ReviewComment } = await import('../../bindings/github.com/Automaat/sybra/internal/task/models.js')
 
 describe('PlanFileView', () => {
   beforeEach(() => {
@@ -46,7 +46,7 @@ describe('PlanFileView', () => {
     expect(screen.getByText('needs work')).toBeDefined()
 
     resolveAdd?.(
-      task.ReviewComment.createFrom({
+      ReviewComment.createFrom({
         id: 'persisted-1',
         line: 1,
         body: 'needs work',

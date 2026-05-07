@@ -1,5 +1,5 @@
 import type { Node, Edge } from '@xyflow/svelte'
-import { workflow } from '../../wailsjs/go/models.js'
+import { Condition, Definition, Position, Step, Trigger } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 
 const NODE_SPACING_X = 250
 const NODE_SPACING_Y = 120
@@ -7,13 +7,13 @@ const NODE_SPACING_Y = 120
 export const TRIGGER_NODE_ID = '__trigger'
 
 type StepNodeData = {
-  step: workflow.Step
+  step: Step
   label: string
   stepType: string
 }
 
 type TriggerNodeData = {
-  trigger: workflow.Trigger
+  trigger: Trigger
 }
 
 const stepTypeColors: Record<string, string> = {
@@ -25,7 +25,7 @@ const stepTypeColors: Record<string, string> = {
   parallel: '#ec4899',    // pink
 }
 
-export function definitionToGraph(def: workflow.Definition): { nodes: Node[], edges: Edge[] } {
+export function definitionToGraph(def: Definition): { nodes: Node[], edges: Edge[] } {
   const nodes: Node[] = []
   const edges: Edge[] = []
   const steps = def.steps ?? []
@@ -39,7 +39,7 @@ export function definitionToGraph(def: workflow.Definition): { nodes: Node[], ed
     type: 'triggerNode',
     position: triggerPos,
     data: {
-      trigger: def.trigger ?? new workflow.Trigger({ on: '', conditions: [] }),
+      trigger: def.trigger ?? new Trigger({ on: '', conditions: [] }),
     } satisfies TriggerNodeData,
   })
   if (steps.length > 0) {
@@ -106,21 +106,21 @@ export function definitionToGraph(def: workflow.Definition): { nodes: Node[], ed
 }
 
 export function graphToDefinition(
-  original: workflow.Definition,
+  original: Definition,
   nodes: Node[],
   _edges: Edge[],
-): workflow.Definition {
+): Definition {
   // Transitions are authoritative on step.next (edited via StepConfigPanel).
   // Edges are a visual projection only; we rebuild them on load via definitionToGraph.
-  const steps: workflow.Step[] = []
+  const steps: Step[] = []
   let trigger = original.trigger
 
   for (const node of nodes) {
     if (node.type === 'endNode') continue
     if (node.type === 'triggerNode' || node.id === TRIGGER_NODE_ID) {
-      trigger = new workflow.Trigger({
+      trigger = new Trigger({
         ...(original.trigger ?? { on: '', conditions: [] }),
-        position: new workflow.Position({ x: node.position.x, y: node.position.y }),
+        position: new Position({ x: node.position.x, y: node.position.y }),
       })
       continue
     }
@@ -128,21 +128,21 @@ export function graphToDefinition(
     const data = node.data as StepNodeData
     const src = data.step
 
-    steps.push(new workflow.Step({
+    steps.push(new Step({
       ...src,
-      position: new workflow.Position({ x: node.position.x, y: node.position.y }),
+      position: new Position({ x: node.position.x, y: node.position.y }),
       next: src.next ?? [],
     }))
   }
 
-  return new workflow.Definition({
+  return new Definition({
     ...original,
     trigger,
     steps,
   })
 }
 
-function formatCondition(c: workflow.Condition): string {
+function formatCondition(c: Condition): string {
   if (!c) return ''
   const field = c.field?.split('.').pop() ?? c.field
   return `${field} ${c.operator} ${c.value}`

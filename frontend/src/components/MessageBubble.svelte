@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { renderMarkdown } from '../lib/markdown.js'
   import DiffViewer from './DiffViewer.svelte'
 
   interface Props {
-    event: agent.ConvoEvent
+    event: ConvoEvent
   }
 
   const { event }: Props = $props()

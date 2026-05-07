@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ChevronLeft } from '@lucide/svelte'
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
@@ -35,7 +35,7 @@
 
   const { agentId, onback, onviewtask, onnavigate }: Props = $props()
 
-  let a = $state<agent.Agent | null>(null)
+  let a = $state<Agent | null>(null)
   let error = $state('')
   let agentErr = $state<AgentErrorEvent | null>(null)
   let escalation = $state<EscalationEvent | null>(null)
@@ -110,7 +110,7 @@
     const cached = agentStore.agents.get(agentId)
     if (cached) a = cached
 
-    const unsubState = EventsOn(agentState(agentId), (data: agent.Agent) => {
+    const unsubState = EventsOn(agentState(agentId), (data: Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
     })

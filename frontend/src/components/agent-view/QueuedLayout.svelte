@@ -1,9 +1,9 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
-  import type { task } from '../../../wailsjs/go/models.js'
+  import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
   interface Props {
-    linkedTask?: task.Task | null
+    linkedTask?: Task | null
   }
 
   const { linkedTask }: Props = $props()

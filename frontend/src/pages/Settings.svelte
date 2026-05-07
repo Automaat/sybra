@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { GetSettings, UpdateSettings, GetVersion } from '$lib/api'
-  import type { sybra } from '../../wailsjs/go/models.js'
+  import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import {
     GetProviderHealth,
     ProviderHealthEnabled,
@@ -27,8 +27,6 @@
   $effect(() => {
     applyColorScheme(colorScheme)
   })
-
-  type AppSettings = sybra.AppSettings
 
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')

@@ -6,7 +6,7 @@
   import { MarkPRReady, EventsOn } from '$lib/api'
   import { agentOutput } from '../lib/events.js'
   import { extractStepText } from '$lib/step-text.js'
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import AgentCard from '../components/AgentCard.svelte'
   import PRCard from '../components/PRCard.svelte'
 
@@ -35,7 +35,7 @@
   $effect(() => {
     const runningIds = runningAgents.map((a) => a.id)
     const unsubs = runningIds.map((id) =>
-      EventsOn(agentOutput(id), (event: agent.StreamEvent) => {
+      EventsOn(agentOutput(id), (event: StreamEvent) => {
         const text = extractStepText(event)
         if (text) agentStore.setStepText(id, text)
       }),

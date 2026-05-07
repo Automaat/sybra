@@ -1,20 +1,20 @@
 <script lang="ts">
   import { ArrowDown } from '@lucide/svelte'
   import { EventsOn } from '$lib/api'
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentOutput } from '../lib/events.js'
 
   interface Props {
     agentId?: string
-    staticEvents?: agent.StreamEvent[]
+    staticEvents?: StreamEvent[]
     highlightIndex?: number | null
     onvisibleindex?: (index: number) => void
   }
 
   const { agentId, staticEvents, highlightIndex = null, onvisibleindex }: Props = $props()
 
-  let events = $state<agent.StreamEvent[]>([])
+  let events = $state<StreamEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
   let autoScroll = $state(true)
   let flashIndex = $state<number | null>(null)
@@ -75,7 +75,7 @@
       scrollToBottom()
     })
 
-    const unsub = EventsOn(agentOutput(agentId), (event: agent.StreamEvent) => {
+    const unsub = EventsOn(agentOutput(agentId), (event: StreamEvent) => {
       events = [...events, event]
       agentStore.appendEvent(agentId, event)
       requestAnimationFrame(scrollToBottom)

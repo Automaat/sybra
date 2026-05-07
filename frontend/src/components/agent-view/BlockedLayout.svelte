@@ -1,7 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { ChevronDown, ChevronUp, PanelLeft } from '@lucide/svelte'
-  import type { agent } from '../../../wailsjs/go/models.js'
+  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
@@ -16,14 +16,14 @@
   import AgentSidebarList from './AgentSidebarList.svelte'
 
   interface Props {
-    a: agent.Agent
+    a: Agent
     planSteps: PlanStep[]
     timelineEntries: TimelineEntry[]
     selectedIndex: number | null
     onselect: (i: number) => void
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: agent.ConvoEvent[]
-    allAgents: agent.Agent[]
+    convoEvents: ConvoEvent[]
+    allAgents: Agent[]
     latestToolUse: ToolUseSignal | undefined
     onnavigate: (id: string) => void
   }

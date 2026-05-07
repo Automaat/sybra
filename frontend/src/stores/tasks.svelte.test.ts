@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { task } from '../../wailsjs/go/models.js'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 const mockListTasks = vi.fn()
 const mockGetTask = vi.fn()
@@ -33,8 +33,8 @@ vi.mock('$lib/api', () => ({
 
 const { taskStore } = await import('./tasks.svelte.js')
 
-function makeTask(overrides: Partial<task.Task> = {}): task.Task {
-  return task.Task.createFrom({
+function makeTask(overrides: Record<string, unknown> = {}): Task {
+  return Task.createFrom({
     id: 'task-1',
     slug: '',
     title: 'Test task',

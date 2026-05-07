@@ -1,6 +1,6 @@
 <script lang="ts">
   import { statsStore } from '../stores/stats.svelte.js'
-  import type { stats } from '../../wailsjs/go/models.js'
+
 
   type Period = 'today' | 'thisWeek' | 'thisMonth' | 'allTime'
 

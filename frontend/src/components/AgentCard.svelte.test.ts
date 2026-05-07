@@ -3,14 +3,15 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import AgentCard from './AgentCard.svelte'
 import { agentStore } from '../stores/agents.svelte.js'
 import { taskStore } from '../stores/tasks.svelte.js'
-import type { task } from '../../wailsjs/go/models.js'
+import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 // Mutable clock mock — set per test as needed; vi.hoisted ensures it is accessible
 // inside the hoisted vi.mock factory
 const clockMock = vi.hoisted(() => ({ now: Date.now() }))
 vi.mock('$lib/clock.svelte.js', () => ({ clock: clockMock }))
 
-function makeAgent(overrides: Record<string, unknown> = {}) {
+function makeAgent(overrides: Record<string, unknown> = {}): Agent {
   return {
     id: 'agent-1',
     taskId: 'task-1',
@@ -27,10 +28,10 @@ function makeAgent(overrides: Record<string, unknown> = {}) {
     lastEventAt: '',
     convertValues: () => {},
     ...overrides,
-  }
+  } as unknown as Agent
 }
 
-function makeTask(overrides: Partial<task.Task> = {}): task.Task {
+function makeTask(overrides: Record<string, unknown> = {}): Task {
   return {
     id: 'task-1',
     title: 'Test task title',
@@ -51,7 +52,7 @@ function makeTask(overrides: Partial<task.Task> = {}): task.Task {
     agentRuns: [],
     convertValues: () => {},
     ...overrides,
-  } as task.Task
+  } as unknown as Task
 }
 
 describe('AgentCard', () => {

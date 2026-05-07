@@ -8,12 +8,12 @@ import {
   StartChat,
   StopChat,
 } from '$lib/api'
-import { agent } from '../../wailsjs/go/models.js'
+import { Agent, State, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 import { extractStepText } from '$lib/step-text.js'
 import type { TimestampedStreamEvent } from '$lib/timeline.js'
 
-class AgentStore extends EntityStore<agent.Agent> {
+class AgentStore extends EntityStore<Agent> {
   outputs = new SvelteMap<string, TimestampedStreamEvent[]>()
   stepTexts = new SvelteMap<string, string>()
 
@@ -34,27 +34,27 @@ class AgentStore extends EntityStore<agent.Agent> {
   get agents() {
     return this.items
   }
-  set agents(v: Map<string, agent.Agent>) {
+  set agents(v: Map<string, Agent>) {
     this.items = v
   }
 
-  byTask(taskID: string): agent.Agent | undefined {
+  byTask(taskID: string): Agent | undefined {
     return this.list.find((a) => a.taskId === taskID)
   }
 
-  byState(state: string): agent.Agent[] {
+  byState(state: string): Agent[] {
     if (state === 'all') return this.list
     return this.list.filter((a) => a.state === state)
   }
 
-  async start(taskID: string, mode: string, prompt: string): Promise<agent.Agent> {
+  async start(taskID: string, mode: string, prompt: string): Promise<Agent> {
     const result = await StartAgent(taskID, mode, prompt)
     this.set(result.id, result)
     this.outputs.set(result.id, [])
     return result
   }
 
-  async startChat(projectID: string, provider: string, prompt: string): Promise<agent.Agent> {
+  async startChat(projectID: string, provider: string, prompt: string): Promise<Agent> {
     const result = await StartChat(projectID, provider, prompt)
     this.set(result.id, result)
     this.outputs.set(result.id, [])
@@ -65,7 +65,7 @@ class AgentStore extends EntityStore<agent.Agent> {
     await StopAgent(agentID)
     const a = this.items.get(agentID)
     if (a) {
-      a.state = 'stopped'
+      a.state = State.StateStopped
       this.set(agentID, a)
     }
   }
@@ -92,7 +92,7 @@ class AgentStore extends EntityStore<agent.Agent> {
     return wrapped
   }
 
-  appendEvent(agentID: string, event: agent.StreamEvent): void {
+  appendEvent(agentID: string, event: StreamEvent): void {
     const tse: TimestampedStreamEvent = { event, receivedAt: new Date() }
     const existing = this.outputs.get(agentID) ?? []
     this.outputs.set(agentID, [...existing, tse])
@@ -104,7 +104,7 @@ class AgentStore extends EntityStore<agent.Agent> {
     this.stepTexts.set(agentID, text)
   }
 
-  updateAgent(agentID: string, data: agent.Agent): void {
+  updateAgent(agentID: string, data: Agent): void {
     this.set(agentID, data)
   }
 }

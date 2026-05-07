@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy } from '@lucide/svelte'
-  import type { task } from '../../wailsjs/go/models.js'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
@@ -8,7 +8,7 @@
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
-    task: task.Task
+    task: Task
     onclick: () => void
     focused?: boolean
     onstatuschange?: (status: string) => void
@@ -106,7 +106,7 @@
     {:else if topPR?.ciStatus === 'PENDING'}
       <Clock size={16} class="shrink-0 text-warning-500" />
     {/if}
-    {#if t.priority && t.priority !== ''}
+    {#if t.priority}
       {@const pm = priorityMeta(t.priority)}
       <span class="shrink-0 font-mono text-xs {pm.classes}" title="Priority: {pm.label}">{pm.icon}</span>
     {/if}
