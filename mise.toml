@@ -15,7 +15,11 @@ description = "Install CLI and run wails dev server"
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
 [tasks."dev:v3"]
-run = ["cd frontend && npm run build:desktop", "go run ./cmd/sybra-v3"]
+run = [
+  "cd frontend && npm run build:desktop",
+  "rsync -a --delete --exclude=.gitkeep frontend/dist/ cmd/sybra-v3/dist/",
+  "go run ./cmd/sybra-v3",
+]
 description = "Run the full Sybra app on Wails v3 alpha (darwin-only). See docs/migrations/wails-v3.md."
 
 [tasks."dev:v3:poc"]
