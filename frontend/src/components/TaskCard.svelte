@@ -105,7 +105,7 @@
       {@const pm = priorityMeta(t.priority)}
       <span class="shrink-0 font-mono text-xs {pm.classes}" title="Priority: {pm.label}">{pm.icon}</span>
     {/if}
-    <h3 class="text-sm font-semibold leading-tight">{t.title}</h3>
+    <h3 class="line-clamp-2 text-sm font-semibold leading-tight">{t.title}</h3>
   </div>
 
   {#if t.statusReason}
