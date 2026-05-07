@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Search, Filter, ChevronDown, List, Columns, GanttChart } from '@lucide/svelte'
-  import type { task } from '../../wailsjs/go/models.js'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
@@ -65,7 +65,7 @@
   let priorityPickerOpen = $state(false)
   let assignProjectOpen = $state(false)
 
-  function getColumnTasks(colIndex: number): task.Task[] {
+  function getColumnTasks(colIndex: number): Task[] {
     const col = visibleColumns[colIndex]
     if (!col) return []
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
@@ -328,13 +328,13 @@
   let showDone = $state(false)
   // Derived: unique tags across all tasks
   const allTags = $derived(
-    [...new Set(taskStore.list.flatMap((t: task.Task) => t.tags ?? []))].sort()
+    [...new Set(taskStore.list.flatMap((t: Task) => t.tags ?? []))].sort()
   )
 
   // Derived: filter function
-  function filteredByStatuses(statuses: string[]): task.Task[] {
+  function filteredByStatuses(statuses: string[]): Task[] {
     const query = searchQuery.toLowerCase().trim()
-    return taskStore.list.filter((t: task.Task) => {
+    return taskStore.list.filter((t: Task) => {
       if (!statuses.includes(t.status)) return false
       if (query && !t.title.toLowerCase().includes(query)
           && !(t.body ?? '').toLowerCase().includes(query)
@@ -358,7 +358,7 @@
 
   const allFilteredTasks = $derived.by(() => {
     const query = searchQuery.toLowerCase().trim()
-    return taskStore.list.filter((t: task.Task) => {
+    return taskStore.list.filter((t: Task) => {
       if (!showDone && (t.status === 'done' || t.status === 'cancelled')) return false
       if (query && !t.title.toLowerCase().includes(query)
           && !(t.body ?? '').toLowerCase().includes(query)

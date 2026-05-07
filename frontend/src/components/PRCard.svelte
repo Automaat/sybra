@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { github } from '../../wailsjs/go/models.js'
+  import type { PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
   interface Props {
-    pr: github.PullRequest
+    pr: PullRequest
     actionLabel?: string
     onaction?: () => void
     onselect?: () => void

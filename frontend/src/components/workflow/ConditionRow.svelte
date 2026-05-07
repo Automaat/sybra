@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { workflow } from '../../../wailsjs/go/models.js'
+  import { Condition } from '../../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import { X } from '@lucide/svelte'
 
   interface Props {
-    condition: workflow.Condition
-    onupdate: (c: workflow.Condition) => void
+    condition: Condition
+    onupdate: (c: Condition) => void
     onremove?: () => void
     fieldPlaceholder?: string
   }
 
   const { condition, onupdate, onremove, fieldPlaceholder = 'task.tags' }: Props = $props()
 
-  function update(patch: Partial<workflow.Condition>) {
-    onupdate(new workflow.Condition({ ...condition, ...patch }))
+  function update(patch: Partial<Condition>) {
+    onupdate(new Condition({ ...condition, ...patch }))
   }
 </script>
 

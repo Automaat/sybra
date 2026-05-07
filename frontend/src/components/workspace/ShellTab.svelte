@@ -1,12 +1,12 @@
 <script lang="ts">
   import { Loader } from '@lucide/svelte'
-  import type { agent } from '../../../wailsjs/go/models.js'
+  import type { ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { extractBashActivity, stripAnsi, truncateOutput } from '$lib/bash-activity.js'
 
   interface Props {
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: agent.ConvoEvent[]
+    convoEvents: ConvoEvent[]
   }
 
   const { streamOutputs, convoEvents }: Props = $props()

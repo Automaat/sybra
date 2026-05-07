@@ -1,4 +1,4 @@
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { TimestampedStreamEvent } from './timeline.js'
 
 export interface BashActivity {
@@ -25,7 +25,7 @@ export interface BashActivity {
  */
 export function extractBashActivity(
   streamOutputs: TimestampedStreamEvent[],
-  convoEvents: agent.ConvoEvent[],
+  convoEvents: ConvoEvent[],
 ): BashActivity[] {
   // Interactive mode: structured tool_use/tool_result pairs.
   if (convoEvents.length > 0) {

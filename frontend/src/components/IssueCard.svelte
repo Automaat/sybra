@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { github } from '../../wailsjs/go/models.js'
+  import type { Issue } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
   import { BrowserOpenURL } from '$lib/api'
 
   interface Props {
-    issue: github.Issue
+    issue: Issue
   }
 
   const { issue }: Props = $props()

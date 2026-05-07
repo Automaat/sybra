@@ -1,26 +1,36 @@
 // Transport shim: VITE_MODE=desktop (default) → Wails IPC, VITE_MODE=web → HTTP fetch.
-// All source files import from here instead of wailsjs/* directly.
+// All source files import from here instead of bindings/* directly.
+//
+// Desktop path uses Wails v3 alpha bindings (frontend/bindings/...) generated
+// by `wails3 generate bindings ./cmd/sybra-v3/...`.
 
-import * as AgentSvc from '../../wailsjs/go/sybra/AgentService.js'
-import * as AppSvc from '../../wailsjs/go/sybra/App.js'
-import * as ConfigSvc from '../../wailsjs/go/sybra/ConfigService.js'
-import * as IntegrationSvc from '../../wailsjs/go/sybra/IntegrationService.js'
-import * as LoopSvc from '../../wailsjs/go/sybra/LoopAgentService.js'
-import * as OrchestratorSvc from '../../wailsjs/go/sybra/OrchestratorService.js'
-import * as PlanningSvc from '../../wailsjs/go/sybra/PlanningService.js'
-import * as ProjectSvc from '../../wailsjs/go/sybra/ProjectService.js'
-import * as ReviewSvc from '../../wailsjs/go/sybra/ReviewService.js'
-import * as StatsSvc from '../../wailsjs/go/sybra/StatsService.js'
-import * as TaskSvc from '../../wailsjs/go/sybra/TaskService.js'
-import * as InfoSvc from '../../wailsjs/go/sybra/InfoService.js'
-import * as WorkflowSvc from '../../wailsjs/go/sybra/WorkflowService.js'
-import { EventsOn as _dEventsOn, BrowserOpenURL as _dBrowserOpenURL } from '../../wailsjs/runtime/runtime.js'
+import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
+import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
+import * as ConfigSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/configservice.js'
+import * as IntegrationSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
+import * as LoopSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/loopagentservice.js'
+import * as OrchestratorSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/orchestratorservice.js'
+import * as PlanningSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/planningservice.js'
+import * as ProjectSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/projectservice.js'
+import * as ReviewSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/reviewservice.js'
+import * as StatsSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/statsservice.js'
+import * as TaskSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/taskservice.js'
+import * as InfoSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/infoservice.js'
+import * as WorkflowSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/workflowservice.js'
+import { Events as _Events, Browser as _Browser } from '@wailsio/runtime'
 import * as http from './api-http.js'
 
 // pick selects the desktop or web implementation at module init time.
 // import.meta.env.VITE_MODE is a build-time constant; Vite tree-shakes the dead branch.
-function pick<T>(desktop: T, web: T): T {
-  return (import.meta.env.VITE_MODE === 'web' ? web : desktop)
+//
+// Desktop type is `unknown` because v3-generated bindings differ from the
+// HTTP shim in two superficial ways:
+//   1. Pointer returns are `T | null` instead of `T`.
+//   2. Promises are `CancellablePromise<T>` instead of `Promise<T>`.
+// Both reduce to the http shape at runtime; we let the http signature drive
+// the public type so call-sites stay v2-compatible.
+function pick<T>(desktop: unknown, web: T): T {
+  return (import.meta.env.VITE_MODE === 'web' ? web : (desktop as T))
 }
 
 // AgentService
@@ -133,6 +143,24 @@ export const ResetBuiltin = pick(WorkflowSvc.ResetBuiltin, http.ResetBuiltin)
 export const SaveWorkflow = pick(WorkflowSvc.SaveWorkflow, http.SaveWorkflow)
 export const StartWorkflow = pick(WorkflowSvc.StartWorkflow, http.StartWorkflow)
 
-// Runtime events and browser utilities
+// Runtime events and browser utilities.
+//
+// v3 Events.On callback receives a `WailsEvent` object whose payload is on
+// `event.data`; v2 EventsOn passed the raw value(s) as variadic args. The
+// adapter below preserves the v2 call shape so existing Svelte stores keep
+// working without per-callsite changes.
+const _dEventsOn = (eventName: string, callback: (...args: unknown[]) => void): (() => void) => {
+  return _Events.On(eventName, (event: { data: unknown }) => {
+    if (Array.isArray(event.data)) {
+      callback(...event.data)
+    } else {
+      callback(event.data)
+    }
+  })
+}
+const _dBrowserOpenURL = (url: string): void => {
+  void _Browser.OpenURL(url)
+}
+
 export const EventsOn = pick(_dEventsOn, http.EventsOn)
 export const BrowserOpenURL = pick(_dBrowserOpenURL, http.BrowserOpenURL)

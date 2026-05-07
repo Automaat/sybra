@@ -82,13 +82,3 @@ func (a *App) ServiceRegistry() map[string]any {
 		"WorkflowService":     a.workflowSvc,
 	}
 }
-
-// BindTargets returns the objects to bind for Wails IPC.
-func (a *App) BindTargets() []any {
-	return []any{
-		a,
-		a.taskSvc, a.planSvc, a.agentSvc, a.orchSvc,
-		a.projectSvc, a.loopAgentSvc, a.configSvc, a.intgSvc,
-		a.statsSvc, a.reviewSvc, a.workflowSvc, a.infoSvc,
-	}
-}

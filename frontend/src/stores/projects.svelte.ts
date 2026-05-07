@@ -5,10 +5,10 @@ import {
   UpdateProject,
   DeleteProject,
 } from '$lib/api'
-import { project } from '../../wailsjs/go/models.js'
+import { Project } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
-class ProjectStore extends EntityStore<project.Project> {
+class ProjectStore extends EntityStore<Project> {
   constructor() {
     super(
       () => ListProjects(),
@@ -23,23 +23,23 @@ class ProjectStore extends EntityStore<project.Project> {
   get projects() {
     return this.items
   }
-  set projects(v: Map<string, project.Project>) {
+  set projects(v: Map<string, Project>) {
     this.items = v
   }
 
-  async get(id: string): Promise<project.Project> {
+  async get(id: string): Promise<Project> {
     const result = await GetProject(id)
     this.set(result.id, result)
     return result
   }
 
-  async create(url: string, type: string = 'pet'): Promise<project.Project> {
+  async create(url: string, type: string = 'pet'): Promise<Project> {
     const result = await CreateProject(url, type)
     this.set(result.id, result)
     return result
   }
 
-  async update(id: string, type: string): Promise<project.Project> {
+  async update(id: string, type: string): Promise<Project> {
     const result = await UpdateProject(id, type)
     this.set(result.id, result)
     return result

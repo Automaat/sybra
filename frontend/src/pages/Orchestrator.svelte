@@ -7,7 +7,9 @@
     GetMonitorReport,
     EventsOn,
   } from '$lib/api'
-  import type { agent, monitor, sybra } from '../../wailsjs/go/models.js'
+  import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Report } from '../../bindings/github.com/Automaat/sybra/internal/monitor/models.js'
+  import type { MonitorReportBinding } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import { MonitorReport, OrchestratorState } from '../lib/events.js'
@@ -16,15 +18,15 @@
 
   let running = $state(false)
   let orchestratorId = $state('')
-  let events = $state<agent.ConvoEvent[]>([])
+  let events = $state<ConvoEvent[]>([])
   let error = $state('')
   let container: HTMLDivElement | undefined = $state()
   let convoUnsub: (() => void) | undefined
-  let monitorBinding = $state<sybra.MonitorReportBinding | null>(null)
+  let monitorBinding = $state<MonitorReportBinding | null>(null)
   let lastReportAt = $state<number | null>(null)
   let monitorTick = $state(0)
 
-  const monitorReport = $derived<monitor.Report | null>(
+  const monitorReport = $derived<Report | null>(
     monitorBinding?.ready ? monitorBinding.report : null
   )
   const driftCount = $derived(monitorReport?.anomalies?.length ?? 0)
@@ -41,7 +43,7 @@
     return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
   }
 
-  function recordReport(binding: sybra.MonitorReportBinding | null) {
+  function recordReport(binding: MonitorReportBinding | null) {
     monitorBinding = binding
     if (binding && binding.ready) {
       const t = new Date(binding.report.generatedAt as unknown as string).getTime()
@@ -133,12 +135,12 @@
       }
     })
 
-    const unsubMonitor = EventsOn(MonitorReport, (report: monitor.Report) => {
+    const unsubMonitor = EventsOn(MonitorReport, (report: Report) => {
       recordReport({
         enabled: true,
         ready: true,
         report,
-      } as sybra.MonitorReportBinding)
+      } as MonitorReportBinding)
     })
 
     // Tick the derived age every second so the UI counts up without waiting

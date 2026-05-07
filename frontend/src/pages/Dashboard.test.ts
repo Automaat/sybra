@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
-import { agent, task } from '../../wailsjs/go/models.js'
+import { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 vi.mock('$lib/api', () => ({
   StartAgent: vi.fn(),
@@ -31,8 +32,8 @@ const { agentStore } = await import('../stores/agents.svelte.js')
 
 import Dashboard from './Dashboard.svelte'
 
-function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
-  return agent.Agent.createFrom({
+function makeAgent(overrides: Record<string, unknown> = {}): Agent {
+  return Agent.createFrom({
     id: 'a1',
     taskId: 'task-1',
     mode: 'headless',
@@ -45,8 +46,8 @@ function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
   })
 }
 
-function makeTask(overrides: Partial<task.Task> = {}): task.Task {
-  return task.Task.createFrom({
+function makeTask(overrides: Record<string, unknown> = {}): Task {
+  return Task.createFrom({
     id: 't1',
     slug: '',
     title: 'Test Task',

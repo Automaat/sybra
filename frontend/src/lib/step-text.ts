@@ -1,4 +1,4 @@
-import type { agent } from '../../wailsjs/go/models.js'
+import type { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 const MAX_LEN = 80
 
@@ -13,7 +13,7 @@ function truncate(s: string): string {
  * Claude headless: assistant events carry "[ToolName] description" lines.
  * Codex headless: tool_use events carry the shell command as content.
  */
-export function extractStepText(event: agent.StreamEvent): string | null {
+export function extractStepText(event: StreamEvent): string | null {
   // Codex: tool_use event, content is the shell command
   if (event.type === 'tool_use' && event.content) {
     const text = event.content.trim()

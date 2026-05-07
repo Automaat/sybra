@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { agent } from '../../wailsjs/go/models.js'
+import { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { agentConvo, agentApproval } from '../lib/events.js'
 
 const mockGetConvoOutput = vi.fn()
@@ -20,8 +20,8 @@ vi.mock('$lib/api', () => ({
 
 const { convoStore } = await import('./convo.svelte.js')
 
-function makeConvoEvent(type: string, text = ''): agent.ConvoEvent {
-  return agent.ConvoEvent.createFrom({ type, text, timestamp: new Date().toISOString() })
+function makeConvoEvent(type: string, text = ''): ConvoEvent {
+  return ConvoEvent.createFrom({ type, text, timestamp: new Date().toISOString() })
 }
 
 describe('ConvoStore', () => {

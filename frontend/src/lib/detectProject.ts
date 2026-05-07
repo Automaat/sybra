@@ -1,7 +1,7 @@
-import type { project } from '../../wailsjs/go/models.js'
+import type { Project } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 
 export interface DetectionResult {
-  project: project.Project
+  project: Project
   matchType: 'url' | 'name'
   matchedText: string
   matchStart: number
@@ -12,7 +12,7 @@ const githubURLRe = /(?:https?:\/\/)?github\.com\/(([^/\s]+)\/([^/\s#?]+))/gi
 
 export function detectProject(
   input: string,
-  projects: project.Project[],
+  projects: Project[],
 ): DetectionResult | null {
   if (!input || projects.length === 0) return null
 

@@ -1,9 +1,9 @@
 import { FetchAssignedIssues, EventsOn } from '$lib/api'
 import { IssuesUpdated } from '../lib/events.js'
-import type { github } from '../../wailsjs/go/models.js'
+import type { Issue } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 class IssueStore {
-  issues = $state<github.Issue[]>([])
+  issues = $state<Issue[]>([])
   loading = $state(false)
   error = $state('')
   private cancelListener: (() => void) | null = null
@@ -27,7 +27,7 @@ class IssueStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(IssuesUpdated, (issues: github.Issue[]) => {
+    this.cancelListener = EventsOn(IssuesUpdated, (issues: Issue[]) => {
       this.issues = issues ?? []
     })
   }

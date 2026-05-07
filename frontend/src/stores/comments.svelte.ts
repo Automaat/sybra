@@ -5,12 +5,12 @@ import {
   ResolveReviewComment,
   DeleteReviewComment,
 } from '$lib/api'
-import { task } from '../../wailsjs/go/models.js'
+import { ReviewComment } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 class CommentStore {
-  private byTask = new SvelteMap<string, task.ReviewComment[]>()
+  private byTask = new SvelteMap<string, ReviewComment[]>()
 
-  get(taskID: string): task.ReviewComment[] {
+  get(taskID: string): ReviewComment[] {
     return this.byTask.get(taskID) ?? []
   }
 
@@ -19,9 +19,9 @@ class CommentStore {
     this.byTask.set(taskID, result ?? [])
   }
 
-  async add(taskID: string, line: number, body: string): Promise<task.ReviewComment> {
+  async add(taskID: string, line: number, body: string): Promise<ReviewComment> {
     // Optimistic placeholder so UI updates instantly
-    const optimistic = task.ReviewComment.createFrom({
+    const optimistic = ReviewComment.createFrom({
       id: crypto.randomUUID().slice(0, 8),
       line,
       body,
@@ -56,7 +56,7 @@ class CommentStore {
     const existing = this.byTask.get(taskID) ?? []
     this.byTask.set(
       taskID,
-      existing.map((c) => (c.id === commentID ? task.ReviewComment.createFrom({ ...c, resolved: true }) : c)),
+      existing.map((c) => (c.id === commentID ? ReviewComment.createFrom({ ...c, resolved: true }) : c)),
     )
     try {
       await ResolveReviewComment(taskID, commentID)
@@ -64,7 +64,7 @@ class CommentStore {
       // Rollback
       this.byTask.set(
         taskID,
-        existing.map((c) => (c.id === commentID ? task.ReviewComment.createFrom({ ...c, resolved: false }) : c)),
+        existing.map((c) => (c.id === commentID ? ReviewComment.createFrom({ ...c, resolved: false }) : c)),
       )
       throw e
     }
@@ -86,7 +86,7 @@ class CommentStore {
     }
   }
 
-  byLine(taskID: string, line: number): task.ReviewComment[] {
+  byLine(taskID: string, line: number): ReviewComment[] {
     return this.get(taskID).filter((c) => c.line === line)
   }
 

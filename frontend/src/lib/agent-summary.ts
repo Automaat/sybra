@@ -1,4 +1,4 @@
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { TimestampedStreamEvent } from './timeline.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
@@ -18,7 +18,7 @@ export interface AgentSummary {
  */
 export function summarizeAgent(
   streamEvents: TimestampedStreamEvent[],
-  convoEvents: agent.ConvoEvent[],
+  convoEvents: ConvoEvent[],
 ): AgentSummary {
   const filesEdited = new Set<string>()
   let commandsRun = 0

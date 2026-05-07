@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { github } from '../../wailsjs/go/models.js'
+  import type { CheckRunInfo, PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
   import { BrowserOpenURL } from '$lib/api'
 
   interface Props {
-    pr: github.PullRequest
-    checkRuns?: github.CheckRunInfo[]
+    pr: PullRequest
+    checkRuns?: CheckRunInfo[]
     onback: () => void
     onapprove?: () => void
     onmerge?: () => void

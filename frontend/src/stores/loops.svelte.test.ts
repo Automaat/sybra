@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { loopagent } from '../../wailsjs/go/models.js'
+import { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
 
 const mockListLoopAgents = vi.fn()
 const mockGetLoopAgent = vi.fn()
@@ -21,8 +21,8 @@ vi.mock('$lib/api', () => ({
 
 const { loopStore } = await import('./loops.svelte.js')
 
-function makeLoop(overrides: Partial<loopagent.LoopAgent> = {}): loopagent.LoopAgent {
-  return loopagent.LoopAgent.createFrom({
+function makeLoop(overrides: Record<string, unknown> = {}): LoopAgent {
+  return LoopAgent.createFrom({
     id: 'loop-1',
     name: 'nightly-monitor',
     prompt: 'Check for issues',

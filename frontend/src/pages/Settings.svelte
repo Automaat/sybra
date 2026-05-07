@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { GetSettings, UpdateSettings, GetVersion } from '$lib/api'
-  import type { sybra } from '../../wailsjs/go/models.js'
+  import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import {
     GetProviderHealth,
     ProviderHealthEnabled,
     SetProviderAutoFailover,
     SetProviderEnabled,
-  } from '../../wailsjs/go/sybra/IntegrationService'
+  } from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
   import { EventsOn } from '$lib/api'
   import * as ev from '../lib/events.js'
 
@@ -27,8 +27,6 @@
   $effect(() => {
     applyColorScheme(colorScheme)
   })
-
-  type AppSettings = sybra.AppSettings
 
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')

@@ -13,10 +13,10 @@ import {
   SendTestPlanMessage,
   HasLiveTestPlanAgent,
 } from '$lib/api'
-import { task } from '../../wailsjs/go/models.js'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
-class TaskStore extends EntityStore<task.Task> {
+class TaskStore extends EntityStore<Task> {
   constructor() {
     super(
       () => ListTasks(),
@@ -31,28 +31,28 @@ class TaskStore extends EntityStore<task.Task> {
   get tasks() {
     return this.items
   }
-  set tasks(v: Map<string, task.Task>) {
+  set tasks(v: Map<string, Task>) {
     this.items = v
   }
 
-  byStatus(status: string): task.Task[] {
+  byStatus(status: string): Task[] {
     if (status === 'all') return this.list
     return this.list.filter((t) => t.status === status)
   }
 
-  async get(id: string): Promise<task.Task> {
+  async get(id: string): Promise<Task> {
     const result = await GetTask(id)
     this.set(result.id, result)
     return result
   }
 
-  async create(title: string, body: string, mode: string): Promise<task.Task> {
+  async create(title: string, body: string, mode: string): Promise<Task> {
     const result = await CreateTask(title, body, mode)
     this.set(result.id, result)
     return result
   }
 
-  async update(id: string, updates: Record<string, any>): Promise<task.Task> {
+  async update(id: string, updates: Record<string, any>): Promise<Task> {
     const result = await UpdateTask(id, updates)
     this.set(result.id, result)
     return result
@@ -63,13 +63,13 @@ class TaskStore extends EntityStore<task.Task> {
     this.delete(id)
   }
 
-  async approvePlan(id: string): Promise<task.Task> {
+  async approvePlan(id: string): Promise<Task> {
     const result = await ApprovePlan(id)
     this.set(result.id, result)
     return result
   }
 
-  async rejectPlan(id: string, feedback: string): Promise<task.Task> {
+  async rejectPlan(id: string, feedback: string): Promise<Task> {
     const result = await RejectPlan(id, feedback)
     this.set(result.id, result)
     return result
@@ -83,13 +83,13 @@ class TaskStore extends EntityStore<task.Task> {
     return HasLivePlanAgent(id)
   }
 
-  async approveTestPlan(id: string): Promise<task.Task> {
+  async approveTestPlan(id: string): Promise<Task> {
     const result = await ApproveTestPlan(id)
     this.set(result.id, result)
     return result
   }
 
-  async rejectTestPlan(id: string, feedback: string): Promise<task.Task> {
+  async rejectTestPlan(id: string, feedback: string): Promise<Task> {
     const result = await RejectTestPlan(id, feedback)
     this.set(result.id, result)
     return result

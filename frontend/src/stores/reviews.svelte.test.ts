@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ReviewsUpdated } from '../lib/events.js'
-import { github } from '../../wailsjs/go/models.js'
+import { PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 const mockFetchReviews = vi.fn()
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
@@ -15,8 +15,8 @@ vi.mock('$lib/api', () => ({
 
 const { reviewStore } = await import('./reviews.svelte.js')
 
-function makePR(overrides: Partial<github.PullRequest> = {}): github.PullRequest {
-  return github.PullRequest.createFrom({
+function makePR(overrides: Record<string, unknown> = {}): PullRequest {
+  return PullRequest.createFrom({
     number: 1,
     title: 'Test PR',
     url: 'https://github.com/org/repo/pull/1',

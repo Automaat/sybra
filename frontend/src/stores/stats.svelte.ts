@@ -1,8 +1,8 @@
 import { GetStats } from '$lib/api'
-import type { stats } from '../../wailsjs/go/models.js'
+import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 
 class StatsStore {
-  data = $state<stats.StatsResponse | null>(null)
+  data = $state<StatsResponse | null>(null)
   loading = $state(false)
   error = $state('')
 

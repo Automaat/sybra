@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import MessageBubble from './MessageBubble.svelte'
   import ToolApproval from './ToolApproval.svelte'
@@ -20,7 +20,7 @@
 
   const { agentId, agentState = 'running', costUsd = 0, inputTokens = 0, outputTokens = 0, bounded = false, highlightIndex = null, suppressApprovals = false, onvisibleindex }: Props = $props()
 
-  let events = $state<agent.ConvoEvent[]>([])
+  let events = $state<ConvoEvent[]>([])
   let container: HTMLDivElement | undefined = $state()
   let autoScroll = $state(true)
   let flashIndex = $state<number | null>(null)

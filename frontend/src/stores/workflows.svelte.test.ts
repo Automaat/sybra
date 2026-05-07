@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { workflow } from '../../wailsjs/go/models.js'
+import { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 
 const mockListWorkflows = vi.fn()
 const mockGetWorkflow = vi.fn()
@@ -17,8 +17,8 @@ vi.mock('$lib/api', () => ({
 
 const { workflowStore } = await import('./workflows.svelte.js')
 
-function makeDef(overrides: Partial<workflow.Definition> = {}): workflow.Definition {
-  return workflow.Definition.createFrom({
+function makeDef(overrides: Record<string, unknown> = {}): Definition {
+  return Definition.createFrom({
     id: 'wf-1',
     name: 'my-workflow',
     description: 'Does stuff',

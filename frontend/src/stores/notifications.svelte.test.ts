@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { notification } from '../../wailsjs/go/models.js'
+import { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import { Notification as NotificationEvent } from '../lib/events.js'
 
 const mockListNotifications = vi.fn()
@@ -15,8 +15,8 @@ vi.mock('$lib/api', () => ({
 
 const { notificationStore } = await import('./notifications.svelte.js')
 
-function makeNotification(overrides: Partial<notification.Notification> = {}): notification.Notification {
-  return notification.Notification.createFrom({
+function makeNotification(overrides: Record<string, unknown> = {}): Notification {
+  return Notification.createFrom({
     id: 'n-1',
     level: 'info',
     title: 'Test',

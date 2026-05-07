@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { github } from '../../wailsjs/go/models.js'
+import { Issue } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import { IssuesUpdated } from '../lib/events.js'
 
 const mockFetchAssignedIssues = vi.fn()
@@ -15,8 +15,8 @@ vi.mock('$lib/api', () => ({
 
 const { issueStore } = await import('./issues.svelte.js')
 
-function makeIssue(overrides: Partial<github.Issue> = {}): github.Issue {
-  return github.Issue.createFrom({
+function makeIssue(overrides: Record<string, unknown> = {}): Issue {
+  return Issue.createFrom({
     number: 1,
     title: 'Bug report',
     body: 'Description',

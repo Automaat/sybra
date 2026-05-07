@@ -1,14 +1,14 @@
 <script lang="ts">
-  import type { agent } from '../../../wailsjs/go/models.js'
-  import type { task } from '../../../wailsjs/go/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { PhaseConfig, AgentPhase } from '$lib/agent-phases.js'
 
   interface Props {
-    a: agent.Agent
+    a: Agent
     phase: AgentPhase
     phaseConfig: PhaseConfig
     stepText?: string
-    linkedTask?: task.Task | null
+    linkedTask?: Task | null
     onstop: () => void
     onviewtask: (taskId: string) => void
   }

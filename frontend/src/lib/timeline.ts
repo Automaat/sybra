@@ -1,7 +1,7 @@
-import type { agent } from '../../wailsjs/go/models.js'
+import type { ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 export interface TimestampedStreamEvent {
-  event: agent.StreamEvent
+  event: StreamEvent
   receivedAt: Date
 }
 
@@ -18,7 +18,7 @@ function trunc(s: string): string {
   return s.length > MAX_SUMMARY ? s.slice(0, MAX_SUMMARY) + '…' : s
 }
 
-function summarize(event: agent.StreamEvent): string {
+function summarize(event: StreamEvent): string {
   switch (event.type) {
     case 'init':
       return 'Session started'
@@ -53,7 +53,7 @@ export function buildStreamTimeline(events: TimestampedStreamEvent[]): TimelineE
   }))
 }
 
-function summarizeConvo(event: agent.ConvoEvent): string {
+function summarizeConvo(event: ConvoEvent): string {
   switch (event.type) {
     case 'user_input':
       return event.text ? 'User: ' + trunc(event.text.split('\n')[0].trim()) : 'User input'
@@ -80,7 +80,7 @@ function summarizeConvo(event: agent.ConvoEvent): string {
   }
 }
 
-export function buildConvoTimeline(events: agent.ConvoEvent[]): TimelineEntry[] {
+export function buildConvoTimeline(events: ConvoEvent[]): TimelineEntry[] {
   return events.map((e, i) => ({
     index: i,
     timestamp: new Date(e.timestamp),

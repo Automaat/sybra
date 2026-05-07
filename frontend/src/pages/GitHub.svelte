@@ -12,12 +12,12 @@
     RerunRenovateChecks,
     FixRenovateCI,
   } from '$lib/api'
-  import type { github } from '../../wailsjs/go/models.js'
+  import type { CheckRunInfo, PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
   type Tab = 'my-prs' | 'reviews' | 'renovate' | 'issues'
 
   let activeTab = $state<Tab>('my-prs')
-  let selectedPR = $state<{ pr: github.PullRequest; checkRuns?: github.CheckRunInfo[]; source: Tab } | null>(null)
+  let selectedPR = $state<{ pr: PullRequest; checkRuns?: CheckRunInfo[]; source: Tab } | null>(null)
 
   $effect(() => {
     reviewStore.load()
@@ -37,7 +37,7 @@
     }
   })
 
-  function selectPR(pr: github.PullRequest, checkRuns?: github.CheckRunInfo[]) {
+  function selectPR(pr: PullRequest, checkRuns?: CheckRunInfo[]) {
     selectedPR = { pr, checkRuns, source: activeTab }
   }
 
@@ -52,7 +52,7 @@
     { id: 'issues', label: 'Issues', count: () => issueStore.count },
   ]
 
-  function prPriority(pr: github.PullRequest): number {
+  function prPriority(pr: PullRequest): number {
     const ready = !pr.isDraft && pr.mergeable === 'MERGEABLE' &&
       (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
       (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
@@ -62,9 +62,9 @@
     return 3
   }
 
-  type GroupedPRs<T extends github.PullRequest> = { repo: string; prs: T[] }[]
+  type GroupedPRs<T extends PullRequest> = { repo: string; prs: T[] }[]
 
-  function groupByRepo<T extends github.PullRequest>(prs: T[]): GroupedPRs<T> {
+  function groupByRepo<T extends PullRequest>(prs: T[]): GroupedPRs<T> {
     const sorted = [...prs].sort((a, b) => prPriority(a) - prPriority(b))
     const groups = new Map<string, T[]>()
     for (const pr of sorted) {

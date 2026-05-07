@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { github } from '../../wailsjs/go/models.js'
+  import type { RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
   import {
     MergeRenovatePR,
     ApproveRenovatePR,
@@ -9,7 +9,7 @@
   import { renovateStore } from '../stores/renovate.svelte.js'
 
   interface Props {
-    pr: github.RenovatePR
+    pr: RenovatePR
     onselect: () => void
   }
 

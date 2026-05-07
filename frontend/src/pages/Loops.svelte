@@ -1,12 +1,12 @@
 <script lang="ts">
   import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { loopStore } from '../stores/loops.svelte.js'
-  import { loopagent } from '../../wailsjs/go/models.js'
+  import { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
   import { EventsOn } from '$lib/api'
   import { LoopAgentUpdated } from '../lib/events.js'
 
   let showForm = $state(false)
-  let editing = $state<loopagent.LoopAgent | null>(null)
+  let editing = $state<LoopAgent | null>(null)
 
   // Form state
   let formName = $state('')
@@ -61,7 +61,7 @@
     showForm = true
   }
 
-  function openEdit(la: loopagent.LoopAgent) {
+  function openEdit(la: LoopAgent) {
     editing = la
     formName = la.name
     formPrompt = la.prompt
@@ -83,7 +83,7 @@
         .filter(Boolean)
 
       if (editing) {
-        const updated = new loopagent.LoopAgent({
+        const updated = new LoopAgent({
           ...editing,
           name: formName,
           prompt: formPrompt,
@@ -112,12 +112,12 @@
     }
   }
 
-  async function toggleEnabled(la: loopagent.LoopAgent) {
-    const updated = new loopagent.LoopAgent({ ...la, enabled: !la.enabled })
+  async function toggleEnabled(la: LoopAgent) {
+    const updated = new LoopAgent({ ...la, enabled: !la.enabled })
     await loopStore.update(updated)
   }
 
-  async function runNow(la: loopagent.LoopAgent) {
+  async function runNow(la: LoopAgent) {
     try {
       await loopStore.runNow(la.id)
     } catch (e) {
@@ -125,7 +125,7 @@
     }
   }
 
-  async function remove(la: loopagent.LoopAgent) {
+  async function remove(la: LoopAgent) {
     try {
       await loopStore.remove(la.id)
     } catch (e) {

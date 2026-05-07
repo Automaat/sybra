@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { agent } from '../../wailsjs/go/models.js'
+import { Agent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 // Mock Wails bindings
 const mockListAgents = vi.fn()
@@ -19,8 +19,8 @@ vi.mock('$lib/api', () => ({
 // Must import after mock setup
 const { agentStore } = await import('./agents.svelte.js')
 
-function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
-  return agent.Agent.createFrom({
+function makeAgent(overrides: Record<string, unknown> = {}): Agent {
+  return Agent.createFrom({
     id: 'test-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -172,8 +172,8 @@ describe('AgentStore', () => {
 
   describe('appendEvent', () => {
     it('appends to existing output', () => {
-      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' } as unknown as agent.StreamEvent, receivedAt: new Date() }])
-      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' } as unknown as agent.StreamEvent)
+      agentStore.outputs.set('a1', [{ event: { type: 'init', content: 'start' } as unknown as StreamEvent, receivedAt: new Date() }])
+      agentStore.appendEvent('a1', { type: 'assistant', content: 'hi' } as unknown as StreamEvent)
 
       const events = agentStore.outputs.get('a1')!
       expect(events).toHaveLength(2)
@@ -181,7 +181,7 @@ describe('AgentStore', () => {
     })
 
     it('creates new array if none exists', () => {
-      agentStore.appendEvent('a1', { type: 'init', content: '' } as unknown as agent.StreamEvent)
+      agentStore.appendEvent('a1', { type: 'init', content: '' } as unknown as StreamEvent)
 
       expect(agentStore.outputs.get('a1')).toHaveLength(1)
     })

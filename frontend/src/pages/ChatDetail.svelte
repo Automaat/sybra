@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { agent } from '../../wailsjs/go/models.js'
+  import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { EventsOn } from '$lib/api'
   import { agentStore } from '../stores/agents.svelte.js'
   import { agentState } from '../lib/events.js'
@@ -14,14 +14,14 @@
 
   const { agentId, onback, onviewtask }: Props = $props()
 
-  let a = $state<agent.Agent | null>(null)
+  let a = $state<Agent | null>(null)
   let error = $state('')
 
   $effect(() => {
     const cached = agentStore.agents.get(agentId)
     if (cached) a = cached
 
-    const unsub = EventsOn(agentState(agentId), (data: agent.Agent) => {
+    const unsub = EventsOn(agentState(agentId), (data: Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
     })

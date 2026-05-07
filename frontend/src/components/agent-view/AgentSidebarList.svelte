@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { agent } from '../../../wailsjs/go/models.js'
+  import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
 
   interface Props {
-    agents: agent.Agent[]
+    agents: Agent[]
     activeId: string
     onnavigate: (id: string) => void
   }

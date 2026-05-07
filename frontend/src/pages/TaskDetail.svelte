@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronLeft, CircleDot, GitPullRequest, ChevronDown, Copy } from '@lucide/svelte'
-  import type { agent, task } from '../../wailsjs/go/models.js'
+  import type { Agent, ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { EventsOn, BrowserOpenURL, StartFixReview, StartReview, GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
   import { agentState } from '../lib/events.js'
   import { renderMarkdown } from '../lib/markdown.js'
@@ -104,12 +105,12 @@
     if (editingDueDate && dueDateInputRef) dueDateInputRef.focus()
   })
 
-  let t = $state<task.Task | null>(null)
+  let t = $state<Task | null>(null)
   let error = $state('')
   let prompt = $state('')
   let agentMode = $state('interactive')
   let starting = $state(false)
-  let runningAgent = $state<agent.Agent | null>(null)
+  let runningAgent = $state<Agent | null>(null)
 
   const statusOptions = STATUS_OPTIONS
 
@@ -152,7 +153,7 @@
 
   $effect(() => {
     if (!runningAgent) return
-    const unsub = EventsOn(agentState(runningAgent.id), (data: agent.Agent) => {
+    const unsub = EventsOn(agentState(runningAgent.id), (data: Agent) => {
       runningAgent = data
       agentStore.updateAgent(data.id, data)
     })
@@ -520,8 +521,8 @@
   // ConvoEvents (structured tool_use/tool_result blocks). Keep both keyed by
   // agent ID — fetched only when the history row expands so we don't pay the
   // parse cost for rows the user never opens.
-  let runLogStreamEvents = $state<Map<string, agent.StreamEvent[]>>(new Map())
-  let runLogConvoEvents = $state<Map<string, agent.ConvoEvent[]>>(new Map())
+  let runLogStreamEvents = $state<Map<string, StreamEvent[]>>(new Map())
+  let runLogConvoEvents = $state<Map<string, ConvoEvent[]>>(new Map())
   let runLogLoading = $state<Set<string>>(new Set())
   let runLogError = $state<Map<string, string>>(new Map())
 

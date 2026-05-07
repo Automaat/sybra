@@ -1,18 +1,18 @@
 <script lang="ts">
   import { fly } from 'svelte/transition'
   import { FileEdit, Terminal, GitBranch, GitPullRequest, Clock, DollarSign, ChevronDown, ChevronUp } from '@lucide/svelte'
-  import type { agent } from '../../../wailsjs/go/models.js'
-  import type { task } from '../../../wailsjs/go/models.js'
+  import type { Agent, ConvoEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+  import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { TimestampedStreamEvent } from '$lib/timeline.js'
   import { summarizeAgent } from '$lib/agent-summary.js'
   import StreamOutput from '../StreamOutput.svelte'
   import ChatView from '../ChatView.svelte'
 
   interface Props {
-    a: agent.Agent
-    linkedTask?: task.Task | null
+    a: Agent
+    linkedTask?: Task | null
     streamOutputs: TimestampedStreamEvent[]
-    convoEvents: agent.ConvoEvent[]
+    convoEvents: ConvoEvent[]
   }
 
   const { a, linkedTask, streamOutputs, convoEvents }: Props = $props()

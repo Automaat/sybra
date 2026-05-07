@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { workflow } from '../../../wailsjs/go/models.js'
+  import { Condition, Trigger } from '../../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import { Zap } from '@lucide/svelte'
   import ConditionRow from './ConditionRow.svelte'
 
   interface Props {
-    trigger: workflow.Trigger | null
-    onupdate: (t: workflow.Trigger) => void
+    trigger: Trigger | null
+    onupdate: (t: Trigger) => void
   }
 
   const { trigger, onupdate }: Props = $props()
@@ -16,9 +16,9 @@
     { value: 'pr.event', label: 'PR event' },
   ]
 
-  function emit(patch: Partial<workflow.Trigger>) {
-    const base = trigger ?? new workflow.Trigger({ on: '', conditions: [] })
-    const next = new workflow.Trigger({
+  function emit(patch: Partial<Trigger>) {
+    const base = trigger ?? new Trigger({ on: '', conditions: [] })
+    const next = new Trigger({
       on: base.on ?? '',
       conditions: base.conditions ?? [],
       position: base.position,
@@ -31,7 +31,7 @@
     emit({ on: value })
   }
 
-  function updateCondition(idx: number, c: workflow.Condition) {
+  function updateCondition(idx: number, c: Condition) {
     const conditions = [...(trigger?.conditions ?? [])]
     conditions[idx] = c
     emit({ conditions })
@@ -45,7 +45,7 @@
 
   function addCondition() {
     const conditions = [...(trigger?.conditions ?? [])]
-    conditions.push(new workflow.Condition({ field: '', operator: 'equals', value: '' }))
+    conditions.push(new Condition({ field: '', operator: 'equals', value: '' }))
     emit({ conditions })
   }
 </script>

@@ -5,10 +5,10 @@ import {
   DeleteWorkflow,
   ResetBuiltin,
 } from '$lib/api'
-import { workflow } from '../../wailsjs/go/models.js'
+import { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 
-class WorkflowStore extends EntityStore<workflow.Definition> {
+class WorkflowStore extends EntityStore<Definition> {
   constructor() {
     super(
       () => ListWorkflows(),
@@ -16,13 +16,13 @@ class WorkflowStore extends EntityStore<workflow.Definition> {
     )
   }
 
-  async get(id: string): Promise<workflow.Definition> {
+  async get(id: string): Promise<Definition> {
     const result = await GetWorkflow(id)
     this.set(result.id, result)
     return result
   }
 
-  async save(def: workflow.Definition): Promise<void> {
+  async save(def: Definition): Promise<void> {
     await SaveWorkflow(def)
     this.set(def.id, def)
   }

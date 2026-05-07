@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { github } from '../../wailsjs/go/models.js'
+import { RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import { RenovateUpdated } from '../lib/events.js'
 
 const mockFetchRenovatePRs = vi.fn()
@@ -15,8 +15,8 @@ vi.mock('$lib/api', () => ({
 
 const { renovateStore } = await import('./renovate.svelte.js')
 
-function makePR(overrides: Partial<github.RenovatePR> = {}): github.RenovatePR {
-  return github.RenovatePR.createFrom({
+function makePR(overrides: Record<string, unknown> = {}): RenovatePR {
+  return RenovatePR.createFrom({
     number: 1,
     title: 'chore(deps): update dependency',
     url: 'https://github.com/org/repo/pull/1',

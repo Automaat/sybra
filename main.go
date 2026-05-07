@@ -1,122 +1,101 @@
+// Sybra desktop entry point — Wails v3.
+//
+// Phase 5 of the v2→v3 migration. The repo-root main.go now boots the v3
+// runtime directly; the parallel-track cmd/sybra-v3 binary that drove the
+// migration is gone. See docs/migrations/wails-v3.md.
+//
+// Darwin-only because Wails v3 alpha needs gtk3/webkit2gtk-4.1 system
+// headers on Linux that the CI runners do not have. main_other.go is the
+// no-op stub for non-darwin so `go build ./...` and govulncheck stay green.
+
+//go:build darwin
+
 package main
 
 import (
 	"context"
 	"embed"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"os"
-	"sync"
 	"time"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/sybra"
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/menu"
-	"github.com/wailsapp/wails/v2/pkg/menu/keys"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		println("Error loading config:", err.Error())
-		return
+		return fmt.Errorf("config: %w", err)
 	}
 
 	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
-		println("Error initializing logger:", err.Error())
-		return
+		return fmt.Errorf("logging: %w", err)
 	}
 	defer cleanup()
 
-	// Route Go's default log (used by net/http for idle channel noise)
-	// through slog at DEBUG so it doesn't pollute stderr.
 	log.SetFlags(0)
 	log.SetOutput(slogWriter{logger})
 
 	startPprof(logger)
 
-	app := sybra.NewApp(logger, levelVar, cfg,
-		sybra.WithEmitFactory(func(ctx context.Context) func(string, any) {
-			return func(event string, data any) {
-				wailsruntime.EventsEmit(ctx, event, data)
-			}
+	v3emit := func(string, any) {}
+
+	sybraApp := sybra.NewApp(logger, levelVar, cfg,
+		sybra.WithEmitFactory(func(_ context.Context) func(string, any) {
+			return func(event string, data any) { v3emit(event, data) }
 		}),
 	)
 
-	var (
-		quitArmed bool
-		quitMu    sync.Mutex
-		quitTimer *time.Timer
-	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	appMenu := menu.NewMenu()
-	appMenu.Append(menu.EditMenu())
-	appMenu.Append(menu.WindowMenu())
-	fileMenu := appMenu.AddSubmenu("File")
-	fileMenu.AddText("Close Window", keys.CmdOrCtrl("w"), func(_ *menu.CallbackData) {
-		wailsruntime.Quit(app.Context())
-	})
-	fileMenu.AddText("Quit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
-		quitMu.Lock()
-		defer quitMu.Unlock()
+	if err := sybraApp.Startup(ctx); err != nil {
+		logger.Error("app.startup.fatal", "err", err)
+		return fmt.Errorf("sybra startup: %w", err)
+	}
+	defer sybraApp.Shutdown(ctx)
 
-		if quitArmed {
-			wailsruntime.Quit(app.Context())
-			return
-		}
-
-		quitArmed = true
-		wailsruntime.EventsEmit(app.Context(), events.AppQuitConfirm)
-		quitTimer = time.AfterFunc(3*time.Second, func() {
-			quitMu.Lock()
-			defer quitMu.Unlock()
-			quitArmed = false
-		})
-		_ = quitTimer
+	v3app := application.New(application.Options{
+		Name:        "Sybra",
+		Description: "Sybra orchestrator",
+		LogLevel:    slog.LevelInfo,
+		Services:    sybraApp.V3Services(),
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(assets),
+		},
 	})
 
-	err = wails.Run(&options.App{
+	v3emit = func(event string, data any) {
+		v3app.Event.Emit(event, data)
+	}
+
+	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Sybra",
 		Width:            1280,
 		Height:           800,
-		WindowStartState: options.Maximised,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		Mac: &mac.Options{
-			Preferences: &mac.Preferences{
-				FullscreenEnabled: mac.Enabled,
-			},
-		},
-		OnStartup: func(ctx context.Context) {
-			if err := app.Startup(ctx); err != nil {
-				logger.Error("app.startup.fatal", "err", err)
-				wailsruntime.Quit(ctx)
-			}
-		},
-		OnShutdown: app.Shutdown,
-		Menu:       appMenu,
-		Bind:       app.BindTargets(),
+		StartState:       application.WindowStateMaximised,
+		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
 	})
 
-	if err != nil {
-		logger.Error("app.fatal", "err", err)
-		println("Error:", err.Error())
-	}
+	return v3app.Run()
 }
 
 // startPprof launches a pprof HTTP server when SYBRA_PPROF is set.

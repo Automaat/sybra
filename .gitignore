@@ -5,6 +5,10 @@ frontend/dist-web/
 frontend/node_modules/
 frontend/package.json.md5
 
+# v3 binary populates its embed dir from frontend/dist at build time
+cmd/sybra-v3/dist/*
+!cmd/sybra-v3/dist/.gitkeep
+
 # Runtime data (lives in ~/.sybra at runtime)
 tasks/
 
