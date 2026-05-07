@@ -2344,8 +2344,8 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 		t.Fatal("expected error for cyclic workflow, got nil")
 	}
 
-	var cycleErr *CycleError
-	if !errors.As(err, &cycleErr) {
+	cycleErr, ok := errors.AsType[*CycleError](err)
+	if !ok {
 		t.Fatalf("expected *CycleError, got %T: %v", err, err)
 	}
 	if cycleErr.StepID == "" {

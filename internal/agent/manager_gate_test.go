@@ -70,8 +70,8 @@ func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		t.Fatalf("error should match ErrProviderUnhealthy: %v", err)
 	}
-	var ue *provider.UnhealthyError
-	if !errors.As(err, &ue) {
+	ue, ok := errors.AsType[*provider.UnhealthyError](err)
+	if !ok {
 		t.Fatalf("error should unwrap to UnhealthyError")
 	}
 	if ue.Provider != "claude" || ue.Reason != "rate_limited" {

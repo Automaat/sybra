@@ -53,8 +53,8 @@ func TestConfigureGracefulShutdown_CancelSendsSIGTERM(t *testing.T) {
 	if waitErr == nil {
 		t.Fatal("expected exit error after cancel, got nil")
 	}
-	var exitErr *exec.ExitError
-	if !errors.As(waitErr, &exitErr) {
+	exitErr, ok := errors.AsType[*exec.ExitError](waitErr)
+	if !ok {
 		t.Fatalf("expected *exec.ExitError, got %T: %v", waitErr, waitErr)
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)

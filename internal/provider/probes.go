@@ -28,12 +28,10 @@ func ProbeClaude(ctx context.Context) (Status, error) {
 		if isLoggedOutStderr(stderr.String()) {
 			return Status{Provider: "claude", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			// Fall through: claude may have printed JSON on stdout even with non-zero exit.
-		} else {
+		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 			return Status{Provider: "claude", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 		}
+		// Fall through: claude may have printed JSON on stdout even with non-zero exit.
 	}
 	return parseClaudeAuthStatus(stdout.Bytes())
 }
@@ -55,8 +53,7 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		if isLoggedOutStderr(stderr.String()) || isLoggedOutStderr(stdout.String()) {
 			return Status{Provider: "codex", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 			return Status{Provider: "codex", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 		}
 	}
