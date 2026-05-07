@@ -1,7 +1,9 @@
 package sybra
 
 import (
+	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/github"
@@ -84,4 +86,58 @@ func diffSet(a, b map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+// TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers locks in the string
+// values of the PR issue kind constants against the real builtin workflow
+// YAMLs they must match. This is the narrowest possible regression guard
+// for the ci-failure vs ci_failure (and ready-to-merge vs ready_to_merge)
+// dispatch-mismatch bugs: if the constants drift from what the YAML triggers
+// expect, dispatch silently stops matching — exactly the bug this test
+// prevents.
+func TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers(t *testing.T) {
+	cases := []struct {
+		kind     github.PRIssueKind
+		wantStr  string
+		yamlFile string // empty when no builtin workflow triggers on this kind
+		needle   string
+	}{
+		{
+			kind:     github.PRIssueCIFailure,
+			wantStr:  "ci_failure",
+			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
+			needle:   "value: conflict,ci_failure",
+		},
+		{
+			kind:    github.PRIssueReadyToMerge,
+			wantStr: "ready_to_merge",
+			// No builtin workflow: auto-merge.yaml was removed because
+			// ready_to_merge short-circuits to app_reviews.handleAutoMerge
+			// direct path and never reaches DispatchEvent. The constant is
+			// still locked here so frontend + any new workflow stays in sync.
+		},
+		{
+			kind:     github.PRIssueConflict,
+			wantStr:  "conflict",
+			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
+			needle:   "value: conflict,ci_failure",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			if got := string(tc.kind); got != tc.wantStr {
+				t.Errorf("constant = %q, want %q", got, tc.wantStr)
+			}
+			if tc.yamlFile == "" {
+				return
+			}
+			raw, err := os.ReadFile(tc.yamlFile)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.yamlFile, err)
+			}
+			if !strings.Contains(string(raw), tc.needle) {
+				t.Errorf("%s missing trigger %q — dispatch would not match", tc.yamlFile, tc.needle)
+			}
+		})
+	}
 }

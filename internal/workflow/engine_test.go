@@ -281,6 +281,13 @@ func (m *mockAgents) LastID() string {
 	return fmt.Sprintf("agent-%d", m.counter)
 }
 
+// RunningAgentID returns the agent ID currently assigned to a task.
+func (m *mockAgents) RunningAgentID(taskID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.running[taskID]
+}
+
 // CallCount returns total StartAgent calls.
 func (m *mockAgents) CallCount() int {
 	m.mu.Lock()
