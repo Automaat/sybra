@@ -7,7 +7,7 @@
     ProviderHealthEnabled,
     SetProviderAutoFailover,
     SetProviderEnabled,
-  } from '../../wailsjs/go/sybra/IntegrationService'
+  } from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
   import { EventsOn } from '$lib/api'
   import * as ev from '../lib/events.js'
 

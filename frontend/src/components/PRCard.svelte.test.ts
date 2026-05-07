@@ -2,12 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import PRCard from './PRCard.svelte'
 
-const mockBrowserOpenURL = vi.fn()
-
-vi.mock('../../wailsjs/runtime/runtime.js', () => ({
-  BrowserOpenURL: (...args: unknown[]) => mockBrowserOpenURL(...args),
-}))
-
 function makePR(overrides: Record<string, unknown> = {}) {
   return {
     number: 42,

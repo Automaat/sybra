@@ -3,32 +3,23 @@ go = "1.26.2"
 node = "24"
 hadolint = "2.14.0"
 golangci-lint = "2.12.1"
-"go:github.com/wailsapp/wails/v2/cmd/wails" = "v2.12.0"
 
 [tasks."hooks:install"]
 run = "git config core.hooksPath .githooks"
 description = "Configure git to use project hooks from .githooks/"
 
 [tasks.dev]
-run = ["go install ./cmd/sybra-cli", "wails dev"]
-description = "Install CLI and run wails dev server"
+run = [
+  "go install ./cmd/sybra-cli",
+  "cd frontend && npm run build:desktop",
+  "go run .",
+]
+description = "Install CLI, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
-[tasks."dev:v3"]
-run = [
-  "cd frontend && npm run build:desktop",
-  "rsync -a --delete --exclude=.gitkeep frontend/dist/ cmd/sybra-v3/dist/",
-  "go run ./cmd/sybra-v3",
-]
-description = "Run the full Sybra app on Wails v3 alpha (darwin-only). See docs/migrations/wails-v3.md."
-
-[tasks."dev:v3:poc"]
-run = "go run ./cmd/sybra-v3-poc"
-description = "Run the Phase 1 v3 spike (single window, InfoService only)."
-
 [tasks.build]
-run = "wails build"
-description = "Build production binary"
+run = ["cd frontend && npm run build:desktop", "go build -o build/bin/sybra ."]
+description = "Build production desktop binary."
 
 [tasks."build:cli"]
 run = "go build -o build/bin/sybra-cli ./cmd/sybra-cli"

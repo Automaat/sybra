@@ -97,19 +97,25 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
-      - name: Install wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Build frontend (needed for go:embed)
-        run: cd frontend && npm ci && npm run build:desktop
+      - name: Install wails3 CLI
+        # Upstream v3 module has a relative `replace` directive that breaks a
+        # plain `go install ...@version`. Pulling the deps via `go get` first
+        # (so they land in the local module cache without the replace), then
+        # installing, is the workaround. go.mod/go.sum may shift here but we
+        # only diff frontend/bindings/ below, so it does not poison the check.
+        run: |
+          go get github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87
+          go get github.com/wailsapp/wails/v3/internal/commands@v3.0.0-alpha.87
+          go get github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@v3.0.0-alpha.87
+          go install github.com/wailsapp/wails/v3/cmd/wails3
 
       - name: Regenerate bindings
-        run: wails generate module
+        run: wails3 generate bindings -ts -clean -d frontend/bindings ./...
 
       - name: Check for drift
         run: |
-          git diff --exit-code frontend/wailsjs/ || \
-            (echo "::error::Wails bindings out of sync. Run 'wails generate module'." && exit 1)
+          git diff --exit-code frontend/bindings/ || \
+            (echo "::error::Wails v3 bindings out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...'." && exit 1)
 
   build:
     name: Build
@@ -119,14 +125,16 @@ jobs:
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
-      - name: Install wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
       - name: Lint frontend
         run: cd frontend && npm ci && npx oxlint .
 
-      - name: Build
-        run: wails build
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm run build:desktop
+
+      - name: Build desktop binary
+        # The repo-root main.go is darwin-gated; macos-15 runner exercises
+        # it alongside cmd/sybra-server and the CLIs.
+        run: go build ./...
 
   doc-version-sync:
     name: Doc Version Sync

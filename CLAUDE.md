@@ -1,14 +1,13 @@
 # Sybra
 
-Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v2 GUI.
+Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
 
 ## Project Structure
 
 ```
 sybra/
-├── main.go                  # Wails bootstrap, embeds frontend/dist
-├── app.go                   # Bound methods exposed to Svelte frontend
-├── wails.json               # Wails config
+├── main.go                  # Wails v3 bootstrap, embeds frontend/dist (darwin-gated)
+├── main_other.go            # No-op stub for non-darwin
 ├── go.mod / go.sum
 ├── internal/
 │   ├── task/                # YAML frontmatter + markdown task CRUD
@@ -42,17 +41,17 @@ sybra/
 │   │   ├── App.svelte       # Root component
 │   │   ├── main.ts          # Entry point
 │   │   └── style.css
-│   ├── wailsjs/             # Auto-generated Wails bindings
+│   ├── bindings/            # Auto-generated Wails v3 bindings (TS, per-package)
 │   └── package.json
-└── build/                   # Wails build assets
+└── build/                   # Build assets
 ```
 
 ## Tech Stack
 
 ### Backend
 
-- **Go 1.26.2** (Wails v2 bound methods)
-- **Wails v2.12** — desktop app framework, IPC via bound methods + events
+- **Go 1.26.2**
+- **Wails v3 alpha** (`v3.0.0-alpha.87`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
 
@@ -61,7 +60,8 @@ sybra/
 - **Svelte 5** + **TypeScript 6** (Vite 8)
 - **Skeleton UI v4** (skeleton.dev) + Vox theme
 - **Tailwind CSS v4**
-- Auto-generated Wails bindings in `frontend/wailsjs/`
+- Auto-generated Wails v3 bindings in `frontend/bindings/` (per Go package, e.g. `internal/task/models`)
+- `@wailsio/runtime` for IPC, events, browser/system APIs
 
 ### Tooling
 
@@ -72,21 +72,22 @@ sybra/
 
 ## Architecture
 
-### Wails Binding Convention
+### Wails v3 Binding Convention
 
-All methods on `App` struct in `app.go` are auto-bound to the frontend. Wails generates TypeScript bindings in `frontend/wailsjs/`.
+The `App` struct and the 12 service structs (`internal/sybra/svc_*.go`) are registered via `App.V3Services()` and exposed to the frontend through `wails3 generate bindings`. Bindings live under `frontend/bindings/` keyed by Go package path (e.g. `frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts`).
 
 **Adding a new bound method:**
-1. Add method to `App` struct in `app.go`
-2. Run `wails dev` or `wails generate module` to regenerate bindings
-3. Import from `wailsjs/go/main/App` in Svelte
+1. Add method to a service struct in `internal/sybra/svc_*.go` (or `App` itself).
+2. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
+3. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim, not the binding directly.
+4. CI's `Wails Bindings Sync` job runs the same generate command and fails on drift.
 
 **Wails events (Go → Frontend):**
 - `agent:state:<id>` — agent state change
 - `agent:output:<id>` — new StreamEvent from headless agent
 - `task:updated` / `task:created` / `task:deleted` — file system changes
 
-Emit events via `runtime.EventsEmit(ctx, "event:name", data)`.
+Emit events via the App's `emit` closure (set up in `main.go` to wrap `app.Event.Emit`). The frontend subscribes via `EventsOn` from `$lib/api`, which adapts v3's `WailsEvent` to the variadic callback shape stores expect.
 
 ### Task Format
 
@@ -216,29 +217,31 @@ Typical repo `setup:` examples:
 
 App-level `SetupCommands` should stay empty for most projects; use it only for host-specific extras such as copying a local `.env`.
 
-**Server-context quality gates.** On the server, do NOT treat `wails build` as a commit gate — webkit2gtk is not installed and desktop builds are a CI concern. Use `mise run build:server` (HTTP server) or `go build ./cmd/sybra-server` for a server-side build verification instead. Lint (`golangci-lint run ./...`, `hadolint Dockerfile`, `npx oxlint`) and tests (`go test ./...`) remain the authoritative gates — all installable via the project's `mise install` bootstrap.
+**Server-context quality gates.** On the server, do NOT treat the desktop build (`go build .`) as a commit gate — webkit2gtk is not installed and desktop builds are a CI concern (and darwin-only). Use `mise run build:server` (HTTP server) or `go build ./cmd/sybra-server` for a server-side build verification instead. Lint (`golangci-lint run ./...`, `hadolint Dockerfile`, `npx oxlint`) and tests (`go test ./...`) remain the authoritative gates — all installable via the project's `mise install` bootstrap.
 
 ## Development Workflow
 
 ### Running Locally
 
 ```bash
-mise run dev          # wails dev — hot reload for both Go + Svelte
+mise run dev          # rebuild frontend + go run . — desktop app on Wails v3 (darwin-only)
 ```
+
+There is no Vite-backed hot reload — the frontend is built once per `mise run dev` invocation, the desktop binary serves the built bundle. Restart the task to pick up frontend changes.
 
 ### Adding a Backend Feature
 
-1. Add/modify Go types in `internal/<package>/`
-2. If exposing to frontend: add bound method to `app.go`
-3. Run `wails dev` to regenerate frontend bindings
-4. Use new binding in Svelte via `import { MethodName } from 'wailsjs/go/main/App'`
+1. Add/modify Go types in `internal/<package>/`.
+2. If exposing to frontend: add a method to a service struct in `internal/sybra/svc_*.go` (or to `App`).
+3. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
+4. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim.
 
 ### Adding a Frontend Feature
 
-1. Create/edit Svelte component in `frontend/src/`
-2. Use Skeleton UI components from `@skeletonlabs/skeleton-svelte`
-3. Call Go backend via auto-generated bindings in `wailsjs/`
-4. Listen for events with `runtime.EventsOn("event:name", callback)`
+1. Create/edit Svelte component in `frontend/src/`.
+2. Use Skeleton UI components from `@skeletonlabs/skeleton-svelte`.
+3. Call Go backend through `$lib/api` (do NOT import from `frontend/bindings/` directly in components).
+4. Listen for events with `EventsOn("event:name", callback)` from `$lib/api`.
 
 ### Testing
 
@@ -254,7 +257,7 @@ Before committing:
 - [ ] oxlint passes
 - [ ] svelte-check passes
 - [ ] Go tests pass
-- [ ] `wails build` succeeds
+- [ ] `cd frontend && npm run build:desktop && cd .. && go build .` succeeds (darwin)
 
 ```bash
 # Lint all
@@ -314,7 +317,7 @@ delete   <id>
 
 - `--json` for machine-parseable output (used by skills)
 - Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
-- `mise run dev` auto-installs latest CLI before starting wails
+- `mise run dev` auto-installs latest CLI before launching the desktop app
 
 ### Skills
 
@@ -332,21 +335,22 @@ Skills are auto-copied to `~/.sybra/skills/` on app startup (via `syncSkills()` 
 
 Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 
-1. `cd frontend && npm install && npm run build` → produces `frontend/dist/`
-2. `wails build` (or `go build`) — embeds `frontend/dist/` into binary
+1. `cd frontend && npm install && npm run build:desktop` → produces `frontend/dist/`
+2. `go build .` (darwin) — embeds `frontend/dist/` into the desktop binary
 
-`wails dev` and `wails build` handle this automatically. Manual `go build` requires step 1 first.
+`mise run dev` and `mise run build` handle this sequencing automatically. Manual `go build .` requires step 1 first.
 
 ## Anti-Patterns
 
 **AVOID:**
 
-- ❌ Running `go build` without building frontend first — `//go:embed` fails if `frontend/dist/` missing
-- ❌ Forgetting to regenerate Wails bindings after changing `app.go` methods
-- ❌ Using WebSocket/HTTP for Go↔Frontend IPC — Wails events + bound methods handle this
+- ❌ Running `go build .` without building the frontend first — `//go:embed` fails if `frontend/dist/` is missing
+- ❌ Forgetting to regenerate v3 bindings after adding/changing service methods (run `wails3 generate bindings -ts -clean -d frontend/bindings ./...`); CI's `Wails Bindings Sync` job catches drift
+- ❌ Editing files in `frontend/bindings/` — these are auto-generated and get overwritten
+- ❌ Importing directly from `frontend/bindings/` in components/stores — go through `$lib/api` so the desktop ↔ web shim handles transport
+- ❌ Using WebSocket/HTTP for Go↔Frontend IPC on desktop — Wails v3 events + bound services handle this
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
-- ❌ Editing files in `frontend/wailsjs/` — these are auto-generated, changes get overwritten
 - ❌ Using `allowed_tools: []` without understanding it means all tools with `--dangerously-skip-permissions`
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
 - ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.
-- ❌ Treating `wails build` as a server-context commit gate — Linux wails needs GTK/webkit (not installed server-side) and desktop builds are CI-owned. Use `mise run build:server` for server-side verification.
+- ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
