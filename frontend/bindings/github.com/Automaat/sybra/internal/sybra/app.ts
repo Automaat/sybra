@@ -26,15 +26,6 @@ import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/mo
 import * as $models from "./models.js";
 
 /**
- * BindTargets returns the objects to bind for Wails IPC.
- */
-export function BindTargets(): $CancellablePromise<any[]> {
-    return $Call.ByID(3335194330).then(($result: any) => {
-        return $$createType0($result);
-    });
-}
-
-/**
  * Context returns the app's running context.
  */
 export function Context(): $CancellablePromise<context$0.Context> {
@@ -49,7 +40,7 @@ export function Context(): $CancellablePromise<context$0.Context> {
  */
 export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBinding> {
     return $Call.ByID(936556103).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType0($result);
     });
 }
 
@@ -58,7 +49,7 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
  */
 export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
     return $Call.ByID(729571497).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType2($result);
     });
 }
 
@@ -67,7 +58,7 @@ export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
  */
 export function ListNotifications(): $CancellablePromise<notification$0.Notification[]> {
     return $Call.ByID(706012029).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType4($result);
     });
 }
 
@@ -85,7 +76,7 @@ export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
  */
 export function ServiceRegistry(): $CancellablePromise<{ [_ in string]?: any }> {
     return $Call.ByID(3128777629).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType5($result);
     });
 }
 
@@ -107,7 +98,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function StartAgent(taskID: string, mode: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(2345014098, taskID, mode, prompt).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType7($result);
     });
 }
 
@@ -118,7 +109,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string): $Cance
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType7($result);
     });
 }
 
@@ -140,26 +131,24 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
 }
 
 /**
- * V3Services exposes the App and its 12 bound services as Wails v3
- * application.Service values, in the same order as BindTargets so the
- * v3 binary keeps method-name parity with the v2 path. Phase 5 cutover
- * retires BindTargets.
+ * V3Services exposes the App and its 12 services as v3 application.Service
+ * values. Order matches the historical v2 BindTargets so generated bindings
+ * keep stable IDs across migrations.
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType9($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = $models.MonitorReportBinding.createFrom;
-const $$createType2 = bgop$0.Operation.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = notification$0.Notification.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Map($Create.Any, $Create.Any);
-const $$createType7 = agent$0.Agent.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = application$0.Service.createFrom;
-const $$createType10 = $Create.Array($$createType9);
+const $$createType0 = $models.MonitorReportBinding.createFrom;
+const $$createType1 = bgop$0.Operation.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = notification$0.Notification.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $Create.Map($Create.Any, $Create.Any);
+const $$createType6 = agent$0.Agent.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = application$0.Service.createFrom;
+const $$createType9 = $Create.Array($$createType8);
