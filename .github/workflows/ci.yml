@@ -122,6 +122,12 @@ jobs:
           GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
           grep -q "$GO_VERSION" README.md || (echo "README Go version stale (want $GO_VERSION)" && exit 1)
           grep -q "$GO_VERSION" CLAUDE.md || (echo "CLAUDE.md Go version stale (want $GO_VERSION)" && exit 1)
+          MISE_GO_VERSION=$(grep '^go = ' mise.toml | awk -F'"' '{print $2}')
+          [ "$GO_VERSION" = "$MISE_GO_VERSION" ] || \
+            (echo "mise.toml Go version stale (go.mod=$GO_VERSION, mise.toml=$MISE_GO_VERSION)" && exit 1)
+          NODE_VERSION=$(grep '^node = ' mise.toml | awk -F'"' '{print $2}')
+          grep -q "\"node\": \"$NODE_VERSION\"" frontend/package.json || \
+            (echo "frontend/package.json engines.node stale (want $NODE_VERSION)" && exit 1)
 
   go-mod-integrity:
     name: Go Module Integrity
