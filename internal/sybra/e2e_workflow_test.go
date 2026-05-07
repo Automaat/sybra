@@ -2435,12 +2435,13 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 30*time.Second, "task flips to human-required via require_plan_critique", func() bool {
+	// Wait for ExecCompleted, not just status: execRequireSidecar updates status before the engine records the step, so a status-only poll races the history append.
+	waitFor(t, 30*time.Second, "workflow completes via require_plan_critique guard", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil {
 			return false
 		}
-		return tk.Status == task.StatusHumanRequired
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusHumanRequired
 	})
 
 	tk, err := env.tasks.Get(created.ID)
