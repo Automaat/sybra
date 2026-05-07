@@ -31,3 +31,14 @@ Pin build tools to an exact version to prevent unexpected toolchain drift:
 - **CI:** the `npm Lockfile Integrity` job runs `npm install --package-lock-only` and fails the build if the lockfile drifts.
 
 Always commit an updated `package-lock.json` when changing `package.json`.
+
+## Version Update Process
+
+`mise.toml` is the single source of truth for tool versions (Go, Node). When bumping a version:
+
+1. Update the version in `mise.toml` (`[tools]` section).
+2. For **Go**: also update `go.mod` (`go X.Y.Z` directive), README.md tech stack table, and CLAUDE.md.
+3. For **Node**: also update the `engines.node` field in `frontend/package.json`.
+4. Run `cd frontend && npm install` to regenerate `package-lock.json` if Node changed.
+
+The `Doc Version Sync` CI job enforces that all four locations stay in sync and will fail if any are stale.
