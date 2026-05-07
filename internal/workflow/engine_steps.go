@@ -119,15 +119,15 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+	// Hold e.mu across StartAgent + registration so HandleAgentComplete's
+	// lookupAgentStep (which acquires e.mu) cannot fire before the agentID
+	// is in the map — closing the race between agent spawn and step tracking.
+	e.mu.Lock()
 	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
 	if err != nil {
+		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", err)
 	}
-
-	// Track which step this agent was spawned for so HandleAgentComplete
-	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
-	// race) rather than blindly crediting the current step.
-	e.mu.Lock()
 	e.agentSteps[agentID] = step.ID
 	e.mu.Unlock()
 
@@ -247,15 +247,16 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	}
 	oneShot := false
 
+	// Hold e.mu across StartAgent + registration — same race-close as execRunAgent.
+	e.mu.Lock()
 	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot)
 	if err != nil {
+		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", err)
 	}
-
 	// agentSteps key uses the *child* step ID. StepByID recurses into
 	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
 	// returns the right step config.
-	e.mu.Lock()
 	e.agentSteps[agentID] = child.ID
 	e.mu.Unlock()
 
