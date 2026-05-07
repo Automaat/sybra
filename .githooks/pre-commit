@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# When frontend/package.json is staged, verify package-lock.json is in sync.
+if git diff --cached --name-only | grep -q "^frontend/package\.json$"; then
+  echo "frontend/package.json staged — verifying package-lock.json is in sync..."
+  (cd frontend && npm install --package-lock-only --ignore-scripts --quiet 2>/dev/null)
+  if ! git diff --quiet frontend/package-lock.json; then
+    echo "ERROR: frontend/package-lock.json is out of sync with package.json."
+    echo "Run 'cd frontend && npm install' and stage the updated lockfile."
+    git checkout frontend/package-lock.json
+    exit 1
+  fi
+fi
