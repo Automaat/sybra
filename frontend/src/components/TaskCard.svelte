@@ -112,6 +112,19 @@
     <p class="mb-1.5 line-clamp-2 text-xs text-warning-600 dark:text-warning-400">{t.statusReason}</p>
   {/if}
 
+  {#if t.blockedByIssue}
+    <a
+      href={t.blockedByIssue}
+      target="_blank"
+      rel="noopener"
+      onclick={(e) => e.stopPropagation()}
+      class="mb-1.5 inline-flex items-center gap-1 text-xs text-error-700 hover:underline dark:text-error-300"
+    >
+      <svg class="h-3 w-3 shrink-0" viewBox="0 0 16 16" fill="currentColor"><title>Issue</title><path d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 1a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Zm0 2a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4.5Zm0 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></svg>
+      Blocked by Sybra bug
+    </a>
+  {/if}
+
   <div class="flex flex-wrap items-center gap-1.5 text-xs text-surface-500">
     <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">
       {t.agentMode}

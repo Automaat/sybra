@@ -77,6 +77,7 @@ type App struct {
 	todoistCancel   context.CancelFunc
 	renovateHandler *poll.RenovateHandler
 	triageHandler   *poll.TriageHandler
+	humanReview     *humanReviewHandler
 	cfg             *config.Config
 	logLevel        *slog.LevelVar
 	emit            func(string, any)
@@ -278,10 +279,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Error("watcher.start", "err", err)
 	}
 
-	a.initTodoist(emit)
-	a.initRenovate(emit)
-	a.initTriage()
-	issuesFetcher := a.initIssuesFetcher(emit)
+	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
 
 	a.syncSkills()
@@ -582,6 +580,7 @@ func (a *App) logAutomationsSummary() {
 		"github", a.cfg.GitHub.Enabled,
 		"renovate", a.cfg.Renovate.Enabled,
 		"triage", a.cfg.Triage.Enabled,
+		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
 		"loop_agents_enabled", loopAgentsEnabled,
 	)
@@ -624,6 +623,9 @@ func (a *App) initStatusHook() {
 				msg = t.Title
 			}
 			a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
+			if a.humanReview != nil {
+				go a.humanReview.maybeSpawn(taskID, from)
+			}
 		case string(task.StatusTesting):
 			if a.workflowEngine != nil {
 				if _, err := a.workflowEngine.DispatchEvent(
@@ -725,39 +727,7 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		"log_file":   ag.LogPath,
 	})
 
-	if a.stats != nil {
-		in := ag.GetInputTokens()
-		out := ag.GetOutputTokens()
-		agCost := cost
-		if agCost == 0 && ag.Provider == "codex" {
-			agCost = stats.EstimateCost(ag.Model, in, out)
-		}
-		outcome := "failed"
-		if exitErr == nil {
-			outcome = "completed"
-		}
-		var projectID string
-		if ag.TaskID != "" {
-			if t, err := a.tasks.Get(ag.TaskID); err == nil {
-				projectID = t.ProjectID
-			}
-		}
-		_ = a.stats.Record(stats.RunRecord{
-			ID:           ag.ID,
-			TaskID:       ag.TaskID,
-			ProjectID:    projectID,
-			Mode:         ag.Mode,
-			Role:         string(agent.RoleFromName(ag.Name)),
-			Model:        ag.Model,
-			Provider:     ag.Provider,
-			CostUSD:      agCost,
-			DurationS:    duration,
-			InputTokens:  in,
-			OutputTokens: out,
-			Outcome:      outcome,
-			Timestamp:    time.Now(),
-		})
-	}
+	a.recordAgentRunStats(ag, cost, duration, exitErr)
 
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
@@ -787,6 +757,16 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 
+	// Human-review agents are out-of-band diagnostics — they must not feed
+	// into the workflow engine (which would advance the step that originally
+	// caused the human-required transition based on the diagnostic verdict).
+	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+		if a.humanReview != nil {
+			a.humanReview.onComplete(ag)
+		}
+		return
+	}
+
 	// Advance workflow.
 	if a.workflowEngine != nil {
 		a.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
@@ -804,6 +784,56 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 			go a.sandboxes.Stop(ag.TaskID)
 		}
 	}
+}
+
+// initAutomations starts every per-machine task source in dependency order
+// and returns the GitHub issues fetcher (still consumed by
+// startBackgroundServices). Extracted so Startup stays under funlen.
+func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
+	a.initTodoist(emit)
+	a.initRenovate(emit)
+	a.initTriage()
+	a.initHumanReview()
+	return a.initIssuesFetcher(emit)
+}
+
+// recordAgentRunStats persists a stats.RunRecord for the completed agent.
+// Extracted from onAgentComplete to keep that function within funlen.
+func (a *App) recordAgentRunStats(ag *agent.Agent, cost, duration float64, exitErr error) {
+	if a.stats == nil {
+		return
+	}
+	in := ag.GetInputTokens()
+	out := ag.GetOutputTokens()
+	agCost := cost
+	if agCost == 0 && ag.Provider == "codex" {
+		agCost = stats.EstimateCost(ag.Model, in, out)
+	}
+	outcome := "failed"
+	if exitErr == nil {
+		outcome = "completed"
+	}
+	var projectID string
+	if ag.TaskID != "" {
+		if t, err := a.tasks.Get(ag.TaskID); err == nil {
+			projectID = t.ProjectID
+		}
+	}
+	_ = a.stats.Record(stats.RunRecord{
+		ID:           ag.ID,
+		TaskID:       ag.TaskID,
+		ProjectID:    projectID,
+		Mode:         ag.Mode,
+		Role:         string(agent.RoleFromName(ag.Name)),
+		Model:        ag.Model,
+		Provider:     ag.Provider,
+		CostUSD:      agCost,
+		DurationS:    duration,
+		InputTokens:  in,
+		OutputTokens: out,
+		Outcome:      outcome,
+		Timestamp:    time.Now(),
+	})
 }
 
 func (a *App) onWorkflowComplete(info workflow.CompletionInfo) {

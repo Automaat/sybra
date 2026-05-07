@@ -12,27 +12,28 @@ import (
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
 type Update struct {
-	Title        *string
-	Slug         *string
-	Status       *Status
-	StatusReason *string
-	AgentMode    *string
-	TaskType     *TaskType
-	Body         *string
-	Tags         *[]string
-	ProjectID    *string
-	Branch       *string
-	PRNumber     *int
-	Issue        *string
-	Reviewed     *bool
-	RunRole      *string
-	TodoistID    *string
-	Priority     *Priority
-	DueDate      **time.Time
-	Workflow     **workflow.Execution
-	Plan         *string
-	PlanCritique *string
-	CodeReview   *string
+	Title          *string
+	Slug           *string
+	Status         *Status
+	StatusReason   *string
+	BlockedByIssue *string
+	AgentMode      *string
+	TaskType       *TaskType
+	Body           *string
+	Tags           *[]string
+	ProjectID      *string
+	Branch         *string
+	PRNumber       *int
+	Issue          *string
+	Reviewed       *bool
+	RunRole        *string
+	TodoistID      *string
+	Priority       *Priority
+	DueDate        **time.Time
+	Workflow       **workflow.Execution
+	Plan           *string
+	PlanCritique   *string
+	CodeReview     *string
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -57,7 +58,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
-	case "title", "slug", "status_reason", "body",
+	case "title", "slug", "status_reason", "blocked_by_issue", "body",
 		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review":
 		return applyPlainStringField(u, k, v)
 	case "priority":
@@ -104,6 +105,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.Slug = &s
 	case "status_reason":
 		u.StatusReason = &s
+	case "blocked_by_issue":
+		u.BlockedByIssue = &s
 	case "body":
 		u.Body = &s
 	case "project_id":

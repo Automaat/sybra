@@ -32,6 +32,10 @@ const (
 	EventHealthReport        = "health.report"
 	EventAgentStartFailed    = "agent.start_failed"
 	EventProviderGateBlocked = "provider.gate_blocked"
+	EventHumanReviewSpawned  = "human_review.spawned"
+	EventHumanReviewVerdict  = "human_review.verdict"
+	EventHumanReviewIssue    = "human_review.issue_filed"
+	EventHumanReviewSkipped  = "human_review.skipped"
 )
 
 type Event struct {

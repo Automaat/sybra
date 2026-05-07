@@ -290,6 +290,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
 	}
+	if u.BlockedByIssue != nil {
+		t.BlockedByIssue = *u.BlockedByIssue
+	}
 	if u.AgentMode != nil {
 		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
 			return Task{}, err

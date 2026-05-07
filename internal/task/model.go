@@ -19,6 +19,7 @@ const (
 	StatusTesting        Status = "testing"
 	StatusTestPlanReview Status = "test-plan-review"
 	StatusHumanRequired  Status = "human-required"
+	StatusBlocked        Status = "blocked"
 	StatusDone           Status = "done"
 	StatusCancelled      Status = "cancelled"
 )
@@ -27,7 +28,8 @@ var validStatuses = map[Status]bool{
 	StatusNew: true, StatusTodo: true, StatusInProgress: true,
 	StatusInReview: true, StatusPlanning: true, StatusPlanReview: true,
 	StatusTesting: true, StatusTestPlanReview: true,
-	StatusHumanRequired: true, StatusDone: true, StatusCancelled: true,
+	StatusHumanRequired: true, StatusBlocked: true,
+	StatusDone: true, StatusCancelled: true,
 }
 
 // AllStatuses returns every valid status in display order.
@@ -36,7 +38,7 @@ func AllStatuses() []Status {
 		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
 		StatusInProgress, StatusInReview,
 		StatusTesting, StatusTestPlanReview,
-		StatusHumanRequired, StatusDone, StatusCancelled,
+		StatusHumanRequired, StatusBlocked, StatusDone, StatusCancelled,
 	}
 }
 
@@ -143,25 +145,29 @@ type AgentRun struct {
 }
 
 type Task struct {
-	ID           string     `yaml:"id" json:"id"`
-	Slug         string     `yaml:"slug,omitempty" json:"slug"`
-	Title        string     `yaml:"title" json:"title"`
-	Status       Status     `yaml:"status" json:"status"`
-	TaskType     TaskType   `yaml:"task_type,omitempty" json:"taskType"`
-	AgentMode    string     `yaml:"agent_mode" json:"agentMode"`
-	AllowedTools []string   `yaml:"allowed_tools" json:"allowedTools"`
-	Tags         []string   `yaml:"tags" json:"tags"`
-	ProjectID    string     `yaml:"project_id,omitempty" json:"projectId"`
-	Branch       string     `yaml:"branch,omitempty" json:"branch"`
-	PRNumber     int        `yaml:"pr_number,omitempty" json:"prNumber"`
-	Issue        string     `yaml:"issue,omitempty" json:"issue"`
-	StatusReason string     `yaml:"status_reason,omitempty" json:"statusReason"`
-	Reviewed     bool       `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole      string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
-	TodoistID    string     `yaml:"todoist_id,omitempty" json:"todoistId"`
-	Priority     Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
-	DueDate      *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
-	ClosedAt     *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
+	ID           string   `yaml:"id" json:"id"`
+	Slug         string   `yaml:"slug,omitempty" json:"slug"`
+	Title        string   `yaml:"title" json:"title"`
+	Status       Status   `yaml:"status" json:"status"`
+	TaskType     TaskType `yaml:"task_type,omitempty" json:"taskType"`
+	AgentMode    string   `yaml:"agent_mode" json:"agentMode"`
+	AllowedTools []string `yaml:"allowed_tools" json:"allowedTools"`
+	Tags         []string `yaml:"tags" json:"tags"`
+	ProjectID    string   `yaml:"project_id,omitempty" json:"projectId"`
+	Branch       string   `yaml:"branch,omitempty" json:"branch"`
+	PRNumber     int      `yaml:"pr_number,omitempty" json:"prNumber"`
+	Issue        string   `yaml:"issue,omitempty" json:"issue"`
+	StatusReason string   `yaml:"status_reason,omitempty" json:"statusReason"`
+	// BlockedByIssue stores the URL of the GitHub issue that put the task
+	// into status=blocked. Set by the human-review automation when it
+	// concludes the human-required transition was caused by a Sybra bug.
+	BlockedByIssue string     `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
+	Reviewed       bool       `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole        string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	TodoistID      string     `yaml:"todoist_id,omitempty" json:"todoistId"`
+	Priority       Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
+	DueDate        *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
+	ClosedAt       *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).
 	RequirePermissions *bool               `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
