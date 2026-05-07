@@ -60,7 +60,7 @@ class ReviewStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(ReviewsUpdated, (summary: any) => {
+    this.cancelListener = EventsOn(ReviewsUpdated, (summary: github.ReviewSummary) => {
       this.createdByMe = summary.createdByMe ?? []
       this.reviewRequested = summary.reviewRequested ?? []
     })
