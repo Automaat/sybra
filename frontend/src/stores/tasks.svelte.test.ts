@@ -5,21 +5,30 @@ const mockListTasks = vi.fn()
 const mockGetTask = vi.fn()
 const mockCreateTask = vi.fn()
 const mockUpdateTask = vi.fn()
+const mockDeleteTask = vi.fn()
+const mockApprovePlan = vi.fn()
+const mockRejectPlan = vi.fn()
+const mockSendPlanMessage = vi.fn()
+const mockHasLivePlanAgent = vi.fn()
+const mockApproveTestPlan = vi.fn()
+const mockRejectTestPlan = vi.fn()
+const mockSendTestPlanMessage = vi.fn()
+const mockHasLiveTestPlanAgent = vi.fn()
 
 vi.mock('$lib/api', () => ({
   ListTasks: (...args: unknown[]) => mockListTasks(...args),
   GetTask: (...args: unknown[]) => mockGetTask(...args),
   CreateTask: (...args: unknown[]) => mockCreateTask(...args),
   UpdateTask: (...args: unknown[]) => mockUpdateTask(...args),
-  DeleteTask: vi.fn(),
-  ApprovePlan: vi.fn(),
-  RejectPlan: vi.fn(),
-  SendPlanMessage: vi.fn(),
-  HasLivePlanAgent: vi.fn(),
-  ApproveTestPlan: vi.fn(),
-  RejectTestPlan: vi.fn(),
-  SendTestPlanMessage: vi.fn(),
-  HasLiveTestPlanAgent: vi.fn(),
+  DeleteTask: (...args: unknown[]) => mockDeleteTask(...args),
+  ApprovePlan: (...args: unknown[]) => mockApprovePlan(...args),
+  RejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
+  SendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
+  HasLivePlanAgent: (...args: unknown[]) => mockHasLivePlanAgent(...args),
+  ApproveTestPlan: (...args: unknown[]) => mockApproveTestPlan(...args),
+  RejectTestPlan: (...args: unknown[]) => mockRejectTestPlan(...args),
+  SendTestPlanMessage: (...args: unknown[]) => mockSendTestPlanMessage(...args),
+  HasLiveTestPlanAgent: (...args: unknown[]) => mockHasLiveTestPlanAgent(...args),
 }))
 
 const { taskStore } = await import('./tasks.svelte.js')
@@ -175,6 +184,120 @@ describe('TaskStore', () => {
 
       const list = taskStore.list
       expect(list[0].id).toBe('b')
+    })
+  })
+
+  describe('remove', () => {
+    it('deletes task and removes from map', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
+      mockDeleteTask.mockResolvedValue(undefined)
+
+      await taskStore.remove('t1')
+
+      expect(mockDeleteTask).toHaveBeenCalledWith('t1')
+      expect(taskStore.tasks.has('t1')).toBe(false)
+    })
+  })
+
+  describe('approvePlan', () => {
+    it('calls ApprovePlan and updates task in map', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'in-review' }))
+      const approved = makeTask({ id: 't1', status: 'in-progress' })
+      mockApprovePlan.mockResolvedValue(approved)
+
+      const result = await taskStore.approvePlan('t1')
+
+      expect(mockApprovePlan).toHaveBeenCalledWith('t1')
+      expect(result.status).toBe('in-progress')
+      expect(taskStore.tasks.get('t1')!.status).toBe('in-progress')
+    })
+  })
+
+  describe('rejectPlan', () => {
+    it('calls RejectPlan with feedback and updates task', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
+      const rejected = makeTask({ id: 't1', status: 'todo' })
+      mockRejectPlan.mockResolvedValue(rejected)
+
+      const result = await taskStore.rejectPlan('t1', 'needs work')
+
+      expect(mockRejectPlan).toHaveBeenCalledWith('t1', 'needs work')
+      expect(result.id).toBe('t1')
+      expect(taskStore.tasks.get('t1')).toBeDefined()
+    })
+  })
+
+  describe('sendPlanMessage', () => {
+    it('calls SendPlanMessage', async () => {
+      mockSendPlanMessage.mockResolvedValue(undefined)
+
+      await taskStore.sendPlanMessage('t1', 'please adjust')
+
+      expect(mockSendPlanMessage).toHaveBeenCalledWith('t1', 'please adjust')
+    })
+  })
+
+  describe('hasLivePlanAgent', () => {
+    it('returns true when plan agent is live', async () => {
+      mockHasLivePlanAgent.mockResolvedValue(true)
+
+      const result = await taskStore.hasLivePlanAgent('t1')
+
+      expect(result).toBe(true)
+    })
+
+    it('returns false when no plan agent', async () => {
+      mockHasLivePlanAgent.mockResolvedValue(false)
+
+      const result = await taskStore.hasLivePlanAgent('t1')
+
+      expect(result).toBe(false)
+    })
+  })
+
+  describe('approveTestPlan', () => {
+    it('calls ApproveTestPlan and updates task', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
+      const updated = makeTask({ id: 't1', status: 'in-progress' })
+      mockApproveTestPlan.mockResolvedValue(updated)
+
+      const result = await taskStore.approveTestPlan('t1')
+
+      expect(mockApproveTestPlan).toHaveBeenCalledWith('t1')
+      expect(result.status).toBe('in-progress')
+    })
+  })
+
+  describe('rejectTestPlan', () => {
+    it('calls RejectTestPlan with feedback and updates task', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
+      const rejected = makeTask({ id: 't1', status: 'todo' })
+      mockRejectTestPlan.mockResolvedValue(rejected)
+
+      const result = await taskStore.rejectTestPlan('t1', 'missing edge cases')
+
+      expect(mockRejectTestPlan).toHaveBeenCalledWith('t1', 'missing edge cases')
+      expect(result.id).toBe('t1')
+    })
+  })
+
+  describe('sendTestPlanMessage', () => {
+    it('calls SendTestPlanMessage', async () => {
+      mockSendTestPlanMessage.mockResolvedValue(undefined)
+
+      await taskStore.sendTestPlanMessage('t1', 'add more assertions')
+
+      expect(mockSendTestPlanMessage).toHaveBeenCalledWith('t1', 'add more assertions')
+    })
+  })
+
+  describe('hasLiveTestPlanAgent', () => {
+    it('returns true when test plan agent is live', async () => {
+      mockHasLiveTestPlanAgent.mockResolvedValue(true)
+
+      const result = await taskStore.hasLiveTestPlanAgent('t1')
+
+      expect(result).toBe(true)
     })
   })
 

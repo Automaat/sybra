@@ -111,6 +111,97 @@ describe('ReviewStore', () => {
     })
   })
 
+  describe('allPRs', () => {
+    it('merges both lists deduplicating by repository+number', () => {
+      const pr1 = makePR({ number: 1, repository: 'org/repo' })
+      const pr2 = makePR({ number: 2, repository: 'org/repo' })
+      // Same PR in both lists — should appear once
+      const shared = makePR({ number: 1, repository: 'org/repo' })
+      reviewStore.createdByMe = [pr1, pr2]
+      reviewStore.reviewRequested = [shared]
+
+      const all = reviewStore.allPRs
+      expect(all).toHaveLength(2)
+      expect(all.map((p) => p.number)).toEqual([1, 2])
+    })
+
+    it('returns empty when both lists are empty', () => {
+      expect(reviewStore.allPRs).toHaveLength(0)
+    })
+
+    it('preserves order: createdByMe first, then reviewRequested', () => {
+      reviewStore.createdByMe = [makePR({ number: 10, repository: 'org/a' })]
+      reviewStore.reviewRequested = [makePR({ number: 20, repository: 'org/b' })]
+
+      const all = reviewStore.allPRs
+      expect(all[0].number).toBe(10)
+      expect(all[1].number).toBe(20)
+    })
+  })
+
+  describe('byRepo', () => {
+    it('returns PRs for matching repository', () => {
+      reviewStore.createdByMe = [
+        makePR({ number: 1, repository: 'org/repo-a' }),
+        makePR({ number: 2, repository: 'org/repo-b' }),
+      ]
+
+      expect(reviewStore.byRepo('org/repo-a')).toHaveLength(1)
+      expect(reviewStore.byRepo('org/repo-a')[0].number).toBe(1)
+    })
+
+    it('returns empty for unknown repo', () => {
+      reviewStore.createdByMe = [makePR({ number: 1, repository: 'org/repo' })]
+      expect(reviewStore.byRepo('org/other')).toHaveLength(0)
+    })
+  })
+
+  describe('byTask', () => {
+    it('returns empty when task has no projectId', () => {
+      reviewStore.createdByMe = [makePR({ number: 1, repository: 'org/repo' })]
+      expect(reviewStore.byTask({})).toHaveLength(0)
+    })
+
+    it('matches by prNumber when available', () => {
+      reviewStore.createdByMe = [
+        makePR({ number: 1, repository: 'org/repo' }),
+        makePR({ number: 2, repository: 'org/repo' }),
+      ]
+
+      const result = reviewStore.byTask({ projectId: 'org/repo', prNumber: 1 })
+      expect(result).toHaveLength(1)
+      expect(result[0].number).toBe(1)
+    })
+
+    it('falls back to branch match when prNumber not found', () => {
+      reviewStore.createdByMe = [
+        makePR({ number: 5, repository: 'org/repo', headRefName: 'feature/x' }),
+      ]
+
+      const result = reviewStore.byTask({ projectId: 'org/repo', prNumber: 999, branch: 'feature/x' })
+      expect(result).toHaveLength(1)
+      expect(result[0].headRefName).toBe('feature/x')
+    })
+
+    it('matches by branch when no prNumber given', () => {
+      reviewStore.createdByMe = [
+        makePR({ number: 5, repository: 'org/repo', headRefName: 'fix/bug' }),
+      ]
+
+      const result = reviewStore.byTask({ projectId: 'org/repo', branch: 'fix/bug' })
+      expect(result).toHaveLength(1)
+    })
+
+    it('returns empty when neither prNumber nor branch match', () => {
+      reviewStore.createdByMe = [
+        makePR({ number: 1, repository: 'org/repo', headRefName: 'main' }),
+      ]
+
+      const result = reviewStore.byTask({ projectId: 'org/repo', prNumber: 99, branch: 'other' })
+      expect(result).toHaveLength(0)
+    })
+  })
+
   describe('event listener', () => {
     it('updates state from reviews:updated event', () => {
       reviewStore.listen()

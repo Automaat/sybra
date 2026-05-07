@@ -21,15 +21,14 @@ vi.mock('../stores/convo.svelte.js', () => ({
   },
 }))
 
-describe('ChatView', () => {
-  let ChatView: typeof import('./ChatView.svelte').default
+const ChatView = (await import('./ChatView.svelte')).default
 
-  beforeEach(async () => {
+describe('ChatView', () => {
+  beforeEach(() => {
     vi.clearAllMocks()
     conversations.clear()
     pendingApprovals.clear()
     mockGetOutput.mockResolvedValue([])
-    ChatView = (await import('./ChatView.svelte')).default
   })
 
   afterEach(() => {
