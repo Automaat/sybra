@@ -94,6 +94,12 @@ type CompletionInfo struct {
 	Variables  map[string]string
 }
 
+// agentEntry records which task and step an agent was spawned for.
+type agentEntry struct {
+	taskID string
+	stepID string
+}
+
 // Engine executes workflow definitions against tasks.
 type Engine struct {
 	store           *Store
@@ -109,7 +115,7 @@ type Engine struct {
 	dispatching     map[string]struct{}    // taskID → dispatch in progress
 	starting        map[string]struct{}    // taskID → StartWorkflowWithVars in progress
 	humanAction     map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps      map[string]string      // agentID → stepID it was spawned for
+	agentSteps      map[string]agentEntry  // agentID → {taskID, stepID}
 	resumeError     *logging.ErrorThrottle
 }
 
@@ -125,7 +131,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		dispatching:     make(map[string]struct{}),
 		starting:        make(map[string]struct{}),
 		humanAction:     make(map[string]struct{}),
-		agentSteps:      make(map[string]string),
+		agentSteps:      make(map[string]agentEntry),
 		resumeError:     logging.NewErrorThrottle(),
 	}
 }
@@ -655,6 +661,14 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		return
 	}
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		// Still import sidecar for tracked agents that finish after the
+		// workflow turns terminal (e.g. an untracked agent advanced the step
+		// first, leaving the real agent's output file unread).
+		if c.Success {
+			if spawnedStep, tracked := e.lookupAgentStep(c.AgentID); tracked {
+				e.importSidecarIfConfigured(taskID, spawnedStep, t)
+			}
+		}
 		e.logger.Debug("workflow.agent-complete.terminal",
 			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
 		e.clearAgentStep(c.AgentID)
@@ -667,13 +681,21 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		return
 	}
 
-	// Resolve the step this agent was actually spawned for. Fallback to the
-	// workflow's current step for agents that were never tracked (recovery
-	// flows calling with synthetic IDs). The resolved ID is then checked
-	// against the current step inside AdvanceStep to drop stale completions.
+	// Resolve the step this agent was actually spawned for. For untracked
+	// agents (post-restart recovery or manually-dispatched), fall back to the
+	// workflow's current step — but only when no tracked agent is already in
+	// flight for that task+step. If one is, this is a phantom completion (e.g.
+	// a manual implementation agent completing during a code_review step) and
+	// must be dropped to prevent it from advancing the wrong step.
 	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
+		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
+			e.logger.Debug("workflow.agent-complete.untracked-ignored",
+				"task_id", taskID, "agent_id", c.AgentID, "current_step", spawnedStep)
+			e.clearAgentStep(c.AgentID)
+			return
+		}
 	}
 
 	status := "completed"
@@ -702,8 +724,22 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	stepID, ok := e.agentSteps[agentID]
-	return stepID, ok
+	entry, ok := e.agentSteps[agentID]
+	return entry.stepID, ok
+}
+
+// hasTrackedAgentForTaskStep returns true when a tracked agent is already in
+// flight for the given task+step pair. Used to detect phantom completions from
+// untracked (manually-dispatched) agents.
+func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, entry := range e.agentSteps {
+		if entry.taskID == taskID && entry.stepID == stepID {
+			return true
+		}
+	}
+	return false
 }
 
 // clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.

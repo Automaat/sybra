@@ -2136,7 +2136,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	agents.roles["t1/plan"] = planAgent2
 	agents.mu.Unlock()
 	engine.mu.Lock()
-	engine.agentSteps[planAgent2] = "plan"
+	engine.agentSteps[planAgent2] = agentEntry{taskID: "t1", stepID: "plan"}
 	engine.mu.Unlock()
 
 	// Agent 1 completes first → workflow advances to review_plan/wait_human.
@@ -2308,13 +2308,13 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 
 	agentID := agents.LastID()
 	engine.mu.Lock()
-	gotStep, tracked := engine.agentSteps[agentID]
+	gotEntry, tracked := engine.agentSteps[agentID]
 	engine.mu.Unlock()
 	if !tracked {
 		t.Fatalf("agentSteps missing entry for agent %s", agentID)
 	}
-	if gotStep != "plan" {
-		t.Errorf("agentSteps[%s] = %q, want plan", agentID, gotStep)
+	if gotEntry.stepID != "plan" {
+		t.Errorf("agentSteps[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
 	}
 
 	// Completing the agent must clear its mapping so the map doesn't grow
