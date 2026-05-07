@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sybra v3 POC</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #1b2636;
+            color: #e8e8e8;
+            margin: 0;
+            padding: 2rem;
+        }
+        h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+        code {
+            background: #0f1620;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+        }
+        .ok { color: #6ee7b7; }
+        .err { color: #f87171; }
+    </style>
+</head>
+<body>
+    <h1>Sybra v3 POC</h1>
+    <p>Window opened. Calling <code>InfoService.GetVersion</code>...</p>
+    <p id="result">loading...</p>
+
+    <script type="module">
+        import { Call } from "/wails/runtime.js";
+
+        const fqn = "github.com/Automaat/sybra/internal/sybra/v3svc.InfoService.GetVersion";
+        const out = document.getElementById("result");
+
+        try {
+            const v = await Call.ByName(fqn);
+            out.innerHTML = `<span class="ok">OK</span> &mdash; server version: <code>${v.server || "(empty)"}</code>`;
+        } catch (e) {
+            out.innerHTML = `<span class="err">FAIL</span> &mdash; ${e}`;
+        }
+    </script>
+</body>
+</html>
