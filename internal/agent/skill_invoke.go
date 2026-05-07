@@ -1,10 +1,11 @@
 package agent
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -22,7 +23,7 @@ func rewriteSkillInvocations(prompt string, skillNames []string) string {
 	// shorter prefix like "plan" consuming part of "plan-critic").
 	sorted := make([]string, len(skillNames))
 	copy(sorted, skillNames)
-	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	slices.SortFunc(sorted, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	for _, name := range sorted {
 		if name == "" {
 			continue
