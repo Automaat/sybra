@@ -3,6 +3,7 @@
   import { Folder, X } from '@lucide/svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
+  import { notificationStore } from '../stores/notifications.svelte.js'
   import { detectProject } from '../lib/detectProject.js'
 
   interface Props {
@@ -99,6 +100,8 @@
       value = ''
       onclose()
       oncreated?.(t.id)
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Create failed', String(err))
     } finally {
       submitting = false
     }

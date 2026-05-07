@@ -3,6 +3,7 @@
   import type { task } from '../../wailsjs/go/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { notificationStore } from '../stores/notifications.svelte.js'
   import { STATUS_OPTIONS } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
@@ -30,9 +31,13 @@
 
   async function copyBranch(e: MouseEvent) {
     e.stopPropagation()
-    await navigator.clipboard.writeText(taskBranchName)
-    copiedBranch = true
-    setTimeout(() => { copiedBranch = false }, 1500)
+    try {
+      await navigator.clipboard.writeText(taskBranchName)
+      copiedBranch = true
+      setTimeout(() => { copiedBranch = false }, 1500)
+    } catch {
+      notificationStore.pushLocal('error', 'Copy failed', 'Could not copy branch name to clipboard')
+    }
   }
 
   const triaging = $derived(

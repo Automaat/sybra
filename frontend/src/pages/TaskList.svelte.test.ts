@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/svelte'
+import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     loading: false,
     error: '',
     list: [],
+    tasks: new Map(),
+    create: vi.fn(),
+    update: vi.fn(),
   },
 }))
 
@@ -15,7 +18,14 @@ vi.mock('../stores/projects.svelte.js', () => ({
   },
 }))
 
+vi.mock('../stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    pushLocal: vi.fn(),
+  },
+}))
+
 const { taskStore } = await import('../stores/tasks.svelte.js')
+const { notificationStore } = await import('../stores/notifications.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
 const mockTask = (id: string, title: string, status = 'todo') => ({
@@ -34,7 +44,8 @@ const mockTask = (id: string, title: string, status = 'todo') => ({
 
 describe('TaskList', () => {
   beforeEach(() => {
-    Object.assign(taskStore, { loading: false, error: '', list: [] })
+    Object.assign(taskStore, { loading: false, error: '', list: [], tasks: new Map(), create: vi.fn(), update: vi.fn() })
+    vi.mocked(notificationStore.pushLocal).mockClear()
   })
 
   afterEach(() => {
@@ -74,5 +85,23 @@ describe('TaskList', () => {
     render(TaskList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('First Task')).toBeDefined()
     expect(screen.getByText('Second Task')).toBeDefined()
+  })
+
+  describe('submitInlineAdd error handling', () => {
+    it('shows notification when task creation fails', async () => {
+      vi.mocked(taskStore.create).mockRejectedValueOnce(new Error('Network error'))
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const addBtn = screen.getAllByTitle('Add task (C)')[0]
+      await fireEvent.click(addBtn)
+
+      const input = screen.getByPlaceholderText('Task title')
+      await fireEvent.input(input, { target: { value: 'New task' } })
+      await fireEvent.keyDown(input, { key: 'Enter' })
+
+      await new Promise((r) => setTimeout(r, 0))
+
+      expect(notificationStore.pushLocal).toHaveBeenCalledWith('error', 'Create failed', 'Error: Network error')
+    })
   })
 })
