@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -422,12 +423,12 @@ func parseVerdict(text string) (verdictDecision, error) {
 // The fenced verdict block always lives in the last assistant turn.
 func finalAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
-	for i := len(out) - 1; i >= 0; i-- {
+	for i := range slices.Backward(out) {
 		if out[i].Type == "assistant" && strings.Contains(out[i].Content, "sybra-verdict") {
 			return out[i].Content
 		}
 	}
-	for i := len(out) - 1; i >= 0; i-- {
+	for i := range slices.Backward(out) {
 		if out[i].Type == "result" {
 			return out[i].Content
 		}
