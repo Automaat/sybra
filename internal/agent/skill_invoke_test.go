@@ -10,9 +10,10 @@ func TestRewriteSkillInvocations(t *testing.T) {
 	t.Parallel()
 	skills := []string{"plan-critic", "sybra-triage", "sybra-plan", "staff-code-review"}
 	tests := []struct {
-		name string
-		in   string
-		want string
+		name   string
+		in     string
+		want   string
+		skills []string // nil = use package-level skills
 	}{
 		{
 			name: "leading slash invocation",
@@ -50,17 +51,26 @@ func TestRewriteSkillInvocations(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "no skill names leaves prompt untouched",
-			in:   "/plan-critic here",
-			want: "/plan-critic here",
+			name:   "no skill names leaves prompt untouched",
+			in:     "/plan-critic here",
+			want:   "/plan-critic here",
+			skills: []string{},
+		},
+		{
+			// Validates descending-length sort: "plan" must not consume the
+			// prefix of "plan-critic" when both are present.
+			name:   "overlapping names: longer match wins",
+			in:     "Run /plan-critic then /plan to finish.",
+			want:   "Run $plan-critic then $plan to finish.",
+			skills: []string{"plan", "plan-critic"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			names := skills
-			if tt.name == "no skill names leaves prompt untouched" {
-				names = nil
+			if tt.skills != nil {
+				names = tt.skills
 			}
 			got := rewriteSkillInvocations(tt.in, names)
 			if got != tt.want {
