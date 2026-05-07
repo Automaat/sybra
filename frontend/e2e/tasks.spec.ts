@@ -251,7 +251,8 @@ test.describe('Navigation Rail', () => {
 })
 
 test.describe('Task watcher', () => {
-  test('board updates when task file is created externally', { tag: '@flaky', timeout: 35_000 }, async ({ page }) => {
+  test('board updates when task file is created externally', { tag: '@flaky' }, async ({ page }) => {
+    test.setTimeout(35_000)
     await goToTaskList(page)
     await waitForTasks(page)
 
