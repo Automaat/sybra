@@ -59,8 +59,8 @@ jobs:
       - name: Build web variant
         run: cd frontend && npm run build:web
 
-      - name: Run unit tests
-        run: cd frontend && npx vitest run --passWithNoTests
+      - name: Run unit tests with coverage
+        run: cd frontend && npm run test:coverage
 
   lint-go:
     name: Go Lint

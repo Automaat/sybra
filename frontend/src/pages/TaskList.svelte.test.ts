@@ -24,7 +24,14 @@ vi.mock('../stores/notifications.svelte.js', () => ({
   },
 }))
 
+vi.mock('../components/TaskTimeline.svelte', () => ({ default: () => {} }))
+vi.mock('../components/StatusPicker.svelte', () => ({ default: () => {} }))
+vi.mock('../components/PriorityPicker.svelte', () => ({ default: () => {} }))
+vi.mock('../components/AssignProjectDialog.svelte', () => ({ default: () => {} }))
+vi.mock('../components/shell/MobileSheet.svelte', () => ({ default: () => {} }))
+
 const { taskStore } = await import('../stores/tasks.svelte.js')
+const { projectStore } = await import('../stores/projects.svelte.js')
 const { notificationStore } = await import('../stores/notifications.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
@@ -45,6 +52,7 @@ const mockTask = (id: string, title: string, status = 'todo') => ({
 describe('TaskList', () => {
   beforeEach(() => {
     Object.assign(taskStore, { loading: false, error: '', list: [], tasks: new Map(), create: vi.fn(), update: vi.fn() })
+    Object.assign(projectStore, { list: [] })
     vi.mocked(notificationStore.pushLocal).mockClear()
   })
 
@@ -102,6 +110,106 @@ describe('TaskList', () => {
       await new Promise((r) => setTimeout(r, 0))
 
       expect(notificationStore.pushLocal).toHaveBeenCalledWith('error', 'Create failed', 'Error: Network error')
+    })
+  })
+
+  describe('view mode buttons', () => {
+    it('renders List, Board, and Timeline buttons', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('List')).toBeDefined()
+      expect(screen.getByText('Board')).toBeDefined()
+      expect(screen.getByText('Timeline')).toBeDefined()
+    })
+
+    it('renders Show done checkbox', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByLabelText('Show done')).toBeDefined()
+    })
+
+    it('renders Logbook link', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Logbook →')).toBeDefined()
+    })
+  })
+
+  describe('task selection', () => {
+    it('calls onselect when task card is clicked in board view', async () => {
+      const onselect = vi.fn()
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Selectable Task', 'todo')],
+      })
+      render(TaskList, { props: { onselect } })
+      const taskCard = screen.getByText('Selectable Task')
+      await fireEvent.click(taskCard)
+      expect(onselect).toHaveBeenCalledWith('t-1')
+    })
+  })
+
+  describe('show done tasks in list view', () => {
+    it('hides done tasks in list view by default', async () => {
+      Object.assign(taskStore, {
+        list: [
+          mockTask('t-done', 'Completed Task', 'done'),
+          mockTask('t-todo', 'Active Task', 'todo'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      // Switch to list view
+      await fireEvent.click(screen.getByText('List'))
+      expect(screen.getByText('Active Task')).toBeDefined()
+      expect(screen.queryByText('Completed Task')).toBeNull()
+    })
+
+    it('shows done tasks in list view when Show done checked', async () => {
+      Object.assign(taskStore, {
+        list: [
+          mockTask('t-done', 'Completed Task', 'done'),
+          mockTask('t-todo', 'Active Task', 'todo'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      // Switch to list view
+      await fireEvent.click(screen.getByText('List'))
+      const checkbox = screen.getByLabelText('Show done')
+      await fireEvent.click(checkbox)
+      expect(screen.getByText('Completed Task')).toBeDefined()
+      expect(screen.getByText('Active Task')).toBeDefined()
+    })
+  })
+
+  describe('move task error handling', () => {
+    it('shows notification when task move fails', async () => {
+      vi.mocked(taskStore.update).mockRejectedValueOnce(new Error('Server error'))
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Task to move', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Task to move', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const col = document.querySelector('[data-col-status="in-progress"]')
+      if (col) {
+        await fireEvent.drop(col, {
+          dataTransfer: { getData: () => 't-1' },
+        })
+        await new Promise((r) => setTimeout(r, 0))
+        expect(notificationStore.pushLocal).toHaveBeenCalledWith('error', 'Move failed', expect.any(String))
+      }
+    })
+  })
+
+  describe('project filter', () => {
+    it('shows project filter when projects exist', () => {
+      Object.assign(projectStore, {
+        list: [{ id: 'p1', owner: 'myorg', repo: 'myrepo' }],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('All projects')).toBeDefined()
+    })
+
+    it('does not show project filter when no projects', () => {
+      Object.assign(projectStore, { list: [] })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText('All projects')).toBeNull()
     })
   })
 })
