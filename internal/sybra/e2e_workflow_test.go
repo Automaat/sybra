@@ -2338,11 +2338,17 @@ func agentRunRoles(t task.Task) []string {
 // in headless mode with role "plan-critic"; that role appearing in the task's
 // agent runs is the externally observable proof the step ran.
 func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
+	// Dual-provider plan flow scenarios:
+	//   triage → parallel{plan_claude, plan_codex} → converge_plans →
+	//   maybe_critique → critique_plan → require_plan_critique →
+	//   reset_for_address → address_critique → review_plan.
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning",  // triage flips status=planning, tags=large
-		"success",             // plan agent (interactive) — exits, advances
-		"plan_critic_success", // critique_plan agent saves sidecar via sybra-cli
-		"success",             // address_critique agent
+		"triage_to_planning",    // triage: status=planning, tags=large
+		"write_sidecar_success", // plan child #1 — writes plan-draft sidecar
+		"write_sidecar_success", // plan child #2 — writes plan-draft sidecar
+		"write_sidecar_success", // converge_plans — writes synthesized plan sidecar
+		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
+		"success",               // address_critique
 	})
 	loadBuiltinWorkflow(t, env, "simple-task")
 
@@ -2409,10 +2415,14 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 // would render only the plan. The guard must flip the task to human-required
 // and halt the workflow.
 func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
+	// Dual-provider plan flow: triage → parallel(plan_a, plan_b) → converge
+	// → critique_plan (no_save) → require_plan_critique guard fires.
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning",  // triage flips status=planning, tags=large
-		"success",             // plan agent (interactive) — exits, advances
-		"plan_critic_no_save", // critic agent completes without writing sidecar
+		"triage_to_planning",    // triage: status=planning, tags=large
+		"write_sidecar_success", // plan child #1
+		"write_sidecar_success", // plan child #2
+		"write_sidecar_success", // converge_plans
+		"plan_critic_no_save",   // critic exits without writing sidecar
 	})
 	loadBuiltinWorkflow(t, env, "simple-task")
 
@@ -2460,9 +2470,17 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 // a task tagged "nocritic" must bypass critique_plan via the maybe_critique
 // condition step and reach review_plan with no plan-critic agent ever spawned.
 func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
+	// Dual-provider plan flow: triage → parallel{plan_claude, plan_codex}
+	// → converge_plans → maybe_critique (skipped via nocritic) → review_plan.
+	// Codex provider is not on PATH in this single-provider setup, so the
+	// engine falls back to claude for the codex child — both children
+	// spawn fake-claude with the write_sidecar_success scenario, each
+	// writing to a child-specific path derived from {{.Step.ID}}.
 	env := setupE2EMulti(t, []string{
 		"triage_to_planning_nocritic", // triage sets status=planning, tags=large,nocritic
-		"success",                     // plan agent only — no critic should run
+		"write_sidecar_success",       // plan child #1 writes its plan-draft
+		"write_sidecar_success",       // plan child #2 writes its plan-draft
+		"write_sidecar_success",       // converge_plans writes the synthesized plan
 	})
 	loadBuiltinWorkflow(t, env, "simple-task")
 

@@ -58,9 +58,12 @@ type TaskInfo struct {
 	Plan         string
 	PlanCritique string
 	CodeReview   string
-	Issue        string
-	Reviewed     bool
-	Workflow     *Execution
+	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
+	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
+	PlanDrafts map[string]string
+	Issue      string
+	Reviewed   bool
+	Workflow   *Execution
 }
 
 // TaskProvider reads and updates tasks.
@@ -71,11 +74,17 @@ type TaskProvider interface {
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	SetWorkflow(id string, wf *Execution) error
-	// WriteSidecar stores content as the named sidecar (`code_review` or
-	// `plan_critique`) for the task. Used by run_agent steps that declare
-	// import_sidecar so the engine can ingest the agent's output file
-	// without depending on the agent's sandbox being able to write to
-	// ~/.sybra/tasks/.
+	// WriteSidecar stores content as the named sidecar for the task. Used
+	// by run_agent steps that declare import_sidecar so the engine can
+	// ingest the agent's output file without depending on the agent's
+	// sandbox being able to write to ~/.sybra/tasks/. Recognized kinds:
+	//   "plan"          — final implementation plan
+	//   "plan_critique" — plan-critic report
+	//   "code_review"   — staff-code-review report
+	//   "plan_draft.<name>" — raw per-provider plan during dual-/N-provider
+	//       planning; <name> is typically the parallel child step ID. The
+	//       engine derives <name> from the step ID when the YAML kind is
+	//       a bare "plan_draft".
 	WriteSidecar(id, kind, content string) error
 }
 
@@ -109,37 +118,37 @@ type CompletionInfo struct {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store       *Store
-	tasks       TaskProvider
-	agents      AgentLauncher
-	prLinker    PRLinker
-	worktrees   WorktreeGetter
-	onComplete  func(CompletionInfo)
-	logger      *slog.Logger
-	ctx         context.Context
-	mu          sync.Mutex
-	inflight    map[string]struct{} // taskID → step in flight (prevent double-advance)
-	dispatching map[string]struct{} // taskID → dispatch in progress
-	starting    map[string]struct{} // taskID → StartWorkflowWithVars in progress
-	humanAction map[string]struct{} // taskID → HandleHumanAction in progress
-	agentSteps  map[string]string   // agentID → stepID it was spawned for
-	resumeError *logging.ErrorThrottle
+	store           *Store
+	tasks           TaskProvider
+	agents          AgentLauncher
+	prLinker        PRLinker
+	worktrees       WorktreeGetter
+	onComplete      func(CompletionInfo)
+	logger          *slog.Logger
+	ctx             context.Context
+	mu              sync.Mutex
+	inflightMutexes map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching     map[string]struct{}    // taskID → dispatch in progress
+	starting        map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction     map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentSteps      map[string]string      // agentID → stepID it was spawned for
+	resumeError     *logging.ErrorThrottle
 }
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return &Engine{
-		store:       store,
-		tasks:       tasks,
-		agents:      agents,
-		logger:      logger,
-		ctx:         context.Background(),
-		inflight:    make(map[string]struct{}),
-		dispatching: make(map[string]struct{}),
-		starting:    make(map[string]struct{}),
-		humanAction: make(map[string]struct{}),
-		agentSteps:  make(map[string]string),
-		resumeError: logging.NewErrorThrottle(),
+		store:           store,
+		tasks:           tasks,
+		agents:          agents,
+		logger:          logger,
+		ctx:             context.Background(),
+		inflightMutexes: make(map[string]*sync.Mutex),
+		dispatching:     make(map[string]struct{}),
+		starting:        make(map[string]struct{}),
+		humanAction:     make(map[string]struct{}),
+		agentSteps:      make(map[string]string),
+		resumeError:     logging.NewErrorThrottle(),
 	}
 }
 
@@ -336,19 +345,20 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 // double-delivered callback — from triggering "step not found" errors that
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
-	if !e.acquireInflight(taskID) {
-		e.logger.Debug("workflow.advance.skip", "task_id", taskID, "reason", "already_advancing")
-		return nil
-	}
-	// Released explicitly before executeSteps (below) so the dispatched
-	// agent's completion callback isn't dropped as "already_advancing"
-	// when it races with the outer call. Deferred release is idempotent
-	// and covers every early-return path.
+	e.acquireInflight(taskID) // blocks until any concurrent advance releases
 	defer e.releaseInflight(taskID)
 
-	wfExec, def, currentStep, skip, err := e.loadAdvanceContext(taskID, output)
+	ctx, skip, err := e.loadAdvanceContext(taskID, output)
 	if err != nil || skip {
 		return err
+	}
+	wfExec, def, currentStep := ctx.WfExec, ctx.Def, ctx.Step
+
+	// Parallel-child completion: route to the child-aware path. The parent
+	// step's record + transitions are emitted only after every child has
+	// terminated, so we never go through the single-step record path here.
+	if ctx.ParallelParent != nil {
+		return e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
 	}
 
 	// Record step completion.
@@ -375,7 +385,6 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 				return err
 			}
-			e.releaseInflight(taskID)
 			return e.executeSteps(taskID, &def, currentStep, wfExec)
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
@@ -406,83 +415,145 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
-	e.releaseInflight(taskID)
 	return e.executeSteps(taskID, &def, nextStep, wfExec)
 }
 
-// acquireInflight attempts to mark a task as actively advancing. Returns
-// false when another AdvanceStep call already owns the slot, in which case
-// the caller must no-op rather than racing.
+// acquireInflight serializes AdvanceStep for a task. Blocks (rather than
+// returning false) so simultaneous parallel-child completions from
+// different agent goroutines are processed sequentially instead of one
+// silently being dropped. Always returns true; the bool return is kept
+// so callers can preserve the "skip on already-advancing" log line.
+//
+// Re-entry within the same goroutine is not supported — every AdvanceStep
+// path defers releaseInflight before any callback that could re-enter.
 func (e *Engine) acquireInflight(taskID string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, ok := e.inflight[taskID]; ok {
-		return false
-	}
-	e.inflight[taskID] = struct{}{}
+	mu := e.taskInflightMutex(taskID)
+	mu.Lock()
 	return true
 }
 
-// releaseInflight clears the in-flight marker for a task.
+// releaseInflight unlocks the per-task advance mutex.
 func (e *Engine) releaseInflight(taskID string) {
+	mu := e.taskInflightMutex(taskID)
+	mu.Unlock()
+}
+
+// taskInflightMutex returns the lazily-initialized per-task mutex used by
+// acquire/releaseInflight. Old taskInflightMutex entries linger for the
+// life of the process; tasks with hundreds of millions of IDs would leak
+// memory, but task IDs are bounded by the human workload so this is fine.
+func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
 	e.mu.Lock()
-	delete(e.inflight, taskID)
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	mu, ok := e.inflightMutexes[taskID]
+	if !ok {
+		mu = &sync.Mutex{}
+		e.inflightMutexes[taskID] = mu
+	}
+	return mu
+}
+
+// advanceContext bundles everything AdvanceStep needs to act on a single
+// step completion. ParallelParent is non-nil when the resolved Step is a
+// child of an in-flight `parallel` block.
+type advanceContext struct {
+	WfExec         *Execution
+	Def            Definition
+	Step           *Step
+	ParallelParent *Step
 }
 
 // loadAdvanceContext validates and resolves the state needed by AdvanceStep.
-// Returns skip=true (with nil error) for every legitimate no-op path: a
-// terminal workflow, an empty step ID, a stale step (the ResumeStalled-race
-// duplicate-agent guard), or an unexpected agent callback hitting a
-// wait_human step without a human_action var set (defense-in-depth).
-func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (*Execution, Definition, *Step, bool, error) {
-	var emptyDef Definition
+// Returns skip=true (with nil error and ctx={}) for every legitimate no-op
+// path: a terminal workflow, an empty step ID, a stale step (the
+// ResumeStalled-race duplicate-agent guard), or an unexpected agent callback
+// hitting a wait_human step without a human_action var set
+// (defense-in-depth).
+//
+// When the workflow's current step is a `parallel` block and `output.StepID`
+// names one of its children, ctx.Step is the *child* (so retry counters and
+// ImportSidecar lookups operate on the child's config) and
+// ctx.ParallelParent is non-nil.
+func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceContext, bool, error) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
-		return nil, emptyDef, nil, false, err
+		return advanceContext{}, false, err
 	}
 	if t.Workflow == nil {
-		return nil, emptyDef, nil, false, fmt.Errorf("task %s has no active workflow", taskID)
+		return advanceContext{}, false, fmt.Errorf("task %s has no active workflow", taskID)
 	}
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
 		e.logger.Debug("workflow.advance.skip",
 			"task_id", taskID, "reason", "workflow_terminal",
 			"state", string(t.Workflow.State), "step_id", output.StepID)
-		return nil, emptyDef, nil, true, nil
+		return advanceContext{}, true, nil
 	}
 	if output.StepID == "" {
 		e.logger.Debug("workflow.advance.skip",
 			"task_id", taskID, "reason", "empty_step_id",
 			"state", string(t.Workflow.State))
-		return nil, emptyDef, nil, true, nil
-	}
-	if output.StepID != t.Workflow.CurrentStep {
-		e.logger.Debug("workflow.advance.skip",
-			"task_id", taskID, "reason", "stale_step",
-			"output_step", output.StepID, "current_step", t.Workflow.CurrentStep,
-			"agent_id", output.AgentID)
-		return nil, emptyDef, nil, true, nil
+		return advanceContext{}, true, nil
 	}
 
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
-		return nil, emptyDef, nil, false, err
-	}
-	currentStep := def.StepByID(output.StepID)
-	if currentStep == nil {
-		return nil, emptyDef, nil, false, fmt.Errorf("step %s not found in workflow %s", output.StepID, def.ID)
+		return advanceContext{}, false, err
 	}
 
-	if currentStep.Type == StepWaitHuman && output.AgentID != "" {
+	// Stale-step / parallel-child check: the output step must either match
+	// the current step exactly, or be a child of the current step when the
+	// current step is a `parallel` block. Anything else is a stale callback.
+	currentStep := def.StepByID(t.Workflow.CurrentStep)
+	if currentStep == nil {
+		return advanceContext{}, false, fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
+	}
+	var parallelParent *Step
+	resolvedStep := currentStep
+	if output.StepID != t.Workflow.CurrentStep {
+		if currentStep.Type == StepParallel && parallelHasChild(currentStep, output.StepID) {
+			parallelParent = currentStep
+			resolvedStep = def.StepByID(output.StepID) // child (StepByID recurses)
+			if resolvedStep == nil {
+				return advanceContext{}, false, fmt.Errorf("parallel child %s not found in workflow %s", output.StepID, def.ID)
+			}
+		} else {
+			e.logger.Debug("workflow.advance.skip",
+				"task_id", taskID, "reason", "stale_step",
+				"output_step", output.StepID, "current_step", t.Workflow.CurrentStep,
+				"agent_id", output.AgentID)
+			return advanceContext{}, true, nil
+		}
+	}
+
+	if resolvedStep.Type == StepWaitHuman && output.AgentID != "" {
 		if _, set := t.Workflow.Variables["human_action"]; !set {
 			e.logger.Debug("workflow.advance.skip",
 				"task_id", taskID, "reason", "wait_human_no_action",
 				"step", output.StepID, "agent_id", output.AgentID)
-			return nil, emptyDef, nil, true, nil
+			return advanceContext{}, true, nil
 		}
 	}
 
-	return t.Workflow, def, currentStep, false, nil
+	return advanceContext{
+		WfExec:         t.Workflow,
+		Def:            def,
+		Step:           resolvedStep,
+		ParallelParent: parallelParent,
+	}, false, nil
+}
+
+// parallelHasChild reports whether `parent` is a parallel block that lists
+// `childID` among its direct children.
+func parallelHasChild(parent *Step, childID string) bool {
+	if parent == nil || parent.Type != StepParallel {
+		return false
+	}
+	for i := range parent.Parallel {
+		if parent.Parallel[i].ID == childID {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -683,11 +754,19 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
 		return
 	}
-	if writeErr := e.tasks.WriteSidecar(taskID, cfg.Kind, string(content)); writeErr != nil {
-		e.logger.Error("workflow.import-sidecar.write", "task_id", taskID, "step", stepID, "kind", cfg.Kind, "err", writeErr)
+	// Convention: a bare "plan_draft" kind is auto-namespaced by the step
+	// ID so a single workflow can fan out to N parallel planners without
+	// each having to spell out a unique kind. The result lands in the
+	// PlanDraftStore under name=<step ID>.
+	kind := cfg.Kind
+	if kind == "plan_draft" {
+		kind = "plan_draft." + stepID
+	}
+	if writeErr := e.tasks.WriteSidecar(taskID, kind, string(content)); writeErr != nil {
+		e.logger.Error("workflow.import-sidecar.write", "task_id", taskID, "step", stepID, "kind", kind, "err", writeErr)
 		return
 	}
-	e.logger.Info("workflow.import-sidecar", "task_id", taskID, "step", stepID, "kind", cfg.Kind, "path", path, "bytes", len(content))
+	e.logger.Info("workflow.import-sidecar", "task_id", taskID, "step", stepID, "kind", kind, "path", path, "bytes", len(content))
 }
 
 // lookupAgentStep returns the stepID an agent was spawned for and whether it
@@ -752,8 +831,16 @@ func (e *Engine) ResumeStalled() {
 		// this guard the ticker would spawn a duplicate and the second
 		// agent's completion would corrupt the workflow at the wait_human
 		// gate.
+		// inflightMutexes is a non-blocking probe: TryLock distinguishes
+		// "another goroutine currently holds the advance lock" from "free".
+		// We only set dispatching when both the advance lock and prior
+		// dispatching guard are free.
+		mu := e.taskInflightMutex(t.ID)
+		advancing := !mu.TryLock()
+		if !advancing {
+			mu.Unlock()
+		}
 		e.mu.Lock()
-		_, advancing := e.inflight[t.ID]
 		_, dispatching := e.dispatching[t.ID]
 		if !advancing && !dispatching {
 			e.dispatching[t.ID] = struct{}{}
@@ -843,6 +930,8 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		switch step.Type {
 		case StepRunAgent:
 			return e.execRunAgent(taskID, step, wfExec, ctx)
+		case StepParallel:
+			return e.execParallel(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar:
@@ -1042,6 +1131,260 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
+// execParallel spawns every child of a `parallel` block concurrently, all
+// against the shared task worktree. Children are headless run_agent steps
+// (validated at definition load time); planning is read-only so contention
+// on the worktree is benign. The parent step advances to its `next` only
+// after every child has terminated; per-child completions are routed
+// through AdvanceStep via the existing agentSteps mapping.
+func (e *Engine) execParallel(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+	if len(step.Parallel) < 2 {
+		return fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
+	}
+
+	// Resume-safe: a re-entry into the same parallel parent (e.g. after a
+	// process restart) finds the existing record and skips children that
+	// already completed. We treat any non-pending child as already
+	// dispatched; the missing pending children get re-spawned below.
+	if wfExec.ParallelInflight == nil {
+		wfExec.ParallelInflight = make(map[string]*ParallelChildren)
+	}
+	rec, exists := wfExec.ParallelInflight[step.ID]
+	if !exists {
+		rec = &ParallelChildren{
+			ParentStepID: step.ID,
+			StartedAt:    time.Now().UTC(),
+			Children:     make(map[string]*ChildStatus, len(step.Parallel)),
+		}
+		for i := range step.Parallel {
+			c := &step.Parallel[i]
+			rec.Children[c.ID] = &ChildStatus{Status: "pending"}
+		}
+		wfExec.ParallelInflight[step.ID] = rec
+	}
+
+	// Stop stale agents from prior steps once before spawning the fan-out.
+	// Doing this inside the per-child loop would kill the child we just
+	// spawned for the previous iteration.
+	e.agents.StopAgentsForTask(taskID, "")
+
+	// Persist the inflight record before spawning so an agent that
+	// completes mid-loop finds the parent record on AdvanceStep.
+	wfExec.State = ExecWaiting
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return err
+	}
+
+	dir := wfExec.Variables[WorkflowVarDir]
+	for i := range step.Parallel {
+		child := &step.Parallel[i]
+		status := rec.Children[child.ID]
+		if status == nil {
+			status = &ChildStatus{Status: "pending"}
+			rec.Children[child.ID] = status
+		}
+		// Skip children that already terminated in a previous run (resume).
+		if status.Status == "completed" || status.Status == "failed" {
+			continue
+		}
+		if err := e.spawnParallelChild(taskID, step, child, wfExec, ctx, dir, status); err != nil {
+			e.logger.Error("workflow.parallel.spawn", "task_id", taskID, "parent", step.ID, "child", child.ID, "err", err)
+			// Mark this child failed up front; AdvanceStep treats failed
+			// children consistently with the retry path.
+			status.Status = "failed"
+			status.Output = "spawn failed: " + err.Error()
+		}
+	}
+
+	return e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+// spawnParallelChild spawns one child agent of a parallel block. Mirrors
+// the body of execRunAgent but skips StopAgentsForTask (that's done once
+// at the parent level) and writes results into the ChildStatus slot
+// instead of mutating wfExec.State directly.
+func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *Execution, parentCtx TemplateContext, dir string, status *ChildStatus) error {
+	// Render the child prompt with a context that points at the child step
+	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
+	childCtx := parentCtx
+	childCtx.Step = *child
+	prompt, err := RenderTemplate(child.Config.Prompt, childCtx)
+	if err != nil {
+		return fmt.Errorf("render prompt: %w", err)
+	}
+
+	mode := child.Config.Mode
+	if strings.Contains(mode, "{{") {
+		if rendered, rErr := RenderTemplate(mode, childCtx); rErr == nil {
+			mode = rendered
+		}
+	}
+	if mode == "" {
+		mode = "headless"
+	}
+	model := child.Config.Model
+	if model == "" {
+		model = "sonnet"
+	}
+
+	provider := resolveProvider(child.Config.Provider, wfExec, e.agents.DefaultProvider())
+	if provider != "" && !providerAvailable(provider) {
+		e.logger.Warn("workflow.parallel.cross-provider.fallback", "child", child.ID, "wanted", provider, "reason", "CLI not found")
+		provider = ""
+	}
+
+	// Headless one-shot: parallel children must terminate so the parent
+	// can advance. Interactive/wait_for_status children are not supported
+	// here (validated at definition load time would be the proper place;
+	// guard here defensively).
+	if mode == "interactive" {
+		return fmt.Errorf("parallel child %q: interactive mode not supported", child.ID)
+	}
+	oneShot := false
+
+	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot)
+	if err != nil {
+		return fmt.Errorf("start agent: %w", err)
+	}
+
+	// agentSteps key uses the *child* step ID. StepByID recurses into
+	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
+	// returns the right step config.
+	e.mu.Lock()
+	e.agentSteps[agentID] = child.ID
+	e.mu.Unlock()
+
+	status.AgentID = agentID
+	status.Provider = provider
+	status.Status = "pending"
+	e.logger.Info("workflow.parallel.spawn",
+		"task_id", taskID, "parent", parent.ID, "child", child.ID,
+		"role", child.Config.Role, "agent_id", agentID, "provider", provider)
+	return nil
+}
+
+// advanceParallelChild records one child's completion inside its parent
+// `parallel` block. Per-child retry: a failed child gets re-spawned up to
+// child.Config.MaxRetries times before terminating with status=failed.
+// The parent step's StepRecord + Next-evaluation only fire after every
+// child has terminated. Aggregate parent status: completed iff every
+// child completed; failed otherwise.
+func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, child *Step, wfExec *Execution, output StepOutput) error {
+	rec := wfExec.ParallelInflight[parent.ID]
+	if rec == nil {
+		// Parent record was cleared (e.g. another late callback after the
+		// parent already advanced). Treat as a stale callback.
+		e.logger.Debug("workflow.parallel.stale", "task_id", taskID, "parent", parent.ID, "child", child.ID)
+		return nil
+	}
+	status := rec.Children[child.ID]
+	if status == nil {
+		status = &ChildStatus{Status: "pending"}
+		rec.Children[child.ID] = status
+	}
+
+	// Per-child retry: only failures count toward MaxRetries; each retry
+	// re-spawns the child agent on the shared worktree.
+	if output.Status == "failed" && child.Config.MaxRetries > 0 && status.Retries < child.Config.MaxRetries {
+		status.Retries++
+		status.Status = "pending"
+		status.Output = output.Output
+		e.logger.Info("workflow.parallel.retry",
+			"task_id", taskID, "parent", parent.ID, "child", child.ID,
+			"attempt", status.Retries, "max", child.Config.MaxRetries)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return err
+		}
+		// Re-spawn just this child. Reuse the parent's template context
+		// rendered fresh from the latest task state.
+		t, gErr := e.tasks.GetTask(taskID)
+		if gErr != nil {
+			return gErr
+		}
+		dir := wfExec.Variables[WorkflowVarDir]
+		ctx := TemplateContext{
+			Task:     t,
+			Step:     *parent,
+			Vars:     wfExec.Variables,
+			Workflow: wfExec,
+		}
+		if spawnErr := e.spawnParallelChild(taskID, parent, child, wfExec, ctx, dir, status); spawnErr != nil {
+			status.Status = "failed"
+			status.Output = "respawn failed: " + spawnErr.Error()
+			e.logger.Error("workflow.parallel.respawn", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", spawnErr)
+		}
+		return e.tasks.SetWorkflow(taskID, wfExec)
+	}
+
+	// Terminal status — update slot.
+	status.AgentID = output.AgentID
+	status.Provider = output.Provider
+	status.Status = output.Status
+	status.Output = truncate(output.Output, 4000)
+
+	// Wait for the rest of the cohort.
+	if !rec.AllChildrenDone() {
+		e.logger.Debug("workflow.parallel.child-done",
+			"task_id", taskID, "parent", parent.ID, "child", child.ID,
+			"status", status.Status)
+		return e.tasks.SetWorkflow(taskID, wfExec)
+	}
+
+	// All children terminated — collapse into a single parent step record
+	// and advance via parent's Next.
+	parentStatus := "completed"
+	if rec.AnyChildFailed() {
+		parentStatus = "failed"
+	}
+	parentOutput := summarizeChildOutputs(rec)
+
+	// Clear the inflight record before recording the parent step so a stale
+	// late callback can't re-enter advanceParallelChild for this parent.
+	delete(wfExec.ParallelInflight, parent.ID)
+
+	now := time.Now().UTC()
+	wfExec.RecordStep(StepRecord{
+		StepID:    parent.ID,
+		Status:    parentStatus,
+		Output:    truncate(parentOutput, 4000),
+		StartedAt: rec.StartedAt,
+		EndedAt:   now,
+	})
+	if parentOutput != "" {
+		wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+	}
+
+	// Re-read task for latest state (children may have written sidecars).
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	t.Workflow = wfExec
+	nextStep, err := e.resolveNext(taskID, def, parent, wfExec, t)
+	if err != nil {
+		return err
+	}
+	if nextStep == nil {
+		return nil
+	}
+	e.logger.Info("workflow.parallel.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID, "status", parentStatus)
+	return e.executeSteps(taskID, def, nextStep, wfExec)
+}
+
+// summarizeChildOutputs renders a compact "child=status" summary that
+// downstream steps (e.g. converge_plans) can reference via vars.step.<parent>.output.
+func summarizeChildOutputs(rec *ParallelChildren) string {
+	if rec == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(rec.Children))
+	for id, c := range rec.Children {
+		parts = append(parts, fmt.Sprintf("%s=%s", id, c.Status))
+	}
+	slices.Sort(parts) // deterministic for test assertions
+	return strings.Join(parts, ", ")
+}
+
 // flipProvider returns the opposite provider.
 func flipProvider(p string) string {
 	if p == "codex" {
@@ -1237,17 +1580,24 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // exits cleanly without producing its expected output file.
 func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	var content, label string
-	switch step.Config.Sidecar {
-	case "plan_critique":
+	switch sk := step.Config.Sidecar; {
+	case sk == "plan_critique":
 		content = t.PlanCritique
 		label = "plan critique"
-	case "code_review":
+	case sk == "code_review":
 		content = t.CodeReview
 		label = "code review"
-	case "":
+	case sk == "plan":
+		content = t.Plan
+		label = "plan"
+	case strings.HasPrefix(sk, "plan_draft."):
+		name := strings.TrimPrefix(sk, "plan_draft.")
+		content = t.PlanDrafts[name]
+		label = "plan draft " + name
+	case sk == "":
 		return StepOutput{}, fmt.Errorf("require_sidecar: config.sidecar is required")
 	default:
-		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan_critique|code_review)", step.Config.Sidecar)
+		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan|plan_critique|code_review|plan_draft.<name>)", sk)
 	}
 	if strings.TrimSpace(content) == "" {
 		reason := label + " missing — upstream agent step completed without writing its sidecar"

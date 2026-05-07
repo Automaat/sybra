@@ -62,20 +62,15 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Tag nocritic so the workflow's maybe_critique branch routes directly
-	// to review_plan instead of trying to launch a plan-critic agent
-	// (which would fail in this lightweight setup).
-	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"tags": []string{"nocritic"}}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Park the workflow at the simple-task `plan` step. The plan step
-	// declares wait_for_status: plan-review.
+	// Park the workflow at the simple-task `address_critique` step — the
+	// only run_agent step in simple-task that still uses
+	// wait_for_status: plan-review (the plan step is now a parallel block
+	// of headless one-shots that exit on their own).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
 		"workflow": &workflow.Execution{
 			WorkflowID:  "simple-task",
-			CurrentStep: "plan",
+			CurrentStep: "address_critique",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},
 		},
@@ -114,13 +109,13 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 				step = tk.Workflow.CurrentStep
 				state = string(tk.Workflow.State)
 			}
-			t.Fatalf("workflow stuck on step %q (state=%q, status=%q) after external status change to plan-review", step, state, tk.Status)
+			t.Fatalf("workflow stuck on step %q (state=%q, status=%q) after external status change to plan-review (expected advance past address_critique)", step, state, tk.Status)
 		case <-time.After(50 * time.Millisecond):
 			tk, err := app.tasks.Get(created.ID)
 			if err != nil {
 				continue
 			}
-			if tk.Workflow != nil && tk.Workflow.CurrentStep != "plan" {
+			if tk.Workflow != nil && tk.Workflow.CurrentStep != "address_critique" {
 				return // success — workflow advanced
 			}
 		}

@@ -1,0 +1,43 @@
+id: test-parallel
+name: Test Parallel
+description: Minimal workflow for parallel-step engine tests
+trigger:
+  on: task.created
+steps:
+  - id: plan
+    name: Plan (parallel)
+    type: parallel
+    parallel:
+      - id: plan_a
+        type: run_agent
+        config:
+          role: plan
+          provider: claude
+          mode: headless
+          prompt: "Plan A {{.Task.ID}}"
+          import_sidecar:
+            kind: plan_draft
+            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+      - id: plan_b
+        type: run_agent
+        config:
+          role: plan
+          provider: codex
+          mode: headless
+          max_retries: 1
+          prompt: "Plan B {{.Task.ID}}"
+          import_sidecar:
+            kind: plan_draft
+            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+    next:
+      - goto: converge
+  - id: converge
+    name: Converge
+    type: run_agent
+    config:
+      role: plan
+      mode: headless
+      model: sonnet
+      prompt: "Converge {{.Task.ID}}"
+    next:
+      - goto: ""

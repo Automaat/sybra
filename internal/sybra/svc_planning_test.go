@@ -422,8 +422,8 @@ func TestPlanningService_SendPlanMessage_WithCommentsButNoLiveAgentErrors(t *tes
 // inside App.initStatusHook: a task status update on a task whose
 // workflow is sitting in a run_agent step with wait_for_status must
 // advance past that step as a side effect of the task update. Without
-// this wiring, interactive plan agents would never make the workflow
-// leave the plan step.
+// this wiring, the interactive address_critique agent would never make
+// the workflow leave the critique-iteration loop.
 func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	taskSvc, app := setupTaskService(t)
 	app.workflowEngine = taskSvc.workflowEngine
@@ -437,20 +437,14 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Tag the task `nocritic` so the workflow's maybe_critique branch
-	// routes directly to review_plan instead of trying to launch a
-	// plan-critic agent (which would fail in this lightweight test setup).
-	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"tags": []string{"nocritic"}}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Park the workflow in the plan step (the builtin simple-task
-	// plan step declares wait_for_status: plan-review).
+	// Park the workflow in address_critique — the only run_agent step in
+	// simple-task that still uses wait_for_status: plan-review (the plan
+	// step is now a parallel block of headless one-shots).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
 		"workflow": &workflow.Execution{
 			WorkflowID:  "simple-task",
-			CurrentStep: "plan",
+			CurrentStep: "address_critique",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},
 		},
@@ -458,8 +452,8 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Act — simulate the plan agent flipping task status to
-	// plan-review (this would normally come from `sybra-cli update`).
+	// Act — simulate the agent flipping task status to plan-review
+	// (this would normally come from `sybra-cli update`).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"status": "plan-review"}); err != nil {
 		t.Fatal(err)
 	}
