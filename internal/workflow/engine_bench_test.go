@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -121,32 +122,30 @@ func BenchmarkResumeStalled(b *testing.B) {
 
 // BenchmarkConcurrentAdvance_DistinctTasks measures concurrent AdvanceStep
 // calls across independent tasks, exercising the per-task inflightMutex map
-// under goroutine contention.
+// under goroutine contention without same-ID collisions.
 func BenchmarkConcurrentAdvance_DistinctTasks(b *testing.B) {
-	const parallelism = 8
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	ids := make([]string, parallelism)
-	for i := range parallelism {
-		ids[i] = fmt.Sprintf("par-t%d", i)
-	}
-
+	var counter atomic.Int64
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		i := 0
 		for pb.Next() {
-			id := ids[i%parallelism]
+			id := fmt.Sprintf("par-t%d", counter.Add(1))
 			tasks.Put(TaskInfo{ID: id, Status: "todo", AgentMode: "headless"})
-			_ = engine.StartWorkflow(id, "test-simple")
-			agentID := agents.LastID()
+			if err := engine.StartWorkflow(id, "test-simple"); err != nil {
+				b.Error(err)
+				continue
+			}
+			agentID := agents.RunningAgentID(id)
 			agents.SimulateComplete(id)
-			_ = engine.AdvanceStep(id, StepOutput{
+			if err := engine.AdvanceStep(id, StepOutput{
 				StepID: "triage", Status: "completed", AgentID: agentID,
-			})
-			i++
+			}); err != nil {
+				b.Error(err)
+			}
 		}
 	})
 }
