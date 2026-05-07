@@ -116,7 +116,7 @@ func extractLastJSONObject(s string) string {
 		lastStart = -1
 		lastEnd   = -1
 	)
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		c := s[i]
 		if escape {
 			escape = false

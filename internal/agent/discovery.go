@@ -550,11 +550,12 @@ func findCodexPIDs() map[string]int {
 }
 
 func parseLsofCWD(output string) string {
-	lines := strings.Split(output, "\n")
-	for i, line := range lines {
-		if line == "fcwd" && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "n") {
-			return lines[i+1][1:]
+	prev := ""
+	for line := range strings.SplitSeq(output, "\n") {
+		if prev == "fcwd" && strings.HasPrefix(line, "n") {
+			return line[1:]
 		}
+		prev = line
 	}
 	return ""
 }

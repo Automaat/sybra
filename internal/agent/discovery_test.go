@@ -597,6 +597,55 @@ func TestRefreshTrackedCodex(t *testing.T) {
 	}
 }
 
+func TestParseLsofCWD(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "typical lsof -Fn output",
+			output: "p12345\nfcwd\nn/home/user/project\nftxt\nn/usr/bin/claude\n",
+			want:   "/home/user/project",
+		},
+		{
+			name:   "no fcwd record",
+			output: "p12345\nftxt\nn/usr/bin/claude\n",
+			want:   "",
+		},
+		{
+			name:   "fcwd not followed by n-line",
+			output: "p12345\nfcwd\nftxt\nn/usr/bin/claude\n",
+			want:   "",
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   "",
+		},
+		{
+			name:   "multiple pids, first match wins",
+			output: "p1\nfcwd\nn/first\np2\nfcwd\nn/second\n",
+			want:   "/first",
+		},
+		{
+			name:   "path with spaces",
+			output: "p99\nfcwd\nn/home/user/my project\n",
+			want:   "/home/user/my project",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := parseLsofCWD(tt.output)
+			if got != tt.want {
+				t.Errorf("parseLsofCWD() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveCodexSessionFileInDir(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "01RESOLVE0000000000000"
