@@ -905,16 +905,14 @@ func TestStoreConcurrentCreate(t *testing.T) {
 	ids := make(chan string, n)
 	errs := make(chan error, n)
 	for i := range n {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			tk, cerr := store.Create(fmt.Sprintf("task-%d", i), "body", "headless")
 			if cerr != nil {
 				errs <- cerr
 				return
 			}
 			ids <- tk.ID
-		}(i)
+		})
 	}
 	wg.Wait()
 	close(ids)

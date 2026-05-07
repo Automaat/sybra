@@ -157,14 +157,12 @@ func TestDockerSandbox_ConcurrentTasks(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range n {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			taskID := fmt.Sprintf("task-concurrent-%d", idx)
-			tasks[idx] = taskID
+		wg.Go(func() {
+			taskID := fmt.Sprintf("task-concurrent-%d", i)
+			tasks[i] = taskID
 			cfg := &project.SandboxConfig{Image: "nginx:alpine", Port: 80}
-			insts[idx], errs[idx] = m.Start(ctx, taskID, "", cfg)
-		}(i)
+			insts[i], errs[i] = m.Start(ctx, taskID, "", cfg)
+		})
 	}
 	wg.Wait()
 

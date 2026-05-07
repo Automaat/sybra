@@ -3104,12 +3104,10 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 	errs := make([]error, callers)
 	start := make(chan struct{})
 	for i := range callers {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			errs[i] = engine.StartWorkflow("t1", "test-simple")
-		}(i)
+		})
 	}
 	close(start)
 	wg.Wait()
