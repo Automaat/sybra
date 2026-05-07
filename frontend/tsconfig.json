@@ -1,18 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2025",
     "useDefineForClassFields": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "baseUrl": ".",
     "paths": {
-      "$lib/*": ["src/lib/*"]
+      "$lib/*": ["./src/lib/*"]
     },
     "allowJs": true,
     "checkJs": true,
     "isolatedModules": true,
     "strict": true,
+    "libReplacement": false,
     "skipLibCheck": true
   },
   "include": [
