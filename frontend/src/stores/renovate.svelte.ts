@@ -40,7 +40,7 @@ class RenovateStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(RenovateUpdated, (prs: any) => {
+    this.cancelListener = EventsOn(RenovateUpdated, (prs: github.RenovatePR[]) => {
       this.prs = prs ?? []
     })
   }

@@ -27,7 +27,7 @@ class IssueStore {
 
   listen(): void {
     this.stopListening()
-    this.cancelListener = EventsOn(IssuesUpdated, (issues: any) => {
+    this.cancelListener = EventsOn(IssuesUpdated, (issues: github.Issue[]) => {
       this.issues = issues ?? []
     })
   }
