@@ -1412,7 +1412,12 @@ func resolveProvider(stepProv string, wfExec *Execution, defaultProv string) str
 }
 
 // providerAvailable reports whether the CLI for a provider is on PATH.
-func providerAvailable(provider string) bool {
+// Indirected through a var so tests can short-circuit the lookup — engine
+// unit tests run with mock agents and don't care whether the real CLI is
+// installed on the runner; without the indirection a CI host without
+// claude/codex on PATH causes the engine's fallback to strip the
+// step-configured provider, breaking provider-aware assertions.
+var providerAvailable = func(provider string) bool {
 	_, err := exec.LookPath(provider)
 	return err == nil
 }

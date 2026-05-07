@@ -147,6 +147,14 @@ func TestParallelValidation_AcceptsValid(t *testing.T) {
 // every child agent (one StartAgent call per child) using each child's
 // configured provider/role.
 func TestParallel_DispatchesAllChildren(t *testing.T) {
+	// Stub providerAvailable so the engine's fallback (which strips the
+	// configured provider when the CLI isn't on PATH) doesn't run. Without
+	// this, the test fails on CI runners that have neither claude nor
+	// codex installed.
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -379,7 +387,7 @@ func mustWorkflow(t *testing.T, tasks *memTasks, id string) *Execution {
 }
 
 func findStepRecord(wf *Execution, stepID string) *StepRecord {
-	for i := len(wf.StepHistory) - 1; i >= 0; i-- {
+	for i := range slices.Backward(wf.StepHistory) {
 		if wf.StepHistory[i].StepID == stepID {
 			return &wf.StepHistory[i]
 		}

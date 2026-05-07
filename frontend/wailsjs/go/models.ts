@@ -1479,6 +1479,7 @@ export namespace task {
 	    plan?: string;
 	    planCritique?: string;
 	    codeReview?: string;
+	    planDrafts?: Record<string, string>;
 	    filePath: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1515,6 +1516,7 @@ export namespace task {
 	        this.plan = source["plan"];
 	        this.planCritique = source["planCritique"];
 	        this.codeReview = source["codeReview"];
+	        this.planDrafts = source["planDrafts"];
 	        this.filePath = source["filePath"];
 	    }
 	
@@ -1560,6 +1562,26 @@ export namespace todoist {
 
 export namespace workflow {
 	
+	export class ChildStatus {
+	    agentId?: string;
+	    provider?: string;
+	    status: string;
+	    output?: string;
+	    retries?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChildStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.agentId = source["agentId"];
+	        this.provider = source["provider"];
+	        this.status = source["status"];
+	        this.output = source["output"];
+	        this.retries = source["retries"];
+	    }
+	}
 	export class Condition {
 	    field: string;
 	    operator: string;
@@ -1824,6 +1846,41 @@ export namespace workflow {
 		    return a;
 		}
 	}
+	export class ParallelChildren {
+	    parentStepId: string;
+	    // Go type: time
+	    startedAt: any;
+	    children: Record<string, ChildStatus>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ParallelChildren(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.parentStepId = source["parentStepId"];
+	        this.startedAt = this.convertValues(source["startedAt"], null);
+	        this.children = this.convertValues(source["children"], ChildStatus, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class StepRecord {
 	    stepId: string;
 	    status: string;
@@ -1879,6 +1936,7 @@ export namespace workflow {
 	    // Go type: time
 	    completedAt?: any;
 	    recovered?: boolean;
+	    parallelInflight?: Record<string, ParallelChildren>;
 	
 	    static createFrom(source: any = {}) {
 	        return new Execution(source);
@@ -1894,6 +1952,7 @@ export namespace workflow {
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.completedAt = this.convertValues(source["completedAt"], null);
 	        this.recovered = source["recovered"];
+	        this.parallelInflight = this.convertValues(source["parallelInflight"], ParallelChildren, true);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1914,6 +1973,7 @@ export namespace workflow {
 		    return a;
 		}
 	}
+	
 	
 	
 	
