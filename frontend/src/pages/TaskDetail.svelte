@@ -5,6 +5,7 @@
   import { agentState } from '../lib/events.js'
   import { renderMarkdown } from '../lib/markdown.js'
   import { taskStore } from '../stores/tasks.svelte.js'
+  import { notificationStore } from '../stores/notifications.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { connectionStore } from '../stores/connection.svelte.js'
@@ -121,16 +122,24 @@
 
   async function copyId() {
     if (!t) return
-    await navigator.clipboard.writeText(t.id)
-    copied = true
-    setTimeout(() => { copied = false }, 1500)
+    try {
+      await navigator.clipboard.writeText(t.id)
+      copied = true
+      setTimeout(() => { copied = false }, 1500)
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Copy failed', String(err))
+    }
   }
 
   async function copyBranch() {
     if (!t || !t.projectId) return
-    await navigator.clipboard.writeText(taskBranchName)
-    copiedBranch = true
-    setTimeout(() => { copiedBranch = false }, 1500)
+    try {
+      await navigator.clipboard.writeText(taskBranchName)
+      copiedBranch = true
+      setTimeout(() => { copiedBranch = false }, 1500)
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Copy failed', String(err))
+    }
   }
 
   $effect(() => {

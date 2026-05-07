@@ -475,9 +475,19 @@
     const title = newTaskTitle.trim()
     if (!title) return
     newTaskTitle = ''
-    const created = await taskStore.create(title, '', 'headless')
+    let created
+    try {
+      created = await taskStore.create(title, '', 'headless')
+    } catch (err) {
+      notificationStore.pushLocal('error', 'Create failed', String(err))
+      return
+    }
     if (status !== 'new') {
-      await taskStore.update(created.id, { status })
+      try {
+        await taskStore.update(created.id, { status })
+      } catch (err) {
+        notificationStore.pushLocal('error', 'Failed to set status', String(err))
+      }
     }
     requestAnimationFrame(() => inputRef?.focus())
   }

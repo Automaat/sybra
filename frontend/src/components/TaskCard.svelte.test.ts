@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import TaskCard from './TaskCard.svelte'
 
+vi.mock('../stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    pushLocal: vi.fn(),
+  },
+}))
+
+const { notificationStore } = await import('../stores/notifications.svelte.js')
+
 const mockTask = {
   id: 'task-1',
   slug: 'test-task',
@@ -61,6 +69,44 @@ describe('TaskCard', () => {
     render(TaskCard, { props: { task: mockTask, onclick: handler } })
     await fireEvent.click(screen.getByRole('button'))
     expect(handler).toHaveBeenCalledOnce()
+  })
+
+  describe('copyBranch error handling', () => {
+    beforeEach(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: vi.fn() },
+        configurable: true,
+        writable: true,
+      })
+      vi.mocked(notificationStore.pushLocal).mockClear()
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('shows notification when clipboard write fails', async () => {
+      vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error('Permission denied'))
+      const taskWithProject = { ...mockTask, projectId: 'owner/repo' }
+      render(TaskCard, { props: { task: taskWithProject, onclick: () => {} } })
+
+      const copyBtn = screen.getByTitle('Copy branch name (⇧⌘.)')
+      await fireEvent.click(copyBtn)
+
+      expect(notificationStore.pushLocal).toHaveBeenCalledWith('error', 'Copy failed', 'Could not copy branch name to clipboard')
+    })
+
+    it('copies branch name on success', async () => {
+      vi.mocked(navigator.clipboard.writeText).mockResolvedValueOnce(undefined)
+      const taskWithProject = { ...mockTask, projectId: 'owner/repo' }
+      render(TaskCard, { props: { task: taskWithProject, onclick: () => {} } })
+
+      const copyBtn = screen.getByTitle('Copy branch name (⇧⌘.)')
+      await fireEvent.click(copyBtn)
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining(mockTask.id))
+      expect(notificationStore.pushLocal).not.toHaveBeenCalled()
+    })
   })
 
   it('shows Needs Review badge for plan-review status', () => {
