@@ -155,7 +155,16 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
+	if name, isDraft := strings.CutPrefix(kind, "plan_draft."); isDraft {
+		if t.PlanDrafts == nil {
+			t.PlanDrafts = map[string]string{}
+		}
+		t.PlanDrafts[name] = content
+		return nil
+	}
 	switch kind {
+	case "plan":
+		t.Plan = content
 	case "code_review":
 		t.CodeReview = content
 	case "plan_critique":
@@ -2242,11 +2251,10 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	})
 
 	// Simulate the original dispatch being mid-flight inside AdvanceStep —
-	// inflight[t1] is set, no agent registered yet (worktree still being
-	// created in the real system, fake-claude hasn't started).
-	engine.mu.Lock()
-	engine.inflight["t1"] = struct{}{}
-	engine.mu.Unlock()
+	// the per-task advance mutex is held, no agent registered yet (worktree
+	// still being created in the real system, fake-claude hasn't started).
+	heldMu := engine.taskInflightMutex("t1")
+	heldMu.Lock()
 
 	before := agents.CallCount()
 	engine.ResumeStalled()
@@ -2255,11 +2263,9 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 			before, got)
 	}
 
-	// Once the original dispatch finishes and clears inflight, a subsequent
-	// tick is allowed to resume — that's the real recovery path.
-	engine.mu.Lock()
-	delete(engine.inflight, "t1")
-	engine.mu.Unlock()
+	// Once the original dispatch finishes and releases the advance mutex,
+	// a subsequent tick is allowed to resume — that's the real recovery path.
+	heldMu.Unlock()
 
 	engine.ResumeStalled()
 	if got := agents.CallCount(); got != before+1 {

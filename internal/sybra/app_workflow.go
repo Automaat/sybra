@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
@@ -88,14 +89,22 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 }
 
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
+	// Plan drafts are namespaced "plan_draft.<name>" so the workflow can fan
+	// out to N parallel planners without growing the static sidecar enum.
+	// The engine derives <name> from the parallel child step ID.
+	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
+		return a.tasks.PlanDrafts().Write(id, name, content)
+	}
 	var u task.Update
 	switch kind {
+	case "plan":
+		u.Plan = &content
 	case "code_review":
 		u.CodeReview = &content
 	case "plan_critique":
 		u.PlanCritique = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want code_review|plan_critique)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|code_review|plan_critique|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -115,6 +124,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Plan:         t.Plan,
 		PlanCritique: t.PlanCritique,
 		CodeReview:   t.CodeReview,
+		PlanDrafts:   t.PlanDrafts,
 		Issue:        t.Issue,
 		Reviewed:     t.Reviewed,
 		Workflow:     t.Workflow,

@@ -20,6 +20,7 @@ type Store struct {
 	dir           string
 	comments      *CommentStore
 	plans         *PlanStore
+	planDrafts    *PlanDraftStore
 	planCritiques *PlanCritiqueStore
 	codeReviews   *CodeReviewStore
 	cacheMu       sync.RWMutex
@@ -35,6 +36,7 @@ func NewStore(dir string) (*Store, error) {
 		dir:           dir,
 		comments:      NewCommentStore(dir),
 		plans:         NewPlanStore(dir),
+		planDrafts:    NewPlanDraftStore(dir),
 		planCritiques: NewPlanCritiqueStore(dir),
 		codeReviews:   NewCodeReviewStore(dir),
 	}, nil
@@ -48,12 +50,28 @@ func (s *Store) Plans() *PlanStore {
 	return s.plans
 }
 
+func (s *Store) PlanDrafts() *PlanDraftStore {
+	return s.planDrafts
+}
+
 func (s *Store) PlanCritiques() *PlanCritiqueStore {
 	return s.planCritiques
 }
 
 func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
+}
+
+// IsSidecarFile reports whether a filename (basename) belongs to a sidecar
+// store rather than a primary task file. Centralized so adding a new
+// sidecar kind only requires updating this list.
+func IsSidecarFile(base string) bool {
+	if IsPlanDraftFile(base) {
+		return true
+	}
+	return strings.HasSuffix(base, ".plan.md") ||
+		strings.HasSuffix(base, ".plan-critique.md") ||
+		strings.HasSuffix(base, ".review.md")
 }
 
 func (s *Store) List() ([]Task, error) {
@@ -70,7 +88,7 @@ func (s *Store) List() ([]Task, error) {
 	var parseErr bool
 	for _, p := range paths {
 		base := filepath.Base(p)
-		if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
+		if IsSidecarFile(base) {
 			continue
 		}
 		t, err := Parse(p)
@@ -82,6 +100,7 @@ func (s *Store) List() ([]Task, error) {
 		t.Plan, _ = s.plans.Read(t.ID)
 		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 		t.CodeReview, _ = s.codeReviews.Read(t.ID)
+		t.PlanDrafts, _ = s.planDrafts.List(t.ID)
 		// One-time migration: stamp ClosedAt for legacy terminal tasks that
 		// predate the ClosedAt field. UpdatedAt is the best approximation.
 		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
@@ -114,6 +133,7 @@ func (s *Store) Get(id string) (Task, error) {
 	t.Plan, _ = s.plans.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 	t.CodeReview, _ = s.codeReviews.Read(t.ID)
+	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
 	return t, nil
 }
 
@@ -337,7 +357,7 @@ func (s *Store) InvalidatePath(path string) {
 		return
 	}
 	base := filepath.Base(path)
-	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
+	if IsSidecarFile(base) {
 		s.invalidateListCache()
 		return
 	}

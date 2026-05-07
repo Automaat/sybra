@@ -19,11 +19,25 @@ type Definition struct {
 	UpdatedAt   time.Time `yaml:"updated_at,omitempty" json:"updatedAt"`
 }
 
-// StepByID returns the step with the given ID, or nil.
+// StepByID returns the step with the given ID, or nil. Recurses into
+// `parallel` blocks so children of a parallel step are also reachable.
 func (d *Definition) StepByID(id string) *Step {
 	for i := range d.Steps {
-		if d.Steps[i].ID == id {
-			return &d.Steps[i]
+		if s := findStepRecursive(&d.Steps[i], id); s != nil {
+			return s
+		}
+	}
+	return nil
+}
+
+// findStepRecursive walks the step tree (including Parallel children).
+func findStepRecursive(s *Step, id string) *Step {
+	if s.ID == id {
+		return s
+	}
+	for i := range s.Parallel {
+		if c := findStepRecursive(&s.Parallel[i], id); c != nil {
+			return c
 		}
 	}
 	return nil
@@ -71,6 +85,11 @@ const (
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"
 	StepRequireSidecar      StepType = "require_sidecar"
+	// StepParallel runs its `Parallel` children concurrently as run_agent
+	// steps. The parent step advances only after every child has terminated;
+	// parent-level Next is evaluated against the parent step record (with the
+	// aggregate failure flag set when any child failed past its retry budget).
+	StepParallel StepType = "parallel"
 )
 
 // Step is one node in the workflow graph.
@@ -157,14 +176,60 @@ const maxRetries = 10
 
 // Validate checks the definition for configuration errors.
 func (d *Definition) Validate() error {
+	seenIDs := make(map[string]bool, len(d.Steps))
 	for i := range d.Steps {
 		s := &d.Steps[i]
 		if s.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: max_retries %d exceeds limit %d", s.ID, s.Config.MaxRetries, maxRetries)
 		}
+		if err := validateParallelStep(s, seenIDs); err != nil {
+			return err
+		}
+		if seenIDs[s.ID] {
+			return fmt.Errorf("step %q: duplicate id", s.ID)
+		}
+		seenIDs[s.ID] = true
 	}
 	if err := d.ValidateFields(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateParallelStep enforces that a `parallel` step has at least two
+// run_agent children, no nested parallels, and globally-unique child IDs.
+// The constraints exist because the engine's step bookkeeping (agentSteps
+// map, ImportSidecar lookup, retry counter) is keyed by step ID — duplicates
+// would cause cross-step state to clobber each other.
+func validateParallelStep(s *Step, seenIDs map[string]bool) error {
+	if s.Type != StepParallel {
+		if len(s.Parallel) > 0 {
+			return fmt.Errorf("step %q: parallel children only allowed when type is %q", s.ID, StepParallel)
+		}
+		return nil
+	}
+	if len(s.Parallel) < 2 {
+		return fmt.Errorf("step %q: parallel step needs at least 2 children", s.ID)
+	}
+	for i := range s.Parallel {
+		c := &s.Parallel[i]
+		if c.Type != StepRunAgent {
+			return fmt.Errorf("step %q: parallel child %q has type %q (only %q allowed)",
+				s.ID, c.ID, c.Type, StepRunAgent)
+		}
+		if len(c.Parallel) > 0 {
+			return fmt.Errorf("step %q: parallel child %q nests another parallel block (not supported)", s.ID, c.ID)
+		}
+		if c.Config.MaxRetries > maxRetries {
+			return fmt.Errorf("step %q: child %q max_retries %d exceeds limit %d", s.ID, c.ID, c.Config.MaxRetries, maxRetries)
+		}
+		if c.ID == "" {
+			return fmt.Errorf("step %q: parallel child at index %d missing id", s.ID, i)
+		}
+		if seenIDs[c.ID] {
+			return fmt.Errorf("step %q: parallel child id %q already used elsewhere in workflow", s.ID, c.ID)
+		}
+		seenIDs[c.ID] = true
 	}
 	return nil
 }

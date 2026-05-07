@@ -174,7 +174,13 @@ type Task struct {
 	Plan         string `yaml:"-" json:"plan,omitempty"`
 	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
 	CodeReview   string `yaml:"-" json:"codeReview,omitempty"`
-	FilePath     string `yaml:"-" json:"filePath"`
+	// PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
+	// provider planning. Keys are typically the parallel child step ID
+	// (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on
+	// task load; the convergence step reads this map and writes the merged
+	// result to Plan.
+	PlanDrafts map[string]string `yaml:"-" json:"planDrafts,omitempty"`
+	FilePath   string            `yaml:"-" json:"filePath"`
 }
 
 func (t Task) DirName() string {

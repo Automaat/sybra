@@ -29,6 +29,56 @@ type Execution struct {
 	// step consumes it. Workflow prompts should use recoveredOrPrev instead of
 	// .Prev.Output to guard against stale content.
 	Recovered bool `yaml:"recovered,omitempty" json:"recovered,omitempty"`
+	// ParallelInflight tracks per-parent-step state for in-flight `parallel`
+	// blocks. Keyed by the parent (parallel) step ID. The engine populates
+	// it on dispatch and clears it once every child has terminated.
+	// Persisted so a process restart can resume the parent step rather than
+	// stranding half-completed forks.
+	ParallelInflight map[string]*ParallelChildren `yaml:"parallel_inflight,omitempty" json:"parallelInflight,omitempty"`
+}
+
+// ParallelChildren is the in-flight bookkeeping for one `parallel` parent.
+type ParallelChildren struct {
+	ParentStepID string                  `yaml:"parent_step_id" json:"parentStepId"`
+	StartedAt    time.Time               `yaml:"started_at" json:"startedAt"`
+	Children     map[string]*ChildStatus `yaml:"children" json:"children"`
+}
+
+// ChildStatus is one child step's slot inside a ParallelChildren record.
+type ChildStatus struct {
+	AgentID  string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	// Status: "pending" | "completed" | "failed".
+	Status  string `yaml:"status" json:"status"`
+	Output  string `yaml:"output,omitempty" json:"output,omitempty"`
+	Retries int    `yaml:"retries,omitempty" json:"retries,omitempty"`
+}
+
+// AllChildrenDone reports whether every child reached a terminal status.
+func (p *ParallelChildren) AllChildrenDone() bool {
+	if p == nil {
+		return false
+	}
+	for _, c := range p.Children {
+		if c.Status != "completed" && c.Status != "failed" {
+			return false
+		}
+	}
+	return len(p.Children) > 0
+}
+
+// AnyChildFailed reports whether any child terminated with status=failed.
+// Caller decides whether to mark the parent failed or proceed.
+func (p *ParallelChildren) AnyChildFailed() bool {
+	if p == nil {
+		return false
+	}
+	for _, c := range p.Children {
+		if c.Status == "failed" {
+			return true
+		}
+	}
+	return false
 }
 
 // SetVar sets a variable in the execution context.

@@ -78,7 +78,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 	base := filepath.Base(path)
-	if strings.HasSuffix(base, ".plan.md") || strings.HasSuffix(base, ".plan-critique.md") || strings.HasSuffix(base, ".review.md") {
+	if IsSidecarFile(base) {
 		m.store.InvalidatePath(path)
 		return
 	}
@@ -137,6 +137,9 @@ func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
 
 // Plans returns the underlying PlanStore.
 func (m *Manager) Plans() *PlanStore { return m.store.Plans() }
+
+// PlanDrafts returns the underlying PlanDraftStore.
+func (m *Manager) PlanDrafts() *PlanDraftStore { return m.store.PlanDrafts() }
 
 func (m *Manager) lockFor(id string) *sync.Mutex {
 	existing, _ := m.locks.LoadOrStore(id, &sync.Mutex{})

@@ -54,44 +54,145 @@ steps:
         goto: plan
       - goto: set_in_progress
 
+  # Dual-provider planning: Claude and Codex generate plans in parallel,
+  # each as a headless one-shot writing its raw output to a per-child
+  # plan_draft sidecar (auto-keyed by child step ID). The convergence step
+  # below merges the drafts via /plan-fork into the canonical plan field.
+  #
+  # Adding a third provider = adding a third entry in `parallel`. No code
+  # changes to the engine or sidecar layer.
   - id: plan
-    name: Plan
+    name: Plan (parallel)
+    type: parallel
+    parallel:
+      - id: plan_claude
+        name: Plan (Claude)
+        type: run_agent
+        config:
+          role: plan
+          provider: claude
+          mode: headless
+          model: opus
+          needs_worktree: true
+          max_retries: 1
+          prompt: >-
+            Plan task {{.Task.ID}} using the /sybra-plan skill.
+
+            Steps:
+              1. Run: sybra-cli --json get {{.Task.ID}}
+              2. Read the codebase and produce a detailed implementation plan
+                 that names files, symbols (with `path:line` references), the
+                 ordered steps, and per-step verification criteria.
+              3. Write the full plan markdown to /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+
+            Do NOT call sybra-cli update — Sybra will ingest your file as the
+            plan_draft.{{.Step.ID}} sidecar after you exit. Do NOT modify the
+            task plan field. Do NOT change the task status.
+          allowed_tools:
+            - Bash
+            - Read
+            - Grep
+            - Glob
+            - Write
+            - Skill
+            - Agent
+          import_sidecar:
+            kind: plan_draft
+            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+      - id: plan_codex
+        name: Plan (Codex)
+        type: run_agent
+        config:
+          role: plan
+          provider: codex
+          mode: headless
+          needs_worktree: true
+          max_retries: 1
+          prompt: >-
+            Plan task {{.Task.ID}}.
+
+            Steps:
+              1. Run: sybra-cli --json get {{.Task.ID}} — read the task
+                 title, body, and project context.
+              2. Read the relevant source files. Produce a detailed
+                 implementation plan that names: file paths, symbols with
+                 `path:line` references, ordered steps, and per-step
+                 verification criteria (test command + expected outcome).
+              3. Write the full plan markdown to /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+
+            Do NOT call sybra-cli update — Sybra will ingest your file as the
+            plan_draft.{{.Step.ID}} sidecar after you exit. Do NOT modify the
+            task plan field or status.
+          import_sidecar:
+            kind: plan_draft
+            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
+    next:
+      - goto: converge_plans
+
+  # Converge the parallel drafts into a single synthesized plan via the
+  # /plan-fork skill. Runs on whichever provider Sybra defaults to, since
+  # /plan-fork is a Claude Code skill that nests /plan-critic for the final
+  # gate.
+  - id: converge_plans
+    name: Converge Plans
     type: run_agent
     config:
       role: plan
-      mode: interactive
-      model: opus
+      mode: headless
+      model: sonnet
       needs_worktree: true
-      reuse_agent: true
-      # Interactive plan agents do not exit — they pause idle between turns.
-      # The workflow advances to review_plan when the agent flips the task
-      # status to "plan-review" via the CLI, which fires the engine status
-      # hook (see engine.HandleStatusChange).
-      wait_for_status: plan-review
+      max_retries: 1
       prompt: >-
-        {{- $feedback := getvar .Vars "human.feedback" }}
-        {{- if $feedback }}
-        Plan rejected. Feedback:
+        Converge the parallel plan drafts for task {{.Task.ID}} into a
+        single synthesized plan via /plan-fork.
 
-        {{ $feedback }}
-
-        Revise the plan for task {{.Task.ID}} to address these points.
-        Update the plan and set status back to plan-review when done.
-        {{- else }}
-        Plan task {{.Task.ID}} using /sybra-plan skill.
-        Get the task with sybra-cli, analyze the codebase,
-        and produce a detailed implementation plan.
-
-        When the plan is ready:
-          1. sybra-cli update {{.Task.ID}} --plan "<full plan markdown>"
-          2. sybra-cli update {{.Task.ID}} --status plan-review
-
-        Then STOP and wait. Do NOT exit. Do NOT implement.
-
-        If you receive feedback from the user, address it, update the plan again
-        with the revised plan, set status back to plan-review, and wait again.
+        Drafts (read each one before invoking the skill):
+        {{- range $name, $content := .Task.PlanDrafts }}
+          - {{$name}}: ~/.sybra/tasks/{{$.Task.ID}}.plan-draft-{{$name}}.md
         {{- end }}
+
+        Steps:
+          1. List the available drafts in ~/.sybra/tasks/ with the
+             pattern {{.Task.ID}}.plan-draft-*.md
+          2. Pick the two drafts (typically plan_claude and plan_codex) and
+             invoke:
+             /plan-fork <plan-a-path> <plan-b-path> --task {{.Task.ID}} --out /tmp/sybra-plan-{{.Task.ID}}.md
+          3. Capture only the synthesized plan markdown to
+             /tmp/sybra-plan-{{.Task.ID}}.md (the skill writes there directly
+             when --out is passed).
+
+        Sybra will ingest /tmp/sybra-plan-{{.Task.ID}}.md as the task's
+        plan sidecar after you exit. Do NOT modify the task plan field
+        directly via sybra-cli. Do NOT change the task status.
+      allowed_tools:
+        - Bash
+        - Read
+        - Grep
+        - Glob
+        - Write
+        - Skill
+        - Agent
+      import_sidecar:
+        kind: plan
+        from: /tmp/sybra-plan-{{.Task.ID}}.md
     next:
+      - goto: require_plan
+
+  # Guard: convergence can exit cleanly without producing a plan (e.g.
+  # /plan-fork rejected both drafts as broken). Mirrors require_plan_critique
+  # below: flips to human-required so the failure is visible instead of
+  # silently advancing into critique_plan with an empty plan.
+  - id: require_plan
+    name: Require Plan
+    type: require_sidecar
+    config:
+      sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: maybe_critique
 
   # Branch around critique_plan when the task is tagged `nocritic`, and also
