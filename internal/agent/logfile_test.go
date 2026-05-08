@@ -9,33 +9,52 @@ import (
 	"testing"
 )
 
-func TestParseLogFile(t *testing.T) {
+// TestParseLogFile_UnwrapsClaudeEnvelope is the regression guard for the
+// empty-bubble bug on the Agent History panel: headless logs persist raw
+// Claude stream-json envelopes (`{"type":"assistant","message":{...}}`),
+// and a flat json.Unmarshal into StreamEvent silently dropped
+// `message.content[]` so the rendered UI showed labeled bubbles with no
+// text. ParseLogFile must run the same envelope→StreamEvent conversion
+// the live runner uses.
+func TestParseLogFile_UnwrapsClaudeEnvelope(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.ndjson")
 
-	lines := `{"type":"init","content":"session started"}
-{"type":"assistant","content":"hello world"}
-bad line
-{"type":"tool_use","content":"Read file.go"}
-{"type":"result","content":"done"}
-`
+	lines := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}`,
+		`bad line`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Read","input":{"description":"file.go"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"contents"}]}}`,
+		`{"type":"result","subtype":"success","result":"done","session_id":"sess-1","total_cost_usd":0.01}`,
+	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	events, err := ParseLogFile(path, 0)
+	events, err := ParseLogFile(path, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("expected 4 events, got %d", len(events))
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d: %+v", len(events), events)
 	}
-	if events[0].Type != "init" {
-		t.Errorf("expected init, got %s", events[0].Type)
+
+	if events[0].Type != "system" {
+		t.Errorf("events[0].Type = %s, want system", events[0].Type)
 	}
-	if events[3].Type != "result" {
-		t.Errorf("expected result, got %s", events[3].Type)
+	if events[1].Type != "assistant" || events[1].Content != "hello world" {
+		t.Errorf("assistant text dropped: type=%s content=%q", events[1].Type, events[1].Content)
+	}
+	if events[2].Type != "assistant" || !strings.Contains(events[2].Content, "[Read] file.go") {
+		t.Errorf("tool_use content dropped: type=%s content=%q", events[2].Type, events[2].Content)
+	}
+	if events[3].Type != "user" || events[3].Content != "contents" {
+		t.Errorf("tool_result content dropped: type=%s content=%q", events[3].Type, events[3].Content)
+	}
+	if events[4].Type != "result" || events[4].CostUSD != 0.01 {
+		t.Errorf("result event dropped: type=%s cost=%v", events[4].Type, events[4].CostUSD)
 	}
 }
 
@@ -44,16 +63,17 @@ func TestParseLogFile_MaxEvents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.ndjson")
 
-	lines := `{"type":"assistant","content":"msg1"}
-{"type":"assistant","content":"msg2"}
-{"type":"assistant","content":"msg3"}
-{"type":"result","content":"done"}
-`
+	lines := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"msg1"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"msg2"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"msg3"}]}}`,
+		`{"type":"result","subtype":"success","result":"done"}`,
+	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	events, err := ParseLogFile(path, 2)
+	events, err := ParseLogFile(path, 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +85,41 @@ func TestParseLogFile_MaxEvents(t *testing.T) {
 	}
 	if events[1].Content != "done" {
 		t.Errorf("expected done, got %s", events[1].Content)
+	}
+}
+
+// TestParseLogFile_CodexProvider confirms the codex stream-json envelope
+// (item.started / item.completed / turn.completed) round-trips through the
+// codex parser when the caller passes provider="codex".
+func TestParseLogFile_CodexProvider(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex.ndjson")
+
+	lines := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thr-1"}`,
+		`{"type":"item.completed","item":{"id":"it-1","type":"agent_message","text":"codex says hi"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := ParseLogFile(path, 0, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "init" || events[0].SessionID != "thr-1" {
+		t.Errorf("init event dropped: %+v", events[0])
+	}
+	if events[1].Type != "assistant" || events[1].Content != "codex says hi" {
+		t.Errorf("assistant content dropped: type=%s content=%q", events[1].Type, events[1].Content)
+	}
+	if events[2].Type != "result" || events[2].InputTokens != 10 {
+		t.Errorf("result tokens dropped: %+v", events[2])
 	}
 }
 

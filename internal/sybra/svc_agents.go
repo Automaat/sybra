@@ -78,15 +78,17 @@ func (s *AgentService) GetConvoOutput(agentID string) ([]agent.ConvoEvent, error
 // log format (raw Claude stream-json envelope); route those through
 // GetAgentRunConvoLog so the nested message content is preserved.
 func (s *AgentService) GetAgentRunLog(taskID, agentID string) ([]agent.StreamEvent, error) {
-	if ag, err := s.agents.GetAgent(agentID); err == nil {
-		return ag.Output(), nil
+	if s.agents != nil {
+		if ag, err := s.agents.GetAgent(agentID); err == nil {
+			return ag.Output(), nil
+		}
 	}
 
-	logFile, err := s.findAgentLogFile(taskID, agentID)
+	logFile, provider, err := s.findAgentLogFile(taskID, agentID)
 	if err != nil {
 		return nil, err
 	}
-	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents())
+	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents(), provider)
 }
 
 // GetAgentRunConvoLog returns conversation events for a past or running
@@ -104,7 +106,7 @@ func (s *AgentService) GetAgentRunConvoLog(taskID, agentID string) ([]agent.Conv
 		}
 	}
 
-	logFile, err := s.findAgentLogFile(taskID, agentID)
+	logFile, _, err := s.findAgentLogFile(taskID, agentID)
 	if err != nil {
 		s.logger.Warn("agent.convo-log.not-found",
 			"task_id", taskID, "agent_id", agentID, "err", err)
@@ -124,20 +126,32 @@ func (s *AgentService) GetAgentRunConvoLog(taskID, agentID string) ([]agent.Conv
 
 // findAgentLogFile resolves the NDJSON log path for an agent run, first
 // consulting the task's agent_runs history then falling back to filesystem
-// globbing by agent ID. Shared by GetAgentRunLog / GetAgentRunConvoLog.
-func (s *AgentService) findAgentLogFile(taskID, agentID string) (string, error) {
+// globbing by agent ID. Also returns the provider recorded on the run (or
+// "" if the run could not be located on the task) so callers can pick the
+// matching stream-json parser. Shared by GetAgentRunLog /
+// GetAgentRunConvoLog.
+func (s *AgentService) findAgentLogFile(taskID, agentID string) (logFile, provider string, err error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return "", fmt.Errorf("task %s: %w", taskID, err)
+		return "", "", fmt.Errorf("task %s: %w", taskID, err)
 	}
 
 	for i := range t.AgentRuns {
-		if t.AgentRuns[i].AgentID == agentID && t.AgentRuns[i].LogFile != "" {
-			return t.AgentRuns[i].LogFile, nil
+		if t.AgentRuns[i].AgentID != agentID {
+			continue
 		}
+		provider = t.AgentRuns[i].Provider
+		if t.AgentRuns[i].LogFile != "" {
+			return t.AgentRuns[i].LogFile, provider, nil
+		}
+		break
 	}
 
-	return agent.FindLogFile(s.logsDir, agentID)
+	path, err := agent.FindLogFile(s.logsDir, agentID)
+	if err != nil {
+		return "", provider, err
+	}
+	return path, provider, nil
 }
 
 // RespondEscalation sends a human decision to a guardrail-paused agent.

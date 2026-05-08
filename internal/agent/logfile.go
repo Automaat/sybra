@@ -2,29 +2,55 @@ package agent
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 )
 
-// ParseLogFile reads an NDJSON agent log and returns up to maxEvents
-// StreamEvents (the last N if the file exceeds the cap).
-// Malformed lines are silently skipped.
-func ParseLogFile(path string, maxEvents int) ([]StreamEvent, error) {
+// ParseLogFile reads an NDJSON agent log written by the headless runner and
+// returns up to maxEvents StreamEvents (the last N if the file exceeds the
+// cap). Headless logs persist the raw provider stream-json envelope, so we
+// must run the same envelope→StreamEvent conversion the live runner uses;
+// a flat json.Unmarshal into StreamEvent silently drops the nested
+// `message.content[]` and the rendered UI shows labeled bubbles with empty
+// text (the bug fixed alongside the interactive history rewrite).
+//
+// `provider` selects the parser ("codex" → ParseCodexLine, anything else →
+// ParseClaudeLine). Pass the value from AgentRun.Provider.
+//
+// Malformed lines are skipped silently.
+func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
+	isCodex := provider == "codex"
 	var events []StreamEvent
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
 		var ev StreamEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Type == "" {
+		if isCodex {
+			ce, parseErr := ParseCodexLine(line)
+			if parseErr != nil {
+				continue
+			}
+			ev = codexEventToStreamEvent(ce)
+		} else {
+			ce, parseErr := ParseClaudeLine(line)
+			if parseErr != nil {
+				continue
+			}
+			ev = claudeEventToStreamEvent(ce)
+		}
+		if ev.Type == "" {
 			continue
 		}
 		events = append(events, ev)
