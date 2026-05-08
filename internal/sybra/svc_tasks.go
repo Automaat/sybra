@@ -254,6 +254,8 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 		Prompt: prompt,
 		Dir:    dir,
 		Model:  "opus",
+		// MaxTurns intentionally not inherited: review agents need
+		// enough turns to fetch the PR, run the skill, and write findings.
 	})
 	if err != nil {
 		return err

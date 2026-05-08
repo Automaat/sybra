@@ -338,6 +338,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
+	if u.MaxTurns != nil {
+		t.MaxTurns = *u.MaxTurns
+	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, err
 	}

@@ -211,7 +211,17 @@ func TestCreateAndGetTask(t *testing.T) {
 }
 
 func TestUpdateTask(t *testing.T) {
-	svc, _ := setupTaskService(t)
+	// Use a TaskService without a workflow engine so CreateTask doesn't
+	// spawn a triage goroutine that races with UpdateTask's running-agent check.
+	a := setupApp(t)
+	var wg sync.WaitGroup
+	svc := &TaskService{
+		tasks:     a.tasks,
+		agents:    a.agents,
+		worktrees: a.worktrees,
+		wg:        &wg,
+		logger:    a.logger,
+	}
 
 	created, err := svc.CreateTask("update me", "", "headless")
 	if err != nil {

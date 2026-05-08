@@ -144,6 +144,8 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 		Prompt: prompt,
 		Dir:    dir,
 		Model:  "opus",
+		// MaxTurns intentionally not inherited: fix-review agents need
+		// enough turns to fetch the PR, apply fixes, and commit.
 	})
 	if err != nil {
 		return err
@@ -179,6 +181,8 @@ func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 		Prompt: prompt,
 		Dir:    dir,
 		Model:  "opus",
+		// MaxTurns intentionally not inherited: review agents need
+		// enough turns to fetch the PR, run the skill, and write findings.
 	})
 	if err != nil {
 		return err

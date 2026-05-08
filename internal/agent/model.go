@@ -50,7 +50,9 @@ type Agent struct {
 	Model        string    `json:"model,omitempty"`
 	Prompt       string    `json:"prompt,omitempty"`
 
-	TurnCount        int    `json:"turnCount,omitempty"`
+	TurnCount int `json:"turnCount,omitempty"`
+	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
+	MaxTurns         int    `json:"maxTurns,omitempty"`
 	EscalationReason string `json:"escalationReason,omitempty"`
 	ErrorKind        string `json:"errorKind,omitempty"`
 	ErrorMsg         string `json:"errorMsg,omitempty"`
@@ -359,6 +361,9 @@ type RunConfig struct {
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
 	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG).
 	ExtraEnv []string
+	// MaxTurns overrides the global guardrail for this specific agent run.
+	// Zero means "use the manager's global guardrail".
+	MaxTurns int
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.

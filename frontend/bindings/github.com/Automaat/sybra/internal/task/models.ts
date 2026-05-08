@@ -178,6 +178,12 @@ export class Task {
     "closedAt"?: time$0.Time | null;
 
     /**
+     * MaxTurns overrides the global agent turn limit for this task.
+     * Zero means "use global default".
+     */
+    "maxTurns"?: number;
+
+    /**
      * RequirePermissions overrides the system default when set.
      * nil = use system default (true). false = opt out (--dangerously-skip-permissions).
      */
@@ -279,9 +285,9 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField21_0 = $$createType2;
-        const $$createField22_0 = $$createType4;
-        const $$createField29_0 = $$createType5;
+        const $$createField22_0 = $$createType2;
+        const $$createField23_0 = $$createType4;
+        const $$createField30_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -290,13 +296,13 @@ export class Task {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField21_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField22_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField22_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField23_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField29_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField30_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

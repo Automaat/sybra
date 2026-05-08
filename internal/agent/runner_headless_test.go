@@ -586,3 +586,73 @@ func TestBuildHeadlessInvocation_RejectsShellInjection(t *testing.T) {
 		t.Fatalf("safe invocation rejected: %v", err)
 	}
 }
+
+// TestGuardrails_PerAgentOverrideWins verifies that a per-agent MaxTurns
+// greater than the global limit prevents escalation until the per-agent limit
+// is reached.
+func TestGuardrails_PerAgentOverrideWins(t *testing.T) {
+	// global=5, per-agent=20 → feed 10 assistant events, no escalation expected.
+	var lines []string
+	for range 10 {
+		lines = append(lines, `{"type":"assistant","message":{"content":[{"type":"text","text":"tick"}]}}`)
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var escalations int
+	var mu sync.Mutex
+	emit := func(event string, _ any) {
+		if strings.Contains(event, "agent:escalation:") {
+			mu.Lock()
+			escalations++
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxTurns: 5})
+
+	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 20}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if escalations != 0 {
+		t.Errorf("per-agent MaxTurns=20 should override global=5; got %d escalation events after 10 assistant events", escalations)
+	}
+}
+
+// TestGuardrails_PerAgentOverrideLower verifies that a per-agent MaxTurns
+// lower than the global limit causes escalation at the per-agent limit.
+func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
+	// global=20, per-agent=5 → feed 6 assistant events, expect escalation.
+	var lines []string
+	for range 6 {
+		lines = append(lines, `{"type":"assistant","message":{"content":[{"type":"text","text":"tick"}]}}`)
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var escalations int
+	var mu sync.Mutex
+	emit := func(event string, _ any) {
+		if strings.Contains(event, "agent:escalation:") {
+			mu.Lock()
+			escalations++
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxTurns: 20})
+
+	_, cancel := context.WithCancel(context.Background())
+	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 5, escalationCh: make(chan bool, 1), cancel: cancel}
+	// Pre-fill the escalation channel so the runner doesn't block.
+	a.escalationCh <- false
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if escalations != 1 {
+		t.Errorf("per-agent MaxTurns=5 should escalate before global=20; got %d escalation events", escalations)
+	}
+}
