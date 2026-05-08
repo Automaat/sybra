@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -35,7 +34,6 @@ import (
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/selfmonitor"
-	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
@@ -43,8 +41,6 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
-
-const maxResultLen = 2000
 
 type App struct {
 	ctx             context.Context
@@ -88,6 +84,7 @@ type App struct {
 	emitFactory     func(context.Context) func(string, any)
 	restartStaleErr *logging.ErrorThrottle
 	recovery        *recovery.Recovery
+	agentCompletion *AgentCompletionHandler
 
 	bgops *bgop.Tracker
 
@@ -254,7 +251,6 @@ func (a *App) Startup(ctx context.Context) error {
 		MaxTurns:   a.cfg.Agent.MaxTurns,
 	})
 	a.initApprovalServer(emit)
-	a.agents.SetOnComplete(a.onAgentComplete)
 
 	a.initLoopScheduler(ctx, emit)
 	a.initFileWatcher(ctx, emit)
@@ -277,19 +273,6 @@ func (a *App) Startup(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) initBgops(emit func(string, any)) {
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
-	a.bgops.LoadFromDisk()
-}
-
-func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
-	w := watcher.New(a.tasksDir, emit, a.logger)
-	a.watcher = w
-	if err := w.Start(ctx); err != nil {
-		a.logger.Error("watcher.start", "err", err)
-	}
-}
-
 // GetMonitorReport returns the most recent finished report from the
 // in-process monitor service. Ready is false until the first tick completes;
 // the frontend should show an empty state in that window. Enabled mirrors
@@ -300,357 +283,6 @@ func (a *App) GetMonitorReport() MonitorReportBinding {
 	}
 	r, ok := a.monitorSvc.LastReport()
 	return MonitorReportBinding{Enabled: true, Ready: ok, Report: r}
-}
-
-// MonitorReportBinding is the Wails-friendly envelope for the latest
-// monitor report. Keeping the struct here (rather than in internal/monitor)
-// avoids the frontend bindings needing to handle a `monitor.Report | null`
-// union — Enabled/Ready flags say whether Report is populated.
-type MonitorReportBinding struct {
-	Enabled bool           `json:"enabled"`
-	Ready   bool           `json:"ready"`
-	Report  monitor.Report `json:"report"`
-}
-
-// allowsProjectType reports whether project-scoped automations on this machine
-// should act on the given project type. Used to route automation work between
-// instances (e.g., pet projects on the server, work projects on the laptop).
-func (a *App) allowsProjectType(t project.ProjectType) bool {
-	return a.cfg.AllowsProjectType(string(t))
-}
-
-// initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
-// nil otherwise. Kept separate so Startup stays under the funlen limit.
-func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
-	if !a.cfg.GitHub.Enabled {
-		a.logger.Info("github.disabled")
-		return nil
-	}
-	return poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
-}
-
-// logAutomationsSummary logs a one-line snapshot of which automations this
-// machine runs. Useful when comparing two instances side by side.
-func (a *App) logAutomationsSummary() {
-	loopAgentsEnabled := 0
-	if a.loopAgents != nil {
-		if las, err := a.loopAgents.List(); err == nil {
-			for i := range las {
-				if las[i].Enabled {
-					loopAgentsEnabled++
-				}
-			}
-		}
-	}
-	projectTypes := a.cfg.ProjectTypes
-	if len(projectTypes) == 0 {
-		projectTypes = []string{"*"}
-	}
-	a.logger.Info("app.automations",
-		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
-		"github", a.cfg.GitHub.Enabled,
-		"renovate", a.cfg.Renovate.Enabled,
-		"triage", a.cfg.Triage.Enabled,
-		"human_review", a.humanReview != nil,
-		"project_types", projectTypes,
-		"loop_agents_enabled", loopAgentsEnabled,
-	)
-}
-
-func (a *App) initStats() {
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		a.logger.Warn("stats.init.degraded", "err", err)
-		// a.stats remains nil; StatsService.GetStats() guards against nil.
-		return
-	}
-	a.stats = statsStore
-	if err := statsStore.Backfill(a.auditDir); err != nil {
-		a.logger.Warn("stats.backfill", "err", err)
-	}
-}
-
-func (a *App) initStatusHook() {
-	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
-		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
-
-		// Advance workflows whose current run_agent step declares a
-		// matching wait_for_status. This is how interactive agents (which
-		// never exit between turns) signal step completion.
-		if a.workflowEngine != nil {
-			a.workflowEngine.HandleStatusChange(taskID, to)
-		}
-
-		switch to {
-		case string(task.StatusInReview):
-			msg := taskID
-			if t, err := a.tasks.Get(taskID); err == nil {
-				msg = t.Title
-			}
-			a.notifier.Send(notification.LevelInfo, "Ready for review", msg, taskID, "")
-		case string(task.StatusHumanRequired):
-			msg := taskID
-			if t, err := a.tasks.Get(taskID); err == nil {
-				msg = t.Title
-			}
-			a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
-			if a.humanReview != nil {
-				go a.humanReview.maybeSpawn(taskID, from)
-			}
-		case string(task.StatusTesting):
-			if a.workflowEngine != nil {
-				if _, err := a.workflowEngine.DispatchEvent(
-					taskID,
-					"task.status_changed",
-					map[string]string{"task.status": string(task.StatusTesting)},
-					nil,
-				); err != nil {
-					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
-				}
-			}
-		}
-	})
-}
-
-func (a *App) initAudit() {
-	al, err := audit.NewLogger(a.auditDir)
-	if err != nil {
-		a.logger.Warn("audit.init.degraded", "err", err)
-		// a.audit remains nil; logAudit() is a no-op when audit is nil.
-		return
-	}
-	a.audit = al
-	retentionDays := a.cfg.Audit.RetentionDays
-	if retentionDays <= 0 {
-		retentionDays = 30
-	}
-	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
-		a.logger.Warn("audit.cleanup", "err", err)
-	}
-}
-
-// initProviderHealth constructs the provider health checker, wires it into
-// the agent manager as a gate, and starts its background probe loop. When
-// providers.health_check.enabled=false the checker is skipped entirely and
-// the manager runs with a nil gate (no blocking).
-func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
-	if !a.cfg.Providers.HealthCheck.Enabled {
-		a.logger.Info("provider.health.disabled")
-		return
-	}
-	pc := provider.New(provider.Config{
-		Interval:         time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
-		ClaudeEnabled:    a.cfg.Providers.Claude.Enabled,
-		CodexEnabled:     a.cfg.Providers.Codex.Enabled,
-		AutoFailover:     a.cfg.Providers.AutoFailover,
-		ClaudeRLCooldown: time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
-		CodexRLCooldown:  time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
-	}, emit, a.logger)
-	a.providerHealth = pc
-	a.agents.SetHealthGate(pc)
-	a.wg.Go(func() { pc.Run(ctx) })
-}
-
-// emitDegradedWarnings fires startup:degraded for any subsystem that failed
-// to initialize. Called after emit is configured so the frontend receives the events.
-func (a *App) emitDegradedWarnings(emit func(string, any)) {
-	type degraded struct {
-		Subsystem string `json:"subsystem"`
-		Reason    string `json:"reason"`
-	}
-	if a.audit == nil {
-		emit(events.StartupDegraded, degraded{"audit", "audit logger failed to initialize; audit trail unavailable"})
-	}
-	if a.stats == nil {
-		emit(events.StartupDegraded, degraded{"stats", "stats store failed to initialize; metrics unavailable"})
-	}
-}
-
-func (a *App) onAgentComplete(ag *agent.Agent) {
-	var resultContent string
-	outputs := ag.Output()
-	for i := range outputs {
-		if outputs[i].Type == "result" {
-			resultContent = outputs[i].Content
-		}
-	}
-
-	// Snapshot mutable fields once under the agent's lock so both the
-	// persistence write and the audit entry see a consistent view.
-	state := ag.GetState()
-	cost := ag.GetCostUSD()
-	exitErr := ag.GetExitErr()
-
-	// Audit logging always fires — orchestrator brain agents have no parent
-	// task and skip the storage paths below, but their lifecycle still
-	// belongs in the audit trail.
-	duration := time.Since(ag.StartedAt).Seconds()
-	a.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
-		"mode":       ag.Mode,
-		"cost_usd":   cost,
-		"duration_s": duration,
-		"state":      string(state),
-		"role":       agent.RoleFromName(ag.Name),
-		"provider":   ag.Provider,
-		"name":       ag.Name,
-		"log_file":   ag.LogPath,
-	})
-
-	a.recordAgentRunStats(ag, cost, duration, exitErr)
-
-	// Loop agents run without a TaskID — let the scheduler record cost
-	// before the early return below kicks in.
-	if a.loopSched != nil {
-		a.loopSched.OnAgentComplete(ag)
-	}
-
-	// Orchestrator brain agents run with TaskID="" (rooted at ~/.sybra,
-	// no parent task). Calling UpdateRun / HandleAgentComplete / Get with
-	// an empty ID joins to ".sybra/tasks/.md" and crashes the handler.
-	if ag.TaskID == "" {
-		return
-	}
-
-	// Persist run result to task file.
-	truncated := resultContent
-	if len(truncated) > maxResultLen {
-		truncated = truncated[:maxResultLen] + "\n... (truncated)"
-	}
-	if err := a.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
-		"state":      string(state),
-		"cost_usd":   cost,
-		"result":     truncated,
-		"log_file":   ag.LogPath,
-		"session_id": ag.GetSessionID(),
-	}); err != nil {
-		a.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
-	}
-
-	// Human-review agents are out-of-band diagnostics — they must not feed
-	// into the workflow engine (which would advance the step that originally
-	// caused the human-required transition based on the diagnostic verdict).
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
-		if a.humanReview != nil {
-			a.humanReview.onComplete(ag)
-		}
-		return
-	}
-
-	// Advance workflow.
-	if a.workflowEngine != nil {
-		a.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-			AgentID:  ag.ID,
-			Result:   resultContent,
-			Provider: ag.Provider,
-			Success:  exitErr == nil,
-		})
-	}
-
-	// Worktree and sandbox cleanup for terminal tasks (after engine advances, so status is final).
-	if t, err := a.tasks.Get(ag.TaskID); err == nil && task.IsTerminalStatus(t.Status) {
-		go a.worktrees.Remove(ag.TaskID)
-		if a.sandboxes != nil {
-			go a.sandboxes.Stop(ag.TaskID)
-		}
-	}
-}
-
-// initAutomations starts every per-machine task source in dependency order
-// and returns the GitHub issues fetcher (still consumed by
-// startBackgroundServices). Extracted so Startup stays under funlen.
-func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
-	a.initTodoist(emit)
-	a.initRenovate(emit)
-	a.initTriage()
-	a.initHumanReview()
-	return a.initIssuesFetcher(emit)
-}
-
-// recordAgentRunStats persists a stats.RunRecord for the completed agent.
-// Extracted from onAgentComplete to keep that function within funlen.
-func (a *App) recordAgentRunStats(ag *agent.Agent, cost, duration float64, exitErr error) {
-	if a.stats == nil {
-		return
-	}
-	in := ag.GetInputTokens()
-	out := ag.GetOutputTokens()
-	agCost := cost
-	if agCost == 0 && ag.Provider == "codex" {
-		agCost = stats.EstimateCost(ag.Model, in, out)
-	}
-	outcome := "failed"
-	if exitErr == nil {
-		outcome = "completed"
-	}
-	var projectID string
-	if ag.TaskID != "" {
-		if t, err := a.tasks.Get(ag.TaskID); err == nil {
-			projectID = t.ProjectID
-		}
-	}
-	_ = a.stats.Record(stats.RunRecord{
-		ID:           ag.ID,
-		TaskID:       ag.TaskID,
-		ProjectID:    projectID,
-		Mode:         ag.Mode,
-		Role:         string(agent.RoleFromName(ag.Name)),
-		Model:        ag.Model,
-		Provider:     ag.Provider,
-		CostUSD:      agCost,
-		DurationS:    duration,
-		InputTokens:  in,
-		OutputTokens: out,
-		Outcome:      outcome,
-		Timestamp:    time.Now(),
-	})
-}
-
-func (a *App) onWorkflowComplete(info workflow.CompletionInfo) {
-	kind := github.PRIssueKind(info.Variables["pr_issue_kind"])
-	if kind == "" {
-		return
-	}
-	a.prTracker.ClearCooldown(info.TaskID, kind)
-	a.logger.Info("pr-tracker.cooldown-cleared",
-		"task_id", info.TaskID, "kind", string(kind),
-		"retries", a.prTracker.Retries(info.TaskID, kind))
-}
-
-func (a *App) initWorkflowEngine() {
-	if os.Getenv("SYBRA_DISABLE_WORKFLOWS") == "1" {
-		a.logger.Info("workflow.disabled")
-		return
-	}
-	wfStore, err := workflow.NewStore(config.WorkflowsDir())
-	if err != nil {
-		a.logger.Error("workflow.store.init", "err", err)
-		return
-	}
-	a.workflowStore = wfStore
-	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
-		a.logger.Error("workflow.sync-builtins", "err", syncErr)
-	}
-	a.workflowEngine = workflow.NewEngine(
-		wfStore,
-		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, sandboxes: a.sandboxes},
-		a.logger,
-	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetOnComplete(a.onWorkflowComplete)
-	a.workflowEngine.SetContext(a.ctx)
-}
-
-func (a *App) initApprovalServer(emit func(string, any)) {
-	srv, err := agent.NewApprovalServer(emit, a.logger)
-	if err != nil {
-		a.logger.Error("approval-server.init", "err", err)
-		return
-	}
-	srv.SetManager(a.agents)
-	a.agents.SetApprovalAddr(srv.Addr())
-	a.agentSvc.approval = srv
 }
 
 func (a *App) Shutdown(_ context.Context) {
@@ -667,20 +299,6 @@ func (a *App) Shutdown(_ context.Context) {
 		_ = a.audit.Close()
 	}
 	a.logger.Info("app.stopped")
-}
-
-func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
-	if a.audit == nil {
-		return
-	}
-	if err := a.audit.Log(audit.Event{
-		Type:    eventType,
-		TaskID:  taskID,
-		AgentID: agentID,
-		Data:    data,
-	}); err != nil {
-		a.logger.Error("audit.log", "type", eventType, "err", err)
-	}
 }
 
 // StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
@@ -716,93 +334,6 @@ func (a *App) StopChat(agentID string) error {
 		return fmt.Errorf("agent %s is not a chat (task_type=%s)", agentID, t.TaskType)
 	}
 	return a.taskSvc.DeleteTask(t.ID)
-}
-
-// seedDefaultLoopAgents creates the built-in sybra-self-monitor loop on
-// first boot only. It is disabled by default so the user can review the
-// configuration in the GUI before enabling. Idempotent: if a record with
-// the same Name already exists this is a no-op.
-func (a *App) initLoopAgents() error {
-	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
-	if err != nil {
-		a.logger.Error("loopagent.store.init", "err", err)
-		return err
-	}
-	a.loopAgents = store
-	return nil
-}
-
-func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
-	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
-	a.seedDefaultLoopAgents()
-	a.loopSched.Sync()
-}
-
-func (a *App) seedDefaultLoopAgents() {
-	if a.loopAgents == nil {
-		return
-	}
-	const name = "sybra-self-monitor"
-	if _, ok := a.loopAgents.FindByName(name); ok {
-		return
-	}
-	created, err := a.loopAgents.Create(loopagent.LoopAgent{
-		Name:         name,
-		Prompt:       "/sybra-self-monitor",
-		IntervalSec:  21600, // 6 hours
-		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
-		Model:        "sonnet",
-		Enabled:      false,
-	})
-	if err != nil {
-		a.logger.Warn("loopagent.seed.failed", "name", name, "err", err)
-		return
-	}
-	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
-}
-
-// newRecovery wires the App's deps into a recovery.Recovery used for
-// boot-time cleanup and the periodic restart-stale sweep called from the
-// orchestrator loop. Holds a pointer to a.restartStaleErr so the throttle
-// state is shared across both call sites.
-func (a *App) newRecovery() *recovery.Recovery {
-	var retention time.Duration
-	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
-		retention = time.Duration(days) * 24 * time.Hour
-	}
-	return &recovery.Recovery{
-		Tasks:          a.tasks,
-		Agents:         a.agents,
-		Worktrees:      a.worktrees,
-		WorkflowEngine: a.workflowEngine,
-		Orchestrator:   a.agentOrch,
-		Projects:       a.projects,
-		Logger:         a.logger,
-		Throttle:       a.restartStaleErr,
-		WG:             &a.wg,
-		LogDir:         a.logDir,
-		LogRetention:   retention,
-	}
-}
-
-// syncSkillsBundle drives the skillsync package with the App's source/dst
-// configuration. UserHomeDir is best-effort — when unavailable the user-home
-// destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
-// startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle() {
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		a.logger.Debug("skills.sync.no_user_home", "err", err)
-		userHome = ""
-	}
-	(&skillsync.Syncer{Logger: a.logger}).Run(skillsync.Options{
-		RepoDir:      a.repoDir,
-		SkillsFS:     a.skillsFS,
-		PrimaryDst:   a.skillsDir,
-		SybraHomeDir: config.HomeDir(),
-		UserHomeDir:  userHome,
-	})
 }
 
 // ListBackgroundOps returns active and recently-completed background operations.
