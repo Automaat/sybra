@@ -14,10 +14,21 @@ import (
 
 const (
 	TickInterval   = 30 * time.Second
-	StallLimit     = 15 * time.Minute
 	Debounce       = 5 * time.Minute
 	InspectTimeout = 2 * time.Minute
 )
+
+// stallLimit returns the max event-gap before triggering inspection.
+func stallLimit(tags []string) time.Duration {
+	switch {
+	case slices.Contains(tags, "large"):
+		return 45 * time.Minute
+	case slices.Contains(tags, "small"):
+		return 10 * time.Minute
+	default: // medium or unset
+		return 15 * time.Minute
+	}
+}
 
 // sizeBudget returns the maximum total runtime for a headless agent based on
 // its task's size tag. Trigger inspection once total runtime exceeds this.
@@ -117,16 +128,18 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 		total := now.Sub(ag.StartedAt)
 
 		t, err := w.tasks.Get(ag.TaskID)
-		var budget time.Duration
+		var budget, sl time.Duration
 		if err == nil {
 			budget = sizeBudget(t.Tags)
+			sl = stallLimit(t.Tags)
 		} else {
 			budget = sizeBudget(nil)
+			sl = stallLimit(nil)
 		}
 
 		trigger := ""
 		switch {
-		case stall > StallLimit:
+		case stall > sl:
 			trigger = "stall"
 		case total > budget:
 			trigger = "budget"

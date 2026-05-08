@@ -4,10 +4,32 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+func TestStallLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+		want time.Duration
+	}{
+		{"small", []string{"small"}, 10 * time.Minute},
+		{"medium", []string{"medium"}, 15 * time.Minute},
+		{"unset", nil, 15 * time.Minute},
+		{"large", []string{"large"}, 45 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stallLimit(tc.tags)
+			if got != tc.want {
+				t.Fatalf("stallLimit(%v) = %v, want %v", tc.tags, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	tasks, tk := newTestTasks(t)
