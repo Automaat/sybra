@@ -85,6 +85,7 @@ const (
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"
 	StepRequireSidecar      StepType = "require_sidecar"
+	StepValidatePlan        StepType = "validate_plan"
 	StepTriageReview        StepType = "triage_review"
 	// StepParallel runs its `Parallel` children concurrently as run_agent
 	// steps. The parent step advances only after every child has terminated;

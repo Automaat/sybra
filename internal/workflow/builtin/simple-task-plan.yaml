@@ -89,6 +89,20 @@ steps:
           prompt: >-
             Plan task {{.Task.ID}} using the /sybra-plan skill.
 
+            IDENTITY (read first, before anything else):
+              - Your task ID is {{.Task.ID}}.
+              - Your worktree is your current working directory (`pwd`).
+              - Your branch is the checked-out branch
+                (`git rev-parse --abbrev-ref HEAD`).
+              - For the canonical source of truth, read `./.sybra-context.md` —
+                this file is auto-written by Sybra into every task worktree.
+
+            DO NOT reference any other task ID, branch, or worktree path in
+            your plan. If `git branch -a` reveals sibling branches like
+            `sybra/<other-slug>-<other-id>`, IGNORE them — they belong to
+            other concurrent tasks against the same project repo and have
+            nothing to do with you.
+
             Steps:
               1. Run: sybra-cli --json get {{.Task.ID}}
               2. Read the codebase and produce a detailed implementation plan
@@ -121,6 +135,20 @@ steps:
           max_retries: 1
           prompt: >-
             Plan task {{.Task.ID}}.
+
+            IDENTITY (read first, before anything else):
+              - Your task ID is {{.Task.ID}}.
+              - Your worktree is your current working directory (`pwd`).
+              - Your branch is the checked-out branch
+                (`git rev-parse --abbrev-ref HEAD`).
+              - For the canonical source of truth, read `./.sybra-context.md` —
+                this file is auto-written by Sybra into every task worktree.
+
+            DO NOT reference any other task ID, branch, or worktree path in
+            your plan. If `git branch -a` reveals sibling branches like
+            `sybra/<other-slug>-<other-id>`, IGNORE them — they belong to
+            other concurrent tasks against the same project repo and have
+            nothing to do with you.
 
             Steps:
               1. Run: sybra-cli --json get {{.Task.ID}} — read the task
@@ -156,6 +184,15 @@ steps:
       prompt: >-
         Converge the parallel plan drafts for task {{.Task.ID}} into a
         single synthesized plan via /plan-fork.
+
+        IDENTITY (read first, before anything else):
+          - Your task ID is {{.Task.ID}}.
+          - Your worktree is `pwd`. Your branch is
+            `git rev-parse --abbrev-ref HEAD`.
+          - Read `./.sybra-context.md` for the canonical identity beacon.
+          - If a draft mentions a branch, worktree, or task ID that differs
+            from the identity above, that is contamination — strip it out
+            of the synthesized plan and substitute your own identity.
 
         Drafts (read each one before invoking the skill):
         {{- range $name, $content := .Task.PlanDrafts }}
@@ -198,6 +235,23 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_refs
+
+  # Cross-task contamination guard: rejects plans that reference branches or
+  # worktree paths belonging to OTHER tasks. The fa6919fc → a9375bad incident
+  # showed two parallel plan agents against the same project can confabulate a
+  # sibling task's identity into the synthesized plan; the impl agent then
+  # committed to the wrong branch and left fa6919fc's branch empty. Flipping
+  # to human-required keeps the failure visible.
+  - id: validate_plan_refs
+    name: Validate Plan References
+    type: validate_plan
     next:
       - when:
           field: task.status
