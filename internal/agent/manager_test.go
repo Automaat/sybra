@@ -227,7 +227,17 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 		mu            sync.Mutex
 		completeCalls int
 	)
+
+	// holdOpen blocks the onComplete callback from completing until we have
+	// checked completeCalls. Without this, in environments where the claude
+	// binary is absent the runner goroutine fails immediately and races to
+	// call onComplete before StopAgent returns. t.Cleanup closes it so the
+	// goroutine can eventually finish without leaking.
+	holdOpen := make(chan struct{})
+	t.Cleanup(func() { close(holdOpen) })
+
 	m.SetOnComplete(func(_ *Agent) {
+		<-holdOpen
 		mu.Lock()
 		completeCalls++
 		mu.Unlock()
