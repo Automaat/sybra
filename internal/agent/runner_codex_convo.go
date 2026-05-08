@@ -70,13 +70,13 @@ func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunConfig) {
 	defer func() {
 		a.SetState(StateStopped)
-		m.markAgentDone(a)
 		m.logger.Info("agent.codex.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
 		m.recordCompletion(a, a.GetExitErr() == nil)
 		if m.onComplete != nil {
 			m.onComplete(a)
 		}
+		m.markAgentDone(a)
 	}()
 
 	outFile, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
