@@ -4,7 +4,105 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
+
+const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
+  viewer { login }
+  created: search(query: $createdQ, type: ISSUE, first: 100) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        headRefName
+        isDraft
+        mergeable
+        createdAt
+        updatedAt
+        reviewDecision
+        author { login type: __typename }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 50) {
+                  nodes {
+                    ... on CheckRun { status }
+                  }
+                }
+              }
+            }
+          }
+        }
+        reviewThreads(first: 100) {
+          nodes { isResolved }
+        }
+        latestReviews(first: 20) {
+          nodes { state author { login } }
+        }
+      }
+    }
+  }
+  requested: search(query: $requestedQ, type: ISSUE, first: 100) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        headRefName
+        isDraft
+        mergeable
+        createdAt
+        updatedAt
+        reviewDecision
+        author { login type: __typename }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup {
+                state
+                contexts(first: 50) {
+                  nodes {
+                    ... on CheckRun { status }
+                  }
+                }
+              }
+            }
+          }
+        }
+        reviewThreads(first: 100) {
+          nodes { isResolved }
+        }
+        latestReviews(first: 20) {
+          nodes { state author { login } }
+        }
+      }
+    }
+  }
+}`
+
+type gqlReviewSummaryResponse struct {
+	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+		Created struct {
+			Nodes []gqlPR `json:"nodes"`
+		} `json:"created"`
+		Requested struct {
+			Nodes []gqlPR `json:"nodes"`
+		} `json:"requested"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
 
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
 func FetchReviews() (ReviewSummary, error) {
@@ -12,21 +110,49 @@ func FetchReviews() (ReviewSummary, error) {
 }
 
 func fetchReviewsWith(e execer) (ReviewSummary, error) {
-	var summary ReviewSummary
-
-	created, err := searchPRsWith(e, "is:pr is:open author:@me")
-	if err != nil {
-		return summary, fmt.Errorf("fetch created PRs: %w", err)
+	const (
+		createdQuery   = "is:pr is:open author:@me"
+		requestedQuery = "is:pr is:open review-requested:@me"
+	)
+	cacheKey := createdQuery + "||" + requestedQuery
+	if runtimeCacheEnabled(e) {
+		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql") {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+		}
 	}
-	summary.CreatedByMe = created
 
-	// review-requested may fail on server deployments with scoped tokens or
-	// rate limits. Log and continue rather than discarding createdByMe data.
-	requested, err := searchPRsWith(e, "is:pr is:open review-requested:@me")
+	resp, err := runGHAPIWith(e, "", "graphql",
+		"-f", "query="+reviewSummaryQuery,
+		"-f", "createdQ="+createdQuery,
+		"-f", "requestedQ="+requestedQuery)
 	if err != nil {
-		summary.ReviewRequested = nil
-	} else {
-		summary.ReviewRequested = requested
+		if runtimeCacheEnabled(e) {
+			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+				return stale, nil
+			}
+		}
+		return ReviewSummary{}, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+	}
+
+	var gqlResp gqlReviewSummaryResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+		return ReviewSummary{}, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return ReviewSummary{}, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	}
+
+	summary := ReviewSummary{
+		CreatedByMe:     convertPRs(gqlResp.Data.Created.Nodes, gqlResp.Data.Viewer.Login),
+		ReviewRequested: convertPRs(gqlResp.Data.Requested.Nodes, gqlResp.Data.Viewer.Login),
+	}
+	if runtimeCacheEnabled(e) {
+		reviewSummaryCache.Set(cacheKey, summary, 20*time.Second)
 	}
 
 	return summary, nil
@@ -39,20 +165,38 @@ func HasPendingReview(repo string, number int) (bool, error) {
 }
 
 func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
-	out, err := e.run("api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := pendingReviewCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
 	if err != nil {
-		return false, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(out)), err)
+		if runtimeCacheEnabled(e) {
+			if stale, ok := pendingReviewCache.GetStale(key); ok {
+				return stale, nil
+			}
+		}
+		return false, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(resp.body)), err)
 	}
 	var reviews []struct {
 		State string `json:"state"`
 	}
-	if err := json.Unmarshal(out, &reviews); err != nil {
+	if err := json.Unmarshal(resp.body, &reviews); err != nil {
 		return false, fmt.Errorf("parse reviews: %w", err)
 	}
 	for i := range reviews {
 		if reviews[i].State == "PENDING" {
+			if runtimeCacheEnabled(e) {
+				pendingReviewCache.Set(key, true, 30*time.Second)
+			}
 			return true, nil
 		}
+	}
+	if runtimeCacheEnabled(e) {
+		pendingReviewCache.Set(key, false, 30*time.Second)
 	}
 	return false, nil
 }
@@ -67,6 +211,9 @@ func approvePRWith(e execer, repo string, number int) error {
 		fmt.Sprintf("%d", number), "-R", repo)
 	if err != nil {
 		return fmt.Errorf("gh pr review --approve %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
 	}
 	return nil
 }

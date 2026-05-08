@@ -17,8 +17,10 @@ type execer interface {
 type ghExecer struct{}
 
 func (ghExecer) run(args ...string) ([]byte, error) {
-	cmd := exec.Command("gh", args...)
-	return cmd.CombinedOutput()
+	return ghGate.execute(func() ([]byte, error) {
+		cmd := exec.Command("gh", args...)
+		return cmd.CombinedOutput()
+	})
 }
 
 var defaultExecer execer = ghExecer{}
@@ -50,14 +52,6 @@ func viewerLogin(e execer) string {
 	return result
 }
 
-// resetCachedViewerForTest clears the package-level viewer cache. Exported
-// only for use from tests in the same package.
-func resetCachedViewerForTest() {
-	viewerMu.Lock()
-	cachedViewer = ""
-	viewerMu.Unlock()
-}
-
 // sanitizeGHOutput trims the `gh` CLI's combined output for use in error
 // messages. When GitHub returns a 5xx with an HTML error page (e.g. the
 // "Unicorn!" 504 page), gh prints the entire HTML body followed by a
@@ -80,7 +74,12 @@ func sanitizeGHOutput(out []byte) string {
 }
 
 const prQuery = `query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
+  viewer { login }
+  search(query: $q, type: ISSUE, first: 100) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
     nodes {
       ... on PullRequest {
         number
@@ -135,8 +134,15 @@ type gqlStatusCheckRollup struct {
 
 type gqlResponse struct {
 	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
 		Search struct {
-			Nodes []gqlPR `json:"nodes"`
+			Nodes    []gqlPR `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
 		} `json:"search"`
 	} `json:"data"`
 	Errors []struct {
@@ -190,22 +196,22 @@ type gqlPR struct {
 }
 
 func searchPRsWith(e execer, query string) ([]PullRequest, error) {
-	out, err := e.run("api", "graphql",
+	resp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+prQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
 	}
 
-	var resp gqlResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
+	var gqlResp gqlResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
 		return nil, fmt.Errorf("parse graphql response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
 	}
 
-	return convertPRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
+	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
 }
 
 // convertCommonPR converts shared gqlPR fields into a PullRequest.
