@@ -371,8 +371,10 @@ type RunConfig struct {
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".
 	MaxTurns int
-	// BashTimeoutMs sets --bashTimeoutMs on the claude CLI for this run.
-	// Zero means "use the manager's default".
+	// BashTimeoutMs sets the Bash tool timeout for this run by exporting
+	// BASH_DEFAULT_TIMEOUT_MS and BASH_MAX_TIMEOUT_MS into the claude
+	// subprocess (claude exposes no equivalent CLI flag). Zero means "use
+	// the manager's default".
 	BashTimeoutMs int
 }
 

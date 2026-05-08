@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +73,7 @@ done:
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
-	name, args, command, err := buildHeadlessInvocation(a, cfg)
+	name, args, invokeEnv, command, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
 		return false, err
 	}
@@ -82,8 +83,9 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 {
-		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
+		cmd.Env = append(os.Environ(), invokeEnv...)
+		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
 	a.Command = command
 
@@ -457,7 +459,11 @@ func (m *Manager) effectiveMaxTurns(a *Agent) int {
 	return global
 }
 
-func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []string, command string, err error) {
+// buildHeadlessInvocation builds the subprocess invocation for a headless
+// agent. The returned env slice contains "KEY=VALUE" entries the caller must
+// merge into cmd.Env (Bash tool timeout for claude is delivered this way —
+// claude has no CLI flag for it).
+func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []string, command string, err error) {
 	if a.Provider != "claude" && a.Provider != "codex" {
 		err = fmt.Errorf("unsupported provider: %s", a.Provider)
 		return
@@ -503,7 +509,15 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []strin
 		args = append(args, "--model", a.Model)
 	}
 	if cfg.BashTimeoutMs > 0 {
-		args = append(args, "--bashTimeoutMs", fmt.Sprintf("%d", cfg.BashTimeoutMs))
+		// Claude has no `--bashTimeoutMs` CLI flag — the supported channel is
+		// the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars. Set both
+		// so the configured value is honored even when it exceeds claude's
+		// built-in max (600000 ms).
+		ms := strconv.Itoa(cfg.BashTimeoutMs)
+		env = append(env,
+			"BASH_DEFAULT_TIMEOUT_MS="+ms,
+			"BASH_MAX_TIMEOUT_MS="+ms,
+		)
 	}
 	command = "claude " + strings.Join(args, " ")
 	return
