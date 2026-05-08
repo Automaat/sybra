@@ -625,6 +625,7 @@ export enum StepType {
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
+    StepValidatePlan = "validate_plan",
     StepTriageReview = "triage_review",
 
     /**

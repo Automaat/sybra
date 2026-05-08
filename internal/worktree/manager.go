@@ -162,6 +162,9 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 			}
 			m.installChecks(wtPath, proj)
 			m.ensureBranch(t, wtBranch)
+			if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+				m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+			}
 			return wtPath, nil
 		}
 		// Worktree was wiped — fall through to create paths below.
@@ -194,6 +197,9 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		}
 		m.installChecks(wtPath, proj)
 		m.ensureBranch(t, wtBranch)
+		if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+			m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+		}
 		return wtPath, nil
 	}
 
@@ -214,6 +220,9 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	}
 
 	m.ensureBranch(t, wtBranch)
+	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+	}
 	return wtPath, nil
 }
 
@@ -248,6 +257,9 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 		if usable {
 			m.logger.Info("chat.worktree.reused", "task_id", t.ID, "path", wtPath)
 			m.ensureBranch(t, wtBranch)
+			if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+				m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+			}
 			return wtPath, nil
 		}
 		// Worktree was wiped — fall through.
@@ -263,6 +275,9 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 			return "", fmt.Errorf("chat setup on reused branch: %w", err)
 		}
 		m.ensureBranch(t, wtBranch)
+		if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+			m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+		}
 		return wtPath, nil
 	}
 
@@ -274,6 +289,9 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 		return "", fmt.Errorf("chat setup on new worktree: %w", err)
 	}
 	m.ensureBranch(t, wtBranch)
+	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+	}
 	return wtPath, nil
 }
 
