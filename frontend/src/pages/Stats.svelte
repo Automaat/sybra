@@ -114,6 +114,7 @@
   {#if statsStore.data}
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {#each [
+        { title: 'By Project Type', data: statsStore.data.byProjectType },
         { title: 'By Project', data: statsStore.data.byProject },
         { title: 'By Role', data: statsStore.data.byRole },
         { title: 'By Mode', data: statsStore.data.byMode },
