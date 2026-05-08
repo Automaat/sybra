@@ -33,6 +33,11 @@ export class Agent {
     "model"?: string;
     "prompt"?: string;
     "turnCount"?: number;
+
+    /**
+     * MaxTurns is the per-agent turn limit override; zero means use global guardrail.
+     */
+    "maxTurns"?: number;
     "escalationReason"?: string;
     "errorKind"?: string;
     "errorMsg"?: string;
