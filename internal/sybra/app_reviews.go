@@ -138,13 +138,14 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 	)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:   t.ID,
-		Name:     agent.RoleFixReview.AgentName(t.Title),
-		Mode:     "headless",
-		Prompt:   prompt,
-		Dir:      dir,
-		Model:    "opus",
-		MaxTurns: t.MaxTurns,
+		TaskID: t.ID,
+		Name:   agent.RoleFixReview.AgentName(t.Title),
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// MaxTurns intentionally not inherited: fix-review agents need
+		// enough turns to fetch the PR, apply fixes, and commit.
 	})
 	if err != nil {
 		return err
@@ -174,13 +175,14 @@ func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:   t.ID,
-		Name:     agent.RoleReview.AgentName(t.Title),
-		Mode:     "headless",
-		Prompt:   prompt,
-		Dir:      dir,
-		Model:    "opus",
-		MaxTurns: t.MaxTurns,
+		TaskID: t.ID,
+		Name:   agent.RoleReview.AgentName(t.Title),
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// MaxTurns intentionally not inherited: review agents need
+		// enough turns to fetch the PR, run the skill, and write findings.
 	})
 	if err != nil {
 		return err
