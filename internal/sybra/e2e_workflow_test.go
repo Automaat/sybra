@@ -3283,14 +3283,18 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
+// TestE2E_VerifyCommits_BranchAtBaseMarksDone covers verify_commits when the
+// worktree HEAD matches origin/main (rebased branch with no commits ahead).
+// The implementation is already on origin from a prior merge, so the step
+// marks the task done and ends the workflow instead of routing to
+// set_ready_review (which would otherwise loop forever via the auto-restart
+// in svc_tasks.UpdateTask).
+func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"triage", "success"})
-	// verify_commits lives in simple-task-implement; the cascade in
-	// setupE2EMultiProvider hands off plan → implement on status=in-progress.
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
-	created, err := env.tasks.Create("verify commits no ahead", "", "headless")
+	created, err := env.tasks.Create("verify commits branch at base", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3303,7 +3307,6 @@ func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 	initRepoWithOriginMain(t, worktreePath)
-	runCmd(t, worktreePath, "git", "log", "origin/main..HEAD", "--oneline")
 
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
@@ -3317,24 +3320,24 @@ func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
 	})
 
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", tk.Status)
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done", tk.Status)
 	}
-	if tk.StatusReason != "no commits pushed to branch" {
+	if !strings.Contains(tk.StatusReason, "branch identical to base") {
 		var verifyOut string
 		for i := range tk.Workflow.StepHistory {
 			if tk.Workflow.StepHistory[i].StepID == "verify_commits" {
 				verifyOut = tk.Workflow.StepHistory[i].Output
 			}
 		}
-		t.Fatalf("status_reason = %q, want no commits pushed to branch (verify_commits output=%q)", tk.StatusReason, verifyOut)
+		t.Fatalf("status_reason = %q, want 'branch identical to base' (verify_commits output=%q)", tk.StatusReason, verifyOut)
 	}
 	stepIDs := stepIDsFromHistory(tk.Workflow)
 	if !slices.Contains(stepIDs, "verify_commits") {
 		t.Fatalf("verify_commits missing from history: %v", stepIDs)
 	}
-	if slices.Contains(stepIDs, "link_pr_and_review") || slices.Contains(stepIDs, "evaluate") {
-		t.Fatalf("unexpected fallback steps executed after verify_commits gate: %v", stepIDs)
+	if slices.Contains(stepIDs, "set_ready_review") {
+		t.Fatalf("unexpected set_ready_review executed after verify_commits done-gate: %v", stepIDs)
 	}
 }
 

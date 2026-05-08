@@ -42,6 +42,13 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      # Branch identical to base after fix attempt → fix landed via a different
+      # branch; verify_commits set status=done and we end the workflow.
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
       - goto: link_pr_and_review
 
   # Non-LLM step: recover PR number from task, agent result history, or
