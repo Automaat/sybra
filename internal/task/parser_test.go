@@ -570,3 +570,62 @@ func TestParseBytesLargeBody(t *testing.T) {
 		t.Errorf("reparse Body len = %d, want %d", len(reparsed.Body), size)
 	}
 }
+
+func TestParseBytes_MaxTurns(t *testing.T) {
+	t.Parallel()
+	input := `---
+id: mt1
+title: Long task
+status: todo
+agent_mode: headless
+max_turns: 200
+---
+body`
+	got, err := ParseBytes([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	if got.MaxTurns != 200 {
+		t.Errorf("MaxTurns = %d, want 200", got.MaxTurns)
+	}
+}
+
+func TestMarshal_MaxTurnsZeroOmitted(t *testing.T) {
+	t.Parallel()
+	task := Task{
+		ID:        "mt2",
+		Title:     "no override",
+		Status:    StatusTodo,
+		AgentMode: "headless",
+		MaxTurns:  0,
+	}
+	data, err := Marshal(task)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "max_turns") {
+		t.Errorf("max_turns must be absent when zero; got:\n%s", string(data))
+	}
+}
+
+func TestMarshal_MaxTurnsRoundTrip(t *testing.T) {
+	t.Parallel()
+	task := Task{
+		ID:        "mt3",
+		Title:     "with override",
+		Status:    StatusTodo,
+		AgentMode: "headless",
+		MaxTurns:  300,
+	}
+	data, err := Marshal(task)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	reparsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	if reparsed.MaxTurns != 300 {
+		t.Errorf("MaxTurns after round-trip = %d, want 300", reparsed.MaxTurns)
+	}
+}

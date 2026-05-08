@@ -199,6 +199,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		LastEventAt: now,
 		cancel:      cancel,
 		sessionCWD:  cfg.Dir,
+		MaxTurns:    cfg.MaxTurns,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

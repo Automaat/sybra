@@ -200,6 +200,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Provider:     provider,
 		Dir:          dir,
 		OneShot:      oneShot,
+		MaxTurns:     t.MaxTurns,
 	}
 
 	// Caller-provided dir takes precedence (e.g. pr-fix flow pre-stages a

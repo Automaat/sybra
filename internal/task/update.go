@@ -34,6 +34,7 @@ type Update struct {
 	Plan           *string
 	PlanCritique   *string
 	CodeReview     *string
+	MaxTurns       *int
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -73,6 +74,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyTagsField(u, k, v)
 	case "pr_number":
 		return applyPRNumberField(u, k, v)
+	case "max_turns":
+		return applyMaxTurnsField(u, v)
 	case "due_date":
 		return applyDueDateField(u, v)
 	case "reviewed":
@@ -230,5 +233,22 @@ func applyDueDateField(u *Update, v any) error {
 	}
 	tp := &parsed
 	u.DueDate = &tp
+	return nil
+}
+
+func applyMaxTurnsField(u *Update, v any) error {
+	var n int
+	switch val := v.(type) {
+	case int:
+		n = val
+	case float64:
+		n = int(val)
+	default:
+		return fmt.Errorf("field \"max_turns\": want int, got %T", v)
+	}
+	if n < 0 {
+		return fmt.Errorf("field \"max_turns\": must be >= 0, got %d", n)
+	}
+	u.MaxTurns = &n
 	return nil
 }

@@ -161,6 +161,12 @@ export class Task {
     "statusReason": string;
 
     /**
+     * MaxTurns overrides the global agent turn limit for this task.
+     * Zero means "use global default".
+     */
+    "maxTurns"?: number;
+
+    /**
      * BlockedByIssue stores the URL of the GitHub issue that put the task
      * into status=blocked. Set by the human-review automation when it
      * concludes the human-required transition was caused by a Sybra bug.

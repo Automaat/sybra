@@ -366,10 +366,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 
 		if event.Type == "assistant" {
 			turns := a.IncTurnCount()
-			m.mu.RLock()
-			maxTurns := m.guardrails.MaxTurns
-			m.mu.RUnlock()
-			if maxTurns > 0 && turns >= maxTurns {
+			if maxTurns := m.effectiveMaxTurns(a); maxTurns > 0 && turns >= maxTurns {
 				m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", turns, "limit", maxTurns)
 				a.SetEscalationReason("turns")
 				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
@@ -426,6 +423,21 @@ func (m *Manager) reportScannerError(a *Agent, err error) {
 		"id", a.ID,
 		"err", err,
 		"hint", "oversized line or broken pipe aborted the NDJSON stream; trailing events were lost")
+}
+
+// effectiveMaxTurns returns the turn limit for a: per-agent override when set,
+// otherwise the global guardrail.
+func (m *Manager) effectiveMaxTurns(a *Agent) int {
+	m.mu.RLock()
+	global := m.guardrails.MaxTurns
+	m.mu.RUnlock()
+	a.mu.RLock()
+	perAgent := a.MaxTurns
+	a.mu.RUnlock()
+	if perAgent > 0 {
+		return perAgent
+	}
+	return global
 }
 
 func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []string, command string, err error) {

@@ -24,6 +24,14 @@
   let copiedBranch = $state(false)
   let error = $state('')
 
+  let editingMaxTurns = $state(false)
+  let maxTurnsDraft = $state('')
+  let maxTurnsInputRef = $state<HTMLInputElement | null>(null)
+
+  $effect(() => {
+    if (editingMaxTurns && maxTurnsInputRef) maxTurnsInputRef.focus()
+  })
+
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
   )
@@ -142,6 +150,38 @@
     }
   }
 
+  function startEditingMaxTurns() {
+    maxTurnsDraft = task.maxTurns ? String(task.maxTurns) : ''
+    editingMaxTurns = true
+  }
+
+  async function saveMaxTurns() {
+    editingMaxTurns = false
+    const raw = maxTurnsDraft.trim()
+    const n = raw === '' ? 0 : parseInt(raw, 10)
+    if (raw !== '' && (isNaN(n) || n < 0)) {
+      error = 'Max turns must be a non-negative integer.'
+      return
+    }
+    const current = task.maxTurns ?? 0
+    if (n === current) return
+    try {
+      await taskStore.update(task.id, { max_turns: n })
+      error = ''
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function handleMaxTurnsKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      saveMaxTurns()
+    } else if (e.key === 'Escape') {
+      editingMaxTurns = false
+    }
+  }
+
   async function copyBranch() {
     if (!task.projectId) return
     try {
@@ -254,6 +294,35 @@
       </div>
     </div>
   {/if}
+
+  <div class="flex flex-col gap-1">
+    <span class="font-medium text-surface-500">Max Turns</span>
+    {#if editingMaxTurns}
+      <input
+        bind:this={maxTurnsInputRef}
+        bind:value={maxTurnsDraft}
+        type="number"
+        min="0"
+        class="w-24 rounded border border-primary-400 bg-surface-50 px-2 py-0.5 text-xs outline-none dark:border-primary-500 dark:bg-surface-900"
+        placeholder="global default"
+        onblur={saveMaxTurns}
+        onkeydown={handleMaxTurnsKeydown}
+      />
+    {:else}
+      <button
+        type="button"
+        class="w-fit rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-300"
+        onclick={startEditingMaxTurns}
+        title="Click to set per-task max turns (0 = use global default)"
+      >
+        {#if task.maxTurns}
+          {task.maxTurns}
+        {:else}
+          <span class="italic text-surface-400">global default</span>
+        {/if}
+      </button>
+    {/if}
+  </div>
 </div>
 
 <div class="flex flex-wrap items-center gap-4 text-xs text-surface-400">

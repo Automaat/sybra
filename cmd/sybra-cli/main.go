@@ -283,6 +283,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	pr := fs.Int("pr", 0, "GitHub PR number")
 	issue := fs.String("issue", "", "GitHub issue URL")
 	statusReason := fs.String("status-reason", "", "reason for status change")
+	maxTurnsFlag := fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -336,6 +337,10 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *issue != "" {
 		updates["issue"] = *issue
+	}
+	// -1 is the sentinel "not provided"; 0 clears override, >0 sets limit.
+	if *maxTurnsFlag >= 0 {
+		updates["max_turns"] = float64(*maxTurnsFlag)
 	}
 
 	if len(updates) == 0 {
@@ -906,7 +911,7 @@ Commands:
   get      <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
            TYPE: normal|debug|research
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N]
   delete   <id>
 
   project list
