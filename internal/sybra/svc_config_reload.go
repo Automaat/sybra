@@ -80,6 +80,9 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 			TurnMultiplier:   next.Agent.TurnMultiplier,
 		})
 	}
+	if slices.Contains(hot, "agent.bash_timeout_seconds") {
+		s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
+	}
 
 	if s.logger != nil {
 		for _, k := range restart {
