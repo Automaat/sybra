@@ -660,7 +660,7 @@ func TestBuildHeadlessInvocation_RejectsShellInjection(t *testing.T) {
 	for _, bad := range injections {
 		t.Run("tool_"+bad, func(t *testing.T) {
 			a := &Agent{ID: "a", Provider: "claude"}
-			_, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			_, _, _, _, err := buildHeadlessInvocation(a, RunConfig{
 				Prompt:       "ok",
 				AllowedTools: []string{bad},
 			})
@@ -673,7 +673,7 @@ func TestBuildHeadlessInvocation_RejectsShellInjection(t *testing.T) {
 	for _, bad := range []string{"sonnet --extra-flag", "opus;id", "gpt-5 $(id)", "model\"inject"} {
 		t.Run("model_"+bad, func(t *testing.T) {
 			a := &Agent{ID: "a", Provider: "claude", Model: bad}
-			_, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "ok"})
+			_, _, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "ok"})
 			if err == nil {
 				t.Errorf("buildHeadlessInvocation accepted injection model %q; safeArgRe must reject", bad)
 			}
@@ -682,7 +682,7 @@ func TestBuildHeadlessInvocation_RejectsShellInjection(t *testing.T) {
 
 	// Sanity check: safe tool and model names are accepted.
 	a := &Agent{ID: "a", Provider: "claude", Model: "sonnet"}
-	_, _, _, err := buildHeadlessInvocation(a, RunConfig{
+	_, _, _, _, err := buildHeadlessInvocation(a, RunConfig{
 		Prompt:       "ok",
 		AllowedTools: []string{"Bash", "Read", "Write"},
 	})
@@ -762,44 +762,53 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 	}
 }
 
-// TestBuildHeadlessInvocation_BashTimeoutMs verifies that --bashTimeoutMs is
-// included when cfg.BashTimeoutMs > 0, and absent when it is zero.
-func TestBuildHeadlessInvocation_BashTimeoutMs(t *testing.T) {
-	t.Run("included_when_set", func(t *testing.T) {
+// TestBuildHeadlessInvocation_BashTimeout verifies that the Bash tool timeout
+// is delivered to claude via BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
+// vars (claude has no `--bashTimeoutMs` CLI flag) when cfg.BashTimeoutMs > 0,
+// and that no timeout is injected when it is zero or for codex.
+func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
+	t.Run("env_set_for_claude", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
-		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+		_, args, env, _, err := buildHeadlessInvocation(a, RunConfig{
 			Prompt:        "hi",
 			BashTimeoutMs: 300000,
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		idx := slices.Index(args, "--bashTimeoutMs")
-		if idx == -1 {
-			t.Fatal("--bashTimeoutMs not found in args")
+		if slices.Contains(args, "--bashTimeoutMs") {
+			t.Fatal("--bashTimeoutMs is not a real claude CLI flag and must not appear in args")
 		}
-		if idx+1 >= len(args) || args[idx+1] != "300000" {
-			t.Fatalf("--bashTimeoutMs value = %q, want 300000", args[idx+1])
+		want := []string{
+			"BASH_DEFAULT_TIMEOUT_MS=300000",
+			"BASH_MAX_TIMEOUT_MS=300000",
+		}
+		for _, w := range want {
+			if !slices.Contains(env, w) {
+				t.Errorf("env missing %q; got %v", w, env)
+			}
 		}
 	})
 
-	t.Run("absent_when_zero", func(t *testing.T) {
+	t.Run("env_absent_when_zero", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "claude"}
-		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+		_, _, env, _, err := buildHeadlessInvocation(a, RunConfig{
 			Prompt:        "hi",
 			BashTimeoutMs: 0,
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if slices.Contains(args, "--bashTimeoutMs") {
-			t.Fatal("--bashTimeoutMs must be absent when BashTimeoutMs == 0")
+		for _, e := range env {
+			if strings.HasPrefix(e, "BASH_DEFAULT_TIMEOUT_MS=") || strings.HasPrefix(e, "BASH_MAX_TIMEOUT_MS=") {
+				t.Fatalf("bash timeout env must be absent when BashTimeoutMs == 0; got %q", e)
+			}
 		}
 	})
 
-	t.Run("not_passed_to_codex", func(t *testing.T) {
+	t.Run("not_set_for_codex", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "codex"}
-		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+		_, args, env, _, err := buildHeadlessInvocation(a, RunConfig{
 			Prompt:        "hi",
 			BashTimeoutMs: 300000,
 		})
@@ -808,6 +817,11 @@ func TestBuildHeadlessInvocation_BashTimeoutMs(t *testing.T) {
 		}
 		if slices.Contains(args, "--bashTimeoutMs") {
 			t.Fatal("--bashTimeoutMs must not be passed to codex")
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "BASH_DEFAULT_TIMEOUT_MS=") || strings.HasPrefix(e, "BASH_MAX_TIMEOUT_MS=") {
+				t.Fatalf("bash timeout env must not be set for codex; got %q", e)
+			}
 		}
 	})
 }

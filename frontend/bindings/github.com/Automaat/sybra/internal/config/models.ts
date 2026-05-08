@@ -34,7 +34,9 @@ export class AgentDefaults {
 
     /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
-     * claude -p via --bashTimeoutMs. 0 means use DefaultBashTimeoutSeconds (300).
+     * claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
+     * vars (claude has no equivalent CLI flag). 0 means use
+     * DefaultBashTimeoutSeconds (300).
      */
     "bashTimeoutSeconds": number;
 

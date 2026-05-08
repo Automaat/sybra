@@ -73,7 +73,9 @@ type AgentDefaults struct {
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
-	// claude -p via --bashTimeoutMs. 0 means use DefaultBashTimeoutSeconds (300).
+	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
+	// vars (claude has no equivalent CLI flag). 0 means use
+	// DefaultBashTimeoutSeconds (300).
 	BashTimeoutSeconds int `yaml:"bash_timeout_seconds" json:"bashTimeoutSeconds"`
 	// MaxLogEvents caps how many NDJSON events are returned when replaying
 	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
@@ -89,8 +91,8 @@ type AgentDefaults struct {
 // BashTimeoutSeconds is not set in config.
 const DefaultBashTimeoutSeconds = 300
 
-// BashTimeoutMs returns the bash tool timeout in milliseconds, ready for
-// passing to claude -p --bashTimeoutMs.
+// BashTimeoutMs returns the bash tool timeout in milliseconds, exported into
+// the claude subprocess as BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS.
 func (c *Config) BashTimeoutMs() int {
 	if c != nil && c.Agent.BashTimeoutSeconds > 0 {
 		return c.Agent.BashTimeoutSeconds * 1000
