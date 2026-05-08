@@ -412,14 +412,77 @@ steps:
           field: task.tags
           operator: not_contains
           value: noreview
-        goto: code_review
+        goto: triage_review
       - goto: create_pr
 
-  # Review runs locally on the worktree before the PR is created, so fixes
-  # are committed to the branch first. No PR URL needed — diff against
-  # origin/main captures everything the agent just implemented.
-  - id: code_review
-    name: Code Review
+  # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
+  # "simple" or "staff" so pick_review_method below can pick between the
+  # lightweight /pr-review skill and the deeper /staff-code-review skill.
+  # Force-staff-review tag is checked by the picker, not here, so the
+  # decision rationale is still logged for tagged tasks.
+  - id: triage_review
+    name: Triage Review
+    type: triage_review
+    next:
+      - goto: pick_review_method
+
+  # Routes to the simple or staff review based on:
+  #   - task.tags contains force-staff-review → always staff (escape hatch)
+  #   - vars.step.triage_review.output equals simple → /pr-review
+  #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
+  - id: pick_review_method
+    name: Pick Review Method
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: force-staff-review
+        goto: code_review_staff
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: simple
+        goto: code_review_simple
+      - goto: code_review_staff
+
+  # Lightweight review for small, low-risk diffs. Writes to the same
+  # sidecar path as code_review_staff so fix_review reads either one
+  # transparently.
+  - id: code_review_simple
+    name: Code Review (simple)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
+          2. Run /pr-review against that patch and the worktree source
+          3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+
+        Do NOT submit anything to GitHub. Sybra will ingest
+        /tmp/sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        after you exit — you do not need to call sybra-cli yourself.
+        The /tmp file also remains for the next step (fix_review) to
+        read directly.
+      import_sidecar:
+        kind: code_review
+        from: /tmp/sybra-review-{{.Task.ID}}.md
+    next:
+      - goto: require_code_review
+
+  # Deep review for non-trivial diffs. Same sidecar contract as
+  # code_review_simple. Used by default whenever triage cannot prove a
+  # diff is small + low-risk.
+  - id: code_review_staff
+    name: Code Review (staff)
     type: run_agent
     config:
       role: review

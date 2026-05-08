@@ -625,6 +625,7 @@ export enum StepType {
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
+    StepTriageReview = "triage_review",
 
     /**
      * StepParallel runs its `Parallel` children concurrently as run_agent
