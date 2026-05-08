@@ -34,10 +34,19 @@ describe('parseNaturalDate', () => {
     expect(d.getTime()).toBeGreaterThan(Date.now())
   })
   it('parses "in N days/weeks"', () => {
+    function expectedDate(daysFromNow: number): { date: number; month: number } {
+      const d = new Date()
+      d.setDate(d.getDate() + daysFromNow)
+      return { date: d.getDate(), month: d.getMonth() }
+    }
     const inThree = parseNaturalDate('in 3 days')!
-    expect(Math.round((inThree.getTime() - Date.now()) / 86400000)).toBe(3)
+    const exp3 = expectedDate(3)
+    expect(inThree.getDate()).toBe(exp3.date)
+    expect(inThree.getMonth()).toBe(exp3.month)
     const inTwoWeeks = parseNaturalDate('in 2 weeks')!
-    expect(Math.round((inTwoWeeks.getTime() - Date.now()) / 86400000)).toBe(14)
+    const exp14 = expectedDate(14)
+    expect(inTwoWeeks.getDate()).toBe(exp14.date)
+    expect(inTwoWeeks.getMonth()).toBe(exp14.month)
   })
   it('parses ISO date', () => {
     const d = parseNaturalDate('2026-12-31')!
