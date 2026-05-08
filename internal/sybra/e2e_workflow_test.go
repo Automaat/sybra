@@ -33,6 +33,8 @@ var (
 )
 
 // TestMain tears down the shared binary directory after all tests complete.
+// SYBRA_HOME is seeded by the package-level init in main_test.go before
+// this runs.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if testBinDir != "" {
