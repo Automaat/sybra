@@ -168,7 +168,11 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, st
 		if err := w.agents.StopAgent(ag.ID); err != nil {
 			w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 		}
-		if ag.TaskID != "" {
+		// For tasks with an active workflow, skip the direct status update:
+		// the natural onComplete → HandleAgentComplete path routes through
+		// AdvanceStep, which applies retry logic before escalating.
+		// Fall back to direct update only when no workflow is active.
+		if ag.TaskID != "" && t.Workflow == nil {
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
