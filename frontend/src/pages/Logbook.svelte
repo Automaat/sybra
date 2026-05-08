@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { Search, X } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
-  import { projectStore } from '../stores/projects.svelte.js'
   import { STATUS_MAP } from '../lib/statuses.js'
+  import { matchesQuery, matchesProject, matchesTags, matchesDateRange } from '../lib/task-filters.js'
+  import { toUtcDayStart, toUtcDayEnd } from '../lib/dates.js'
+  import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
 
   interface Props {
     onviewtask: (id: string) => void
@@ -27,43 +28,24 @@
   ]
 
   const logbookTasks = $derived(
-    taskStore.list.filter((t: Task) => t.status === 'done' || t.status === 'cancelled')
+    taskStore.list.filter((t: Task) => t.status === 'done' || t.status === 'cancelled'),
   )
 
   const allTags = $derived(
-    [...new Set(logbookTasks.flatMap((t: Task) => t.tags ?? []))].sort()
+    [...new Set(logbookTasks.flatMap((t: Task) => t.tags ?? []))].sort(),
   )
 
-  function toUtcDayStart(dateStr: string): Date | null {
-    if (!dateStr) return null
-    const [y, m, d] = dateStr.split('-').map(Number)
-    return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0))
-  }
-
-  function toUtcDayEnd(dateStr: string): Date | null {
-    if (!dateStr) return null
-    const [y, m, d] = dateStr.split('-').map(Number)
-    return new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999))
-  }
-
   const filteredTasks = $derived.by(() => {
-    const query = searchQuery.toLowerCase().trim()
     const from = toUtcDayStart(dateFrom)
     const to = toUtcDayEnd(dateTo)
 
     return logbookTasks
       .filter((t: Task) => {
         if (selectedStatus !== 'all' && t.status !== selectedStatus) return false
-        if (query && !t.title.toLowerCase().includes(query)
-            && !(t.body ?? '').toLowerCase().includes(query)) return false
-        if (selectedProjectId && t.projectId !== selectedProjectId) return false
-        if (selectedTags.length > 0 && !selectedTags.every(tag => t.tags?.includes(tag))) return false
-        if (from || to) {
-          const closed = t.closedAt ? new Date(t.closedAt) : null
-          if (!closed) return false
-          if (from && closed < from) return false
-          if (to && closed > to) return false
-        }
+        if (!matchesQuery(t, searchQuery)) return false
+        if (!matchesProject(t, selectedProjectId)) return false
+        if (!matchesTags(t, selectedTags)) return false
+        if (!matchesDateRange(t, from, to, 'closedAt')) return false
         return true
       })
       .sort((a: Task, b: Task) => {
@@ -76,7 +58,12 @@
   })
 
   const hasActiveFilters = $derived(
-    searchQuery || selectedStatus !== 'all' || selectedProjectId || selectedTags.length > 0 || dateFrom || dateTo
+    !!searchQuery
+      || selectedStatus !== 'all'
+      || !!selectedProjectId
+      || selectedTags.length > 0
+      || !!dateFrom
+      || !!dateTo,
   )
 
   function clearFilters() {
@@ -88,18 +75,12 @@
     dateTo = ''
   }
 
-  function removeTag(tag: string) {
-    selectedTags = selectedTags.filter(t => t !== tag)
-  }
-
-  function formatDate(val: any): string {
+  function formatClosed(val: unknown): string {
     if (!val) return '—'
-    const d = new Date(val)
+    const d = new Date(val as string | number | Date)
     if (isNaN(d.getTime())) return '—'
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
   }
-
-  const projects = $derived(projectStore.list)
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -111,80 +92,32 @@
 
   <!-- Filter bar -->
   <div class="flex flex-wrap items-center gap-2 border-b border-surface-200 px-4 py-2 dark:border-surface-700">
-    <!-- Search -->
-    <div class="relative flex items-center">
-      <Search size={14} class="absolute left-2 text-surface-400" />
-      <input
-        type="search"
-        placeholder="Search…"
-        bind:value={searchQuery}
-        class="h-7 rounded-md border border-surface-300 bg-surface-50 pl-7 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800"
-      />
-    </div>
+    <TaskFilterPanel
+      query={searchQuery}
+      onqueryChange={(q) => (searchQuery = q)}
+      showProject
+      selectedProjectId={selectedProjectId}
+      onprojectChange={(id) => (selectedProjectId = id)}
+      showDateRange
+      dateFrom={dateFrom}
+      dateTo={dateTo}
+      ondateChange={(f, t) => { dateFrom = f; dateTo = t }}
+      statusPills={statusPills.map((p) => ({ val: p.val, label: p.label }))}
+      selectedStatus={selectedStatus}
+      onstatusChange={(s) => { selectedStatus = s as 'all' | 'done' | 'cancelled' }}
+      onclear={clearFilters}
+      hasActive={hasActiveFilters}
+    />
 
-    <!-- Status filter pills -->
-    <div class="flex gap-1">
-      {#each statusPills as pill}
-        <button
-          type="button"
-          class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {selectedStatus === pill.val ? 'bg-primary-500 text-white' : 'bg-surface-100 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300'}"
-          onclick={() => { selectedStatus = pill.val }}
-        >
-          {pill.label}
-        </button>
-      {/each}
-    </div>
-
-    <!-- Project filter -->
-    {#if projects.length > 0}
-      <select
-        bind:value={selectedProjectId}
-        class="h-7 rounded-md border border-surface-300 bg-surface-50 px-2 text-xs focus:outline-none dark:border-surface-700 dark:bg-surface-800"
-      >
-        <option value="">All projects</option>
-        {#each projects as p}
-          <option value={p.id}>{p.owner}/{p.repo}</option>
-        {/each}
-      </select>
-    {/if}
-
-    <!-- Date range -->
-    <div class="flex items-center gap-1">
-      <input
-        type="date"
-        bind:value={dateFrom}
-        class="h-7 rounded-md border border-surface-300 bg-surface-50 px-2 text-xs focus:outline-none dark:border-surface-700 dark:bg-surface-800"
-        title="Closed from"
-      />
-      <span class="text-xs text-surface-400">–</span>
-      <input
-        type="date"
-        bind:value={dateTo}
-        class="h-7 rounded-md border border-surface-300 bg-surface-50 px-2 text-xs focus:outline-none dark:border-surface-700 dark:bg-surface-800"
-        title="Closed until"
-      />
-    </div>
-
-    <!-- Sort toggle -->
+    <!-- Sort toggle (page-specific, kept inline) -->
     <button
       type="button"
       class="rounded-md border border-surface-300 bg-surface-50 px-2 py-1 text-xs font-medium transition-colors hover:bg-surface-200 dark:border-surface-700 dark:bg-surface-800"
-      onclick={() => { sortAsc = !sortAsc }}
+      onclick={() => (sortAsc = !sortAsc)}
       title="Sort by closed date"
     >
       {sortAsc ? '↑ Oldest' : '↓ Newest'}
     </button>
-
-    {#if hasActiveFilters}
-      <button
-        type="button"
-        class="flex items-center gap-1 text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
-        onclick={clearFilters}
-      >
-        <X size={12} />
-        Clear
-      </button>
-    {/if}
   </div>
 
   <!-- Tag filter row -->
@@ -195,8 +128,11 @@
           type="button"
           class="rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors {selectedTags.includes(tag)
             ? 'border-primary-500 bg-primary-500 text-white'
-            : 'border-surface-300 bg-surface-100 text-surface-600 hover:bg-surface-200 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300'}"
-          onclick={() => selectedTags.includes(tag) ? removeTag(tag) : selectedTags = [...selectedTags, tag]}
+            : 'border-surface-300 bg-surface-100 text-surface-600 hover:bg-surface-200 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300}'}"
+          onclick={() =>
+            selectedTags.includes(tag)
+              ? (selectedTags = selectedTags.filter((t) => t !== tag))
+              : (selectedTags = [...selectedTags, tag])}
         >
           {tag}
         </button>
@@ -252,7 +188,7 @@
                   {/each}
                 </div>
               </td>
-              <td class="px-4 py-2 text-xs text-surface-400">{formatDate(t.closedAt)}</td>
+              <td class="px-4 py-2 text-xs text-surface-400">{formatClosed(t.closedAt)}</td>
             </tr>
           {/each}
         </tbody>

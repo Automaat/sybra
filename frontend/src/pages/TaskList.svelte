@@ -6,11 +6,13 @@
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
   import { navStore } from '../lib/navigation.svelte.js'
+  import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskCard from '../components/TaskCard.svelte'
   import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
   import AssignProjectDialog from '../components/AssignProjectDialog.svelte'
+  import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
   import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { viewport } from '../lib/viewport.svelte.js'
   import { fly } from 'svelte/transition'
@@ -159,8 +161,7 @@
 
     if (key === '/' || key === 'F') {
       e.preventDefault()
-      searchInputRef?.focus()
-      searchInputRef?.select()
+      window.dispatchEvent(new CustomEvent('focus-search'))
       return
     }
 
@@ -296,17 +297,6 @@
     return () => window.removeEventListener('toggle-view', onToggleView)
   })
 
-  let searchInputRef = $state<HTMLInputElement | null>(null)
-
-  $effect(() => {
-    function onFocusSearch() {
-      searchInputRef?.focus()
-      searchInputRef?.select()
-    }
-    window.addEventListener('focus-search', onFocusSearch)
-    return () => window.removeEventListener('focus-search', onFocusSearch)
-  })
-
   $effect(() => {
     if (filter !== 'in-progress') return
     requestAnimationFrame(() => {
@@ -333,15 +323,12 @@
 
   // Derived: filter function
   function filteredByStatuses(statuses: string[]): Task[] {
-    const query = searchQuery.toLowerCase().trim()
     return taskStore.list.filter((t: Task) => {
       if (!statuses.includes(t.status)) return false
-      if (query && !t.title.toLowerCase().includes(query)
-          && !(t.body ?? '').toLowerCase().includes(query)
-          && !(t.issue ?? '').toLowerCase().includes(query)) return false
-      if (selectedProjectId && t.projectId !== selectedProjectId) return false
-      if (selectedTags.length > 0 && !selectedTags.every(tag => t.tags?.includes(tag))) return false
-      if (selectedAgentMode && t.agentMode !== selectedAgentMode) return false
+      if (!matchesQuery(t, searchQuery)) return false
+      if (!matchesProject(t, selectedProjectId)) return false
+      if (!matchesTags(t, selectedTags)) return false
+      if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     })
   }
@@ -357,15 +344,12 @@
   }
 
   const allFilteredTasks = $derived.by(() => {
-    const query = searchQuery.toLowerCase().trim()
     return taskStore.list.filter((t: Task) => {
       if (!showDone && (t.status === 'done' || t.status === 'cancelled')) return false
-      if (query && !t.title.toLowerCase().includes(query)
-          && !(t.body ?? '').toLowerCase().includes(query)
-          && !(t.issue ?? '').toLowerCase().includes(query)) return false
-      if (selectedProjectId && t.projectId !== selectedProjectId) return false
-      if (selectedTags.length > 0 && !selectedTags.every(tag => t.tags?.includes(tag))) return false
-      if (selectedAgentMode && t.agentMode !== selectedAgentMode) return false
+      if (!matchesQuery(t, searchQuery)) return false
+      if (!matchesProject(t, selectedProjectId)) return false
+      if (!matchesTags(t, selectedTags)) return false
+      if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     }).sort((a, b) => {
       const statusDiff = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99)
@@ -389,55 +373,15 @@
     selectedAgentMode = ''
   }
 
-  // Project dropdown
-  let projectDropdownOpen = $state(false)
-  let projectDropdownRef = $state<HTMLDivElement | null>(null)
-
-  function handleWindowClick(e: MouseEvent) {
-    if (projectDropdownOpen && projectDropdownRef && !projectDropdownRef.contains(e.target as Node)) {
-      projectDropdownOpen = false
-    }
-  }
-
-  const selectedProjectLabel = $derived(
-    selectedProjectId
-      ? projectStore.list.find(p => p.id === selectedProjectId)
-          ? `${projectStore.list.find(p => p.id === selectedProjectId)!.owner}/${projectStore.list.find(p => p.id === selectedProjectId)!.repo}`
-          : selectedProjectId
-      : 'All projects'
-  )
-
-  // Tag input with autosuggest
-  let tagInput = $state('')
-  let tagInputFocused = $state(false)
-  let tagInputRef = $state<HTMLInputElement | null>(null)
-
-  const tagSuggestions = $derived(
-    tagInput.trim()
-      ? allTags.filter(t => t.toLowerCase().includes(tagInput.toLowerCase()) && !selectedTags.includes(t))
-      : []
-  )
-
+  // Helpers retained for the mobile sheet
   function addTag(tag: string) {
     if (!selectedTags.includes(tag)) {
       selectedTags = [...selectedTags, tag]
     }
-    tagInput = ''
   }
 
   function removeTag(tag: string) {
-    selectedTags = selectedTags.filter(t => t !== tag)
-  }
-
-  function handleTagKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && tagSuggestions.length > 0) {
-      e.preventDefault()
-      addTag(tagSuggestions[0])
-    } else if (e.key === 'Backspace' && !tagInput && selectedTags.length > 0) {
-      selectedTags = selectedTags.slice(0, -1)
-    } else if (e.key === 'Escape') {
-      tagInputRef?.blur()
-    }
+    selectedTags = selectedTags.filter((t) => t !== tag)
   }
 
   const agentModes = [
@@ -514,8 +458,6 @@
   }
 </script>
 
-<svelte:window onclick={handleWindowClick} />
-
 {#if statusPickerOpen && focusedTask}
   <StatusPicker
     currentStatus={focusedTask.status}
@@ -566,53 +508,20 @@
 
   <!-- Desktop filter bar -->
   <div class="hidden flex-wrap items-center gap-3 border-b border-surface-200 px-6 py-3 dark:border-surface-800 md:flex">
-    <!-- Search -->
-    <div class="relative">
-      <Search size={16} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400" />
-      <input
-        bind:this={searchInputRef}
-        type="text"
-        bind:value={searchQuery}
-        placeholder="Search tasks..."
-        class="h-8 w-56 rounded-md border border-surface-300 bg-surface-50 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
-      />
-    </div>
+    <TaskFilterPanel
+      query={searchQuery}
+      onqueryChange={(q) => (searchQuery = q)}
+      focusEvent="focus-search"
+      showProject
+      selectedProjectId={selectedProjectId}
+      onprojectChange={(id) => (selectedProjectId = id)}
+      showTags
+      availableTags={allTags}
+      selectedTags={selectedTags}
+      ontagsChange={(tags) => (selectedTags = tags)}
+    />
 
-    <!-- Project filter -->
-    {#if projectStore.list.length > 0}
-      <div class="relative" bind:this={projectDropdownRef}>
-        <button
-          type="button"
-          class="flex h-8 items-center gap-2 rounded-md border border-surface-300 bg-surface-50 px-2.5 text-sm dark:border-surface-700 dark:bg-surface-800"
-          onclick={() => (projectDropdownOpen = !projectDropdownOpen)}
-        >
-          <span class={selectedProjectId ? '' : 'text-surface-400'}>{selectedProjectLabel}</span>
-          <ChevronDown size={14} class="text-surface-400" />
-        </button>
-        {#if projectDropdownOpen}
-          <div class="absolute top-full z-10 mt-1 min-w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
-            <button
-              type="button"
-              class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === '' ? 'font-medium text-primary-500' : ''}"
-              onmousedown={() => { selectedProjectId = ''; projectDropdownOpen = false }}
-            >
-              All projects
-            </button>
-            {#each projectStore.list as p}
-              <button
-                type="button"
-                class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === p.id ? 'font-medium text-primary-500' : ''}"
-                onmousedown={() => { selectedProjectId = p.id; projectDropdownOpen = false }}
-              >
-                {p.owner}/{p.repo}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- Agent mode pills -->
+    <!-- Agent mode pills (TaskList-specific) -->
     <div class="flex h-8 rounded-md border border-surface-300 dark:border-surface-700">
       {#each agentModes as mode}
         <button
@@ -625,41 +534,6 @@
           {mode.label}
         </button>
       {/each}
-    </div>
-
-    <!-- Tag filter -->
-    <div class="relative">
-      <div class="flex h-8 flex-wrap items-center gap-1 rounded-md border border-surface-300 bg-surface-50 px-2 dark:border-surface-700 dark:bg-surface-800">
-        {#each selectedTags as tag}
-          <span class="inline-flex items-center gap-1 rounded bg-primary-500 px-1.5 py-0.5 text-xs font-medium text-white dark:bg-primary-600">
-            {tag}
-            <button type="button" class="hover:text-primary-200" onclick={() => removeTag(tag)}>&times;</button>
-          </span>
-        {/each}
-        <input
-          bind:this={tagInputRef}
-          bind:value={tagInput}
-          type="text"
-          placeholder={selectedTags.length ? '' : 'Filter by tag...'}
-          class="min-w-[80px] flex-1 bg-transparent py-0.5 text-sm outline-none"
-          onfocus={() => (tagInputFocused = true)}
-          onblur={() => setTimeout(() => (tagInputFocused = false), 150)}
-          onkeydown={handleTagKeydown}
-        />
-      </div>
-      {#if tagInputFocused && tagSuggestions.length > 0}
-        <div class="absolute top-full z-10 mt-1 w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
-          {#each tagSuggestions as suggestion}
-            <button
-              type="button"
-              class="w-full px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700"
-              onmousedown={() => addTag(suggestion)}
-            >
-              {suggestion}
-            </button>
-          {/each}
-        </div>
-      {/if}
     </div>
 
     <!-- Right side: clear + show done + view toggle -->
