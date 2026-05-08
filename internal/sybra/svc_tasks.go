@@ -140,18 +140,33 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	// When manually moved to in-progress with a terminal workflow and no live
-	// agent, restart the workflow so the user doesn't need to manually dispatch.
+	// agent, dispatch via task.status_changed so the trigger system picks the
+	// right workflow for the new status. Naively restarting cur.Workflow.WorkflowID
+	// would replay whatever flow ran before — for tasks created on the
+	// pre-split monolithic `simple-task` (commit 3764ed9) this re-ran triage
+	// and flipped status back to `planning` instead of running implement.
+	// DispatchEvent matches against current trigger conditions, which is what
+	// the user wants: in-progress → simple-task-implement.
 	if s.workflowEngine != nil {
 		if newStatus, ok := updates["status"].(string); ok &&
 			newStatus == string(task.StatusInProgress) &&
 			cur.Workflow != nil &&
 			(cur.Workflow.State == workflow.ExecCompleted || cur.Workflow.State == workflow.ExecFailed) &&
 			!s.agents.HasRunningAgentForTask(id) {
-			wfID := cur.Workflow.WorkflowID
-			s.logger.Info("workflow.restart", "task_id", id, "workflow", wfID)
+			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
 			s.wg.Go(func() {
-				if wfErr := s.workflowEngine.StartWorkflow(id, wfID); wfErr != nil {
+				dispatched, wfErr := s.workflowEngine.DispatchEvent(
+					id,
+					"task.status_changed",
+					map[string]string{"task.status": newStatus},
+					nil,
+				)
+				if wfErr != nil {
 					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
+					return
+				}
+				if dispatched == "" {
+					s.logger.Warn("workflow.restart.no-match", "task_id", id, "status", newStatus)
 				}
 			})
 		}
