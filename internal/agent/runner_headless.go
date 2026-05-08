@@ -418,11 +418,6 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 		multiplier := m.effectiveTurnMultiplier()
 		newLimit := int(float64(maxTurns) * multiplier)
 		a.SetMaxTurns(newLimit)
-		m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-			Reason:    "turns_auto_continued",
-			TurnCount: turns,
-			Limit:     float64(newLimit),
-		})
 		m.logger.Info("agent.guardrail.turns.auto_continued", "id", a.ID, "turns", turns, "new_limit", newLimit)
 		return true
 	}

@@ -70,11 +70,14 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 			}
 		}
 	}
-	// SetGuardrails once if either guardrail field changed.
-	if slices.Contains(hot, "agent.max_cost_usd") || slices.Contains(hot, "agent.max_turns") {
+	// SetGuardrails once if any guardrail field changed.
+	guardrailFields := []string{"agent.max_cost_usd", "agent.max_turns", "agent.turn_cost_fraction", "agent.turn_multiplier"}
+	if slices.ContainsFunc(guardrailFields, func(f string) bool { return slices.Contains(hot, f) }) {
 		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD: next.Agent.MaxCostUSD,
-			MaxTurns:   next.Agent.MaxTurns,
+			MaxCostUSD:       next.Agent.MaxCostUSD,
+			MaxTurns:         next.Agent.MaxTurns,
+			TurnCostFraction: next.Agent.TurnCostFraction,
+			TurnMultiplier:   next.Agent.TurnMultiplier,
 		})
 	}
 

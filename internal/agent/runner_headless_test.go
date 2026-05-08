@@ -457,9 +457,8 @@ func TestGuardrails_MaxTurnsZeroMeansUnlimited(t *testing.T) {
 
 // TestGuardrails_TurnsAutoContinue_CostBelowCap verifies that when an agent
 // hits MaxTurns but cumulative cost is well below the MaxCostUSD threshold,
-// the runner auto-continues without blocking on escalationCh. The turn limit
-// is bumped by TurnMultiplier and a turns_auto_continued escalation event is
-// emitted so the GUI can surface the bump.
+// the runner auto-continues without blocking on escalationCh and without
+// emitting a blocking escalation event.
 func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 	// 5 assistant events — limit is 3 so the 3rd fires the guardrail.
 	var lines []string
@@ -469,22 +468,16 @@ func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 	input := strings.Join(lines, "\n") + "\n"
 
 	var (
-		autoContinued int
-		blocked       int
-		mu            sync.Mutex
+		blocked int
+		mu      sync.Mutex
 	)
 	emit := func(event string, data any) {
 		if !strings.Contains(event, "agent:escalation:") {
 			return
 		}
-		if e, ok := data.(EscalationEvent); ok {
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "turns" {
 			mu.Lock()
-			switch e.Reason {
-			case "turns_auto_continued":
-				autoContinued++
-			case "turns":
-				blocked++
-			}
+			blocked++
 			mu.Unlock()
 		}
 	}
@@ -499,9 +492,6 @@ func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if autoContinued == 0 {
-		t.Error("expected turns_auto_continued escalation event, got none")
-	}
 	if blocked != 0 {
 		t.Errorf("expected no blocking escalation, got %d", blocked)
 	}
@@ -756,10 +746,11 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
-	m.SetGuardrails(Guardrails{MaxTurns: 20})
+	// MaxCostUSD set; agent cost seeded above 80% threshold so auto-continue is suppressed.
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 20})
 
 	_, cancel := context.WithCancel(context.Background())
-	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 5, escalationCh: make(chan bool, 1), cancel: cancel}
+	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 5, CostUSD: 9.0, escalationCh: make(chan bool, 1), cancel: cancel}
 	// Pre-fill the escalation channel so the runner doesn't block.
 	a.escalationCh <- false
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)

@@ -25,6 +25,12 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if old.Agent.MaxTurns != next.Agent.MaxTurns {
 		hot = append(hot, "agent.max_turns")
 	}
+	if old.Agent.TurnCostFraction != next.Agent.TurnCostFraction {
+		hot = append(hot, "agent.turn_cost_fraction")
+	}
+	if old.Agent.TurnMultiplier != next.Agent.TurnMultiplier {
+		hot = append(hot, "agent.turn_multiplier")
+	}
 	if old.Logging.Level != next.Logging.Level {
 		hot = append(hot, "logging.level")
 	}

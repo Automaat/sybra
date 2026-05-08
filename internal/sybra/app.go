@@ -247,8 +247,10 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.agents.SetGuardrails(agent.Guardrails{
-		MaxCostUSD: a.cfg.Agent.MaxCostUSD,
-		MaxTurns:   a.cfg.Agent.MaxTurns,
+		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
+		MaxTurns:         a.cfg.Agent.MaxTurns,
+		TurnCostFraction: a.cfg.Agent.TurnCostFraction,
+		TurnMultiplier:   a.cfg.Agent.TurnMultiplier,
 	})
 	a.initApprovalServer(emit)
 

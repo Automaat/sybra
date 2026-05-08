@@ -63,6 +63,11 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
+	// escalation is auto-continued. Default 0.8 when unset.
+	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
+	// TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+	TurnMultiplier float64 `yaml:"turn_multiplier" json:"turnMultiplier"`
 	// RequirePermissions sets the default permission requirement for agents.
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
