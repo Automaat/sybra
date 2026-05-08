@@ -47,13 +47,13 @@ RUN apt-get update \
 
 # --- Layer B: klaudiush binary ---
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.32.0
+ARG KLAUDIUSH_VERSION=v1.32.1
 RUN curl -sSfL https://klaudiu.sh/install.sh \
          | sh -s -- -b /usr/local/bin -v "${KLAUDIUSH_VERSION}"
 
 # --- Layer C: node CLIs (claude code + codex), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.104
+ARG CLAUDE_CODE_VERSION=2.1.129
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.128.0
 RUN npm install -g \
