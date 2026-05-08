@@ -9,8 +9,45 @@ trigger:
       operator: contains
       value: review
 steps:
-  - id: review
-    name: Review PR
+  # Mechanical heuristic: pick simple vs staff review based on PR diff size.
+  # Same step type used by simple-task; here it falls back to `gh pr diff`
+  # since this workflow has no worktree.
+  - id: triage_review
+    name: Triage Review
+    type: triage_review
+    next:
+      - goto: pick_review_method
+
+  - id: pick_review_method
+    name: Pick Review Method
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: force-staff-review
+        goto: review_staff
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: simple
+        goto: review_simple
+      - goto: review_staff
+
+  - id: review_simple
+    name: Review PR (simple)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: sonnet
+      prompt: >-
+        Run /pr-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
+    next:
+      - goto: set_in_review
+
+  - id: review_staff
+    name: Review PR (staff)
     type: run_agent
     config:
       role: review

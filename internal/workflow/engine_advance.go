@@ -286,7 +286,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execParallel(taskID, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepTriageReview:
 			// handled below as sync steps
 		default:
 			return fmt.Errorf("unknown step type %q", step.Type)
@@ -358,6 +358,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execEvaluate(taskID, step, wfExec, t)
 	case StepRequireSidecar:
 		return e.execRequireSidecar(taskID, step, t)
+	case StepTriageReview:
+		return e.execTriageReview(taskID, step, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
