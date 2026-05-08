@@ -141,13 +141,16 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 
 	if h.workflowEngine != nil {
-		if isSignalKill(exitErr) && !ag.WasStopped() {
-			// Infrastructure-level kill (e.g. OS/container SIGTERM): leave the
-			// workflow step stalled so ResumeStalled re-dispatches the agent on
-			// the next tick. Clear the agent→step mapping so agentSteps does not
-			// leak and hasTrackedAgentForTaskStep does not suppress the retry.
+		if isSignalKill(exitErr) {
+			// Signal kill (OS/container SIGTERM, Sybra's own StopAgent, or a
+			// stale-agent cleanup from execRunAgent/execParallel): work is
+			// incomplete, so leave the step stalled for ResumeStalled to
+			// re-dispatch. Advancing on a kill credits an unfinished run as
+			// a failed step, which transitions the workflow into verify_commits
+			// (or similar) with no commits — the failure mode reported in #641.
+			// WasStopped is logged for diagnostics but does not gate the stall.
 			h.logger.Warn("agent.completion.signal-kill",
-				"task_id", ag.TaskID, "agent_id", ag.ID)
+				"task_id", ag.TaskID, "agent_id", ag.ID, "stopped", ag.WasStopped())
 			h.workflowEngine.ClearAgentStep(ag.ID)
 			return
 		}
@@ -209,8 +212,9 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 }
 
 // isSignalKill reports whether err represents a process killed by an OS signal.
-// Signal kills (e.g. SIGTERM from container/OS shutdown) are infrastructure
-// interruptions, not logical agent failures — the workflow should not advance.
+// Signal kills cover both infrastructure interruptions (SIGTERM from container/OS
+// shutdown) and Sybra's own StopAgent (cancel ctx → process killed). Neither
+// completes the agent's work, so the workflow should not advance.
 func isSignalKill(err error) bool {
 	if err == nil {
 		return false

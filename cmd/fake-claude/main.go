@@ -28,6 +28,8 @@
 //   - auth_error: emits auth-failure text then exits 1
 //   - malformed_pr_output: emits large malformed PR-ish text (no valid URL)
 //   - signal_kill: emits system+assistant then kills self with SIGTERM
+//   - hang: emits system+assistant then blocks indefinitely. Used to simulate
+//     an agent that Sybra's StopAgent has to kill mid-run.
 //
 // Perf scenarios (zero token cost, drive backend load):
 //   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
@@ -141,6 +143,8 @@ func runScenario(scenario, taskID string) bool {
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 	case "signal_kill":
 		runSignalKill()
+	case "hang":
+		runHang()
 	case "auth_error":
 		emitSystem()
 		emitAssistant("Authentication failed. Please re-auth.")
@@ -166,6 +170,15 @@ func runSignalKill() {
 	emitAssistant("Starting work...")
 	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 	select {} // block until signal arrives
+}
+
+// runHang emits a start event then blocks until the parent kills the process.
+// Used in tests where Sybra's StopAgent (cancel ctx → SIGTERM) is the killer,
+// distinguishing it from the self-kill in runSignalKill.
+func runHang() {
+	emitSystem()
+	emitAssistant("Hanging...")
+	select {} // block until SIGTERM/SIGKILL arrives
 }
 
 // runMalformedPROutput emits a long stream of malformed PR-URL fragments

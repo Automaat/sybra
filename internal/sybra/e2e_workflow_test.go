@@ -491,6 +491,73 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 	})
 }
 
+// TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow verifies that when
+// Sybra's own StopAgent kills a running agent (cancel ctx → SIGTERM, with
+// WasStopped=true), the workflow step does NOT advance. Regression test for
+// #641: the prior guard `isSignalKill && !WasStopped` only stalled on
+// infrastructure SIGTERM, so a Sybra-initiated stop fell through to
+// HandleAgentComplete with Success=false and advanced the step (e.g.
+// implement → verify_commits with no commits).
+func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
+	// First scenario hangs so the test can call StopAgent mid-run; second
+	// is irrelevant — included only to prove the workflow could in
+	// principle advance if the guard didn't fire.
+	env := setupE2EMulti(t, []string{"hang", "triage"})
+
+	// Wire production AgentCompletionHandler so the signal kill guard fires.
+	h := &AgentCompletionHandler{
+		DomainHandler:  DomainHandler{logger: e2eLogger()},
+		tasks:          env.tasks,
+		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		workflowEngine: env.engine,
+	}
+	env.agents.SetOnComplete(func(ag *agent.Agent) {
+		env.pendingCompletions.Add(1)
+		defer env.pendingCompletions.Add(-1)
+		h.OnComplete(ag)
+	})
+
+	created, err := env.tasks.Create("stop agent task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the triage agent to be live (running) so StopAgent has a
+	// real process to kill. Without this, StopAgent could race the
+	// startup path and leave WasStopped+exitErr in an unintended state.
+	var triageAgentID string
+	waitFor(t, 10*time.Second, "triage agent running", func() bool {
+		ag := env.agents.FindRunningAgentForTask(created.ID, agent.RoleTriage)
+		if ag == nil {
+			return false
+		}
+		triageAgentID = ag.ID
+		return ag.GetState() == agent.StateRunning
+	})
+
+	if err := env.agents.StopAgent(triageAgentID); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "stopped agent completion drains", func() bool {
+		return !env.agents.HasRunningAgentForTask(created.ID) && env.pendingCompletions.Load() == 0
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow on task")
+	}
+	if tk.Workflow.CurrentStep != "triage" {
+		t.Errorf("workflow advanced to %q after StopAgent (WasStopped=true); want stalled at triage", tk.Workflow.CurrentStep)
+	}
+}
+
 func TestE2E_WorkflowWithSynapseCLI(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EProvider(t, p.provider, "triage")
