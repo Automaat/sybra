@@ -3,6 +3,7 @@ package github
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestFetchPRStateWith(t *testing.T) {
@@ -371,4 +372,72 @@ func TestMergePRWith(t *testing.T) {
 			}
 		})
 	}
+}
+
+// scriptedExecer returns a different (output, err) for each call.
+type scriptedExecer struct {
+	calls    int
+	results  []scriptedResult
+	lastArgs []string
+}
+
+type scriptedResult struct {
+	output []byte
+	err    error
+}
+
+func (s *scriptedExecer) run(args ...string) ([]byte, error) {
+	s.lastArgs = args
+	i := s.calls
+	s.calls++
+	if i >= len(s.results) {
+		i = len(s.results) - 1
+	}
+	return s.results[i].output, s.results[i].err
+}
+
+func TestMergePRWith_RetriesBaseBranchModified(t *testing.T) {
+	prev := mergeRetryDelays
+	mergeRetryDelays = []time.Duration{0, 0, 0}
+	t.Cleanup(func() { mergeRetryDelays = prev })
+
+	t.Run("retries then succeeds", func(t *testing.T) {
+		baseModified := []byte("GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)")
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: baseModified, err: fmt.Errorf("exit 1")},
+			{output: baseModified, err: fmt.Errorf("exit 1")},
+			{output: nil, err: nil},
+		}}
+		if err := mergePRWith(se, "owner/repo", 42); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if se.calls != 3 {
+			t.Fatalf("calls = %d, want 3", se.calls)
+		}
+	})
+
+	t.Run("gives up after max retries", func(t *testing.T) {
+		baseModified := []byte("GraphQL: Base branch was modified. Review and try the merge again.")
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: baseModified, err: fmt.Errorf("exit 1")},
+		}}
+		if err := mergePRWith(se, "owner/repo", 42); err == nil {
+			t.Fatal("expected error")
+		}
+		if se.calls != len(mergeRetryDelays)+1 {
+			t.Fatalf("calls = %d, want %d", se.calls, len(mergeRetryDelays)+1)
+		}
+	})
+
+	t.Run("non-retryable error fails fast", func(t *testing.T) {
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("some other error"), err: fmt.Errorf("exit 1")},
+		}}
+		if err := mergePRWith(se, "owner/repo", 42); err == nil {
+			t.Fatal("expected error")
+		}
+		if se.calls != 1 {
+			t.Fatalf("calls = %d, want 1 (no retry)", se.calls)
+		}
+	})
 }
