@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
-import { agent } from '../../wailsjs/go/models.js'
-const { ConvoEvent, ToolUseBlock, ToolResultBlock } = agent
+import { ConvoEvent, ToolUseBlock, ToolResultBlock } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 vi.mock('../lib/markdown.js', () => ({
   renderMarkdown: (text: string) => `<p>${text}</p>`,
@@ -10,7 +9,7 @@ vi.mock('./DiffViewer.svelte', () => ({ default: () => {} }))
 
 const MessageBubble = (await import('./MessageBubble.svelte')).default
 
-function makeEvent(overrides: Partial<agent.ConvoEvent> = {}): agent.ConvoEvent {
+function makeEvent(overrides: Partial<ConvoEvent> = {}): ConvoEvent {
   return ConvoEvent.createFrom({
     type: 'assistant',
     text: '',

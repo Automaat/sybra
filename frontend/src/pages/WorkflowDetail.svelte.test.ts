@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { workflow } from '../../wailsjs/go/models.js'
+import { Definition, Trigger } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 
 const mockWorkflowGet = vi.fn()
 const mockWorkflowSave = vi.fn()
@@ -30,11 +30,11 @@ vi.mock('../lib/workflow-graph.js', () => ({
 const WorkflowDetail = (await import('./WorkflowDetail.svelte')).default
 
 function makeDef(overrides: Record<string, unknown> = {}) {
-  return workflow.Definition.createFrom({
+  return Definition.createFrom({
     id: 'wf-1',
     name: 'my-workflow',
     description: 'Does things',
-    trigger: workflow.Trigger.createFrom({ on: 'manual', conditions: [] }),
+    trigger: Trigger.createFrom({ on: 'manual', conditions: [] }),
     steps: [],
     builtin: false,
     ...overrides,
@@ -52,7 +52,7 @@ describe('WorkflowDetail', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows "Loading workflow..." while definition loads', () => {
+  it('shows "Loading .." while definition loads', () => {
     mockWorkflowGet.mockReturnValue(new Promise(() => {}))
     render(WorkflowDetail, { props: { workflowId: 'wf-1', onback: vi.fn() } })
     expect(screen.getByText('Loading workflow...')).toBeDefined()

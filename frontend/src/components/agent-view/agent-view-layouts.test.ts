@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { agent, task } from '../../../wailsjs/go/models.js'
+import { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 // jsdom doesn't implement Web Animations API used by svelte/transition
 if (!Element.prototype.animate) {
@@ -49,8 +50,8 @@ const QueuedLayout = (await import('./QueuedLayout.svelte')).default
 const DoneLayout = (await import('./DoneLayout.svelte')).default
 const ReviewingLayout = (await import('./ReviewingLayout.svelte')).default
 
-function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
-  return agent.Agent.createFrom({
+function makeAgent(overrides: Partial<Agent> = {}): Agent {
+  return Agent.createFrom({
     id: 'agent-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -64,8 +65,8 @@ function makeAgent(overrides: Partial<agent.Agent> = {}): agent.Agent {
   })
 }
 
-function makeTask(overrides: Partial<task.Task> = {}): task.Task {
-  return task.Task.createFrom({
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return Task.createFrom({
     id: 'task-1',
     title: 'Test task',
     status: 'done',

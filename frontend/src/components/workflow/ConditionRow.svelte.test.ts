@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { workflow } from '../../../wailsjs/go/models.js'
+import { Condition } from '../../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 
 const ConditionRow = (await import('./ConditionRow.svelte')).default
 
-function makeCond(overrides: Partial<workflow.Condition> = {}): workflow.Condition {
-  return new workflow.Condition({
+function makeCond(overrides: Partial<Condition> = {}): Condition {
+  return new Condition({
     field: 'task.status',
     operator: 'equals',
     value: 'done',
@@ -53,7 +53,7 @@ describe('ConditionRow', () => {
     const input = screen.getAllByRole('textbox')[0]
     await fireEvent.change(input, { target: { value: 'new.field' } })
     expect(onupdate).toHaveBeenCalled()
-    const updated = onupdate.mock.calls[0][0] as workflow.Condition
+    const updated = onupdate.mock.calls[0][0] as Condition
     expect(updated.field).toBe('new.field')
   })
 
@@ -62,7 +62,7 @@ describe('ConditionRow', () => {
     render(ConditionRow, { props: { condition: makeCond({ operator: 'equals' }), onupdate } })
     await fireEvent.change(screen.getByRole('combobox'), { target: { value: 'contains' } })
     expect(onupdate).toHaveBeenCalled()
-    const updated = onupdate.mock.calls[0][0] as workflow.Condition
+    const updated = onupdate.mock.calls[0][0] as Condition
     expect(updated.operator).toBe('contains')
   })
 

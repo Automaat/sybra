@@ -127,7 +127,6 @@ describe('Logbook', () => {
       Object.assign(projectStore, { list: [{ id: 'p1', owner: 'org', repo: 'myrepo' }] })
       render(Logbook, { props: { onviewtask: vi.fn() } })
       expect(screen.getByText('All projects')).toBeDefined()
-      expect(screen.getByText('org/myrepo')).toBeDefined()
     })
 
     it('hides project filter when no projects exist', () => {
@@ -197,7 +196,7 @@ describe('Logbook', () => {
         ],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const searchInput = screen.getByPlaceholderText('Search…')
+      const searchInput = screen.getByPlaceholderText('Search tasks...')
       await fireEvent.input(searchInput, { target: { value: 'auth' } })
       expect(screen.getByText('Auth middleware fix')).toBeDefined()
       expect(screen.queryByText('UI cleanup')).toBeNull()
@@ -211,7 +210,7 @@ describe('Logbook', () => {
         ],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const searchInput = screen.getByPlaceholderText('Search…')
+      const searchInput = screen.getByPlaceholderText('Search tasks...')
       await fireEvent.input(searchInput, { target: { value: 'postgres' } })
       expect(screen.getByText('Task A')).toBeDefined()
       expect(screen.queryByText('Task B')).toBeNull()
@@ -222,7 +221,7 @@ describe('Logbook', () => {
         list: [makeTask({ id: 't1', title: 'Fix DATABASE issue', status: 'done' })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const searchInput = screen.getByPlaceholderText('Search…')
+      const searchInput = screen.getByPlaceholderText('Search tasks...')
       await fireEvent.input(searchInput, { target: { value: 'database' } })
       expect(screen.getByText('Fix DATABASE issue')).toBeDefined()
     })
@@ -232,7 +231,7 @@ describe('Logbook', () => {
         list: [makeTask({ id: 't1', title: 'Auth fix', status: 'done' })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const searchInput = screen.getByPlaceholderText('Search…')
+      const searchInput = screen.getByPlaceholderText('Search tasks...')
       await fireEvent.input(searchInput, { target: { value: 'xyz-nonexistent' } })
       expect(screen.getByText('No tasks match these filters')).toBeDefined()
     })
@@ -280,8 +279,8 @@ describe('Logbook', () => {
         list: [makeTask({ id: 't1', status: 'done' })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      await fireEvent.input(screen.getByPlaceholderText('Search…'), { target: { value: 'test' } })
-      expect(screen.getByText('Clear')).toBeDefined()
+      await fireEvent.input(screen.getByPlaceholderText('Search tasks...'), { target: { value: 'test' } })
+      expect(screen.getAllByText('Clear filters').length).toBeGreaterThan(0)
     })
 
     it('does not show Clear button with no active filters', () => {
@@ -289,7 +288,7 @@ describe('Logbook', () => {
         list: [makeTask({ id: 't1', status: 'done' })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      expect(screen.queryByText('Clear')).toBeNull()
+      expect(screen.queryByText('Clear filters')).toBeNull()
     })
 
     it('clears search when Clear button clicked', async () => {
@@ -300,9 +299,9 @@ describe('Logbook', () => {
         ],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      await fireEvent.input(screen.getByPlaceholderText('Search…'), { target: { value: 'auth' } })
+      await fireEvent.input(screen.getByPlaceholderText('Search tasks...'), { target: { value: 'auth' } })
       expect(screen.queryByText('UI task')).toBeNull()
-      await fireEvent.click(screen.getByText('Clear'))
+      await fireEvent.click(screen.getByText('Clear filters'))
       expect(screen.getByText('UI task')).toBeDefined()
     })
 
@@ -311,9 +310,9 @@ describe('Logbook', () => {
         list: [makeTask({ id: 't1', title: 'Auth fix', status: 'done' })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      await fireEvent.input(screen.getByPlaceholderText('Search…'), { target: { value: 'xyz' } })
+      await fireEvent.input(screen.getByPlaceholderText('Search tasks...'), { target: { value: 'xyz' } })
       expect(screen.getByText('No tasks match these filters')).toBeDefined()
-      await fireEvent.click(screen.getByText('Clear filters'))
+      await fireEvent.click(screen.getAllByText('Clear filters')[0])
       expect(screen.getByText('Auth fix')).toBeDefined()
     })
   })

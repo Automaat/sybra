@@ -13,9 +13,10 @@ const ShellTab = (await import('./ShellTab.svelte')).default
 function makeActivity(overrides: Record<string, unknown> = {}) {
   return {
     id: 'act-1',
+    ts: new Date('2026-04-01T00:00:00Z'),
     command: 'ls -la',
     output: '',
-    status: 'done',
+    status: 'done' as const,
     isError: false,
     ...overrides,
   }

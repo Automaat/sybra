@@ -8,7 +8,7 @@ const mockProviderHealthEnabled = vi.fn()
 const mockGetProviderHealth = vi.fn()
 const mockSetProviderAutoFailover = vi.fn()
 const mockSetProviderEnabled = vi.fn()
-const mockEventsOn = vi.fn(() => vi.fn())
+const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -17,7 +17,7 @@ vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
 
-vi.mock('../../wailsjs/go/sybra/IntegrationService', () => ({
+vi.mock('../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js', () => ({
   GetProviderHealth: (...args: unknown[]) => mockGetProviderHealth(...args),
   ProviderHealthEnabled: (...args: unknown[]) => mockProviderHealthEnabled(...args),
   SetProviderAutoFailover: (...args: unknown[]) => mockSetProviderAutoFailover(...args),

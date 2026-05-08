@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { detectProject } from './detectProject.js'
-import type { project } from '../../wailsjs/go/models.js'
+import type { Project } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 
-function makeProject(owner: string, repo: string, name = ''): project.Project {
+function makeProject(owner: string, repo: string, name = ''): Project {
   return {
     id: `${owner}/${repo}`,
     owner,
@@ -11,11 +11,11 @@ function makeProject(owner: string, repo: string, name = ''): project.Project {
     url: `https://github.com/${owner}/${repo}`,
     clonePath: '',
     type: 'pet',
-    setup: [],
+    status: 'ready',
     setupCommands: [],
-    lastFetchAt: '',
     createdAt: '',
-  } as project.Project
+    updatedAt: '',
+  } as unknown as Project
 }
 
 describe('detectProject', () => {

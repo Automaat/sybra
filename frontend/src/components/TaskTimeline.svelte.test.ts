@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { task } from '../../wailsjs/go/models.js'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 // jsdom doesn't implement Web Animations API
 if (!Element.prototype.animate) {
@@ -12,8 +12,8 @@ if (!Element.prototype.animate) {
 
 const TaskTimeline = (await import('./TaskTimeline.svelte')).default
 
-function makeTask(overrides: Partial<task.Task> = {}): task.Task {
-  return task.Task.createFrom({
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return Task.createFrom({
     id: 'task-1',
     title: 'Test task',
     status: 'todo',

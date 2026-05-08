@@ -6,7 +6,7 @@ const mockCreate = vi.fn()
 const mockUpdate = vi.fn()
 const mockRemove = vi.fn()
 const mockRunNow = vi.fn()
-const mockEventsOn = vi.fn(() => vi.fn())
+const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 
 const loopStoreMock = {
   list: [] as any[],

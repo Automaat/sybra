@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { workflow } from '../../wailsjs/go/models.js'
+import { Definition, Trigger, Step, StepConfig, Position, Transition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import { definitionToGraph, graphToDefinition, TRIGGER_NODE_ID } from './workflow-graph.js'
 
 function makeDef(overrides: Record<string, unknown> = {}) {
-  return workflow.Definition.createFrom({
+  return Definition.createFrom({
     id: 'wf-1',
     name: 'test-workflow',
     description: '',
-    trigger: workflow.Trigger.createFrom({ on: 'manual', conditions: [] }),
+    trigger: Trigger.createFrom({ on: 'manual', conditions: [] }),
     steps: [],
     builtin: false,
     ...overrides,
@@ -15,11 +15,11 @@ function makeDef(overrides: Record<string, unknown> = {}) {
 }
 
 function makeStep(id: string, name: string, overrides: Record<string, unknown> = {}) {
-  return workflow.Step.createFrom({
+  return Step.createFrom({
     id,
     name,
     type: 'run_agent',
-    config: workflow.StepConfig.createFrom({}),
+    config: StepConfig.createFrom({}),
     next: [],
     parallel: [],
     ...overrides,
@@ -36,10 +36,10 @@ describe('definitionToGraph', () => {
 
   it('uses trigger position when set', () => {
     const def = makeDef({
-      trigger: workflow.Trigger.createFrom({
+      trigger: Trigger.createFrom({
         on: 'manual',
         conditions: [],
-        position: workflow.Position.createFrom({ x: 100, y: 200 }),
+        position: Position.createFrom({ x: 100, y: 200 }),
       }),
     })
     const { nodes } = definitionToGraph(def)
@@ -78,7 +78,7 @@ describe('definitionToGraph', () => {
 
   it('creates edge for step transitions', () => {
     const step = makeStep('s1', 'Step 1', {
-      next: [workflow.Transition.createFrom({ goto: 's2', when: null })],
+      next: [Transition.createFrom({ goto: 's2', when: null })],
     })
     const def = makeDef({ steps: [step, makeStep('s2', 'Step 2')] })
     const { edges } = definitionToGraph(def)
@@ -88,7 +88,7 @@ describe('definitionToGraph', () => {
 
   it('creates end node for empty goto transition', () => {
     const step = makeStep('s1', 'Step 1', {
-      next: [workflow.Transition.createFrom({ goto: '', when: null })],
+      next: [Transition.createFrom({ goto: '', when: null })],
     })
     const def = makeDef({ steps: [step] })
     const { nodes } = definitionToGraph(def)
@@ -98,7 +98,7 @@ describe('definitionToGraph', () => {
 
   it('uses step position when set', () => {
     const step = makeStep('s1', 'Step 1', {
-      position: workflow.Position.createFrom({ x: 300, y: 400 }),
+      position: Position.createFrom({ x: 300, y: 400 }),
     })
     const def = makeDef({ steps: [step] })
     const { nodes } = definitionToGraph(def)

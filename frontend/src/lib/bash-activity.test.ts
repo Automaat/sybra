@@ -1,23 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { extractBashActivity, stripAnsi, truncateOutput } from './bash-activity.js'
 import type { TimestampedStreamEvent } from './timeline.js'
-import type { agent } from '../../wailsjs/go/models.js'
+import type { StreamEvent, ConvoEvent, ToolUseBlock, ToolResultBlock } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
 function makeTSE(content: string, type = 'assistant', ts?: Date): TimestampedStreamEvent {
   return {
-    event: { type, content } as agent.StreamEvent,
+    event: { type, content } as StreamEvent,
     receivedAt: ts ?? new Date('2024-01-01T10:00:00Z'),
   }
 }
 
-function makeConvoEvent(overrides: Partial<agent.ConvoEvent>): agent.ConvoEvent {
+function makeConvoEvent(overrides: Partial<ConvoEvent>): ConvoEvent {
   return {
     type: 'assistant',
     timestamp: new Date('2024-01-01T10:00:00Z').toISOString(),
     toolUses: [],
     toolResults: [],
     ...overrides,
-  } as agent.ConvoEvent
+  } as ConvoEvent
 }
 
 describe('extractBashActivity', () => {
@@ -31,11 +31,11 @@ describe('extractBashActivity', () => {
       const convo = [
         makeConvoEvent({
           type: 'assistant',
-          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'npm test' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'npm test' } }] as ToolUseBlock[],
         }),
         makeConvoEvent({
           type: 'user',
-          toolResults: [{ toolUseId: 'tu1', content: 'All tests passed', isError: false }] as agent.ToolResultBlock[],
+          toolResults: [{ toolUseId: 'tu1', content: 'All tests passed', isError: false }] as ToolResultBlock[],
         }),
       ]
       const result = extractBashActivity([], convo)
@@ -50,7 +50,7 @@ describe('extractBashActivity', () => {
       const convo = [
         makeConvoEvent({
           type: 'assistant',
-          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'sleep 5' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'sleep 5' } }] as ToolUseBlock[],
         }),
       ]
       const result = extractBashActivity([], convo)
@@ -63,7 +63,7 @@ describe('extractBashActivity', () => {
       const convo = [
         makeConvoEvent({
           type: 'assistant',
-          toolUses: [{ id: 'tu1', name: 'Edit', input: { file_path: 'foo.ts' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Edit', input: { file_path: 'foo.ts' } }] as ToolUseBlock[],
         }),
       ]
       expect(extractBashActivity([], convo)).toHaveLength(0)
@@ -73,11 +73,11 @@ describe('extractBashActivity', () => {
       const convo = [
         makeConvoEvent({
           type: 'assistant',
-          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'ls', cwd: '/app' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'ls', cwd: '/app' } }] as ToolUseBlock[],
         }),
         makeConvoEvent({
           type: 'user',
-          toolResults: [{ toolUseId: 'tu1', content: '', isError: false }] as agent.ToolResultBlock[],
+          toolResults: [{ toolUseId: 'tu1', content: '', isError: false }] as ToolResultBlock[],
         }),
       ]
       const result = extractBashActivity([], convo)
@@ -88,11 +88,11 @@ describe('extractBashActivity', () => {
       const convo = [
         makeConvoEvent({
           type: 'assistant',
-          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'bad' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'bad' } }] as ToolUseBlock[],
         }),
         makeConvoEvent({
           type: 'user',
-          toolResults: [{ toolUseId: 'tu1', content: 'command not found', isError: true }] as agent.ToolResultBlock[],
+          toolResults: [{ toolUseId: 'tu1', content: 'command not found', isError: true }] as ToolResultBlock[],
         }),
       ]
       const result = extractBashActivity([], convo)
@@ -106,12 +106,12 @@ describe('extractBashActivity', () => {
         makeConvoEvent({
           type: 'assistant',
           timestamp: t2.toISOString(),
-          toolUses: [{ id: 'tu2', name: 'Bash', input: { command: 'second' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu2', name: 'Bash', input: { command: 'second' } }] as ToolUseBlock[],
         }),
         makeConvoEvent({
           type: 'assistant',
           timestamp: t1.toISOString(),
-          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'first' } }] as agent.ToolUseBlock[],
+          toolUses: [{ id: 'tu1', name: 'Bash', input: { command: 'first' } }] as ToolUseBlock[],
         }),
       ]
       const result = extractBashActivity([], convo)

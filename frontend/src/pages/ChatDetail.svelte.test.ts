@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
-const mockEventsOn = vi.fn(() => vi.fn())
+const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockStop = vi.fn()
 const mockStopChat = vi.fn()
 const mockUpdateAgent = vi.fn()
