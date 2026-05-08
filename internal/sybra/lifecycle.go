@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
@@ -79,8 +80,9 @@ func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 }
 
 // startAgentLogPruneLoop sweeps stale per-agent NDJSON files once a day.
-// The startup call in runStartupCleanup handles the first pass; this goroutine
-// keeps the directory bounded on long-lived server deployments.
+// The startup call inside Recovery.RunStartupCleanup handles the first
+// pass; this goroutine keeps the directory bounded on long-lived server
+// deployments.
 func (lm *LifecycleManager) startAgentLogPruneLoop(ctx context.Context) {
 	a := lm.app
 	a.wg.Go(func() {
@@ -91,10 +93,23 @@ func (lm *LifecycleManager) startAgentLogPruneLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				a.pruneAgentLogs()
+				lm.prune()
 			}
 		}
 	})
+}
+
+// prune is the periodic body of startAgentLogPruneLoop. Mirrors the
+// retention computation Recovery does at startup so both passes use the
+// same maxAge.
+func (lm *LifecycleManager) prune() {
+	a := lm.app
+	var maxAge time.Duration
+	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
+		maxAge = time.Duration(days) * 24 * time.Hour
+	}
+	r := logging.PruneAgentLogs(a.logDir, maxAge, time.Now())
+	logging.LogPruneReport(a.logger, r)
 }
 
 // registerMetricsObservers wires OTel observable gauge callbacks to live

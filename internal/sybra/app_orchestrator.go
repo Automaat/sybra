@@ -25,7 +25,7 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 			// Recover in-progress tasks whose agent died — runs continuously,
 			// not just at startup, to catch agents that finished without
 			// advancing the workflow.
-			a.restartStaleInProgress()
+			a.recovery.RestartStaleInProgress()
 			a.worktrees.CleanupOrphaned()
 		}
 	}

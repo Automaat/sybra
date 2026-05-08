@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
@@ -28,12 +27,12 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/loopagent"
-	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -88,6 +87,7 @@ type App struct {
 	emit            func(string, any)
 	emitFactory     func(context.Context) func(string, any)
 	restartStaleErr *logging.ErrorThrottle
+	recovery        *recovery.Recovery
 
 	bgops *bgop.Tracker
 
@@ -263,7 +263,8 @@ func (a *App) Startup(ctx context.Context) error {
 	a.wireServices(emit)
 
 	a.syncSkillsBundle()
-	a.runStartupCleanup()
+	a.recovery = a.newRecovery()
+	a.recovery.RunStartupCleanup()
 	a.RegisterSpotlightHotkey()
 
 	lm := newLifecycleManager(a)
@@ -682,247 +683,6 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 	}
 }
 
-// cleanStaleRuns marks agent_runs still showing "running" as "stopped" if no
-// matching in-memory agent exists. Fixes leftover state from crashes/restarts.
-func (a *App) cleanStaleRuns() {
-	tasks, err := a.tasks.List()
-	if err != nil {
-		return
-	}
-	for i := range tasks {
-		if tasks[i].TaskType == task.TaskTypeChat {
-			continue
-		}
-		for j := range tasks[i].AgentRuns {
-			run := &tasks[i].AgentRuns[j]
-			if run.State != string(agent.StateRunning) {
-				continue
-			}
-			if a.agents.HasRunningAgentForTask(tasks[i].ID) {
-				continue
-			}
-			a.logger.Info("stale-run.cleanup", "task_id", tasks[i].ID, "agent_id", run.AgentID)
-			_ = a.tasks.UpdateRun(tasks[i].ID, run.AgentID, map[string]any{
-				"state":  string(agent.StateStopped),
-				"result": "stale: marked stopped on startup",
-			})
-		}
-	}
-}
-
-// runStartupCleanup sequences boot-time maintenance in the order that lets
-// each step see the output of the previous one: chats first so their
-// worktrees show up as orphans to the subsequent sweep; stale run state
-// next so restart-stale sees a clean slate.
-func (a *App) runStartupCleanup() {
-	a.worktrees.RepairAll()
-	a.gcOrphanChats()
-	a.worktrees.CleanupOrphaned()
-	a.cleanStaleRuns()
-	a.pruneAgentLogs()
-	a.restartStaleInProgress()
-}
-
-// pruneAgentLogs removes stale per-agent NDJSON files at startup. Safe
-// to call with an empty logDir (test setups) — the logging helper no-ops.
-// The periodic counterpart lives in startAgentLogPruneLoop.
-func (a *App) pruneAgentLogs() {
-	days := a.cfg.DefaultLogRetentionDays()
-	var maxAge time.Duration
-	if days > 0 {
-		maxAge = time.Duration(days) * 24 * time.Hour
-	}
-	r := logging.PruneAgentLogs(a.logDir, maxAge, time.Now())
-	logging.LogPruneReport(a.logger, r)
-}
-
-// gcOrphanChats deletes any chat-task that no longer has a running agent.
-// Chats are ephemeral by design; a stale chat-task is always noise left over
-// from a crash or kill. Runs before worktree orphan cleanup so the task
-// file is gone by the time the worktree sweeper looks.
-func (a *App) gcOrphanChats() {
-	tasks, err := a.tasks.List()
-	if err != nil {
-		return
-	}
-	for i := range tasks {
-		t := tasks[i]
-		if t.TaskType != task.TaskTypeChat {
-			continue
-		}
-		if a.agents.HasRunningAgentForTask(t.ID) {
-			continue
-		}
-		a.logger.Info("chat.gc.orphan", "task_id", t.ID, "title", t.Title)
-		a.worktrees.Remove(t.ID)
-		if err := a.tasks.Delete(t.ID); err != nil {
-			a.logger.Error("chat.gc.delete", "task_id", t.ID, "err", err)
-		}
-	}
-}
-
-// restartStaleMinAge is the minimum age of the latest agent run before a
-// stale in-progress task is eligible for respawn. Protects against dev-mode
-// hot-reload loops spawning parallel agents onto the same task.
-const restartStaleMinAge = 5 * time.Minute
-
-// restartStaleInProgress recovers in-progress tasks that lost their agent
-// due to a crash or restart. Headless tasks are re-dispatched; interactive
-// tasks drive the workflow engine forward via recoverStaleInteractive.
-func (a *App) restartStaleInProgress() {
-	tasks, err := a.tasks.List()
-	if err != nil {
-		return
-	}
-	for i := range tasks {
-		t := tasks[i]
-		if t.TaskType == task.TaskTypeChat {
-			continue
-		}
-		if t.Status != task.StatusInProgress {
-			continue
-		}
-		if a.agents.HasRunningAgentForTask(t.ID) {
-			continue
-		}
-		if slices.Contains(t.Tags, "review") {
-			continue
-		}
-		// Tasks with a terminal workflow stuck at in-progress: restart the
-		// workflow rather than spawning a bare agent. A bare agent spawn would
-		// loop forever (completion callback can't advance a terminal workflow),
-		// but restarting the workflow gives the callback a live execution to
-		// advance. Skip the remaining stale-restart logic for these.
-		if a.workflowEngine != nil && t.Workflow != nil &&
-			(t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed) {
-			wfID := t.Workflow.WorkflowID
-			taskID := t.ID
-			a.logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
-			a.wg.Go(func() {
-				if wfErr := a.workflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
-					a.logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
-				}
-			})
-			continue
-		}
-		// Debounce respawn when a previous run started recently. Covers the
-		// dev-reload case: app restarts every few seconds, but a headless
-		// subprocess from the prior lifecycle is still alive.
-		if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge {
-			a.logger.Info("restart-stale.skip",
-				"task_id", t.ID, "reason", "recent_run",
-				"last_run_age_s", time.Since(lr.StartedAt).Seconds())
-			continue
-		}
-		// Tasks whose last agent was a pr-fix should not be re-implemented.
-		// Move them back to in-review so the reviews poller can re-detect and fix.
-		// Applies to both headless and interactive modes — handlePRIssue
-		// spawns pr-fix agents directly without registering a workflow, so
-		// onAgentComplete can't advance the task back to in-review itself.
-		if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
-			a.logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
-			if _, err := a.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
-				a.logger.Error("restart-stale.revert", "task_id", t.ID, "err", err)
-			}
-			continue
-		}
-		// Interactive: drive the workflow engine to advance the current step
-		// using the stored agent run result — same mechanism as onAgentComplete.
-		if t.AgentMode != "headless" {
-			a.recoverStaleInteractive(&t)
-			continue
-		}
-		if t.ProjectID == "" {
-			a.logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
-			continue
-		}
-		a.logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
-		taskID := t.ID
-		runRole := t.RunRole
-		if runRole == "pr-fix" {
-			a.wg.Go(func() {
-				err := a.agentOrch.StartPRFixAgent(taskID)
-				metrics.OrchestratorStaleRestart(err == nil)
-				a.restartStaleErr.Log(a.logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
-			})
-		} else {
-			mode := t.AgentMode
-			prFlag := " --draft"
-			if proj, pErr := a.projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
-				prFlag = ""
-			}
-			prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
-			a.wg.Go(func() {
-				// Restart-stale only ever reaches this branch for headless
-				// mode (interactive tasks are handled by recoverStaleInteractive
-				// above), so OneShot is irrelevant here — pass false.
-				_, err := a.agentOrch.StartAgent(taskID, mode, prompt, false)
-				metrics.OrchestratorStaleRestart(err == nil)
-				a.restartStaleErr.Log(a.logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
-			})
-		}
-	}
-}
-
-// recoverStaleInteractive handles interactive in-progress tasks whose agent
-// died or disappeared across restarts. Marks the last agent run as
-// stopped (if still claiming running) and drives the workflow engine to
-// advance the current step using the stored result — mirroring the normal
-// onAgentComplete callback so evaluate/next steps fire.
-func (a *App) recoverStaleInteractive(t *task.Task) {
-	lr := lastAgentRun(t)
-	if lr == nil {
-		a.logger.Info("recover-stale.skip", "task_id", t.ID, "reason", "no_agent_runs")
-		return
-	}
-	// Only recover when the dead agent was interactive — headless stragglers
-	// (triage/eval) are managed by their own error paths, and we don't want
-	// to fake-complete a workflow step that needs real agent output.
-	if lr.Mode != "interactive" {
-		return
-	}
-	if lr.State == string(agent.StateRunning) {
-		if err := a.tasks.UpdateRun(t.ID, lr.AgentID, map[string]any{
-			"state":  string(agent.StateStopped),
-			"result": "stale: agent gone, auto-recovered",
-		}); err != nil {
-			a.logger.Error("recover-stale.update-run", "task_id", t.ID, "err", err)
-		}
-	}
-	if a.workflowEngine == nil || t.Workflow == nil {
-		a.logger.Info("recover-stale.no-workflow", "task_id", t.ID)
-		return
-	}
-	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
-		a.logger.Info("recover-stale.workflow-terminal",
-			"task_id", t.ID, "state", string(t.Workflow.State))
-		return
-	}
-	// Mark the execution as recovered so the next step's template context
-	// knows not to trust .Prev.Output (use recoveredOrPrev instead). Persist
-	// before driving HandleAgentComplete so the engine reloads the flag.
-	t.Workflow.Recovered = true
-	wf := t.Workflow
-	if _, err := a.tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
-		a.logger.Error("recover-stale.set-recovered", "task_id", t.ID, "err", err)
-		return
-	}
-	a.logger.Info("recover-stale.advance",
-		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
-	a.workflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
-		AgentID:  lr.AgentID,
-		Provider: lr.Provider,
-		Success:  true,
-	})
-}
-
-func lastAgentRun(t *task.Task) *task.AgentRun {
-	if len(t.AgentRuns) == 0 {
-		return nil
-	}
-	return &t.AgentRuns[len(t.AgentRuns)-1]
-}
-
 // StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
 // User-triggered starts are never one-shot — that flag is reserved for workflow
 // steps that expect a single turn.
@@ -1000,6 +760,30 @@ func (a *App) seedDefaultLoopAgents() {
 		return
 	}
 	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
+}
+
+// newRecovery wires the App's deps into a recovery.Recovery used for
+// boot-time cleanup and the periodic restart-stale sweep called from the
+// orchestrator loop. Holds a pointer to a.restartStaleErr so the throttle
+// state is shared across both call sites.
+func (a *App) newRecovery() *recovery.Recovery {
+	var retention time.Duration
+	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
+		retention = time.Duration(days) * 24 * time.Hour
+	}
+	return &recovery.Recovery{
+		Tasks:          a.tasks,
+		Agents:         a.agents,
+		Worktrees:      a.worktrees,
+		WorkflowEngine: a.workflowEngine,
+		Orchestrator:   a.agentOrch,
+		Projects:       a.projects,
+		Logger:         a.logger,
+		Throttle:       a.restartStaleErr,
+		WG:             &a.wg,
+		LogDir:         a.logDir,
+		LogRetention:   retention,
+	}
 }
 
 // syncSkillsBundle drives the skillsync package with the App's source/dst
