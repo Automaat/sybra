@@ -4,7 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// mergeRetryDelays controls the backoff between merge retries when GitHub
+// reports the base branch was modified mid-merge. Overridable from tests.
+var mergeRetryDelays = []time.Duration{
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+}
 
 // PRStats holds size metrics for a pull request.
 type PRStats struct {
@@ -325,12 +334,27 @@ func MergePR(repo string, number int) error {
 }
 
 func mergePRWith(e execer, repo string, number int) error {
-	out, err := e.run("pr", "merge", fmt.Sprintf("%d", number),
-		"--repo", repo, "--squash")
-	if err != nil {
-		return fmt.Errorf("gh pr merge %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	var lastOut []byte
+	var lastErr error
+	for attempt := 0; attempt <= len(mergeRetryDelays); attempt++ {
+		out, err := e.run("pr", "merge", fmt.Sprintf("%d", number),
+			"--repo", repo, "--squash")
+		if err == nil {
+			return nil
+		}
+		lastOut, lastErr = out, err
+		if !isBaseBranchModifiedErr(out) || attempt == len(mergeRetryDelays) {
+			break
+		}
+		time.Sleep(mergeRetryDelays[attempt])
 	}
-	return nil
+	return fmt.Errorf("gh pr merge %d: %s: %w", number, strings.TrimSpace(string(lastOut)), lastErr)
+}
+
+// isBaseBranchModifiedErr reports whether gh's output indicates a transient
+// base-branch race that GitHub asks the caller to retry.
+func isBaseBranchModifiedErr(out []byte) bool {
+	return strings.Contains(string(out), "Base branch was modified")
 }
 
 // MarkReady marks a draft pull request as ready for review.
