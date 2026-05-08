@@ -59,6 +59,9 @@ type Watchdog struct {
 	logger *slog.Logger
 	emit   func(string, any)
 	wg     *sync.WaitGroup
+
+	inspectAgent func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error)
+	stopAgent    func(string) error
 }
 
 // New creates a Watchdog.
@@ -70,11 +73,13 @@ func New(
 	wg *sync.WaitGroup,
 ) *Watchdog {
 	return &Watchdog{
-		agents: agents,
-		tasks:  tasks,
-		logger: logger,
-		emit:   emit,
-		wg:     wg,
+		agents:       agents,
+		tasks:        tasks,
+		logger:       logger,
+		emit:         emit,
+		wg:           wg,
+		inspectAgent: agent.Inspect,
+		stopAgent:    agents.StopAgent,
 	}
 }
 
@@ -145,7 +150,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, st
 	ictx, cancel := context.WithTimeout(ctx, InspectTimeout)
 	defer cancel()
 
-	verdict, err := agent.Inspect(ictx, w.logger, agent.InspectInput{
+	verdict, err := w.inspectAgent(ictx, w.logger, agent.InspectInput{
 		AgentID:   ag.ID,
 		TaskTitle: t.Title,
 		LogPath:   ag.GetLogPath(),
@@ -162,26 +167,34 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, st
 		"recommendation", verdict.Recommendation, "reason", verdict.Reason)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
+	w.applyVerdict(ag, verdict)
+}
 
+func (w *Watchdog) applyVerdict(ag *agent.Agent, verdict agent.InspectorVerdict) {
 	switch verdict.Recommendation {
 	case "stop":
 		// Set human-required before stopping so the AdvanceStep callback
 		// (fired via onComplete after the agent exits) sees the escalated
 		// status and the workflow stops instead of advancing to the next step.
 		if ag.TaskID != "" {
-			if _, err := w.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+			reason := "watchdog stop"
+			if verdict.Reason != "" {
+				reason = "watchdog: " + verdict.Reason
+			}
+			if _, err := w.tasks.Update(ag.TaskID, task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: task.Ptr(reason),
+			}); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
 		}
-		if err := w.agents.StopAgent(ag.ID); err != nil {
+		if err := w.stopAgent(ag.ID); err != nil {
 			w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 		}
 	case "escalate":
-		if ag.TaskID != "" {
-			if _, err := w.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
-				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
-			}
-		}
+		// Ambiguous verdicts are advisory only. Flipping the task to
+		// human-required while the agent keeps running leaves task status
+		// inconsistent and can strand successfully completing work.
 	case "continue":
 		// intentional no-op; debounce suppresses re-check
 	}
