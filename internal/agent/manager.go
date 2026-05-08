@@ -40,12 +40,12 @@ type Manager struct {
 	onComplete    func(ag *Agent)
 	logger        *slog.Logger
 	logDir        string
-	maxConcurrent  int
-	defaultProv    string
-	approvalAddr   string // localhost:port for the HTTP tool approval server
-	guardrails     Guardrails
-	bashTimeoutMs  int
-	gate           provider.HealthGate
+	maxConcurrent int
+	defaultProv   string
+	approvalAddr  string // localhost:port for the HTTP tool approval server
+	guardrails    Guardrails
+	bashTimeoutMs int
+	gate          provider.HealthGate
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
