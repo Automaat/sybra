@@ -60,6 +60,15 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.statsSvc.stats = a.stats
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore
+
+	// Subscribe handlers to manager callbacks last — by this point every
+	// dependency the handler reads is wired up, so the closures can't
+	// observe a partially-constructed App.
+	a.agentCompletion = a.newAgentCompletionHandler(emit)
+	a.agents.SetOnComplete(a.agentCompletion.OnComplete)
+	if a.workflowEngine != nil {
+		a.workflowEngine.SetOnComplete(a.agentCompletion.OnWorkflowComplete)
+	}
 }
 
 // ServiceRegistry returns the named service instances for HTTP dispatch.

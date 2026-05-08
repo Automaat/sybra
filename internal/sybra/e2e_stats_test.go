@@ -97,20 +97,15 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 				Logger:       logger,
 				AgentChecker: agentMgr.HasRunningAgentForTask,
 			})
-			agentOrch := newAgentOrchestrator(taskMgr, nil, agentMgr, nil, logger, wm, nil)
-
-			app := &App{
-				tasks:     taskMgr,
-				agents:    agentMgr,
-				worktrees: wm,
-				agentOrch: agentOrch,
-				logger:    logger,
-				stats:     statsStore,
+			h := &AgentCompletionHandler{
+				DomainHandler: DomainHandler{logger: logger},
+				tasks:         taskMgr,
+				worktrees:     wm,
+				stats:         statsStore,
 			}
-
 			done := make(chan struct{})
 			agentMgr.SetOnComplete(func(ag *agent.Agent) {
-				app.onAgentComplete(ag)
+				h.OnComplete(ag)
 				close(done)
 			})
 

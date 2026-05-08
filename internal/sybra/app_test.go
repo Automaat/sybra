@@ -149,7 +149,12 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 
 	// Should not panic, and should not touch any task file. The historical
 	// bug created/touched ".md" in tasksDir; assert no such file exists.
-	a.onAgentComplete(ag)
+	h := &AgentCompletionHandler{
+		DomainHandler: DomainHandler{logger: a.logger},
+		tasks:         a.tasks,
+		worktrees:     a.worktrees,
+	}
+	h.OnComplete(ag)
 
 	if _, err := os.Stat(filepath.Join(a.tasksDir, ".md")); !os.IsNotExist(err) {
 		t.Errorf("expected no .md file in tasks dir, got err=%v", err)
