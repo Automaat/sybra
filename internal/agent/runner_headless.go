@@ -63,13 +63,16 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 
 done:
 	a.SetState(StateStopped)
-	m.markAgentDone(a)
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, a.GetExitErr() == nil)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
+	// Close `done` only after onComplete returns. HasRunningAgentForTask
+	// gates ResumeStalled; releasing it before the workflow advance handler
+	// runs lets a tight ResumeStalled loop dispatch a duplicate agent.
+	m.markAgentDone(a)
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
@@ -661,7 +664,6 @@ func (m *Manager) handleError(a *Agent, err error) {
 	kind := classifyAgentError(err)
 	a.SetError(kind, err.Error())
 	a.SetState(StateStopped)
-	m.markAgentDone(a)
 	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
 	m.emit(events.AgentState(a.ID), a)
@@ -669,6 +671,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
+	m.markAgentDone(a)
 }
 
 // classifyAgentError maps a fatal agent error to a canonical kind string.

@@ -162,13 +162,13 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 
 done:
 	a.SetState(StateStopped)
-	m.markAgentDone(a)
 	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.recordCompletion(a, a.GetExitErr() == nil)
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
+	m.markAgentDone(a)
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
