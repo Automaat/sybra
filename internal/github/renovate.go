@@ -134,28 +134,28 @@ func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
 	return convertRenovatePRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
 }
 
+// buildRenovateSearchQuery composes a GitHub issue-search query string.
+//
+// GitHub search treats parentheses and the `OR` keyword as text matches
+// rather than boolean grouping, so wrapping qualifiers in `(a OR b)`
+// silently returns zero results. Repeated same-name qualifiers act as an
+// implicit OR — `author:a author:b repo:x repo:y` is the only form that
+// works.
 func buildRenovateSearchQuery(authors, repos []string) string {
-	var authorParts []string
+	parts := []string{"is:pr", "is:open"}
 	for _, author := range authors {
 		if strings.TrimSpace(author) == "" {
 			continue
 		}
-		authorParts = append(authorParts, "author:"+author)
+		parts = append(parts, "author:"+author)
 	}
-
-	var repoParts []string
 	for _, repo := range repos {
 		if strings.TrimSpace(repo) == "" {
 			continue
 		}
-		repoParts = append(repoParts, "repo:"+repo)
+		parts = append(parts, "repo:"+repo)
 	}
-
-	return fmt.Sprintf(
-		"is:pr is:open (%s) (%s)",
-		strings.Join(authorParts, " OR "),
-		strings.Join(repoParts, " OR "),
-	)
+	return strings.Join(parts, " ")
 }
 
 func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
