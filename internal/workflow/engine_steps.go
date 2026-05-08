@@ -677,13 +677,13 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 		//       svc_tasks.UpdateTask doesn't bounce the task back to in-progress.
 		//   (b) HEAD != base → branch diverged but has zero fast-forward commits.
 		//       Genuine "agent did nothing"; flip to human-required as before.
-		if branchAtBase(e.ctx, wtPath) {
-			reason := "branch identical to base — implementation already on origin"
+		if branchMergedIntoBase(e.ctx, wtPath) {
+			reason := "branch already merged into base — implementation already on origin"
 			if statusErr := e.tasks.UpdateTaskStatus(taskID, "done", reason); statusErr != nil {
 				e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 			}
-			e.logger.Info("workflow.verify-commits.branch-at-base", "task_id", taskID)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "branch at base: marked done"}, nil
+			e.logger.Info("workflow.verify-commits.branch-merged", "task_id", taskID)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "branch merged into base: marked done"}, nil
 		}
 		reason := "no commits pushed to branch"
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
@@ -695,32 +695,23 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
-// branchAtBase reports whether the worktree's HEAD points at the same commit
-// as the resolved origin base ref. Used by execVerifyCommits to distinguish
-// "fix already merged elsewhere" from "agent did nothing".
-func branchAtBase(parentCtx context.Context, wtPath string) bool {
+// branchMergedIntoBase reports whether HEAD is reachable from the resolved
+// origin base ref (i.e. HEAD is an ancestor of, or equal to, base). Used by
+// execVerifyCommits to distinguish "fix already merged into origin" from
+// "agent did nothing".
+//
+// `git log origin/main..HEAD` empty ⟺ HEAD is reachable from origin/main, so
+// any time we land in the "no commits ahead" branch the answer here is true
+// in the common case. We still gate on an explicit `merge-base --is-ancestor`
+// check so an unrelated history (orphan branch, force-pushed elsewhere) does
+// not silently get marked done.
+func branchMergedIntoBase(parentCtx context.Context, wtPath string) bool {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 	baseRef := resolveOriginBase(ctx, wtPath)
-	headSHA, err := gitRevParse(ctx, wtPath, "HEAD")
-	if err != nil || headSHA == "" {
-		return false
-	}
-	baseSHA, err := gitRevParse(ctx, wtPath, baseRef)
-	if err != nil || baseSHA == "" {
-		return false
-	}
-	return headSHA == baseSHA
-}
-
-func gitRevParse(ctx context.Context, wtPath, ref string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", "HEAD", baseRef)
 	cmd.Dir = wtPath
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+	return cmd.Run() == nil
 }
 
 // triageReviewLineLimit and triageReviewFileLimit are the hard ceilings under

@@ -3323,14 +3323,14 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	if tk.Status != task.StatusDone {
 		t.Fatalf("status = %q, want done", tk.Status)
 	}
-	if !strings.Contains(tk.StatusReason, "branch identical to base") {
+	if !strings.Contains(tk.StatusReason, "already merged into base") {
 		var verifyOut string
 		for i := range tk.Workflow.StepHistory {
 			if tk.Workflow.StepHistory[i].StepID == "verify_commits" {
 				verifyOut = tk.Workflow.StepHistory[i].Output
 			}
 		}
-		t.Fatalf("status_reason = %q, want 'branch identical to base' (verify_commits output=%q)", tk.StatusReason, verifyOut)
+		t.Fatalf("status_reason = %q, want 'already merged into base' (verify_commits output=%q)", tk.StatusReason, verifyOut)
 	}
 	stepIDs := stepIDsFromHistory(tk.Workflow)
 	if !slices.Contains(stepIDs, "verify_commits") {
