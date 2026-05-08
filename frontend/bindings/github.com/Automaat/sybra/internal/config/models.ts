@@ -15,6 +15,17 @@ export class AgentDefaults {
     "maxTurns": number;
 
     /**
+     * TurnCostFraction is the fraction of MaxCostUSD below which a turns
+     * escalation is auto-continued. Default 0.8 when unset.
+     */
+    "turnCostFraction": number;
+
+    /**
+     * TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+     */
+    "turnMultiplier": number;
+
+    /**
      * RequirePermissions sets the default permission requirement for agents.
      * nil means not configured (falls back to true — safe default).
      * Set to false in config to opt all tasks into skip-permissions mode.
@@ -57,6 +68,12 @@ export class AgentDefaults {
         }
         if (!("maxTurns" in $$source)) {
             this["maxTurns"] = 0;
+        }
+        if (!("turnCostFraction" in $$source)) {
+            this["turnCostFraction"] = 0;
+        }
+        if (!("turnMultiplier" in $$source)) {
+            this["turnMultiplier"] = 0;
         }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
