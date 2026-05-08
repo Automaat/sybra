@@ -69,7 +69,7 @@ func TestBuildRenovateSearchQuery(t *testing.T) {
 		[]string{"app/renovate", "renovate[bot]"},
 		[]string{"acme/api", "acme/web"},
 	)
-	want := "is:pr is:open (author:app/renovate OR author:renovate[bot]) (repo:acme/api OR repo:acme/web)"
+	want := "is:pr is:open author:app/renovate author:renovate[bot] repo:acme/api repo:acme/web"
 	if got != want {
 		t.Fatalf("query = %q, want %q", got, want)
 	}
