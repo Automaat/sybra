@@ -2638,23 +2638,25 @@ func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "branch at base") {
-		t.Errorf("Output = %q, want 'branch at base'", out.Output)
+	if !strings.Contains(out.Output, "branch merged into base") {
+		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "done" {
 		t.Errorf("task status = %q, want done", ti.Status)
 	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "branch identical to base") {
-		t.Errorf("status reason = %q, want 'branch identical to base'", reason)
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "already merged into base") {
+		t.Errorf("status reason = %q, want 'already merged into base'", reason)
 	}
 }
 
-// TestExecVerifyCommits_DivergentNoCommitsFlipsHumanRequired covers the
-// genuine "agent did nothing" path: HEAD is behind origin/main (not at base
-// tip) and no commits exist ahead. We can't conclude the work is on origin,
-// so flip to human-required as before.
-func TestExecVerifyCommits_DivergentNoCommitsFlipsHumanRequired(t *testing.T) {
+// TestExecVerifyCommits_BranchAncestorOfBaseMarksDone covers the regression
+// from issue #670: HEAD is an ancestor of origin/main (branch tip equals an
+// older commit on main, with newer commits on top — typical of squash-merge
+// followed by additional PRs). `git log origin/main..HEAD` is empty AND
+// HEAD != base.tip, but the work is still on origin. Must flip to done, not
+// human-required.
+func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -2671,18 +2673,18 @@ func TestExecVerifyCommits_DivergentNoCommitsFlipsHumanRequired(t *testing.T) {
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
 	}
-	if !strings.Contains(out.Output, "no commits") {
-		t.Errorf("Output = %q, want 'no commits'", out.Output)
+	if !strings.Contains(out.Output, "branch merged into base") {
+		t.Errorf("Output = %q, want 'branch merged into base'", out.Output)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "done" {
+		t.Errorf("task status = %q, want done", ti.Status)
 	}
 }
 
-// makeGitRepoBehindOrigin builds a worktree where HEAD is behind origin/main:
-// origin/main points at commit B, HEAD is reset back to commit A. Used to
-// exercise the "no commits ahead, HEAD != base" branch of execVerifyCommits.
+// makeGitRepoBehindOrigin builds a worktree where HEAD is an ancestor of
+// origin/main: origin/main points at commit B, HEAD is reset to commit A
+// (a parent of B). `git log origin/main..HEAD` is empty AND HEAD != base.tip.
 func makeGitRepoBehindOrigin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
