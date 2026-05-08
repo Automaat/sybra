@@ -27,6 +27,7 @@
 //     mechanical link_pr_and_review step can extract the PR number via regex
 //   - auth_error: emits auth-failure text then exits 1
 //   - malformed_pr_output: emits large malformed PR-ish text (no valid URL)
+//   - signal_kill: emits system+assistant then kills self with SIGTERM
 //
 // Perf scenarios (zero token cost, drive backend load):
 //   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
@@ -50,6 +51,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -137,6 +139,8 @@ func runScenario(scenario, taskID string) bool {
 		emitSystem()
 		emitAssistant("Implementing and pushing PR...")
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
+	case "signal_kill":
+		runSignalKill()
 	case "auth_error":
 		emitSystem()
 		emitAssistant("Authentication failed. Please re-auth.")
@@ -153,6 +157,15 @@ func runScenario(scenario, taskID string) bool {
 		return false
 	}
 	return true
+}
+
+// runSignalKill emits a start event then kills itself with SIGTERM, simulating
+// a container/OS shutdown mid-run.
+func runSignalKill() {
+	emitSystem()
+	emitAssistant("Starting work...")
+	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	select {} // block until signal arrives
 }
 
 // runMalformedPROutput emits a long stream of malformed PR-URL fragments

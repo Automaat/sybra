@@ -433,6 +433,64 @@ func TestE2E_HeadlessAgent_FailExit(t *testing.T) {
 	})
 }
 
+// TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow verifies that when an
+// agent is killed by a signal (SIGTERM), the workflow step does NOT advance.
+// The workflow should stay stalled at the current step so ResumeStalled can
+// re-dispatch the agent. Regression test for #615.
+func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
+	// First call: agent dies with SIGTERM. Second call (via ResumeStalled): success.
+	env := setupE2EMulti(t, []string{"signal_kill", "triage"})
+
+	// Wire production AgentCompletionHandler so the signal kill guard fires.
+	h := &AgentCompletionHandler{
+		DomainHandler:  DomainHandler{logger: e2eLogger()},
+		tasks:          env.tasks,
+		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		workflowEngine: env.engine,
+	}
+	env.agents.SetOnComplete(func(ag *agent.Agent) {
+		env.pendingCompletions.Add(1)
+		defer env.pendingCompletions.Add(-1)
+		h.OnComplete(ag)
+	})
+
+	created, err := env.tasks.Create("signal kill task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the signal-killed agent to finish and completion callback to return.
+	waitFor(t, 10*time.Second, "signal-killed agent completes", func() bool {
+		return !env.agents.HasRunningAgentForTask(created.ID) && env.pendingCompletions.Load() == 0
+	})
+
+	// The workflow must NOT have advanced past triage.
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow on task")
+	}
+	if tk.Workflow.CurrentStep != "triage" {
+		t.Errorf("workflow advanced to %q on signal kill; want to stay at triage", tk.Workflow.CurrentStep)
+	}
+
+	// ResumeStalled re-dispatches the agent with the next scenario (triage success).
+	env.engine.ResumeStalled()
+
+	waitFor(t, 10*time.Second, "workflow advances past triage after retry", func() bool {
+		tk2, err := env.tasks.Get(created.ID)
+		if err != nil {
+			return false
+		}
+		return tk2.Workflow != nil && tk2.Workflow.CurrentStep != "triage"
+	})
+}
+
 func TestE2E_WorkflowWithSynapseCLI(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EProvider(t, p.provider, "triage")
