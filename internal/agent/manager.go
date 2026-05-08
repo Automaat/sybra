@@ -514,6 +514,7 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	m.logger.Info("agent.stop", "id", agentID)
 
+	a.MarkStopped()
 	if a.cancel != nil {
 		a.cancel()
 	}

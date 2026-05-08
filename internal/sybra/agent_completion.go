@@ -141,12 +141,14 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 
 	if h.workflowEngine != nil {
-		if isSignalKill(exitErr) {
-			// Agent was killed by a signal (e.g. SIGTERM on container/OS shutdown),
-			// not a logical failure. Leave the workflow step stalled so
-			// ResumeStalled re-dispatches the agent on the next tick.
+		if isSignalKill(exitErr) && !ag.WasStopped() {
+			// Infrastructure-level kill (e.g. OS/container SIGTERM): leave the
+			// workflow step stalled so ResumeStalled re-dispatches the agent on
+			// the next tick. Clear the agent→step mapping so agentSteps does not
+			// leak and hasTrackedAgentForTaskStep does not suppress the retry.
 			h.logger.Warn("agent.completion.signal-kill",
 				"task_id", ag.TaskID, "agent_id", ag.ID)
+			h.workflowEngine.ClearAgentStep(ag.ID)
 			return
 		}
 		h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{

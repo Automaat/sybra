@@ -217,6 +217,14 @@ func (e *Engine) clearAgentStep(agentID string) {
 	e.mu.Unlock()
 }
 
+// ClearAgentStep removes the agent→step mapping without advancing the workflow.
+// Used when an agent exits due to an infrastructure-level signal kill so the
+// tracked-agent entry is released while the workflow step stays stalled for
+// ResumeStalled to re-dispatch.
+func (e *Engine) ClearAgentStep(agentID string) {
+	e.clearAgentStep(agentID)
+}
+
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
