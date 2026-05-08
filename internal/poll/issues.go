@@ -26,6 +26,7 @@ type IssuesFetcher struct {
 	allowsType    func(project.ProjectType) bool
 	fetchAssigned func() ([]github.Issue, error)
 	fetchLabeled  func(repos []string, label string) ([]github.Issue, error)
+	fetchSnapshot func(repos []string, label string) (github.IssueSnapshot, error)
 }
 
 // NewIssuesFetcher creates an IssuesFetcher. allowsType filters issues whose
@@ -49,12 +50,18 @@ func NewIssuesFetcher(
 		allowsType:    allowsType,
 		fetchAssigned: github.FetchAssignedIssues,
 		fetchLabeled:  github.FetchLabeledIssuesForRepos,
+		fetchSnapshot: github.FetchIssueSnapshot,
 	}
 }
 
 func (f *IssuesFetcher) Name() string { return "issues" }
 
 func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
+	if f.fetchSnapshot != nil {
+		f.pollSnapshot()
+		return IssuesPollInterval
+	}
+
 	issues, err := f.fetchAssigned()
 	metrics.GitHubFetch(err == nil)
 	if err != nil {
@@ -69,6 +76,24 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	return IssuesPollInterval
 }
 
+func (f *IssuesFetcher) pollSnapshot() {
+	repos := f.allowedRepos()
+	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
+	metrics.GitHubFetch(err == nil)
+	if err != nil {
+		f.logger.Warn("issues.fetch", "err", err)
+		return
+	}
+
+	f.emit("issues:updated", snapshot.Assigned)
+	f.logger.Debug("issues.poll", "count", len(snapshot.Assigned))
+	metrics.GitHubIssuesImported(len(snapshot.Assigned))
+	f.syncIssuesToTasks(snapshot.Assigned)
+
+	f.logger.Debug("labeled-issues.poll", "count", len(snapshot.Labeled))
+	f.syncIssuesToTasks(snapshot.Labeled)
+}
+
 // syncLabeledIssuesToTasks fetches issues labeled 'sybra' across all registered
 // pet projects and creates tasks for any not yet tracked.
 func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
@@ -78,12 +103,7 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 		return
 	}
 
-	var repos []string
-	for i := range projects {
-		if f.allowsType(projects[i].Type) {
-			repos = append(repos, projects[i].ID)
-		}
-	}
+	repos := f.allowedReposFrom(projects)
 	if len(repos) == 0 {
 		return
 	}
@@ -95,6 +115,25 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 	}
 	f.logger.Debug("labeled-issues.poll", "count", len(labeled))
 	f.syncIssuesToTasks(labeled)
+}
+
+func (f *IssuesFetcher) allowedRepos() []string {
+	projects, err := f.projects.List()
+	if err != nil {
+		f.logger.Error("labeled-issues.list-projects", "err", err)
+		return nil
+	}
+	return f.allowedReposFrom(projects)
+}
+
+func (f *IssuesFetcher) allowedReposFrom(projects []project.Project) []string {
+	var repos []string
+	for i := range projects {
+		if f.allowsType(projects[i].Type) {
+			repos = append(repos, projects[i].ID)
+		}
+	}
+	return repos
 }
 
 func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {

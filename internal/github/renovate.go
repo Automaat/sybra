@@ -3,11 +3,20 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
+
+const renovateSearchChunkSize = 20
 
 // renovatePRQuery includes individual check run contexts for rerun support.
 const renovatePRQuery = `query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
+  viewer { login }
+  search(query: $q, type: ISSUE, first: 100) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
     nodes {
       ... on PullRequest {
         number
@@ -61,50 +70,92 @@ func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR
 		return nil, nil
 	}
 
-	seen := make(map[string]struct{})
-	var all []RenovatePR
-
 	authors := []string{author}
 	if author == "app/renovate" {
 		authors = append(authors, "renovate[bot]")
 	}
-
-	for _, repo := range repos {
-		for _, a := range authors {
-			query := fmt.Sprintf("is:pr is:open author:%s repo:%s", a, repo)
-			prs, err := searchRenovatePRsWith(e, query)
-			if err != nil {
-				return nil, fmt.Errorf("fetch renovate PRs for %s: %w", repo, err)
-			}
-			for i := range prs {
-				key := fmt.Sprintf("%s#%d", prs[i].Repository, prs[i].Number)
-				if _, dup := seen[key]; !dup {
-					seen[key] = struct{}{}
-					all = append(all, prs[i])
-				}
+	cacheKey := strings.Join(authors, ",") + "||" + strings.Join(repos, ",")
+	if runtimeCacheEnabled(e) {
+		if cached, ok := renovatePRsCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql") {
+			if stale, ok := renovatePRsCache.GetStale(cacheKey); ok {
+				return stale, nil
 			}
 		}
+	}
+
+	seen := make(map[string]struct{})
+	var all []RenovatePR
+
+	for start := 0; start < len(repos); start += renovateSearchChunkSize {
+		end := min(start+renovateSearchChunkSize, len(repos))
+		query := buildRenovateSearchQuery(authors, repos[start:end])
+		prs, err := searchRenovatePRsWith(e, query)
+		if err != nil {
+			if runtimeCacheEnabled(e) {
+				if stale, ok := renovatePRsCache.GetStale(cacheKey); ok {
+					return stale, nil
+				}
+			}
+			return nil, fmt.Errorf("fetch renovate PRs: %w", err)
+		}
+		for i := range prs {
+			key := fmt.Sprintf("%s#%d", prs[i].Repository, prs[i].Number)
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				all = append(all, prs[i])
+			}
+		}
+	}
+	if runtimeCacheEnabled(e) {
+		renovatePRsCache.Set(cacheKey, all, 30*time.Second)
 	}
 	return all, nil
 }
 
 func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
-	out, err := e.run("api", "graphql",
+	resp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+renovatePRQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
 	}
 
-	var resp gqlResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
+	var gqlResp gqlResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
 		return nil, fmt.Errorf("parse graphql response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
 	}
 
-	return convertRenovatePRs(resp.Data.Search.Nodes, viewerLogin(e)), nil
+	return convertRenovatePRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+}
+
+func buildRenovateSearchQuery(authors, repos []string) string {
+	var authorParts []string
+	for _, author := range authors {
+		if strings.TrimSpace(author) == "" {
+			continue
+		}
+		authorParts = append(authorParts, "author:"+author)
+	}
+
+	var repoParts []string
+	for _, repo := range repos {
+		if strings.TrimSpace(repo) == "" {
+			continue
+		}
+		repoParts = append(repoParts, "repo:"+repo)
+	}
+
+	return fmt.Sprintf(
+		"is:pr is:open (%s) (%s)",
+		strings.Join(authorParts, " OR "),
+		strings.Join(repoParts, " OR "),
+	)
 }
 
 func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {

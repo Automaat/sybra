@@ -21,5 +21,8 @@ func rerunFailedChecksWith(e execer, repo string, number int) error {
 	if err != nil {
 		return fmt.Errorf("gh run rerun --failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
 	return nil
 }

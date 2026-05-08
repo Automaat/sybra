@@ -92,6 +92,13 @@ func FetchPR(repo string, number int) (PullRequest, error) {
 }
 
 func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "number,title,body,url,headRefName,author,labels")
 	if err != nil {
@@ -122,7 +129,7 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 	if len(parts) == 2 {
 		repoName = parts[1]
 	}
-	return PullRequest{
+	pr := PullRequest{
 		Number:      raw.Number,
 		Title:       raw.Title,
 		URL:         raw.URL,
@@ -131,7 +138,11 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		RepoName:    repoName,
 		Author:      raw.Author.Login,
 		Labels:      labels,
-	}, nil
+	}
+	if runtimeCacheEnabled(e) {
+		prCache.Set(key, pr, 2*time.Minute)
+	}
+	return pr, nil
 }
 
 // FetchPRStats returns additions, deletions, and changed file count for a PR.
@@ -140,6 +151,13 @@ func FetchPRStats(repo string, number int) (PRStats, error) {
 }
 
 func fetchPRStatsWith(e execer, repo string, number int) (PRStats, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prStatsCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "additions,deletions,changedFiles")
 	if err != nil {
@@ -148,6 +166,9 @@ func fetchPRStatsWith(e execer, repo string, number int) (PRStats, error) {
 	var s PRStats
 	if err := json.Unmarshal(out, &s); err != nil {
 		return PRStats{}, fmt.Errorf("parse pr stats: %w", err)
+	}
+	if runtimeCacheEnabled(e) {
+		prStatsCache.Set(key, s, 5*time.Minute)
 	}
 	return s, nil
 }
@@ -158,6 +179,13 @@ func FetchPRState(repo string, number int) (PRState, error) {
 }
 
 func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prStateCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "state,mergedAt,mergeable,statusCheckRollup")
 	if err != nil {
@@ -166,6 +194,9 @@ func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
 	var s PRState
 	if err := json.Unmarshal(out, &s); err != nil {
 		return PRState{}, fmt.Errorf("parse pr state: %w", err)
+	}
+	if runtimeCacheEnabled(e) {
+		prStateCache.Set(key, s, 30*time.Second)
 	}
 	return s, nil
 }
@@ -176,6 +207,13 @@ func FetchPRFiles(repo string, number int) ([]string, error) {
 }
 
 func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prFilesCache.Get(key); ok {
+			return append([]string(nil), cached...), nil
+		}
+	}
+
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "files")
 	if err != nil {
@@ -189,6 +227,9 @@ func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
 	for i := range f.Files {
 		paths[i] = f.Files[i].Path
 	}
+	if runtimeCacheEnabled(e) {
+		prFilesCache.Set(key, append([]string(nil), paths...), 2*time.Minute)
+	}
 	return paths, nil
 }
 
@@ -198,6 +239,13 @@ func FetchPRBranch(repo string, number int) (string, error) {
 }
 
 func fetchPRBranchWith(e execer, repo string, number int) (string, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prBranchCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "headRefName")
 	if err != nil {
@@ -206,6 +254,9 @@ func fetchPRBranchWith(e execer, repo string, number int) (string, error) {
 	var b PRBranch
 	if err := json.Unmarshal(out, &b); err != nil {
 		return "", fmt.Errorf("parse pr branch: %w", err)
+	}
+	if runtimeCacheEnabled(e) {
+		prBranchCache.Set(key, b.HeadRefName, 2*time.Minute)
 	}
 	return b.HeadRefName, nil
 }
@@ -216,6 +267,13 @@ func FetchPRContext(repo string, number int) (PRContext, error) {
 }
 
 func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prContextCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	// Fetch PR metadata: url, branch, and review bodies
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "url,headRefName,reviews")
@@ -251,11 +309,11 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 	}
 
 	// Fetch inline diff comments (unresolved review thread comments).
-	inlineOut, err := e.run("api",
+	inlineResp, err := runGHAPIWith(e, "30s",
 		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number),
 		"-q", `.[] | select(.position != null) | {author: .user.login, body: .body, path: .path}`)
-	if err == nil && len(inlineOut) > 0 {
-		for line := range strings.SplitSeq(strings.TrimSpace(string(inlineOut)), "\n") {
+	if err == nil && len(inlineResp.body) > 0 {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(inlineResp.body)), "\n") {
 			if line == "" {
 				continue
 			}
@@ -278,6 +336,9 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 		}
 	}
 
+	if runtimeCacheEnabled(e) {
+		prContextCache.Set(key, ctx, 30*time.Second)
+	}
 	return ctx, nil
 }
 
@@ -291,6 +352,13 @@ func FetchPRClosingIssues(repo string, number int) (issues []int, body string, e
 }
 
 func fetchPRClosingIssuesWith(e execer, repo string, number int) (issues []int, body string, err error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prClosingIssuesCache.Get(key); ok {
+			return append([]int(nil), cached.issues...), cached.body, nil
+		}
+	}
+
 	out, runErr := e.run("pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "closingIssuesReferences,body")
 	if runErr != nil {
@@ -325,6 +393,12 @@ func fetchPRClosingIssuesWith(e execer, repo string, number int) (issues []int, 
 			issues = append(issues, ref.Number)
 		}
 	}
+	if runtimeCacheEnabled(e) {
+		prClosingIssuesCache.Set(key, prClosingIssuesResult{
+			issues: append([]int(nil), issues...),
+			body:   raw.Body,
+		}, 2*time.Minute)
+	}
 	return issues, raw.Body, nil
 }
 
@@ -340,6 +414,9 @@ func mergePRWith(e execer, repo string, number int) error {
 		out, err := e.run("pr", "merge", fmt.Sprintf("%d", number),
 			"--repo", repo, "--squash")
 		if err == nil {
+			if runtimeCacheEnabled(e) {
+				invalidatePRCaches(repo, number)
+			}
 			return nil
 		}
 		lastOut, lastErr = out, err
@@ -367,6 +444,9 @@ func markReadyWith(e execer, repo string, number int) error {
 	if err != nil {
 		return fmt.Errorf("gh pr ready: %s: %w", strings.TrimSpace(string(out)), err)
 	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
 	return nil
 }
 
@@ -380,6 +460,9 @@ func editPRBodyWith(e execer, repo string, number int, body string) error {
 		"--repo", repo, "--body", body)
 	if err != nil {
 		return fmt.Errorf("gh pr edit %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
 	}
 	return nil
 }

@@ -61,3 +61,16 @@ func TestConvertRenovatePRs(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildRenovateSearchQuery(t *testing.T) {
+	t.Parallel()
+
+	got := buildRenovateSearchQuery(
+		[]string{"app/renovate", "renovate[bot]"},
+		[]string{"acme/api", "acme/web"},
+	)
+	want := "is:pr is:open (author:app/renovate OR author:renovate[bot]) (repo:acme/api OR repo:acme/web)"
+	if got != want {
+		t.Fatalf("query = %q, want %q", got, want)
+	}
+}

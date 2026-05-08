@@ -4,10 +4,50 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const issueQuery = `query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: 100) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on Issue {
+        number
+        title
+        body
+        url
+        state
+        createdAt
+        updatedAt
+        author { login }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+      }
+    }
+  }
+}`
+
+const issueSnapshotQuery = `query($assignedQ: String!, $labeledQ: String!) {
+  assigned: search(query: $assignedQ, type: ISSUE, first: 100) {
+    nodes {
+      ... on Issue {
+        number
+        title
+        body
+        url
+        state
+        createdAt
+        updatedAt
+        author { login }
+        repository { name nameWithOwner }
+        labels(first: 10) { nodes { name } }
+      }
+    }
+  }
+  labeled: search(query: $labeledQ, type: ISSUE, first: 100) {
     nodes {
       ... on Issue {
         number
@@ -28,8 +68,26 @@ const issueQuery = `query($q: String!) {
 type gqlIssueResponse struct {
 	Data struct {
 		Search struct {
-			Nodes []gqlIssue `json:"nodes"`
+			Nodes    []gqlIssue `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
 		} `json:"search"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type gqlIssueSnapshotResponse struct {
+	Data struct {
+		Assigned struct {
+			Nodes []gqlIssue `json:"nodes"`
+		} `json:"assigned"`
+		Labeled struct {
+			Nodes []gqlIssue `json:"nodes"`
+		} `json:"labeled"`
 	} `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
@@ -58,13 +116,42 @@ type gqlIssue struct {
 	} `json:"labels"`
 }
 
+type IssueSnapshot struct {
+	Assigned []Issue
+	Labeled  []Issue
+}
+
 // FetchAssignedIssues returns open issues assigned to the authenticated user.
 func FetchAssignedIssues() ([]Issue, error) {
 	return fetchAssignedIssuesWith(defaultExecer)
 }
 
 func fetchAssignedIssuesWith(e execer) ([]Issue, error) {
-	return searchIssuesWith(e, "is:issue is:open assignee:@me sort:updated-desc")
+	const query = "is:issue is:open assignee:@me sort:updated-desc"
+	if runtimeCacheEnabled(e) {
+		if cached, ok := assignedIssuesCache.Get(query); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql") {
+			if stale, ok := assignedIssuesCache.GetStale(query); ok {
+				return stale, nil
+			}
+		}
+	}
+
+	issues, err := searchIssuesWith(e, query)
+	if err != nil {
+		if runtimeCacheEnabled(e) {
+			if stale, ok := assignedIssuesCache.GetStale(query); ok {
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
+	if runtimeCacheEnabled(e) {
+		assignedIssuesCache.Set(query, issues, 30*time.Second)
+	}
+	return issues, nil
 }
 
 // FetchLabeledIssuesForRepos returns open issues with the given label across the specified repos.
@@ -81,26 +168,122 @@ func fetchLabeledIssuesForReposWith(e execer, repos []string, label string) ([]I
 		parts[i] = "repo:" + r
 	}
 	query := fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(parts, " "))
-	return searchIssuesWith(e, query)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := labeledIssuesCache.Get(query); ok {
+			return cached, nil
+		}
+		if ghGate.shouldSkipOptional("graphql") {
+			if stale, ok := labeledIssuesCache.GetStale(query); ok {
+				return stale, nil
+			}
+		}
+	}
+
+	issues, err := searchIssuesWith(e, query)
+	if err != nil {
+		if runtimeCacheEnabled(e) {
+			if stale, ok := labeledIssuesCache.GetStale(query); ok {
+				return stale, nil
+			}
+		}
+		return nil, err
+	}
+	if runtimeCacheEnabled(e) {
+		labeledIssuesCache.Set(query, issues, 30*time.Second)
+	}
+	return issues, nil
 }
 
 func searchIssuesWith(e execer, query string) ([]Issue, error) {
-	out, err := e.run("api", "graphql",
+	httpResp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+issueQuery,
 		"-f", "q="+query)
 	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(out), err)
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(httpResp.body), err)
 	}
 
-	var resp gqlIssueResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
+	var gqlResp gqlIssueResponse
+	if err := json.Unmarshal(httpResp.body, &gqlResp); err != nil {
 		return nil, fmt.Errorf("parse graphql response: %w", err)
 	}
-	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", resp.Errors[0].Message)
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
 	}
 
-	return convertIssues(resp.Data.Search.Nodes), nil
+	return convertIssues(gqlResp.Data.Search.Nodes), nil
+}
+
+// FetchIssueSnapshot returns assigned issues and labeled issues in one GraphQL call.
+func FetchIssueSnapshot(repos []string, label string) (IssueSnapshot, error) {
+	return fetchIssueSnapshotWith(defaultExecer, repos, label)
+}
+
+func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapshot, error) {
+	snapshot := IssueSnapshot{}
+	if len(repos) == 0 {
+		assigned, err := fetchAssignedIssuesWith(e)
+		if err != nil {
+			return snapshot, err
+		}
+		snapshot.Assigned = assigned
+		return snapshot, nil
+	}
+
+	labeledParts := make([]string, len(repos))
+	for i, repo := range repos {
+		labeledParts[i] = "repo:" + repo
+	}
+	assignedQuery := "is:issue is:open assignee:@me sort:updated-desc"
+	labeledQuery := fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(labeledParts, " "))
+
+	if runtimeCacheEnabled(e) {
+		if ghGate.shouldSkipOptional("graphql") {
+			if assigned, ok := assignedIssuesCache.GetStale(assignedQuery); ok {
+				snapshot.Assigned = assigned
+			}
+			if labeled, ok := labeledIssuesCache.GetStale(labeledQuery); ok {
+				snapshot.Labeled = labeled
+			}
+			if snapshot.Assigned != nil || snapshot.Labeled != nil {
+				return snapshot, nil
+			}
+		}
+	}
+
+	httpResp, err := runGHAPIWith(e, "", "graphql",
+		"-f", "query="+issueSnapshotQuery,
+		"-f", "assignedQ="+assignedQuery,
+		"-f", "labeledQ="+labeledQuery)
+	if err != nil {
+		if runtimeCacheEnabled(e) {
+			if assigned, ok := assignedIssuesCache.GetStale(assignedQuery); ok {
+				snapshot.Assigned = assigned
+			}
+			if labeled, ok := labeledIssuesCache.GetStale(labeledQuery); ok {
+				snapshot.Labeled = labeled
+			}
+			if snapshot.Assigned != nil || snapshot.Labeled != nil {
+				return snapshot, nil
+			}
+		}
+		return snapshot, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(httpResp.body), err)
+	}
+
+	var gqlResp gqlIssueSnapshotResponse
+	if err := json.Unmarshal(httpResp.body, &gqlResp); err != nil {
+		return snapshot, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return snapshot, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	}
+
+	snapshot.Assigned = convertIssues(gqlResp.Data.Assigned.Nodes)
+	snapshot.Labeled = convertIssues(gqlResp.Data.Labeled.Nodes)
+	if runtimeCacheEnabled(e) {
+		assignedIssuesCache.Set(assignedQuery, snapshot.Assigned, 30*time.Second)
+		labeledIssuesCache.Set(labeledQuery, snapshot.Labeled, 30*time.Second)
+	}
+	return snapshot, nil
 }
 
 func convertIssues(nodes []gqlIssue) []Issue {
@@ -139,6 +322,13 @@ func FetchIssue(repo string, number int) (Issue, error) {
 }
 
 func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := issueCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
 	out, err := e.run("issue", "view", fmt.Sprintf("%d", number),
 		"--repo", repo, "--json", "number,title,body,url,labels,author")
 	if err != nil {
@@ -168,7 +358,7 @@ func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
 	if len(parts) == 2 {
 		repoName = parts[1]
 	}
-	return Issue{
+	issue := Issue{
 		Number:     raw.Number,
 		Title:      raw.Title,
 		Body:       raw.Body,
@@ -177,5 +367,9 @@ func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
 		RepoName:   repoName,
 		Labels:     labels,
 		Author:     raw.Author.Login,
-	}, nil
+	}
+	if runtimeCacheEnabled(e) {
+		issueCache.Set(key, issue, 2*time.Minute)
+	}
+	return issue, nil
 }

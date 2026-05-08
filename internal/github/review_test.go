@@ -5,31 +5,12 @@ import (
 	"testing"
 )
 
-// seqExecer returns successive output/error pairs per call, cycling the last
-// entry if calls exceed the slice length. Used to simulate partial failures
-// (e.g. first query succeeds, second fails).
-type seqExecer struct {
-	responses []struct {
-		output []byte
-		err    error
-	}
-	i int
-}
-
-func (s *seqExecer) run(_ ...string) ([]byte, error) {
-	idx := s.i
-	if idx >= len(s.responses) {
-		idx = len(s.responses) - 1
-	}
-	s.i++
-	return s.responses[idx].output, s.responses[idx].err
-}
-
 func TestFetchReviewsWith_success(t *testing.T) {
 	t.Parallel()
 	response := `{
 		"data": {
-			"search": {
+			"viewer": {"login": "me"},
+			"created": {
 				"nodes": [
 					{
 						"number": 1,
@@ -42,18 +23,32 @@ func TestFetchReviewsWith_success(t *testing.T) {
 						"reviewThreads": {"nodes": []}
 					}
 				]
+			},
+			"requested": {
+				"nodes": [
+					{
+						"number": 2,
+						"title": "review me",
+						"url": "https://github.com/o/r/pull/2",
+						"author": {"login": "peer", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []},
+						"latestReviews": {"nodes": []}
+					}
+				]
 			}
 		}
 	}`
 
-	resetViewerCache()
 	fe := &fakeExecer{output: []byte(response)}
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fe.calls < 2 {
-		t.Errorf("expected at least 2 calls (created + requested), got %d", fe.calls)
+	if fe.calls != 1 {
+		t.Errorf("calls = %d, want 1", fe.calls)
 	}
 	if len(summary.CreatedByMe) != 1 {
 		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
@@ -63,35 +58,12 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	}
 }
 
-func TestFetchReviewsWith_reviewRequestedFailsReturnsCreatedByMe(t *testing.T) {
-	// Simulates a server where review-requested query fails (scoped token,
-	// rate limit, etc.). Must return createdByMe without error.
+func TestFetchReviewsWith_graphqlError(t *testing.T) {
 	t.Parallel()
-	response := `{"data":{"search":{"nodes":[{"number":7,"title":"my pr",` +
-		`"url":"https://github.com/o/r/pull/7","author":{"login":"me","type":"User"},` +
-		`"repository":{"name":"r","nameWithOwner":"o/r"},` +
-		`"labels":{"nodes":[]},"commits":{"nodes":[]},"reviewThreads":{"nodes":[]}}]}}}`
-
-	resetViewerCache()
-	type entry = struct {
-		output []byte
-		err    error
-	}
-	fe := &seqExecer{responses: []entry{
-		{output: []byte(response)},                              // createdByMe graphql
-		{output: []byte("me\n")},                                // viewerLogin user API
-		{output: []byte("gh error"), err: fmt.Errorf("exit 1")}, // review-requested graphql → fail
-	}}
-
-	summary, err := fetchReviewsWith(fe)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(summary.CreatedByMe) != 1 {
-		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
-	}
-	if summary.ReviewRequested != nil {
-		t.Errorf("ReviewRequested = %v, want nil", summary.ReviewRequested)
+	fe := &fakeExecer{output: []byte(`{"errors":[{"message":"rate limited"}]}`)}
+	_, err := fetchReviewsWith(fe)
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 

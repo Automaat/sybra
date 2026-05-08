@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-func resetViewerCache() { resetCachedViewerForTest() }
-
 // fakeExecer is a test double that returns fixed output and error.
 type fakeExecer struct {
 	output []byte
