@@ -89,6 +89,13 @@ type Agent struct {
 	// prompt without a stdin pipe. Guarded by mu.
 	promptCh chan string
 
+	// stopped is set by StopAgent before cancelling the context so
+	// OnComplete can distinguish an intentional user stop (SIGTERM via
+	// cancel) from an infra-level kill (OS/container SIGTERM). Both exit
+	// with a signal, but only intentional stops should advance the
+	// workflow step to "failed".
+	stopped bool
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
@@ -113,6 +120,20 @@ func (a *Agent) GetState() State {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.State
+}
+
+// MarkStopped records that the agent was stopped intentionally via StopAgent.
+func (a *Agent) MarkStopped() {
+	a.mu.Lock()
+	a.stopped = true
+	a.mu.Unlock()
+}
+
+// WasStopped reports whether StopAgent was called on this agent.
+func (a *Agent) WasStopped() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.stopped
 }
 
 // AppendOutput appends a stream event to the headless output buffer and

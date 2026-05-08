@@ -1,6 +1,9 @@
 package sybra
 
 import (
+	"errors"
+	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -138,6 +141,16 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 
 	if h.workflowEngine != nil {
+		if isSignalKill(exitErr) && !ag.WasStopped() {
+			// Infrastructure-level kill (e.g. OS/container SIGTERM): leave the
+			// workflow step stalled so ResumeStalled re-dispatches the agent on
+			// the next tick. Clear the agent→step mapping so agentSteps does not
+			// leak and hasTrackedAgentForTaskStep does not suppress the retry.
+			h.logger.Warn("agent.completion.signal-kill",
+				"task_id", ag.TaskID, "agent_id", ag.ID)
+			h.workflowEngine.ClearAgentStep(ag.ID)
+			return
+		}
 		h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
 			AgentID:  ag.ID,
 			Result:   resultContent,
@@ -193,6 +206,21 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		Outcome:      outcome,
 		Timestamp:    time.Now(),
 	})
+}
+
+// isSignalKill reports whether err represents a process killed by an OS signal.
+// Signal kills (e.g. SIGTERM from container/OS shutdown) are infrastructure
+// interruptions, not logical agent failures — the workflow should not advance.
+func isSignalKill(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	ws, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled()
 }
 
 // OnWorkflowComplete is the callback installed via
