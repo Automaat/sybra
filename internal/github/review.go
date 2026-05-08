@@ -7,9 +7,18 @@ import (
 	"time"
 )
 
+// reviewSummaryQuery fans out two PR searches in one request.
+//
+// Caps were tightened after GitHub's GraphQL edge consistently 502'd this
+// query for accounts with non-trivial PR sets. The original `first:100`
+// search × deep `reviewThreads(first:100) + latestReviews(first:20) +
+// contexts(first:50) + labels(first:10)` blew through ~36K complexity
+// points before the doubling, sitting near GitHub's ~50K cutoff. The caps
+// below preserve every consumer (UnresolvedCount, ViewerHasApproved,
+// HasPendingChecks, Labels) but slash complexity ~85%.
 const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
   viewer { login }
-  created: search(query: $createdQ, type: ISSUE, first: 100) {
+  created: search(query: $createdQ, type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
         number
@@ -23,13 +32,13 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
         reviewDecision
         author { login type: __typename }
         repository { name nameWithOwner }
-        labels(first: 10) { nodes { name } }
+        labels(first: 5) { nodes { name } }
         commits(last: 1) {
           nodes {
             commit {
               statusCheckRollup {
                 state
-                contexts(first: 50) {
+                contexts(first: 20) {
                   nodes {
                     ... on CheckRun { status }
                   }
@@ -38,16 +47,16 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
             }
           }
         }
-        reviewThreads(first: 100) {
+        reviewThreads(first: 20) {
           nodes { isResolved }
         }
-        latestReviews(first: 20) {
+        latestReviews(first: 10) {
           nodes { state author { login } }
         }
       }
     }
   }
-  requested: search(query: $requestedQ, type: ISSUE, first: 100) {
+  requested: search(query: $requestedQ, type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
         number
@@ -61,13 +70,13 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
         reviewDecision
         author { login type: __typename }
         repository { name nameWithOwner }
-        labels(first: 10) { nodes { name } }
+        labels(first: 5) { nodes { name } }
         commits(last: 1) {
           nodes {
             commit {
               statusCheckRollup {
                 state
-                contexts(first: 50) {
+                contexts(first: 20) {
                   nodes {
                     ... on CheckRun { status }
                   }
@@ -76,10 +85,10 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
             }
           }
         }
-        reviewThreads(first: 100) {
+        reviewThreads(first: 20) {
           nodes { isResolved }
         }
-        latestReviews(first: 20) {
+        latestReviews(first: 10) {
           nodes { state author { login } }
         }
       }
