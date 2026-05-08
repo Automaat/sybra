@@ -38,6 +38,7 @@ function makeStatsData(): StatsResponse {
     thisMonth: s,
     allTime: s,
     byProject: [],
+    byProjectType: [],
     byRole: [],
     byMode: [],
     byModel: [],
@@ -111,6 +112,7 @@ describe('Stats', () => {
   it('shows breakdown sections', () => {
     mockStatsStore.data = makeStatsData()
     render(Stats, { props: {} })
+    expect(screen.getByText('By Project Type')).toBeDefined()
     expect(screen.getByText('By Project')).toBeDefined()
     expect(screen.getByText('By Role')).toBeDefined()
     expect(screen.getByText('By Mode')).toBeDefined()

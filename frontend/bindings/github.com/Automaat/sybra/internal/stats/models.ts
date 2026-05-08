@@ -107,6 +107,7 @@ export class StatsResponse {
     "thisMonth": Summary;
     "allTime": Summary;
     "byProject": GroupedStat[];
+    "byProjectType": GroupedStat[];
     "byMode": GroupedStat[];
     "byRole": GroupedStat[];
     "byModel": GroupedStat[];
@@ -129,6 +130,9 @@ export class StatsResponse {
         }
         if (!("byProject" in $$source)) {
             this["byProject"] = [];
+        }
+        if (!("byProjectType" in $$source)) {
+            this["byProjectType"] = [];
         }
         if (!("byMode" in $$source)) {
             this["byMode"] = [];
@@ -162,7 +166,8 @@ export class StatsResponse {
         const $$createField6_0 = $$createType2;
         const $$createField7_0 = $$createType2;
         const $$createField8_0 = $$createType2;
-        const $$createField9_0 = $$createType4;
+        const $$createField9_0 = $$createType2;
+        const $$createField10_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("today" in $$parsedSource) {
             $$parsedSource["today"] = $$createField0_0($$parsedSource["today"]);
@@ -179,20 +184,23 @@ export class StatsResponse {
         if ("byProject" in $$parsedSource) {
             $$parsedSource["byProject"] = $$createField4_0($$parsedSource["byProject"]);
         }
+        if ("byProjectType" in $$parsedSource) {
+            $$parsedSource["byProjectType"] = $$createField5_0($$parsedSource["byProjectType"]);
+        }
         if ("byMode" in $$parsedSource) {
-            $$parsedSource["byMode"] = $$createField5_0($$parsedSource["byMode"]);
+            $$parsedSource["byMode"] = $$createField6_0($$parsedSource["byMode"]);
         }
         if ("byRole" in $$parsedSource) {
-            $$parsedSource["byRole"] = $$createField6_0($$parsedSource["byRole"]);
+            $$parsedSource["byRole"] = $$createField7_0($$parsedSource["byRole"]);
         }
         if ("byModel" in $$parsedSource) {
-            $$parsedSource["byModel"] = $$createField7_0($$parsedSource["byModel"]);
+            $$parsedSource["byModel"] = $$createField8_0($$parsedSource["byModel"]);
         }
         if ("byProvider" in $$parsedSource) {
-            $$parsedSource["byProvider"] = $$createField8_0($$parsedSource["byProvider"]);
+            $$parsedSource["byProvider"] = $$createField9_0($$parsedSource["byProvider"]);
         }
         if ("recentRuns" in $$parsedSource) {
-            $$parsedSource["recentRuns"] = $$createField9_0($$parsedSource["recentRuns"]);
+            $$parsedSource["recentRuns"] = $$createField10_0($$parsedSource["recentRuns"]);
         }
         return new StatsResponse($$parsedSource as Partial<StatsResponse>);
     }

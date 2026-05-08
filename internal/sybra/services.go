@@ -58,6 +58,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.intgSvc.providerHealth = a.providerHealth
 	a.intgSvc.saveConfig = func() error { return a.cfg.Save() }
 	a.statsSvc.stats = a.stats
+	a.statsSvc.projects = a.projects
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore
 
