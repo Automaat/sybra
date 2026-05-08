@@ -190,3 +190,86 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 		t.Errorf("events = %+v, want single event with custom text", events)
 	}
 }
+
+// TestGetAgentRunLog_ReplaysHeadlessFromDisk is the headless counterpart to
+// TestGetAgentRunConvoLog_ReplaysFromDisk: regression guard for the
+// Agent History panel rendering empty bubbles. Headless logs persist raw
+// Claude stream-json envelopes, and a flat StreamEvent unmarshal dropped
+// nested message.content[]. Ensures the service replays headless logs
+// through the same envelope→StreamEvent path the live runner uses.
+func TestGetAgentRunLog_ReplaysHeadlessFromDisk(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	logsDir := filepath.Join(home, "logs")
+	tasksDir := filepath.Join(home, "tasks")
+	agentsLogDir := filepath.Join(logsDir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := "headless-replay-1"
+	logName := agentID + "-2026-05-08T12-00-00.ndjson"
+	logPath := filepath.Join(agentsLogDir, logName)
+	ndjson := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"sess-h1"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"replayed text"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-x","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-x","content":"a\nb"}]}}`,
+		`{"type":"result","subtype":"success","result":"done","session_id":"sess-h1","total_cost_usd":0.42}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logPath, []byte(ndjson), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	tk, err := store.Create("headless replay", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := task.AgentRun{
+		AgentID: agentID,
+		Mode:    "headless",
+		State:   "stopped",
+		LogFile: logPath,
+	}
+	if err := store.AddRun(tk.ID, run); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &AgentService{
+		tasks:   taskMgr,
+		logger:  quietLogger(),
+		cfg:     &config.Config{},
+		logsDir: logsDir,
+	}
+
+	events, err := svc.GetAgentRunLog(tk.ID, agentID)
+	if err != nil {
+		t.Fatalf("GetAgentRunLog: %v", err)
+	}
+
+	if len(events) != 5 {
+		t.Fatalf("want 5 events, got %d: %+v", len(events), events)
+	}
+
+	// Regression assertion: with the old flat-Unmarshal path these would all
+	// be empty strings, producing the labeled-but-blank bubbles users saw.
+	if events[1].Type != "assistant" || events[1].Content != "replayed text" {
+		t.Errorf("assistant text dropped: type=%s content=%q", events[1].Type, events[1].Content)
+	}
+	if events[2].Type != "assistant" || !strings.Contains(events[2].Content, "[Bash] ls") {
+		t.Errorf("tool_use content dropped: type=%s content=%q", events[2].Type, events[2].Content)
+	}
+	if events[3].Type != "user" || events[3].Content != "a\nb" {
+		t.Errorf("tool_result content dropped: type=%s content=%q", events[3].Type, events[3].Content)
+	}
+	if events[4].Type != "result" || events[4].CostUSD != 0.42 {
+		t.Errorf("result metadata dropped: type=%s cost=%v", events[4].Type, events[4].CostUSD)
+	}
+}
