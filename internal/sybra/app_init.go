@@ -240,6 +240,17 @@ func (a *App) initWorkflowEngine() {
 	// to the AgentCompletionHandler constructed there.
 }
 
+func (a *App) initAgentConfig() {
+	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
+	a.agents.SetBashTimeoutMs(a.cfg.BashTimeoutMs())
+	a.agents.SetGuardrails(agent.Guardrails{
+		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
+		MaxTurns:         a.cfg.Agent.MaxTurns,
+		TurnCostFraction: a.cfg.Agent.TurnCostFraction,
+		TurnMultiplier:   a.cfg.Agent.TurnMultiplier,
+	})
+}
+
 func (a *App) initApprovalServer(emit func(string, any)) {
 	srv, err := agent.NewApprovalServer(emit, a.logger)
 	if err != nil {
