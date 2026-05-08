@@ -224,16 +224,56 @@ func isSignalKill(err error) bool {
 }
 
 // OnWorkflowComplete is the callback installed via
-// workflowEngine.SetOnComplete. Clears the PR-tracker cooldown for the
-// resolved (issue, kind) pair so a future failure of the same kind is
-// retried fresh.
+// workflowEngine.SetOnComplete. Two responsibilities:
+//
+//  1. Clear the PR-tracker cooldown for the resolved (issue, kind) pair so a
+//     future failure of the same kind is retried fresh.
+//  2. Bridge the workflow cascade: simple-task-plan flips status to
+//     in-progress, then ends; simple-task-implement flips status to
+//     ready-review, then ends. The status hook in initStatusHook fires
+//     DispatchEvent while *this* workflow is still active and gets rejected
+//     with ErrWorkflowAlreadyActive. By re-dispatching here — *after* the
+//     workflow has reached ExecCompleted — we let the next workflow in the
+//     chain pick up where this one left off. Idempotent: terminal statuses
+//     (done/cancelled/in-review/human-required/blocked) match no triggers,
+//     so DispatchEvent returns "" without starting anything.
 func (h *AgentCompletionHandler) OnWorkflowComplete(info workflow.CompletionInfo) {
-	kind := github.PRIssueKind(info.Variables["pr_issue_kind"])
-	if kind == "" {
+	if kind := github.PRIssueKind(info.Variables["pr_issue_kind"]); kind != "" {
+		h.prTracker.ClearCooldown(info.TaskID, kind)
+		h.logger.Info("pr-tracker.cooldown-cleared",
+			"task_id", info.TaskID, "kind", string(kind),
+			"retries", h.prTracker.Retries(info.TaskID, kind))
+	}
+
+	if h.workflowEngine == nil {
 		return
 	}
-	h.prTracker.ClearCooldown(info.TaskID, kind)
-	h.logger.Info("pr-tracker.cooldown-cleared",
-		"task_id", info.TaskID, "kind", string(kind),
-		"retries", h.prTracker.Retries(info.TaskID, kind))
+	t, err := h.tasks.Get(info.TaskID)
+	if err != nil {
+		return
+	}
+	if task.IsTerminalStatus(t.Status) {
+		return
+	}
+	dispatched, err := h.workflowEngine.DispatchEvent(
+		info.TaskID,
+		"task.status_changed",
+		map[string]string{"task.status": string(t.Status)},
+		nil,
+	)
+	if err != nil {
+		// ErrWorkflowAlreadyActive is benign here: a parallel start (e.g. the
+		// status hook race) has already won, so the cascade is in good hands.
+		if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			h.logger.Error("workflow.cascade.dispatch",
+				"task_id", info.TaskID, "from_workflow", info.WorkflowID,
+				"status", string(t.Status), "err", err)
+		}
+		return
+	}
+	if dispatched != "" {
+		h.logger.Info("workflow.cascade.dispatched",
+			"task_id", info.TaskID, "from_workflow", info.WorkflowID,
+			"status", string(t.Status), "to_workflow", dispatched)
+	}
 }

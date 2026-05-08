@@ -4,6 +4,7 @@ export type TaskStatus =
   | 'planning'
   | 'plan-review'
   | 'in-progress'
+  | 'ready-review'
   | 'in-review'
   | 'testing'
   | 'test-plan-review'
@@ -50,6 +51,12 @@ export const ALL_STATUSES: StatusMeta[] = [
     label: 'In Progress',
     badgeClasses: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200',
     pillClasses: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200',
+  },
+  {
+    value: 'ready-review',
+    label: 'Ready for Review',
+    badgeClasses: 'bg-warning-100 text-warning-700 dark:bg-warning-800 dark:text-warning-300',
+    pillClasses: 'bg-warning-100 text-warning-700 dark:bg-warning-800 dark:text-warning-300',
   },
   {
     value: 'in-review',
@@ -118,7 +125,7 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500', includes: ['new', 'todo'] },
   { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400', includes: ['planning', 'plan-review'] },
   { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400', includes: [] },
-  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: [] },
+  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['ready-review'] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]

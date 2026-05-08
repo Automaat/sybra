@@ -360,17 +360,17 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 	}
 	var simple *Definition
 	for i := range defs {
-		if defs[i].ID == "simple-task" {
+		if defs[i].ID == "simple-task-review" {
 			simple = &defs[i]
 			break
 		}
 	}
 	if simple == nil {
-		t.Fatal("simple-task builtin definition not found")
+		t.Fatal("simple-task-review builtin definition not found")
 	}
 	step := simple.StepByID("pick_review_method")
 	if step == nil {
-		t.Fatal("pick_review_method step not found in simple-task")
+		t.Fatal("pick_review_method step not found in simple-task-review")
 	}
 
 	cases := []struct {

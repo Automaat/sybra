@@ -147,7 +147,7 @@ updated_at: 2025-01-01T00:00:00Z
 	workflowStart := time.Now()
 	if _, err := taskMgr.UpdateMap(created.ID, map[string]any{
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-implement",
 			CurrentStep: "implement",
 			State:       workflow.ExecRunning,
 			StartedAt:   workflowStart,

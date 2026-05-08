@@ -749,7 +749,7 @@ func TestDispatchEvent_AlreadyActiveRejected(t *testing.T) {
 		Status:    "in-progress",
 		AgentMode: "headless",
 		Workflow: &Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-plan",
 			CurrentStep: "implement",
 			State:       ExecWaiting,
 		},
@@ -776,7 +776,7 @@ func TestDispatchEvent_TerminalWorkflowReplaced(t *testing.T) {
 		ID:     "t1",
 		Status: "in-review",
 		Workflow: &Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-plan",
 			CurrentStep: "",
 			State:       ExecCompleted, // terminal — dispatch should replace
 		},
