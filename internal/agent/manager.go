@@ -40,11 +40,12 @@ type Manager struct {
 	onComplete    func(ag *Agent)
 	logger        *slog.Logger
 	logDir        string
-	maxConcurrent int
-	defaultProv   string
-	approvalAddr  string // localhost:port for the HTTP tool approval server
-	guardrails    Guardrails
-	gate          provider.HealthGate
+	maxConcurrent  int
+	defaultProv    string
+	approvalAddr   string // localhost:port for the HTTP tool approval server
+	guardrails     Guardrails
+	bashTimeoutMs  int
+	gate           provider.HealthGate
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -114,6 +115,14 @@ func (m *Manager) DefaultProvider() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.defaultProv
+}
+
+// SetBashTimeoutMs sets the default --bashTimeoutMs passed to claude -p.
+// Zero disables the flag (no per-call timeout).
+func (m *Manager) SetBashTimeoutMs(ms int) {
+	m.mu.Lock()
+	m.bashTimeoutMs = ms
+	m.mu.Unlock()
 }
 
 // SetGuardrails configures cost and turn limits applied to all agents.
@@ -216,6 +225,12 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return nil, gateErr
+	}
+
+	if cfg.BashTimeoutMs == 0 {
+		m.mu.RLock()
+		cfg.BashTimeoutMs = m.bashTimeoutMs
+		m.mu.RUnlock()
 	}
 
 	id := uuid.NewString()[:8]

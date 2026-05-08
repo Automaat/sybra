@@ -502,6 +502,9 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args []strin
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
+	if cfg.BashTimeoutMs > 0 {
+		args = append(args, "--bashTimeoutMs", fmt.Sprintf("%d", cfg.BashTimeoutMs))
+	}
 	command = "claude " + strings.Join(args, " ")
 	return
 }
