@@ -54,6 +54,14 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      # Branch identical to base after rebase → fix already on origin from a
+      # prior merge; verify_commits set status=done and we end the workflow
+      # instead of re-flipping to ready-review.
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
       - goto: set_ready_review
 
   # Terminal hand-off to simple-task-review: flip status to ready-review

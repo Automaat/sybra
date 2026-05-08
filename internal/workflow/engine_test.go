@@ -2616,14 +2616,52 @@ func TestExecVerifyCommits_RetriesAfterTransientFailure(t *testing.T) {
 	}
 }
 
-func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
+// TestExecVerifyCommits_BranchAtBaseMarksDone covers the case where the
+// agent committed nothing because the implementation was already on
+// origin/main (e.g. merged via a different branch). HEAD == origin/main, so
+// the task is marked done instead of human-required to avoid an infinite
+// auto-restart loop in svc_tasks.UpdateTask.
+func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	wtDir := makeGitRepo(t, false /* no extra commit */)
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "branch at base") {
+		t.Errorf("Output = %q, want 'branch at base'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "done" {
+		t.Errorf("task status = %q, want done", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "branch identical to base") {
+		t.Errorf("status reason = %q, want 'branch identical to base'", reason)
+	}
+}
+
+// TestExecVerifyCommits_DivergentNoCommitsFlipsHumanRequired covers the
+// genuine "agent did nothing" path: HEAD is behind origin/main (not at base
+// tip) and no commits exist ahead. We can't conclude the work is on origin,
+// so flip to human-required as before.
+func TestExecVerifyCommits_DivergentNoCommitsFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepoBehindOrigin(t)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
@@ -2640,6 +2678,47 @@ func TestExecVerifyCommits_NoCommitsFlipsHumanRequired(t *testing.T) {
 	if ti.Status != "human-required" {
 		t.Errorf("task status = %q, want human-required", ti.Status)
 	}
+}
+
+// makeGitRepoBehindOrigin builds a worktree where HEAD is behind origin/main:
+// origin/main points at commit B, HEAD is reset back to commit A. Used to
+// exercise the "no commits ahead, HEAD != base" branch of execVerifyCommits.
+func makeGitRepoBehindOrigin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-m", "A")
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "b.txt")
+	run("commit", "-m", "B")
+
+	// origin tracks current HEAD (commit B).
+	run("remote", "add", "origin", dir)
+	run("fetch", "origin")
+
+	// Rewind HEAD to commit A — now origin/main is ahead of HEAD.
+	run("reset", "--hard", "HEAD~1")
+
+	return dir
 }
 
 // --- require_sidecar step ---
