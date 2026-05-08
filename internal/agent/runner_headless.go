@@ -365,29 +365,8 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 		}
 
 		if event.Type == "assistant" {
-			turns := a.IncTurnCount()
-			if maxTurns := m.effectiveMaxTurns(a); maxTurns > 0 && turns >= maxTurns {
-				m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", turns, "limit", maxTurns)
-				a.SetEscalationReason("turns")
-				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-					Reason:    "turns",
-					TurnCount: turns,
-					Limit:     float64(maxTurns),
-				})
-				m.emit(events.AgentState(a.ID), a)
-				// Block until human responds or context is cancelled.
-				select {
-				case continueRun := <-a.escalationCh:
-					if !continueRun {
-						a.cancel()
-						return
-					}
-					// Human approved continuation — clear reason and keep going.
-					a.SetEscalationReason("")
-					m.emit(events.AgentState(a.ID), a)
-				case <-ctx.Done():
-					return
-				}
+			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
+				return
 			}
 		}
 
@@ -423,6 +402,44 @@ func (m *Manager) reportScannerError(a *Agent, err error) {
 		"id", a.ID,
 		"err", err,
 		"hint", "oversized line or broken pipe aborted the NDJSON stream; trailing events were lost")
+}
+
+// checkTurnsGuardrail increments the turn counter and, if the limit is
+// reached, either auto-continues (cost below threshold) or blocks until a
+// human decision arrives. Returns false if the caller should stop the stream.
+func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
+	turns := a.IncTurnCount()
+	maxTurns := m.effectiveMaxTurns(a)
+	if maxTurns <= 0 || turns < maxTurns {
+		return true
+	}
+	m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", turns, "limit", maxTurns)
+	if m.canAutoContinueTurns(a) {
+		multiplier := m.effectiveTurnMultiplier()
+		newLimit := int(float64(maxTurns) * multiplier)
+		a.SetMaxTurns(newLimit)
+		m.logger.Info("agent.guardrail.turns.auto_continued", "id", a.ID, "turns", turns, "new_limit", newLimit)
+		return true
+	}
+	a.SetEscalationReason("turns")
+	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+		Reason:    "turns",
+		TurnCount: turns,
+		Limit:     float64(maxTurns),
+	})
+	m.emit(events.AgentState(a.ID), a)
+	select {
+	case continueRun := <-a.escalationCh:
+		if !continueRun {
+			a.cancel()
+			return false
+		}
+		a.SetEscalationReason("")
+		m.emit(events.AgentState(a.ID), a)
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // effectiveMaxTurns returns the turn limit for a: per-agent override when set,

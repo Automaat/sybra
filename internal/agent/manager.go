@@ -22,6 +22,13 @@ type EmitFunc func(event string, data any)
 type Guardrails struct {
 	MaxCostUSD float64
 	MaxTurns   int
+	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
+	// escalation is auto-continued without human approval. Default 0.8.
+	// Only effective when MaxCostUSD > 0.
+	TurnCostFraction float64
+	// TurnMultiplier scales the turn limit on each auto-continuation so
+	// the agent gets progressively more turns. Default 2.
+	TurnMultiplier float64
 }
 
 type Manager struct {
@@ -121,6 +128,35 @@ func (m *Manager) Guardrails() Guardrails {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.guardrails
+}
+
+// canAutoContinueTurns returns true when the agent's current cost is below
+// TurnCostFraction * MaxCostUSD, meaning there is still meaningful budget left
+// and the turns limit can be auto-bumped without human approval.
+// If MaxCostUSD == 0, auto-continue is always allowed (cost is unlimited).
+func (m *Manager) canAutoContinueTurns(a *Agent) bool {
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	fraction := m.guardrails.TurnCostFraction
+	m.mu.RUnlock()
+	if maxCost == 0 {
+		return true
+	}
+	if fraction <= 0 {
+		fraction = 0.8
+	}
+	return a.GetCostUSD() < maxCost*fraction
+}
+
+// effectiveTurnMultiplier returns the configured TurnMultiplier, defaulting to 2.
+func (m *Manager) effectiveTurnMultiplier() float64 {
+	m.mu.RLock()
+	v := m.guardrails.TurnMultiplier
+	m.mu.RUnlock()
+	if v <= 0 {
+		return 2
+	}
+	return v
 }
 
 // RespondEscalation sends a human decision to a paused agent.
