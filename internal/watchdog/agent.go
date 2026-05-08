@@ -165,17 +165,16 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, st
 
 	switch verdict.Recommendation {
 	case "stop":
-		if err := w.agents.StopAgent(ag.ID); err != nil {
-			w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
-		}
-		// For tasks with an active workflow, skip the direct status update:
-		// the natural onComplete → HandleAgentComplete path routes through
-		// AdvanceStep, which applies retry logic before escalating.
-		// Fall back to direct update only when no workflow is active.
-		if ag.TaskID != "" && t.Workflow == nil {
+		// Set human-required before stopping so the AdvanceStep callback
+		// (fired via onComplete after the agent exits) sees the escalated
+		// status and the workflow stops instead of advancing to the next step.
+		if ag.TaskID != "" {
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
+		}
+		if err := w.agents.StopAgent(ag.ID); err != nil {
+			w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 		}
 	case "escalate":
 		if ag.TaskID != "" {

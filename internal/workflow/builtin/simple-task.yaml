@@ -367,6 +367,14 @@ steps:
         {{.Task.Plan}}
         {{- end}}
     next:
+      # Watchdog stop (or any other pre-completion escalation) sets
+      # human-required before the agent exits; stop the workflow here
+      # instead of advancing into verify_commits on partial work.
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: verify_commits
 
   # Mechanical check (no LLM): verifies the task's branch has at least one
