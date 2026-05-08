@@ -70,7 +70,7 @@
     {
       "customType": "regex",
       "description": "Update ARGs annotated with `# renovate: datasource=… depName=…` in Dockerfiles",
-      "managerFilePatterns": ["(^|/)Dockerfile$"],
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\nARG\\s+[A-Z0-9_]+=(?<currentValue>[^\\s]+)"
       ]
