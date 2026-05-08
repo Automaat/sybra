@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy, AlertTriangle } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
@@ -114,7 +114,13 @@
   </div>
 
   {#if t.statusReason}
-    <p class="mb-1.5 line-clamp-2 text-xs text-warning-600 dark:text-warning-400">{t.statusReason}</p>
+    <p
+      class="mb-1.5 flex items-start gap-1 line-clamp-2 text-xs text-warning-700 dark:text-warning-300"
+      title={t.statusReason}
+    >
+      <AlertTriangle size={12} class="mt-0.5 shrink-0" />
+      <span class="line-clamp-2">{t.statusReason}</span>
+    </p>
   {/if}
 
   {#if t.blockedByIssue}

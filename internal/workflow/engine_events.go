@@ -180,6 +180,13 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		Provider: c.Provider,
 	}); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
+		// Same surfacing as ResumeStalled: AdvanceStep often fails because
+		// the *next* step couldn't spawn its agent (e.g. project missing).
+		// Without this, the task sits in-progress with the only signal in
+		// logs until ResumeStalled gets a chance to retry.
+		if t.Status != "" {
+			e.surfaceStartFailure(taskID, t.Status, err)
+		}
 	}
 	e.clearAgentStep(c.AgentID)
 }
@@ -310,5 +317,30 @@ func (e *Engine) ResumeStalled() {
 		delete(e.dispatching, t.ID)
 		e.mu.Unlock()
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
+		if rErr != nil {
+			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
+		}
+	}
+}
+
+// surfaceStartFailure writes a human-readable reason to task.StatusReason
+// when ResumeStalled fails to (re-)dispatch a step's agent. Permanent errors
+// (e.g. project missing) also flip the task to human-required so the resume
+// loop stops retrying every minute and the UI surfaces the block.
+//
+// Idempotent: writing the same reason twice is a no-op for the user — the
+// task already shows it. The transient branch deliberately does not change
+// status, so retries continue.
+func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error) {
+	reason, permanent := ClassifyAgentStartError(err)
+	if reason == "" {
+		return
+	}
+	target := currentStatus
+	if permanent {
+		target = "human-required"
+	}
+	if uErr := e.tasks.UpdateTaskStatus(taskID, target, reason); uErr != nil {
+		e.logger.Error("workflow.resume-stalled.surface", "task_id", taskID, "err", uErr)
 	}
 }

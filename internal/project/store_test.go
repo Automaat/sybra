@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,6 +92,9 @@ func TestStoreGetNotFound(t *testing.T) {
 	_, err = store.Get("nonexistent/repo")
 	if err == nil {
 		t.Fatal("expected error for nonexistent project")
+	}
+	if !errors.Is(err, ErrProjectNotRegistered) {
+		t.Fatalf("missing project: got %v, want errors.Is(ErrProjectNotRegistered)", err)
 	}
 }
 
