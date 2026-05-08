@@ -3,7 +3,7 @@ module github.com/Automaat/sybra
 go 1.26.3
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/wailsapp/wails/v3 v3.0.0-alpha.87
