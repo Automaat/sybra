@@ -1,0 +1,240 @@
+id: simple-task-review
+name: Simple Task — Review
+description: Triage the review depth, run code review (simple or staff), apply fixes, then create the GitHub PR and link it back to the task. Triggered by the cascade after simple-task-implement flips status to ready-review.
+builtin: true
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-review
+steps:
+  # Skip review when tagged noreview or already reviewed in a prior run.
+  # On skip, jump straight to create_pr so the PR is still opened.
+  - id: maybe_review
+    name: Review Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: noreview
+    next:
+      - when:
+          field: task.reviewed
+          operator: equals
+          value: "true"
+        goto: create_pr
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: noreview
+        goto: triage_review
+      - goto: create_pr
+
+  # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
+  # "simple" or "staff" so pick_review_method below can pick between the
+  # lightweight /pr-review skill and the deeper /staff-code-review skill.
+  # Force-staff-review tag is checked by the picker, not here, so the
+  # decision rationale is still logged for tagged tasks.
+  - id: triage_review
+    name: Triage Review
+    type: triage_review
+    next:
+      - goto: pick_review_method
+
+  # Routes to the simple or staff review based on:
+  #   - task.tags contains force-staff-review → always staff (escape hatch)
+  #   - vars.step.triage_review.output equals simple → /pr-review
+  #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
+  - id: pick_review_method
+    name: Pick Review Method
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: force-staff-review
+        goto: code_review_staff
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: simple
+        goto: code_review_simple
+      - goto: code_review_staff
+
+  # Lightweight review for small, low-risk diffs. Writes to the same
+  # sidecar path as code_review_staff so fix_review reads either one
+  # transparently.
+  - id: code_review_simple
+    name: Code Review (simple)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
+          2. Run /pr-review against that patch and the worktree source
+          3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+
+        Do NOT submit anything to GitHub. Sybra will ingest
+        /tmp/sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        after you exit — you do not need to call sybra-cli yourself.
+        The /tmp file also remains for the next step (fix_review) to
+        read directly.
+      import_sidecar:
+        kind: code_review
+        from: /tmp/sybra-review-{{.Task.ID}}.md
+    next:
+      - goto: require_code_review
+
+  # Deep review for non-trivial diffs. Same sidecar contract as
+  # code_review_simple. Used by default whenever triage cannot prove a
+  # diff is small + low-risk.
+  - id: code_review_staff
+    name: Code Review (staff)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
+          2. Run /staff-code-review against that patch and the worktree source
+          3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+
+        Do NOT submit anything to GitHub. Sybra will ingest
+        /tmp/sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        after you exit — you do not need to call sybra-cli yourself.
+        The /tmp file also remains for the next step (fix_review) to
+        read directly.
+      import_sidecar:
+        kind: code_review
+        from: /tmp/sybra-review-{{.Task.ID}}.md
+    next:
+      - goto: require_code_review
+
+  # Guard: mirrors require_plan_critique in simple-task-plan. Flips task
+  # to human-required when the review sidecar is empty (e.g. agent never
+  # wrote /tmp/sybra-review-…md, or its sandbox blocked the path).
+  # Without this, fix_review reads /tmp and the GUI never sees what
+  # the reviewer wrote.
+  - id: require_code_review
+    name: Require Code Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: fix_review
+
+  - id: fix_review
+    name: Fix Review Comments
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Read the code review at /tmp/sybra-review-{{.Task.ID}}.md
+
+        For each actionable finding (critical/high/medium severity), fix the code.
+        Skip low-severity nitpicks and style-only comments.
+
+        When done, commit your changes (do NOT push yet — push happens with PR
+        creation). Sign commits with `git commit -s -S`.
+        Use conventional commit format: `fix(review): address review comments`.
+    next:
+      - goto: create_pr
+
+  # Create the GitHub PR after review fixes are committed locally.
+  # Check for an existing PR first to stay idempotent on retries.
+  - id: create_pr
+    name: Create PR
+    type: run_agent
+    config:
+      role: create-pr
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Create a GitHub PR for the current branch if one does not exist yet.
+
+        Steps:
+          1. Check: gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number'
+             If a PR number is returned, skip creation — the PR already exists.
+          2. If no PR exists, push the branch and create one:
+             git push -u origin HEAD
+             If push is rejected because the remote has diverged (e.g. after a
+             rebase), force-push without asking for confirmation:
+             git push --force-with-lease -u origin HEAD
+             gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
+               --title "<conventional-commit title>" \
+               --body "<PR body with ## Motivation and ## Implementation information>"
+             {{- if .Task.Issue}}
+             Include "Closes {{.Task.Issue}}" in the PR body.
+             {{- end}}
+
+        PR title must follow conventional commits format matching the task work.
+        PR body must have ## Motivation and ## Implementation information sections.
+        Never ask for confirmation — this is a feature branch owned by this task.
+    next:
+      - goto: link_pr_and_review
+
+  # Non-LLM step: recover PR number from task, agent result history, or
+  # gh pr list. Sets task to in-review and skips the LLM eval when a PR
+  # is unambiguously found. Falls through to evaluate only when all three
+  # sources fail to find a PR.
+  - id: link_pr_and_review
+    name: Link PR and Review
+    type: link_pr_and_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ensure_pr_closes_issue
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: evaluate
+
+  # Mechanical fallback (no LLM): reached only when link_pr_and_review failed
+  # to find a PR. Walks step history for the last run_agent record and flips
+  # the task to human-required with a truncated reason.
+  - id: evaluate
+    name: Evaluate
+    type: evaluate
+    next:
+      - goto: ""
+
+  # Mechanical check (no LLM): if the task is linked to a GitHub issue,
+  # make sure the PR's body carries a `Closes <issue-url>` reference so
+  # merging the PR auto-closes the issue. Auto-appends the reference if
+  # missing; flips to human-required if the edit/verification fails.
+  - id: ensure_pr_closes_issue
+    name: Ensure PR Closes Issue
+    type: ensure_pr_closes_issue
+    next:
+      - goto: ""

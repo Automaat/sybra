@@ -365,13 +365,13 @@ func TestE2E_CrossProvider_DualPlan(t *testing.T) {
 			"write_sidecar_success", // plan_codex → plan-draft sidecar
 		},
 	)
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("dual-plan e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -464,13 +464,13 @@ func TestE2E_DualPlan_ChildRetryThenSucceed(t *testing.T) {
 			"write_sidecar_success", // plan_codex retry — writes the draft
 		},
 	)
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("dual-plan retry e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -541,13 +541,13 @@ func TestE2E_DualPlan_ChildExhaustedFailsParent(t *testing.T) {
 			"fail_exit", // plan_codex retry — also fails, exhausted
 		},
 	)
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("dual-plan exhausted e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 

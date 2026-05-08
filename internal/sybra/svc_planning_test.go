@@ -61,7 +61,7 @@ func TestPlanningService_PlanTask_NoopWithActiveWorkflow(t *testing.T) {
 	// Set up a workflow manually.
 	if _, err := taskSvc.tasks.UpdateMap(created.ID, map[string]any{
 		"workflow": &workflow.Execution{
-			WorkflowID: "simple-task",
+			WorkflowID: "simple-task-plan",
 			State:      workflow.ExecRunning,
 		},
 	}); err != nil {
@@ -296,13 +296,13 @@ type planCommentSpec struct {
 // stageWaitingPlanReview manually drops the task's workflow into an
 // ExecWaiting state at a human-action step so HandleHumanAction accepts
 // the action without going through the full agent pipeline. Uses the
-// builtin simple-task workflow because setupPlanningService syncs the
-// built-in definitions into the store.
+// builtin simple-task-plan workflow because setupPlanningService syncs
+// the built-in definitions into the store.
 func stageWaitingPlanReview(t *testing.T, taskSvc *TaskService, taskID string) {
 	t.Helper()
 	if _, err := taskSvc.tasks.UpdateMap(taskID, map[string]any{
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-plan",
 			CurrentStep: "review_plan",
 			State:       workflow.ExecWaiting,
 			// Seed _dir so the plan step the engine resumes after reject has a
@@ -438,12 +438,12 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	}
 
 	// Park the workflow in address_critique — the only run_agent step in
-	// simple-task that still uses wait_for_status: plan-review (the plan
-	// step is now a parallel block of headless one-shots).
+	// simple-task-plan that still uses wait_for_status: plan-review (the
+	// plan step is now a parallel block of headless one-shots).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-plan",
 			CurrentStep: "address_critique",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},

@@ -134,6 +134,7 @@ export enum Status {
     StatusNew = "new",
     StatusTodo = "todo",
     StatusInProgress = "in-progress",
+    StatusReadyReview = "ready-review",
     StatusInReview = "in-review",
     StatusPlanning = "planning",
     StatusPlanReview = "plan-review",

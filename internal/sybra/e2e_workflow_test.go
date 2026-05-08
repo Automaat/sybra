@@ -266,6 +266,24 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		})
 	})
 
+	// Mirror production cascade wiring (sybra/services.go: SetOnComplete →
+	// AgentCompletionHandler.OnWorkflowComplete) so tests that span multiple
+	// chained workflows (simple-task-plan → simple-task-implement →
+	// simple-task-review) advance through the cascade exactly like the
+	// desktop app does.
+	engine.SetOnComplete(func(info workflow.CompletionInfo) {
+		t, gErr := taskMgr.Get(info.TaskID)
+		if gErr != nil || task.IsTerminalStatus(t.Status) {
+			return
+		}
+		_, _ = engine.DispatchEvent(
+			info.TaskID,
+			"task.status_changed",
+			map[string]string{"task.status": string(t.Status)},
+			map[string]string{workflow.WorkflowVarDir: env.agentDir},
+		)
+	})
+
 	return env
 }
 
@@ -2350,14 +2368,14 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
 		"success",               // address_critique
 	})
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("plan critic e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2424,14 +2442,14 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 		"write_sidecar_success", // converge_plans
 		"plan_critic_no_save",   // critic exits without writing sidecar
 	})
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("missing critique e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2483,14 +2501,14 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 		"write_sidecar_success",       // plan child #2 writes its plan-draft
 		"write_sidecar_success",       // converge_plans writes the synthesized plan
 	})
-	loadBuiltinWorkflow(t, env, "simple-task")
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("nocritic e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2541,13 +2559,13 @@ func TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			forEachProvider(t, func(t *testing.T, p providerSpec) {
 				env := setupE2EMultiProvider(t, p.provider, []string{tc.scenario})
-				loadBuiltinWorkflow(t, env, "simple-task")
+				loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 				created, err := env.tasks.Create("terminal triage "+tc.name, "", "headless")
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+				if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 					t.Fatal(err)
 				}
 
@@ -3267,7 +3285,10 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 
 func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"triage", "success"})
-	loadBuiltinWorkflow(t, env, "simple-task")
+	// verify_commits lives in simple-task-implement; the cascade in
+	// setupE2EMultiProvider hands off plan → implement on status=in-progress.
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
+	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
 	created, err := env.tasks.Create("verify commits no ahead", "", "headless")
 	if err != nil {
@@ -3284,13 +3305,15 @@ func TestE2E_VerifyCommits_NoAheadFlipsHumanRequired(t *testing.T) {
 	initRepoWithOriginMain(t, worktreePath)
 	runCmd(t, worktreePath, "git", "log", "origin/main..HEAD", "--oneline")
 
-	if err := env.startWorkflow(created.ID, "simple-task"); err != nil {
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 30*time.Second, "workflow completes after verify_commits", func() bool {
+	waitFor(t, 30*time.Second, "implement workflow completes after verify_commits", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+		return gErr == nil && tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "simple-task-implement" &&
+			tk.Workflow.State == workflow.ExecCompleted
 	})
 
 	tk, _ := env.tasks.Get(created.ID)

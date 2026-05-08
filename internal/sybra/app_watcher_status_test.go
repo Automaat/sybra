@@ -62,14 +62,14 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Park the workflow at the simple-task `address_critique` step — the
-	// only run_agent step in simple-task that still uses
+	// Park the workflow at the simple-task-plan `address_critique` step —
+	// the only run_agent step in simple-task-plan that still uses
 	// wait_for_status: plan-review (the plan step is now a parallel block
 	// of headless one-shots that exit on their own).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task",
+			WorkflowID:  "simple-task-plan",
 			CurrentStep: "address_critique",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},

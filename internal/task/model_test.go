@@ -28,8 +28,8 @@ func TestValidateStatus_Invalid(t *testing.T) {
 func TestAllStatuses(t *testing.T) {
 	t.Parallel()
 	statuses := AllStatuses()
-	if len(statuses) != 12 {
-		t.Errorf("got %d statuses, want 12", len(statuses))
+	if len(statuses) != 13 {
+		t.Errorf("got %d statuses, want 13", len(statuses))
 	}
 	seen := make(map[Status]bool)
 	for _, s := range statuses {

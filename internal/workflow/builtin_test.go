@@ -19,17 +19,17 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 	var simple *Definition
 	for i := range defs {
-		if defs[i].ID == "simple-task" {
+		if defs[i].ID == "simple-task-plan" {
 			simple = &defs[i]
 			break
 		}
 	}
 	if simple == nil {
-		t.Fatal("simple-task builtin definition not found")
+		t.Fatal("simple-task-plan builtin definition not found")
 	}
 	step := simple.StepByID("maybe_critique")
 	if step == nil {
-		t.Fatal("maybe_critique step not found in simple-task")
+		t.Fatal("maybe_critique step not found in simple-task-plan")
 	}
 
 	cases := []struct {

@@ -13,6 +13,7 @@ const (
 	StatusNew            Status = "new"
 	StatusTodo           Status = "todo"
 	StatusInProgress     Status = "in-progress"
+	StatusReadyReview    Status = "ready-review"
 	StatusInReview       Status = "in-review"
 	StatusPlanning       Status = "planning"
 	StatusPlanReview     Status = "plan-review"
@@ -26,7 +27,8 @@ const (
 
 var validStatuses = map[Status]bool{
 	StatusNew: true, StatusTodo: true, StatusInProgress: true,
-	StatusInReview: true, StatusPlanning: true, StatusPlanReview: true,
+	StatusReadyReview: true, StatusInReview: true,
+	StatusPlanning: true, StatusPlanReview: true,
 	StatusTesting: true, StatusTestPlanReview: true,
 	StatusHumanRequired: true, StatusBlocked: true,
 	StatusDone: true, StatusCancelled: true,
@@ -36,7 +38,7 @@ var validStatuses = map[Status]bool{
 func AllStatuses() []Status {
 	return []Status{
 		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
-		StatusInProgress, StatusInReview,
+		StatusInProgress, StatusReadyReview, StatusInReview,
 		StatusTesting, StatusTestPlanReview,
 		StatusHumanRequired, StatusBlocked, StatusDone, StatusCancelled,
 	}

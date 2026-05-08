@@ -21,7 +21,7 @@ type PlanningService struct {
 // returns nil if a workflow is already running or being started concurrently
 // (CreateTask spawns the same workflow in a goroutine).
 func (s *PlanningService) TriageTask(id string) error {
-	if err := s.engine.StartWorkflow(id, "simple-task"); err != nil {
+	if err := s.engine.StartWorkflow(id, "simple-task-plan"); err != nil {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			return nil
 		}
@@ -42,7 +42,7 @@ func (s *PlanningService) PlanTask(id string) error {
 	if t.Workflow != nil && t.Workflow.State != "" {
 		return nil
 	}
-	if err := s.engine.StartWorkflow(id, "simple-task"); err != nil {
+	if err := s.engine.StartWorkflow(id, "simple-task-plan"); err != nil {
 		// Concurrent auto-start (from CreateTask) holds the per-task start
 		// lock — that's also a no-op outcome from the user's perspective.
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
