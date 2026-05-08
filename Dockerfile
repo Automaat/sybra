@@ -47,7 +47,7 @@ RUN apt-get update \
 
 # --- Layer B: klaudiush binary ---
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=1.32.1
+ARG KLAUDIUSH_VERSION=v1.32.1
 RUN curl -sSfL https://klaudiu.sh/install.sh \
          | sh -s -- -b /usr/local/bin -v "${KLAUDIUSH_VERSION}"
 

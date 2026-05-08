@@ -62,7 +62,6 @@
       "description": "klaudiush — auto-merge any update",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["smykla-skalski/klaudiush"],
-      "extractVersion": "^v(?<version>.*)$",
       "automerge": true
     }
   ],
