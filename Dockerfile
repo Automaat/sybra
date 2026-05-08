@@ -125,6 +125,9 @@ RUN userdel -r node 2>/dev/null || true \
 COPY --from=go-builder /bin/sybra-server /usr/local/bin/sybra-server
 COPY --from=go-builder /bin/sybra-cli /usr/local/bin/sybra-cli
 COPY --from=frontend-builder /app/frontend/dist-web /app/web
+COPY internal /app/src/internal
+COPY orchestrator /app/src/orchestrator
+COPY go.mod go.sum README.md CLAUDE.md /app/src/
 
 ENV SYBRA_PORT=8080
 ENV SYBRA_STATIC_DIR=/app/web
