@@ -93,10 +93,14 @@ func (r *Recovery) RestartStaleInProgress() {
 		taskID := t.ID
 		runRole := t.RunRole
 		if runRole == "pr-fix" {
+			currentStatus := t.Status
 			r.WG.Go(func() {
 				err := r.Orchestrator.StartPRFixAgent(taskID)
 				metrics.OrchestratorStaleRestart(err == nil)
 				r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
+				if err != nil {
+					r.surfaceStartFailure(taskID, currentStatus, err)
+				}
 			})
 			continue
 		}
@@ -106,6 +110,7 @@ func (r *Recovery) RestartStaleInProgress() {
 			prFlag = ""
 		}
 		prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
+		currentStatus := t.Status
 		r.WG.Go(func() {
 			// Restart-stale only ever reaches this branch for headless
 			// mode (interactive tasks are handled by recoverStaleInteractive
@@ -113,7 +118,31 @@ func (r *Recovery) RestartStaleInProgress() {
 			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false)
 			metrics.OrchestratorStaleRestart(err == nil)
 			r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
+			if err != nil {
+				r.surfaceStartFailure(taskID, currentStatus, err)
+			}
 		})
+	}
+}
+
+// surfaceStartFailure mirrors workflow.Engine.surfaceStartFailure for the
+// recovery path: write a UI-visible reason on every retry, and flip to
+// human-required when the error is permanent (e.g. project not registered)
+// so the periodic resume loop stops hammering it.
+func (r *Recovery) surfaceStartFailure(taskID string, currentStatus task.Status, err error) {
+	reason, permanent := workflow.ClassifyAgentStartError(err)
+	if reason == "" {
+		return
+	}
+	target := currentStatus
+	if permanent {
+		target = task.StatusHumanRequired
+	}
+	if _, uErr := r.Tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(target),
+		StatusReason: task.Ptr(reason),
+	}); uErr != nil {
+		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
 	}
 }
 

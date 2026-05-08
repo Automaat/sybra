@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,13 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrProjectNotRegistered indicates the requested project is not present in
+// the local project store. Callers can errors.Is() this to distinguish a
+// permanent misconfiguration ("user never ran Create") from transient I/O
+// failures, and surface it to the UI as human-required instead of looping
+// on retry.
+var ErrProjectNotRegistered = errors.New("project not registered locally")
 
 type Store struct {
 	dir       string
@@ -210,6 +218,9 @@ func (s *Store) filePath(id string) string {
 func (s *Store) readFile(path string) (Project, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Project{}, fmt.Errorf("read project %s: %w", path, ErrProjectNotRegistered)
+		}
 		return Project{}, fmt.Errorf("read project: %w", err)
 	}
 	var p Project

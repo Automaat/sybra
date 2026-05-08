@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronLeft } from '@lucide/svelte'
+  import { ChevronLeft, AlertTriangle } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
@@ -96,6 +96,15 @@
   {#if t}
     <div class="flex flex-col gap-6">
       <TaskHeaderBar task={t} {ondelete} />
+      {#if t.statusReason}
+        <div
+          class="flex items-start gap-2 rounded-md border border-warning-300 bg-warning-50 px-3 py-2 text-sm text-warning-800 dark:border-warning-700 dark:bg-warning-900/40 dark:text-warning-200"
+          role="status"
+        >
+          <AlertTriangle size={16} class="mt-0.5 shrink-0" />
+          <span>{t.statusReason}</span>
+        </div>
+      {/if}
       <TaskMetadataRow task={t} />
       <TaskPullRequestsPanel task={t} />
       <TaskDescriptionEditor task={t} />
