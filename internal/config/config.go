@@ -72,6 +72,9 @@ type AgentDefaults struct {
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
+	// claude -p via --bashTimeoutMs. 0 means use DefaultBashTimeoutSeconds (300).
+	BashTimeoutSeconds int `yaml:"bash_timeout_seconds" json:"bashTimeoutSeconds"`
 	// MaxLogEvents caps how many NDJSON events are returned when replaying
 	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
 	MaxLogEvents int `yaml:"max_log_events" json:"maxLogEvents"`
@@ -80,6 +83,19 @@ type AgentDefaults struct {
 	// files, regardless of age) are swept on app startup and daily
 	// thereafter. 0 falls back to DefaultLogRetentionDays (14).
 	LogRetentionDays int `yaml:"log_retention_days" json:"logRetentionDays"`
+}
+
+// DefaultBashTimeoutSeconds is the per-bash-tool-call timeout used when
+// BashTimeoutSeconds is not set in config.
+const DefaultBashTimeoutSeconds = 300
+
+// BashTimeoutMs returns the bash tool timeout in milliseconds, ready for
+// passing to claude -p --bashTimeoutMs.
+func (c *Config) BashTimeoutMs() int {
+	if c != nil && c.Agent.BashTimeoutSeconds > 0 {
+		return c.Agent.BashTimeoutSeconds * 1000
+	}
+	return DefaultBashTimeoutSeconds * 1000
 }
 
 // DefaultMaxLogEvents returns the configured cap or 500 if unset.

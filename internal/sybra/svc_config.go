@@ -120,6 +120,7 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.notifier.SetDesktop(next.Notification.Desktop)
 	s.agents.SetMaxConcurrent(next.Agent.MaxConcurrent)
 	s.agents.SetDefaultProvider(next.Agent.Provider)
+	s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
 	s.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD: next.Agent.MaxCostUSD,
 		MaxTurns:   next.Agent.MaxTurns,

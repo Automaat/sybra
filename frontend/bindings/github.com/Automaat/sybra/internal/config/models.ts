@@ -33,6 +33,12 @@ export class AgentDefaults {
     "requirePermissions": boolean | null;
 
     /**
+     * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
+     * claude -p via --bashTimeoutMs. 0 means use DefaultBashTimeoutSeconds (300).
+     */
+    "bashTimeoutSeconds": number;
+
+    /**
      * MaxLogEvents caps how many NDJSON events are returned when replaying
      * a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
      */
@@ -77,6 +83,9 @@ export class AgentDefaults {
         }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
+        }
+        if (!("bashTimeoutSeconds" in $$source)) {
+            this["bashTimeoutSeconds"] = 0;
         }
         if (!("maxLogEvents" in $$source)) {
             this["maxLogEvents"] = 0;

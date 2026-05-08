@@ -761,3 +761,53 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 		t.Errorf("per-agent MaxTurns=5 should escalate before global=20; got %d escalation events", escalations)
 	}
 }
+
+// TestBuildHeadlessInvocation_BashTimeoutMs verifies that --bashTimeoutMs is
+// included when cfg.BashTimeoutMs > 0, and absent when it is zero.
+func TestBuildHeadlessInvocation_BashTimeoutMs(t *testing.T) {
+	t.Run("included_when_set", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			BashTimeoutMs: 300000,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--bashTimeoutMs")
+		if idx == -1 {
+			t.Fatal("--bashTimeoutMs not found in args")
+		}
+		if idx+1 >= len(args) || args[idx+1] != "300000" {
+			t.Fatalf("--bashTimeoutMs value = %q, want 300000", args[idx+1])
+		}
+	})
+
+	t.Run("absent_when_zero", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			BashTimeoutMs: 0,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--bashTimeoutMs") {
+			t.Fatal("--bashTimeoutMs must be absent when BashTimeoutMs == 0")
+		}
+	})
+
+	t.Run("not_passed_to_codex", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			BashTimeoutMs: 300000,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+		}
+		if slices.Contains(args, "--bashTimeoutMs") {
+			t.Fatal("--bashTimeoutMs must not be passed to codex")
+		}
+	})
+}

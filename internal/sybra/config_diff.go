@@ -31,6 +31,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if old.Agent.TurnMultiplier != next.Agent.TurnMultiplier {
 		hot = append(hot, "agent.turn_multiplier")
 	}
+	if old.Agent.BashTimeoutSeconds != next.Agent.BashTimeoutSeconds {
+		hot = append(hot, "agent.bash_timeout_seconds")
+	}
 	if old.Logging.Level != next.Logging.Level {
 		hot = append(hot, "logging.level")
 	}
