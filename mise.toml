@@ -1,8 +1,8 @@
 [tools]
-go = "1.26.2"
+go = "1.26.3"
 node = "24"
 hadolint = "2.14.0"
-golangci-lint = "2.12.1"
+golangci-lint = "2.12.2"
 
 [tasks."hooks:install"]
 run = "git config core.hooksPath .githooks"
