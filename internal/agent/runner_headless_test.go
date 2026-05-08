@@ -455,6 +455,120 @@ func TestGuardrails_MaxTurnsZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
+// TestGuardrails_TurnsAutoContinue_CostBelowCap verifies that when an agent
+// hits MaxTurns but cumulative cost is well below the MaxCostUSD threshold,
+// the runner auto-continues without blocking on escalationCh. The turn limit
+// is bumped by TurnMultiplier and a turns_auto_continued escalation event is
+// emitted so the GUI can surface the bump.
+func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
+	// 5 assistant events — limit is 3 so the 3rd fires the guardrail.
+	var lines []string
+	for range 5 {
+		lines = append(lines, `{"type":"assistant","message":{"content":[{"type":"text","text":"tick"}]}}`)
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	var (
+		autoContinued int
+		blocked       int
+		mu            sync.Mutex
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok {
+			mu.Lock()
+			switch e.Reason {
+			case "turns_auto_continued":
+				autoContinued++
+			case "turns":
+				blocked++
+			}
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	// Cost cap set, but agent has spent $0 — well below 80% of $10.
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
+
+	// No escalationCh needed because auto-continue path never blocks.
+	a := &Agent{ID: "t", Provider: "claude"}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if autoContinued == 0 {
+		t.Error("expected turns_auto_continued escalation event, got none")
+	}
+	if blocked != 0 {
+		t.Errorf("expected no blocking escalation, got %d", blocked)
+	}
+	if got := len(a.Output()); got != 5 {
+		t.Errorf("got %d events, want 5 — stream stopped early", got)
+	}
+}
+
+// TestGuardrails_TurnsBlocks_CostNearCap verifies that when an agent hits
+// MaxTurns and cumulative cost is above TurnCostFraction * MaxCostUSD, the
+// runner falls through to the human-gate path (blocking on escalationCh).
+func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
+	// 4 assistant events; limit is 3 so the 3rd triggers.
+	var lines []string
+	for range 4 {
+		lines = append(lines, `{"type":"assistant","message":{"content":[{"type":"text","text":"tick"}]}}`)
+	}
+	// Prepend a result event so the agent's cost is seeded before turns fire.
+	resultLine := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":9.0,"total_input_tokens":1,"total_output_tokens":1}`
+	input := resultLine + "\n" + strings.Join(lines, "\n") + "\n"
+
+	var (
+		autoContinued int
+		blocked       int
+		mu            sync.Mutex
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok {
+			mu.Lock()
+			switch e.Reason {
+			case "turns_auto_continued":
+				autoContinued++
+			case "turns":
+				blocked++
+			}
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	// Cost cap $10, agent already spent $9 — above 80% threshold.
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	// Respond to the escalation immediately: send false (kill) so the stream
+	// exits cleanly without hanging the test.
+	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	go func() {
+		// Wait briefly for the escalation to be raised, then cancel.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if autoContinued != 0 {
+		t.Errorf("expected no auto-continue (cost near cap), got %d", autoContinued)
+	}
+	if blocked == 0 {
+		t.Error("expected blocking turns escalation event, got none")
+	}
+}
+
 // TestGuardrails_SetMidRunVisibleToStream verifies SetGuardrails picks up
 // live — the stream loop re-reads m.guardrails under RLock on every event,
 // so a user who tightens the cost limit mid-run sees escalation on the

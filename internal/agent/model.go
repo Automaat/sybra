@@ -272,6 +272,13 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Unlock()
 }
 
+// SetMaxTurns sets the per-agent turn limit override.
+func (a *Agent) SetMaxTurns(n int) {
+	a.mu.Lock()
+	a.MaxTurns = n
+	a.mu.Unlock()
+}
+
 // GetCostUSD returns the current cumulative cost.
 func (a *Agent) GetCostUSD() float64 {
 	a.mu.RLock()
