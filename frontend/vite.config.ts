@@ -50,6 +50,12 @@ export default defineConfig(({ mode }) => {
         reporter: ['text', 'json'],
         include: ['src/**/*.ts', 'src/**/*.svelte'],
         exclude: ['src/main.ts'],
+        thresholds: {
+          statements: 33,
+          branches: 24,
+          functions: 33,
+          lines: 35,
+        },
       },
     },
   }
