@@ -13,6 +13,11 @@ import (
 // commenting its own GitHub issue. Dispatch is fire-and-forget — the Service
 // does not block on agent completion.
 type Dispatcher interface {
+	// Dispatchable reports whether the anomaly can be dispatched to an agent.
+	// Callers must check this before Dispatch to avoid spurious WARN logs for
+	// anomalies whose working directory can never be resolved (e.g. external
+	// GitHub-issue tasks with no worktree and an empty repoDir).
+	Dispatchable(a Anomaly) bool
 	Dispatch(ctx context.Context, a Anomaly) (agentID string, err error)
 }
 
@@ -60,6 +65,14 @@ func NewAgentDispatcher(d AgentDispatcherDeps) *agentDispatcher {
 		model:        d.Model,
 		issueRepo:    d.IssueRepo,
 	}
+}
+
+// Dispatchable returns true if resolveTarget can produce a non-empty working
+// directory for a. When false, the Service skips dispatch entirely rather than
+// attempting and logging a WARN for every monitor tick.
+func (d *agentDispatcher) Dispatchable(a Anomaly) bool {
+	dir, _, _ := d.resolveTarget(a)
+	return dir != ""
 }
 
 // Dispatch resolves a working directory and a task title for the anomaly,
@@ -115,6 +128,7 @@ func (d *agentDispatcher) resolveTarget(a Anomaly) (dir, taskID, name string) {
 // Dispatcher without spawning real agents.
 type noopDispatcher struct{}
 
+func (noopDispatcher) Dispatchable(Anomaly) bool                         { return true }
 func (noopDispatcher) Dispatch(context.Context, Anomaly) (string, error) { return "", nil }
 
 // NoopDispatcher returns a Dispatcher that never spawns a process. Exported

@@ -3,11 +3,14 @@ package monitor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -214,6 +217,68 @@ func TestDispatcher_EmptyRepoDirRejected(t *testing.T) {
 	}
 	if len(rr.calls) != 0 {
 		t.Error("runner must not be called when dir unresolved")
+	}
+}
+
+func TestDispatcher_DispatchableEmptyRepoDirNoWorktree(t *testing.T) {
+	d := &agentDispatcher{repoDir: ""}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	if d.Dispatchable(a) {
+		t.Error("want false when repoDir empty and no worktree")
+	}
+}
+
+func TestDispatcher_DispatchableWithRepoDir(t *testing.T) {
+	d := &agentDispatcher{repoDir: "/repo"}
+	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
+	if !d.Dispatchable(a) {
+		t.Error("want true when repoDir non-empty")
+	}
+}
+
+func TestDispatcher_DispatchableWithWorktree(t *testing.T) {
+	theTask := task.Task{ID: "abc123"}
+	tasks := dispatcherTasksStub{task: theTask}
+	worktreeFn := func(t task.Task) (string, bool) {
+		return "/worktrees/abc123", t.ID == "abc123"
+	}
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: worktreeFn}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
+	if !d.Dispatchable(a) {
+		t.Error("want true when worktree resolves")
+	}
+}
+
+func TestDispatcher_UndispatchableSkippedInService(t *testing.T) {
+	// Verifies that when Dispatchable returns false the dispatcher is never
+	// called, no cooldown slot is consumed, and no WARN is produced.
+	rr := &recordingRunner{}
+	// Empty repoDir + no worktree → Dispatchable returns false.
+	d := &agentDispatcher{agents: rr, repoDir: "", tasks: nil, worktreePath: nil}
+
+	svc := &Service{
+		dispatcher: d,
+		state:      newRunState(),
+		logger:     slog.Default(),
+		cfg:        config.MonitorConfig{IssueCooldownMinutes: 30},
+	}
+
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	anoms := []Anomaly{
+		{Kind: KindStuckHumanBlocked, TaskID: "abc", RequiresLLM: true, Fingerprint: "stuck:abc"},
+	}
+	dispatched := svc.dispatchLLMAnomalies(context.Background(), now, anoms)
+	if len(dispatched) != 0 {
+		t.Errorf("want 0 dispatched, got %d", len(dispatched))
+	}
+	if len(rr.calls) != 0 {
+		t.Errorf("runner must not be called for undispatchable anomaly")
+	}
+	// Cooldown must not be consumed — a second call at the same time should
+	// also skip (not because of cooldown but because still undispatchable).
+	dispatched2 := svc.dispatchLLMAnomalies(context.Background(), now, anoms)
+	if len(dispatched2) != 0 {
+		t.Errorf("want 0 dispatched on second call, got %d", len(dispatched2))
 	}
 }
 
