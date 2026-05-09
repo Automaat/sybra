@@ -5,7 +5,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { convoStore } from '../stores/convo.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
-  import { agentState, agentEscalation, agentError } from '../lib/events.js'
+  import { agentState, agentEscalation, agentError, agentPluginErrors } from '../lib/events.js'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
@@ -26,6 +26,10 @@
     msg: string
   }
 
+  interface PluginErrorsEvent {
+    errors: string[]
+  }
+
   interface Props {
     agentId: string
     onback: () => void
@@ -38,6 +42,8 @@
   let a = $state<Agent | null>(null)
   let error = $state('')
   let agentErr = $state<AgentErrorEvent | null>(null)
+  let pluginErrors = $state<string[]>([])
+  let pluginErrorsDismissed = $state(false)
   let escalation = $state<EscalationEvent | null>(null)
   let escalationResponding = $state(false)
   let errorDismissed = $state(false)
@@ -107,12 +113,17 @@
   })
 
   $effect(() => {
+    pluginErrors = []
     const cached = agentStore.agents.get(agentId)
-    if (cached) a = cached
+    if (cached) {
+      a = cached
+      pluginErrors = cached.pluginErrors ?? []
+    }
 
     const unsubState = EventsOn(agentState(agentId), (data: Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
+      pluginErrors = data.pluginErrors ?? []
     })
 
     const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {
@@ -125,10 +136,16 @@
       escalationResponding = false
     })
 
+    const unsubPluginErrors = EventsOn(agentPluginErrors(agentId), (data: PluginErrorsEvent) => {
+      pluginErrors = data.errors ?? []
+      pluginErrorsDismissed = false
+    })
+
     return () => {
       unsubState()
       unsubError()
       unsubEscalation()
+      unsubPluginErrors()
     }
   })
 
@@ -207,6 +224,35 @@
       onretry={a?.taskId ? () => onviewtask(a!.taskId) : undefined}
       ondismiss={() => { agentErr = null; errorDismissed = true }}
     />
+  {/if}
+
+  {#if pluginErrors.length > 0 && !pluginErrorsDismissed}
+    <div class="rounded-lg border-2 border-warning-400 bg-warning-50 p-4 dark:border-warning-600 dark:bg-warning-950">
+      <div class="flex items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="rounded bg-warning-200 px-2 py-0.5 text-xs font-bold text-warning-800 dark:bg-warning-700 dark:text-warning-200">
+              PLUGIN ERRORS
+            </span>
+            <span class="text-sm font-medium text-surface-800 dark:text-surface-200">
+              {pluginErrors.length} plugin{pluginErrors.length !== 1 ? 's' : ''} failed to load
+            </span>
+          </div>
+          <ul class="mt-2 space-y-1">
+            {#each pluginErrors as e}
+              <li class="font-mono text-xs text-surface-600 dark:text-surface-400">{e}</li>
+            {/each}
+          </ul>
+        </div>
+        <button
+          type="button"
+          class="shrink-0 text-sm text-surface-400 hover:text-surface-600 dark:hover:text-surface-200"
+          onclick={() => { pluginErrorsDismissed = true }}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
   {/if}
 
   {#if escalation}

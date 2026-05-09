@@ -10,13 +10,14 @@ const (
 	TaskDeleted = "task:deleted"
 
 	// Agent events — prefix only; append ":"+agentID to form full event name.
-	AgentStatePrefix      = "agent:state:"
-	AgentOutputPrefix     = "agent:output:"
-	AgentErrorPrefix      = "agent:error:"
-	AgentStuckPrefix      = "agent:stuck:"
-	AgentConvoPrefix      = "agent:convo:"
-	AgentApprovalPrefix   = "agent:approval:"
-	AgentEscalationPrefix = "agent:escalation:"
+	AgentStatePrefix        = "agent:state:"
+	AgentOutputPrefix       = "agent:output:"
+	AgentErrorPrefix        = "agent:error:"
+	AgentStuckPrefix        = "agent:stuck:"
+	AgentConvoPrefix        = "agent:convo:"
+	AgentApprovalPrefix     = "agent:approval:"
+	AgentEscalationPrefix   = "agent:escalation:"
+	AgentPluginErrorsPrefix = "agent:plugin_errors:"
 
 	// Orchestrator events.
 	OrchestratorState = "orchestrator:state"
@@ -87,3 +88,6 @@ func AgentApproval(id string) string { return AgentApprovalPrefix + id }
 
 // AgentEscalation returns the escalation event name for the given agent ID.
 func AgentEscalation(id string) string { return AgentEscalationPrefix + id }
+
+// AgentPluginErrors returns the plugin errors event name for the given agent ID.
+func AgentPluginErrors(id string) string { return AgentPluginErrorsPrefix + id }

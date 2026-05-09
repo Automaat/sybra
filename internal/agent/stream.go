@@ -31,12 +31,13 @@ type ClaudeResult struct {
 
 // ClaudeEvent is the shared envelope for all Claude stream-json events.
 type ClaudeEvent struct {
-	Type      string
-	Subtype   string
-	SessionID string
-	Raw       json.RawMessage // independent copy, never aliased to scanner buffer
-	Message   *ClaudeMessage
-	Result    *ClaudeResult
+	Type         string
+	Subtype      string
+	SessionID    string
+	PluginErrors []string
+	Raw          json.RawMessage // independent copy, never aliased to scanner buffer
+	Message      *ClaudeMessage
+	Result       *ClaudeResult
 }
 
 // CodexEvent is the shared envelope for all Codex stream-json events.
@@ -53,6 +54,7 @@ type claudeEnvelope struct {
 	Type              string                `json:"type"`
 	Subtype           string                `json:"subtype"`
 	SessionID         string                `json:"session_id"`
+	PluginErrors      []string              `json:"plugin_errors,omitempty"`
 	Message           *claudeMessagePayload `json:"message"`
 	Result            string                `json:"result"`
 	TotalCostUSD      float64               `json:"total_cost_usd"`
@@ -119,8 +121,9 @@ func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
 	}
 
 	switch raw.Type {
-	case "system":
+	case "system", "init":
 		event.SessionID = raw.SessionID
+		event.PluginErrors = raw.PluginErrors
 
 	case "assistant":
 		if raw.Message != nil {

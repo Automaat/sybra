@@ -52,11 +52,13 @@ type Agent struct {
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
-	MaxTurns         int    `json:"maxTurns,omitempty"`
-	EscalationReason string `json:"escalationReason,omitempty"`
-	ErrorKind        string `json:"errorKind,omitempty"`
-	ErrorMsg         string `json:"errorMsg,omitempty"`
-	AwaitingApproval bool   `json:"awaitingApproval,omitempty"`
+	MaxTurns int `json:"maxTurns,omitempty"`
+	// PluginErrors holds plugin load failures from the most recent init event.
+	PluginErrors     []string `json:"pluginErrors,omitempty"`
+	EscalationReason string   `json:"escalationReason,omitempty"`
+	ErrorKind        string   `json:"errorKind,omitempty"`
+	ErrorMsg         string   `json:"errorMsg,omitempty"`
+	AwaitingApproval bool     `json:"awaitingApproval,omitempty"`
 
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
@@ -272,6 +274,27 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Unlock()
 }
 
+// SetPluginErrors records plugin load failures from the init event.
+func (a *Agent) SetPluginErrors(errs []string) {
+	a.mu.Lock()
+	cp := make([]string, len(errs))
+	copy(cp, errs)
+	a.PluginErrors = cp
+	a.mu.Unlock()
+}
+
+// GetPluginErrors returns a snapshot of the recorded plugin errors.
+func (a *Agent) GetPluginErrors() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.PluginErrors) == 0 {
+		return nil
+	}
+	cp := make([]string, len(a.PluginErrors))
+	copy(cp, a.PluginErrors)
+	return cp
+}
+
 // SetMaxTurns sets the per-agent turn limit override.
 func (a *Agent) SetMaxTurns(n int) {
 	a.mu.Lock()
@@ -400,6 +423,8 @@ type StreamEvent struct {
 	// PlanSteps is populated when the assistant calls TodoWrite; contains the
 	// latest snapshot of the agent's todo list at this point in the stream.
 	PlanSteps []PlanStep `json:"plan_steps,omitempty"`
+	// PluginErrors carries plugin load failures surfaced by the init event.
+	PluginErrors []string `json:"plugin_errors,omitempty"`
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool
@@ -471,6 +496,12 @@ func (a *Agent) SetError(kind, msg string) {
 type ErrorEvent struct {
 	Kind string `json:"kind"`
 	Msg  string `json:"msg"`
+}
+
+// PluginErrorsEvent is emitted on agent:plugin_errors:{id} when the init event
+// carries plugin load failures.
+type PluginErrorsEvent struct {
+	Errors []string `json:"errors"`
 }
 
 // EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.
