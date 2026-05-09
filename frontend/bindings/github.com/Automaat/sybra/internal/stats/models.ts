@@ -56,6 +56,7 @@ export class RunRecord {
     "durationS": number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "reasoningTokens"?: number;
     "outcome": string;
     "timestamp": time$0.Time;
 
@@ -217,6 +218,7 @@ export class Summary {
     "totalDurationS": number;
     "totalInputTokens": number;
     "totalOutputTokens": number;
+    "totalReasoningTokens"?: number;
 
     /** Creates a new Summary instance. */
     constructor($$source: Partial<Summary> = {}) {

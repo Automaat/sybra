@@ -17,12 +17,13 @@ type ClaudeMessage struct {
 
 // ClaudeResult holds fields from "result" events.
 type ClaudeResult struct {
-	Subtype      string
-	Text         string
-	SessionID    string
-	CostUSD      float64
-	InputTokens  int
-	OutputTokens int
+	Subtype         string
+	Text            string
+	SessionID       string
+	CostUSD         float64
+	InputTokens     int
+	OutputTokens    int
+	ReasoningTokens int
 	// ErrorType and ErrorStatus carry structured error info when Subtype == "error".
 	// Codex: mapped from the "code" field. Claude: reserved for future extraction.
 	ErrorType   string
@@ -101,8 +102,9 @@ type codexItem struct {
 }
 
 type codexUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens     int `json:"input_tokens"`
+	OutputTokens    int `json:"output_tokens"`
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // ParseClaudeLine parses one line of Claude stream-json output.
@@ -186,6 +188,7 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 		if raw.Usage != nil {
 			r.InputTokens = raw.Usage.InputTokens
 			r.OutputTokens = raw.Usage.OutputTokens
+			r.ReasoningTokens = raw.Usage.ReasoningTokens
 		}
 		return CodexEvent{Type: "result", Raw: rawCopy, Result: &r}, nil
 

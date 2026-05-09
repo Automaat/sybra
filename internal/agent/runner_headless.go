@@ -390,7 +390,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 		}
 
 		if event.Type == "result" {
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)
+			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 			m.mu.RLock()
 			maxCost := m.guardrails.MaxCostUSD
@@ -566,6 +566,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
 		}
 
 	}
@@ -630,6 +631,7 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
 		}

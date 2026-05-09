@@ -56,6 +56,7 @@ func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
 			ev.ErrorType = e.Result.ErrorType
 			ev.ErrorStatus = e.Result.ErrorStatus
 		}
@@ -240,7 +241,7 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 				}
 			}
 		case "result":
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens)
+			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 			m.logger.Info("agent.codex.convo.result", "id", a.ID, "cost", costNow)
 			gotResult = true
 		}

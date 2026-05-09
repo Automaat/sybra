@@ -165,7 +165,7 @@ func TestSchedulerOnAgentCompleteUpdatesCost(t *testing.T) {
 	}
 
 	ag := &agent.Agent{ID: "ag-cost", Name: "loop:self"}
-	ag.AddResultStats("sess", 0.42, 100, 50)
+	ag.AddResultStats("sess", 0.42, 100, 50, 0)
 	sched.OnAgentComplete(ag)
 
 	stored, _ := store.Get(la.ID)

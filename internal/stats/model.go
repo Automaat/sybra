@@ -4,30 +4,32 @@ import "time"
 
 // RunRecord captures a single agent execution for analytics.
 type RunRecord struct {
-	ID           string    `json:"id"`
-	TaskID       string    `json:"taskId"`
-	ProjectID    string    `json:"projectId,omitempty"`
-	Mode         string    `json:"mode"`
-	Role         string    `json:"role"`
-	Model        string    `json:"model,omitempty"`
-	Provider     string    `json:"provider,omitempty"`
-	CostUSD      float64   `json:"costUsd"`
-	DurationS    float64   `json:"durationS"`
-	InputTokens  int       `json:"inputTokens,omitempty"`
-	OutputTokens int       `json:"outputTokens,omitempty"`
-	Outcome      string    `json:"outcome"`
-	Timestamp    time.Time `json:"timestamp"`
+	ID              string    `json:"id"`
+	TaskID          string    `json:"taskId"`
+	ProjectID       string    `json:"projectId,omitempty"`
+	Mode            string    `json:"mode"`
+	Role            string    `json:"role"`
+	Model           string    `json:"model,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	CostUSD         float64   `json:"costUsd"`
+	DurationS       float64   `json:"durationS"`
+	InputTokens     int       `json:"inputTokens,omitempty"`
+	OutputTokens    int       `json:"outputTokens,omitempty"`
+	ReasoningTokens int       `json:"reasoningTokens,omitempty"`
+	Outcome         string    `json:"outcome"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 // Summary holds aggregate metrics over a set of runs.
 type Summary struct {
-	TotalCostUSD      float64 `json:"totalCostUsd"`
-	TotalRuns         int     `json:"totalRuns"`
-	AvgCostPerRun     float64 `json:"avgCostPerRun"`
-	AvgDurationS      float64 `json:"avgDurationS"`
-	TotalDurationS    float64 `json:"totalDurationS"`
-	TotalInputTokens  int     `json:"totalInputTokens"`
-	TotalOutputTokens int     `json:"totalOutputTokens"`
+	TotalCostUSD         float64 `json:"totalCostUsd"`
+	TotalRuns            int     `json:"totalRuns"`
+	AvgCostPerRun        float64 `json:"avgCostPerRun"`
+	AvgDurationS         float64 `json:"avgDurationS"`
+	TotalDurationS       float64 `json:"totalDurationS"`
+	TotalInputTokens     int     `json:"totalInputTokens"`
+	TotalOutputTokens    int     `json:"totalOutputTokens"`
+	TotalReasoningTokens int     `json:"totalReasoningTokens,omitempty"`
 }
 
 // GroupedStat is an aggregate keyed by a dimension (project, mode, etc).

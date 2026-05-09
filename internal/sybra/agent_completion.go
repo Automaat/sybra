@@ -84,12 +84,13 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	state := ag.GetState()
 	cost := ag.GetCostUSD()
 	exitErr := ag.GetExitErr()
+	reasoning := ag.GetReasoningTokens()
 
 	// Audit logging always fires — orchestrator brain agents have no
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := time.Since(ag.StartedAt).Seconds()
-	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
+	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,
 		"duration_s": duration,
@@ -98,7 +99,11 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		"provider":   ag.Provider,
 		"name":       ag.Name,
 		"log_file":   ag.LogPath,
-	})
+	}
+	if reasoning > 0 {
+		auditData["reasoning_tokens"] = reasoning
+	}
+	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 
 	h.recordRunStats(ag, cost, duration, exitErr)
 
@@ -180,6 +185,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	}
 	in := ag.GetInputTokens()
 	out := ag.GetOutputTokens()
+	reasoning := ag.GetReasoningTokens()
 	agCost := cost
 	if agCost == 0 && ag.Provider == "codex" {
 		agCost = stats.EstimateCost(ag.Model, in, out)
@@ -195,19 +201,20 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		}
 	}
 	_ = h.stats.Record(stats.RunRecord{
-		ID:           ag.ID,
-		TaskID:       ag.TaskID,
-		ProjectID:    projectID,
-		Mode:         ag.Mode,
-		Role:         string(agent.RoleFromName(ag.Name)),
-		Model:        ag.Model,
-		Provider:     ag.Provider,
-		CostUSD:      agCost,
-		DurationS:    duration,
-		InputTokens:  in,
-		OutputTokens: out,
-		Outcome:      outcome,
-		Timestamp:    time.Now(),
+		ID:              ag.ID,
+		TaskID:          ag.TaskID,
+		ProjectID:       projectID,
+		Mode:            ag.Mode,
+		Role:            string(agent.RoleFromName(ag.Name)),
+		Model:           ag.Model,
+		Provider:        ag.Provider,
+		CostUSD:         agCost,
+		DurationS:       duration,
+		InputTokens:     in,
+		OutputTokens:    out,
+		ReasoningTokens: reasoning,
+		Outcome:         outcome,
+		Timestamp:       time.Now(),
 	})
 }
 
