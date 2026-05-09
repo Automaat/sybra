@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { GetSettings, UpdateSettings, GetVersion } from '$lib/api'
+  import { GetSettings, UpdateSettings, GetVersion, GetCodexModels } from '$lib/api'
   import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import {
     GetProviderHealth,
@@ -41,12 +41,29 @@
   let serverVersion = $state<string | null>(null)
   const clientVersion = String(import.meta.env.VITE_APP_VERSION || 'dev')
 
+  type ModelOption = { value: string; label: string }
+  const codexFallbackModels: ModelOption[] = [
+    { value: '', label: 'Default (gpt-5.4)' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+  ]
+  let codexDynamicModels = $state<ModelOption[]>([])
+
   $effect(() => {
     load()
   })
 
   onMount(() => {
     GetVersion().then(v => { serverVersion = v.server }).catch(() => { serverVersion = 'unavailable' })
+    GetCodexModels().then(models => {
+      if (models && models.length > 0) {
+        codexDynamicModels = [
+          { value: '', label: `Default (${models[0].slug})` },
+          ...models.map(m => ({ value: m.slug, label: m.display_name })),
+        ]
+      }
+    }).catch(() => {})
   })
 
   async function load() {
@@ -149,12 +166,7 @@
   const modelOptions = $derived.by(() => {
     if (!settings) return []
     if (settings.agent.provider === 'codex') {
-      return [
-        { value: '', label: 'Default (gpt-5.4)' },
-        { value: 'gpt-5.4', label: 'GPT-5.4' },
-        { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-        { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-      ]
+      return codexDynamicModels.length > 0 ? codexDynamicModels : codexFallbackModels
     }
     return [
       { value: '', label: 'Default (Sonnet)' },

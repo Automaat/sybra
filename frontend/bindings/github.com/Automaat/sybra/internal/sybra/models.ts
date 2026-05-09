@@ -108,6 +108,34 @@ export class AppSettings {
 }
 
 /**
+ * CodexModel is a single entry from `codex debug models`.
+ */
+export class CodexModel {
+    "slug": string;
+    "display_name": string;
+
+    /** Creates a new CodexModel instance. */
+    constructor($$source: Partial<CodexModel> = {}) {
+        if (!("slug" in $$source)) {
+            this["slug"] = "";
+        }
+        if (!("display_name" in $$source)) {
+            this["display_name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CodexModel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CodexModel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CodexModel($$parsedSource as Partial<CodexModel>);
+    }
+}
+
+/**
  * LoggingSettings holds the editable subset of LoggingConfig (Dir is read-only).
  */
 export class LoggingSettings {
