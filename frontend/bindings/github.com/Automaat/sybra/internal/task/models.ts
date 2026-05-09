@@ -189,6 +189,12 @@ export class Task {
      * nil = use system default (true). false = opt out (--dangerously-skip-permissions).
      */
     "requirePermissions"?: boolean | null;
+
+    /**
+     * ForkSubagent enables CLAUDE_CODE_FORK_SUBAGENT=1 for this task's headless
+     * agent, allowing a single prompt to spawn parallel subagent runs.
+     */
+    "forkSubagent"?: boolean;
     "agentRuns": AgentRun[];
     "workflow": workflow$0.Execution | null;
     "createdAt": time$0.Time;

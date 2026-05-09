@@ -35,6 +35,7 @@ type Update struct {
 	PlanCritique   *string
 	CodeReview     *string
 	MaxTurns       *int
+	ForkSubagent   *bool
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -76,6 +77,12 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyPRNumberField(u, k, v)
 	case "max_turns":
 		return applyMaxTurnsField(u, v)
+	case "fork_subagent":
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", k, v)
+		}
+		u.ForkSubagent = &b
 	case "due_date":
 		return applyDueDateField(u, v)
 	case "reviewed":

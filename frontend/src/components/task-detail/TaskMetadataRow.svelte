@@ -295,6 +295,30 @@
     </div>
   {/if}
 
+  {#if task.agentMode === 'headless'}
+  <div class="flex flex-col gap-1">
+    <span class="font-medium text-surface-500">Fork Subagents</span>
+    <button
+      type="button"
+      class="w-fit rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-300"
+      onclick={async () => {
+        try {
+          await taskStore.update(task.id, { fork_subagent: !task.forkSubagent })
+        } catch (e) {
+          error = String(e)
+        }
+      }}
+      title="Enable CLAUDE_CODE_FORK_SUBAGENT=1 — parallel subagents, higher token cost"
+    >
+      {#if task.forkSubagent}
+        <span class="text-primary-600 dark:text-primary-400">enabled</span>
+      {:else}
+        <span class="italic text-surface-400">disabled</span>
+      {/if}
+    </button>
+  </div>
+  {/if}
+
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Max Turns</span>
     {#if editingMaxTurns}

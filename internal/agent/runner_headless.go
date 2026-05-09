@@ -538,6 +538,9 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 			"BASH_MAX_TIMEOUT_MS="+ms,
 		)
 	}
+	if cfg.ForkSubagent {
+		env = append(env, "CLAUDE_CODE_FORK_SUBAGENT=1")
+	}
 	command = "claude " + strings.Join(args, " ")
 	return
 }
