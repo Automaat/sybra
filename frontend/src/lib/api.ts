@@ -62,6 +62,7 @@ export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
 
 // InfoService
+export const GetCodexModels = pick(InfoSvc.GetCodexModels, http.GetCodexModels)
 export const GetVersion = pick(InfoSvc.GetVersion, http.GetVersion)
 
 // IntegrationService

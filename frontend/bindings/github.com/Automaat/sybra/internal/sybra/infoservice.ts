@@ -15,13 +15,26 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
+ * GetCodexModels runs `codex debug models` once per session and returns the
+ * parsed model catalog. Returns an empty slice when codex is unavailable or
+ * the output cannot be parsed — callers should fall back to a built-in list.
+ */
+export function GetCodexModels(): $CancellablePromise<$models.CodexModel[]> {
+    return $Call.ByID(2281056322).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetVersion returns version information for the running server binary.
  */
 export function GetVersion(): $CancellablePromise<$models.VersionInfo> {
     return $Call.ByID(2557760771).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType2($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = $models.VersionInfo.createFrom;
+const $$createType0 = $models.CodexModel.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = $models.VersionInfo.createFrom;

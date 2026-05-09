@@ -4,6 +4,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 const mockGetSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
 const mockGetVersion = vi.fn()
+const mockGetCodexModels = vi.fn()
 const mockProviderHealthEnabled = vi.fn()
 const mockGetProviderHealth = vi.fn()
 const mockSetProviderAutoFailover = vi.fn()
@@ -14,6 +15,7 @@ vi.mock('$lib/api', () => ({
   GetSettings: (...args: unknown[]) => mockGetSettings(...args),
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
+  GetCodexModels: (...args: unknown[]) => mockGetCodexModels(...args),
   EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
 
@@ -51,6 +53,7 @@ describe('Settings', () => {
     mockGetSettings.mockReset()
     mockUpdateSettings.mockReset()
     mockGetVersion.mockResolvedValue({ server: 'v1.0.0', client: 'v1.0.0' })
+    mockGetCodexModels.mockResolvedValue([])
     mockProviderHealthEnabled.mockResolvedValue(false)
     mockGetProviderHealth.mockResolvedValue([])
     mockEventsOn.mockReturnValue(vi.fn())

@@ -32,6 +32,7 @@ export {
 
 export {
     AppSettings,
+    CodexModel,
     LoggingSettings,
     LoopAgentRun,
     MonitorReportBinding,
