@@ -110,6 +110,15 @@ const (
 	ProjectStatusError ProjectStatus = "error"
 )
 
+// WorktreeBaseRefFresh branches new worktrees off origin/<default> — always
+// starts from the latest pushed remote state.
+const WorktreeBaseRefFresh = "fresh"
+
+// WorktreeBaseRefHead branches new worktrees off the local HEAD of the
+// default branch — picks up commits that exist locally but haven't been
+// pushed yet.
+const WorktreeBaseRefHead = "head"
+
 type Project struct {
 	ID        string      `yaml:"id" json:"id"`
 	Name      string      `yaml:"name" json:"name"`
@@ -124,8 +133,12 @@ type Project struct {
 	SetupCommands []string       `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
 	Sandbox       *SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 	Checks        *ChecksConfig  `yaml:"checks,omitempty"  json:"checks,omitempty"`
-	CreatedAt     time.Time      `yaml:"created_at" json:"createdAt"`
-	UpdatedAt     time.Time      `yaml:"updated_at" json:"updatedAt"`
+	// WorktreeBaseRef controls the starting point for new worktree branches.
+	// "fresh" (default) branches off origin/<default>; "head" branches off the
+	// local HEAD so unpushed commits are included. Empty value treated as "fresh".
+	WorktreeBaseRef string    `yaml:"worktree_base_ref,omitempty" json:"worktreeBaseRef,omitempty"`
+	CreatedAt       time.Time `yaml:"created_at" json:"createdAt"`
+	UpdatedAt       time.Time `yaml:"updated_at" json:"updatedAt"`
 }
 
 type Worktree struct {

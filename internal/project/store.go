@@ -192,6 +192,21 @@ func (s *Store) SetSetupCommands(id string, cmds []string) (Project, error) {
 	return p, s.writeFile(p)
 }
 
+// SetWorktreeBaseRef sets the worktree branching base for a project.
+// ref must be WorktreeBaseRefFresh or WorktreeBaseRefHead.
+func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
+	if ref != WorktreeBaseRefFresh && ref != WorktreeBaseRefHead {
+		return Project{}, fmt.Errorf("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
+	}
+	p, err := s.Get(id)
+	if err != nil {
+		return p, err
+	}
+	p.WorktreeBaseRef = ref
+	p.UpdatedAt = time.Now().UTC()
+	return p, s.writeFile(p)
+}
+
 func (s *Store) Delete(id string) error {
 	p, err := s.Get(id)
 	if err != nil {
@@ -232,6 +247,9 @@ func (s *Store) readFile(path string) (Project, error) {
 	}
 	if p.Status == "" {
 		p.Status = ProjectStatusReady
+	}
+	if p.WorktreeBaseRef == "" {
+		p.WorktreeBaseRef = WorktreeBaseRefFresh
 	}
 	return p, nil
 }

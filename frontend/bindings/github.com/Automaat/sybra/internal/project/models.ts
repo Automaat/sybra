@@ -57,6 +57,13 @@ export class Project {
     "setupCommands"?: string[];
     "sandbox"?: SandboxConfig | null;
     "checks"?: ChecksConfig | null;
+
+    /**
+     * WorktreeBaseRef controls the starting point for new worktree branches.
+     * "fresh" (default) branches off origin/<default>; "head" branches off the
+     * local HEAD so unpushed commits are included. Empty value treated as "fresh".
+     */
+    "worktreeBaseRef"?: string;
     "createdAt": time$0.Time;
     "updatedAt": time$0.Time;
 

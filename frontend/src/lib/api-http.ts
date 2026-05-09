@@ -105,6 +105,7 @@ export function ListProjects(): Promise<Array<Project>> { return call('ProjectSe
 export function ListWorktrees(arg1: string): Promise<Array<Worktree>> { return call('ProjectService', 'ListWorktrees', arg1) }
 export function OpenInEditor(arg1: string): Promise<void> { return call('ProjectService', 'OpenInEditor', arg1) }
 export function OpenInTerminal(arg1: string): Promise<void> { return call('ProjectService', 'OpenInTerminal', arg1) }
+export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }
 
 // ReviewService

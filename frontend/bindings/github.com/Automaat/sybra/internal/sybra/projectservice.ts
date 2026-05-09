@@ -91,6 +91,16 @@ export function SetProjectSetupCommands(id: string, cmds: string[]): $Cancellabl
 }
 
 /**
+ * SetProjectWorktreeBaseRef sets the worktree branching base for a project.
+ * ref must be "fresh" (branch off origin/<default>) or "head" (branch off local HEAD).
+ */
+export function SetProjectWorktreeBaseRef(id: string, ref: string): $CancellablePromise<project$0.Project> {
+    return $Call.ByID(1094675552, id, ref).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * UpdateProject changes the type (pet/work) of a registered project.
  */
 export function UpdateProject(id: string, ptype: string): $CancellablePromise<project$0.Project> {
