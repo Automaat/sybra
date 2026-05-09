@@ -346,7 +346,7 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 
 // buildCodexCommand builds the display command string for a Codex agent.
 func buildCodexCommand(model string, requirePerms, headless bool) string {
-	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
+	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	parts = append(parts, codexSandboxArgs(requirePerms, headless)...)
 	if model != "" {
 		parts = append(parts, "--model", model)

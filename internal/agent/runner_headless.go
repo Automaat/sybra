@@ -493,7 +493,7 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 
 	if a.Provider == "codex" {
 		name = "codex"
-		args = []string{"exec", "--json", "--skip-git-repo-check"}
+		args = []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 		// headless=true: --sandbox workspace-write requires approval prompts
 		// which auto-reject in headless mode (no TTY/UI). Always bypass.
 		args = append(args, codexSandboxArgs(cfg.RequirePermissions, true)...)
