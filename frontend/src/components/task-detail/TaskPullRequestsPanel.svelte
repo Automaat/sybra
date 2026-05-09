@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { GitPullRequest } from '@lucide/svelte'
+  import { GitPullRequest, RotateCcw } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { reviewStore } from '../../stores/reviews.svelte.js'
-  import { BrowserOpenURL } from '$lib/api'
+  import { BrowserOpenURL, ResumeInClaudeCode } from '$lib/api'
 
   interface Props {
     task: Task
@@ -11,6 +11,19 @@
   const { task }: Props = $props()
 
   const linkedPRs = $derived(reviewStore.byTask(task))
+
+  const hasPR = $derived(linkedPRs.length > 0 || (task.prNumber > 0 && !!task.projectId))
+
+  let resuming = $state(false)
+
+  async function resumeInCC() {
+    resuming = true
+    try {
+      await ResumeInClaudeCode(task.id)
+    } finally {
+      resuming = false
+    }
+  }
 </script>
 
 {#if linkedPRs.length > 0}
@@ -68,4 +81,17 @@
       {task.projectId}#{task.prNumber}
     </button>
   </div>
+{/if}
+
+{#if hasPR}
+  <button
+    type="button"
+    class="flex w-fit items-center gap-1.5 rounded-md border border-surface-300 bg-surface-50 px-2.5 py-1.5 text-sm transition-colors hover:bg-surface-100 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+    onclick={resumeInCC}
+    disabled={resuming}
+    title="Resume the Claude Code session that produced this PR"
+  >
+    <RotateCcw size={14} class="shrink-0" />
+    {resuming ? 'Resuming…' : 'Resume in Claude Code'}
+  </button>
 {/if}

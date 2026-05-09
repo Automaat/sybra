@@ -39,6 +39,7 @@ export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { 
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
 export function OpenWorktree(arg1: string): Promise<void> { return call('AgentService', 'OpenWorktree', arg1) }
+export function ResumeInClaudeCode(arg1: string): Promise<void> { return call('AgentService', 'ResumeInClaudeCode', arg1) }
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
