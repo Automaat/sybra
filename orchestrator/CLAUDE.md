@@ -168,10 +168,10 @@ Sybra supports two agent providers: `claude` (default) and `codex`. The active p
 If the provider is `codex`, Sybra calls:
 ```bash
 # RequirePermissions=false
-codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox [--model <model>] -C <worktree> "<prompt>"
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox [--model <model>] -C <worktree> "<prompt>"
 
 # RequirePermissions=true (default)
-codex exec --json --skip-git-repo-check --sandbox workspace-write [--model <model>] -C <worktree> "<prompt>"
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write [--model <model>] -C <worktree> "<prompt>"
 ```
 
 See `docs/codex-setup.md` for full setup and auth details.
