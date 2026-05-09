@@ -363,6 +363,17 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
 				continue
 			}
+			// Gate dispatch on workflow state too: an agent may have just
+			// exited while the workflow is still in verify_commits /
+			// link_pr_and_review. Without this, a fresh issue (e.g.
+			// kind=conflict appearing because main moved during the agent
+			// run) races the in-flight workflow's tail steps and triggers
+			// a layered re-dispatch that DispatchEvent later rejects, but
+			// only after we've prepped a worktree and emitted audit
+			// noise.
+			if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
+				continue
+			}
 			if !r.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA) {
 				continue
 			}

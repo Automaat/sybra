@@ -39,10 +39,15 @@ const renovatePRQuery = `query($q: String!) {
                 state
                 contexts(first: 50) {
                   nodes {
+                    __typename
                     ... on CheckRun {
                       name
                       status
                       conclusion
+                    }
+                    ... on StatusContext {
+                      name: context
+                      state
                     }
                   }
                 }
@@ -172,7 +177,11 @@ func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
 					if ctx.Name == "" {
 						continue
 					}
-					checks = append(checks, CheckRunInfo(ctx))
+					checks = append(checks, CheckRunInfo{
+						Name:       ctx.Name,
+						Status:     ctx.Status,
+						Conclusion: ctx.Conclusion,
+					})
 				}
 			}
 		}
