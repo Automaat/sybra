@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"github.com/Automaat/sybra/internal/executil"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrBranchMissing is returned by PushForce when the local branch ref does not exist.
+var ErrBranchMissing = errors.New("local branch ref does not exist")
 
 // LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
 // RepoConfig (not an error) if the file does not exist.
@@ -291,7 +295,15 @@ func PushUpstream(worktreePath, branch string) error {
 // PushForce force-pushes the branch to origin using --force-with-lease.
 // Used after a local rebase to sync the remote without overwriting commits
 // from other authors (--force-with-lease fails if remote has unknown commits).
+// Returns ErrBranchMissing if the local branch ref does not exist.
 func PushForce(worktreePath, branch string) error {
+	if err := executil.Run(worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return ErrBranchMissing
+		}
+		return err
+	}
 	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", "origin", branch)
 }
 

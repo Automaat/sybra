@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -156,9 +157,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 				// Sync remote after rebase — local SHAs changed, remote still has
 				// old commits. create_pr push would fail with "diverged" otherwise.
 				callPhase(onPhase, "Pushing upstream…")
-				if err := project.PushForce(wtPath, wtBranch); err != nil {
-					m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
-				}
+				m.logPushForce(t.ID, wtBranch, project.PushForce(wtPath, wtBranch))
 			}
 			m.installChecks(wtPath, proj)
 			m.ensureBranch(t, wtBranch)
@@ -186,9 +185,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		} else {
 			// Sync remote after rebase.
 			callPhase(onPhase, "Pushing upstream…")
-			if err := project.PushForce(wtPath, wtBranch); err != nil {
-				m.logger.Warn("worktree.push-force", "task_id", t.ID, "branch", wtBranch, "err", err)
-			}
+			m.logPushForce(t.ID, wtBranch, project.PushForce(wtPath, wtBranch))
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		callPhase(onPhase, "Running setup…")
@@ -705,5 +702,16 @@ func (m *Manager) ensureBranch(t task.Task, branch string) {
 	}
 	if _, err := m.tasks.Update(t.ID, task.Update{Branch: task.Ptr(branch)}); err != nil {
 		m.logger.Error("worktree.set-branch", "task_id", t.ID, "err", err)
+	}
+}
+
+func (m *Manager) logPushForce(taskID, branch string, err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, project.ErrBranchMissing) {
+		m.logger.Info("worktree.push-force-skipped", "task_id", taskID, "branch", branch, "reason", "local branch ref missing")
+	} else {
+		m.logger.Warn("worktree.push-force", "task_id", taskID, "branch", branch, "err", err)
 	}
 }
