@@ -360,6 +360,131 @@ func TestCreateWithProject(t *testing.T) {
 	}
 }
 
+// TestCreateDedupActiveDuplicate covers the orchestrator double-dispatch case:
+// two `sybra-cli create` calls with the same project+issue+title within seconds
+// must collapse onto the first task instead of forking a parallel one.
+func TestCreateDedupActiveDuplicate(t *testing.T) {
+	setupStore(t)
+
+	args := []string{
+		"--json", "create",
+		"--title", "refactor: extract styles",
+		"--project", "owner/repo",
+		"--issue", "https://github.com/owner/repo/issues/152",
+	}
+
+	code, out := runCLI(t, args...)
+	if code != 0 {
+		t.Fatalf("first create exit %d: %s", code, out)
+	}
+	var first task.Task
+	mustUnmarshal(t, out, &first)
+
+	code, out = runCLI(t, args...)
+	if code != 0 {
+		t.Fatalf("second create (dedup) exit %d: %s", code, out)
+	}
+	var second task.Task
+	mustUnmarshal(t, out, &second)
+
+	if second.ID != first.ID {
+		t.Fatalf("dedup failed: got new task %s, want existing %s", second.ID, first.ID)
+	}
+
+	code, out = runCLI(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d", code)
+	}
+	var tasks []task.Task
+	mustUnmarshal(t, out, &tasks)
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task after dedup, got %d", len(tasks))
+	}
+}
+
+// TestCreateDedupAllowsDifferentTitle confirms the matcher is title-strict so
+// distinct subtasks of an umbrella issue (same project+issue, different title)
+// are not collapsed.
+func TestCreateDedupAllowsDifferentTitle(t *testing.T) {
+	setupStore(t)
+
+	common := []string{
+		"--project", "owner/repo",
+		"--issue", "https://github.com/owner/repo/issues/152",
+	}
+
+	code, _ := runCLI(t, append([]string{"--json", "create", "--title", "subtask A"}, common...)...)
+	if code != 0 {
+		t.Fatalf("first create exit %d", code)
+	}
+	code, _ = runCLI(t, append([]string{"--json", "create", "--title", "subtask B"}, common...)...)
+	if code != 0 {
+		t.Fatalf("second create exit %d", code)
+	}
+
+	_, out := runCLI(t, "--json", "list")
+	var tasks []task.Task
+	mustUnmarshal(t, out, &tasks)
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 tasks (different titles), got %d", len(tasks))
+	}
+}
+
+// TestCreateDedupSkipsTerminalTask confirms a finished task does not block a
+// fresh dispatch on the same issue+title (e.g. operator wants a re-do).
+func TestCreateDedupSkipsTerminalTask(t *testing.T) {
+	setupStore(t)
+
+	args := []string{
+		"--json", "create",
+		"--title", "redo me",
+		"--project", "owner/repo",
+		"--issue", "https://github.com/owner/repo/issues/9",
+	}
+	_, out := runCLI(t, args...)
+	var first task.Task
+	mustUnmarshal(t, out, &first)
+
+	if code, msg := runCLI(t, "--json", "update", first.ID, "--status", "done"); code != 0 {
+		t.Fatalf("mark done exit %d: %s", code, msg)
+	}
+
+	code, out := runCLI(t, args...)
+	if code != 0 {
+		t.Fatalf("re-create exit %d: %s", code, out)
+	}
+	var second task.Task
+	mustUnmarshal(t, out, &second)
+	if second.ID == first.ID {
+		t.Fatalf("re-dispatch after done was deduped (got same id %s)", first.ID)
+	}
+}
+
+// TestCreateDedupAllowDupFlag confirms --allow-dup bypasses the check.
+func TestCreateDedupAllowDupFlag(t *testing.T) {
+	setupStore(t)
+
+	args := []string{
+		"--json", "create",
+		"--title", "force dup",
+		"--project", "owner/repo",
+		"--issue", "https://github.com/owner/repo/issues/1",
+	}
+	_, out := runCLI(t, args...)
+	var first task.Task
+	mustUnmarshal(t, out, &first)
+
+	code, out := runCLI(t, append(args, "--allow-dup")...)
+	if code != 0 {
+		t.Fatalf("forced create exit %d: %s", code, out)
+	}
+	var second task.Task
+	mustUnmarshal(t, out, &second)
+	if second.ID == first.ID {
+		t.Fatalf("--allow-dup did not bypass dedup")
+	}
+}
+
 func TestUpdateProject(t *testing.T) {
 	setupStore(t)
 
