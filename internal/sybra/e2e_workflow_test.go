@@ -403,8 +403,7 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 				"exec",
 				"--json",
 				"--skip-git-repo-check",
-				"--sandbox",
-				"workspace-write",
+				"--dangerously-bypass-approvals-and-sandbox",
 				"--model\ngpt-5.4",
 			} {
 				if !strings.Contains(args, want) {

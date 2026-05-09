@@ -324,7 +324,7 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	model := normalizeModel(prov, cfg.Model)
 	switch prov {
 	case "codex":
-		return buildCodexCommand(model, cfg.RequirePermissions), nil
+		return buildCodexCommand(model, cfg.RequirePermissions, cfg.Mode == "headless"), nil
 	default:
 		return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions), nil
 	}
@@ -345,9 +345,9 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 }
 
 // buildCodexCommand builds the display command string for a Codex agent.
-func buildCodexCommand(model string, requirePerms bool) string {
+func buildCodexCommand(model string, requirePerms, headless bool) string {
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check"}
-	parts = append(parts, codexSandboxArgs(requirePerms)...)
+	parts = append(parts, codexSandboxArgs(requirePerms, headless)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
@@ -360,13 +360,20 @@ func buildCodexCommand(model string, requirePerms bool) string {
 // inside a Docker/LXC container whose kernel blocks unprivileged user
 // namespaces (kernel.unprivileged_userns_clone=0), where bwrap crashes
 // before the agent can execute any command.
-func codexSandboxArgs(requirePerms bool) []string {
+//
+// headless must be true for headless runs. --sandbox workspace-write asks
+// for user approval on writes outside the workspace; in headless mode there
+// is no UI to serve those approval prompts, so they auto-reject and the run
+// fails. Bypass mode is used instead.
+func codexSandboxArgs(requirePerms, headless bool) []string {
 	if os.Getenv("SYBRA_DISABLE_CODEX_SANDBOX") == "1" {
 		return []string{"--sandbox", "danger-full-access"}
 	}
-	if !requirePerms {
-		// Mirror Claude's --dangerously-skip-permissions: bypass all approval
-		// prompts and sandbox restrictions.
+	if !requirePerms || headless {
+		// Bypass all approval prompts and sandbox restrictions.
+		// For headless runs this is required regardless of RequirePermissions:
+		// --sandbox workspace-write auto-rejects approval requests since there
+		// is no TTY/UI to serve them, which silently breaks the agent run.
 		return []string{"--dangerously-bypass-approvals-and-sandbox"}
 	}
 	return []string{"--sandbox", "workspace-write"}
