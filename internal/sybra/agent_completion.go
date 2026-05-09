@@ -180,6 +180,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	}
 	in := ag.GetInputTokens()
 	out := ag.GetOutputTokens()
+	reasoning := ag.GetReasoningTokens()
 	agCost := cost
 	if agCost == 0 && ag.Provider == "codex" {
 		agCost = stats.EstimateCost(ag.Model, in, out)
@@ -195,19 +196,20 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		}
 	}
 	_ = h.stats.Record(stats.RunRecord{
-		ID:           ag.ID,
-		TaskID:       ag.TaskID,
-		ProjectID:    projectID,
-		Mode:         ag.Mode,
-		Role:         string(agent.RoleFromName(ag.Name)),
-		Model:        ag.Model,
-		Provider:     ag.Provider,
-		CostUSD:      agCost,
-		DurationS:    duration,
-		InputTokens:  in,
-		OutputTokens: out,
-		Outcome:      outcome,
-		Timestamp:    time.Now(),
+		ID:              ag.ID,
+		TaskID:          ag.TaskID,
+		ProjectID:       projectID,
+		Mode:            ag.Mode,
+		Role:            string(agent.RoleFromName(ag.Name)),
+		Model:           ag.Model,
+		Provider:        ag.Provider,
+		CostUSD:         agCost,
+		DurationS:       duration,
+		InputTokens:     in,
+		OutputTokens:    out,
+		ReasoningTokens: reasoning,
+		Outcome:         outcome,
+		Timestamp:       time.Now(),
 	})
 }
 

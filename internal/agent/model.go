@@ -30,25 +30,26 @@ const (
 )
 
 type Agent struct {
-	ID           string    `json:"id"`
-	TaskID       string    `json:"taskId"`
-	Mode         string    `json:"mode"`
-	State        State     `json:"state"`
-	SessionID    string    `json:"sessionId"`
-	CostUSD      float64   `json:"costUsd"`
-	InputTokens  int       `json:"inputTokens,omitempty"`
-	OutputTokens int       `json:"outputTokens,omitempty"`
-	StartedAt    time.Time `json:"startedAt"`
-	LastEventAt  time.Time `json:"lastEventAt"`
-	LogPath      string    `json:"logPath,omitempty"`
-	External     bool      `json:"external"`
-	PID          int       `json:"pid,omitempty"`
-	Command      string    `json:"command,omitempty"`
-	Name         string    `json:"name,omitempty"`
-	Project      string    `json:"project,omitempty"`
-	Provider     string    `json:"provider,omitempty"`
-	Model        string    `json:"model,omitempty"`
-	Prompt       string    `json:"prompt,omitempty"`
+	ID              string    `json:"id"`
+	TaskID          string    `json:"taskId"`
+	Mode            string    `json:"mode"`
+	State           State     `json:"state"`
+	SessionID       string    `json:"sessionId"`
+	CostUSD         float64   `json:"costUsd"`
+	InputTokens     int       `json:"inputTokens,omitempty"`
+	OutputTokens    int       `json:"outputTokens,omitempty"`
+	ReasoningTokens int       `json:"reasoningTokens,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	LastEventAt     time.Time `json:"lastEventAt"`
+	LogPath         string    `json:"logPath,omitempty"`
+	External        bool      `json:"external"`
+	PID             int       `json:"pid,omitempty"`
+	Command         string    `json:"command,omitempty"`
+	Name            string    `json:"name,omitempty"`
+	Project         string    `json:"project,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Prompt          string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
@@ -243,7 +244,7 @@ func (a *Agent) GetSessionFilePath() string {
 
 // AddResultStats merges a result-event's stats into the running totals
 // and returns the new cumulative CostUSD.
-func (a *Agent) AddResultStats(sessionID string, cost float64, in, out int) float64 {
+func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
 	a.mu.Lock()
 	if sessionID != "" {
 		a.SessionID = sessionID
@@ -251,6 +252,7 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out int) floa
 	a.CostUSD += cost
 	a.InputTokens += in
 	a.OutputTokens += out
+	a.ReasoningTokens += reasoning
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
@@ -348,6 +350,13 @@ func (a *Agent) GetOutputTokens() int {
 	return a.OutputTokens
 }
 
+// GetReasoningTokens returns the cumulative reasoning token count.
+func (a *Agent) GetReasoningTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ReasoningTokens
+}
+
 // GetLogPath returns the current output log path.
 func (a *Agent) GetLogPath() string {
 	a.mu.RLock()
@@ -433,14 +442,15 @@ type PlanStep struct {
 }
 
 type StreamEvent struct {
-	Type         string    `json:"type"`
-	Content      string    `json:"content,omitempty"`
-	SessionID    string    `json:"session_id,omitempty"`
-	CostUSD      float64   `json:"cost_usd,omitempty"`
-	InputTokens  int       `json:"input_tokens,omitempty"`
-	OutputTokens int       `json:"output_tokens,omitempty"`
-	Subtype      string    `json:"subtype,omitempty"`
-	Timestamp    time.Time `json:"timestamp"`
+	Type            string    `json:"type"`
+	Content         string    `json:"content,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	CostUSD         float64   `json:"cost_usd,omitempty"`
+	InputTokens     int       `json:"input_tokens,omitempty"`
+	OutputTokens    int       `json:"output_tokens,omitempty"`
+	ReasoningTokens int       `json:"reasoning_tokens,omitempty"`
+	Subtype         string    `json:"subtype,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"error_type,omitempty"`
@@ -455,18 +465,19 @@ type StreamEvent struct {
 // ConvoEvent is a rich event for conversational mode, preserving full tool
 // call structure for the chat UI.
 type ConvoEvent struct {
-	Type         string            `json:"type"`
-	Subtype      string            `json:"subtype,omitempty"`
-	SessionID    string            `json:"sessionId,omitempty"`
-	Text         string            `json:"text,omitempty"`
-	ToolUses     []ToolUseBlock    `json:"toolUses,omitempty"`
-	ToolResults  []ToolResultBlock `json:"toolResults,omitempty"`
-	CostUSD      float64           `json:"costUsd,omitempty"`
-	InputTokens  int               `json:"inputTokens,omitempty"`
-	OutputTokens int               `json:"outputTokens,omitempty"`
-	IsPartial    bool              `json:"isPartial,omitempty"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Raw          json.RawMessage   `json:"raw,omitempty"`
+	Type            string            `json:"type"`
+	Subtype         string            `json:"subtype,omitempty"`
+	SessionID       string            `json:"sessionId,omitempty"`
+	Text            string            `json:"text,omitempty"`
+	ToolUses        []ToolUseBlock    `json:"toolUses,omitempty"`
+	ToolResults     []ToolResultBlock `json:"toolResults,omitempty"`
+	CostUSD         float64           `json:"costUsd,omitempty"`
+	InputTokens     int               `json:"inputTokens,omitempty"`
+	OutputTokens    int               `json:"outputTokens,omitempty"`
+	ReasoningTokens int               `json:"reasoningTokens,omitempty"`
+	IsPartial       bool              `json:"isPartial,omitempty"`
+	Timestamp       time.Time         `json:"timestamp"`
+	Raw             json.RawMessage   `json:"raw,omitempty"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"errorType,omitempty"`

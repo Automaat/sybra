@@ -71,10 +71,11 @@ func aggregateByProjectType(byProject []stats.GroupedStat, types map[string]stri
 
 func addSummary(a, b stats.Summary) stats.Summary {
 	return stats.Summary{
-		TotalCostUSD:      a.TotalCostUSD + b.TotalCostUSD,
-		TotalRuns:         a.TotalRuns + b.TotalRuns,
-		TotalDurationS:    a.TotalDurationS + b.TotalDurationS,
-		TotalInputTokens:  a.TotalInputTokens + b.TotalInputTokens,
-		TotalOutputTokens: a.TotalOutputTokens + b.TotalOutputTokens,
+		TotalCostUSD:         a.TotalCostUSD + b.TotalCostUSD,
+		TotalRuns:            a.TotalRuns + b.TotalRuns,
+		TotalDurationS:       a.TotalDurationS + b.TotalDurationS,
+		TotalInputTokens:     a.TotalInputTokens + b.TotalInputTokens,
+		TotalOutputTokens:    a.TotalOutputTokens + b.TotalOutputTokens,
+		TotalReasoningTokens: a.TotalReasoningTokens + b.TotalReasoningTokens,
 	}
 }

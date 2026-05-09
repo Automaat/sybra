@@ -106,6 +106,9 @@
         <p class="mt-1 text-2xl font-bold">
           {formatTokens(summary.totalInputTokens)} / {formatTokens(summary.totalOutputTokens)}
         </p>
+        {#if summary.totalReasoningTokens}
+          <p class="mt-0.5 text-xs text-surface-400">{formatTokens(summary.totalReasoningTokens)} reasoning</p>
+        {/if}
       </div>
     </div>
   {/if}
@@ -130,6 +133,7 @@
                   <th class="pb-2 text-right">Runs</th>
                   <th class="pb-2 text-right">Cost</th>
                   <th class="pb-2 text-right">Duration</th>
+                  <th class="pb-2 text-right">Reasoning</th>
                 </tr>
               </thead>
               <tbody>
@@ -139,6 +143,7 @@
                     <td class="py-1.5 text-right">{row.stats.totalRuns}</td>
                     <td class="py-1.5 text-right">${row.stats.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right">{formatDuration(row.stats.totalDurationS)}</td>
+                    <td class="py-1.5 text-right text-surface-400">{row.stats.totalReasoningTokens ? formatTokens(row.stats.totalReasoningTokens) : '—'}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -165,6 +170,7 @@
                 <th class="pb-2">Model</th>
                 <th class="pb-2 text-right">Cost</th>
                 <th class="pb-2 text-right">Duration</th>
+                <th class="pb-2 text-right">Reasoning</th>
                 <th class="pb-2">Outcome</th>
               </tr>
             </thead>
@@ -180,6 +186,7 @@
                   <td class="py-1.5 text-xs">{run.model || '—'}</td>
                   <td class="py-1.5 text-right text-xs">${run.costUsd.toFixed(4)}</td>
                   <td class="py-1.5 text-right text-xs">{formatDuration(run.durationS)}</td>
+                  <td class="py-1.5 text-right text-xs text-surface-400">{run.reasoningTokens ? formatTokens(run.reasoningTokens) : '—'}</td>
                   <td class="py-1.5">
                     <span class="rounded px-1.5 py-0.5 text-xs {run.outcome === 'completed'
                       ? 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'

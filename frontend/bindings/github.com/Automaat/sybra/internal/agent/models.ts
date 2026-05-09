@@ -21,6 +21,7 @@ export class Agent {
     "costUsd": number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "reasoningTokens"?: number;
     "startedAt": time$0.Time;
     "lastEventAt": time$0.Time;
     "logPath"?: string;
@@ -47,6 +48,13 @@ export class Agent {
     "errorKind"?: string;
     "errorMsg"?: string;
     "awaitingApproval"?: boolean;
+
+    /**
+     * Resumable is set when the agent was stopped intentionally via StopAgent
+     * and CC exited with a valid session_id, meaning the next run can pass
+     * --resume to continue the conversation.
+     */
+    "resumable"?: boolean;
 
     /** Creates a new Agent instance. */
     constructor($$source: Partial<Agent> = {}) {
@@ -85,10 +93,10 @@ export class Agent {
      * Creates a new Agent instance from a string or object.
      */
     static createFrom($$source: any = {}): Agent {
-        const $$createField21_0 = $$createType0;
+        const $$createField22_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField21_0($$parsedSource["pluginErrors"]);
+            $$parsedSource["pluginErrors"] = $$createField22_0($$parsedSource["pluginErrors"]);
         }
         return new Agent($$parsedSource as Partial<Agent>);
     }
@@ -108,6 +116,7 @@ export class ConvoEvent {
     "costUsd"?: number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "reasoningTokens"?: number;
     "isPartial"?: boolean;
     "timestamp": time$0.Time;
     "raw"?: json$0.RawMessage;
@@ -199,6 +208,7 @@ export class StreamEvent {
     "cost_usd"?: number;
     "input_tokens"?: number;
     "output_tokens"?: number;
+    "reasoning_tokens"?: number;
     "subtype"?: string;
     "timestamp": time$0.Time;
 
@@ -236,14 +246,14 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField10_0 = $$createType6;
-        const $$createField11_0 = $$createType0;
+        const $$createField11_0 = $$createType6;
+        const $$createField12_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
-            $$parsedSource["plan_steps"] = $$createField10_0($$parsedSource["plan_steps"]);
+            $$parsedSource["plan_steps"] = $$createField11_0($$parsedSource["plan_steps"]);
         }
         if ("plugin_errors" in $$parsedSource) {
-            $$parsedSource["plugin_errors"] = $$createField11_0($$parsedSource["plugin_errors"]);
+            $$parsedSource["plugin_errors"] = $$createField12_0($$parsedSource["plugin_errors"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }
