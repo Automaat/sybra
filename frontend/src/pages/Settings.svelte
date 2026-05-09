@@ -59,7 +59,7 @@
     GetCodexModels().then(models => {
       if (models && models.length > 0) {
         codexDynamicModels = [
-          { value: '', label: `Default (${models[0].slug})` },
+          { value: '', label: codexFallbackModels[0].label },
           ...models.map(m => ({ value: m.slug, label: m.display_name })),
         ]
       }
