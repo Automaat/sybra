@@ -62,6 +62,11 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	}
 
 done:
+	// If CC exited after a graceful SIGINT (WasStopped + session_id captured
+	// from the final result event), the next run can pass --resume.
+	if a.WasStopped() && a.GetSessionID() != "" {
+		a.SetResumable(true)
+	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
