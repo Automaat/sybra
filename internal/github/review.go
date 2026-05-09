@@ -36,6 +36,7 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
         commits(last: 1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 state
                 contexts(first: 20) {
@@ -74,6 +75,7 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
         commits(last: 1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 state
                 contexts(first: 20) {

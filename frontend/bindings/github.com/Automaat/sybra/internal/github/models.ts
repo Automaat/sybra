@@ -122,6 +122,7 @@ export class PullRequest {
     "isDraft": boolean;
     "labels": string[];
     "headRefName": string;
+    "headSha": string;
 
     /**
      * SUCCESS, FAILURE, PENDING, or ""
@@ -175,6 +176,9 @@ export class PullRequest {
         }
         if (!("headRefName" in $$source)) {
             this["headRefName"] = "";
+        }
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
         }
         if (!("ciStatus" in $$source)) {
             this["ciStatus"] = "";
@@ -230,6 +234,7 @@ export class RenovatePR {
     "isDraft": boolean;
     "labels": string[];
     "headRefName": string;
+    "headSha": string;
 
     /**
      * SUCCESS, FAILURE, PENDING, or ""
@@ -285,6 +290,9 @@ export class RenovatePR {
         if (!("headRefName" in $$source)) {
             this["headRefName"] = "";
         }
+        if (!("headSha" in $$source)) {
+            this["headSha"] = "";
+        }
         if (!("ciStatus" in $$source)) {
             this["ciStatus"] = "";
         }
@@ -321,13 +329,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField17_0 = $$createType2;
+        const $$createField18_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField17_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField18_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }

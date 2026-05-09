@@ -13,6 +13,7 @@ type IssueTracker struct {
 	mu       sync.Mutex
 	handled  map[string]time.Time
 	retries  map[string]int
+	lastSHA  map[string]string
 	cooldown time.Duration
 	now      func() time.Time // injectable for testing
 }
@@ -22,6 +23,7 @@ func NewIssueTracker(cooldown time.Duration) *IssueTracker {
 	return &IssueTracker{
 		handled:  make(map[string]time.Time),
 		retries:  make(map[string]int),
+		lastSHA:  make(map[string]string),
 		cooldown: cooldown,
 		now:      time.Now,
 	}
@@ -31,13 +33,19 @@ func issueKey(taskID string, kind PRIssueKind) string {
 	return taskID + ":" + string(kind)
 }
 
-// ShouldHandle returns true if this issue hasn't been handled within the
-// cooldown and hasn't exceeded max retries.
-func (t *IssueTracker) ShouldHandle(taskID string, kind PRIssueKind) bool {
+// ShouldHandle returns true if this issue should be retried.
+// Blocks when: max retries reached, same SHA as last attempt (no new commit),
+// or within cooldown window (first attempt or SHA unknown).
+func (t *IssueTracker) ShouldHandle(taskID string, kind PRIssueKind, sha string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	key := issueKey(taskID, kind)
 	if t.retries[key] >= maxRetries {
+		return false
+	}
+	// If SHA is known and unchanged, the fix attempt ran against this exact
+	// commit with no new push since — skip until a new commit arrives.
+	if sha != "" && t.lastSHA[key] == sha {
 		return false
 	}
 	last, ok := t.handled[key]
@@ -48,16 +56,20 @@ func (t *IssueTracker) ShouldHandle(taskID string, kind PRIssueKind) bool {
 }
 
 // MarkHandled records that an agent was spawned for this issue.
-func (t *IssueTracker) MarkHandled(taskID string, kind PRIssueKind) {
+func (t *IssueTracker) MarkHandled(taskID string, kind PRIssueKind, sha string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	key := issueKey(taskID, kind)
 	t.handled[key] = t.now()
 	t.retries[key]++
+	if sha != "" {
+		t.lastSHA[key] = sha
+	}
 }
 
-// ClearCooldown removes the cooldown for a task+issue so the next poll
-// can retry immediately. The retry counter is preserved.
+// ClearCooldown removes the time-based cooldown for a task+issue so the next
+// poll can retry immediately if the SHA has changed. The retry counter and
+// last-attempt SHA are preserved.
 func (t *IssueTracker) ClearCooldown(taskID string, kind PRIssueKind) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -71,6 +83,7 @@ func (t *IssueTracker) Clear(taskID string, kind PRIssueKind) {
 	key := issueKey(taskID, kind)
 	delete(t.handled, key)
 	delete(t.retries, key)
+	delete(t.lastSHA, key)
 }
 
 // Retries returns the current retry count for a task+issue.
@@ -89,6 +102,7 @@ func (t *IssueTracker) Cleanup() {
 		if v.Before(cutoff) {
 			delete(t.handled, k)
 			delete(t.retries, k)
+			delete(t.lastSHA, k)
 		}
 	}
 }

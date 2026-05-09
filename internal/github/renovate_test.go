@@ -33,9 +33,11 @@ func TestConvertRenovatePRs(t *testing.T) {
 		node := makeNode("renovate[bot]", "Bot")
 		node.Commits.Nodes = []struct {
 			Commit struct {
+				OID               string                `json:"oid"`
 				StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 			} `json:"commit"`
 		}{{Commit: struct {
+			OID               string                `json:"oid"`
 			StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 		}{StatusCheckRollup: &gqlStatusCheckRollup{
 			State: "FAILURE",

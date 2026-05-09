@@ -349,7 +349,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
 				continue
 			}
-			if !r.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind) {
+			if !r.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA) {
 				continue
 			}
 			if issues[i].Kind == github.PRIssueReadyToMerge {
@@ -421,7 +421,7 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
-	r.prTracker.MarkHandled(t.ID, issue.Kind)
+	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 	r.logAudit(audit.EventPRAutoMerged, t.ID, "", map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
 	})
@@ -504,7 +504,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		return
 	}
 
-	r.prTracker.MarkHandled(t.ID, issue.Kind)
+	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
 		"issue": string(issue.Kind), "pr": issue.PR.Number, "workflow": wfID,
 	})

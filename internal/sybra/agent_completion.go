@@ -242,13 +242,6 @@ func isSignalKill(err error) bool {
 //     (done/cancelled/in-review/human-required/blocked) match no triggers,
 //     so DispatchEvent returns "" without starting anything.
 func (h *AgentCompletionHandler) OnWorkflowComplete(info workflow.CompletionInfo) {
-	if kind := github.PRIssueKind(info.Variables["pr_issue_kind"]); kind != "" {
-		h.prTracker.ClearCooldown(info.TaskID, kind)
-		h.logger.Info("pr-tracker.cooldown-cleared",
-			"task_id", info.TaskID, "kind", string(kind),
-			"retries", h.prTracker.Retries(info.TaskID, kind))
-	}
-
 	if h.workflowEngine == nil {
 		return
 	}

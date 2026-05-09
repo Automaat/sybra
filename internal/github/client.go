@@ -97,6 +97,7 @@ const prQuery = `query($q: String!) {
         commits(last: 1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 state
                 contexts(first: 50) {
@@ -176,6 +177,7 @@ type gqlPR struct {
 	Commits struct {
 		Nodes []struct {
 			Commit struct {
+				OID               string                `json:"oid"`
 				StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 			} `json:"commit"`
 		} `json:"nodes"`
@@ -224,7 +226,9 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 
 	var ciStatus string
 	var hasPendingChecks bool
+	var headSHA string
 	if len(n.Commits.Nodes) > 0 {
+		headSHA = n.Commits.Nodes[0].Commit.OID
 		if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
 			ciStatus = rollup.State
 			for _, ctx := range rollup.Contexts.Nodes {
@@ -258,6 +262,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Title:             n.Title,
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
+		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,
 		RepoName:          n.Repository.Name,
 		Author:            n.Author.Login,
