@@ -14,10 +14,12 @@ import (
 // does not block on agent completion.
 type Dispatcher interface {
 	// Dispatchable reports whether the anomaly can be dispatched to an agent.
-	// Callers must check this before Dispatch to avoid spurious WARN logs for
-	// anomalies whose working directory can never be resolved (e.g. external
-	// GitHub-issue tasks with no worktree and an empty repoDir).
-	Dispatchable(a Anomaly) bool
+	// Returns (true, "") when dispatchable.
+	// Returns (false, "") when undispatchable for an expected reason (e.g. an
+	// external GitHub-issue task with no worktree and empty repoDir).
+	// Returns (false, reason) for unexpected conditions (task store not
+	// configured, transient task lookup failure) — callers should WARN.
+	Dispatchable(a Anomaly) (ok bool, skipReason string)
 	Dispatch(ctx context.Context, a Anomaly) (agentID string, err error)
 }
 
@@ -67,12 +69,31 @@ func NewAgentDispatcher(d AgentDispatcherDeps) *agentDispatcher {
 	}
 }
 
-// Dispatchable returns true if resolveTarget can produce a non-empty working
-// directory for a. When false, the Service skips dispatch entirely rather than
-// attempting and logging a WARN for every monitor tick.
-func (d *agentDispatcher) Dispatchable(a Anomaly) bool {
+// Dispatchable implements Dispatcher. It calls resolveTarget for the fast path
+// (dir non-empty → dispatchable). When dir is empty it classifies the reason:
+// expected cases (external task with no worktree) return (false, ""); unexpected
+// cases (missing task store, transient lookup failure) return (false, reason) so
+// the caller can emit a WARN instead of silently swallowing the anomaly.
+func (d *agentDispatcher) Dispatchable(a Anomaly) (ok bool, skipReason string) {
 	dir, _, _ := d.resolveTarget(a)
-	return dir != ""
+	if dir != "" {
+		return true, ""
+	}
+	// dir is empty — classify the root cause so the caller can distinguish
+	// expected external-task skips from unexpected resolution failures.
+	if a.TaskID == "" {
+		return false, "board-wide anomaly: repoDir not configured"
+	}
+	if d.tasks == nil {
+		return false, "task store not configured"
+	}
+	if _, err := d.tasks.Get(a.TaskID); err != nil {
+		return false, "task lookup failed: " + err.Error()
+	}
+	// Task exists but has no worktree and repoDir is empty — this is the
+	// known external-task case (e.g. GitHub-issue task on a machine with no
+	// local clone). Skip silently.
+	return false, ""
 }
 
 // Dispatch resolves a working directory and a task title for the anomaly,
@@ -128,7 +149,7 @@ func (d *agentDispatcher) resolveTarget(a Anomaly) (dir, taskID, name string) {
 // Dispatcher without spawning real agents.
 type noopDispatcher struct{}
 
-func (noopDispatcher) Dispatchable(Anomaly) bool                         { return true }
+func (noopDispatcher) Dispatchable(Anomaly) (ok bool, skipReason string) { return true, "" }
 func (noopDispatcher) Dispatch(context.Context, Anomaly) (string, error) { return "", nil }
 
 // NoopDispatcher returns a Dispatcher that never spawns a process. Exported

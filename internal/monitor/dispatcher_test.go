@@ -223,7 +223,8 @@ func TestDispatcher_EmptyRepoDirRejected(t *testing.T) {
 func TestDispatcher_DispatchableEmptyRepoDirNoWorktree(t *testing.T) {
 	d := &agentDispatcher{repoDir: ""}
 	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
-	if d.Dispatchable(a) {
+	ok, _ := d.Dispatchable(a)
+	if ok {
 		t.Error("want false when repoDir empty and no worktree")
 	}
 }
@@ -231,7 +232,8 @@ func TestDispatcher_DispatchableEmptyRepoDirNoWorktree(t *testing.T) {
 func TestDispatcher_DispatchableWithRepoDir(t *testing.T) {
 	d := &agentDispatcher{repoDir: "/repo"}
 	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
-	if !d.Dispatchable(a) {
+	ok, _ := d.Dispatchable(a)
+	if !ok {
 		t.Error("want true when repoDir non-empty")
 	}
 }
@@ -244,16 +246,62 @@ func TestDispatcher_DispatchableWithWorktree(t *testing.T) {
 	}
 	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: worktreeFn}
 	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
-	if !d.Dispatchable(a) {
+	ok, _ := d.Dispatchable(a)
+	if !ok {
 		t.Error("want true when worktree resolves")
+	}
+}
+
+func TestDispatcher_DispatchableMissingTaskStore_ReturnsReason(t *testing.T) {
+	// tasks==nil with a TaskID is unexpected — must return a non-empty reason.
+	d := &agentDispatcher{repoDir: "", tasks: nil, worktreePath: nil}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false")
+	}
+	if reason == "" {
+		t.Error("want non-empty skip reason for missing task store")
+	}
+}
+
+func TestDispatcher_DispatchableTransientLookupFailure_ReturnsReason(t *testing.T) {
+	// tasks.Get failure with empty repoDir is unexpected — must return a reason.
+	tasks := dispatcherTasksStub{err: errors.New("db timeout")}
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: nil}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false")
+	}
+	if reason == "" {
+		t.Error("want non-empty skip reason for transient task lookup failure")
+	}
+}
+
+func TestDispatcher_DispatchableExternalTask_SilentSkip(t *testing.T) {
+	// Task exists, worktree returns false, repoDir empty → external task.
+	// This is an expected/known case — skip reason must be empty.
+	theTask := task.Task{ID: "abc123"}
+	tasks := dispatcherTasksStub{task: theTask}
+	worktreeFn := func(task.Task) (string, bool) { return "", false }
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: worktreeFn}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false for external task with no worktree")
+	}
+	if reason != "" {
+		t.Errorf("want empty reason for known external-task skip, got %q", reason)
 	}
 }
 
 func TestDispatcher_UndispatchableSkippedInService(t *testing.T) {
 	// Verifies that when Dispatchable returns false the dispatcher is never
-	// called, no cooldown slot is consumed, and no WARN is produced.
+	// called and no cooldown slot is consumed. (A WARN is expected here because
+	// tasks==nil with a non-empty TaskID is an unexpected configuration.)
 	rr := &recordingRunner{}
-	// Empty repoDir + no worktree → Dispatchable returns false.
+	// Empty repoDir + no task store → Dispatchable returns (false, reason).
 	d := &agentDispatcher{agents: rr, repoDir: "", tasks: nil, worktreePath: nil}
 
 	svc := &Service{
