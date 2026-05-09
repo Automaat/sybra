@@ -37,6 +37,11 @@ type ReviewHandler struct {
 	prTracker      *github.IssueTracker
 	worktrees      *worktree.Manager
 	workflowEngine *workflow.Engine
+	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
+	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
+	// this hook a Renovate PR linked to a task by pr_number/branch never gets
+	// re-dispatched to pr-fix when CI fails. nil = renovate disabled.
+	renovatePRsFn func() []github.PullRequest
 }
 
 func newReviewHandler(
@@ -48,6 +53,7 @@ func newReviewHandler(
 	prTracker *github.IssueTracker,
 	emit func(string, any),
 	worktrees *worktree.Manager,
+	renovatePRsFn func() []github.PullRequest,
 ) *ReviewHandler {
 	return &ReviewHandler{
 		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
@@ -56,6 +62,7 @@ func newReviewHandler(
 		agents:        agents,
 		prTracker:     prTracker,
 		worktrees:     worktrees,
+		renovatePRsFn: renovatePRsFn,
 	}
 }
 
@@ -332,8 +339,10 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		})
 	}
 
+	monitoredPRs := r.monitoredPRs(summary)
+
 	if len(matchers) > 0 {
-		issues := github.MatchTaskPRs(summary.CreatedByMe, matchers)
+		issues := github.MatchTaskPRs(monitoredPRs, matchers)
 		r.prTracker.Cleanup()
 
 		for i := range issues {
@@ -350,7 +359,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			r.handlePRIssue(issues[i])
 		}
 
-		closedPRs := github.DetectClosedTaskPRs(summary.CreatedByMe, matchers, github.FetchPRState)
+		closedPRs := github.DetectClosedTaskPRs(monitoredPRs, matchers, github.FetchPRState)
 		for _, c := range closedPRs {
 			if r.agents.HasRunningAgentForTask(c.TaskID) {
 				r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
@@ -372,10 +381,28 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.detectPublishedReviews(tasks)
 
-	if prNeedsAttention(summary.CreatedByMe) {
+	if prNeedsAttention(monitoredPRs) {
 		return prPollFast
 	}
 	return prPollSlow
+}
+
+// monitoredPRs returns the union of user-authored PRs (from FetchReviews) and
+// Renovate-bot PRs (from renovatePRsFn). Renovate's PRs aren't in author:@me,
+// so without folding them in here the pr-fix monitor would never re-spawn an
+// agent on a Renovate PR whose CI keeps failing.
+func (r *ReviewHandler) monitoredPRs(summary github.ReviewSummary) []github.PullRequest {
+	if r.renovatePRsFn == nil {
+		return summary.CreatedByMe
+	}
+	renovatePRs := r.renovatePRsFn()
+	if len(renovatePRs) == 0 {
+		return summary.CreatedByMe
+	}
+	prs := make([]github.PullRequest, 0, len(summary.CreatedByMe)+len(renovatePRs))
+	prs = append(prs, summary.CreatedByMe...)
+	prs = append(prs, renovatePRs...)
+	return prs
 }
 
 func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
