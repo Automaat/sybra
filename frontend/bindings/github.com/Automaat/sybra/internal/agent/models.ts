@@ -38,6 +38,11 @@ export class Agent {
      * MaxTurns is the per-agent turn limit override; zero means use global guardrail.
      */
     "maxTurns"?: number;
+
+    /**
+     * PluginErrors holds plugin load failures from the most recent init event.
+     */
+    "pluginErrors"?: string[];
     "escalationReason"?: string;
     "errorKind"?: string;
     "errorMsg"?: string;
@@ -80,7 +85,11 @@ export class Agent {
      * Creates a new Agent instance from a string or object.
      */
     static createFrom($$source: any = {}): Agent {
+        const $$createField21_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pluginErrors" in $$parsedSource) {
+            $$parsedSource["pluginErrors"] = $$createField21_0($$parsedSource["pluginErrors"]);
+        }
         return new Agent($$parsedSource as Partial<Agent>);
     }
 }
@@ -126,8 +135,8 @@ export class ConvoEvent {
      * Creates a new ConvoEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): ConvoEvent {
-        const $$createField4_0 = $$createType1;
-        const $$createField5_0 = $$createType3;
+        const $$createField4_0 = $$createType2;
+        const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("toolUses" in $$parsedSource) {
             $$parsedSource["toolUses"] = $$createField4_0($$parsedSource["toolUses"]);
@@ -206,6 +215,11 @@ export class StreamEvent {
      */
     "plan_steps"?: PlanStep[];
 
+    /**
+     * PluginErrors carries plugin load failures surfaced by the init event.
+     */
+    "plugin_errors"?: string[];
+
     /** Creates a new StreamEvent instance. */
     constructor($$source: Partial<StreamEvent> = {}) {
         if (!("type" in $$source)) {
@@ -222,10 +236,14 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField10_0 = $$createType5;
+        const $$createField10_0 = $$createType6;
+        const $$createField11_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
             $$parsedSource["plan_steps"] = $$createField10_0($$parsedSource["plan_steps"]);
+        }
+        if ("plugin_errors" in $$parsedSource) {
+            $$parsedSource["plugin_errors"] = $$createField11_0($$parsedSource["plugin_errors"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }
@@ -287,7 +305,7 @@ export class ToolUseBlock {
      * Creates a new ToolUseBlock instance from a string or object.
      */
     static createFrom($$source: any = {}): ToolUseBlock {
-        const $$createField2_0 = $$createType6;
+        const $$createField2_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("input" in $$parsedSource) {
             $$parsedSource["input"] = $$createField2_0($$parsedSource["input"]);
@@ -297,10 +315,11 @@ export class ToolUseBlock {
 }
 
 // Private type creation functions
-const $$createType0 = ToolUseBlock.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = ToolResultBlock.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = PlanStep.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Map($Create.Any, $Create.Any);
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = ToolUseBlock.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = ToolResultBlock.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = PlanStep.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = $Create.Map($Create.Any, $Create.Any);

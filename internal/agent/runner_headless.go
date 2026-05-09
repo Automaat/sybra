@@ -369,6 +369,14 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			}
 		}
 
+		if (event.Type == "system" || event.Type == "init") && len(event.PluginErrors) > 0 {
+			for _, e := range event.PluginErrors {
+				m.logger.Warn("agent.plugin_error", "id", a.ID, "error", e)
+			}
+			a.SetPluginErrors(event.PluginErrors)
+			m.emit(events.AgentPluginErrors(a.ID), PluginErrorsEvent{Errors: event.PluginErrors})
+		}
+
 		if event.Type == "assistant" {
 			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
 				return
@@ -534,6 +542,8 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
 	switch e.Type {
+	case "system", "init":
+		ev.PluginErrors = e.PluginErrors
 	case "assistant":
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)

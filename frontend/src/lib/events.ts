@@ -14,6 +14,7 @@ export const AgentStuckPrefix = "agent:stuck:"
 export const AgentConvoPrefix = "agent:convo:"
 export const AgentApprovalPrefix = "agent:approval:"
 export const AgentEscalationPrefix = "agent:escalation:"
+export const AgentPluginErrorsPrefix = "agent:plugin_errors:"
 export const OrchestratorState = "orchestrator:state"
 export const MonitorReport = "monitor:report"
 export const SelfMonitorReport = "selfmonitor:report"
@@ -36,5 +37,6 @@ export const agentConvo = (id: string) => `${AgentConvoPrefix}${id}`
 export const agentError = (id: string) => `${AgentErrorPrefix}${id}`
 export const agentEscalation = (id: string) => `${AgentEscalationPrefix}${id}`
 export const agentOutput = (id: string) => `${AgentOutputPrefix}${id}`
+export const agentPluginErrors = (id: string) => `${AgentPluginErrorsPrefix}${id}`
 export const agentState = (id: string) => `${AgentStatePrefix}${id}`
 export const agentStuck = (id: string) => `${AgentStuckPrefix}${id}`
