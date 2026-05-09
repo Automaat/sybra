@@ -365,7 +365,9 @@ func codexSandboxArgs(requirePerms bool) []string {
 		return []string{"--sandbox", "danger-full-access"}
 	}
 	if !requirePerms {
-		return []string{"--full-auto"}
+		// Mirror Claude's --dangerously-skip-permissions: bypass all approval
+		// prompts and sandbox restrictions.
+		return []string{"--dangerously-bypass-approvals-and-sandbox"}
 	}
 	return []string{"--sandbox", "workspace-write"}
 }

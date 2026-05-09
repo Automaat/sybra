@@ -156,18 +156,22 @@ Sybra supports two agent providers: `claude` (default) and `codex`. The active p
 | Task is a self-contained script or shell automation | Yes |
 | Task requires OpenAI-specific models or tooling | Yes |
 | Task needs session resume across runs | No — use Claude (`--resume` not supported in Codex) |
-| Task needs fine-grained tool allowlist | No — Codex only supports `--full-auto` or `--sandbox workspace-write` |
+| Task needs fine-grained tool allowlist | No — Codex only supports `--sandbox workspace-write` (RequirePermissions=true) or `--dangerously-bypass-approvals-and-sandbox` (RequirePermissions=false) |
 
 **Codex limitations to keep in mind:**
 
 - No session resume — every headless run starts fresh; multi-turn recovery requires re-stating context in the prompt
-- No `--allowedTools` — use `RequirePermissions=true` to restrict to `workspace-write` sandbox, or accept `--full-auto`
+- No `--allowedTools` — use `RequirePermissions=true` to restrict to `workspace-write` sandbox, or `RequirePermissions=false` for full bypass (`--dangerously-bypass-approvals-and-sandbox`)
 - Cost not reported in stream — usage visible on OpenAI dashboard, not in Sybra UI
 - Interactive mode spawns a new process per turn (no persistent stdin)
 
 If the provider is `codex`, Sybra calls:
 ```bash
-codex exec --json --skip-git-repo-check --full-auto [--model <model>] -C <worktree> "<prompt>"
+# RequirePermissions=false
+codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox [--model <model>] -C <worktree> "<prompt>"
+
+# RequirePermissions=true (default)
+codex exec --json --skip-git-repo-check --sandbox workspace-write [--model <model>] -C <worktree> "<prompt>"
 ```
 
 See `docs/codex-setup.md` for full setup and auth details.

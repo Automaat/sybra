@@ -74,10 +74,10 @@ Sybra maps generic aliases to provider-specific model IDs at runtime:
 Sybra spawns a `codex exec` subprocess per task:
 
 ```bash
-# Default (no permission restrictions)
-codex exec --json --skip-git-repo-check --full-auto --model gpt-5.4 -C <worktree> "<prompt>"
+# RequirePermissions=false (skip-permissions / bypass mode)
+codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
 
-# With RequirePermissions=true
+# RequirePermissions=true (sandboxed, file-write only)
 codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4 -C <worktree> "<prompt>"
 ```
 
@@ -93,7 +93,7 @@ Sybra spawns a new `codex exec --json` process for each user turn. Unlike Claude
 |---------|-------------|-------|
 | Session resume | `--resume <session-id>` | Not supported — each run is independent |
 | Tool allowlist | `--allowedTools tool1,tool2` | Not supported; use `--sandbox workspace-write` for file-write-only mode |
-| Permissions bypass | `--dangerously-skip-permissions` | `--full-auto` |
+| Permissions bypass | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
 | Session files | `~/.claude/projects/<key>/<id>.jsonl` | `~/.codex/sessions/rollout-<id>.jsonl` |
 | External discovery | Claude process detection via session files | Codex process detection via `pgrep -f codex` + session JSONL |
 | Cost reporting | Reported in `result` event (`cost_usd`) | Not reported in stream; billed on OpenAI dashboard |
