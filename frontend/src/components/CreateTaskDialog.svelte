@@ -79,7 +79,7 @@
       const updates: Record<string, unknown> = {}
       if (taskType !== 'normal') updates.task_type = taskType
       if (selectedProject) updates.project_id = selectedProject
-      if (forkSubagent) updates.fork_subagent = true
+      if (forkSubagent && effectiveMode === 'headless') updates.fork_subagent = true
       if (Object.keys(updates).length > 0) {
         t = await taskStore.update(t.id, updates)
       }

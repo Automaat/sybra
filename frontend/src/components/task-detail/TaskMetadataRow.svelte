@@ -295,6 +295,7 @@
     </div>
   {/if}
 
+  {#if task.agentMode === 'headless'}
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Fork Subagents</span>
     <button
@@ -316,6 +317,7 @@
       {/if}
     </button>
   </div>
+  {/if}
 
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Max Turns</span>
