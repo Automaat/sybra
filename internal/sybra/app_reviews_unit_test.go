@@ -3,6 +3,7 @@ package sybra
 import (
 	"testing"
 
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -74,6 +75,62 @@ func TestPRMonitorEligible(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := prMonitorEligible(&tt.tk); got != tt.want {
 				t.Errorf("prMonitorEligible(%+v) = %v, want %v", tt.tk, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMonitoredPRs covers the regression where Renovate-bot PRs linked to a
+// task by pr_number were silently skipped by the pr-monitor because
+// FetchReviews uses author:@me. monitoredPRs folds renovatePRsFn output into
+// the same slice that drives MatchTaskPRs and DetectClosedTaskPRs.
+func TestMonitoredPRs(t *testing.T) {
+	mine := github.PullRequest{Number: 1, Author: "me"}
+	bot := github.PullRequest{Number: 2, Author: "app/renovate"}
+	summary := github.ReviewSummary{CreatedByMe: []github.PullRequest{mine}}
+
+	tests := []struct {
+		name      string
+		fn        func() []github.PullRequest
+		wantNums  []int
+		wantAlloc bool // true when fn supplies extra PRs (forces a copy)
+	}{
+		{
+			name:     "nil fn returns CreatedByMe directly",
+			fn:       nil,
+			wantNums: []int{1},
+		},
+		{
+			name:     "empty fn result also returns CreatedByMe directly",
+			fn:       func() []github.PullRequest { return nil },
+			wantNums: []int{1},
+		},
+		{
+			name:      "fn returns renovate PRs — concatenated after CreatedByMe",
+			fn:        func() []github.PullRequest { return []github.PullRequest{bot} },
+			wantNums:  []int{1, 2},
+			wantAlloc: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &ReviewHandler{renovatePRsFn: tt.fn}
+			got := r.monitoredPRs(summary)
+			if len(got) != len(tt.wantNums) {
+				t.Fatalf("len = %d, want %d (got %+v)", len(got), len(tt.wantNums), got)
+			}
+			for i, n := range tt.wantNums {
+				if got[i].Number != n {
+					t.Errorf("got[%d].Number = %d, want %d", i, got[i].Number, n)
+				}
+			}
+			// When fn adds entries we must return a fresh slice — appending
+			// onto summary.CreatedByMe directly would mutate the caller's
+			// data on the next poll.
+			if tt.wantAlloc && len(got) > 0 && len(summary.CreatedByMe) > 0 &&
+				&got[0] == &summary.CreatedByMe[0] {
+				t.Error("monitoredPRs aliased summary.CreatedByMe; expected a copy")
 			}
 		})
 	}
