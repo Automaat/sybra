@@ -102,7 +102,9 @@ const prQuery = `query($q: String!) {
                 state
                 contexts(first: 50) {
                   nodes {
-                    ... on CheckRun { status }
+                    __typename
+                    ... on CheckRun { name status conclusion }
+                    ... on StatusContext { name: context state }
                   }
                 }
               }
@@ -120,10 +122,16 @@ const prQuery = `query($q: String!) {
   }
 }`
 
+// gqlCheckContext captures both `CheckRun` and `StatusContext` shapes from
+// the StatusCheckRollup contexts edge. The GraphQL query aliases
+// `StatusContext.context` → `name` and only `CheckRun` populates
+// status/conclusion, so callers must dispatch on Typename.
 type gqlCheckContext struct {
+	Typename   string `json:"__typename"`
 	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`     // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
+	Conclusion string `json:"conclusion"` // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
+	State      string `json:"state"`      // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
 }
 
 type gqlStatusCheckRollup struct {
@@ -230,11 +238,21 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	if len(n.Commits.Nodes) > 0 {
 		headSHA = n.Commits.Nodes[0].Commit.OID
 		if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
-			ciStatus = rollup.State
-			for _, ctx := range rollup.Contexts.Nodes {
-				if ctx.Status != "" && ctx.Status != "COMPLETED" {
-					hasPendingChecks = true
-					break
+			// Recompute rollup from contexts so non-gating reporters
+			// (codecov, sonarcloud) don't masquerade as CI failures and
+			// drive pr-fix loops. Fall back to the GitHub rollup state
+			// when no contexts came back (zero-checks PR or older gh).
+			filtered, filteredPending := rollupFromContexts(rollup.Contexts.Nodes)
+			if filtered != "" {
+				ciStatus = filtered
+				hasPendingChecks = filteredPending
+			} else {
+				ciStatus = rollup.State
+				for _, ctx := range rollup.Contexts.Nodes {
+					if ctx.Status != "" && ctx.Status != "COMPLETED" {
+						hasPendingChecks = true
+						break
+					}
 				}
 			}
 		}

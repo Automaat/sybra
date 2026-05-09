@@ -797,6 +797,44 @@ func TestDispatchEvent_TerminalWorkflowReplaced(t *testing.T) {
 	}
 }
 
+func TestHasActiveWorkflow(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
+	tasks.Put(TaskInfo{ID: "running", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", State: ExecRunning}})
+	tasks.Put(TaskInfo{ID: "waiting", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", State: ExecWaiting}})
+	tasks.Put(TaskInfo{ID: "completed", Status: "done",
+		Workflow: &Execution{WorkflowID: "x", State: ExecCompleted}})
+	tasks.Put(TaskInfo{ID: "failed", Status: "human-required",
+		Workflow: &Execution{WorkflowID: "x", State: ExecFailed}})
+
+	cases := []struct {
+		id   string
+		want bool
+	}{
+		{"no-wf", false},
+		{"running", true},
+		{"waiting", true},
+		{"completed", false},
+		{"failed", false},
+		{"unknown-task", false},
+	}
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			t.Parallel()
+			if got := engine.HasActiveWorkflow(c.id); got != c.want {
+				t.Errorf("HasActiveWorkflow(%q) = %v, want %v", c.id, got, c.want)
+			}
+		})
+	}
+}
+
 func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

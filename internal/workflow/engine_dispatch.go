@@ -171,3 +171,26 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	}
 	return def.ID, nil
 }
+
+// HasActiveWorkflow reports whether the task has a non-terminal workflow
+// execution attached. Returns false when the task is unknown, has no
+// workflow, or its workflow has reached ExecCompleted/ExecFailed.
+//
+// Pre-check for callers that want to bail out early (no worktree prep,
+// no audit emit) when DispatchEvent would otherwise reject with
+// ErrWorkflowAlreadyActive. This is racy by construction — a workflow
+// can complete or start between the check and the dispatch — so callers
+// must still treat ErrWorkflowAlreadyActive from DispatchEvent as
+// benign. Used by pr-monitor to suppress layered re-dispatches while a
+// pr-fix run is in flight, including the gap between an agent
+// finishing and the workflow's verify_commits/link_pr steps advancing.
+func (e *Engine) HasActiveWorkflow(taskID string) bool {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return false
+	}
+	if t.Workflow == nil {
+		return false
+	}
+	return t.Workflow.State != ExecCompleted && t.Workflow.State != ExecFailed
+}
