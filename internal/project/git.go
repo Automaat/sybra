@@ -298,7 +298,11 @@ func PushUpstream(worktreePath, branch string) error {
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushForce(worktreePath, branch string) error {
 	if err := executil.Run(worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
-		return ErrBranchMissing
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return ErrBranchMissing
+		}
+		return err
 	}
 	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", "origin", branch)
 }
