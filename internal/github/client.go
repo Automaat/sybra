@@ -328,3 +328,19 @@ func ParseIssueURL(rawURL string) (repo string, number int) {
 func ViewerLogin() string {
 	return viewerLogin(defaultExecer)
 }
+
+// IsTransientError reports whether err is a transient GitHub API failure
+// (HTTP 5xx or network timeout) that is expected to resolve on its own.
+func IsTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// HTTP 5xx: sanitized gh output produces "gh: http 5xx"
+	if strings.Contains(msg, "http 5") {
+		return true
+	}
+	return strings.Contains(msg, "dial tcp") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "context deadline exceeded")
+}

@@ -18,14 +18,17 @@ const (
 	RenovatePollSlow = 5 * time.Minute
 )
 
+const renovateTransientWarnThreshold = 3
+
 // RenovateHandler manages Renovate PR polling and actions.
 type RenovateHandler struct {
-	projects     *project.Store
-	logger       *slog.Logger
-	emit         func(string, any)
-	cfg          *config.RenovateConfig
-	allowsType   func(project.ProjectType) bool
-	lastPRsCount atomic.Int64
+	projects            *project.Store
+	logger              *slog.Logger
+	emit                func(string, any)
+	cfg                 *config.RenovateConfig
+	allowsType          func(project.ProjectType) bool
+	lastPRsCount        atomic.Int64
+	transientFetchFails int
 }
 
 // NewRenovateHandler creates a RenovateHandler. allowsType filters which
@@ -88,9 +91,20 @@ func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 	prs, err := github.FetchRenovatePRs(h.cfg.Author, repos)
 	metrics.RenovatePoll(err == nil)
 	if err != nil {
-		h.logger.Warn("renovate.fetch", "err", err)
+		if github.IsTransientError(err) {
+			h.transientFetchFails++
+			if h.transientFetchFails < renovateTransientWarnThreshold {
+				h.logger.Info("renovate.fetch", "err", err)
+			} else {
+				h.logger.Warn("renovate.fetch", "err", err, "consecutive", h.transientFetchFails)
+			}
+		} else {
+			h.transientFetchFails = 0
+			h.logger.Warn("renovate.fetch", "err", err)
+		}
 		return RenovatePollSlow
 	}
+	h.transientFetchFails = 0
 
 	h.lastPRsCount.Store(int64(len(prs)))
 	h.emit(events.RenovateUpdated, prs)

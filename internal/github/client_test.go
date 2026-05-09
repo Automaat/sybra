@@ -637,6 +637,39 @@ func TestParseIssueURL(t *testing.T) {
 	}
 }
 
+func TestIsTransientError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		errMsg    string
+		transient bool
+	}{
+		{"nil error", "", false},
+		{"504 html page", "gh api graphql: gh: HTTP 504: exit status 1", true},
+		{"502 html page", "gh api graphql: gh: HTTP 502: exit status 1", true},
+		{"500 internal", "gh api graphql: gh: HTTP 500: exit status 1", true},
+		{"dial tcp timeout", "gh api graphql: dial tcp 1.2.3.4:443: i/o timeout: exit status 1", true},
+		{"i/o timeout bare", "i/o timeout", true},
+		{"context deadline exceeded", "context deadline exceeded", true},
+		{"401 auth", "gh api graphql: gh: HTTP 401: exit status 1", false},
+		{"404 not found", "gh api graphql: gh: HTTP 404: exit status 1", false},
+		{"graphql error", "graphql: Field 'foo' doesn't exist", false},
+		{"parse error", "parse graphql response: unexpected EOF", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var err error
+			if tt.errMsg != "" {
+				err = fmt.Errorf("%s", tt.errMsg)
+			}
+			if got := IsTransientError(err); got != tt.transient {
+				t.Errorf("IsTransientError(%q) = %v, want %v", tt.errMsg, got, tt.transient)
+			}
+		})
+	}
+}
+
 func TestSanitizeGHOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
