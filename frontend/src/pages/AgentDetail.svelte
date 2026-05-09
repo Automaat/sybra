@@ -113,17 +113,17 @@
   })
 
   $effect(() => {
+    pluginErrors = []
     const cached = agentStore.agents.get(agentId)
     if (cached) {
       a = cached
-      if (cached.pluginErrors?.length) {
-        pluginErrors = cached.pluginErrors
-      }
+      pluginErrors = cached.pluginErrors ?? []
     }
 
     const unsubState = EventsOn(agentState(agentId), (data: Agent) => {
       a = data
       agentStore.updateAgent(agentId, data)
+      pluginErrors = data.pluginErrors ?? []
     })
 
     const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {

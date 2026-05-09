@@ -375,6 +375,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			}
 			a.SetPluginErrors(event.PluginErrors)
 			m.emit(events.AgentPluginErrors(a.ID), PluginErrorsEvent{Errors: event.PluginErrors})
+			m.emit(events.AgentState(a.ID), a)
 		}
 
 		if event.Type == "assistant" {
