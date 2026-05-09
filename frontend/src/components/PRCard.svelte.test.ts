@@ -13,6 +13,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     isDraft: false,
     labels: [],
     headRefName: 'feature/test',
+    headSha: 'abc1234',
     ciStatus: '',
     hasPendingChecks: false,
     reviewDecision: '',
