@@ -12,7 +12,15 @@
 
   const linkedPRs = $derived(reviewStore.byTask(task))
 
-  const hasPR = $derived(linkedPRs.length > 0 || (task.prNumber > 0 && !!task.projectId))
+  // Show resume button only when the backend can succeed: either a stored
+  // implementation session_id exists, or the task has a directly linked PR.
+  // Branch-matched PRs alone are not enough — the backend requires prNumber.
+  const hasImplementationSession = $derived(
+    task.agentRuns?.some(
+      (r) => (r.role === '' || r.role === 'implementation') && !!r.sessionId,
+    ) ?? false,
+  )
+  const hasPR = $derived(hasImplementationSession || (task.prNumber > 0 && !!task.projectId))
 
   let resuming = $state(false)
 

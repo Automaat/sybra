@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,11 +255,12 @@ func (s *AgentService) ResumeInClaudeCode(taskID string) error {
 		return fmt.Errorf("task %s: %w", taskID, err)
 	}
 
-	// Find the latest implementation run (role=="") that has a session_id.
+	// Find the latest implementation run that has a session_id.
+	// Accept role=="" (legacy runs predating role recording) or role==RoleImplementation.
 	sessionID := ""
-	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
-		r := t.AgentRuns[i]
-		if r.Role == "" && r.SessionID != "" {
+	for i := range slices.Backward(t.AgentRuns) {
+		r := &t.AgentRuns[i]
+		if (r.Role == "" || r.Role == string(agent.RoleImplementation)) && r.SessionID != "" {
 			sessionID = r.SessionID
 			break
 		}
