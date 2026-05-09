@@ -90,13 +90,6 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		cmd.Env = append(os.Environ(), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	// Signal EOF on stdin for codex: /dev/null (the nil default) reads as
-	// infinite zero bytes and never signals EOF, which may leave codex
-	// thinking stdin is open and cause write_stdin attempts on subprocesses.
-	// An empty reader returns EOF immediately so codex detects a closed stdin.
-	if a.Provider == "codex" {
-		cmd.Stdin = bytes.NewReader(nil)
-	}
 	a.Command = command
 
 	stdout, pipeErr := cmd.StdoutPipe()
