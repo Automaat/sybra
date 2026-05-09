@@ -43,48 +43,49 @@ import (
 )
 
 type App struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	tasks           *task.Manager
-	projects        *project.Store
-	loopAgents      *loopagent.Store
-	loopSched       *loopagent.Scheduler
-	agents          *agent.Manager
-	watcher         *watcher.Watcher
-	configWatcher   *confighot.Watcher
-	notifier        *notification.Emitter
-	audit           *audit.Logger
-	stats           *stats.Store
-	tasksDir        string
-	skillsDir       string
-	repoDir         string
-	worktreesDir    string
-	logger          *slog.Logger
-	logDir          string
-	auditDir        string
-	prTracker       *github.IssueTracker
-	providerHealth  *provider.Checker
-	worktrees       *worktree.Manager
-	sandboxes       *sandbox.Manager
-	monitorSvc      *monitor.Service
-	selfMonitorSvc  *selfmonitor.Service
-	agentOrch       *AgentOrchestrator
-	reviewer        *ReviewHandler
-	workflowEngine  *workflow.Engine
-	workflowStore   *workflow.Store
-	todoistHandler  *poll.TodoistHandler
-	todoistCancel   context.CancelFunc
-	renovateHandler *poll.RenovateHandler
-	triageHandler   *poll.TriageHandler
-	humanReview     *humanReviewHandler
-	cfg             *config.Config
-	logLevel        *slog.LevelVar
-	emit            func(string, any)
-	emitFactory     func(context.Context) func(string, any)
-	restartStaleErr *logging.ErrorThrottle
-	recovery        *recovery.Recovery
-	agentCompletion *AgentCompletionHandler
+	ctx                           context.Context
+	cancel                        context.CancelFunc
+	wg                            sync.WaitGroup
+	tasks                         *task.Manager
+	projects                      *project.Store
+	loopAgents                    *loopagent.Store
+	loopSched                     *loopagent.Scheduler
+	agents                        *agent.Manager
+	watcher                       *watcher.Watcher
+	configWatcher                 *confighot.Watcher
+	notifier                      *notification.Emitter
+	audit                         *audit.Logger
+	stats                         *stats.Store
+	tasksDir                      string
+	skillsDir                     string
+	repoDir                       string
+	worktreesDir                  string
+	logger                        *slog.Logger
+	logDir                        string
+	auditDir                      string
+	prTracker                     *github.IssueTracker
+	providerHealth                *provider.Checker
+	worktrees                     *worktree.Manager
+	sandboxes                     *sandbox.Manager
+	monitorSvc                    *monitor.Service
+	selfMonitorSvc                *selfmonitor.Service
+	agentOrch                     *AgentOrchestrator
+	reviewer                      *ReviewHandler
+	workflowEngine                *workflow.Engine
+	workflowStore                 *workflow.Store
+	todoistHandler                *poll.TodoistHandler
+	todoistCancel                 context.CancelFunc
+	renovateHandler               *poll.RenovateHandler
+	renovateMonitorTransientFails int
+	triageHandler                 *poll.TriageHandler
+	humanReview                   *humanReviewHandler
+	cfg                           *config.Config
+	logLevel                      *slog.LevelVar
+	emit                          func(string, any)
+	emitFactory                   func(context.Context) func(string, any)
+	restartStaleErr               *logging.ErrorThrottle
+	recovery                      *recovery.Recovery
+	agentCompletion               *AgentCompletionHandler
 
 	bgops *bgop.Tracker
 

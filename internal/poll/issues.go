@@ -14,19 +14,23 @@ import (
 
 const IssuesPollInterval = 5 * time.Minute
 
+const issuesTransientWarnThreshold = 3
+
 // synapseIssueLabel is the GitHub label that triggers auto-creation of Sybra tasks.
 const synapseIssueLabel = "sybra"
 
 // IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
 type IssuesFetcher struct {
-	tasks         *task.Manager
-	projects      *project.Store
-	emit          func(string, any)
-	logger        *slog.Logger
-	allowsType    func(project.ProjectType) bool
-	fetchAssigned func() ([]github.Issue, error)
-	fetchLabeled  func(repos []string, label string) ([]github.Issue, error)
-	fetchSnapshot func(repos []string, label string) (github.IssueSnapshot, error)
+	tasks                 *task.Manager
+	projects              *project.Store
+	emit                  func(string, any)
+	logger                *slog.Logger
+	allowsType            func(project.ProjectType) bool
+	fetchAssigned         func() ([]github.Issue, error)
+	fetchLabeled          func(repos []string, label string) ([]github.Issue, error)
+	fetchSnapshot         func(repos []string, label string) (github.IssueSnapshot, error)
+	transientFetchFails   int
+	transientLabeledFails int
 }
 
 // NewIssuesFetcher creates an IssuesFetcher. allowsType filters issues whose
@@ -65,9 +69,20 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	issues, err := f.fetchAssigned()
 	metrics.GitHubFetch(err == nil)
 	if err != nil {
-		f.logger.Warn("issues.fetch", "err", err)
+		if github.IsTransientError(err) {
+			f.transientFetchFails++
+			if f.transientFetchFails < issuesTransientWarnThreshold {
+				f.logger.Info("issues.fetch", "err", err)
+			} else {
+				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
+			}
+		} else {
+			f.transientFetchFails = 0
+			f.logger.Warn("issues.fetch", "err", err)
+		}
 		return IssuesPollInterval
 	}
+	f.transientFetchFails = 0
 	f.emit("issues:updated", issues)
 	f.logger.Debug("issues.poll", "count", len(issues))
 	metrics.GitHubIssuesImported(len(issues))
@@ -81,9 +96,20 @@ func (f *IssuesFetcher) pollSnapshot() {
 	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
 	metrics.GitHubFetch(err == nil)
 	if err != nil {
-		f.logger.Warn("issues.fetch", "err", err)
+		if github.IsTransientError(err) {
+			f.transientFetchFails++
+			if f.transientFetchFails < issuesTransientWarnThreshold {
+				f.logger.Info("issues.fetch", "err", err)
+			} else {
+				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
+			}
+		} else {
+			f.transientFetchFails = 0
+			f.logger.Warn("issues.fetch", "err", err)
+		}
 		return
 	}
+	f.transientFetchFails = 0
 
 	f.emit("issues:updated", snapshot.Assigned)
 	f.logger.Debug("issues.poll", "count", len(snapshot.Assigned))
@@ -110,9 +136,20 @@ func (f *IssuesFetcher) syncLabeledIssuesToTasks() {
 
 	labeled, err := f.fetchLabeled(repos, synapseIssueLabel)
 	if err != nil {
-		f.logger.Warn("labeled-issues.fetch", "err", err)
+		if github.IsTransientError(err) {
+			f.transientLabeledFails++
+			if f.transientLabeledFails < issuesTransientWarnThreshold {
+				f.logger.Info("labeled-issues.fetch", "err", err)
+			} else {
+				f.logger.Warn("labeled-issues.fetch", "err", err, "consecutive", f.transientLabeledFails)
+			}
+		} else {
+			f.transientLabeledFails = 0
+			f.logger.Warn("labeled-issues.fetch", "err", err)
+		}
 		return
 	}
+	f.transientLabeledFails = 0
 	f.logger.Debug("labeled-issues.poll", "count", len(labeled))
 	f.syncIssuesToTasks(labeled)
 }
