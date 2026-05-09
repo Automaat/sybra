@@ -59,6 +59,10 @@ type Agent struct {
 	ErrorKind        string   `json:"errorKind,omitempty"`
 	ErrorMsg         string   `json:"errorMsg,omitempty"`
 	AwaitingApproval bool     `json:"awaitingApproval,omitempty"`
+	// Resumable is set when the agent was stopped intentionally via StopAgent
+	// and CC exited with a valid session_id, meaning the next run can pass
+	// --resume to continue the conversation.
+	Resumable bool `json:"resumable,omitempty"`
 
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
@@ -165,6 +169,27 @@ func (a *Agent) SetCmd(cmd *exec.Cmd) {
 		a.PID = cmd.Process.Pid
 	}
 	a.mu.Unlock()
+}
+
+// GetCmd returns the agent's current command (nil if not yet started or already reaped).
+func (a *Agent) GetCmd() *exec.Cmd {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cmd
+}
+
+// SetResumable marks whether this agent's CC session can be resumed via --resume.
+func (a *Agent) SetResumable(v bool) {
+	a.mu.Lock()
+	a.Resumable = v
+	a.mu.Unlock()
+}
+
+// IsResumable reports whether this agent's session can be resumed.
+func (a *Agent) IsResumable() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Resumable
 }
 
 // SetExitErr records the exit error of the underlying process.

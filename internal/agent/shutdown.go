@@ -13,6 +13,13 @@ import (
 // truncated run log.
 const shutdownWaitDelay = 15 * time.Second
 
+// stopSIGINTGrace is the grace window between SIGINT and SIGKILL when the
+// user calls StopAgent. CC v2.1.132+ uses SIGINT for graceful shutdown:
+// it restores terminal modes and persists the session ID for --resume
+// before exiting. 3 seconds is enough for cleanup in the common case;
+// SIGKILL handles any process that ignores SIGINT.
+const stopSIGINTGrace = 3 * time.Second
+
 // configureGracefulShutdown wires cmd so that a cancelled context first
 // sends SIGTERM (letting the subprocess flush its final output) and only
 // SIGKILLs after shutdownWaitDelay if it refuses to exit. The default for
