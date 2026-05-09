@@ -269,6 +269,37 @@ func TestBackfillFieldExtraction(t *testing.T) {
 	}
 }
 
+func TestBackfillReasoningTokens(t *testing.T) {
+	s, _ := newTestStore(t)
+	auditDir := newAuditDir(t)
+
+	ts := time.Date(2024, 7, 1, 9, 0, 0, 0, time.UTC)
+	writeAuditFile(t, auditDir, "2024-07-01.ndjson", []audit.Event{
+		{
+			Timestamp: ts,
+			Type:      audit.EventAgentCompleted,
+			TaskID:    "t1",
+			AgentID:   "a1",
+			Data: map[string]any{
+				"state":            "stopped",
+				"reasoning_tokens": float64(450),
+			},
+		},
+	})
+
+	if err := s.Backfill(auditDir); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := s.Query()
+	if len(resp.RecentRuns) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(resp.RecentRuns))
+	}
+	if resp.RecentRuns[0].ReasoningTokens != 450 {
+		t.Errorf("ReasoningTokens: got %d, want 450", resp.RecentRuns[0].ReasoningTokens)
+	}
+}
+
 func TestBackfillMultipleFiles(t *testing.T) {
 	s, _ := newTestStore(t)
 	auditDir := newAuditDir(t)

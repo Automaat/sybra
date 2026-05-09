@@ -53,6 +53,9 @@ func (s *Store) Backfill(auditDir string) error {
 		if v, ok := ev.Data["provider"].(string); ok {
 			r.Provider = v
 		}
+		if v, ok := ev.Data["reasoning_tokens"].(float64); ok {
+			r.ReasoningTokens = int(v)
+		}
 
 		s.runs = append(s.runs, r)
 	}

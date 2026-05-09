@@ -658,6 +658,11 @@ func TestCodexEventToStreamEvent(t *testing.T) {
 			line: `{"type":"turn.completed","usage":{"input_tokens":16012,"output_tokens":18}}`,
 			want: StreamEvent{Type: "result", InputTokens: 16012, OutputTokens: 18},
 		},
+		{
+			name: "turn.completed with reasoning tokens",
+			line: `{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50,"reasoning_tokens":200}}`,
+			want: StreamEvent{Type: "result", InputTokens: 100, OutputTokens: 50, ReasoningTokens: 200},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -678,6 +683,9 @@ func TestCodexEventToStreamEvent(t *testing.T) {
 			}
 			if got.OutputTokens != tt.want.OutputTokens {
 				t.Errorf("OutputTokens = %d, want %d", got.OutputTokens, tt.want.OutputTokens)
+			}
+			if got.ReasoningTokens != tt.want.ReasoningTokens {
+				t.Errorf("ReasoningTokens = %d, want %d", got.ReasoningTokens, tt.want.ReasoningTokens)
 			}
 		})
 	}

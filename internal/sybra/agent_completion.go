@@ -84,12 +84,13 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	state := ag.GetState()
 	cost := ag.GetCostUSD()
 	exitErr := ag.GetExitErr()
+	reasoning := ag.GetReasoningTokens()
 
 	// Audit logging always fires — orchestrator brain agents have no
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := time.Since(ag.StartedAt).Seconds()
-	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, map[string]any{
+	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,
 		"duration_s": duration,
@@ -98,7 +99,11 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		"provider":   ag.Provider,
 		"name":       ag.Name,
 		"log_file":   ag.LogPath,
-	})
+	}
+	if reasoning > 0 {
+		auditData["reasoning_tokens"] = reasoning
+	}
+	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 
 	h.recordRunStats(ag, cost, duration, exitErr)
 

@@ -135,6 +135,39 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+func TestReasoningTokensPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.json")
+
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Record(RunRecord{
+		ID: "r1", TaskID: "t1", Mode: "headless", Role: "implementation",
+		ReasoningTokens: 300, Outcome: "completed", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload and verify field survives the round-trip.
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := s2.Query()
+	if len(resp.RecentRuns) != 1 {
+		t.Fatalf("expected 1 run after reload, got %d", len(resp.RecentRuns))
+	}
+	if resp.RecentRuns[0].ReasoningTokens != 300 {
+		t.Errorf("ReasoningTokens after reload: got %d, want 300", resp.RecentRuns[0].ReasoningTokens)
+	}
+	if resp.AllTime.TotalReasoningTokens != 300 {
+		t.Errorf("TotalReasoningTokens: got %d, want 300", resp.AllTime.TotalReasoningTokens)
+	}
+}
+
 func TestQueryEmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stats.json")
