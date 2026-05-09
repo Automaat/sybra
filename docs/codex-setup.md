@@ -74,12 +74,13 @@ Sybra maps generic aliases to provider-specific model IDs at runtime:
 Sybra spawns a `codex exec` subprocess per task:
 
 ```bash
-# RequirePermissions=false (skip-permissions / bypass mode)
+# Headless mode always uses bypass (regardless of RequirePermissions)
 codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
-
-# RequirePermissions=true (sandboxed, file-write only)
-codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4 -C <worktree> "<prompt>"
 ```
+
+`--sandbox workspace-write` is intentionally not used in headless mode. That mode requests user approval for writes outside the workspace; in a headless run there is no TTY or UI to serve the approval prompt, so every such request is auto-rejected and the agent run fails. The worktree directory itself provides task isolation.
+
+`RequirePermissions=true` only affects sandbox selection in **interactive (conversational)** mode, where a human can approve sandbox prompts.
 
 Stdout is read as NDJSON. Sybra parses Codex event types (`agent_message`, `command_execution`, `task_complete`, etc.) and maps them to its unified `StreamEvent` format for display.
 

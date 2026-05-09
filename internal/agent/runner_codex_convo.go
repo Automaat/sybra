@@ -174,7 +174,9 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	args := []string{"exec", "--json", "--skip-git-repo-check"}
-	args = append(args, codexSandboxArgs(cfg.RequirePermissions)...)
+	// headless=false: interactive (conversational) mode has a human present
+	// who can approve sandbox prompts via the UI.
+	args = append(args, codexSandboxArgs(cfg.RequirePermissions, false)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}

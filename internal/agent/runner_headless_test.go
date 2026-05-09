@@ -825,3 +825,96 @@ func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox verifies that headless
+// codex invocations always use --dangerously-bypass-approvals-and-sandbox,
+// even when RequirePermissions=true. In headless mode there is no UI to serve
+// --sandbox workspace-write approval prompts; auto-rejection silently breaks
+// the agent run.
+func TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox(t *testing.T) {
+	cases := []struct {
+		name           string
+		requirePerms   bool
+		disableSandbox string // SYBRA_DISABLE_CODEX_SANDBOX value
+		wantBypass     bool
+		wantDangerFull bool
+	}{
+		{
+			name:         "require_perms_false_bypasses",
+			requirePerms: false,
+			wantBypass:   true,
+		},
+		{
+			name:         "require_perms_true_still_bypasses_in_headless",
+			requirePerms: true,
+			wantBypass:   true,
+		},
+		{
+			name:           "disable_sandbox_env_overrides_all",
+			requirePerms:   true,
+			disableSandbox: "1",
+			wantDangerFull: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.disableSandbox != "" {
+				t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", tc.disableSandbox)
+			}
+
+			a := &Agent{ID: "a", Provider: "codex"}
+			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+				Prompt:             "hi",
+				RequirePermissions: tc.requirePerms,
+			})
+			if err != nil {
+				t.Fatalf("buildHeadlessInvocation: %v", err)
+			}
+
+			if tc.wantBypass {
+				if !slices.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
+					t.Errorf("args missing --dangerously-bypass-approvals-and-sandbox; got %v", args)
+				}
+				if slices.Contains(args, "--sandbox") {
+					t.Errorf("--sandbox must not appear when bypassing; got %v", args)
+				}
+			}
+			if tc.wantDangerFull {
+				if !slices.Contains(args, "danger-full-access") {
+					t.Errorf("args missing danger-full-access; got %v", args)
+				}
+			}
+		})
+	}
+}
+
+// TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless
+// codex always bypasses approvals even when RequirePermissions=true. Interactive
+// mode with RequirePermissions=true must use --sandbox workspace-write.
+func TestCodexSandboxArgs_HeadlessAlwaysBypasses(t *testing.T) {
+	t.Run("headless_requirePerms_false", func(t *testing.T) {
+		args := codexSandboxArgs(false, true)
+		if !slices.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
+			t.Errorf("expected bypass; got %v", args)
+		}
+	})
+	t.Run("headless_requirePerms_true", func(t *testing.T) {
+		args := codexSandboxArgs(true, true)
+		if !slices.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
+			t.Errorf("requirePerms=true headless must bypass; got %v", args)
+		}
+	})
+	t.Run("interactive_requirePerms_true", func(t *testing.T) {
+		args := codexSandboxArgs(true, false)
+		if !slices.Contains(args, "--sandbox") || !slices.Contains(args, "workspace-write") {
+			t.Errorf("interactive+requirePerms should use workspace-write; got %v", args)
+		}
+	})
+	t.Run("interactive_requirePerms_false", func(t *testing.T) {
+		args := codexSandboxArgs(false, false)
+		if !slices.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
+			t.Errorf("interactive+!requirePerms should bypass; got %v", args)
+		}
+	})
+}

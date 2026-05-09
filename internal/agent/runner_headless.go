@@ -90,6 +90,13 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		cmd.Env = append(os.Environ(), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
+	// Signal EOF on stdin for codex: /dev/null (the nil default) reads as
+	// infinite zero bytes and never signals EOF, which may leave codex
+	// thinking stdin is open and cause write_stdin attempts on subprocesses.
+	// An empty reader returns EOF immediately so codex detects a closed stdin.
+	if a.Provider == "codex" {
+		cmd.Stdin = bytes.NewReader(nil)
+	}
 	a.Command = command
 
 	stdout, pipeErr := cmd.StdoutPipe()
@@ -485,7 +492,9 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 	if a.Provider == "codex" {
 		name = "codex"
 		args = []string{"exec", "--json", "--skip-git-repo-check"}
-		args = append(args, codexSandboxArgs(cfg.RequirePermissions)...)
+		// headless=true: --sandbox workspace-write requires approval prompts
+		// which auto-reject in headless mode (no TTY/UI). Always bypass.
+		args = append(args, codexSandboxArgs(cfg.RequirePermissions, true)...)
 		if a.Model != "" {
 			args = append(args, "--model", a.Model)
 		}
