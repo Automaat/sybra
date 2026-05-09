@@ -75,7 +75,7 @@ Sybra spawns a `codex exec` subprocess per task:
 
 ```bash
 # Headless mode always uses bypass (regardless of RequirePermissions)
-codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
 ```
 
 `--sandbox workspace-write` is intentionally not used in headless mode. That mode requests user approval for writes outside the workspace; in a headless run there is no TTY or UI to serve the approval prompt, so every such request is auto-rejected and the agent run fails. The worktree directory itself provides task isolation.

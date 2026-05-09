@@ -247,15 +247,19 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	}
 	oneShot := false
 
+	// Hold e.mu across StartAgent so HandleAgentComplete (which acquires
+	// e.mu via lookupAgentStep) cannot race past the agentSteps registration.
+	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
+	// before agentSteps is populated, causing the wrong step to advance.
+	e.mu.Lock()
 	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot)
 	if err != nil {
+		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", err)
 	}
-
 	// agentSteps key uses the *child* step ID. StepByID recurses into
 	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
 	// returns the right step config.
-	e.mu.Lock()
 	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: child.ID}
 	e.mu.Unlock()
 
