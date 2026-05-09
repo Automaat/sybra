@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -242,4 +243,45 @@ func (s *AgentService) OpenWorktree(taskID string) error {
 		return fmt.Errorf("no worktree for task %s", taskID)
 	}
 	return sysopen.Dir(s.worktrees.PathFor(t))
+}
+
+// ResumeInClaudeCode opens a Ghostty terminal tab with a Claude Code session
+// resumed for taskID. If Sybra has a session_id from a prior implementation
+// run, it passes --resume directly. Otherwise the PR URL is copied to the
+// clipboard so the user can paste it into /resume manually.
+func (s *AgentService) ResumeInClaudeCode(taskID string) error {
+	t, err := s.tasks.Get(taskID)
+	if err != nil {
+		return fmt.Errorf("task %s: %w", taskID, err)
+	}
+
+	// Find the latest implementation run that has a session_id.
+	// Accept role=="" (legacy runs predating role recording) or role==RoleImplementation.
+	sessionID := ""
+	for i := range slices.Backward(t.AgentRuns) {
+		r := &t.AgentRuns[i]
+		if (r.Role == "" || r.Role == string(agent.RoleImplementation)) && r.SessionID != "" {
+			sessionID = r.SessionID
+			break
+		}
+	}
+
+	// Best-effort: use the worktree directory so the CC session opens in context.
+	dir := ""
+	if s.worktrees != nil && s.worktrees.Exists(t) {
+		dir = s.worktrees.PathFor(t)
+	}
+
+	if sessionID != "" {
+		return openCommandInGhostty(dir, "claude --resume "+sessionID)
+	}
+
+	if t.PRNumber == 0 || t.ProjectID == "" {
+		return fmt.Errorf("task %s has no session_id or linked PR", taskID)
+	}
+	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
+	if err := copyToClipboard(prURL); err != nil {
+		s.logger.Warn("clipboard copy failed", "err", err)
+	}
+	return openCommandInGhostty(dir, "claude")
 }
