@@ -248,6 +248,13 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 		if !a.RequiresLLM {
 			continue
 		}
+		ok, skipReason := s.dispatcher.Dispatchable(a)
+		if !ok {
+			if skipReason != "" {
+				s.logger.Warn("monitor.dispatch.undispatchable", "kind", a.Kind, "task_id", a.TaskID, "reason", skipReason)
+			}
+			continue
+		}
 		if !s.state.canDispatch(a.Fingerprint, now, cooldown) {
 			continue
 		}

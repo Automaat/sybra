@@ -100,6 +100,8 @@ type fakeDispatcher struct {
 	nextID int
 }
 
+func (f *fakeDispatcher) Dispatchable(Anomaly) (ok bool, skipReason string) { return true, "" }
+
 func (f *fakeDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

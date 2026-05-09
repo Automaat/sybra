@@ -3,11 +3,14 @@ package monitor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -214,6 +217,116 @@ func TestDispatcher_EmptyRepoDirRejected(t *testing.T) {
 	}
 	if len(rr.calls) != 0 {
 		t.Error("runner must not be called when dir unresolved")
+	}
+}
+
+func TestDispatcher_DispatchableEmptyRepoDirNoWorktree(t *testing.T) {
+	d := &agentDispatcher{repoDir: ""}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	ok, _ := d.Dispatchable(a)
+	if ok {
+		t.Error("want false when repoDir empty and no worktree")
+	}
+}
+
+func TestDispatcher_DispatchableWithRepoDir(t *testing.T) {
+	d := &agentDispatcher{repoDir: "/repo"}
+	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
+	ok, _ := d.Dispatchable(a)
+	if !ok {
+		t.Error("want true when repoDir non-empty")
+	}
+}
+
+func TestDispatcher_DispatchableWithWorktree(t *testing.T) {
+	theTask := task.Task{ID: "abc123"}
+	tasks := dispatcherTasksStub{task: theTask}
+	worktreeFn := func(t task.Task) (string, bool) {
+		return "/worktrees/abc123", t.ID == "abc123"
+	}
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: worktreeFn}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
+	ok, _ := d.Dispatchable(a)
+	if !ok {
+		t.Error("want true when worktree resolves")
+	}
+}
+
+func TestDispatcher_DispatchableMissingTaskStore_ReturnsReason(t *testing.T) {
+	// tasks==nil with a TaskID is unexpected — must return a non-empty reason.
+	d := &agentDispatcher{repoDir: "", tasks: nil, worktreePath: nil}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false")
+	}
+	if reason == "" {
+		t.Error("want non-empty skip reason for missing task store")
+	}
+}
+
+func TestDispatcher_DispatchableTransientLookupFailure_ReturnsReason(t *testing.T) {
+	// tasks.Get failure with empty repoDir is unexpected — must return a reason.
+	tasks := dispatcherTasksStub{err: errors.New("db timeout")}
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: nil}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc", Fingerprint: "stuck:abc"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false")
+	}
+	if reason == "" {
+		t.Error("want non-empty skip reason for transient task lookup failure")
+	}
+}
+
+func TestDispatcher_DispatchableExternalTask_SilentSkip(t *testing.T) {
+	// Task exists, worktree returns false, repoDir empty → external task.
+	// This is an expected/known case — skip reason must be empty.
+	theTask := task.Task{ID: "abc123"}
+	tasks := dispatcherTasksStub{task: theTask}
+	worktreeFn := func(task.Task) (string, bool) { return "", false }
+	d := &agentDispatcher{repoDir: "", tasks: tasks, worktreePath: worktreeFn}
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Fatal("want false for external task with no worktree")
+	}
+	if reason != "" {
+		t.Errorf("want empty reason for known external-task skip, got %q", reason)
+	}
+}
+
+func TestDispatcher_UndispatchableSkippedInService(t *testing.T) {
+	// Verifies that when Dispatchable returns false the dispatcher is never
+	// called and no cooldown slot is consumed. (A WARN is expected here because
+	// tasks==nil with a non-empty TaskID is an unexpected configuration.)
+	rr := &recordingRunner{}
+	// Empty repoDir + no task store → Dispatchable returns (false, reason).
+	d := &agentDispatcher{agents: rr, repoDir: "", tasks: nil, worktreePath: nil}
+
+	svc := &Service{
+		dispatcher: d,
+		state:      newRunState(),
+		logger:     slog.Default(),
+		cfg:        config.MonitorConfig{IssueCooldownMinutes: 30},
+	}
+
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	anoms := []Anomaly{
+		{Kind: KindStuckHumanBlocked, TaskID: "abc", RequiresLLM: true, Fingerprint: "stuck:abc"},
+	}
+	dispatched := svc.dispatchLLMAnomalies(context.Background(), now, anoms)
+	if len(dispatched) != 0 {
+		t.Errorf("want 0 dispatched, got %d", len(dispatched))
+	}
+	if len(rr.calls) != 0 {
+		t.Errorf("runner must not be called for undispatchable anomaly")
+	}
+	// Cooldown must not be consumed — a second call at the same time should
+	// also skip (not because of cooldown but because still undispatchable).
+	dispatched2 := svc.dispatchLLMAnomalies(context.Background(), now, anoms)
+	if len(dispatched2) != 0 {
+		t.Errorf("want 0 dispatched on second call, got %d", len(dispatched2))
 	}
 }
 
