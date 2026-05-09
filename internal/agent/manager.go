@@ -365,7 +365,7 @@ func codexSandboxArgs(requirePerms bool) []string {
 		return []string{"--sandbox", "danger-full-access"}
 	}
 	if !requirePerms {
-		return []string{"--full-auto"}
+		return []string{"--sandbox", "workspace-write"}
 	}
 	return []string{"--sandbox", "workspace-write"}
 }
