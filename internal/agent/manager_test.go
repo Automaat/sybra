@@ -521,12 +521,12 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex default model mapping",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model gpt-5.4",
 		},
 		{
 			name:    "codex maps haiku to mini",
 			cfg:     RunConfig{Provider: "codex", Model: "haiku"},
-			wantCmd: "codex exec --json --skip-git-repo-check --sandbox workspace-write --model gpt-5.4-mini",
+			wantCmd: "codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --model gpt-5.4-mini",
 		},
 		{
 			name:    "codex with RequirePermissions uses workspace-write sandbox",
