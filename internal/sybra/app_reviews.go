@@ -28,6 +28,8 @@ const (
 	reviewSmallFiles     = 5
 )
 
+const transientFetchWarnThreshold = 3
+
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
 type ReviewHandler struct {
 	DomainHandler
@@ -41,7 +43,8 @@ type ReviewHandler struct {
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
 	// re-dispatched to pr-fix when CI fails. nil = renovate disabled.
-	renovatePRsFn func() []github.PullRequest
+	renovatePRsFn       func() []github.PullRequest
+	transientFetchFails int
 }
 
 func newReviewHandler(
@@ -315,9 +318,20 @@ func (r *ReviewHandler) Poll(_ context.Context) time.Duration {
 func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	summary, err := github.FetchReviews()
 	if err != nil {
-		r.logger.Warn("pr-monitor.fetch", "err", err)
+		if github.IsTransientError(err) {
+			r.transientFetchFails++
+			if r.transientFetchFails < transientFetchWarnThreshold {
+				r.logger.Info("pr-monitor.fetch", "err", err)
+			} else {
+				r.logger.Warn("pr-monitor.fetch", "err", err, "consecutive", r.transientFetchFails)
+			}
+		} else {
+			r.transientFetchFails = 0
+			r.logger.Warn("pr-monitor.fetch", "err", err)
+		}
 		return prPollSlow
 	}
+	r.transientFetchFails = 0
 
 	r.emit("reviews:updated", summary)
 

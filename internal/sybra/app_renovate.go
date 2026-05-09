@@ -28,9 +28,20 @@ func (a *App) renovatePRsForMonitor() []github.PullRequest {
 	}
 	rps, err := github.FetchRenovatePRs(a.cfg.Renovate.Author, repos)
 	if err != nil {
-		a.logger.Warn("pr-monitor.renovate-fetch", "err", err)
+		if github.IsTransientError(err) {
+			a.renovateMonitorTransientFails++
+			if a.renovateMonitorTransientFails < transientFetchWarnThreshold {
+				a.logger.Info("pr-monitor.renovate-fetch", "err", err)
+			} else {
+				a.logger.Warn("pr-monitor.renovate-fetch", "err", err, "consecutive", a.renovateMonitorTransientFails)
+			}
+		} else {
+			a.renovateMonitorTransientFails = 0
+			a.logger.Warn("pr-monitor.renovate-fetch", "err", err)
+		}
 		return nil
 	}
+	a.renovateMonitorTransientFails = 0
 	prs := make([]github.PullRequest, len(rps))
 	for i := range rps {
 		prs[i] = rps[i].PullRequest
