@@ -201,6 +201,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	branch := fs.String("branch", "", "Git branch name")
 	pr := fs.Int("pr", 0, "GitHub PR number")
 	issue := fs.String("issue", "", "GitHub issue URL")
+	allowDup := fs.Bool("allow-dup", false, "skip duplicate-dispatch check (project+issue+title)")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -209,6 +210,20 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if _, err := task.ValidateTaskType(*ttype); err != nil {
 		return fatal(jsonOut, "%v", err)
+	}
+
+	if !*allowDup {
+		if dup, ok, err := findActiveDuplicate(s, *proj, *issue, *title); err != nil {
+			return fatal(jsonOut, "dedup check: %v", err)
+		} else if ok {
+			fmt.Fprintf(os.Stderr, "warning: duplicate dispatch — returning existing task %s (status=%s) for project=%s issue=%s; pass --allow-dup to override\n",
+				dup.ID, dup.Status, *proj, *issue)
+			if jsonOut {
+				return printJSON(dup)
+			}
+			fmt.Printf("Existing task %s: %s\n", dup.ID, dup.Title)
+			return 0
+		}
 	}
 
 	t, err := s.Create(*title, *body, *mode)
@@ -257,6 +272,33 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	fmt.Printf("Created task %s: %s\n", t.ID, t.Title)
 	return 0
+}
+
+// findActiveDuplicate looks for an existing non-terminal task that matches
+// project + issue + title. Used to suppress double-dispatch from the
+// orchestrator brain (which calls `sybra-cli create` externally and has no
+// view of the in-flight task list when a previous dispatch is still running).
+//
+// Match requires all three fields to be non-empty and equal, so it cannot
+// collapse legitimate distinct subtasks of an umbrella issue (those have
+// different titles).
+func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.Task, bool, error) {
+	if projectID == "" || issue == "" || title == "" {
+		return task.Task{}, false, nil
+	}
+	tasks, err := s.List()
+	if err != nil {
+		return task.Task{}, false, err
+	}
+	for i := range tasks {
+		if task.IsTerminalStatus(tasks[i].Status) {
+			continue
+		}
+		if tasks[i].ProjectID == projectID && tasks[i].Issue == issue && tasks[i].Title == title {
+			return tasks[i], true, nil
+		}
+	}
+	return task.Task{}, false, nil
 }
 
 func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
@@ -909,7 +951,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|test-plan-review|human-required|done|cancelled
   get      <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL]
+  create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N]
   delete   <id>
