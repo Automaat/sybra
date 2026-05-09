@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -12,6 +13,37 @@ import (
 // logs; anything shorter shows up in ops logs as `signal: killed` with a
 // truncated run log.
 const shutdownWaitDelay = 15 * time.Second
+
+// stopSIGINTGrace is the grace window between SIGINT and SIGKILL when the
+// user calls StopAgent. CC v2.1.132+ uses SIGINT for graceful shutdown:
+// it restores terminal modes and persists the session ID for --resume
+// before exiting. 3 seconds is enough for cleanup in the common case;
+// SIGKILL handles any process that ignores SIGINT.
+const stopSIGINTGrace = 3 * time.Second
+
+// stopWithSIGINT sends SIGINT to cmd's process (CC v2.1.132+ graceful shutdown)
+// and escalates to SIGKILL if the process does not exit within grace. done is
+// the agent's done channel — closed when the runner goroutine fully exits. A
+// nil done falls back to a bare timer. Call before cancel() so SIGINT arrives
+// before any context-driven SIGTERM.
+func stopWithSIGINT(cmd *exec.Cmd, done <-chan struct{}, grace time.Duration) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Signal(os.Interrupt)
+	go func() {
+		if done != nil {
+			select {
+			case <-done:
+				return
+			case <-time.After(grace):
+			}
+		} else {
+			time.Sleep(grace)
+		}
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+	}()
+}
 
 // configureGracefulShutdown wires cmd so that a cancelled context first
 // sends SIGTERM (letting the subprocess flush its final output) and only

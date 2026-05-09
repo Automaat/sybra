@@ -576,6 +576,13 @@ func (m *Manager) StopAgent(agentID string) error {
 	m.logger.Info("agent.stop", "id", agentID)
 
 	a.MarkStopped()
+	// Send SIGINT first so CC can restore terminal modes and persist the
+	// session ID for --resume. Escalate to SIGKILL only after the grace window.
+	if a.Mode == "headless" {
+		if cmd := a.GetCmd(); cmd != nil {
+			stopWithSIGINT(cmd, a.done, stopSIGINTGrace)
+		}
+	}
 	if a.cancel != nil {
 		a.cancel()
 	}
