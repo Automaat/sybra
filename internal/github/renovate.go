@@ -34,6 +34,7 @@ const renovatePRQuery = `query($q: String!) {
         commits(last: 1) {
           nodes {
             commit {
+              oid
               statusCheckRollup {
                 state
                 contexts(first: 50) {

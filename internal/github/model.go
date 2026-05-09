@@ -11,6 +11,7 @@ type PullRequest struct {
 	IsDraft           bool     `json:"isDraft"`
 	Labels            []string `json:"labels"`
 	HeadRefName       string   `json:"headRefName"`
+	HeadSHA           string   `json:"headSha"`
 	CIStatus          string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
 	HasPendingChecks  bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
 	ReviewDecision    string   `json:"reviewDecision"`   // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""

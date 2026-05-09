@@ -216,10 +216,12 @@ func TestConvertPRs_ciStatus(t *testing.T) {
 			if tt.hasCI {
 				node.Commits.Nodes = []struct {
 					Commit struct {
+						OID               string                `json:"oid"`
 						StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 					} `json:"commit"`
 				}{
 					{Commit: struct {
+						OID               string                `json:"oid"`
 						StatusCheckRollup *gqlStatusCheckRollup `json:"statusCheckRollup"`
 					}{StatusCheckRollup: &gqlStatusCheckRollup{State: tt.state}}},
 				}
