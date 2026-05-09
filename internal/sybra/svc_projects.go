@@ -110,6 +110,17 @@ func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (proj
 	return p, nil
 }
 
+// SetProjectWorktreeBaseRef sets the worktree branching base for a project.
+// ref must be "fresh" (branch off origin/<default>) or "head" (branch off local HEAD).
+func (s *ProjectService) SetProjectWorktreeBaseRef(id, ref string) (project.Project, error) {
+	s.logger.Info("project.set-worktree-base-ref", "id", id, "ref", ref)
+	p, err := s.projects.SetWorktreeBaseRef(id, ref)
+	if err != nil {
+		s.logger.Error("project.set-worktree-base-ref.failed", "id", id, "err", err)
+	}
+	return p, err
+}
+
 // DeleteProject removes a project and its bare clone from disk.
 func (s *ProjectService) DeleteProject(id string) error {
 	s.logger.Info("project.delete", "id", id)

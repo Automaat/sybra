@@ -112,6 +112,7 @@ export const ListProjects = pick(ProjectSvc.ListProjects, http.ListProjects)
 export const ListWorktrees = pick(ProjectSvc.ListWorktrees, http.ListWorktrees)
 export const OpenInEditor = pick(ProjectSvc.OpenInEditor, http.OpenInEditor)
 export const OpenInTerminal = pick(ProjectSvc.OpenInTerminal, http.OpenInTerminal)
+export const SetProjectWorktreeBaseRef = pick(ProjectSvc.SetProjectWorktreeBaseRef, http.SetProjectWorktreeBaseRef)
 export const UpdateProject = pick(ProjectSvc.UpdateProject, http.UpdateProject)
 
 // ReviewService

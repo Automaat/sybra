@@ -119,6 +119,8 @@ Projects mirror GitHub repos. Created from a GitHub URL, cloned as bare repos.
 
 **Flow:** Create project from URL → bare clone → assign `project_id` to tasks → agent start auto-creates worktree → worktree cleaned up on agent completion.
 
+**Worktree base ref** (`worktree_base_ref`): controls the starting point for new worktree branches. `fresh` (default) branches off `origin/<default>` so worktrees always start from pushed remote state. `head` branches off the local HEAD of the default branch, picking up commits that exist locally but haven't been pushed yet. Empty value treated as `fresh` — existing projects require no migration. Configurable per-project from the Project → Setup tab.
+
 **CLI:**
 ```bash
 sybra-cli project list|get|create|delete

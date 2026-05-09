@@ -135,7 +135,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 
 	wtPath := m.PathFor(t)
 	wtBranch := "sybra/" + t.DirName()
-	baseRef := "refs/remotes/origin/" + branch
+	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		callPhase(onPhase, "Checking worktree…")
@@ -244,7 +244,7 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 
 	wtPath := m.PathFor(t)
 	wtBranch := "sybra/" + t.DirName()
-	baseRef := "refs/remotes/origin/" + branch
+	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		usable, err := m.healOrRecreate(t.ID, proj.ClonePath, wtPath)
@@ -714,4 +714,15 @@ func (m *Manager) logPushForce(taskID, branch string, err error) {
 	} else {
 		m.logger.Warn("worktree.push-force", "task_id", taskID, "branch", branch, "err", err)
 	}
+}
+
+// worktreeBaseRef returns the git ref used as the starting point for new
+// worktree branches. "head" uses the local branch tip (picks up unpushed
+// commits); anything else (including "fresh" and the zero value) uses the
+// remote tracking ref so the worktree always starts from pushed state.
+func worktreeBaseRef(setting, branch string) string {
+	if setting == project.WorktreeBaseRefHead {
+		return "refs/heads/" + branch
+	}
+	return "refs/remotes/origin/" + branch
 }

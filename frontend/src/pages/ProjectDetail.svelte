@@ -4,6 +4,7 @@
   import * as yaml from 'js-yaml'
   import type { Project, SandboxConfig } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
   import { SetProjectSandboxConfig, SetProjectSetupCommands } from '../../bindings/github.com/Automaat/sybra/internal/sybra/projectservice.js'
+  import { SetProjectWorktreeBaseRef } from '../lib/api.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
@@ -31,6 +32,9 @@
   let setupSaving = $state(false)
   let setupError = $state('')
   let setupSaved = $state(false)
+  let baseRefSaving = $state(false)
+  let baseRefError = $state('')
+  let baseRefSaved = $state(false)
 
   const tabs = [
     { value: 'tasks', label: 'Tasks' },
@@ -75,6 +79,22 @@
       setupError = String(e)
     } finally {
       setupSaving = false
+    }
+  }
+
+  async function saveWorktreeBaseRef(ref: string) {
+    if (!p) return
+    baseRefSaving = true
+    baseRefError = ''
+    baseRefSaved = false
+    try {
+      p = await SetProjectWorktreeBaseRef(projectId, ref)
+      baseRefSaved = true
+      setTimeout(() => { baseRefSaved = false }, 2000)
+    } catch (e) {
+      baseRefError = String(e)
+    } finally {
+      baseRefSaving = false
     }
   }
 
@@ -250,6 +270,36 @@
         <WorktreeList projectId={projectId} />
       {:else if activeTab === 'setup'}
         <div class="flex flex-col gap-3">
+          <div class="flex flex-col gap-2 rounded border border-surface-300 p-3 dark:border-surface-600">
+            <div class="flex items-center justify-between">
+              <div class="flex flex-col gap-0.5">
+                <span class="text-sm font-medium">Worktree base</span>
+                <span class="text-xs text-surface-500">
+                  Starting point for new worktree branches.
+                  <strong>fresh</strong> = <code>origin/&lt;default&gt;</code> (always pushed state);
+                  <strong>head</strong> = local HEAD (includes unpushed commits).
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                {#if baseRefSaved}
+                  <span class="text-xs text-success-500">Saved</span>
+                {/if}
+                {#if baseRefError}
+                  <span class="text-xs text-error-500">{baseRefError}</span>
+                {/if}
+                <select
+                  class="rounded border border-surface-300 bg-surface-50 px-2 py-1 text-sm dark:border-surface-600 dark:bg-surface-900 disabled:opacity-50"
+                  value={p.worktreeBaseRef ?? 'fresh'}
+                  onchange={(e) => saveWorktreeBaseRef((e.target as HTMLSelectElement).value)}
+                  disabled={baseRefSaving}
+                >
+                  <option value="fresh">fresh</option>
+                  <option value="head">head</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
           <p class="text-sm text-surface-500">
             Machine-local shell commands run inside every newly created worktree for this project, <em>after</em>
             the <code>setup:</code> block in the repo's <code>.sybra.yaml</code>. Use this only for host-specific extras
