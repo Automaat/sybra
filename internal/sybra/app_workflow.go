@@ -191,16 +191,17 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	cfg := agent.RunConfig{
-		TaskID:       taskID,
-		Name:         r.AgentName(t.Title),
-		Mode:         mode,
-		Prompt:       prompt,
-		AllowedTools: allowedTools,
-		Model:        model,
-		Provider:     provider,
-		Dir:          dir,
-		OneShot:      oneShot,
-		MaxTurns:     t.MaxTurns,
+		TaskID:             taskID,
+		Name:               r.AgentName(t.Title),
+		Mode:               mode,
+		Prompt:             prompt,
+		AllowedTools:       allowedTools,
+		Model:              model,
+		Provider:           provider,
+		Dir:                dir,
+		OneShot:            oneShot,
+		MaxTurns:           t.MaxTurns,
+		RequirePermissions: resolvePermission(t, a.agentOrch.cfg),
 	}
 
 	// Caller-provided dir takes precedence (e.g. pr-fix flow pre-stages a
