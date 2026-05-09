@@ -681,6 +681,64 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_WorktreeBaseRefHead asserts that "head" mode branches from
+// the current remote state, not the stale clone-time commit. Before the fix,
+// refs/heads/<branch> in a bare clone was never updated after FetchOrigin, so
+// selecting "head" silently produced worktrees rooted at the original clone SHA.
+func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	// Switch the project to head mode.
+	if _, err := h.store.SetWorktreeBaseRef(h.proj.ID, project.WorktreeBaseRefHead); err != nil {
+		t.Fatalf("SetWorktreeBaseRef: %v", err)
+	}
+
+	// Add a commit to the upstream src after the bare was cloned.
+	if err := os.WriteFile(filepath.Join(h.src, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "upstream.txt")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream progress")
+
+	// Capture the new upstream SHA.
+	rawSHA, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse src HEAD: %v", err)
+	}
+	wantSHA := strings.TrimSpace(string(rawSHA))
+
+	tk, err := h.tasks.Store().Create("head-mode task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask: %v", err)
+	}
+
+	// The upstream commit must be an ancestor of the worktree HEAD — confirming
+	// that SyncLocalBranch carried the new commit into refs/heads/main before
+	// the worktree branch was created.
+	out, err := exec.Command("git", "-C", wtPath, "merge-base", wantSHA, "HEAD").Output()
+	if err != nil {
+		t.Fatalf("merge-base: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != wantSHA {
+		t.Errorf("worktree does not contain upstream commit %s; merge-base=%s", wantSHA, got)
+	}
+}
+
 func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)

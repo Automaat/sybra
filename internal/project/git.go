@@ -136,6 +136,50 @@ func FetchOrigin(barePath string) error {
 	return executil.Run(barePath, "git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
+// SyncLocalBranch fast-forwards refs/heads/<branch> in the bare clone to match
+// refs/remotes/origin/<branch> if the local branch is strictly behind the remote.
+// If the local branch has commits ahead of (or diverged from) origin, it is left
+// unchanged so those local-only commits are preserved. This keeps refs/heads/<branch>
+// usable as a base ref for WorktreeBaseRefHead mode — without this, a bare clone
+// never updates refs/heads/* after the initial clone, so FetchOrigin alone cannot
+// make head mode reflect current remote state.
+func SyncLocalBranch(barePath, branch string) error {
+	localRef := "refs/heads/" + branch
+	remoteRef := "refs/remotes/origin/" + branch
+
+	remoteSHA, remoteOK := resolveRef(barePath, remoteRef)
+	if !remoteOK {
+		return nil // remote ref absent, nothing to sync
+	}
+
+	localSHA, localOK := resolveRef(barePath, localRef)
+	if !localOK {
+		// local branch absent — create it at the remote SHA
+		return executil.Run(barePath, "git", "update-ref", localRef, remoteSHA)
+	}
+
+	if localSHA == remoteSHA {
+		return nil
+	}
+
+	// Fast-forward only: advance local if it is a strict ancestor of remote.
+	// merge-base --is-ancestor exits 0 when local IS an ancestor; exits 1 when not.
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", localSHA, remoteSHA)
+	cmd.Dir = barePath
+	if cmd.Run() == nil {
+		return executil.Run(barePath, "git", "update-ref", localRef, remoteSHA)
+	}
+	// local is not an ancestor (has local-only or diverged commits) — preserve
+	return nil
+}
+
+// resolveRef resolves a git ref in the bare repo. Returns ("", false) if the
+// ref does not exist or cannot be resolved.
+func resolveRef(barePath, ref string) (string, bool) {
+	sha, err := executil.Output(barePath, "git", "rev-parse", "--verify", ref)
+	return sha, err == nil
+}
+
 // SanitizeWorktree cleans up worktree state that would confuse agents:
 //   - aborts any stuck rebase/merge/cherry-pick
 //   - deletes local branches that shadow remote refs (e.g. local "origin/main")

@@ -133,6 +133,12 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		return "", fmt.Errorf("default branch: %w", err)
 	}
 
+	if proj.WorktreeBaseRef == project.WorktreeBaseRefHead {
+		if err := project.SyncLocalBranch(proj.ClonePath, branch); err != nil {
+			m.logger.Warn("worktree.sync-local-branch", "task_id", t.ID, "branch", branch, "err", err)
+		}
+	}
+
 	wtPath := m.PathFor(t)
 	wtBranch := "sybra/" + t.DirName()
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
@@ -240,6 +246,12 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 	branch, err := project.DefaultBranch(proj.ClonePath)
 	if err != nil {
 		return "", fmt.Errorf("default branch: %w", err)
+	}
+
+	if proj.WorktreeBaseRef == project.WorktreeBaseRefHead {
+		if err := project.SyncLocalBranch(proj.ClonePath, branch); err != nil {
+			m.logger.Warn("worktree.sync-local-branch", "task_id", t.ID, "branch", branch, "err", err)
+		}
 	}
 
 	wtPath := m.PathFor(t)
