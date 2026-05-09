@@ -433,6 +433,10 @@ type RunConfig struct {
 	// subprocess (claude exposes no equivalent CLI flag). Zero means "use
 	// the manager's default".
 	BashTimeoutMs int
+	// ForkSubagent, when true, sets CLAUDE_CODE_FORK_SUBAGENT=1 in the claude
+	// subprocess environment (claude provider only). Enables parallel subagent
+	// spawning from a single prompt at the cost of higher token usage.
+	ForkSubagent bool
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.

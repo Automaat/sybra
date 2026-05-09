@@ -137,6 +137,8 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 - StreamEvent types: `init`, `assistant`, `tool_use`, `tool_result`, `result`
 - Empty `allowed_tools` → `--dangerously-skip-permissions`
 
+**Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
+
 **Interactive** (tmux):
 ```bash
 tmux new-session -d -s sybra-<id> -x 200 -y 50 "claude"

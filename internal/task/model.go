@@ -175,7 +175,11 @@ type Task struct {
 	MaxTurns int `yaml:"max_turns,omitempty" json:"maxTurns,omitempty"`
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).
-	RequirePermissions *bool               `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
+	RequirePermissions *bool `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
+	// ForkSubagent enables CLAUDE_CODE_FORK_SUBAGENT=1 for this task's headless
+	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
+	// higher token cost for reduced wall-clock time on multi-part prompts.
+	ForkSubagent bool `yaml:"fork_subagent,omitempty" json:"forkSubagent,omitempty"`
 	AgentRuns          []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
 	Workflow           *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
 	CreatedAt          time.Time           `yaml:"created_at" json:"createdAt"`

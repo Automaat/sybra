@@ -341,6 +341,9 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	if u.MaxTurns != nil {
 		t.MaxTurns = *u.MaxTurns
 	}
+	if u.ForkSubagent != nil {
+		t.ForkSubagent = *u.ForkSubagent
+	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, err
 	}
