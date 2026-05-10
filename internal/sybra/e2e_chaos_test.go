@@ -192,7 +192,8 @@ func waitForChaosSettle(t *testing.T, env *e2eEnv, taskID string, timeout time.D
 	t.Helper()
 	const requiredStable = 4
 	const pollInterval = 50 * time.Millisecond
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	stableCount := 0
 	for {
 		select {
@@ -248,9 +249,11 @@ func isChaosSettled(env *e2eEnv, taskID string) bool {
 
 // waitForCondition polls fn until it returns true or the deadline expires.
 // Returns true if fn fired, false on timeout. Used for short polls where
-// failure is informational rather than fatal.
+// failure is informational rather than fatal. Honours the same e2e timeout
+// scale as waitFor so CI runners aren't penalized.
 func waitForCondition(timeout time.Duration, fn func() bool) bool {
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	for {
 		select {
 		case <-deadline:
@@ -269,7 +272,8 @@ func waitForCondition(timeout time.Duration, fn func() bool) bool {
 // snapshot can briefly show empty history.
 func pollUntilHistoryPopulated(t *testing.T, env *e2eEnv, taskID string, timeout time.Duration) task.Task {
 	t.Helper()
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	var last task.Task
 	for {
 		tk, err := env.tasks.Get(taskID)
