@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestNewStore(t *testing.T) {
@@ -1226,6 +1228,114 @@ func TestClosedAtYAMLRoundTrip(t *testing.T) {
 	}
 	if reloaded2.ClosedAt != nil {
 		t.Errorf("active task should have nil ClosedAt, got %v", reloaded2.ClosedAt)
+	}
+}
+
+// TestCloneWorkflowDoesNotAliasParallelInflight guards against a regression
+// where cloneWorkflow shallow-copied the Execution struct and left the
+// ParallelInflight map (and its nested *ChildStatus values) shared between
+// the cache entry and the caller-visible clone. The shallow copy meant a
+// caller that mutated tasks[i].Workflow.ParallelInflight on a List() result
+// silently corrupted listCache, and the next List() observed the torn map.
+func TestCloneWorkflowDoesNotAliasParallelInflight(t *testing.T) {
+	t.Parallel()
+	orig := workflow.Execution{
+		WorkflowID:  "wf",
+		CurrentStep: "parent",
+		State:       workflow.ExecRunning,
+		ParallelInflight: map[string]*workflow.ParallelChildren{
+			"parent": {
+				ParentStepID: "parent",
+				Children: map[string]*workflow.ChildStatus{
+					"a": {Status: "pending", Output: "untouched"},
+					"b": {Status: "pending"},
+				},
+			},
+		},
+	}
+
+	clone := cloneWorkflow(orig)
+
+	if &clone.ParallelInflight == &orig.ParallelInflight {
+		t.Fatal("clone.ParallelInflight aliases the original map header (impossible: maps are reference types but headers differ across struct copies)")
+	}
+
+	// Mutate the clone's outer map: must not affect the original.
+	clone.ParallelInflight["parent"].Children["a"].Status = "completed"
+	if orig.ParallelInflight["parent"].Children["a"].Status != "pending" {
+		t.Errorf("clone mutation of ChildStatus leaked to original: status=%q",
+			orig.ParallelInflight["parent"].Children["a"].Status)
+	}
+
+	// Replace a child entry on the clone — must not appear on the original.
+	clone.ParallelInflight["parent"].Children["c"] = &workflow.ChildStatus{Status: "completed"}
+	if _, ok := orig.ParallelInflight["parent"].Children["c"]; ok {
+		t.Error("clone added child key 'c' that leaked to original Children map")
+	}
+
+	// Replace the parent entry on the clone — must not appear on the original.
+	clone.ParallelInflight["other"] = &workflow.ParallelChildren{ParentStepID: "other"}
+	if _, ok := orig.ParallelInflight["other"]; ok {
+		t.Error("clone added parent key 'other' that leaked to original ParallelInflight map")
+	}
+}
+
+// TestStoreListMutateClonedParallelInflightDoesNotAffectCache exercises the
+// real path: List() returns clones whose ParallelInflight is independent
+// of the Store's cache. Mutating a returned clone must not change what a
+// subsequent List() observes.
+func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := store.Create("p", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := workflow.Execution{
+		WorkflowID:  "wf",
+		CurrentStep: "parent",
+		State:       workflow.ExecRunning,
+		ParallelInflight: map[string]*workflow.ParallelChildren{
+			"parent": {
+				ParentStepID: "parent",
+				Children: map[string]*workflow.ChildStatus{
+					"a": {Status: "pending"},
+				},
+			},
+		},
+	}
+	wfPtr := &wf
+	if _, err := store.Update(tk.ID, Update{Workflow: &wfPtr}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].Workflow == nil {
+		t.Fatalf("unexpected list result: %+v", first)
+	}
+	// Mutate the returned clone's ChildStatus directly.
+	first[0].Workflow.ParallelInflight["parent"].Children["a"].Status = "MUTATED-BY-CALLER"
+	first[0].Workflow.ParallelInflight["parent"].Children["b"] = &workflow.ChildStatus{Status: "MUTATED"}
+
+	second, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].Workflow == nil {
+		t.Fatalf("unexpected second list: %+v", second)
+	}
+	got := second[0].Workflow.ParallelInflight["parent"].Children["a"].Status
+	if got != "pending" {
+		t.Errorf("cache corrupted: ChildStatus.Status = %q, want %q", got, "pending")
+	}
+	if _, ok := second[0].Workflow.ParallelInflight["parent"].Children["b"]; ok {
+		t.Error("cache corrupted: caller-added child key 'b' visible on second List()")
 	}
 }
 
