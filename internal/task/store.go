@@ -471,6 +471,34 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 		ts := *wf.CompletedAt
 		clone.CompletedAt = &ts
 	}
+	// Deep-copy ParallelInflight: the outer map and every *ParallelChildren +
+	// nested *ChildStatus must be independent. Without this, a Task fetched
+	// via List() shares the in-flight bookkeeping with the listCache entry,
+	// so a caller that mutates wf.ParallelInflight on a returned clone
+	// silently corrupts cached state — and any subsequent List() observes the
+	// torn maps until the cache is invalidated.
+	if wf.ParallelInflight != nil {
+		clone.ParallelInflight = make(map[string]*workflow.ParallelChildren, len(wf.ParallelInflight))
+		for k, v := range wf.ParallelInflight {
+			if v == nil {
+				clone.ParallelInflight[k] = nil
+				continue
+			}
+			pcClone := *v
+			if v.Children != nil {
+				pcClone.Children = make(map[string]*workflow.ChildStatus, len(v.Children))
+				for ck, cv := range v.Children {
+					if cv == nil {
+						pcClone.Children[ck] = nil
+						continue
+					}
+					csClone := *cv
+					pcClone.Children[ck] = &csClone
+				}
+			}
+			clone.ParallelInflight[k] = &pcClone
+		}
+	}
 	return clone
 }
 

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,20 +288,63 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	return env
 }
 
-// waitFor polls a condition with timeout.
+// waitFor polls a condition with timeout. The timeout is scaled by
+// e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance)
+// don't have to be defended against per-test. Local runs see the unscaled
+// deadline.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * int64(e2eTimeoutScale()))
+	deadline := time.After(scaled)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for: %s", desc)
+			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)", desc, scaled, e2eTimeoutScale())
 		case <-time.After(50 * time.Millisecond):
 			if fn() {
 				return
 			}
 		}
 	}
+}
+
+// e2eTimeoutScaleCached memoizes the result of e2eTimeoutScaleResolve so
+// repeated waitFor invocations don't repeatedly stat env vars. Tests should
+// not rely on dynamic mutation of CI / SYBRA_E2E_TIMEOUT_SCALE.
+var e2eTimeoutScaleCached struct {
+	once  sync.Once
+	value int64
+}
+
+// e2eTimeoutScale returns the integer multiplier applied to every waitFor
+// deadline. Resolution priority:
+//
+//  1. SYBRA_E2E_TIMEOUT_SCALE env var (positive integer) — explicit override.
+//  2. CI=true or GITHUB_ACTIONS=true — defaults to 4 (CI fork/exec variance).
+//  3. Local — 1.
+//
+// Scaling lets the suite absorb 5–10× CI slowdowns without each test
+// hand-picking a generous timeout (which would hide real regressions on
+// developer machines). 4× of a 30s local-comfortable budget gives a 2-minute
+// CI ceiling — long enough for the slowest observed runner, short enough that
+// a deadlocked test still fails the job within the per-job budget.
+func e2eTimeoutScale() int64 {
+	e2eTimeoutScaleCached.once.Do(func() {
+		e2eTimeoutScaleCached.value = e2eTimeoutScaleResolve()
+	})
+	return e2eTimeoutScaleCached.value
+}
+
+func e2eTimeoutScaleResolve() int64 {
+	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		return 4
+	}
+	return 1
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {

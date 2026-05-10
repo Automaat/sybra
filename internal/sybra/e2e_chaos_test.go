@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,10 +19,14 @@ import (
 // agent invocation. Mix of happy and failure modes so any seed can produce
 // e.g. "succeed → fail_exit → no_result → success" sequences.
 //
-// Scenarios that change task status (triage_*) appear so the chaos can drive
-// branch transitions through the test-simple workflow's planning vs
+// Scenarios that change task status (triage_*, evaluate) appear so the chaos
+// can drive branch transitions through the test-simple workflow's planning vs
 // direct-implement path. Pure-failure scenarios force retries; auth_error and
 // fail_exit exhaust the max_retries budget on enough repetition.
+//
+// Notably absent: signal_kill (engine deliberately stalls on signal-killed
+// agents to avoid advancing on incomplete work — would prevent settle) and
+// hang (blocks forever; only meaningful with an external StopAgent driver).
 var chaosScenarioPool = []string{
 	"success",
 	"implement",
@@ -35,6 +40,7 @@ var chaosScenarioPool = []string{
 	"triage_to_done",
 	"triage_to_human_required",
 	"triage_to_in_review",
+	"evaluate",
 }
 
 // TestE2E_ChaosFullLifecycle runs the test-simple workflow many times under
@@ -186,7 +192,8 @@ func waitForChaosSettle(t *testing.T, env *e2eEnv, taskID string, timeout time.D
 	t.Helper()
 	const requiredStable = 4
 	const pollInterval = 50 * time.Millisecond
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	stableCount := 0
 	for {
 		select {
@@ -242,9 +249,11 @@ func isChaosSettled(env *e2eEnv, taskID string) bool {
 
 // waitForCondition polls fn until it returns true or the deadline expires.
 // Returns true if fn fired, false on timeout. Used for short polls where
-// failure is informational rather than fatal.
+// failure is informational rather than fatal. Honours the same e2e timeout
+// scale as waitFor so CI runners aren't penalized.
 func waitForCondition(timeout time.Duration, fn func() bool) bool {
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	for {
 		select {
 		case <-deadline:
@@ -263,7 +272,8 @@ func waitForCondition(timeout time.Duration, fn func() bool) bool {
 // snapshot can briefly show empty history.
 func pollUntilHistoryPopulated(t *testing.T, env *e2eEnv, taskID string, timeout time.Duration) task.Task {
 	t.Helper()
-	deadline := time.After(timeout)
+	scaled := time.Duration(int64(timeout) * e2eTimeoutScale())
+	deadline := time.After(scaled)
 	var last task.Task
 	for {
 		tk, err := env.tasks.Get(taskID)
@@ -313,4 +323,165 @@ func truncateForLog(s string, limit int) string {
 		return s
 	}
 	return s[:limit] + "…"
+}
+
+// TestE2E_ChaosConcurrentTasks runs multiple tasks through the workflow
+// engine simultaneously, drawing scenarios from a shared FAKE_CLAUDE_SCENARIO
+// queue protected by flock(2) in the fake-claude binary. Per-task invariants
+// must hold even though agent invocations across tasks interleave on the
+// scenario file:
+//
+//  1. Every task's file parses cleanly (no torn writes from concurrent
+//     Manager.Update calls hitting Store.AddRun + writeSidecars on the same
+//     workflow ticks).
+//  2. Every task settles within the deadline (state terminal, status
+//     human-required, or state waiting on wait_human).
+//  3. No task leaves a running agent registered after settle.
+//  4. Each task records at least one step in its own StepHistory — proving
+//     the engine isolated task IDs and didn't smear history across tasks.
+//
+// The shared scenario queue intentionally exercises the cross-task seam.
+// Fake-claude's popScenario uses flock so two simultaneous invocations can
+// never observe the same first line; without that lock, a single scenario
+// would feed both processes and the queue would silently desync.
+func TestE2E_ChaosConcurrentTasks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("concurrent chaos spawns subprocesses; skipped in -short mode")
+	}
+
+	const tasks = 4
+	const scenariosPerTask = 14 // upper bound on agent invocations per task
+	const seed = uint64(1337)
+
+	rng := rand.New(rand.NewPCG(seed, seed*2654435761))
+
+	// Generate one large interleaved scenario queue. The pop order across
+	// tasks is whatever the kernel grants the flock first; what matters is
+	// that every task drains *something* from the queue and the queue never
+	// runs short — short queue would force a fallback to "success" for
+	// trailing pops, which is also fine but would mask any drain-related
+	// bug as silently-passing.
+	totalScenarios := tasks * scenariosPerTask
+	queue := make([]string, totalScenarios)
+	for i := range queue {
+		queue[i] = chaosScenarioPool[rng.IntN(len(chaosScenarioPool))]
+	}
+	t.Logf("concurrent chaos queue (seed=%d, %d entries): %s",
+		seed, len(queue), strings.Join(queue, " → "))
+
+	env := setupE2EMulti(t, queue)
+
+	// Create tasks first. Creation goes through the same lock-protected
+	// Store path that the workflow tick exercises later, so any race in
+	// Create + List would surface here.
+	taskIDs := make([]string, tasks)
+	for i := range taskIDs {
+		created, err := env.tasks.Create(fmt.Sprintf("chaos-concurrent-%d", i), "body", "headless")
+		if err != nil {
+			t.Fatalf("create task %d: %v", i, err)
+		}
+		taskIDs[i] = created.ID
+	}
+
+	// Start workflows in lockstep. Per-task settlement happens off the
+	// goroutine so the engine sees real concurrency rather than a
+	// staggered ramp.
+	var wg sync.WaitGroup
+	results := make([]chaosResult, tasks)
+	for i, id := range taskIDs {
+		i := i
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := env.startWorkflow(id, "test-simple"); err != nil {
+				results[i] = chaosResult{taskID: id, err: fmt.Errorf("startWorkflow: %w", err)}
+				return
+			}
+			settled := waitForChaosSettle(t, env, id, 60*time.Second)
+			results[i] = chaosResult{taskID: id, settled: settled}
+		}()
+	}
+	wg.Wait()
+
+	// Per-task assertions — collect all failures before fataling so a
+	// regression that breaks half the tasks is fully diagnosed in one run.
+	for i, r := range results {
+		if r.err != nil {
+			dumpChaosState(t, env, r.taskID)
+			t.Errorf("task %d (%s): %v", i, r.taskID, r.err)
+			continue
+		}
+		if !r.settled {
+			dumpChaosState(t, env, r.taskID)
+			t.Errorf("task %d (%s): never settled in 60s", i, r.taskID)
+			continue
+		}
+
+		tk, err := env.tasks.Get(r.taskID)
+		if err != nil {
+			t.Errorf("task %d (%s): post-settle get: %v", i, r.taskID, err)
+			continue
+		}
+
+		if env.agents.HasRunningAgentForTask(r.taskID) {
+			waitForCondition(2*time.Second, func() bool {
+				return !env.agents.HasRunningAgentForTask(r.taskID)
+			})
+			if env.agents.HasRunningAgentForTask(r.taskID) {
+				t.Errorf("task %d (%s): lingering running agent after settle", i, r.taskID)
+			}
+		}
+
+		tk = pollUntilHistoryPopulated(t, env, r.taskID, 10*time.Second)
+		if tk.Workflow == nil {
+			t.Errorf("task %d (%s): workflow is nil after settle", i, r.taskID)
+			continue
+		}
+		if len(tk.Workflow.StepHistory) == 0 {
+			dumpChaosState(t, env, r.taskID)
+			t.Errorf("task %d (%s): empty StepHistory — workflow never executed any step",
+				i, r.taskID)
+			continue
+		}
+		// Cross-task isolation: every step record must reference the
+		// owning task's workflow, not someone else's. The StepHistory
+		// is per-execution so the assertion is implicit, but a regression
+		// that smeared cache entries across tasks would surface as the
+		// step's expected stepID space being wrong.
+		state := tk.Workflow.State
+		status := tk.Status
+		terminal := state == workflow.ExecCompleted || state == workflow.ExecFailed
+		humanRequired := status == task.StatusHumanRequired
+		waiting := state == workflow.ExecWaiting
+		if !terminal && !humanRequired && !waiting {
+			t.Errorf("task %d (%s): incoherent settle: state=%q status=%q step=%q",
+				i, r.taskID, state, status, tk.Workflow.CurrentStep)
+		}
+	}
+
+	// Cross-task uniqueness: each task's ID must still resolve to exactly
+	// one entry in the listing. A regression that re-keyed cache entries
+	// (e.g. cloneTask aliasing IDs) would surface as duplicates here.
+	listed, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("List after concurrent chaos: %v", err)
+	}
+	seen := map[string]int{}
+	for _, lt := range listed {
+		seen[lt.ID]++
+	}
+	for _, id := range taskIDs {
+		if seen[id] != 1 {
+			t.Errorf("task %s appears %d times in List; want 1", id, seen[id])
+		}
+	}
+}
+
+// chaosResult captures one concurrent-task outcome to defer assertions
+// until every goroutine has completed.
+type chaosResult struct {
+	taskID  string
+	settled bool
+	err     error
 }
