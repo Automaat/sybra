@@ -21,6 +21,8 @@ export class Agent {
     "costUsd": number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "cacheCreationInputTokens"?: number;
+    "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
     "startedAt": time$0.Time;
     "lastEventAt": time$0.Time;
@@ -93,10 +95,10 @@ export class Agent {
      * Creates a new Agent instance from a string or object.
      */
     static createFrom($$source: any = {}): Agent {
-        const $$createField22_0 = $$createType0;
+        const $$createField24_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField22_0($$parsedSource["pluginErrors"]);
+            $$parsedSource["pluginErrors"] = $$createField24_0($$parsedSource["pluginErrors"]);
         }
         return new Agent($$parsedSource as Partial<Agent>);
     }
@@ -116,6 +118,8 @@ export class ConvoEvent {
     "costUsd"?: number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "cacheCreationInputTokens"?: number;
+    "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
     "isPartial"?: boolean;
     "timestamp": time$0.Time;
@@ -208,6 +212,8 @@ export class StreamEvent {
     "cost_usd"?: number;
     "input_tokens"?: number;
     "output_tokens"?: number;
+    "cache_creation_input_tokens"?: number;
+    "cache_read_input_tokens"?: number;
     "reasoning_tokens"?: number;
     "subtype"?: string;
     "timestamp": time$0.Time;
@@ -246,14 +252,14 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField11_0 = $$createType6;
-        const $$createField12_0 = $$createType0;
+        const $$createField13_0 = $$createType6;
+        const $$createField14_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
-            $$parsedSource["plan_steps"] = $$createField11_0($$parsedSource["plan_steps"]);
+            $$parsedSource["plan_steps"] = $$createField13_0($$parsedSource["plan_steps"]);
         }
         if ("plugin_errors" in $$parsedSource) {
-            $$parsedSource["plugin_errors"] = $$createField12_0($$parsedSource["plugin_errors"]);
+            $$parsedSource["plugin_errors"] = $$createField14_0($$parsedSource["plugin_errors"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }

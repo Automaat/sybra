@@ -50,6 +50,8 @@ func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
 			ev.CostUSD = e.Result.CostUSD
 			ev.InputTokens = e.Result.InputTokens
 			ev.OutputTokens = e.Result.OutputTokens
+			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
+			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
 			ev.ReasoningTokens = e.Result.ReasoningTokens
 		}
 	}
@@ -290,6 +292,7 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			}
 		case "result":
 			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
 			m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 			// Drain any prompts queued mid-turn before flipping to paused.
 			// Each queued prompt fires the next turn back-to-back so the

@@ -16,14 +16,21 @@ type ClaudeMessage struct {
 }
 
 // ClaudeResult holds fields from "result" events.
+//
+// Cache tokens dominate input volume in long agent runs (cache reads typically
+// 100–10000× larger than uncached `InputTokens`). Captured separately so the
+// stats UI can reflect actual API consumption — `InputTokens` alone is just
+// the small uncached delta and looks "too small" without these.
 type ClaudeResult struct {
-	Subtype         string
-	Text            string
-	SessionID       string
-	CostUSD         float64
-	InputTokens     int
-	OutputTokens    int
-	ReasoningTokens int
+	Subtype                  string
+	Text                     string
+	SessionID                string
+	CostUSD                  float64
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	ReasoningTokens          int
 	// ErrorType and ErrorStatus carry structured error info when Subtype == "error".
 	// Codex: mapped from the "code" field. Claude: reserved for future extraction.
 	ErrorType   string
@@ -52,15 +59,27 @@ type CodexEvent struct {
 }
 
 type claudeEnvelope struct {
-	Type              string                `json:"type"`
-	Subtype           string                `json:"subtype"`
-	SessionID         string                `json:"session_id"`
-	PluginErrors      []string              `json:"plugin_errors,omitempty"`
-	Message           *claudeMessagePayload `json:"message"`
-	Result            string                `json:"result"`
-	TotalCostUSD      float64               `json:"total_cost_usd"`
-	TotalInputTokens  int                   `json:"total_input_tokens"`
-	TotalOutputTokens int                   `json:"total_output_tokens"`
+	Type         string                `json:"type"`
+	Subtype      string                `json:"subtype"`
+	SessionID    string                `json:"session_id"`
+	PluginErrors []string              `json:"plugin_errors,omitempty"`
+	Message      *claudeMessagePayload `json:"message"`
+	Result       string                `json:"result"`
+	TotalCostUSD float64               `json:"total_cost_usd"`
+	// Real Claude Code result events nest token counts under `usage` (per
+	// platform.claude.com/docs/en/agent-sdk/headless and verified against
+	// captured agent NDJSON). Earlier root-level `total_*_tokens` fields are
+	// kept as a fallback for fixtures that still use them.
+	Usage             *claudeUsage `json:"usage"`
+	TotalInputTokens  int          `json:"total_input_tokens"`
+	TotalOutputTokens int          `json:"total_output_tokens"`
+}
+
+type claudeUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 type claudeMessagePayload struct {
@@ -102,9 +121,13 @@ type codexItem struct {
 }
 
 type codexUsage struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	ReasoningTokens int `json:"reasoning_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	// Real Codex emits `reasoning_output_tokens`; `reasoning_tokens` kept as
+	// fallback for any legacy/test fixture using the shorter name.
+	ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+	ReasoningTokens       int `json:"reasoning_tokens"`
 }
 
 // ParseClaudeLine parses one line of Claude stream-json output.
@@ -188,7 +211,19 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 		if raw.Usage != nil {
 			r.InputTokens = raw.Usage.InputTokens
 			r.OutputTokens = raw.Usage.OutputTokens
-			r.ReasoningTokens = raw.Usage.ReasoningTokens
+			// Codex `cached_input_tokens` is a subset of `input_tokens` (gross
+			// total). Map to CacheReadInputTokens so the stats UI can break
+			// down billed vs cache-hit tokens with the same column shape used
+			// for Claude.
+			r.CacheReadInputTokens = raw.Usage.CachedInputTokens
+			// Real codex emits `reasoning_output_tokens`; older fixtures use
+			// the shorter `reasoning_tokens`. Prefer the canonical field and
+			// fall back so tests added under the legacy name still pass.
+			if raw.Usage.ReasoningOutputTokens != 0 {
+				r.ReasoningTokens = raw.Usage.ReasoningOutputTokens
+			} else {
+				r.ReasoningTokens = raw.Usage.ReasoningTokens
+			}
 		}
 		return CodexEvent{Type: "result", Raw: rawCopy, Result: &r}, nil
 
@@ -414,7 +449,7 @@ func extractToolResultsTyped(msg *claudeMessagePayload) []ToolResultBlock {
 }
 
 func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
-	return ClaudeResult{
+	r := ClaudeResult{
 		Subtype:      raw.Subtype,
 		Text:         raw.Result,
 		SessionID:    raw.SessionID,
@@ -422,6 +457,20 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		InputTokens:  raw.TotalInputTokens,
 		OutputTokens: raw.TotalOutputTokens,
 	}
+	if raw.Usage != nil {
+		// usage.input_tokens / usage.output_tokens are the canonical Claude
+		// Code fields; total_*_tokens at root only exists in legacy fixtures.
+		// Prefer the nested values when present, fall back to root otherwise.
+		if raw.Usage.InputTokens != 0 {
+			r.InputTokens = raw.Usage.InputTokens
+		}
+		if raw.Usage.OutputTokens != 0 {
+			r.OutputTokens = raw.Usage.OutputTokens
+		}
+		r.CacheCreationInputTokens = raw.Usage.CacheCreationInputTokens
+		r.CacheReadInputTokens = raw.Usage.CacheReadInputTokens
+	}
+	return r
 }
 
 // copyRaw returns an independent copy of line as json.RawMessage.

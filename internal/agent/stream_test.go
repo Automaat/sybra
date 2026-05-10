@@ -108,6 +108,36 @@ func TestParseClaudeLine(t *testing.T) {
 			},
 		},
 		{
+			// Real Claude Code result event shape — token counts live under
+			// `usage.*`. Regression guard: an earlier root-level
+			// `total_input_tokens` parser dropped these silently and stats
+			// always recorded 0 tokens for Claude runs.
+			name: "result event with usage block",
+			line: `{"type":"result","result":"done","session_id":"s1","total_cost_usd":0.66,` +
+				`"usage":{"input_tokens":24,"output_tokens":10656,` +
+				`"cache_creation_input_tokens":48071,"cache_read_input_tokens":1070865}}`,
+			check: func(t *testing.T, got ClaudeEvent) {
+				if got.Result == nil {
+					t.Fatal("Result is nil")
+				}
+				if got.Result.InputTokens != 24 {
+					t.Errorf("InputTokens = %d, want 24", got.Result.InputTokens)
+				}
+				if got.Result.OutputTokens != 10656 {
+					t.Errorf("OutputTokens = %d, want 10656", got.Result.OutputTokens)
+				}
+				if got.Result.CacheCreationInputTokens != 48071 {
+					t.Errorf("CacheCreationInputTokens = %d, want 48071", got.Result.CacheCreationInputTokens)
+				}
+				if got.Result.CacheReadInputTokens != 1070865 {
+					t.Errorf("CacheReadInputTokens = %d, want 1070865", got.Result.CacheReadInputTokens)
+				}
+				if got.Result.CostUSD != 0.66 {
+					t.Errorf("CostUSD = %f, want 0.66", got.Result.CostUSD)
+				}
+			},
+		},
+		{
 			name: "unknown event type preserved",
 			line: `{"type":"rate_limit_event","subtype":"throttle"}`,
 			check: func(t *testing.T, got ClaudeEvent) {
@@ -523,7 +553,7 @@ func TestParseCodexLine_CommandExecution(t *testing.T) {
 }
 
 func TestParseCodexLine_TurnCompleted(t *testing.T) {
-	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":16012,"cached_input_tokens":2432,"output_tokens":18}}`)
+	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":16012,"cached_input_tokens":2432,"output_tokens":18,"reasoning_output_tokens":7}}`)
 
 	got, err := ParseCodexLine(line)
 	if err != nil {
@@ -537,6 +567,12 @@ func TestParseCodexLine_TurnCompleted(t *testing.T) {
 	}
 	if got.Result.InputTokens != 16012 || got.Result.OutputTokens != 18 {
 		t.Fatalf("tokens = %d/%d, want 16012/18", got.Result.InputTokens, got.Result.OutputTokens)
+	}
+	if got.Result.CacheReadInputTokens != 2432 {
+		t.Errorf("CacheReadInputTokens = %d, want 2432", got.Result.CacheReadInputTokens)
+	}
+	if got.Result.ReasoningTokens != 7 {
+		t.Errorf("ReasoningTokens = %d, want 7", got.Result.ReasoningTokens)
 	}
 }
 

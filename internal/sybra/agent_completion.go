@@ -185,10 +185,15 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	}
 	in := ag.GetInputTokens()
 	out := ag.GetOutputTokens()
+	cacheCreate := ag.GetCacheCreationInputTokens()
+	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := cost
 	if agCost == 0 && ag.Provider == "codex" {
-		agCost = stats.EstimateCost(ag.Model, in, out)
+		// Codex CLI doesn't emit cost — estimate from token counts.
+		// Pricing covers cached vs uncached input separately so the estimate
+		// matches actual OpenAI billing rather than the gross-input ceiling.
+		agCost = stats.EstimateCostDetailed(ag.Model, in, out, 0, cacheRead, reasoning)
 	}
 	outcome := "failed"
 	if exitErr == nil {
@@ -201,20 +206,22 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		}
 	}
 	_ = h.stats.Record(stats.RunRecord{
-		ID:              ag.ID,
-		TaskID:          ag.TaskID,
-		ProjectID:       projectID,
-		Mode:            ag.Mode,
-		Role:            string(agent.RoleFromName(ag.Name)),
-		Model:           ag.Model,
-		Provider:        ag.Provider,
-		CostUSD:         agCost,
-		DurationS:       duration,
-		InputTokens:     in,
-		OutputTokens:    out,
-		ReasoningTokens: reasoning,
-		Outcome:         outcome,
-		Timestamp:       time.Now(),
+		ID:                       ag.ID,
+		TaskID:                   ag.TaskID,
+		ProjectID:                projectID,
+		Mode:                     ag.Mode,
+		Role:                     string(agent.RoleFromName(ag.Name)),
+		Model:                    ag.Model,
+		Provider:                 ag.Provider,
+		CostUSD:                  agCost,
+		DurationS:                duration,
+		InputTokens:              in,
+		OutputTokens:             out,
+		CacheCreationInputTokens: cacheCreate,
+		CacheReadInputTokens:     cacheRead,
+		ReasoningTokens:          reasoning,
+		Outcome:                  outcome,
+		Timestamp:                time.Now(),
 	})
 }
 

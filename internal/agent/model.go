@@ -30,26 +30,28 @@ const (
 )
 
 type Agent struct {
-	ID              string    `json:"id"`
-	TaskID          string    `json:"taskId"`
-	Mode            string    `json:"mode"`
-	State           State     `json:"state"`
-	SessionID       string    `json:"sessionId"`
-	CostUSD         float64   `json:"costUsd"`
-	InputTokens     int       `json:"inputTokens,omitempty"`
-	OutputTokens    int       `json:"outputTokens,omitempty"`
-	ReasoningTokens int       `json:"reasoningTokens,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	LastEventAt     time.Time `json:"lastEventAt"`
-	LogPath         string    `json:"logPath,omitempty"`
-	External        bool      `json:"external"`
-	PID             int       `json:"pid,omitempty"`
-	Command         string    `json:"command,omitempty"`
-	Name            string    `json:"name,omitempty"`
-	Project         string    `json:"project,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
+	ID                       string    `json:"id"`
+	TaskID                   string    `json:"taskId"`
+	Mode                     string    `json:"mode"`
+	State                    State     `json:"state"`
+	SessionID                string    `json:"sessionId"`
+	CostUSD                  float64   `json:"costUsd"`
+	InputTokens              int       `json:"inputTokens,omitempty"`
+	OutputTokens             int       `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
@@ -258,6 +260,16 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 	return result
 }
 
+// AddCacheStats merges cache token counts into the running totals.
+// Kept separate from AddResultStats so the existing 5-arg signature stays
+// stable across runners.
+func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
+	a.mu.Lock()
+	a.CacheCreationInputTokens += cacheCreate
+	a.CacheReadInputTokens += cacheRead
+	a.mu.Unlock()
+}
+
 // EnqueuePrompt appends a follow-up prompt to the pending queue.
 func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Lock()
@@ -341,6 +353,25 @@ func (a *Agent) GetInputTokens() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.InputTokens
+}
+
+// GetCacheCreationInputTokens returns the cumulative cache-creation input tokens.
+// For Claude these are billed at the cache-write rate (typically 1.25× standard
+// input). For Codex this is always 0 — Codex only reports a cached subset of
+// gross input.
+func (a *Agent) GetCacheCreationInputTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.CacheCreationInputTokens
+}
+
+// GetCacheReadInputTokens returns cumulative cache-read input tokens.
+// Claude bills these at ~10% of standard input. For Codex this is the
+// `cached_input_tokens` subset of gross input_tokens.
+func (a *Agent) GetCacheReadInputTokens() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.CacheReadInputTokens
 }
 
 // GetOutputTokens returns the cumulative output token count.
@@ -446,15 +477,17 @@ type PlanStep struct {
 }
 
 type StreamEvent struct {
-	Type            string    `json:"type"`
-	Content         string    `json:"content,omitempty"`
-	SessionID       string    `json:"session_id,omitempty"`
-	CostUSD         float64   `json:"cost_usd,omitempty"`
-	InputTokens     int       `json:"input_tokens,omitempty"`
-	OutputTokens    int       `json:"output_tokens,omitempty"`
-	ReasoningTokens int       `json:"reasoning_tokens,omitempty"`
-	Subtype         string    `json:"subtype,omitempty"`
-	Timestamp       time.Time `json:"timestamp"`
+	Type                     string    `json:"type"`
+	Content                  string    `json:"content,omitempty"`
+	SessionID                string    `json:"session_id,omitempty"`
+	CostUSD                  float64   `json:"cost_usd,omitempty"`
+	InputTokens              int       `json:"input_tokens,omitempty"`
+	OutputTokens             int       `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cache_read_input_tokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoning_tokens,omitempty"`
+	Subtype                  string    `json:"subtype,omitempty"`
+	Timestamp                time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"error_type,omitempty"`
@@ -469,19 +502,21 @@ type StreamEvent struct {
 // ConvoEvent is a rich event for conversational mode, preserving full tool
 // call structure for the chat UI.
 type ConvoEvent struct {
-	Type            string            `json:"type"`
-	Subtype         string            `json:"subtype,omitempty"`
-	SessionID       string            `json:"sessionId,omitempty"`
-	Text            string            `json:"text,omitempty"`
-	ToolUses        []ToolUseBlock    `json:"toolUses,omitempty"`
-	ToolResults     []ToolResultBlock `json:"toolResults,omitempty"`
-	CostUSD         float64           `json:"costUsd,omitempty"`
-	InputTokens     int               `json:"inputTokens,omitempty"`
-	OutputTokens    int               `json:"outputTokens,omitempty"`
-	ReasoningTokens int               `json:"reasoningTokens,omitempty"`
-	IsPartial       bool              `json:"isPartial,omitempty"`
-	Timestamp       time.Time         `json:"timestamp"`
-	Raw             json.RawMessage   `json:"raw,omitempty"`
+	Type                     string            `json:"type"`
+	Subtype                  string            `json:"subtype,omitempty"`
+	SessionID                string            `json:"sessionId,omitempty"`
+	Text                     string            `json:"text,omitempty"`
+	ToolUses                 []ToolUseBlock    `json:"toolUses,omitempty"`
+	ToolResults              []ToolResultBlock `json:"toolResults,omitempty"`
+	CostUSD                  float64           `json:"costUsd,omitempty"`
+	InputTokens              int               `json:"inputTokens,omitempty"`
+	OutputTokens             int               `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int               `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int               `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int               `json:"reasoningTokens,omitempty"`
+	IsPartial                bool              `json:"isPartial,omitempty"`
+	Timestamp                time.Time         `json:"timestamp"`
+	Raw                      json.RawMessage   `json:"raw,omitempty"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"errorType,omitempty"`
