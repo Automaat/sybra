@@ -11,6 +11,11 @@ import (
 	"github.com/Automaat/sybra/internal/notification"
 )
 
+// modelNameRe restricts the agent model identifier to characters safe to embed
+// on a CLI argument without quoting. Compiled once — recompiling per call
+// allocates ~1KB of regex state each time UpdateSettings runs.
+var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
 	mu         sync.RWMutex
@@ -62,7 +67,7 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if !validProviders[settings.Agent.Provider] {
 		return fmt.Errorf("invalid provider: %q", settings.Agent.Provider)
 	}
-	if settings.Agent.Model != "" && !regexp.MustCompile(`^[A-Za-z0-9._/-]+$`).MatchString(settings.Agent.Model) {
+	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
 		return fmt.Errorf("invalid model: %q", settings.Agent.Model)
 	}
 	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
