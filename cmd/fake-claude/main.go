@@ -57,6 +57,12 @@ import (
 	"time"
 )
 
+// scenarioFileLockSuffix is appended to FAKE_CLAUDE_SCENARIO_FILE to derive a
+// per-file lock path that flock(2) can serialize across concurrent fake-claude
+// processes. We don't lock the scenario file directly because we read+truncate
+// it; a sibling lockfile keeps the lock target stable.
+const scenarioFileLockSuffix = ".lock"
+
 // cleanEnvPath validates a file path from an env var.
 // Only paths under the system temp directory are accepted to prevent traversal.
 // Returns empty string if the path is empty, unresolvable, or outside tmp.
@@ -399,8 +405,18 @@ func extractSidecarPath(args []string) string {
 // popScenario reads the scenario for this invocation. If FAKE_CLAUDE_SCENARIO_FILE
 // is set, it pops the first line from that file (for multi-step workflows).
 // Falls back to FAKE_CLAUDE_SCENARIO, then "success".
+//
+// The read-modify-write of the scenario file is serialized across concurrent
+// fake-claude processes via flock(2) on a sibling lockfile. Without this,
+// two simultaneous invocations from a multi-task chaos test would observe
+// the same first line and both consume it, silently losing scenarios from
+// the queue.
 func popScenario() string {
 	if sf := cleanEnvPath(os.Getenv("FAKE_CLAUDE_SCENARIO_FILE")); sf != "" {
+		release, ok := acquireScenarioLock(sf)
+		if ok {
+			defer release()
+		}
 		data, err := os.ReadFile(sf)
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
@@ -416,6 +432,27 @@ func popScenario() string {
 		return s
 	}
 	return "success"
+}
+
+// acquireScenarioLock takes an exclusive flock on a sibling .lock file and
+// returns a release closure. Returns ok=false on any error so the caller
+// continues unlocked rather than failing the test outright (the worst case
+// is the original racy behaviour; the alternative — a hard error — would
+// hide more bugs than it surfaces).
+func acquireScenarioLock(scenarioPath string) (release func(), ok bool) {
+	lockPath := scenarioPath + scenarioFileLockSuffix
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, false
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, true
 }
 
 func runCLI(subcmd, taskID string, extra ...string) {
