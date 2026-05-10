@@ -4,6 +4,7 @@ package sybra
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,9 +39,12 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			wantProvider: "claude",
 		},
 		{
-			provider:     "codex",
-			scenario:     "success",
-			wantCost:     0,
+			provider: "codex",
+			scenario: "success",
+			// Codex emits no cost — agent_completion estimates it via
+			// stats.EstimateCostDetailed("gpt-5.4", 100 in, 20 out, 0, 0, 0)
+			// = 100*1.25/1M + 20*10/1M = 0.000325.
+			wantCost:     0.000325,
 			wantIn:       100,
 			wantOut:      20,
 			wantOutcome:  "completed",
@@ -137,8 +141,8 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			}
 			r := resp.RecentRuns[0]
 
-			if r.CostUSD != tc.wantCost {
-				t.Errorf("CostUSD = %f, want %f", r.CostUSD, tc.wantCost)
+			if math.Abs(r.CostUSD-tc.wantCost) > 1e-9 {
+				t.Errorf("CostUSD = %g, want %g", r.CostUSD, tc.wantCost)
 			}
 			if r.InputTokens != tc.wantIn {
 				t.Errorf("InputTokens = %d, want %d", r.InputTokens, tc.wantIn)

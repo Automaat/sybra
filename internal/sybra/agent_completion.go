@@ -146,16 +146,19 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 
 	if h.workflowEngine != nil {
-		if isSignalKill(exitErr) {
-			// Signal kill (OS/container SIGTERM, Sybra's own StopAgent, or a
-			// stale-agent cleanup from execRunAgent/execParallel): work is
-			// incomplete, so leave the step stalled for ResumeStalled to
-			// re-dispatch. Advancing on a kill credits an unfinished run as
-			// a failed step, which transitions the workflow into verify_commits
-			// (or similar) with no commits — the failure mode reported in #641.
-			// WasStopped is logged for diagnostics but does not gate the stall.
-			h.logger.Warn("agent.completion.signal-kill",
-				"task_id", ag.TaskID, "agent_id", ag.ID, "stopped", ag.WasStopped())
+		// Stall when (a) the kernel killed the process via signal (OS/container
+		// SIGTERM, SIGKILL escalation), or (b) Sybra's own StopAgent set the
+		// `stopped` flag — even if the child exited cleanly. The latter is
+		// load-bearing: PR #722's SIGINT-first path lets default Go binaries
+		// (e.g. fake-claude in tests, claude/codex in prod) terminate via the
+		// runtime's signal handler with ExitStatus=2 (NOT WaitStatus.Signaled),
+		// so isSignalKill alone misses Sybra-initiated stops and the workflow
+		// advances on incomplete work — the failure mode reported in #641 plus
+		// the flake in TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow.
+		if isSignalKill(exitErr) || ag.WasStopped() {
+			h.logger.Warn("agent.completion.stall",
+				"task_id", ag.TaskID, "agent_id", ag.ID,
+				"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped())
 			h.workflowEngine.ClearAgentStep(ag.ID)
 			return
 		}
@@ -185,10 +188,15 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	}
 	in := ag.GetInputTokens()
 	out := ag.GetOutputTokens()
+	cacheCreate := ag.GetCacheCreationInputTokens()
+	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := cost
 	if agCost == 0 && ag.Provider == "codex" {
-		agCost = stats.EstimateCost(ag.Model, in, out)
+		// Codex CLI doesn't emit cost — estimate from token counts.
+		// Pricing covers cached vs uncached input separately so the estimate
+		// matches actual OpenAI billing rather than the gross-input ceiling.
+		agCost = stats.EstimateCostDetailed(ag.Model, in, out, 0, cacheRead, reasoning)
 	}
 	outcome := "failed"
 	if exitErr == nil {
@@ -201,20 +209,22 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		}
 	}
 	_ = h.stats.Record(stats.RunRecord{
-		ID:              ag.ID,
-		TaskID:          ag.TaskID,
-		ProjectID:       projectID,
-		Mode:            ag.Mode,
-		Role:            string(agent.RoleFromName(ag.Name)),
-		Model:           ag.Model,
-		Provider:        ag.Provider,
-		CostUSD:         agCost,
-		DurationS:       duration,
-		InputTokens:     in,
-		OutputTokens:    out,
-		ReasoningTokens: reasoning,
-		Outcome:         outcome,
-		Timestamp:       time.Now(),
+		ID:                       ag.ID,
+		TaskID:                   ag.TaskID,
+		ProjectID:                projectID,
+		Mode:                     ag.Mode,
+		Role:                     string(agent.RoleFromName(ag.Name)),
+		Model:                    ag.Model,
+		Provider:                 ag.Provider,
+		CostUSD:                  agCost,
+		DurationS:                duration,
+		InputTokens:              in,
+		OutputTokens:             out,
+		CacheCreationInputTokens: cacheCreate,
+		CacheReadInputTokens:     cacheRead,
+		ReasoningTokens:          reasoning,
+		Outcome:                  outcome,
+		Timestamp:                time.Now(),
 	})
 }
 

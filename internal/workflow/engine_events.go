@@ -286,14 +286,30 @@ func (e *Engine) ResumeStalled() {
 		}
 		e.mu.Lock()
 		_, dispatching := e.dispatching[t.ID]
-		if !advancing && !dispatching {
+		// agentSteps holds outstanding agents the engine spawned but hasn't
+		// yet routed completion for. Required because interactive agents pass
+		// through StatePaused after their first result event (one-shot path
+		// closes stdin → state Paused → process exits → onComplete fires →
+		// AdvanceStep), and HasRunningAgent returns false during that window.
+		// Without this check a tight ResumeStalled loop dispatches a duplicate.
+		hasOutstandingAgent := false
+		for _, entry := range e.agentSteps {
+			if entry.taskID == t.ID && entry.stepID == step.ID {
+				hasOutstandingAgent = true
+				break
+			}
+		}
+		if !advancing && !dispatching && !hasOutstandingAgent {
 			e.dispatching[t.ID] = struct{}{}
 		}
 		e.mu.Unlock()
-		if advancing || dispatching {
+		if advancing || dispatching || hasOutstandingAgent {
 			reason := "dispatching"
-			if advancing {
+			switch {
+			case advancing:
 				reason = "inflight"
+			case hasOutstandingAgent:
+				reason = "agent-pending-completion"
 			}
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", reason, "step", step.ID)

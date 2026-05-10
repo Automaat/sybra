@@ -43,6 +43,11 @@ export class GroupedStat {
 
 /**
  * RunRecord captures a single agent execution for analytics.
+ * 
+ * Cache token fields are recorded so the stats UI can show actual API
+ * consumption — for long Claude runs cache reads dominate by 100–10000×
+ * (e.g. 1.07M cache reads vs 24 uncached input tokens in a single result
+ * event), so plain InputTokens alone looks misleadingly small.
  */
 export class RunRecord {
     "id": string;
@@ -56,6 +61,8 @@ export class RunRecord {
     "durationS": number;
     "inputTokens"?: number;
     "outputTokens"?: number;
+    "cacheCreationInputTokens"?: number;
+    "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
     "outcome": string;
     "timestamp": time$0.Time;
@@ -218,6 +225,8 @@ export class Summary {
     "totalDurationS": number;
     "totalInputTokens": number;
     "totalOutputTokens": number;
+    "totalCacheCreationInputTokens"?: number;
+    "totalCacheReadInputTokens"?: number;
     "totalReasoningTokens"?: number;
 
     /** Creates a new Summary instance. */

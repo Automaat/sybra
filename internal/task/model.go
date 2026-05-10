@@ -179,11 +179,11 @@ type Task struct {
 	// ForkSubagent enables CLAUDE_CODE_FORK_SUBAGENT=1 for this task's headless
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.
-	ForkSubagent bool `yaml:"fork_subagent,omitempty" json:"forkSubagent,omitempty"`
-	AgentRuns          []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
-	Workflow           *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
-	CreatedAt          time.Time           `yaml:"created_at" json:"createdAt"`
-	UpdatedAt          time.Time           `yaml:"updated_at" json:"updatedAt"`
+	ForkSubagent bool                `yaml:"fork_subagent,omitempty" json:"forkSubagent,omitempty"`
+	AgentRuns    []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
+	Workflow     *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
+	CreatedAt    time.Time           `yaml:"created_at" json:"createdAt"`
+	UpdatedAt    time.Time           `yaml:"updated_at" json:"updatedAt"`
 
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`
