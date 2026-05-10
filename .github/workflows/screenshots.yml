@@ -108,8 +108,14 @@ jobs:
           git commit -m "chore(screenshots): sync from sybra@${SYBRA_SHA}"
           git push --force-with-lease origin "$BRANCH"
 
-          if gh pr view "$BRANCH" --repo Automaat/sybra-website >/dev/null 2>&1; then
-            gh pr edit "$BRANCH" \
+          PR_URL=$(gh pr list \
+            --repo Automaat/sybra-website \
+            --head "$BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url // ""')
+          if [ -n "$PR_URL" ]; then
+            gh pr edit "$PR_URL" \
               --repo Automaat/sybra-website \
               --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
               --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
