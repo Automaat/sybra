@@ -79,28 +79,44 @@ func (s *Store) List() ([]Task, error) {
 		return tasks, nil
 	}
 
-	paths, err := fsutil.ListFiles(s.dir, ".md")
+	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("read tasks dir: %w", err)
 	}
 
-	var tasks []Task
-	var parseErr bool
-	for _, p := range paths {
-		base := filepath.Base(p)
-		if IsSidecarFile(base) {
+	// Bucket entries in one pass so we don't ReadDir per-task in the
+	// PlanDraftStore.List path (was N²) or stat-via-ENOENT 3 sidecars per
+	// task (was 3N misses on the common no-sidecar case).
+	var taskPaths []string
+	sidecars := loadSidecarsFromEntries(s.dir, entries)
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
+		base := e.Name()
+		if !strings.HasSuffix(base, ".md") || IsSidecarFile(base) {
+			continue
+		}
+		taskPaths = append(taskPaths, filepath.Join(s.dir, base))
+	}
+
+	tasks := make([]Task, 0, len(taskPaths))
+	var parseErr bool
+	for _, p := range taskPaths {
 		t, err := Parse(p)
 		if err != nil {
 			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
 			parseErr = true
 			continue
 		}
-		t.Plan, _ = s.plans.Read(t.ID)
-		t.PlanCritique, _ = s.planCritiques.Read(t.ID)
-		t.CodeReview, _ = s.codeReviews.Read(t.ID)
-		t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+		t.Plan = sidecars.plans[t.ID]
+		t.PlanCritique = sidecars.critiques[t.ID]
+		t.CodeReview = sidecars.reviews[t.ID]
+		if drafts, ok := sidecars.drafts[t.ID]; ok {
+			t.PlanDrafts = drafts
+		} else {
+			t.PlanDrafts = map[string]string{}
+		}
 		// One-time migration: stamp ClosedAt for legacy terminal tasks that
 		// predate the ClosedAt field. UpdatedAt is the best approximation.
 		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
@@ -116,6 +132,85 @@ func (s *Store) List() ([]Task, error) {
 		s.storeListCache(tasks)
 	}
 	return tasks, nil
+}
+
+// sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
+// indexed by task ID. Used by List to amortize sidecar I/O.
+type sidecarIndex struct {
+	plans     map[string]string
+	critiques map[string]string
+	reviews   map[string]string
+	drafts    map[string]map[string]string
+}
+
+// loadSidecarsFromEntries reads sidecar contents for every recognized
+// suffix in a single pass. Read failures on individual sidecars are
+// logged and skipped — matches the prior `_ = err` behavior of the
+// per-task sidecar Reads in List, where a corrupt sidecar should not
+// abort the whole task list.
+func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
+	idx := &sidecarIndex{
+		plans:     map[string]string{},
+		critiques: map[string]string{},
+		reviews:   map[string]string{},
+		drafts:    map[string]map[string]string{},
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if !strings.HasSuffix(base, ".md") {
+			continue
+		}
+		// Order matters: plan-draft and plan-critique both have
+		// ".plan" in them, so check the more specific suffix first.
+		switch {
+		case IsPlanDraftFile(base):
+			// IsPlanDraftFile already guarantees the prefix is present,
+			// but using Cut + the found flag keeps the lint clean and is
+			// resilient if the helper's contract loosens later.
+			id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
+			if !found {
+				continue
+			}
+			name := strings.TrimSuffix(rest, ".md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			if idx.drafts[id] == nil {
+				idx.drafts[id] = map[string]string{}
+			}
+			idx.drafts[id][name] = string(data)
+		case strings.HasSuffix(base, ".plan-critique.md"):
+			id := strings.TrimSuffix(base, ".plan-critique.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.critiques[id] = string(data)
+		case strings.HasSuffix(base, ".plan.md"):
+			id := strings.TrimSuffix(base, ".plan.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.plans[id] = string(data)
+		case strings.HasSuffix(base, ".review.md"):
+			id := strings.TrimSuffix(base, ".review.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.reviews[id] = string(data)
+		}
+	}
+	return idx
 }
 
 func (s *Store) Get(id string) (Task, error) {
@@ -258,10 +353,19 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 }
 
 func (s *Store) Update(id string, u Update) (Task, error) {
+	t, _, err := s.UpdateWithPrev(id, u)
+	return t, err
+}
+
+// UpdateWithPrev applies u and returns both the updated task and the prior
+// status. Lets callers (Manager.Update) wire status-change hooks without a
+// redundant Get to read the previous value before the write.
+func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	t, err := s.Get(id)
 	if err != nil {
-		return Task{}, err
+		return Task{}, "", err
 	}
+	prevStatus := t.Status
 
 	if u.Title != nil {
 		t.Title = *u.Title
@@ -295,7 +399,7 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 	}
 	if u.AgentMode != nil {
 		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
-			return Task{}, err
+			return Task{}, "", err
 		}
 		t.AgentMode = *u.AgentMode
 	}
@@ -345,18 +449,18 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 		t.ForkSubagent = *u.ForkSubagent
 	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
-		return Task{}, err
+		return Task{}, "", err
 	}
 
 	data, err := Marshal(t)
 	if err != nil {
-		return Task{}, err
+		return Task{}, "", err
 	}
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write task file: %w", err)
+		return Task{}, "", fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
-	return t, nil
+	return t, prevStatus, nil
 }
 
 // InvalidatePath clears any cached task/list state for the given task file.

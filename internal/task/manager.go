@@ -191,14 +191,7 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
 
-	var prevStatus string
-	if u.Status != nil {
-		if prev, getErr := m.store.Get(id); getErr == nil {
-			prevStatus = string(prev.Status)
-		}
-	}
-
-	t, err := m.store.Update(id, u)
+	t, prev, err := m.store.UpdateWithPrev(id, u)
 	if err != nil {
 		mu.Unlock()
 		return t, err
@@ -207,18 +200,19 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 
 	var (
-		fireHook  bool
-		newStatus string
+		fireHook            bool
+		prevStatus, newStat string
 	)
 	if u.Status != nil && m.onStatusHook != nil {
-		newStatus = string(t.Status)
-		fireHook = newStatus != prevStatus
+		prevStatus = string(prev)
+		newStat = string(t.Status)
+		fireHook = newStat != prevStatus
 	}
 	mu.Unlock()
 
 	if fireHook {
-		m.recordFiredStatus(id, newStatus)
-		m.onStatusHook(id, prevStatus, newStatus)
+		m.recordFiredStatus(id, newStat)
+		m.onStatusHook(id, prevStatus, newStat)
 	}
 	return t, nil
 }
