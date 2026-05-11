@@ -215,8 +215,12 @@
         }
         if (e.metaKey && e.key === 'f') {
           e.preventDefault()
-          navStore.reset({ kind: 'task-list' })
-          requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
+          if (navStore.page.kind === 'github') {
+            window.dispatchEvent(new CustomEvent('focus-renovate-search'))
+          } else {
+            navStore.reset({ kind: 'task-list' })
+            requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
+          }
         }
         if (e.metaKey && e.key === 'b') {
           e.preventDefault()
