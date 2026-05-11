@@ -80,7 +80,20 @@ describe('AgentLauncher', () => {
     await fireEvent.input(ta, { target: { value: 'do the thing' } })
     await fireEvent.click(screen.getByText('Start agent'))
     await waitFor(() => {
-      expect(mockStart).toHaveBeenCalledWith('t1', 'headless', 'do the thing')
+      expect(mockStart).toHaveBeenCalledWith('t1', 'headless', 'do the thing', false)
+    })
+  })
+
+  it('includes task description when opted in', async () => {
+    mockStart.mockResolvedValue({ id: 'a1', state: 'running', mode: 'headless' })
+    render(AgentLauncher, { props: { task: baseTask as never, onviewagent: vi.fn() } })
+    const ta = screen.getByPlaceholderText('Enter prompt for the agent...') as HTMLTextAreaElement
+    await fireEvent.input(ta, { target: { value: 'do the thing' } })
+    const include = screen.getByLabelText('Include task description') as HTMLInputElement
+    await fireEvent.click(include)
+    await fireEvent.click(screen.getByText('Start agent'))
+    await waitFor(() => {
+      expect(mockStart).toHaveBeenCalledWith('t1', 'headless', 'do the thing', true)
     })
   })
 

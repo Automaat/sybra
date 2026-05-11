@@ -301,8 +301,8 @@ func (a *App) Shutdown(_ context.Context) {
 // StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
 // User-triggered starts are never one-shot — that flag is reserved for workflow
 // steps that expect a single turn.
-func (a *App) StartAgent(taskID, mode, prompt string) (*agent.Agent, error) {
-	return a.agentOrch.StartAgent(taskID, mode, prompt, false)
+func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription bool) (*agent.Agent, error) {
+	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
 }
 
 // StartChat creates a new interactive chat bound to projectID using the

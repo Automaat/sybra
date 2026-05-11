@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +156,27 @@ func TestPickImplementationResumeSession(t *testing.T) {
 				t.Errorf("pickImplementationResumeSession() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildTaskStartPrompt(t *testing.T) {
+	t.Parallel()
+
+	taskData := task.Task{Title: "My task", Body: "Task body"}
+
+	got := buildTaskStartPrompt(taskData, "do the thing", false)
+	if got != "do the thing" {
+		t.Fatalf("buildTaskStartPrompt(include=false) = %q, want %q", got, "do the thing")
+	}
+
+	got = buildTaskStartPrompt(taskData, "do the thing", true)
+	want := "# Task: My task\n\nTask body\n\n---\n\ndo the thing"
+	if got != want {
+		t.Fatalf("buildTaskStartPrompt(include=true) = %q, want %q", got, want)
+	}
+
+	got = buildTaskStartPrompt(taskData, "   \n\t", true)
+	if !strings.Contains(got, "# Task: My task") {
+		t.Fatalf("buildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
 	}
 }

@@ -21,7 +21,7 @@ import (
 // uses. Defined here so the package does not import internal/sybra (which
 // would form a cycle: sybra → recovery → sybra).
 type Orchestrator interface {
-	StartAgent(taskID, mode, prompt string, oneShot bool) (*agent.Agent, error)
+	StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error)
 	StartPRFixAgent(taskID string) error
 }
 

@@ -115,7 +115,7 @@ func (r *Recovery) RestartStaleInProgress() {
 			// Restart-stale only ever reaches this branch for headless
 			// mode (interactive tasks are handled by recoverStaleInteractive
 			// above), so OneShot is irrelevant — pass false.
-			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false)
+			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, false)
 			metrics.OrchestratorStaleRestart(err == nil)
 			r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			if err != nil {

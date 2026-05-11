@@ -176,7 +176,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
-		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt, oneShot)
+		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt, false, oneShot)
 		if err != nil {
 			return "", err
 		}

@@ -125,7 +125,7 @@ type stubOrchestrator struct {
 	startReturned *agent.Agent
 }
 
-func (s *stubOrchestrator) StartAgent(_, _, _ string, _ bool) (*agent.Agent, error) {
+func (s *stubOrchestrator) StartAgent(_, _, _ string, _, _ bool) (*agent.Agent, error) {
 	s.startCalls++
 	return s.startReturned, s.startErr
 }
