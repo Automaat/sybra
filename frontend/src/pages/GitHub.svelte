@@ -6,18 +6,21 @@
   import RenovatePRCard from '../components/RenovatePRCard.svelte'
   import IssueCard from '../components/IssueCard.svelte'
   import PRDetailView from '../components/PRDetailView.svelte'
+  import { Search } from '@lucide/svelte'
   import {
     ApproveRenovatePR,
     MergeRenovatePR,
     RerunRenovateChecks,
     FixRenovateCI,
   } from '$lib/api'
-  import type { CheckRunInfo, PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
+  import type { CheckRunInfo, PullRequest, RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
   type Tab = 'my-prs' | 'reviews' | 'renovate' | 'issues'
 
   let activeTab = $state<Tab>('my-prs')
   let selectedPR = $state<{ pr: PullRequest; checkRuns?: CheckRunInfo[]; source: Tab } | null>(null)
+  let renovateQuery = $state('')
+  let renovateSearchRef = $state<HTMLInputElement | null>(null)
 
   $effect(() => {
     reviewStore.load()
@@ -28,14 +31,41 @@
     issueStore.load()
     issueStore.startPolling()
     issueStore.listen()
+
+    function onFocusRenovateSearch() {
+      activeTab = 'renovate'
+      requestAnimationFrame(() => {
+        renovateSearchRef?.focus()
+        renovateSearchRef?.select()
+      })
+    }
+    window.addEventListener('focus-renovate-search', onFocusRenovateSearch)
+
     return () => {
       reviewStore.stopPolling()
       renovateStore.stopPolling()
       renovateStore.stopListening()
       issueStore.stopPolling()
       issueStore.stopListening()
+      window.removeEventListener('focus-renovate-search', onFocusRenovateSearch)
     }
   })
+
+  function matchesRenovate(pr: RenovatePR, q: string): boolean {
+    return (
+      pr.repository.toLowerCase().includes(q) ||
+      pr.title.toLowerCase().includes(q) ||
+      pr.labels.some((l) => l.toLowerCase().includes(q))
+    )
+  }
+
+  function onSearchKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      renovateQuery = ''
+      renovateSearchRef?.blur()
+    }
+  }
 
   function selectPR(pr: PullRequest, checkRuns?: CheckRunInfo[]) {
     selectedPR = { pr, checkRuns, source: activeTab }
@@ -77,7 +107,12 @@
 
   const groupedMyPRs = $derived(groupByRepo(reviewStore.createdByMe))
   const groupedReviews = $derived(groupByRepo(reviewStore.reviewRequested))
-  const groupedRenovate = $derived(groupByRepo(renovateStore.prs))
+  const filteredRenovate = $derived.by(() => {
+    const q = renovateQuery.trim().toLowerCase()
+    if (!q) return renovateStore.prs
+    return renovateStore.prs.filter((pr) => matchesRenovate(pr, q))
+  })
+  const groupedRenovate = $derived(groupByRepo(filteredRenovate))
 </script>
 
 {#if selectedPR}
@@ -175,6 +210,17 @@
       {/if}
 
     {:else if activeTab === 'renovate'}
+      <div class="relative w-full max-w-md">
+        <Search size={16} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-surface-400" />
+        <input
+          bind:this={renovateSearchRef}
+          bind:value={renovateQuery}
+          onkeydown={onSearchKeydown}
+          type="text"
+          placeholder="Search by repo, title, or label…"
+          class="h-8 w-full rounded-md border border-surface-300 bg-surface-50 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        />
+      </div>
       {#if renovateStore.loading && renovateStore.count === 0}
         <p class="text-center text-sm opacity-60">Loading...</p>
       {:else if renovateStore.error}
@@ -191,6 +237,8 @@
         </div>
       {:else if renovateStore.count === 0}
         <p class="py-8 text-center text-sm opacity-50">No Renovate PRs</p>
+      {:else if filteredRenovate.length === 0}
+        <p class="py-8 text-center text-sm opacity-50">No matches for "{renovateQuery}"</p>
       {:else}
         {#each groupedRenovate as group (group.repo)}
           <div class="flex flex-col gap-2">
