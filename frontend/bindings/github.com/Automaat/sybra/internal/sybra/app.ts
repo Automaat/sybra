@@ -96,8 +96,8 @@ export function Shutdown(): $CancellablePromise<void> {
  * User-triggered starts are never one-shot — that flag is reserved for workflow
  * steps that expect a single turn.
  */
-export function StartAgent(taskID: string, mode: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
-    return $Call.ByID(2345014098, taskID, mode, prompt).then(($result: any) => {
+export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
+    return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
         return $$createType7($result);
     });
 }

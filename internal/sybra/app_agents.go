@@ -115,7 +115,7 @@ func newAgentOrchestrator(
 	}
 }
 
-func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool) (*agent.Agent, error) {
+func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return nil, err
@@ -166,7 +166,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		}
 	}
 
-	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\n%s", t.Title, t.Body, prompt)
+	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
 		Name:               t.Title,
@@ -215,6 +215,18 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, oneShot bool
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return ag, nil
+}
+
+func buildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription bool) string {
+	prompt = strings.TrimSpace(prompt)
+	if !includeTaskDescription {
+		return prompt
+	}
+	base := fmt.Sprintf("# Task: %s\n\n%s", t.Title, t.Body)
+	if prompt == "" {
+		return base
+	}
+	return base + "\n\n---\n\n" + prompt
 }
 
 // StartChat creates a synthetic chat task bound to projectID, prepares a

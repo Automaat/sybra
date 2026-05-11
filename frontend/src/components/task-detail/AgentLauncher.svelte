@@ -19,6 +19,7 @@
   let runningAgent = $state<Agent | null>(null)
   let prompt = $state('')
   let agentMode = $state('interactive')
+  let includeTaskDescription = $state(false)
   let starting = $state(false)
   let error = $state('')
   let modeInit = false
@@ -52,7 +53,7 @@
     starting = true
     error = ''
     try {
-      runningAgent = await agentStore.start(task.id, agentMode, prompt.trim())
+      runningAgent = await agentStore.start(task.id, agentMode, prompt.trim(), includeTaskDescription)
       prompt = ''
     } catch (e) {
       error = String(e)
@@ -131,6 +132,15 @@
           class="rounded border-surface-300 dark:border-surface-600"
         />
         <span class="text-sm">Headless</span>
+      </label>
+      <label class="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={includeTaskDescription}
+          onchange={(e) => { includeTaskDescription = e.currentTarget.checked }}
+          class="rounded border-surface-300 dark:border-surface-600"
+        />
+        <span class="text-sm">Include task description</span>
       </label>
     </div>
     <textarea

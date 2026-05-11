@@ -172,7 +172,7 @@ updated_at: 2025-01-01T00:00:00Z
 		t.Fatal(err)
 	}
 
-	if _, err := orch.StartAgent(created.ID, "interactive", "Implement the feature.", true); err != nil {
+	if _, err := orch.StartAgent(created.ID, "interactive", "Implement the feature.", false, true); err != nil {
 		t.Fatalf("orchestrator StartAgent: %v", err)
 	}
 

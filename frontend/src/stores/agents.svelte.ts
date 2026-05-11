@@ -47,8 +47,8 @@ class AgentStore extends EntityStore<Agent> {
     return this.list.filter((a) => a.state === state)
   }
 
-  async start(taskID: string, mode: string, prompt: string): Promise<Agent> {
-    const result = await StartAgent(taskID, mode, prompt)
+  async start(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): Promise<Agent> {
+    const result = await StartAgent(taskID, mode, prompt, includeTaskDescription)
     this.set(result.id, result)
     this.outputs.set(result.id, [])
     return result

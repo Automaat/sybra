@@ -99,9 +99,9 @@ describe('AgentStore', () => {
       const agent = makeAgent({ id: 'new-1' })
       mockStartAgent.mockResolvedValue(agent)
 
-      const result = await agentStore.start('task-1', 'headless', 'do stuff')
+      const result = await agentStore.start('task-1', 'headless', 'do stuff', false)
 
-      expect(mockStartAgent).toHaveBeenCalledWith('task-1', 'headless', 'do stuff')
+      expect(mockStartAgent).toHaveBeenCalledWith('task-1', 'headless', 'do stuff', false)
       expect(result.id).toBe('new-1')
       expect(agentStore.agents.get('new-1')).toBeDefined()
       expect(agentStore.outputs.get('new-1')).toEqual([])

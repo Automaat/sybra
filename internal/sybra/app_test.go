@@ -275,7 +275,7 @@ func TestStartAgentRejectsMissingProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = a.StartAgent(created.ID, "headless", "test prompt")
+	_, err = a.StartAgent(created.ID, "headless", "test prompt", false)
 	if err == nil {
 		t.Fatal("expected error: task without project_id must be rejected")
 	}
@@ -286,7 +286,7 @@ func TestStartAgentRejectsMissingProject(t *testing.T) {
 
 func TestStartAgentTaskNotFound(t *testing.T) {
 	a := setupApp(t)
-	_, err := a.StartAgent("nonexistent", "headless", "prompt")
+	_, err := a.StartAgent("nonexistent", "headless", "prompt", false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}

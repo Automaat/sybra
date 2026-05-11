@@ -200,7 +200,7 @@ func TestE2E_BootstrapRunsBeforeAgent_MergedRepoAndApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false)
+	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestE2E_BootstrapFailure_AbortsAgentStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false)
+	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false, false)
 	if err == nil {
 		t.Fatalf("expected StartAgent to fail, got agent %s", ag.ID)
 	}
