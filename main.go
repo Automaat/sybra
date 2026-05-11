@@ -83,9 +83,10 @@ func run() error {
 		},
 	})
 
-	v3emit = func(event string, data any) {
+	desktopEvents := newDesktopEmitter(ctx, logger, func(event string, data any) {
 		v3app.Event.Emit(event, data)
-	}
+	})
+	v3emit = desktopEvents.Emit
 
 	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Sybra",
