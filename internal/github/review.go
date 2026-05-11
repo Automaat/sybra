@@ -41,7 +41,16 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
                 state
                 contexts(first: 20) {
                   nodes {
-                    ... on CheckRun { status }
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      name: context
+                      state
+                    }
                   }
                 }
               }
@@ -80,7 +89,16 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
                 state
                 contexts(first: 20) {
                   nodes {
-                    ... on CheckRun { status }
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      name: context
+                      state
+                    }
                   }
                 }
               }
