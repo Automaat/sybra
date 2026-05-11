@@ -55,6 +55,48 @@ func (a *App) allowsProjectType(t project.ProjectType) bool {
 	return a.cfg.AllowsProjectType(string(t))
 }
 
+// WorkScrubContext carries the redaction blocklist for a task whose project
+// is work-typed. Returned from App.workScrubContextForTask; a nil result
+// means "not a work-typed task — file artifacts normally". A non-nil result
+// signals automations to scrub their output through Blocklist and route to
+// a local sybra task instead of the public sybra repo. See CLAUDE.md —
+// Work-Data Confidentiality.
+type WorkScrubContext struct {
+	// ProjectID of the originating work task, retained for tagging and
+	// audit only — must not be echoed into any scrubbed artifact body.
+	ProjectID string
+	// Blocklist of literal strings to redact before persistence. Derived
+	// from the project record (owner, repo, full id, repo URL).
+	Blocklist []string
+}
+
+// workScrubContextForTask reports whether artifacts derived from a task
+// must be scrubbed and rerouted to a local sybra task. Returns nil when the
+// task is unscoped (no project_id), its project lookup misses, or the
+// project is not work-typed. Returns a populated context when the project
+// resolves to project.ProjectTypeWork.
+//
+// Fail-open behaviour (unknown projects → nil) is intentional: the absence
+// of a project record means we have no upstream work source to leak, so
+// scrubbing would only hide signal without adding safety.
+func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
+	if projectID == "" {
+		return nil
+	}
+	p, err := a.projects.Get(projectID)
+	if err != nil {
+		return nil
+	}
+	if p.Type != project.ProjectTypeWork {
+		return nil
+	}
+	bl := []string{p.ID, p.Owner, p.Repo}
+	if p.URL != "" {
+		bl = append(bl, p.URL)
+	}
+	return &WorkScrubContext{ProjectID: p.ID, Blocklist: bl}
+}
+
 // initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
 // nil otherwise. Kept separate so Startup stays under the funlen limit.
 func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {

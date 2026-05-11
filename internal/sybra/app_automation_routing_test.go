@@ -2,6 +2,9 @@ package sybra
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -101,5 +104,84 @@ func TestAllowsProjectType_RoutingAcrossMachines(t *testing.T) {
 				t.Errorf("allowsProjectType(other) = %v, want %v", got, tt.wantOther)
 			}
 		})
+	}
+}
+
+// TestWorkScrubContextForTask covers the Work-Data Confidentiality guard:
+// work-typed projects must yield a non-nil scrub context (signalling the
+// caller to scrub + route to a local task) regardless of per-machine
+// routing config. Pet/unknown projects and tasks without a project_id
+// must yield nil so artifacts file normally on the public repo.
+func TestWorkScrubContextForTask(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := project.NewStore(dir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Seed projects by writing YAML directly — Create() does a real git clone.
+	mustWriteProjectYAML(t, dir, "work-owner/work-repo", project.ProjectTypeWork)
+	mustWriteProjectYAML(t, dir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	// Even a machine routed to handle BOTH project types must still block
+	// public-repo filings for work-typed tasks.
+	a := &App{
+		cfg:      &config.Config{ProjectTypes: []string{"pet", "work"}},
+		projects: store,
+		logger:   slog.Default(),
+	}
+
+	cases := []struct {
+		name        string
+		projectID   string
+		wantNonNil  bool
+		wantInBlock []string // substrings the blocklist must contain when non-nil
+	}{
+		{name: "empty projectID is unscoped", projectID: "", wantNonNil: false},
+		{name: "pet project is unscoped", projectID: "pet-owner/pet-repo", wantNonNil: false},
+		{name: "unknown project fails open", projectID: "ghost-owner/ghost-repo", wantNonNil: false},
+		{
+			name:        "work project produces blocklist",
+			projectID:   "work-owner/work-repo",
+			wantNonNil:  true,
+			wantInBlock: []string{"work-owner/work-repo"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := a.workScrubContextForTask(tc.projectID)
+			if (got != nil) != tc.wantNonNil {
+				t.Fatalf("workScrubContextForTask(%q) non-nil=%v, want %v", tc.projectID, got != nil, tc.wantNonNil)
+			}
+			if got == nil {
+				return
+			}
+			for _, needle := range tc.wantInBlock {
+				if !slices.Contains(got.Blocklist, needle) {
+					t.Errorf("blocklist missing %q; got %v", needle, got.Blocklist)
+				}
+			}
+		})
+	}
+}
+
+// mustWriteProjectYAML writes a minimal project record straight to the
+// project.Store directory. Bypasses Store.Create (which performs a real git
+// clone) so the test can stage work/pet entries without network access.
+func mustWriteProjectYAML(t *testing.T, dir, id string, ptype project.ProjectType) {
+	t.Helper()
+	// project.Store.filePath maps "owner/repo" → "owner--repo.yaml".
+	safe := id
+	for i := 0; i < len(safe); i++ {
+		if safe[i] == '/' {
+			safe = safe[:i] + "--" + safe[i+1:]
+		}
+	}
+	path := filepath.Join(dir, safe+".yaml")
+	content := "id: " + id + "\ntype: " + string(ptype) + "\nowner: stub\nrepo: stub\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write project YAML: %v", err)
 	}
 }

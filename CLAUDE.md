@@ -2,6 +2,36 @@
 
 Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
 
+## Work-Data Confidentiality (HARD RULE)
+
+Sybra is a public personal project. **Never** link, embed, paraphrase, or otherwise leak content from work repos (e.g. Kong / `konghq.*`) into the sybra repo or any artifact it produces.
+
+Applies to:
+
+- Issues and PRs opened against `Automaat/sybra` — manually, via Claude Code, or via any sybra automation
+- Task bodies, decision logs, plan sidecars, commit messages, audit logs that may end up in PRs
+- Auto-sources that ingest external content into tasks: Todoist polling, GitHub Issues fetcher, Renovate fixer, orchestrator brain, review automations
+- Logs, screenshots, and pasted snippets uploaded to issues/PRs
+
+Forbidden content: work-org repo URLs, branch names, commit SHAs from work repos, ticket IDs (e.g. Jira keys), internal hostnames, customer names, code snippets from work repos.
+
+### Enforcement mechanism
+
+Two-layer defense applied to every automation that authors a sybra artifact for a work-typed task (`project.Type == work`):
+
+1. **Semantic ceiling (prompt-level)** — review-agent prompts include explicit redaction rules naming the project's identifiers; agents are told to describe sybra bugs abstractly without quoting work content.
+2. **Regex floor (`internal/scrub`)** — every agent- or detector-authored title/body is run through `scrub.Scrub(text, blocklist)` before persistence. Blocklist is derived from the project record (id, owner, repo, URL). Static patterns redact GitHub URLs, Jira-shaped keys, emails. Replacement is `[redacted]`.
+
+Filing routes for work-typed tasks:
+
+| Source | Public path (non-work) | Work-typed path |
+|--------|------------------------|-----------------|
+| Human review (`internal/sybra/app_human_review.go`) | GH issue on `Automaat/sybra` | Scrubbed local sybra task tagged `sybra-bug,scrubbed` (`fileLocalScrubbed`); origin task flipped to `blocked` with pointer to the local task |
+| Monitor anomalies (`internal/sybra/monitor_sink.go`) | GH issue on `Monitor.IssueRepo` | Scrubbed local sybra task tagged `sybra-bug,scrubbed,monitor:<kind>` via `monitorRoutingSink` |
+| LLM-dispatched anomalies | Agent files its own GH issue | Downgraded to deterministic path via `DowngradeLLMForTask` → goes through `monitorRoutingSink` (no agent invocation, no agent-authored content to leak) |
+
+When adding a new auto-source that ingests external content or files artifacts on a public destination, route work-typed tasks through `App.workScrubContextForTask` + `scrub.Scrub` and create a local sybra task instead. Never paraphrase, summarise, or build a "lite" issue body that retains identifiers — the scrubber is the only sanctioned reduction.
+
 ## Project Structure
 
 ```
@@ -358,3 +388,4 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
 - ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
+- ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.
