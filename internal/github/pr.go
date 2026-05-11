@@ -76,6 +76,7 @@ type PRBranch struct {
 type PRContext struct {
 	URL      string
 	Branch   string
+	Author   string
 	Comments []PRReviewComment
 }
 
@@ -276,14 +277,17 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 
 	// Fetch PR metadata: url, branch, and review bodies
 	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
-		"--repo", repo, "--json", "url,headRefName,reviews")
+		"--repo", repo, "--json", "url,headRefName,author,reviews")
 	if err != nil {
 		return PRContext{}, fmt.Errorf("gh pr view %d context: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
 	var meta struct {
 		URL         string `json:"url"`
 		HeadRefName string `json:"headRefName"`
-		Reviews     []struct {
+		Author      struct {
+			Login string `json:"login"`
+		} `json:"author"`
+		Reviews []struct {
 			Author struct {
 				Login string `json:"login"`
 			} `json:"author"`
@@ -295,7 +299,7 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 		return PRContext{}, fmt.Errorf("parse pr context: %w", err)
 	}
 
-	ctx := PRContext{URL: meta.URL, Branch: meta.HeadRefName}
+	ctx := PRContext{URL: meta.URL, Branch: meta.HeadRefName, Author: meta.Author.Login}
 
 	// Include only CHANGES_REQUESTED review bodies.
 	for _, r := range meta.Reviews {
@@ -460,6 +464,38 @@ func editPRBodyWith(e execer, repo string, number int, body string) error {
 		"--repo", repo, "--body", body)
 	if err != nil {
 		return fmt.Errorf("gh pr edit %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
+	return nil
+}
+
+// RequestReviewers requests a review from the given GitHub user logins.
+func RequestReviewers(repo string, number int, reviewers []string) error {
+	return requestReviewersWith(defaultExecer, repo, number, reviewers)
+}
+
+func requestReviewersWith(e execer, repo string, number int, reviewers []string) error {
+	if len(reviewers) == 0 {
+		return nil
+	}
+	args := []string{
+		"--method", "POST",
+		fmt.Sprintf("repos/%s/pulls/%d/requested_reviewers", repo, number),
+	}
+	for _, reviewer := range reviewers {
+		if strings.TrimSpace(reviewer) == "" {
+			continue
+		}
+		args = append(args, "-f", "reviewers[]="+reviewer)
+	}
+	if len(args) == 3 {
+		return nil
+	}
+	resp, err := runGHAPIWith(e, "", args...)
+	if err != nil {
+		return fmt.Errorf("gh request reviewers %d: %s: %w", number, sanitizeGHOutput(resp.body), err)
 	}
 	if runtimeCacheEnabled(e) {
 		invalidatePRCaches(repo, number)

@@ -147,6 +147,14 @@
         <option value="set_status">Set Status</option>
         <option value="condition">Condition</option>
         <option value="shell">Shell</option>
+        <option value="ensure_pr_closes_issue">Ensure PR Closes Issue</option>
+        <option value="rerequest_review">Re-request Review</option>
+        <option value="verify_commits">Verify Commits</option>
+        <option value="link_pr_and_review">Link PR and Review</option>
+        <option value="evaluate">Evaluate</option>
+        <option value="require_sidecar">Require Sidecar</option>
+        <option value="validate_plan">Validate Plan</option>
+        <option value="triage_review">Triage Review</option>
         <option value="parallel">Parallel</option>
       </select>
     </label>

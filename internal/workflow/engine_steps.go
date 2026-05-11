@@ -572,6 +572,27 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 	return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 }
 
+func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if e.prReviewers == nil {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr review requester configured"}, nil
+	}
+	if t.PRNumber == 0 || t.ProjectID == "" {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
+	}
+
+	reviewers, err := e.prReviewers.RerequestReview(t.ProjectID, t.PRNumber)
+	if err != nil {
+		e.logger.Warn("workflow.rerequest-review.failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "request failed: " + err.Error()}, nil
+	}
+	if len(reviewers) == 0 {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no eligible reviewers"}, nil
+	}
+	msg := "requested review from @" + strings.Join(reviewers, ", @")
+	e.logger.Info("workflow.rerequest-review.requested", "task_id", taskID, "pr", t.PRNumber, "reviewers", reviewers)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+}
+
 // execVerifyCommits checks that the task's branch has at least one commit
 // ahead of origin/main. This is a non-LLM mechanical gate that runs before
 // the eval agent to detect incomplete work without giving eval git access.

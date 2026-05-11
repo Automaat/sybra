@@ -234,6 +234,7 @@ func (a *App) initWorkflowEngine() {
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
+	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetContext(a.ctx)
 	// SetOnComplete moves to wireServices so the callback closure binds

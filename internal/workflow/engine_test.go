@@ -1787,6 +1787,99 @@ func newEnsurePRStep() *Step {
 	return &Step{ID: "ensure", Type: StepEnsurePRClosesIssue}
 }
 
+type fakePRReviewRequester struct {
+	reviewers []string
+	err       error
+	calls     int
+	repo      string
+	prNumber  int
+}
+
+func (f *fakePRReviewRequester) RerequestReview(repo string, prNumber int) ([]string, error) {
+	f.calls++
+	f.repo = repo
+	f.prNumber = prNumber
+	return f.reviewers, f.err
+}
+
+func newRerequestReviewStep() *Step {
+	return &Step{ID: "rerequest", Type: StepRerequestReview}
+}
+
+func TestExecRerequestReview_NoRequesterSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "no pr review requester") {
+		t.Errorf("Output = %q, want no requester skip", out.Output)
+	}
+}
+
+func TestExecRerequestReview_MissingFieldsSkip(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	requester := &fakePRReviewRequester{}
+	engine.SetPRReviewRequester(requester)
+
+	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), TaskInfo{ID: "t1", ProjectID: "owner/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requester.calls != 0 {
+		t.Fatalf("requester calls = %d, want 0", requester.calls)
+	}
+	if !strings.Contains(out.Output, "missing pr or project") {
+		t.Errorf("Output = %q, want missing fields skip", out.Output)
+	}
+}
+
+func TestExecRerequestReview_RequestsReviewers(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	requester := &fakePRReviewRequester{reviewers: []string{"alice", "bob"}}
+	engine.SetPRReviewRequester(requester)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requester.calls != 1 || requester.repo != "owner/repo" || requester.prNumber != 5 {
+		t.Fatalf("requester = calls:%d repo:%q pr:%d", requester.calls, requester.repo, requester.prNumber)
+	}
+	if !strings.Contains(out.Output, "@alice") || !strings.Contains(out.Output, "@bob") {
+		t.Errorf("Output = %q, want requested reviewers", out.Output)
+	}
+}
+
+func TestExecRerequestReview_ErrorIsNonFatal(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetPRReviewRequester(&fakePRReviewRequester{err: fmt.Errorf("boom")})
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "request failed") {
+		t.Errorf("output = %+v, want completed failure note", out)
+	}
+}
+
 func TestExecEnsurePRClosesIssue_NoLinkerSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
