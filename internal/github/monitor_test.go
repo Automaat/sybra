@@ -169,10 +169,17 @@ func TestDetectClosedTaskPRs(t *testing.T) {
 		},
 		{
 			name:    "PR still open – skipped",
-			openPRs: []PullRequest{{Number: 42}},
+			openPRs: []PullRequest{{Number: 42, Repository: "o/r"}},
 			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42, ProjectID: "o/r"}},
 			states:  map[int]PRState{42: open},
 			want:    nil,
+		},
+		{
+			name:    "same PR number in another repo does not mask closed task PR",
+			openPRs: []PullRequest{{Number: 42, Repository: "other/repo"}},
+			tasks:   []TaskMatcher{{ID: "t1", PRNumber: 42, ProjectID: "o/r"}},
+			states:  map[int]PRState{42: closed},
+			want:    []ClosedPR{{TaskID: "t1", PRNumber: 42, State: "CLOSED"}},
 		},
 		{
 			name:    "PR merged → done",

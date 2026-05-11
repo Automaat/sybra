@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -274,6 +275,29 @@ func (r *ReviewHandler) detectPublishedReviews(tasks []task.Task) {
 	}
 }
 
+func reviewClosedPREligible(t *task.Task) bool {
+	return t.TaskType != task.TaskTypeChat &&
+		!task.IsTerminalStatus(t.Status) &&
+		slices.Contains(t.Tags, "review") &&
+		t.ProjectID != "" &&
+		t.PRNumber != 0
+}
+
+func reviewTaskMatchers(tasks []task.Task) []github.TaskMatcher {
+	matchers := make([]github.TaskMatcher, 0, len(tasks))
+	for i := range tasks {
+		if !reviewClosedPREligible(&tasks[i]) {
+			continue
+		}
+		matchers = append(matchers, github.TaskMatcher{
+			ID:        tasks[i].ID,
+			PRNumber:  tasks[i].PRNumber,
+			ProjectID: tasks[i].ProjectID,
+		})
+	}
+	return matchers
+}
+
 // prMonitorEligible decides whether the PR monitor should consider a task
 // when scanning for CI failures, conflicts, and ready-to-merge state.
 //
@@ -405,11 +429,40 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.detectPublishedReviews(tasks)
+	r.closeFinishedReviewTasks(tasks, summary.ReviewRequested)
 
 	if prNeedsAttention(monitoredPRs) {
 		return prPollFast
 	}
 	return prPollSlow
+}
+
+func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPRs []github.PullRequest) {
+	matchers := reviewTaskMatchers(tasks)
+	if len(matchers) == 0 {
+		return
+	}
+	closedPRs := github.DetectClosedTaskPRs(openReviewPRs, matchers, github.FetchPRState)
+	for _, c := range closedPRs {
+		if r.agents.HasRunningAgentForTask(c.TaskID) {
+			r.logger.Info("review.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+			continue
+		}
+		reason := fmt.Sprintf("review PR %s", strings.ToLower(c.State))
+		if _, err := r.tasks.Update(c.TaskID, task.Update{
+			Status:       task.Ptr(task.StatusDone),
+			StatusReason: &reason,
+		}); err != nil {
+			r.logger.Error("review.closed-update", "task_id", c.TaskID, "err", err)
+			continue
+		}
+		eventType := audit.EventPRMerged
+		if c.State == "CLOSED" {
+			eventType = audit.EventPRClosed
+		}
+		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State, "review_task": true})
+		r.logger.Info("review.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State)
+	}
 }
 
 // monitoredPRs returns the union of user-authored PRs (from FetchReviews) and
