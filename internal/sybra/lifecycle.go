@@ -189,7 +189,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.logger)
+	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, a.logger)
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        a.cfg.Monitor,
 		Tasks:      a.tasks,
