@@ -4,13 +4,16 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -165,6 +168,180 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 	}
 	if !otherStat.ModTime().Equal(otherStat2.ModTime()) {
 		t.Errorf("unrelated task file was rewritten: mtime %v -> %v", otherStat.ModTime(), otherStat2.ModTime())
+	}
+}
+
+func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manager, string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	home, err := os.MkdirTemp("", "sybra-fix-review-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+
+	tasksDir := filepath.Join(home, "tasks")
+	taskStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+
+	projStore, err := project.NewStore(filepath.Join(home, "projects"), filepath.Join(home, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := initFixReviewSourceRepo(t)
+	barePath := filepath.Join(home, "clones", "testowner", "testrepo.git")
+	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := project.CloneBare(src, barePath); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	projYAML := `id: testowner/testrepo
+name: testrepo
+owner: testowner
+repo: testrepo
+url: ` + src + `
+clone_path: ` + barePath + `
+type: pet
+created_at: 2025-01-01T00:00:00Z
+updated_at: 2025-01-01T00:00:00Z
+`
+	projFile := filepath.Join(home, "projects", "testowner--testrepo.yaml")
+	if err := os.WriteFile(projFile, []byte(projYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: filepath.Join(home, "worktrees"),
+		Projects:     projStore,
+		Tasks:        taskMgr,
+		Logger:       logger,
+		PRBranchResolver: func(repo string, prNumber int) (string, error) {
+			return project.DefaultBranch(barePath)
+		},
+	})
+
+	h := &AgentCompletionHandler{
+		DomainHandler: DomainHandler{logger: logger},
+		tasks:         taskMgr,
+		worktrees:     wm,
+	}
+	return h, taskMgr, barePath
+}
+
+func initFixReviewSourceRepo(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", dir},
+		{"-C", dir, "config", "user.email", "test@test.com"},
+		{"-C", dir, "config", "user.name", "Test"},
+		{"-C", dir, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", dir, "add", "."},
+		{"-C", dir, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
+	h, taskMgr, barePath := setupFixReviewPushTest(t)
+	branch, err := project.DefaultBranch(barePath)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	tk, err := taskMgr.Create("fix pr", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := taskMgr.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("testowner/testrepo"),
+		PRNumber:  task.Ptr(42),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk = updated
+
+	wtPath, err := h.worktrees.PrepareForFix(tk, 42)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "add", "."},
+		{"-C", wtPath, "commit", "-m", "fix(review): update pr"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	localHead, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("local head: %v", err)
+	}
+
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "agent-1",
+		Role:      string(agent.RoleFixReview),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.OnComplete(&agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Mode:      "headless",
+		Name:      agent.RoleFixReview.AgentName(tk.Title),
+		StartedAt: time.Now(),
+	})
+
+	remoteHead, err := exec.Command("git", "-C", barePath, "rev-parse", "refs/heads/"+branch).Output()
+	if err != nil {
+		t.Fatalf("remote head: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(localHead)); got != want {
+		t.Fatalf("remote head = %s, want %s", got, want)
 	}
 }
 
