@@ -55,24 +55,46 @@ func (a *App) allowsProjectType(t project.ProjectType) bool {
 	return a.cfg.AllowsProjectType(string(t))
 }
 
-// canFilePublicForProject reports whether sybra automations may file artifacts
-// (issues, PRs) on the public sybra repo on behalf of a task with the given
-// project ID. Work-typed projects are blocked unconditionally so work-repo
-// content (issue bodies, agent logs, diagnoses) never reaches Automaat/sybra
-// via any automation. See CLAUDE.md — Work-Data Confidentiality.
+// WorkScrubContext carries the redaction blocklist for a task whose project
+// is work-typed. Returned from App.workScrubContextForTask; a nil result
+// means "not a work-typed task — file artifacts normally". A non-nil result
+// signals automations to scrub their output through Blocklist and route to
+// a local sybra task instead of the public sybra repo. See CLAUDE.md —
+// Work-Data Confidentiality.
+type WorkScrubContext struct {
+	// ProjectID of the originating work task, retained for tagging and
+	// audit only — must not be echoed into any scrubbed artifact body.
+	ProjectID string
+	// Blocklist of literal strings to redact before persistence. Derived
+	// from the project record (owner, repo, full id, repo URL).
+	Blocklist []string
+}
+
+// workScrubContextForTask reports whether artifacts derived from a task
+// must be scrubbed and rerouted to a local sybra task. Returns nil when the
+// task is unscoped (no project_id), its project lookup misses, or the
+// project is not work-typed. Returns a populated context when the project
+// resolves to project.ProjectTypeWork.
 //
-// Returns true for tasks with no project_id (unscoped sybra-internal tasks)
-// and for tasks whose project lookup fails (fail-open is safe here because
-// the absence of a project record means no upstream work source).
-func (a *App) canFilePublicForProject(projectID string) bool {
+// Fail-open behaviour (unknown projects → nil) is intentional: the absence
+// of a project record means we have no upstream work source to leak, so
+// scrubbing would only hide signal without adding safety.
+func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 	if projectID == "" {
-		return true
+		return nil
 	}
 	p, err := a.projects.Get(projectID)
 	if err != nil {
-		return true
+		return nil
 	}
-	return p.Type != project.ProjectTypeWork
+	if p.Type != project.ProjectTypeWork {
+		return nil
+	}
+	bl := []string{p.ID, p.Owner, p.Repo}
+	if p.URL != "" {
+		bl = append(bl, p.URL)
+	}
+	return &WorkScrubContext{ProjectID: p.ID, Blocklist: bl}
 }
 
 // initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning

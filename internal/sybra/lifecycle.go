@@ -13,7 +13,6 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -184,13 +183,20 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		Model:     a.cfg.Monitor.Model,
 		IssueRepo: a.cfg.Monitor.IssueRepo,
 	})
+	// Work-Data Confidentiality: wrap the GH sink so anomalies on work-typed
+	// tasks become scrubbed local sybra tasks instead of public issues. The
+	// DowngradeLLMForTask closure forces work-typed LLM anomalies through the
+	// deterministic path so they hit this sink (and get scrubbed) rather than
+	// being dispatched to an agent that would file an issue itself.
+	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
+	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.logger)
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        a.cfg.Monitor,
 		Tasks:      a.tasks,
 		Audit:      monitor.AuditDirReader(a.cfg.AuditDir()),
 		Agents:     a.agents,
 		Dispatcher: disp,
-		Sink:       monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo),
+		Sink:       routingSink,
 		Emit:       emit,
 		Logger:     a.logger,
 		AllowsProject: func(projectID string) bool {
@@ -201,15 +207,14 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			if err != nil {
 				return true
 			}
-			// Monitor files anomaly issues on Monitor.IssueRepo (defaults to
-			// Automaat/sybra). Work-typed projects must never surface there —
-			// anomaly bodies carry task IDs and audit excerpts that may
-			// reference work-repo content. See CLAUDE.md — Work-Data
-			// Confidentiality.
-			if p.Type == project.ProjectTypeWork {
+			return a.allowsProjectType(p.Type)
+		},
+		DowngradeLLMForTask: func(taskID string) bool {
+			t, err := a.tasks.Get(taskID)
+			if err != nil {
 				return false
 			}
-			return a.allowsProjectType(p.Type)
+			return a.workScrubContextForTask(t.ProjectID) != nil
 		},
 	})
 	a.monitorSvc = svc

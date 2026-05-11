@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -55,12 +56,13 @@ type humanReviewHandler struct {
 	logFile string
 	now     func() time.Time
 
-	// canFilePublic reports whether human-review may run for a task with the
-	// given project ID. Work-typed projects are blocked to prevent leaking
-	// work-repo content into Automaat/sybra (see CLAUDE.md — Work-Data
-	// Confidentiality). Wired from App.canFilePublicForProject; nil during
-	// tests allows everything.
-	canFilePublic func(projectID string) bool
+	// workCtx returns a non-nil WorkScrubContext when the task's project is
+	// work-typed. When set, the handler still spawns the review agent but
+	// reroutes the sybra_bug verdict to a local sybra task with the body
+	// scrubbed through ctx.Blocklist — no GH issue on Automaat/sybra is
+	// filed. See CLAUDE.md — Work-Data Confidentiality. Nil during tests
+	// disables the work-project path.
+	workCtx func(projectID string) *WorkScrubContext
 
 	mu       sync.Mutex
 	inflight map[string]string // taskID -> agent ID
@@ -85,20 +87,20 @@ func newHumanReviewHandler(
 	logger *slog.Logger,
 	sink humanReviewIssueFiler,
 	homeDir, logFile string,
-	canFilePublic func(projectID string) bool,
+	workCtx func(projectID string) *WorkScrubContext,
 ) *humanReviewHandler {
 	return &humanReviewHandler{
-		cfg:           cfg,
-		tasks:         tasks,
-		agents:        agents,
-		audit:         al,
-		logger:        logger,
-		sink:          sink,
-		homeDir:       homeDir,
-		logFile:       logFile,
-		now:           time.Now,
-		canFilePublic: canFilePublic,
-		inflight:      make(map[string]string),
+		cfg:      cfg,
+		tasks:    tasks,
+		agents:   agents,
+		audit:    al,
+		logger:   logger,
+		sink:     sink,
+		homeDir:  homeDir,
+		logFile:  logFile,
+		now:      time.Now,
+		workCtx:  workCtx,
+		inflight: make(map[string]string),
 	}
 }
 
@@ -119,7 +121,7 @@ func (a *App) initHumanReview() {
 	}
 	sink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
 	logFile := filepath.Join(a.logDir, "sybra.log")
-	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.canFilePublicForProject)
+	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.workScrubContextForTask)
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
 
@@ -140,12 +142,13 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return
 	}
-	// Work-Data Confidentiality: human-review files issues on Automaat/sybra
-	// (public) with task body + agent logs embedded. Work-typed projects must
-	// never reach that pipeline, regardless of per-machine routing.
-	if h.canFilePublic != nil && !h.canFilePublic(t.ProjectID) {
-		h.skip(taskID, "work_project_no_public_filing")
-		return
+	// Work-Data Confidentiality: if the task's project is work-typed, the
+	// review still runs (we want the diagnosis) but the prompt is augmented
+	// with redaction instructions and the verdict is routed to a local
+	// sybra task in onComplete rather than the public GH sink.
+	var wctx *WorkScrubContext
+	if h.workCtx != nil {
+		wctx = h.workCtx(t.ProjectID)
 	}
 
 	h.mu.Lock()
@@ -164,7 +167,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	h.recent = append(h.recent, h.now())
 	h.mu.Unlock()
 
-	prompt := h.buildPrompt(t)
+	prompt := h.buildPrompt(t, wctx)
 	ag, err := h.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
 		Name:               agent.RoleHumanReview.AgentName(t.Title),
@@ -233,10 +236,72 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	case "human":
 		h.appendNote(taskID, "Auto-review verdict: needs human", v.Summary)
 	case "sybra_bug":
-		h.fileIssue(taskID, ag.ID, v)
+		// Re-check work context at completion time so a project re-typed
+		// during the review run still routes correctly.
+		var wctx *WorkScrubContext
+		if h.workCtx != nil {
+			if t, err := h.tasks.Get(taskID); err == nil {
+				wctx = h.workCtx(t.ProjectID)
+			}
+		}
+		if wctx != nil {
+			h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
+		} else {
+			h.fileIssue(taskID, ag.ID, v)
+		}
 	default:
 		h.logger.Warn("human-review.verdict.unknown", "task_id", taskID, "decision", v.Decision)
 		h.appendNote(taskID, "Auto-review (unknown decision)", final)
+	}
+}
+
+// fileLocalScrubbed is the work-project fallback for the sybra_bug verdict.
+// Instead of opening a GitHub issue on Automaat/sybra, it scrubs the agent-
+// authored title and body through wctx.Blocklist and creates a local sybra
+// task tagged sybra-bug,scrubbed. The originating task is flipped to blocked
+// with a pointer to the new local task — same UX shape as the public path,
+// just routed away from the public repo.
+func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdictDecision, wctx *WorkScrubContext) {
+	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
+		h.logger.Warn("human-review.local.empty", "task_id", taskID, "agent_id", agentID)
+		h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary)
+		return
+	}
+	title, titleRed := scrub.Scrub(v.IssueTitle, wctx.Blocklist)
+	body, bodyRed := scrub.Scrub(v.IssueBody, wctx.Blocklist)
+	summary, _ := scrub.Scrub(v.Summary, wctx.Blocklist)
+
+	newTask, err := h.tasks.Create(title, body, task.AgentModeHeadless)
+	if err != nil {
+		h.logger.Error("human-review.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
+		h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", summary+"\n\nError: "+err.Error())
+		return
+	}
+	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
+	if _, err := h.tasks.Update(newTask.ID, task.Update{Tags: &tags}); err != nil {
+		h.logger.Warn("human-review.local.tag", "new_task_id", newTask.ID, "err", err)
+	}
+	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+		"created": true, "url": "", "title": title,
+		"local_task_id": newTask.ID, "redactions_title": titleRed, "redactions_body": bodyRed,
+		"scrubbed": true,
+	})
+
+	statusReason := fmt.Sprintf("auto-review: %s (local task %s)", summary, newTask.ID)
+	noteBody := fmt.Sprintf("**Linked local sybra task:** %s\n\n%s", newTask.ID, summary)
+	origin, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.local.origin-get", "task_id", taskID, "err", err)
+		return
+	}
+	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (scrubbed)", noteBody)
+	upd := task.Update{
+		Body:         &newBody,
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(statusReason),
+	}
+	if _, err := h.tasks.Update(taskID, upd); err != nil {
+		h.logger.Error("human-review.local.origin-update", "task_id", taskID, "err", err)
 	}
 }
 
@@ -338,10 +403,23 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 // buildPrompt assembles the review agent's instructions and context. The
 // agent runs in the Sybra source tree with skip-permissions, so it can
 // freely grep the codebase + read host logs to diagnose the transition.
-func (h *humanReviewHandler) buildPrompt(t task.Task) string {
+//
+// When wctx is non-nil the task originates from a work-typed project; the
+// prompt is augmented with explicit redaction rules and the verdict will be
+// routed to a local sybra task instead of a public GH issue. The regex
+// scrubber is the floor — these instructions are the semantic ceiling.
+func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) string {
 	var b strings.Builder
 	b.WriteString("# Sybra auto-review of human-required transition\n\n")
-	b.WriteString("You are a diagnostic agent for Sybra (the desktop task orchestrator). A user task just transitioned to status=human-required. Decide whether this is genuinely a human-input situation or whether Sybra itself misbehaved (workflow misfire, agent mis-config, infrastructure flakiness, code bug). If it's a Sybra bug, prepare a GitHub issue payload — the host process will file it.\n\n")
+	if wctx != nil {
+		b.WriteString("## Work-Data Confidentiality (CRITICAL)\n")
+		b.WriteString("This task originated from a work-typed project. Your verdict will be persisted to a LOCAL sybra task, not a public GitHub issue, but you must still scrub work identifiers from your output:\n\n")
+		b.WriteString("- NEVER include the project_id, repo URL, owner, or repo name.\n")
+		b.WriteString("- NEVER quote code, branch names, commit SHAs, or ticket IDs from the task body.\n")
+		b.WriteString("- NEVER include author emails, customer names, or internal hostnames.\n")
+		b.WriteString("- DO describe the sybra bug abstractly: which workflow step misfired, which sybra subsystem is implicated, what state was inconsistent.\n\n")
+	}
+	b.WriteString("You are a diagnostic agent for Sybra (the desktop task orchestrator). A user task just transitioned to status=human-required. Decide whether this is genuinely a human-input situation or whether Sybra itself misbehaved (workflow misfire, agent mis-config, infrastructure flakiness, code bug). If it's a Sybra bug, prepare an issue payload — the host process will route it (local sybra task for work-typed projects, public GH issue otherwise).\n\n")
 	b.WriteString("## Task\n")
 	fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
 	if t.StatusReason != "" {

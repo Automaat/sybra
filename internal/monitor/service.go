@@ -48,23 +48,32 @@ type Deps struct {
 	Logger        *slog.Logger
 	Now           func() time.Time
 	AllowsProject func(projectID string) bool
+	// DowngradeLLMForTask, when non-nil, is consulted for every anomaly with
+	// RequiresLLM=true after detection. Returning true for an anomaly's
+	// TaskID forces its RequiresLLM flag to false, routing it through the
+	// deterministic-body path instead of the agent-driven path. Used by
+	// callers (e.g. internal/sybra) to keep work-typed anomalies away from
+	// LLM-generated issue content that is hard to scrub. See CLAUDE.md —
+	// Work-Data Confidentiality.
+	DowngradeLLMForTask func(taskID string) bool
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
 // runs until its context is cancelled.
 type Service struct {
-	cfg           config.MonitorConfig
-	tasks         taskAPI
-	audit         auditAPI
-	agents        agentLister
-	dispatcher    Dispatcher
-	sink          IssueSink
-	emit          EmitFunc
-	logger        *slog.Logger
-	now           func() time.Time
-	allowsProject func(string) bool
-	state         *runState
-	rem           *remediator
+	cfg                 config.MonitorConfig
+	tasks               taskAPI
+	audit               auditAPI
+	agents              agentLister
+	dispatcher          Dispatcher
+	sink                IssueSink
+	emit                EmitFunc
+	logger              *slog.Logger
+	now                 func() time.Time
+	allowsProject       func(string) bool
+	downgradeLLMForTask func(taskID string) bool
+	state               *runState
+	rem                 *remediator
 }
 
 // NewService validates dependencies and returns a Service ready for Run.
@@ -85,18 +94,19 @@ func NewService(d Deps) *Service {
 		d.Emit = func(string, any) {}
 	}
 	return &Service{
-		cfg:           d.Cfg,
-		tasks:         d.Tasks,
-		audit:         d.Audit,
-		agents:        d.Agents,
-		dispatcher:    d.Dispatcher,
-		sink:          d.Sink,
-		emit:          d.Emit,
-		logger:        d.Logger,
-		now:           d.Now,
-		allowsProject: d.AllowsProject,
-		state:         newRunState(),
-		rem:           newRemediator(d.Tasks),
+		cfg:                 d.Cfg,
+		tasks:               d.Tasks,
+		audit:               d.Audit,
+		agents:              d.Agents,
+		dispatcher:          d.Dispatcher,
+		sink:                d.Sink,
+		emit:                d.Emit,
+		logger:              d.Logger,
+		now:                 d.Now,
+		allowsProject:       d.AllowsProject,
+		downgradeLLMForTask: d.DowngradeLLMForTask,
+		state:               newRunState(),
+		rem:                 newRemediator(d.Tasks),
 	}
 }
 
@@ -170,6 +180,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		AllowsProject: s.allowsProject,
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
+	s.applyDowngradeLLM(report.Anomalies)
 
 	report.Remediated = s.applyRemediations(ctx, report.Anomalies)
 	report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
@@ -218,6 +229,25 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 func (s *Service) LastReport() (Report, bool) {
 	r, _, ok := s.state.snapshot()
 	return r, ok
+}
+
+// applyDowngradeLLM forces RequiresLLM=false on any anomaly whose TaskID the
+// downgrade closure rejects. Used to route work-typed anomalies away from the
+// agent-driven filing path (which produces hard-to-scrub LLM output) into the
+// deterministic-body path where the issue sink applies redaction. No-op when
+// the closure is unset.
+func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
+	if s.downgradeLLMForTask == nil {
+		return
+	}
+	for i := range anoms {
+		if !anoms[i].RequiresLLM || anoms[i].TaskID == "" {
+			continue
+		}
+		if s.downgradeLLMForTask(anoms[i].TaskID) {
+			anoms[i].RequiresLLM = false
+		}
+	}
 }
 
 func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) []string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -297,17 +298,23 @@ func TestOnComplete_SinkError_LeavesHumanRequired(t *testing.T) {
 	}
 }
 
-func TestMaybeSpawn_WorkProject_SkippedNoAgent(t *testing.T) {
+func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
 	const workProject = "work-owner/work-repo"
-	h.canFilePublic = func(projectID string) bool {
-		return projectID != workProject
+	h.workCtx = func(projectID string) *WorkScrubContext {
+		if projectID != workProject {
+			return nil
+		}
+		return &WorkScrubContext{
+			ProjectID: workProject,
+			Blocklist: []string{workProject, "work-owner", "work-repo"},
+		}
 	}
 
-	tk, err := tasks.Create("Has work content", "Body with work-repo refs.", "headless")
+	tk, err := tasks.Create("Workflow misfire", "Body with KAG-1234 reference.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -318,19 +325,69 @@ func TestMaybeSpawn_WorkProject_SkippedNoAgent(t *testing.T) {
 		t.Fatalf("assign work project: %v", err)
 	}
 
-	// agents and audit are nil in the test env; if maybeSpawn reaches the
-	// spawn path it would panic. The guard must short-circuit before that.
-	h.maybeSpawn(tk.ID, "in-progress")
+	// Verdict body contains all three leak vectors: blocklist literal, GH
+	// URL, Jira key. After scrub, none must survive in the created task.
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Diagnosis.\n\n```sybra-verdict\n" + `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits never re-checked the branch in work-owner/work-repo",
+  "issue_title": "fix(workflow): verify_commits race for work-owner/work-repo",
+  "issue_body": "## What\nwork-owner referenced https://github.com/work-owner/work-repo/pull/9 (ticket KAG-1234)",
+  "issue_labels": ["workflow"]
+}` + "\n```\n",
+	})
+	h.inflight[tk.ID] = "agent-work"
+	h.onComplete(ag)
 
 	if sink.calls != 0 {
-		t.Errorf("sink should not be called for work-typed project; calls=%d", sink.calls)
+		t.Errorf("public sink must NOT be called for work-typed project; calls=%d", sink.calls)
 	}
-	if _, busy := h.inflight[tk.ID]; busy {
-		t.Errorf("inflight should be empty when work project is skipped")
+
+	// Original task: flipped to blocked with a pointer to the local task.
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load origin: %v", err)
 	}
-	if len(h.recent) != 0 {
-		t.Errorf("rate-limit slot should not be consumed when work project is skipped; recent=%v", h.recent)
+	if got.Status != task.StatusBlocked {
+		t.Errorf("origin status: got %q want blocked", got.Status)
 	}
+	if !strings.Contains(got.Body, "blocked by Sybra bug (scrubbed)") {
+		t.Errorf("origin body missing scrubbed-blocked header; got:\n%s", got.Body)
+	}
+
+	// A new local task must exist with scrubbed content + sybra-bug tag.
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	var local *task.Task
+	for i := range all {
+		if all[i].ID == tk.ID {
+			continue
+		}
+		t := all[i]
+		local = &t
+	}
+	if local == nil {
+		t.Fatalf("expected a second (scrubbed) task to be created; got only origin")
+	}
+	body := local.Title + "\n" + local.Body
+	for _, leak := range []string{workProject, "work-owner", "work-repo", "github.com/work-owner", "KAG-1234"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("local task leaks %q in title/body: %s", leak, body)
+		}
+	}
+	wantTag := func(needle string) {
+		t.Helper()
+		if !slices.Contains(local.Tags, needle) {
+			t.Errorf("local task missing tag %q; got tags=%v", needle, local.Tags)
+		}
+	}
+	wantTag("sybra-bug")
+	wantTag("scrubbed")
+	wantTag("workflow")
 }
 
 func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {

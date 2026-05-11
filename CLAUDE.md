@@ -15,7 +15,22 @@ Applies to:
 
 Forbidden content: work-org repo URLs, branch names, commit SHAs from work repos, ticket IDs (e.g. Jira keys), internal hostnames, customer names, code snippets from work repos.
 
-When an automation could surface external content into sybra, filter at the source (project-type / source-config), not just at the final artifact. See "Per-Machine Automations" — work projects must be routed to a different sybra instance, not authored into the public repo.
+### Enforcement mechanism
+
+Two-layer defense applied to every automation that authors a sybra artifact for a work-typed task (`project.Type == work`):
+
+1. **Semantic ceiling (prompt-level)** — review-agent prompts include explicit redaction rules naming the project's identifiers; agents are told to describe sybra bugs abstractly without quoting work content.
+2. **Regex floor (`internal/scrub`)** — every agent- or detector-authored title/body is run through `scrub.Scrub(text, blocklist)` before persistence. Blocklist is derived from the project record (id, owner, repo, URL). Static patterns redact GitHub URLs, Jira-shaped keys, emails. Replacement is `[redacted]`.
+
+Filing routes for work-typed tasks:
+
+| Source | Public path (non-work) | Work-typed path |
+|--------|------------------------|-----------------|
+| Human review (`internal/sybra/app_human_review.go`) | GH issue on `Automaat/sybra` | Scrubbed local sybra task tagged `sybra-bug,scrubbed` (`fileLocalScrubbed`); origin task flipped to `blocked` with pointer to the local task |
+| Monitor anomalies (`internal/sybra/monitor_sink.go`) | GH issue on `Monitor.IssueRepo` | Scrubbed local sybra task tagged `sybra-bug,scrubbed,monitor:<kind>` via `monitorRoutingSink` |
+| LLM-dispatched anomalies | Agent files its own GH issue | Downgraded to deterministic path via `DowngradeLLMForTask` → goes through `monitorRoutingSink` (no agent invocation, no agent-authored content to leak) |
+
+When adding a new auto-source that ingests external content or files artifacts on a public destination, route work-typed tasks through `App.workScrubContextForTask` + `scrub.Scrub` and create a local sybra task instead. Never paraphrase, summarise, or build a "lite" issue body that retains identifiers — the scrubber is the only sanctioned reduction.
 
 ## Project Structure
 

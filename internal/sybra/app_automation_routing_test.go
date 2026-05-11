@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -106,11 +107,12 @@ func TestAllowsProjectType_RoutingAcrossMachines(t *testing.T) {
 	}
 }
 
-// TestCanFilePublicForProject covers the Work-Data Confidentiality guard:
-// auto-filing on the public sybra repo must be blocked for work-typed
-// projects regardless of per-machine routing config. Pet/unknown projects
-// and tasks without a project_id remain allowed.
-func TestCanFilePublicForProject(t *testing.T) {
+// TestWorkScrubContextForTask covers the Work-Data Confidentiality guard:
+// work-typed projects must yield a non-nil scrub context (signalling the
+// caller to scrub + route to a local task) regardless of per-machine
+// routing config. Pet/unknown projects and tasks without a project_id
+// must yield nil so artifacts file normally on the public repo.
+func TestWorkScrubContextForTask(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -131,20 +133,35 @@ func TestCanFilePublicForProject(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		projectID string
-		want      bool
+		name        string
+		projectID   string
+		wantNonNil  bool
+		wantInBlock []string // substrings the blocklist must contain when non-nil
 	}{
-		{"empty projectID is allowed", "", true},
-		{"pet project allowed", "pet-owner/pet-repo", true},
-		{"work project blocked", "work-owner/work-repo", false},
-		{"unknown project fails open", "ghost-owner/ghost-repo", true},
+		{name: "empty projectID is unscoped", projectID: "", wantNonNil: false},
+		{name: "pet project is unscoped", projectID: "pet-owner/pet-repo", wantNonNil: false},
+		{name: "unknown project fails open", projectID: "ghost-owner/ghost-repo", wantNonNil: false},
+		{
+			name:        "work project produces blocklist",
+			projectID:   "work-owner/work-repo",
+			wantNonNil:  true,
+			wantInBlock: []string{"work-owner/work-repo"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := a.canFilePublicForProject(tc.projectID); got != tc.want {
-				t.Errorf("canFilePublicForProject(%q) = %v, want %v", tc.projectID, got, tc.want)
+			got := a.workScrubContextForTask(tc.projectID)
+			if (got != nil) != tc.wantNonNil {
+				t.Fatalf("workScrubContextForTask(%q) non-nil=%v, want %v", tc.projectID, got != nil, tc.wantNonNil)
+			}
+			if got == nil {
+				return
+			}
+			for _, needle := range tc.wantInBlock {
+				if !slices.Contains(got.Blocklist, needle) {
+					t.Errorf("blocklist missing %q; got %v", needle, got.Blocklist)
+				}
 			}
 		})
 	}
