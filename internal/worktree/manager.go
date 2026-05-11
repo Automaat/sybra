@@ -359,7 +359,11 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 	}
 
 	ref := "refs/remotes/origin/" + branch
-	if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, ref); err != nil {
+	if project.BranchExists(proj.ClonePath, branch) {
+		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, branch); err != nil {
+			return "", fmt.Errorf("checkout fix branch %s: %w", branch, err)
+		}
+	} else if err := project.CreateWorktree(proj.ClonePath, wtPath, branch, ref); err != nil {
 		return "", fmt.Errorf("create fix worktree: %w", err)
 	}
 	if err := project.SanitizeWorktree(wtPath); err != nil {
