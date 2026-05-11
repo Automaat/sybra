@@ -55,6 +55,26 @@ func (a *App) allowsProjectType(t project.ProjectType) bool {
 	return a.cfg.AllowsProjectType(string(t))
 }
 
+// canFilePublicForProject reports whether sybra automations may file artifacts
+// (issues, PRs) on the public sybra repo on behalf of a task with the given
+// project ID. Work-typed projects are blocked unconditionally so work-repo
+// content (issue bodies, agent logs, diagnoses) never reaches Automaat/sybra
+// via any automation. See CLAUDE.md — Work-Data Confidentiality.
+//
+// Returns true for tasks with no project_id (unscoped sybra-internal tasks)
+// and for tasks whose project lookup fails (fail-open is safe here because
+// the absence of a project record means no upstream work source).
+func (a *App) canFilePublicForProject(projectID string) bool {
+	if projectID == "" {
+		return true
+	}
+	p, err := a.projects.Get(projectID)
+	if err != nil {
+		return true
+	}
+	return p.Type != project.ProjectTypeWork
+}
+
 // initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
 // nil otherwise. Kept separate so Startup stays under the funlen limit.
 func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {

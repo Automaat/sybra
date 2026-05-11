@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -199,6 +200,14 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			p, err := a.projects.Get(projectID)
 			if err != nil {
 				return true
+			}
+			// Monitor files anomaly issues on Monitor.IssueRepo (defaults to
+			// Automaat/sybra). Work-typed projects must never surface there —
+			// anomaly bodies carry task IDs and audit excerpts that may
+			// reference work-repo content. See CLAUDE.md — Work-Data
+			// Confidentiality.
+			if p.Type == project.ProjectTypeWork {
+				return false
 			}
 			return a.allowsProjectType(p.Type)
 		},

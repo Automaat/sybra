@@ -55,6 +55,13 @@ type humanReviewHandler struct {
 	logFile string
 	now     func() time.Time
 
+	// canFilePublic reports whether human-review may run for a task with the
+	// given project ID. Work-typed projects are blocked to prevent leaking
+	// work-repo content into Automaat/sybra (see CLAUDE.md — Work-Data
+	// Confidentiality). Wired from App.canFilePublicForProject; nil during
+	// tests allows everything.
+	canFilePublic func(projectID string) bool
+
 	mu       sync.Mutex
 	inflight map[string]string // taskID -> agent ID
 	recent   []time.Time       // spawn timestamps (rolling window)
@@ -78,18 +85,20 @@ func newHumanReviewHandler(
 	logger *slog.Logger,
 	sink humanReviewIssueFiler,
 	homeDir, logFile string,
+	canFilePublic func(projectID string) bool,
 ) *humanReviewHandler {
 	return &humanReviewHandler{
-		cfg:      cfg,
-		tasks:    tasks,
-		agents:   agents,
-		audit:    al,
-		logger:   logger,
-		sink:     sink,
-		homeDir:  homeDir,
-		logFile:  logFile,
-		now:      time.Now,
-		inflight: make(map[string]string),
+		cfg:           cfg,
+		tasks:         tasks,
+		agents:        agents,
+		audit:         al,
+		logger:        logger,
+		sink:          sink,
+		homeDir:       homeDir,
+		logFile:       logFile,
+		now:           time.Now,
+		canFilePublic: canFilePublic,
+		inflight:      make(map[string]string),
 	}
 }
 
@@ -110,7 +119,7 @@ func (a *App) initHumanReview() {
 	}
 	sink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
 	logFile := filepath.Join(a.logDir, "sybra.log")
-	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile)
+	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.canFilePublicForProject)
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
 
@@ -129,6 +138,13 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	t, err := h.tasks.Get(taskID)
 	if err != nil {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
+		return
+	}
+	// Work-Data Confidentiality: human-review files issues on Automaat/sybra
+	// (public) with task body + agent logs embedded. Work-typed projects must
+	// never reach that pipeline, regardless of per-machine routing.
+	if h.canFilePublic != nil && !h.canFilePublic(t.ProjectID) {
+		h.skip(taskID, "work_project_no_public_filing")
 		return
 	}
 

@@ -51,7 +51,7 @@ func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIs
 	cfg.HumanReview.MaxPerHour = 3
 	sink := &fakeIssueSink{created: true, url: "https://github.com/Automaat/sybra/issues/42"}
 	logger := slog.New(slog.DiscardHandler)
-	h := newHumanReviewHandler(cfg, tasks, nil, nil, logger, sink, dir, filepath.Join(dir, "missing.log"))
+	h := newHumanReviewHandler(cfg, tasks, nil, nil, logger, sink, dir, filepath.Join(dir, "missing.log"), nil)
 	return h, tasks, sink, func() {}
 }
 
@@ -294,6 +294,42 @@ func TestOnComplete_SinkError_LeavesHumanRequired(t *testing.T) {
 	}
 	if !strings.Contains(got.Body, "issue submission failed") {
 		t.Errorf("expected failure note in body; got:\n%s", got.Body)
+	}
+}
+
+func TestMaybeSpawn_WorkProject_SkippedNoAgent(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const workProject = "work-owner/work-repo"
+	h.canFilePublic = func(projectID string) bool {
+		return projectID != workProject
+	}
+
+	tk, err := tasks.Create("Has work content", "Body with work-repo refs.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr(workProject),
+		Status:    task.Ptr(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatalf("assign work project: %v", err)
+	}
+
+	// agents and audit are nil in the test env; if maybeSpawn reaches the
+	// spawn path it would panic. The guard must short-circuit before that.
+	h.maybeSpawn(tk.ID, "in-progress")
+
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called for work-typed project; calls=%d", sink.calls)
+	}
+	if _, busy := h.inflight[tk.ID]; busy {
+		t.Errorf("inflight should be empty when work project is skipped")
+	}
+	if len(h.recent) != 0 {
+		t.Errorf("rate-limit slot should not be consumed when work project is skipped; recent=%v", h.recent)
 	}
 }
 
