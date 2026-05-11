@@ -35,10 +35,12 @@ func DeterministicIssueBody(a Anomaly) string {
 // issueRepo is the "owner/name" repository where GitHub issues must be filed;
 // it is injected explicitly so agents are independent of their working
 // directory (which may be a task worktree for an unrelated project).
-func DispatchPrompt(a Anomaly, issueRepo string) string {
+// pushRemote names the git remote agents should push branches to ("fork"
+// when the worktree's repo has a user-fork remote configured, else "origin").
+func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 	switch a.Kind {
 	case KindPRGap:
-		return prGapPrompt(a)
+		return prGapPrompt(a, pushRemote)
 	case KindStuckHumanBlocked:
 		return stuckPrompt(a, issueRepo)
 	case KindFailureSpike:
@@ -50,9 +52,12 @@ func DispatchPrompt(a Anomaly, issueRepo string) string {
 	}
 }
 
-func prGapPrompt(a Anomaly) string {
+func prGapPrompt(a Anomaly, pushRemote string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)
+	if pushRemote == "" {
+		pushRemote = "origin"
+	}
 	return fmt.Sprintf(`You are the sybra monitor PR-gap remediator.
 
 Task: %s — %q
@@ -66,13 +71,14 @@ Run, in order:
    `+"`sybra-cli update %s --status human-required --status-reason \"monitor: in-review with no commits\"`"+`
    then exit.
 3. Otherwise:
-   `+"`git push -u origin HEAD`"+`
+   `+"`git push -u %s HEAD`"+`
    `+"`gh pr create --base main --title %q --body \"<two-sentence summary from the latest commits>\"`"+`
+   When pushing to a fork remote, gh detects the cross-repo head automatically; no extra flags needed.
 4. On success, run `+"`sybra-cli update %s --pr <number> --status-reason \"monitor: created missing PR\"`"+`.
 
 Output exactly one final JSON line:
 {"action":"created"|"escalated"|"failed","prNumber":N,"reason":"..."}`,
-		taskID, title, taskID, title, taskID,
+		taskID, title, taskID, pushRemote, title, taskID,
 	)
 }
 

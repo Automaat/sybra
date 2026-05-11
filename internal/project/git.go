@@ -331,9 +331,23 @@ func parseWorktreePorcelain(raw string) []Worktree {
 	return result
 }
 
-// PushUpstream pushes branch to origin with -u to set remote tracking.
+// PushRemote returns the remote that branch pushes should target. If the
+// repository has a remote named "fork" (the user's fork of the upstream,
+// typically configured manually or by `gh repo fork --remote`), returns
+// "fork"; otherwise returns "origin". This lets sybra push agent branches to
+// the fork — and `gh pr create` therefore open cross-repo PRs — without a
+// project-level setting.
+func PushRemote(repoPath string) string {
+	if _, err := executil.Output(repoPath, "git", "config", "--get", "remote.fork.url"); err == nil {
+		return "fork"
+	}
+	return "origin"
+}
+
+// PushUpstream pushes branch to the fork remote if present, else origin,
+// with -u to set remote tracking.
 func PushUpstream(worktreePath, branch string) error {
-	return executil.Run(worktreePath, "git", "push", "-u", "origin", branch)
+	return executil.Run(worktreePath, "git", "push", "-u", PushRemote(worktreePath), branch)
 }
 
 // CurrentBranch returns the checked-out branch name for a worktree.
@@ -345,10 +359,10 @@ func CurrentBranch(worktreePath string) (string, error) {
 	return strings.TrimSpace(branch), nil
 }
 
-// PushForce force-pushes the branch to origin using --force-with-lease.
-// Used after a local rebase to sync the remote without overwriting commits
-// from other authors (--force-with-lease fails if remote has unknown commits).
-// Returns ErrBranchMissing if the local branch ref does not exist.
+// PushForce force-pushes the branch to the fork remote if present, else
+// origin, using --force-with-lease. Used after a local rebase to sync the
+// remote without overwriting commits from other authors. Returns
+// ErrBranchMissing if the local branch ref does not exist.
 func PushForce(worktreePath, branch string) error {
 	if err := executil.Run(worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 		var exitErr *exec.ExitError
@@ -357,7 +371,7 @@ func PushForce(worktreePath, branch string) error {
 		}
 		return err
 	}
-	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", "origin", branch)
+	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", PushRemote(worktreePath), branch)
 }
 
 func RemoveWorktree(barePath, worktreePath string) error {
