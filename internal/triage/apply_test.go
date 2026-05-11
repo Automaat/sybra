@@ -78,7 +78,7 @@ func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 	}
 }
 
-func TestApplyWorkProjectForcesInteractive(t *testing.T) {
+func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("refactor ingestion", "https://github.com/myco/work-repo/issues/1", task.AgentModeHeadless)
 	if err != nil {
@@ -100,6 +100,9 @@ func TestApplyWorkProjectForcesInteractive(t *testing.T) {
 	}
 	if updated.AgentMode != task.AgentModeInteractive {
 		t.Errorf("mode: got %q, want interactive", updated.AgentMode)
+	}
+	if updated.Status != task.StatusPlanning {
+		t.Errorf("status: got %s, want planning", updated.Status)
 	}
 	if updated.ProjectID != "myco/work-repo" {
 		t.Errorf("project_id: got %q", updated.ProjectID)

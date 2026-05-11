@@ -29,7 +29,7 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
    - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type)
    - Picks size (small|medium|large), type (bug|feature|refactor|review|chore|docs), and mode (headless|interactive)
    - Auto-matches a registered project if a github.com URL is in the title or body
-   - Applies routing rules (medium/large features → planning; everything else → todo)
+   - Applies routing rules (work non-reviews → planning; medium/large features → planning; everything else → todo)
    - Forces `interactive` mode for `work` projects unless it's a PR review
    - Writes a `triage.classified` audit event
 
