@@ -207,6 +207,15 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 		t.Fatalf("StartFixReview: %v", err)
 	}
 
+	wtPath := filepath.Join(os.Getenv("SYBRA_HOME"), "worktrees", tk.DirName())
+	branchOut, err := exec.Command("git", "-C", wtPath, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatalf("show current branch: %v", err)
+	}
+	if branch := strings.TrimSpace(string(branchOut)); branch == "" {
+		t.Fatalf("fix-review worktree is detached HEAD")
+	}
+
 	waitFor(t, 5*time.Second, "fake-claude args log written", func() bool {
 		_, err := os.Stat(argsLog)
 		return err == nil
