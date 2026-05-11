@@ -66,7 +66,7 @@ When a task's project has `type: work`, apply these overrides during triage:
 
 | Rule | Effect |
 |------|--------|
-| Forced planning | medium/large features MUST go to `planning` (never skip to `todo`) |
+| Forced planning | all non-review work tasks MUST go to `planning` before implementation |
 | Default interactive | Agent mode defaults to `interactive` unless task is a review |
 | PR required | Task cannot move to `in-review` without a linked PR |
 
