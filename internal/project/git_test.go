@@ -1002,6 +1002,83 @@ func TestCreateWorktree_DuplicatePathRejected(t *testing.T) {
 	}
 }
 
+func TestPushRemote_DefaultOrigin(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+	if got := PushRemote(wtPath); got != "origin" {
+		t.Errorf("PushRemote without fork = %q, want %q", got, "origin")
+	}
+}
+
+func TestPushRemote_DetectsFork(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+
+	if got := PushRemote(wtPath); got != "fork" {
+		t.Errorf("PushRemote with fork = %q, want %q", got, "fork")
+	}
+}
+
+// TestPushUpstream_RoutesToFork verifies that PushUpstream targets the fork
+// remote when one is configured — this is the core kuma-PR-from-fork fix.
+// Without this routing, sybra's initial branch push lands on the upstream
+// repo and gh pr create then opens a same-repo PR.
+func TestPushUpstream_RoutesToFork(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	originBare := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", originBare).CombinedOutput(); err != nil {
+		t.Fatalf("init origin bare: %v: %s", err, out)
+	}
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	for _, args := range [][]string{
+		{"remote", "set-url", "origin", originBare},
+		{"remote", "add", "fork", forkBare},
+		{"checkout", "-b", "sybra/route-test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := PushUpstream(wtPath, "sybra/route-test"); err != nil {
+		t.Fatalf("PushUpstream: %v", err)
+	}
+
+	// Branch should exist on fork, not origin.
+	forkOut, _ := exec.Command("git", "-C", forkBare, "branch", "--list", "sybra/route-test").Output()
+	if strings.TrimSpace(string(forkOut)) == "" {
+		t.Error("branch missing on fork after PushUpstream")
+	}
+	originOut, _ := exec.Command("git", "-C", originBare, "branch", "--list", "sybra/route-test").Output()
+	if strings.TrimSpace(string(originOut)) != "" {
+		t.Errorf("branch should not exist on origin; got %q", originOut)
+	}
+}
+
 // TestListWorktrees_OrphanedAdminDir covers the recovery mismatch where a
 // user manually rm -rfs the working tree directory but leaves the
 // `.git/worktrees/<name>/` admin entry. `git worktree list` still reports the

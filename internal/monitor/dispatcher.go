@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -110,7 +111,7 @@ func (d *agentDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error)
 		TaskID:                 taskID,
 		Name:                   name,
 		Mode:                   "headless",
-		Prompt:                 DispatchPrompt(a, d.issueRepo),
+		Prompt:                 DispatchPrompt(a, d.issueRepo, project.PushRemote(dir)),
 		AllowedTools:           []string{"Bash", "Read"},
 		Dir:                    dir,
 		Model:                  d.model,
