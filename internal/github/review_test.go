@@ -58,6 +58,53 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	}
 }
 
+func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
+	t.Parallel()
+	response := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"created": {
+				"nodes": [
+					{
+						"number": 1,
+						"title": "my PR",
+						"url": "https://github.com/o/r/pull/1",
+						"author": {"login": "me", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": [{
+							"commit": {
+								"oid": "abc123",
+								"statusCheckRollup": {
+									"state": "FAILURE",
+									"contexts": {"nodes": [
+										{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"}
+									]}
+								}
+							}
+						}]},
+						"reviewThreads": {"nodes": []},
+						"latestReviews": {"nodes": []}
+					}
+				]
+			},
+			"requested": {"nodes": []}
+		}
+	}`
+
+	fe := &fakeExecer{output: []byte(response)}
+	summary, err := fetchReviewsWith(fe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := summary.CreatedByMe[0].CIStatus; got != "FAILURE" {
+		t.Errorf("CIStatus = %q, want FAILURE", got)
+	}
+	if summary.CreatedByMe[0].HasPendingChecks {
+		t.Error("HasPendingChecks = true, want false")
+	}
+}
+
 func TestFetchReviewsWith_graphqlError(t *testing.T) {
 	t.Parallel()
 	fe := &fakeExecer{output: []byte(`{"errors":[{"message":"rate limited"}]}`)}
