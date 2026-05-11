@@ -80,6 +80,98 @@ func TestPRMonitorEligible(t *testing.T) {
 	}
 }
 
+func TestReviewClosedPREligible(t *testing.T) {
+	tests := []struct {
+		name string
+		tk   task.Task
+		want bool
+	}{
+		{
+			name: "in-review review task with PR",
+			tk: task.Task{
+				Status:    task.StatusInReview,
+				Tags:      []string{"review"},
+				ProjectID: "o/r",
+				PRNumber:  42,
+			},
+			want: true,
+		},
+		{
+			name: "human-required review task with PR",
+			tk: task.Task{
+				Status:    task.StatusHumanRequired,
+				Tags:      []string{"review"},
+				ProjectID: "o/r",
+				PRNumber:  42,
+			},
+			want: true,
+		},
+		{
+			name: "done review task skipped",
+			tk: task.Task{
+				Status:    task.StatusDone,
+				Tags:      []string{"review"},
+				ProjectID: "o/r",
+				PRNumber:  42,
+			},
+			want: false,
+		},
+		{
+			name: "non-review task skipped",
+			tk: task.Task{
+				Status:    task.StatusInReview,
+				ProjectID: "o/r",
+				PRNumber:  42,
+			},
+			want: false,
+		},
+		{
+			name: "review task without PR skipped",
+			tk: task.Task{
+				Status:    task.StatusInReview,
+				Tags:      []string{"review"},
+				ProjectID: "o/r",
+			},
+			want: false,
+		},
+		{
+			name: "chat task skipped",
+			tk: task.Task{
+				Status:    task.StatusInReview,
+				TaskType:  task.TaskTypeChat,
+				Tags:      []string{"review"},
+				ProjectID: "o/r",
+				PRNumber:  42,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reviewClosedPREligible(&tt.tk); got != tt.want {
+				t.Errorf("reviewClosedPREligible(%+v) = %v, want %v", tt.tk, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewTaskMatchers(t *testing.T) {
+	tasks := []task.Task{
+		{ID: "review", Status: task.StatusInReview, Tags: []string{"review"}, ProjectID: "o/r", PRNumber: 42},
+		{ID: "done", Status: task.StatusDone, Tags: []string{"review"}, ProjectID: "o/r", PRNumber: 43},
+		{ID: "mine", Status: task.StatusInReview, ProjectID: "o/r", PRNumber: 44},
+	}
+
+	got := reviewTaskMatchers(tasks)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].ID != "review" || got[0].ProjectID != "o/r" || got[0].PRNumber != 42 {
+		t.Fatalf("matcher = %+v, want review o/r#42", got[0])
+	}
+}
+
 // TestMonitoredPRs covers the regression where Renovate-bot PRs linked to a
 // task by pr_number were silently skipped by the pr-monitor because
 // FetchReviews uses author:@me. monitoredPRs folds renovatePRsFn output into

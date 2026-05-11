@@ -81,6 +81,12 @@ type PRLinker interface {
 	EditBody(repo string, prNumber int, body string) error
 }
 
+// PRReviewRequester re-requests review from prior PR commenters after a
+// workflow fixes review comments and pushes updated commits.
+type PRReviewRequester interface {
+	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
+}
+
 // CompletionInfo is passed to the OnComplete callback when a workflow finishes.
 type CompletionInfo struct {
 	TaskID     string
@@ -100,6 +106,7 @@ type Engine struct {
 	tasks           TaskProvider
 	agents          AgentLauncher
 	prLinker        PRLinker
+	prReviewers     PRReviewRequester
 	worktrees       WorktreeGetter
 	onComplete      func(CompletionInfo)
 	logger          *slog.Logger
@@ -141,6 +148,9 @@ func (e *Engine) Defs() *Store { return e.store }
 // SetPRLinker wires an implementation of PRLinker used by the
 // `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
 func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
+
+// SetPRReviewRequester wires an implementation used by rerequest_review.
+func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.

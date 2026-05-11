@@ -472,17 +472,39 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 func TestE2E_HeadlessAgent_FailExit(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EProvider(t, p.provider, "fail_exit")
+		writeWorkflowFixture(t, env, "test-fail-exit", `id: test-fail-exit
+name: Test Fail Exit
+steps:
+  - id: triage
+    name: Triage
+    type: run_agent
+    config:
+      role: triage
+      mode: headless
+      model: sonnet
+      max_retries: 0
+      prompt: "Triage {{.Task.ID}}"
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Mark Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
 
 		created, err := env.tasks.Create("test task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		if err := env.startWorkflow(created.ID, "test-fail-exit"); err != nil {
 			t.Fatal(err)
 		}
 
-		waitFor(t, 30*time.Second, "workflow moves past triage retries", func() bool {
+		waitFor(t, 30*time.Second, "workflow moves past failed triage", func() bool {
 			tk, err := env.tasks.Get(created.ID)
 			if err != nil {
 				return false

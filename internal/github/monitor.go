@@ -1,5 +1,7 @@
 package github
 
+import "strconv"
+
 // PRIssueKind identifies what's wrong with a PR.
 type PRIssueKind string
 
@@ -36,14 +38,22 @@ type ClosedPR struct {
 // It skips tasks whose PR still appears in openPRs.
 func DetectClosedTaskPRs(openPRs []PullRequest, tasks []TaskMatcher, fetchState func(repo string, number int) (PRState, error)) []ClosedPR {
 	openByNumber := make(map[int]struct{}, len(openPRs))
+	openByRepoNumber := make(map[string]struct{}, len(openPRs))
 	for i := range openPRs {
-		openByNumber[openPRs[i].Number] = struct{}{}
+		if openPRs[i].Repository == "" {
+			openByNumber[openPRs[i].Number] = struct{}{}
+			continue
+		}
+		openByRepoNumber[prRepoNumberKey(openPRs[i].Repository, openPRs[i].Number)] = struct{}{}
 	}
 
 	var closed []ClosedPR
 	for i := range tasks {
 		t := &tasks[i]
 		if t.PRNumber == 0 || t.ProjectID == "" {
+			continue
+		}
+		if _, isOpen := openByRepoNumber[prRepoNumberKey(t.ProjectID, t.PRNumber)]; isOpen {
 			continue
 		}
 		if _, isOpen := openByNumber[t.PRNumber]; isOpen {
@@ -58,6 +68,10 @@ func DetectClosedTaskPRs(openPRs []PullRequest, tasks []TaskMatcher, fetchState 
 		}
 	}
 	return closed
+}
+
+func prRepoNumberKey(repo string, number int) string {
+	return repo + "#" + strconv.Itoa(number)
 }
 
 // MatchTaskPRs finds issues on PRs that are linked to tasks.

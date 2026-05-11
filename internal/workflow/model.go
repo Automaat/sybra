@@ -81,6 +81,7 @@ const (
 	StepCondition           StepType = "condition"
 	StepShell               StepType = "shell"
 	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
+	StepRerequestReview     StepType = "rerequest_review"
 	StepVerifyCommits       StepType = "verify_commits"
 	StepLinkPRAndReview     StepType = "link_pr_and_review"
 	StepEvaluate            StepType = "evaluate"

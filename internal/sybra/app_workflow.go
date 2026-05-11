@@ -18,10 +18,11 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ workflow.TaskProvider   = (*taskAdapter)(nil)
-	_ workflow.AgentLauncher  = (*agentAdapter)(nil)
-	_ workflow.PRLinker       = (*prLinkerAdapter)(nil)
-	_ workflow.WorktreeGetter = (*worktreeGetterAdapter)(nil)
+	_ workflow.TaskProvider      = (*taskAdapter)(nil)
+	_ workflow.AgentLauncher     = (*agentAdapter)(nil)
+	_ workflow.PRLinker          = (*prLinkerAdapter)(nil)
+	_ workflow.PRReviewRequester = (*prReviewRequesterAdapter)(nil)
+	_ workflow.WorktreeGetter    = (*worktreeGetterAdapter)(nil)
 )
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
@@ -141,6 +142,49 @@ func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int
 
 func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
 	return github.EditPRBody(repo, prNumber, body)
+}
+
+// prReviewRequesterAdapter asks users who left actionable PR feedback to
+// review again after the fix-review workflow pushes updated commits.
+type prReviewRequesterAdapter struct{}
+
+func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]string, error) {
+	ctx, err := github.FetchPRContext(repo, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	viewer := github.ViewerLogin()
+	seen := map[string]struct{}{}
+	reviewers := make([]string, 0, len(ctx.Comments))
+	for _, c := range ctx.Comments {
+		login := strings.TrimSpace(c.Author)
+		if !eligibleRerequestReviewer(login, viewer, ctx.Author) {
+			continue
+		}
+		key := strings.ToLower(login)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		reviewers = append(reviewers, login)
+	}
+	if len(reviewers) == 0 {
+		return nil, nil
+	}
+	if err := github.RequestReviewers(repo, prNumber, reviewers); err != nil {
+		return nil, err
+	}
+	return reviewers, nil
+}
+
+func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
+	if login == "" {
+		return false
+	}
+	if strings.EqualFold(login, viewer) || strings.EqualFold(login, prAuthor) {
+		return false
+	}
+	return !strings.HasSuffix(strings.ToLower(login), "[bot]")
 }
 
 // worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.

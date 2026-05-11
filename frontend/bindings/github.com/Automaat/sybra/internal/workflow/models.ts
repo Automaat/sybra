@@ -621,6 +621,7 @@ export enum StepType {
     StepCondition = "condition",
     StepShell = "shell",
     StepEnsurePRClosesIssue = "ensure_pr_closes_issue",
+    StepRerequestReview = "rerequest_review",
     StepVerifyCommits = "verify_commits",
     StepLinkPRAndReview = "link_pr_and_review",
     StepEvaluate = "evaluate",

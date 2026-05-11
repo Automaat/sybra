@@ -87,4 +87,12 @@ steps:
     name: Ensure PR Closes Issue
     type: ensure_pr_closes_issue
     next:
+      - goto: rerequest_review
+
+  # Mechanical check (no LLM): after a PR-fix agent has pushed updated commits,
+  # request another review from users whose comments/reviews were addressed.
+  - id: rerequest_review
+    name: Re-request Review
+    type: rerequest_review
+    next:
       - goto: ""
