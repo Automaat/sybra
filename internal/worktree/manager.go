@@ -369,6 +369,7 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 	if err := project.SanitizeWorktree(wtPath); err != nil {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
+	m.ensureBranch(t, branch)
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)

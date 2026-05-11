@@ -144,7 +144,7 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 		"Run /fix-review https://github.com/%s/pull/%d --auto\n\n"+
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
-			"Sign the commit with `git commit -s -S`.",
+			"Sign the commit with `git commit -s -S`. Push the branch when done.",
 		t.ProjectID, t.PRNumber,
 	)
 

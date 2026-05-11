@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/loopagent"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
@@ -145,6 +147,10 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
+	if agent.RoleFromName(ag.Name) == agent.RoleFixReview && exitErr == nil {
+		h.pushFixReviewBranch(ag)
+	}
+
 	if h.workflowEngine != nil {
 		// Stall when (a) the kernel killed the process via signal (OS/container
 		// SIGTERM, SIGKILL escalation), or (b) Sybra's own StopAgent set the
@@ -178,6 +184,46 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Stop(ag.TaskID)
 		}
 	}
+}
+
+func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
+	if h.worktrees == nil || h.tasks == nil {
+		return
+	}
+
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		h.logger.Warn("fix-review.push.task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		return
+	}
+	if t.ProjectID == "" {
+		return
+	}
+
+	wtPath := h.worktrees.PathFor(t)
+	if _, err := os.Stat(wtPath); err != nil {
+		h.logger.Warn("fix-review.push.worktree", "task_id", ag.TaskID, "agent_id", ag.ID, "path", wtPath, "err", err)
+		return
+	}
+
+	branch := t.Branch
+	if branch == "" {
+		branch, err = project.CurrentBranch(wtPath)
+		if err != nil {
+			h.logger.Warn("fix-review.push.branch", "task_id", ag.TaskID, "agent_id", ag.ID, "path", wtPath, "err", err)
+			return
+		}
+	}
+
+	if err := project.PushForce(wtPath, branch); err != nil {
+		if errors.Is(err, project.ErrBranchMissing) {
+			h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "reason", "local branch ref missing")
+			return
+		}
+		h.logger.Warn("fix-review.push", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "err", err)
+		return
+	}
+	h.logger.Info("fix-review.pushed", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch)
 }
 
 // recordRunStats persists a stats.RunRecord for the completed agent.

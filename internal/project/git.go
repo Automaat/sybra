@@ -336,6 +336,15 @@ func PushUpstream(worktreePath, branch string) error {
 	return executil.Run(worktreePath, "git", "push", "-u", "origin", branch)
 }
 
+// CurrentBranch returns the checked-out branch name for a worktree.
+func CurrentBranch(worktreePath string) (string, error) {
+	branch, err := executil.Output(worktreePath, "git", "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(branch), nil
+}
+
 // PushForce force-pushes the branch to origin using --force-with-lease.
 // Used after a local rebase to sync the remote without overwriting commits
 // from other authors (--force-with-lease fails if remote has unknown commits).
