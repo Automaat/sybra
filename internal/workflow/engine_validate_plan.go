@@ -7,12 +7,12 @@ import (
 	"strings"
 )
 
-// foreignBranchRefRe matches Sybra branch refs of the form
-// `sybra/<slug>-<8hex>`. The trailing 8-hex group is the task ID; if it
-// differs from the current task's ID, the plan is referencing another
-// task's branch — likely cross-task LLM contamination during plan
-// synthesis (see fa6919fc / a9375bad incident).
-var foreignBranchRefRe = regexp.MustCompile(`sybra/[a-z0-9][a-z0-9-]*-([0-9a-f]{8})\b`)
+// foreignBranchRefRe matches Sybra-owned branch refs of the form
+// `<type>/<slug>-<8hex>` or legacy `sybra/<slug>-<8hex>`. The trailing
+// 8-hex group is the task ID; if it differs from the current task's ID,
+// the plan is referencing another task's branch — likely cross-task LLM
+// contamination during plan synthesis (see fa6919fc / a9375bad incident).
+var foreignBranchRefRe = regexp.MustCompile(`(?:sybra|feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/[a-z0-9][a-z0-9-]*-([0-9a-f]{8})\b`)
 
 // foreignWorktreePathRe matches Sybra worktree paths of the form
 // `worktrees/<slug>-<8hex>`. Same contamination signal as branch refs.

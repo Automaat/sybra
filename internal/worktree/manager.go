@@ -114,7 +114,7 @@ func callPhase(fn func(string), phase string) {
 }
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.
-// Fetches origin, creates branch sybra/{dirName} off default branch,
+// Fetches origin, creates a conventional-prefixed branch off default branch,
 // pushes upstream, and sets task.Branch.
 // onPhase is an optional callback that receives human-readable phase labels
 // as work progresses; pass nil when phase reporting is not needed.
@@ -140,7 +140,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	}
 
 	wtPath := m.PathFor(t)
-	wtBranch := "sybra/" + t.DirName()
+	wtBranch := branchNameForTask(t)
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
@@ -255,7 +255,7 @@ func (m *Manager) PrepareForChat(t task.Task, onPhase func(string)) (string, err
 	}
 
 	wtPath := m.PathFor(t)
-	wtBranch := "sybra/" + t.DirName()
+	wtBranch := branchNameForTask(t)
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {

@@ -314,14 +314,7 @@ func parseWorktreePorcelain(raw string) []Worktree {
 			} else if ref, ok := strings.CutPrefix(line, "branch "); ok {
 				branch, _ := strings.CutPrefix(ref, "refs/heads/")
 				wt.Branch = branch
-				if name, ok := strings.CutPrefix(wt.Branch, "sybra/"); ok {
-					// Task ID is always the last 8 chars (uuid[:8])
-					if len(name) >= 8 {
-						wt.TaskID = name[len(name)-8:]
-					} else {
-						wt.TaskID = name
-					}
-				}
+				wt.TaskID = taskIDFromBranch(wt.Branch)
 			}
 		}
 		if wt.Path != "" {
@@ -329,6 +322,49 @@ func parseWorktreePorcelain(raw string) []Worktree {
 		}
 	}
 	return result
+}
+
+func taskIDFromBranch(branch string) string {
+	if name, ok := strings.CutPrefix(branch, "sybra/"); ok {
+		return trailingTaskID(name)
+	}
+	prefix, name, ok := strings.Cut(branch, "/")
+	if !ok || !isSybraBranchPrefix(prefix) {
+		return ""
+	}
+	return trailingTaskID(name)
+}
+
+func trailingTaskID(name string) string {
+	if len(name) < 8 {
+		return ""
+	}
+	id := name[len(name)-8:]
+	if !isShortTaskID(id) {
+		return ""
+	}
+	return id
+}
+
+func isShortTaskID(id string) bool {
+	if len(id) != 8 {
+		return false
+	}
+	for _, r := range id {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isSybraBranchPrefix(prefix string) bool {
+	switch prefix {
+	case "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert":
+		return true
+	default:
+		return false
+	}
 }
 
 // PushRemote returns the remote that branch pushes should target. If the

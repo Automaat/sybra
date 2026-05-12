@@ -275,6 +275,16 @@ func TestParseWorktreePorcelain(t *testing.T) {
 			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "sybra/implement-auth-a1b2c3d4",
 		},
 		{
+			name:    "conventional format slug-id",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/feat/implement-auth-a1b2c3d4\n",
+			wantLen: 1, wantTaskID: "a1b2c3d4", wantBranch: "feat/implement-auth-a1b2c3d4",
+		},
+		{
+			name:    "conventional non-sybra branch",
+			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/feat/foo\n",
+			wantLen: 1, wantTaskID: "", wantBranch: "feat/foo",
+		},
+		{
 			name:    "non-synapse branch",
 			raw:     "worktree /tmp/wt\nHEAD abc1234567890\nbranch refs/heads/feature/foo\n",
 			wantLen: 1, wantTaskID: "", wantBranch: "feature/foo",
