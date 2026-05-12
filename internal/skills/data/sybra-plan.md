@@ -1,7 +1,7 @@
 ---
 name: sybra-plan
 description: Plan Sybra tasks — analyze scope, spawn persona-driven multi-provider planners, synthesize one plan with tradeoffs. Use when asked to plan a task.
-allowed-tools: Bash, Read, Glob, WebFetch
+allowed-tools: Bash, Read, Glob
 user-invocable: true
 ---
 
@@ -26,7 +26,7 @@ sybra-cli --json get <id>
 ### 2. Analyze scope
 
 - Read the task body, understand what's being asked
-- If URLs are referenced, fetch context (GitHub PRs/issues via `gh`, or WebFetch)
+- If URLs are referenced, fetch context with `gh` for GitHub or `curl` for public pages when available.
 - Explore the codebase: find relevant files, understand existing patterns
 - Identify dependencies and potential risks
 - **Triviality check** — if the task is a typo / single-line / mechanical rename / single-file edit with no design choices, skip persona-driven planning and jump straight to Step 5 with the plan written directly.

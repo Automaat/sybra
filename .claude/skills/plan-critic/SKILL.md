@@ -1,6 +1,6 @@
 ---
 name: plan-critic
-description: Critique a Claude implementation plan before approving execution. Spawns parallel persona subagents (Skeptic, Architect, Verifier) to evaluate the plan against the codebase, auto-applies refinements on REFINE verdict, and saves every review to ~/.claude/plan-reviews/ for future reference. Use when a plan has been generated (Plan Mode output, ExitPlanMode, pasted plan text, or plan file path) and needs review before code is written. Triggers on "critique this plan", "review this plan", "is this plan good", "poke holes in this plan", "should I approve this plan", or sharing a plan for evaluation.
+description: Critique an implementation plan before approving execution. Spawns persona subagents when available, falls back to local review, auto-applies refinements on REFINE verdict, and saves every review to ~/.claude/plan-reviews/. Use when a plan has been generated (Plan Mode output, ExitPlanMode, pasted plan text, or plan file path) and needs review before code is written.
 argument-hint: "[plan file path | paste plan inline | --from-conversation]"
 user-invocable: true
 allowed-tools:
@@ -10,12 +10,11 @@ allowed-tools:
   - Bash
   - Edit
   - Write
-  - AskUserQuestion
 ---
 
 # Plan Critic
 
-Critique a Claude implementation plan **before** any code is written. The cost of revising a plan is near-zero; the cost of revising executed code is hours of rework. This skill applies the plan-then-execute discipline rigorously: nothing gets approved until three independent personas have inspected it.
+Critique an implementation plan **before** any code is written. The cost of revising a plan is near-zero; the cost of revising executed code is hours of rework. This skill applies the plan-then-execute discipline rigorously: nothing gets approved until three independent lenses have inspected it.
 
 **Core principle:** A plan that names files generically has not been read. A plan that references `verify_jwt_token` at `auth/middleware.go:42` has been read. The job of this skill is to tell those apart and force the second.
 
@@ -27,7 +26,7 @@ Critique a Claude implementation plan **before** any code is written. The cost o
 | `[paste plan inline]` | positional | Plan text pasted directly in the user's message. Use as-is. |
 | `--from-conversation` | flag | Use the plan most recently produced in the current conversation (e.g., from ExitPlanMode or a planning response). |
 
-If input is ambiguous (multiple candidates, unclear which plan), use AskUserQuestion to disambiguate before proceeding. Present these options:
+If input is ambiguous (multiple candidates, unclear which plan), ask the user to disambiguate before proceeding. Present these options:
 
 - **File path** — the user types a path to a plan markdown file
 - **Paste inline** — the user pastes the plan text in the next message
@@ -59,9 +58,9 @@ Input: A plan touching 14 files across 4 packages with no symbol-level reference
 Triage result: Scope warning (7+ files) AND surface-level reading risk. Recommend splitting into sub-plans before review continues.
 </example>
 
-### Phase 2: Codebase Grounding (single Explore agent, 30-60s)
+### Phase 2: Codebase Grounding (single explorer when available, 30-60s)
 
-Spawn one `Agent` (subagent_type: `Explore`, thoroughness: `medium`) to build a **Grounding Brief**. All three review personas will share this brief — no redundant exploration.
+Spawn one explorer subagent to build a **Grounding Brief** when the runtime supports subagents. In Claude, use `Agent` with an explore/general-purpose subagent. In Codex, use the available subagent tool. If subagents are unavailable, build the brief locally with `Read`, `Grep`, and `Bash`. All three review lenses share this brief — no redundant exploration.
 
 The Grounding agent must:
 
@@ -97,13 +96,13 @@ The Grounding agent must:
 - No tests exist for the package the plan modifies most heavily
 ```
 
-### Phase 3: Persona Review (parallel subagents)
+### Phase 3: Persona Review (parallel subagents when available)
 
 Read [references/personas.md](references/personas.md) in full before spawning Phase 3 agents — it contains the exact instruction blocks for each persona.
 
-Spawn three `Agent` subagents **in parallel** (single message, multiple Agent tool calls) using the prompts in personas.md. Parallelize because the personas are independent perspectives on the same inputs, so sequential spawning wastes wall time without improving quality:
+Spawn three subagents **in parallel** when the runtime supports it, using the prompts in personas.md. Claude uses `Agent`; Codex uses its available subagent tool. If subagents are unavailable, run the three reviews locally as separate sections:
 
-- **Verifier** — Did Claude actually read the code, or skim file names?
+- **Verifier** — Did the planner actually read the code, or skim file names?
 - **Architect** — Is the structure sound? File selection, order, conventions, scope?
 - **Skeptic** — What's missing? Edge cases, failure modes, verification criteria?
 
@@ -198,7 +197,7 @@ Produce the final report in this exact structure:
 
 ## Rejection Rationale
 
-[Only if verdict is REJECT. What's fundamentally wrong and what Claude must do before re-planning.]
+[Only if verdict is REJECT. What's fundamentally wrong and what the planner must do before re-planning.]
 
 ## Refined Plan
 
@@ -214,11 +213,11 @@ Saved to: `~/.claude/plan-reviews/<filename>.md`
 - "Approved — proceed with execution."
 - "Refined — plan file updated in place at `<path>`. Review.": when REFINE + file path
 - "Refined — refined plan in the Refined Plan section above. Copy into your plan source.": when REFINE + inline/from-conversation
-- "Rejected — Claude should read [specific files] and re-plan from scratch."]
+- "Rejected — planner should read [specific files] and re-plan from scratch."]
 ```
 
 <example>
-Plan claims to update `UserStore.Save` callers. Grounding Brief reports `UserStore.Save` not found; closest is `UserRepository.Persist`. Verifier flags surface reading. Verdict: **REJECT**. Next action: Claude must read `store/user.go` and re-plan against the real symbol.
+Plan claims to update `UserStore.Save` callers. Grounding Brief reports `UserStore.Save` not found; closest is `UserRepository.Persist`. Verifier flags surface reading. Verdict: **REJECT**. Next action: planner must read `store/user.go` and re-plan against the real symbol.
 </example>
 
 <example>
@@ -249,7 +248,7 @@ Common failure modes and recovery:
 
 - **Grounding agent times out or returns empty brief.** Re-spawn with a narrower scope (focus on the top 3 files the plan names). If still empty, fall back to running grep directly from the main context for the named symbols and proceed without the full brief — note the degraded confidence in the verdict.
 - **Personas disagree (one APPROVE, one REJECT).** Trust the more conservative verdict. Surface the disagreement explicitly in the Cross-Cutting Issues section and let the user adjudicate.
-- **Plan input is ambiguous or missing.** Use AskUserQuestion with concrete options (file path, paste inline, use last-conversation plan). Do not guess.
+- **Plan input is ambiguous or missing.** Ask with concrete options (file path, paste inline, use last-conversation plan). Do not guess.
 - **Plan references files in a different repo or path the agent can't access.** Stop and ask the user to either provide the files or scope the review to what is reachable.
 - **All three personas return identical findings.** This usually means the plan is so vague that any reviewer surfaces the same gaps — flag as REJECT and request specifics before re-review.
 

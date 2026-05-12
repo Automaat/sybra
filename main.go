@@ -27,6 +27,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sybra"
 )
 
@@ -59,6 +60,7 @@ func run() error {
 	v3emit := func(string, any) {}
 
 	sybraApp := sybra.NewApp(logger, levelVar, cfg,
+		sybra.WithSkillsFS(skills.FS),
 		sybra.WithEmitFactory(func(_ context.Context) func(string, any) {
 			return func(event string, data any) { v3emit(event, data) }
 		}),

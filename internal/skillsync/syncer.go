@@ -89,7 +89,16 @@ func (s *Syncer) Run(opts Options) {
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	s.info("skills.sync.start", "src", repoDir, "dst", opts.PrimaryDst)
 	for _, dst := range dsts {
-		s.SyncDir(skillsSrc, dst)
+		if opts.SkillsFS == nil {
+			s.SyncDir(skillsSrc, dst)
+			continue
+		}
+		cleanDst := filepath.Clean(dst) + string(filepath.Separator)
+		srcNames := s.syncFS(opts.SkillsFS, "data", dst, false)
+		for name := range s.syncDir(skillsSrc, dst, false) {
+			srcNames[name] = struct{}{}
+		}
+		s.removeOrphans(dst, cleanDst, srcNames)
 	}
 
 	if opts.SybraHomeDir != "" {
@@ -143,14 +152,18 @@ func (s *Syncer) SyncFile(src, dst string) {
 // by Claude Code's skill loader, so this layout is mandatory. Orphan skill
 // subdirs (present in dst but absent from src) are removed.
 func (s *Syncer) SyncDir(src, dst string) {
+	s.syncDir(src, dst, true)
+}
+
+func (s *Syncer) syncDir(src, dst string, prune bool) map[string]struct{} {
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		s.debug("sync.skill.skip", "src", src, "reason", err)
-		return
+		return map[string]struct{}{}
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		s.error("sync.skill.mkdir", "dst", dst, "err", err)
-		return
+		return map[string]struct{}{}
 	}
 	cleanSrc := filepath.Clean(src) + string(filepath.Separator)
 	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
@@ -203,20 +216,27 @@ func (s *Syncer) SyncDir(src, dst string) {
 		srcNames[name] = struct{}{}
 	}
 
-	s.removeOrphans(dst, cleanDst, srcNames)
+	if prune {
+		s.removeOrphans(dst, cleanDst, srcNames)
+	}
+	return srcNames
 }
 
 // SyncFS mirrors SyncDir but reads source files from an fs.FS. Used for
 // the embedded skill bundle (internal/skills.FS).
 func (s *Syncer) SyncFS(fsys fs.FS, srcDir, dst string) {
+	s.syncFS(fsys, srcDir, dst, true)
+}
+
+func (s *Syncer) syncFS(fsys fs.FS, srcDir, dst string, prune bool) map[string]struct{} {
 	entries, err := fs.ReadDir(fsys, srcDir)
 	if err != nil {
 		s.debug("sync.skill.fs.skip", "src", srcDir, "reason", err)
-		return
+		return map[string]struct{}{}
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		s.error("sync.skill.mkdir", "dst", dst, "err", err)
-		return
+		return map[string]struct{}{}
 	}
 	cleanDst := filepath.Clean(dst) + string(filepath.Separator)
 
@@ -253,7 +273,10 @@ func (s *Syncer) SyncFS(fsys fs.FS, srcDir, dst string) {
 		srcNames[name] = struct{}{}
 	}
 
-	s.removeOrphans(dst, cleanDst, srcNames)
+	if prune {
+		s.removeOrphans(dst, cleanDst, srcNames)
+	}
+	return srcNames
 }
 
 // removeOrphans deletes dst/<name>/ subdirs whose names are absent from

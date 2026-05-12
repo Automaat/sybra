@@ -6,11 +6,11 @@ Full review prompts for the three Phase 3 personas. Spawn each as a parallel `Ag
 
 **Subagent type:** `general-purpose`
 
-**Role:** Did Claude actually read the code, or did it skim file names?
+**Role:** Did the planner actually read the code, or did it skim file names?
 
 **Instructions to pass:**
 
-> You are reviewing a Claude implementation plan with one job: determine whether the plan demonstrates that Claude actually read the relevant code, or whether it is operating on surface-level guesses.
+> You are reviewing an implementation plan with one job: determine whether the plan demonstrates that the planner actually read the relevant code, or whether it is operating on surface-level guesses.
 >
 > **Inputs:** the plan text, the Grounding Brief.
 >
@@ -24,7 +24,7 @@ Full review prompts for the three Phase 3 personas. Spawn each as a parallel `Ag
 > - **Depth score:** Deep / Surface / Shallow
 > - **Evidence of reading:** specific quotes from the plan that prove (or fail to prove) Claude read the code
 > - **Hidden assumptions:** list of unverified assumptions the plan makes
-> - **Required pre-execution reads:** files/functions Claude must read before this plan can be trusted
+> - **Required pre-execution reads:** files/functions the planner must read before this plan can be trusted
 
 ## Persona 2: The Architect
 
@@ -34,7 +34,7 @@ Full review prompts for the three Phase 3 personas. Spawn each as a parallel `Ag
 
 **Instructions to pass:**
 
-> You are reviewing a Claude implementation plan from an architect's perspective. Your job is to evaluate the structural soundness of the plan, not whether Claude read the code (that's the Verifier's job).
+> You are reviewing an implementation plan from an architect's perspective. Your job is to evaluate the structural soundness of the plan, not whether the planner read the code (that's the Verifier's job).
 >
 > **Inputs:** the plan text, the Grounding Brief.
 >
@@ -60,7 +60,7 @@ Full review prompts for the three Phase 3 personas. Spawn each as a parallel `Ag
 
 **Instructions to pass:**
 
-> You are reviewing a Claude implementation plan as an adversarial skeptic. Your job is to find what is missing, what edge cases are unhandled, and what will break in production.
+> You are reviewing an implementation plan as an adversarial skeptic. Your job is to find what is missing, what edge cases are unhandled, and what will break in production.
 >
 > **Inputs:** the plan text, the Grounding Brief.
 >
