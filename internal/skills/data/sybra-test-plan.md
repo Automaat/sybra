@@ -57,7 +57,7 @@ For trivial changes see the "When not to use" section at the top — produce a o
 
 ### 3. Spawn three personas in parallel
 
-Invoke three `Agent` tool calls in a **single assistant message** — sequential spawning leaks context between personas and erodes the frame diversity that makes this skill work. Use `subagent_type: general-purpose`. Each prompt contains:
+Invoke three subagents in parallel when the runtime supports it — sequential spawning leaks context between personas and erodes the frame diversity that makes this skill work. Claude can use `Agent` with `subagent_type: general-purpose`; Codex can use its available subagent tool. If subagents are unavailable, write three local persona drafts as separate sections. Each prompt contains:
 
 1. The change under test (same for all three)
 2. The relevant domain checklist (same for all three)
@@ -318,7 +318,7 @@ sybra-cli --json update task-typo-7 --status test-plan-review
 - Plan manual verification only; automated tests belong in `test-writer`.
 - Don't execute cases — this skill produces the plan, a human runs it.
 - Stay at the prompt after publishing, so the human can send feedback.
-- Spawn personas in **parallel** (single message, three `Agent` calls). Sequential spawning leaks context and erodes frame diversity.
+- Spawn personas in **parallel** when supported. Sequential spawning leaks context and erodes frame diversity.
 - Skip personas for trivial changes (docs, typos, pure refactor) — publish a one-paragraph smoke plan instead.
 - Surface persona disagreements in Open questions; silently picking a winner hides real design ambiguity.
 - If the change is unidentifiable (no PR, no diff, vague body), ask the human before spawning personas.

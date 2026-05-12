@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 )
 
@@ -237,7 +239,7 @@ func TestRunPrefersEmbeddedWhenNoGoMod(t *testing.T) {
 	}
 }
 
-func TestRunUsesRepoSourceWhenGoModPresent(t *testing.T) {
+func TestRunMergesRepoAndEmbeddedWhenGoModPresent(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -250,6 +252,10 @@ func TestRunUsesRepoSourceWhenGoModPresent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillsSrc, "repo-skill.md"), repoSkill, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	repoOverride := []byte("---\nname: shared\ndescription: repo\n---\n")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "shared.md"), repoOverride, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
 	dataDir := filepath.Join(embeddedSrc, "data")
@@ -257,6 +263,9 @@ func TestRunUsesRepoSourceWhenGoModPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "embed-only.md"), []byte("---\nname: embed-only\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "shared.md"), []byte("---\nname: shared\ndescription: embed\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
@@ -270,8 +279,39 @@ func TestRunUsesRepoSourceWhenGoModPresent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(primaryDst, "repo-skill", "SKILL.md")); err != nil {
 		t.Errorf("repo skill missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(primaryDst, "embed-only")); !os.IsNotExist(err) {
-		t.Errorf("embedded skill should not be written in repo-source mode")
+	if _, err := os.Stat(filepath.Join(primaryDst, "embed-only", "SKILL.md")); err != nil {
+		t.Errorf("embedded skill missing: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(primaryDst, "shared", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "description: repo") {
+		t.Errorf("repo skill should override embedded duplicate, got %q", got)
+	}
+}
+
+func TestRunShipsWorkflowSkillsFromEmbeddedBundle(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	primaryDst := filepath.Join(t.TempDir(), "app-skills")
+	newSyncer().Run(skillsync.Options{
+		RepoDir:    repoDir,
+		SkillsFS:   skills.FS,
+		PrimaryDst: primaryDst,
+	})
+
+	for _, name := range []string{"plan-critic", "plan-fork", "sybra-plan", "sybra-test-plan", "sybra-triage"} {
+		if _, err := os.Stat(filepath.Join(primaryDst, name, "SKILL.md")); err != nil {
+			t.Errorf("%s skill missing: %v", name, err)
+		}
 	}
 }
 
