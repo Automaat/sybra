@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -169,6 +170,50 @@ func TestBuiltinDefinitions_Valid(t *testing.T) {
 				t.Errorf("Validate() error for %q: %v", d.ID, err)
 			}
 		})
+	}
+}
+
+func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review builtin definition not found")
+	}
+	step := simple.StepByID("create_pr")
+	if step == nil {
+		t.Fatal("create_pr step not found in simple-task-review")
+	}
+	prompt := step.Config.Prompt
+	for _, want := range []string{
+		`remote.fork.url`,
+		`PUSH_REMOTE="fork"`,
+		`REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"`,
+		`--head "$HEAD_ARG"`,
+		`git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"`,
+		`headRefOid`,
+		`test "$LOCAL_SHA" = "$PR_SHA"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("create_pr prompt missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"git push -u origin HEAD",
+		"git push --force-with-lease -u origin HEAD",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("create_pr prompt still hardcodes %q", forbidden)
+		}
 	}
 }
 

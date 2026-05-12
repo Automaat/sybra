@@ -180,19 +180,33 @@ steps:
         Create a GitHub PR for the current branch if one does not exist yet.
 
         Steps:
-          1. Check: gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number'
+          1. Set branch/remote variables:
+             BRANCH="$(git branch --show-current)"
+             PUSH_REMOTE="origin"
+             if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE="fork"; fi
+             REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"
+             HEAD_OWNER="$(gh repo view "$REMOTE_URL" --json owner --jq .owner.login)"
+             HEAD_ARG="$BRANCH"
+             if [ "$PUSH_REMOTE" = "fork" ]; then HEAD_ARG="$HEAD_OWNER:$BRANCH"; fi
+          2. Check: gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number'
              If a PR number is returned, skip creation — the PR already exists.
-          2. If no PR exists, push the branch and create one:
-             git push -u origin HEAD
+          3. If no PR exists, push the branch and create one:
+             git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"
              If push is rejected because the remote has diverged (e.g. after a
              rebase), force-push without asking for confirmation:
-             git push --force-with-lease -u origin HEAD
+             git push --force-with-lease -u "$PUSH_REMOTE" HEAD:"$BRANCH"
              gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
+               --head "$HEAD_ARG" \
                --title "<conventional-commit title>" \
                --body "<PR body with ## Motivation and ## Implementation information>"
              {{- if .Task.Issue}}
              Include "Closes {{.Task.Issue}}" in the PR body.
              {{- end}}
+          4. Verify the created PR head matches local HEAD:
+             PR="$(gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number')"
+             LOCAL_SHA="$(git rev-parse HEAD)"
+             PR_SHA="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
+             test "$LOCAL_SHA" = "$PR_SHA"
 
         PR title must follow conventional commits format matching the task work.
         PR body must have ## Motivation and ## Implementation information sections.
