@@ -14,7 +14,7 @@ func TestExecValidatePlan_CleanPlanPasses(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "planning"})
 	engine := newEngineForEval(t, tasks)
 
-	plan := "# Plan\n\nBranch: `sybra/bk-tree-on-per-base-buckets-fa6919fc`\nEdit src/cleaner.rs:60.\n"
+	plan := "# Plan\n\nBranch: `perf/bk-tree-on-per-base-buckets-fa6919fc`\nEdit src/cleaner.rs:60.\n"
 	out, err := engine.execValidatePlan("fa6919fc", newValidatePlanStep(),
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
@@ -36,7 +36,7 @@ func TestExecValidatePlan_ForeignBranchRefFlipsHumanRequired(t *testing.T) {
 
 	// Reproduces the fa6919fc → a9375bad incident: plan body cites a sibling
 	// task's worktree path inside the same project.
-	plan := "# Plan\n\nBranch: `sybra/bk-tree-on-per-base-buckets-fa6919fc`\n" +
+	plan := "# Plan\n\nBranch: `perf/bk-tree-on-per-base-buckets-fa6919fc`\n" +
 		"Worktree: /home/sybra/.sybra/worktrees/cross-base-typo-detection-a9375bad\n"
 	out, err := engine.execValidatePlan("fa6919fc", newValidatePlanStep(),
 		TaskInfo{ID: "fa6919fc", Plan: plan})
@@ -65,7 +65,7 @@ func TestExecValidatePlan_ForeignBranchRefAlone(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 
 	// Branch ref alone (no worktree path) must still trip the validator.
-	plan := "Use branch sybra/cross-base-typo-detection-a9375bad as base."
+	plan := "Use branch fix/cross-base-typo-detection-a9375bad as base."
 	_, err := engine.execValidatePlan("fa6919fc", newValidatePlanStep(),
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
@@ -101,7 +101,7 @@ func TestExecValidatePlan_EmptyPlanPasses(t *testing.T) {
 func TestExecValidatePlan_GitShortShaIgnored(t *testing.T) {
 	// 8-hex git short SHAs in code/commit references must NOT be flagged
 	// as foreign task IDs. The validator only matches structural patterns
-	// (sybra/<slug>-<id>, worktrees/<slug>-<id>).
+	// (<type>/<slug>-<id>, legacy sybra/<slug>-<id>, worktrees/<slug>-<id>).
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "planning"})
 	engine := newEngineForEval(t, tasks)
@@ -119,7 +119,7 @@ func TestExecValidatePlan_GitShortShaIgnored(t *testing.T) {
 }
 
 func TestCollectForeignTaskIDs_DedupesAndSorts(t *testing.T) {
-	plan := "sybra/foo-aaaaaaaa and again sybra/bar-aaaaaaaa, plus worktrees/baz-bbbbbbbb."
+	plan := "fix/foo-aaaaaaaa and again sybra/bar-aaaaaaaa, plus worktrees/baz-bbbbbbbb."
 	got := collectForeignTaskIDs(plan, "fa6919fc")
 	want := []string{"aaaaaaaa", "bbbbbbbb"}
 	if len(got) != len(want) {
@@ -133,7 +133,7 @@ func TestCollectForeignTaskIDs_DedupesAndSorts(t *testing.T) {
 }
 
 func TestCollectForeignTaskIDs_OwnIDIgnored(t *testing.T) {
-	plan := "sybra/my-slug-fa6919fc and worktrees/my-slug-fa6919fc"
+	plan := "feat/my-slug-fa6919fc and worktrees/my-slug-fa6919fc"
 	got := collectForeignTaskIDs(plan, "fa6919fc")
 	if len(got) != 0 {
 		t.Errorf("got %v, want empty (own ID should be ignored)", got)

@@ -99,7 +99,7 @@ steps:
 
             DO NOT reference any other task ID, branch, or worktree path in
             your plan. If `git branch -a` reveals sibling branches like
-            `sybra/<other-slug>-<other-id>`, IGNORE them — they belong to
+            `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
             other concurrent tasks against the same project repo and have
             nothing to do with you.
 
@@ -146,7 +146,7 @@ steps:
 
             DO NOT reference any other task ID, branch, or worktree path in
             your plan. If `git branch -a` reveals sibling branches like
-            `sybra/<other-slug>-<other-id>`, IGNORE them — they belong to
+            `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
             other concurrent tasks against the same project repo and have
             nothing to do with you.
 
