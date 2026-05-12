@@ -71,6 +71,10 @@ func newReviewHandler(
 }
 
 func (r *ReviewHandler) createReviewTask(pr github.PullRequest, projectID string) {
+	r.createReviewTaskWithTriage(pr, projectID, r.triageReview)
+}
+
+func (r *ReviewHandler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -81,17 +85,18 @@ func (r *ReviewHandler) createReviewTask(pr github.PullRequest, projectID string
 	}
 
 	tags := []string{"review"}
-	if _, err := r.tasks.Update(t.ID, task.Update{
+	t, err = r.tasks.Update(t.ID, task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
 		Status:    task.Ptr(task.StatusTodo),
-	}); err != nil {
+	})
+	if err != nil {
 		r.logger.Error("review.update-task", "task_id", t.ID, "err", err)
 		return
 	}
 	r.logger.Info("review.task-created", "task_id", t.ID, "pr", pr.Number, "project", projectID)
-	go r.triageReview(t)
+	go triage(t)
 }
 
 func (r *ReviewHandler) triageReview(t task.Task) {
@@ -173,6 +178,10 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 }
 
 func (r *ReviewHandler) startReviewAgent(t task.Task) error {
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		return fmt.Errorf("task %s has no linked PR", t.ID)
+	}
+
 	dir := config.HomeDir()
 	if t.ProjectID != "" {
 		d, err := r.worktrees.PrepareForReview(t)
