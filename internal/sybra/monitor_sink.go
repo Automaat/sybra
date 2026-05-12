@@ -26,25 +26,34 @@ import (
 // Terminal tasks (done, cancelled) are ignored so a recurrence after closure
 // opens a fresh task.
 type monitorRoutingSink struct {
-	inner     monitor.IssueSink
-	tasks     *task.Manager
-	workCtx   func(projectID string) *WorkScrubContext
-	projectID string
-	logger    *slog.Logger
-	now       func() time.Time
+	inner           monitor.IssueSink
+	tasks           *task.Manager
+	workCtx         func(projectID string) *WorkScrubContext
+	projectID       string
+	dispatchCreated func(taskID string)
+	logger          *slog.Logger
+	now             func() time.Time
 }
 
-func newMonitorRoutingSink(inner monitor.IssueSink, tasks *task.Manager, workCtx func(string) *WorkScrubContext, projectID string, logger *slog.Logger) *monitorRoutingSink {
+func newMonitorRoutingSink(
+	inner monitor.IssueSink,
+	tasks *task.Manager,
+	workCtx func(string) *WorkScrubContext,
+	projectID string,
+	dispatchCreated func(taskID string),
+	logger *slog.Logger,
+) *monitorRoutingSink {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &monitorRoutingSink{
-		inner:     inner,
-		tasks:     tasks,
-		workCtx:   workCtx,
-		projectID: projectID,
-		logger:    logger,
-		now:       time.Now,
+		inner:           inner,
+		tasks:           tasks,
+		workCtx:         workCtx,
+		projectID:       projectID,
+		dispatchCreated: dispatchCreated,
+		logger:          logger,
+		now:             time.Now,
 	}
 }
 
@@ -84,10 +93,18 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 	if _, err := s.tasks.Update(newTask.ID, update); err != nil {
 		s.logger.Warn("monitor.routing.local.tag", "new_task_id", newTask.ID, "err", err)
 	}
+	s.dispatchCreatedWorkflow(newTask.ID)
 	s.logger.Info("monitor.routing.local",
 		"kind", a.Kind, "src_task_id", a.TaskID,
 		"new_task_id", newTask.ID, "project_id", s.projectID, "redactions", redactions)
 	return true, nil
+}
+
+func (s *monitorRoutingSink) dispatchCreatedWorkflow(taskID string) {
+	if s.dispatchCreated == nil {
+		return
+	}
+	s.dispatchCreated(taskID)
 }
 
 // findOpenByTitle returns the first non-terminal task whose Title equals the
