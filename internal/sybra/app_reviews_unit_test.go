@@ -1,7 +1,12 @@
 package sybra
 
 import (
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -169,6 +174,52 @@ func TestReviewTaskMatchers(t *testing.T) {
 	}
 	if got[0].ID != "review" || got[0].ProjectID != "o/r" || got[0].PRNumber != 42 {
 		t.Fatalf("matcher = %+v, want review o/r#42", got[0])
+	}
+}
+
+func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tasks")
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	got := make(chan task.Task, 1)
+
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		tasks:         tasks,
+	}
+	r.createReviewTaskWithTriage(github.PullRequest{
+		Number: 2708,
+		Title:  "docs: explain precedence",
+		URL:    "https://github.com/kumahq/kuma-website/pull/2708",
+		Author: "slonka",
+	}, "kumahq/kuma-website", func(t task.Task) {
+		got <- t
+	})
+
+	select {
+	case reviewTask := <-got:
+		if reviewTask.ProjectID != "kumahq/kuma-website" {
+			t.Fatalf("ProjectID = %q, want kumahq/kuma-website", reviewTask.ProjectID)
+		}
+		if reviewTask.PRNumber != 2708 {
+			t.Fatalf("PRNumber = %d, want 2708", reviewTask.PRNumber)
+		}
+		if reviewTask.Status != task.StatusTodo {
+			t.Fatalf("Status = %q, want %q", reviewTask.Status, task.StatusTodo)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triage was not called")
+	}
+
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("created files = %d, want 1", len(files))
 	}
 }
 
