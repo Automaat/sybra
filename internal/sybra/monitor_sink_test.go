@@ -40,7 +40,7 @@ func newSinkTestEnv(t *testing.T) (*monitorRoutingSink, *task.Manager, *fakeInne
 		}
 		return &WorkScrubContext{ProjectID: projectID, Blocklist: []string{"kumahq/kuma"}}
 	}
-	sink := newMonitorRoutingSink(inner, tasks, workCtx, "Automaat/sybra", slog.New(slog.DiscardHandler))
+	sink := newMonitorRoutingSink(inner, tasks, workCtx, "Automaat/sybra", nil, slog.New(slog.DiscardHandler))
 	sink.now = func() time.Time { return time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC) }
 	return sink, tasks, inner
 }
@@ -96,6 +96,45 @@ func TestMonitorRoutingSink_WorkAnomaly_CreatesLocalTaskWithProject(t *testing.T
 	}
 	if strings.Contains(routed.Body, "kumahq/kuma") {
 		t.Errorf("body leaked work identifier: %q", routed.Body)
+	}
+}
+
+func TestMonitorRoutingSink_WorkAnomaly_DispatchesCreatedWorkflow(t *testing.T) {
+	t.Parallel()
+	sink, tasks, _ := newSinkTestEnv(t)
+	var dispatched []string
+	sink.dispatchCreated = func(taskID string) {
+		dispatched = append(dispatched, taskID)
+	}
+	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pid := "kumahq/kuma"
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	a := monitor.Anomaly{
+		Kind:        monitor.KindStuckHumanBlocked,
+		TaskID:      src.ID,
+		Fingerprint: "stuck_human_blocked:" + src.ID,
+	}
+	if _, err := sink.Submit(context.Background(), a, "evidence"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(dispatched) != 1 {
+		t.Fatalf("dispatch calls = %d, want 1", len(dispatched))
+	}
+	routed, err := tasks.Get(dispatched[0])
+	if err != nil {
+		t.Fatalf("Get dispatched task: %v", err)
+	}
+	if routed.ProjectID != "Automaat/sybra" {
+		t.Fatalf("dispatch happened before project route update: project_id=%q", routed.ProjectID)
+	}
+	if !slices.Contains(routed.Tags, "sybra-bug") {
+		t.Fatalf("dispatch happened before tag route update: tags=%v", routed.Tags)
 	}
 }
 

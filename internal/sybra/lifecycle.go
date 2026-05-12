@@ -189,7 +189,21 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, a.logger)
+	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
+		if a.workflowEngine == nil {
+			return
+		}
+		a.wg.Go(func() {
+			dispatched, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil)
+			if err != nil {
+				a.logger.Error("monitor.routing.workflow.failed", "task_id", taskID, "err", err)
+				return
+			}
+			if dispatched == "" {
+				a.logger.Warn("monitor.routing.workflow.no-match", "task_id", taskID)
+			}
+		})
+	}, a.logger)
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        a.cfg.Monitor,
 		Tasks:      a.tasks,
