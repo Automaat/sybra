@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,21 +172,20 @@ func TestTaskService_CreateTask_AutoStartsWorkflow(t *testing.T) {
 }
 
 func TestTaskService_UpdateTask_CleansWorktreeOnDone(t *testing.T) {
-	svc, _ := setupTaskService(t)
+	a := setupApp(t)
+	var wg sync.WaitGroup
+	svc := &TaskService{
+		tasks:     a.tasks,
+		agents:    a.agents,
+		worktrees: a.worktrees,
+		wg:        &wg,
+		logger:    a.logger,
+	}
 
 	created, err := svc.CreateTask("cleanup task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// CreateTask auto-dispatches the task.created workflow in a goroutine,
-	// which briefly registers a triage agent that fails (no real `claude`
-	// binary on PATH in unit tests). UpdateTask's status guard refuses
-	// "done" while HasRunningAgentForTask is true, so wait for the agent
-	// goroutine to finish cleanup before exercising the guard. Without
-	// this, the test races the agent.Manager cleanup goroutine and flakes
-	// under CI load.
-	waitForNoAgent(t, svc, created.ID, 5*time.Second)
 
 	updated, err := svc.UpdateTask(created.ID, map[string]any{"status": "done"})
 	if err != nil {
@@ -194,24 +194,6 @@ func TestTaskService_UpdateTask_CleansWorktreeOnDone(t *testing.T) {
 	if updated.Status != task.StatusDone {
 		t.Fatalf("expected done, got %q", updated.Status)
 	}
-}
-
-// waitForNoAgent polls until no live agent is registered for the task or
-// the deadline expires. Use after CreateTask in tests that exercise
-// status-change guards: setupTaskService loads builtin workflows whose
-// task.created trigger spawns an async triage agent that fails fast (no
-// real provider on PATH). The race window between agent registration and
-// markAgentDone is what flakes under CI load.
-func waitForNoAgent(t *testing.T, svc *TaskService, taskID string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !svc.agents.HasRunningAgentForTask(taskID) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timeout waiting for agent cleanup on task %s", taskID)
 }
 
 // --- assembleFeedback: merges free text + unresolved inline comments ---

@@ -29,6 +29,8 @@ type IssuesFetcher struct {
 	fetchAssigned         func() ([]github.Issue, error)
 	fetchLabeled          func(repos []string, label string) ([]github.Issue, error)
 	fetchSnapshot         func(repos []string, label string) (github.IssueSnapshot, error)
+	fetchIssueLinkedPRs   func(repo string, issueNumber int) ([]github.PullRequest, error)
+	viewerLogin           func() string
 	transientFetchFails   int
 	transientLabeledFails int
 }
@@ -47,14 +49,16 @@ func NewIssuesFetcher(
 		allowsType = func(project.ProjectType) bool { return true }
 	}
 	return &IssuesFetcher{
-		tasks:         tasks,
-		projects:      projects,
-		emit:          emit,
-		logger:        logger,
-		allowsType:    allowsType,
-		fetchAssigned: github.FetchAssignedIssues,
-		fetchLabeled:  github.FetchLabeledIssuesForRepos,
-		fetchSnapshot: github.FetchIssueSnapshot,
+		tasks:               tasks,
+		projects:            projects,
+		emit:                emit,
+		logger:              logger,
+		allowsType:          allowsType,
+		fetchAssigned:       github.FetchAssignedIssues,
+		fetchLabeled:        github.FetchLabeledIssuesForRepos,
+		fetchSnapshot:       github.FetchIssueSnapshot,
+		fetchIssueLinkedPRs: github.FetchIssueLinkedPRs,
+		viewerLogin:         github.ViewerLogin,
 	}
 }
 
@@ -217,6 +221,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 				Issue:     task.Ptr(issue.URL),
 				ProjectID: task.Ptr(issue.Repository),
 			}
+			f.enrichLinkedViewerPR(issue, &u)
 			if issue.Body != "" {
 				u.Body = task.Ptr(issue.Body)
 			}
@@ -239,6 +244,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 			Status:    task.Ptr(task.StatusTodo),
 			ProjectID: task.Ptr(issue.Repository),
 		}
+		f.enrichLinkedViewerPR(issue, &u)
 
 		if len(issue.Labels) > 0 {
 			labels := issue.Labels
@@ -251,4 +257,37 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 
 		f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
 	}
+}
+
+func (f *IssuesFetcher) enrichLinkedViewerPR(issue *github.Issue, u *task.Update) {
+	if f.fetchIssueLinkedPRs == nil || f.viewerLogin == nil {
+		return
+	}
+	prs, err := f.fetchIssueLinkedPRs(issue.Repository, issue.Number)
+	if err != nil {
+		f.logger.Warn("issue-sync.linked-prs", "issue", issue.URL, "err", err)
+		return
+	}
+	if len(prs) == 0 {
+		return
+	}
+	viewer := f.viewerLogin()
+	if viewer == "" {
+		return
+	}
+	var mine []github.PullRequest
+	for i := range prs {
+		if strings.EqualFold(prs[i].Author, viewer) {
+			mine = append(mine, prs[i])
+		}
+	}
+	if len(mine) != 1 {
+		if len(mine) > 1 {
+			f.logger.Warn("issue-sync.linked-prs.ambiguous", "issue", issue.URL, "count", len(mine))
+		}
+		return
+	}
+	u.PRNumber = task.Ptr(mine[0].Number)
+	u.Branch = task.Ptr(mine[0].HeadRefName)
+	u.Status = task.Ptr(task.StatusInReview)
 }

@@ -65,6 +65,31 @@ const issueSnapshotQuery = `query($assignedQ: String!, $labeledQ: String!) {
   }
 }`
 
+const issueLinkedPRsQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      timelineItems(first: 100, itemTypes: CROSS_REFERENCED_EVENT) {
+        nodes {
+          ... on CrossReferencedEvent {
+            willCloseTarget
+            source {
+              ... on PullRequest {
+                number
+                title
+                url
+                state
+                headRefName
+                author { login type: __typename }
+                repository { name nameWithOwner }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
 type gqlIssueResponse struct {
 	Data struct {
 		Search struct {
@@ -114,6 +139,40 @@ type gqlIssue struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
+}
+
+type gqlIssueLinkedPRsResponse struct {
+	Data struct {
+		Repository struct {
+			Issue struct {
+				TimelineItems struct {
+					Nodes []gqlCrossReferencedEvent `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"issue"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type gqlCrossReferencedEvent struct {
+	WillCloseTarget bool `json:"willCloseTarget"`
+	Source          struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		State       string `json:"state"`
+		HeadRefName string `json:"headRefName"`
+		Author      struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"author"`
+		Repository struct {
+			Name          string `json:"name"`
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"repository"`
+	} `json:"source"`
 }
 
 type IssueSnapshot struct {
@@ -372,4 +431,58 @@ func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
 		issueCache.Set(key, issue, 2*time.Minute)
 	}
 	return issue, nil
+}
+
+// FetchIssueLinkedPRs returns same-repo open PRs that GitHub links as closing
+// the issue through cross-reference timeline events.
+func FetchIssueLinkedPRs(repo string, issueNumber int) ([]PullRequest, error) {
+	return fetchIssueLinkedPRsWith(defaultExecer, repo, issueNumber)
+}
+
+func fetchIssueLinkedPRsWith(e execer, repo string, issueNumber int) ([]PullRequest, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("invalid repo %q", repo)
+	}
+	httpResp, err := runGHAPIWith(e, "", "graphql",
+		"-f", "query="+issueLinkedPRsQuery,
+		"-f", "owner="+owner,
+		"-f", "name="+name,
+		"-F", fmt.Sprintf("number=%d", issueNumber))
+	if err != nil {
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(httpResp.body), err)
+	}
+
+	var gqlResp gqlIssueLinkedPRsResponse
+	if err := json.Unmarshal(httpResp.body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	}
+
+	events := gqlResp.Data.Repository.Issue.TimelineItems.Nodes
+	prs := make([]PullRequest, 0, len(events))
+	seen := make(map[int]struct{}, len(events))
+	for i := range events {
+		ev := &events[i]
+		src := &ev.Source
+		if !ev.WillCloseTarget || src.Number == 0 || src.State != "OPEN" || src.Repository.NameWithOwner != repo {
+			continue
+		}
+		if _, ok := seen[src.Number]; ok {
+			continue
+		}
+		seen[src.Number] = struct{}{}
+		prs = append(prs, PullRequest{
+			Number:      src.Number,
+			Title:       src.Title,
+			URL:         src.URL,
+			HeadRefName: src.HeadRefName,
+			Repository:  src.Repository.NameWithOwner,
+			RepoName:    src.Repository.Name,
+			Author:      src.Author.Login,
+		})
+	}
+	return prs, nil
 }
