@@ -53,6 +53,8 @@ func newIssuesFetcherForTest(
 	}
 	// Assigned path is exercised separately; default to empty to avoid gh.
 	f.fetchAssigned = func() ([]github.Issue, error) { return nil, nil }
+	f.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	f.viewerLogin = func() string { return "me" }
 
 	return &issuesFetcherEnv{
 		fetcher:     f,
@@ -280,6 +282,127 @@ func TestIssuesFetcher_SyncIssuesToTasks_EnrichesURLTitledTasks(t *testing.T) {
 	}
 }
 
+func TestIssuesFetcher_SyncIssuesToTasks_LinkedViewerPR(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+	env.fetcher.fetchIssueLinkedPRs = func(repo string, issueNumber int) ([]github.PullRequest, error) {
+		if repo != "acme/pet1" || issueNumber != 6 {
+			t.Fatalf("linked PR fetch = %s#%d, want acme/pet1#6", repo, issueNumber)
+		}
+		return []github.PullRequest{{
+			Number:      42,
+			HeadRefName: "fix/issue-6",
+			Author:      "me",
+		}}, nil
+	}
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{{
+		Number:     6,
+		Title:      "linked issue",
+		URL:        "https://github.com/acme/pet1/issues/6",
+		Repository: "acme/pet1",
+	}})
+
+	got := onlyTask(t, env.tasks)
+	if got.Status != task.StatusInReview {
+		t.Fatalf("Status = %q, want %q", got.Status, task.StatusInReview)
+	}
+	if got.PRNumber != 42 {
+		t.Fatalf("PRNumber = %d, want 42", got.PRNumber)
+	}
+	if got.Branch != "fix/issue-6" {
+		t.Fatalf("Branch = %q, want fix/issue-6", got.Branch)
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_URLTitleLinkedViewerPR(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+	stub, err := env.tasks.Create("https://github.com/acme/pet1/issues/7", "", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	env.fetcher.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return []github.PullRequest{{Number: 43, HeadRefName: "fix/issue-7", Author: "me"}}, nil
+	}
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{{
+		Number:     7,
+		Title:      "real title",
+		URL:        "https://github.com/acme/pet1/issues/7",
+		Repository: "acme/pet1",
+	}})
+
+	tasks, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	got, err := env.tasks.Get(stub.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "real title" || got.PRNumber != 43 || got.Status != task.StatusInReview {
+		t.Fatalf("task = %+v, want enriched linked viewer PR", got)
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_NoLinkedPRKeepsTodo(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{{
+		Number:     8,
+		Title:      "plain issue",
+		URL:        "https://github.com/acme/pet1/issues/8",
+		Repository: "acme/pet1",
+	}})
+
+	got := onlyTask(t, env.tasks)
+	if got.Status != task.StatusTodo {
+		t.Fatalf("Status = %q, want %q", got.Status, task.StatusTodo)
+	}
+	if got.PRNumber != 0 || got.Branch != "" {
+		t.Fatalf("linked PR fields = %d/%q, want empty", got.PRNumber, got.Branch)
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_AmbiguousViewerPRsKeepTodo(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+	env.fetcher.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return []github.PullRequest{
+			{Number: 44, HeadRefName: "one", Author: "me"},
+			{Number: 45, HeadRefName: "two", Author: "me"},
+		}, nil
+	}
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{{
+		Number:     9,
+		Title:      "ambiguous issue",
+		URL:        "https://github.com/acme/pet1/issues/9",
+		Repository: "acme/pet1",
+	}})
+
+	got := onlyTask(t, env.tasks)
+	if got.Status != task.StatusTodo {
+		t.Fatalf("Status = %q, want %q", got.Status, task.StatusTodo)
+	}
+	if got.PRNumber != 0 || got.Branch != "" {
+		t.Fatalf("linked PR fields = %d/%q, want empty", got.PRNumber, got.Branch)
+	}
+}
+
 // TestIssuesFetcher_CrossMachineRouting_PetAndWorkSplit verifies the
 // end-to-end routing story: two machines (pet-only and work-only) point at
 // the same shared project universe, and each machine's fetcher only creates
@@ -337,6 +460,18 @@ func taskIssueURLs(t *testing.T, tm *task.Manager) []string {
 		}
 	}
 	return out
+}
+
+func onlyTask(t *testing.T, tm *task.Manager) task.Task {
+	t.Helper()
+	tasks, err := tm.List()
+	if err != nil {
+		t.Fatalf("tasks.List: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	return tasks[0]
 }
 
 func assertStringSetEqual(t *testing.T, got, want []string) {

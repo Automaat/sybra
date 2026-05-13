@@ -19,14 +19,18 @@ import (
 
 // TaskService exposes task CRUD operations as Wails-bound methods.
 type TaskService struct {
-	tasks          *task.Manager
-	agents         *agent.Manager
-	workflowEngine *workflow.Engine
-	worktrees      *worktree.Manager
-	sandboxes      *sandbox.Manager
-	wg             *sync.WaitGroup
-	logger         *slog.Logger
-	audit          *audit.Logger
+	tasks               *task.Manager
+	agents              *agent.Manager
+	workflowEngine      *workflow.Engine
+	worktrees           *worktree.Manager
+	sandboxes           *sandbox.Manager
+	wg                  *sync.WaitGroup
+	logger              *slog.Logger
+	audit               *audit.Logger
+	fetchPR             func(repo string, number int) (github.PullRequest, error)
+	fetchIssue          func(repo string, number int) (github.Issue, error)
+	fetchIssueLinkedPRs func(repo string, issueNumber int) ([]github.PullRequest, error)
+	viewerLogin         func() string
 }
 
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
@@ -58,12 +62,14 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	if err != nil {
 		return t, err
 	}
+	isIssueURL := false
 	// Enrich from GitHub PR URL if title looks like one.
 	if repo, number := github.ParsePRURL(title); repo != "" {
 		s.wg.Go(func() {
 			s.enrichFromPR(t.ID, repo, number)
 		})
 	} else if repo, number := github.ParseIssueURL(title); repo != "" {
+		isIssueURL = true
 		// Enrich from GitHub issue URL if title looks like one.
 		s.wg.Go(func() {
 			s.enrichFromIssue(t.ID, repo, number)
@@ -77,18 +83,25 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 		})
 	}
 	// Match and start a workflow for the new task.
-	if s.workflowEngine != nil && t.Status == task.StatusTodo {
-		info := taskToInfo(t)
-		if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
-			s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
-			s.wg.Go(func() {
-				if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil {
-					s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
-				}
-			})
-		}
+	if !isIssueURL {
+		s.startCreatedWorkflow(t)
 	}
 	return t, nil
+}
+
+func (s *TaskService) startCreatedWorkflow(t task.Task) {
+	if s.workflowEngine == nil || t.Status != task.StatusTodo {
+		return
+	}
+	info := taskToInfo(t)
+	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
+		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
+		s.wg.Go(func() {
+			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil {
+				s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
+			}
+		})
+	}
 }
 
 // UpdateTask applies field updates to a task. The workflow engine drives
@@ -200,12 +213,12 @@ func (s *TaskService) DeleteTask(id string) error {
 // If the PR was authored by the current viewer, moves to in-review for PR monitoring.
 // Otherwise, starts a headless review agent with /staff-code-review.
 func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
-	pr, err := github.FetchPR(repo, number)
+	pr, err := s.fetchPRFunc()(repo, number)
 	if err != nil {
 		s.logger.Error("enrich-pr.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
 		return
 	}
-	viewer := github.ViewerLogin()
+	viewer := s.viewerLoginFunc()()
 
 	slug := task.Slugify(pr.Title)
 	u := task.Update{
@@ -294,7 +307,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 
 // enrichFromIssue fetches a GitHub issue and updates the task with real title/body.
 func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
-	issue, err := github.FetchIssue(repo, number)
+	issue, err := s.fetchIssueFunc()(repo, number)
 	if err != nil {
 		s.logger.Error("enrich-issue.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
 		return
@@ -313,9 +326,84 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		labels := issue.Labels
 		u.Tags = &labels
 	}
-	if _, err := s.tasks.Update(taskID, u); err != nil {
+	linkedPRs, linkedErr := s.fetchIssueLinkedPRsFunc()(repo, number)
+	if linkedErr != nil {
+		s.logger.Warn("enrich-issue.linked-prs", "task_id", taskID, "repo", repo, "number", number, "err", linkedErr)
+	} else if linked, ok := s.singleViewerLinkedPR(linkedPRs); ok {
+		u.PRNumber = task.Ptr(linked.Number)
+		u.Branch = task.Ptr(linked.HeadRefName)
+		u.Status = task.Ptr(task.StatusInReview)
+	} else if len(linkedPRs) > 0 {
+		if viewerPRs := s.viewerLinkedPRCount(linkedPRs); viewerPRs > 1 {
+			s.logger.Warn("enrich-issue.linked-prs.ambiguous", "task_id", taskID, "count", viewerPRs)
+		}
+	}
+	updated, err := s.tasks.Update(taskID, u)
+	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
 		return
 	}
+	if linkedErr == nil && len(linkedPRs) == 0 {
+		s.startCreatedWorkflow(updated)
+	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
+}
+
+func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {
+	if s.fetchPR != nil {
+		return s.fetchPR
+	}
+	return github.FetchPR
+}
+
+func (s *TaskService) fetchIssueFunc() func(string, int) (github.Issue, error) {
+	if s.fetchIssue != nil {
+		return s.fetchIssue
+	}
+	return github.FetchIssue
+}
+
+func (s *TaskService) fetchIssueLinkedPRsFunc() func(string, int) ([]github.PullRequest, error) {
+	if s.fetchIssueLinkedPRs != nil {
+		return s.fetchIssueLinkedPRs
+	}
+	return github.FetchIssueLinkedPRs
+}
+
+func (s *TaskService) viewerLoginFunc() func() string {
+	if s.viewerLogin != nil {
+		return s.viewerLogin
+	}
+	return github.ViewerLogin
+}
+
+func (s *TaskService) singleViewerLinkedPR(prs []github.PullRequest) (github.PullRequest, bool) {
+	viewer := s.viewerLoginFunc()()
+	if viewer == "" {
+		return github.PullRequest{}, false
+	}
+	var mine []github.PullRequest
+	for i := range prs {
+		if strings.EqualFold(prs[i].Author, viewer) {
+			mine = append(mine, prs[i])
+		}
+	}
+	if len(mine) != 1 {
+		return github.PullRequest{}, false
+	}
+	return mine[0], true
+}
+
+func (s *TaskService) viewerLinkedPRCount(prs []github.PullRequest) int {
+	viewer := s.viewerLoginFunc()()
+	if viewer == "" {
+		return 0
+	}
+	var count int
+	for i := range prs {
+		if strings.EqualFold(prs[i].Author, viewer) {
+			count++
+		}
+	}
+	return count
 }
