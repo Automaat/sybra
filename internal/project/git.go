@@ -7,10 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/executil"
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	// ownerRe: alphanumeric + hyphens, 1-39 chars, no leading/trailing hyphen.
+	ownerRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$`)
+	// repoRe: alphanumeric + hyphens/underscores/dots, 1-100 chars.
+	// "." and ".." are rejected by explicit check below.
+	repoRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,100}$`)
 )
 
 // ErrBranchMissing is returned by PushForce when the local branch ref does not exist.
@@ -84,6 +93,7 @@ func ParseGitHubURL(raw string) (owner, repo string, err error) {
 
 	// SSH: git@github.com:owner/repo.git
 	if path, ok := strings.CutPrefix(raw, "git@github.com:"); ok {
+		path = strings.TrimSuffix(path, "/")
 		path = strings.TrimSuffix(path, ".git")
 		return splitOwnerRepo(path)
 	}
@@ -98,16 +108,24 @@ func ParseGitHubURL(raw string) (owner, repo string, err error) {
 	}
 
 	path := strings.TrimPrefix(u.Path, "/")
+	path = strings.TrimSuffix(path, "/")
 	path = strings.TrimSuffix(path, ".git")
 	return splitOwnerRepo(path)
 }
 
 func splitOwnerRepo(path string) (owner, repo string, err error) {
 	parts := strings.SplitN(path, "/", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("invalid owner/repo path: %s", path)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid owner/repo path: %q", path)
 	}
-	return parts[0], parts[1], nil
+	owner, repo = parts[0], parts[1]
+	if !ownerRe.MatchString(owner) {
+		return "", "", fmt.Errorf("invalid GitHub owner %q", owner)
+	}
+	if repo == "." || repo == ".." || !repoRe.MatchString(repo) {
+		return "", "", fmt.Errorf("invalid GitHub repo %q", repo)
+	}
+	return owner, repo, nil
 }
 
 func CloneBare(repoURL, destPath string) error {
