@@ -7,10 +7,10 @@ import (
 
 func TestFetchReviewsWith_success(t *testing.T) {
 	t.Parallel()
-	response := `{
+	createdResponse := `{
 		"data": {
 			"viewer": {"login": "me"},
-			"created": {
+			"search": {
 				"nodes": [
 					{
 						"number": 1,
@@ -23,8 +23,13 @@ func TestFetchReviewsWith_success(t *testing.T) {
 						"reviewThreads": {"nodes": []}
 					}
 				]
-			},
-			"requested": {
+			}
+		}
+	}`
+	requestedResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {
 				"nodes": [
 					{
 						"number": 2,
@@ -38,8 +43,13 @@ func TestFetchReviewsWith_success(t *testing.T) {
 						"latestReviews": {"nodes": []}
 					}
 				]
-			},
-			"reviewed": {
+			}
+		}
+	}`
+	reviewedResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {
 				"nodes": [
 					{
 						"number": 3,
@@ -68,13 +78,17 @@ func TestFetchReviewsWith_success(t *testing.T) {
 		}
 	}`
 
-	fe := &fakeExecer{output: []byte(response)}
+	fe := &sequenceExecer{outputs: [][]byte{
+		[]byte(createdResponse),
+		[]byte(requestedResponse),
+		[]byte(reviewedResponse),
+	}}
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fe.calls != 1 {
-		t.Errorf("calls = %d, want 1", fe.calls)
+	if fe.calls != 3 {
+		t.Errorf("calls = %d, want 3", fe.calls)
 	}
 	if len(summary.CreatedByMe) != 1 {
 		t.Errorf("CreatedByMe len = %d, want 1", len(summary.CreatedByMe))
@@ -92,10 +106,10 @@ func TestFetchReviewsWith_success(t *testing.T) {
 
 func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 	t.Parallel()
-	response := `{
+	createdResponse := `{
 		"data": {
 			"viewer": {"login": "me"},
-			"created": {
+			"search": {
 				"nodes": [
 					{
 						"number": 1,
@@ -119,13 +133,21 @@ func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 						"latestReviews": {"nodes": []}
 					}
 				]
-			},
-			"requested": {"nodes": []},
-			"reviewed": {"nodes": []}
+			}
+		}
+	}`
+	emptyResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {"nodes": []}
 		}
 	}`
 
-	fe := &fakeExecer{output: []byte(response)}
+	fe := &sequenceExecer{outputs: [][]byte{
+		[]byte(createdResponse),
+		[]byte(emptyResponse),
+		[]byte(emptyResponse),
+	}}
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

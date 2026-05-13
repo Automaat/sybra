@@ -7,114 +7,13 @@ import (
 	"time"
 )
 
-// reviewSummaryQuery fans out two PR searches in one request.
-//
-// Caps were tightened after GitHub's GraphQL edge consistently 502'd this
-// query for accounts with non-trivial PR sets. The original `first:100`
-// search × deep `reviewThreads(first:100) + latestReviews(first:20) +
-// contexts(first:50) + labels(first:10)` blew through ~36K complexity
-// points before the doubling, sitting near GitHub's ~50K cutoff. The caps
-// below preserve every consumer (UnresolvedCount, ViewerHasApproved,
-// HasPendingChecks, Labels) but slash complexity ~85%.
-const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!, $reviewedQ: String!) {
+// reviewSummaryQuery fetches one PR search leg. FetchReviews runs it once per
+// query instead of fanning out multiple search legs in one GraphQL request; the
+// combined form times out at GitHub's edge for accounts with many open review
+// requests.
+const reviewSummaryQuery = `query($q: String!) {
   viewer { login }
-  created: search(query: $createdQ, type: ISSUE, first: 50) {
-    nodes {
-      ... on PullRequest {
-        number
-        title
-        url
-        headRefName
-        isDraft
-        mergeable
-        createdAt
-        updatedAt
-        reviewDecision
-        author { login type: __typename }
-        repository { name nameWithOwner }
-        labels(first: 5) { nodes { name } }
-        commits(last: 1) {
-          nodes {
-            commit {
-              oid
-              statusCheckRollup {
-                state
-                contexts(first: 20) {
-                  nodes {
-                    __typename
-                    ... on CheckRun {
-                      name
-                      status
-                      conclusion
-                    }
-                    ... on StatusContext {
-                      name: context
-                      state
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        reviewThreads(first: 20) {
-          nodes { isResolved }
-        }
-        latestReviews(first: 10) {
-          nodes { state author { login } }
-        }
-      }
-    }
-  }
-  requested: search(query: $requestedQ, type: ISSUE, first: 50) {
-    nodes {
-      ... on PullRequest {
-        number
-        title
-        url
-        headRefName
-        isDraft
-        mergeable
-        createdAt
-        updatedAt
-        reviewDecision
-        author { login type: __typename }
-        repository { name nameWithOwner }
-        labels(first: 5) { nodes { name } }
-        commits(last: 1) {
-          nodes {
-            commit {
-              oid
-              statusCheckRollup {
-                state
-                contexts(first: 20) {
-                  nodes {
-                    __typename
-                    ... on CheckRun {
-                      name
-                      status
-                      conclusion
-                    }
-                    ... on StatusContext {
-                      name: context
-                      state
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        reviewThreads(first: 20) {
-          nodes { isResolved }
-        }
-        latestReviews(first: 10) {
-          nodes { state author { login } }
-        }
-      }
-    }
-  }
-  reviewed: search(query: $reviewedQ, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
         number
@@ -169,15 +68,9 @@ type gqlReviewSummaryResponse struct {
 		Viewer struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
-		Created struct {
+		Search struct {
 			Nodes []gqlPR `json:"nodes"`
-		} `json:"created"`
-		Requested struct {
-			Nodes []gqlPR `json:"nodes"`
-		} `json:"requested"`
-		Reviewed struct {
-			Nodes []gqlPR `json:"nodes"`
-		} `json:"reviewed"`
+		} `json:"search"`
 	} `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
@@ -207,38 +100,57 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 		}
 	}
 
-	resp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+reviewSummaryQuery,
-		"-f", "createdQ="+createdQuery,
-		"-f", "requestedQ="+requestedQuery,
-		"-f", "reviewedQ="+reviewedQuery)
+	created, err := fetchReviewSearchWith(e, createdQuery)
 	if err != nil {
-		if runtimeCacheEnabled(e) {
-			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
-				return stale, nil
-			}
-		}
-		return ReviewSummary{}, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		return staleReviewSummaryOrError(e, cacheKey, "created", err)
 	}
-
-	var gqlResp gqlReviewSummaryResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return ReviewSummary{}, fmt.Errorf("parse graphql response: %w", err)
+	requested, err := fetchReviewSearchWith(e, requestedQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "requested", err)
 	}
-	if len(gqlResp.Errors) > 0 {
-		return ReviewSummary{}, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	reviewed, err := fetchReviewSearchWith(e, reviewedQuery)
+	if err != nil {
+		return staleReviewSummaryOrError(e, cacheKey, "reviewed", err)
 	}
 
 	summary := ReviewSummary{
-		CreatedByMe:     convertPRs(gqlResp.Data.Created.Nodes, gqlResp.Data.Viewer.Login),
-		ReviewRequested: convertPRs(gqlResp.Data.Requested.Nodes, gqlResp.Data.Viewer.Login),
-		ReviewedByMe:    approvedOnly(convertPRs(gqlResp.Data.Reviewed.Nodes, gqlResp.Data.Viewer.Login)),
+		CreatedByMe:     created,
+		ReviewRequested: requested,
+		ReviewedByMe:    approvedOnly(reviewed),
 	}
 	if runtimeCacheEnabled(e) {
 		reviewSummaryCache.Set(cacheKey, summary, 20*time.Second)
 	}
 
 	return summary, nil
+}
+
+func staleReviewSummaryOrError(e execer, cacheKey, leg string, err error) (ReviewSummary, error) {
+	if runtimeCacheEnabled(e) {
+		if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
+			return stale, nil
+		}
+	}
+	return ReviewSummary{}, fmt.Errorf("fetch %s reviews: %w", leg, err)
+}
+
+func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {
+	resp, err := runGHAPIWith(e, "", "graphql",
+		"-f", "query="+reviewSummaryQuery,
+		"-f", "q="+query)
+	if err != nil {
+		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+	}
+
+	var gqlResp gqlReviewSummaryResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+		return nil, fmt.Errorf("parse graphql response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+	}
+
+	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
 }
 
 func approvedOnly(prs []PullRequest) []PullRequest {
