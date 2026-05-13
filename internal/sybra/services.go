@@ -81,7 +81,7 @@ func (a *App) wireServices(emit func(string, any)) {
 // ServiceRegistry returns the named service instances for HTTP dispatch.
 // Each service carries an explicit method allowlist — only listed methods are
 // reachable; all other exported methods return 404.
-func (a *App) ServiceRegistry() map[string]httpapi.Service {
+func ServiceRegistry(a *App) map[string]httpapi.Service {
 	out := make(map[string]httpapi.Service, 13)
 	maps.Copy(out, a.coreHTTPServices())
 	maps.Copy(out, a.planningHTTPServices())
@@ -185,12 +185,14 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"GetProject",
 			"CreateProject",
 			"UpdateProject",
-			"SetProjectSandboxConfig",
 			"SetProjectWorktreeBaseRef",
 			"DeleteProject",
 			"ListWorktrees",
 			// SetProjectSetupCommands excluded: persists shell commands executed
 			// via sh -c during worktree prep — Wails IPC only.
+			// SetProjectSandboxConfig excluded: cfg.Deploy is run via sh -c in
+			// k8s sandbox and Docker build/compose paths accept attacker-controlled
+			// filesystem paths — Wails IPC only.
 			// OpenInTerminal and OpenInEditor open local GUI apps.
 		),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
