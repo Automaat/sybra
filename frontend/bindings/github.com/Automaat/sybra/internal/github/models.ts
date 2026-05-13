@@ -347,6 +347,7 @@ export class RenovatePR {
 export class ReviewSummary {
     "createdByMe": PullRequest[];
     "reviewRequested": PullRequest[];
+    "reviewedByMe": PullRequest[];
 
     /** Creates a new ReviewSummary instance. */
     constructor($$source: Partial<ReviewSummary> = {}) {
@@ -355,6 +356,9 @@ export class ReviewSummary {
         }
         if (!("reviewRequested" in $$source)) {
             this["reviewRequested"] = [];
+        }
+        if (!("reviewedByMe" in $$source)) {
+            this["reviewedByMe"] = [];
         }
 
         Object.assign(this, $$source);
@@ -366,12 +370,16 @@ export class ReviewSummary {
     static createFrom($$source: any = {}): ReviewSummary {
         const $$createField0_0 = $$createType4;
         const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("createdByMe" in $$parsedSource) {
             $$parsedSource["createdByMe"] = $$createField0_0($$parsedSource["createdByMe"]);
         }
         if ("reviewRequested" in $$parsedSource) {
             $$parsedSource["reviewRequested"] = $$createField1_0($$parsedSource["reviewRequested"]);
+        }
+        if ("reviewedByMe" in $$parsedSource) {
+            $$parsedSource["reviewedByMe"] = $$createField2_0($$parsedSource["reviewedByMe"]);
         }
         return new ReviewSummary($$parsedSource as Partial<ReviewSummary>);
     }

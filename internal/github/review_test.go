@@ -38,6 +38,32 @@ func TestFetchReviewsWith_success(t *testing.T) {
 						"latestReviews": {"nodes": []}
 					}
 				]
+			},
+			"reviewed": {
+				"nodes": [
+					{
+						"number": 3,
+						"title": "approved by me",
+						"url": "https://github.com/o/r/pull/3",
+						"author": {"login": "peer", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []},
+						"latestReviews": {"nodes": [{"state": "APPROVED", "author": {"login": "me"}}]}
+					},
+					{
+						"number": 4,
+						"title": "commented by me",
+						"url": "https://github.com/o/r/pull/4",
+						"author": {"login": "peer", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": []},
+						"latestReviews": {"nodes": [{"state": "COMMENTED", "author": {"login": "me"}}]}
+					}
+				]
 			}
 		}
 	}`
@@ -55,6 +81,12 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	}
 	if len(summary.ReviewRequested) != 1 {
 		t.Errorf("ReviewRequested len = %d, want 1", len(summary.ReviewRequested))
+	}
+	if len(summary.ReviewedByMe) != 1 {
+		t.Fatalf("ReviewedByMe len = %d, want 1", len(summary.ReviewedByMe))
+	}
+	if summary.ReviewedByMe[0].Number != 3 {
+		t.Errorf("ReviewedByMe[0].Number = %d, want 3", summary.ReviewedByMe[0].Number)
 	}
 }
 
@@ -88,7 +120,8 @@ func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 					}
 				]
 			},
-			"requested": {"nodes": []}
+			"requested": {"nodes": []},
+			"reviewed": {"nodes": []}
 		}
 	}`
 

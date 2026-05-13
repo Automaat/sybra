@@ -43,6 +43,7 @@ describe('ReviewStore', () => {
     eventCallbacks = {}
     reviewStore.createdByMe = []
     reviewStore.reviewRequested = []
+    reviewStore.reviewedByMe = []
     reviewStore.error = ''
     reviewStore.loading = false
     reviewStore.stopListening()
@@ -52,22 +53,25 @@ describe('ReviewStore', () => {
     it('fetches reviews from backend', async () => {
       const created = [makePR({ number: 1 })]
       const requested = [makePR({ number: 2 })]
-      mockFetchReviews.mockResolvedValue({ createdByMe: created, reviewRequested: requested })
+      const reviewed = [makePR({ number: 3, viewerHasApproved: true })]
+      mockFetchReviews.mockResolvedValue({ createdByMe: created, reviewRequested: requested, reviewedByMe: reviewed })
 
       await reviewStore.load()
 
       expect(mockFetchReviews).toHaveBeenCalled()
       expect(reviewStore.createdByMe).toHaveLength(1)
       expect(reviewStore.reviewRequested).toHaveLength(1)
+      expect(reviewStore.reviewedByMe).toHaveLength(1)
     })
 
     it('handles null arrays', async () => {
-      mockFetchReviews.mockResolvedValue({ createdByMe: null, reviewRequested: null })
+      mockFetchReviews.mockResolvedValue({ createdByMe: null, reviewRequested: null, reviewedByMe: null })
 
       await reviewStore.load()
 
       expect(reviewStore.createdByMe).toHaveLength(0)
       expect(reviewStore.reviewRequested).toHaveLength(0)
+      expect(reviewStore.reviewedByMe).toHaveLength(0)
       expect(reviewStore.error).toBe('')
     })
 
@@ -102,6 +106,7 @@ describe('ReviewStore', () => {
     it('sums both lists', () => {
       reviewStore.createdByMe = [makePR({ number: 1 }), makePR({ number: 2 })]
       reviewStore.reviewRequested = [makePR({ number: 3 })]
+      reviewStore.reviewedByMe = [makePR({ number: 4 })]
 
       expect(reviewStore.totalCount).toBe(3)
     })
@@ -119,6 +124,7 @@ describe('ReviewStore', () => {
       const shared = makePR({ number: 1, repository: 'org/repo' })
       reviewStore.createdByMe = [pr1, pr2]
       reviewStore.reviewRequested = [shared]
+      reviewStore.reviewedByMe = [makePR({ number: 2, repository: 'org/repo' })]
 
       const all = reviewStore.allPRs
       expect(all).toHaveLength(2)
@@ -129,13 +135,15 @@ describe('ReviewStore', () => {
       expect(reviewStore.allPRs).toHaveLength(0)
     })
 
-    it('preserves order: createdByMe first, then reviewRequested', () => {
+    it('preserves order: createdByMe first, then reviewRequested, then reviewedByMe', () => {
       reviewStore.createdByMe = [makePR({ number: 10, repository: 'org/a' })]
       reviewStore.reviewRequested = [makePR({ number: 20, repository: 'org/b' })]
+      reviewStore.reviewedByMe = [makePR({ number: 30, repository: 'org/c' })]
 
       const all = reviewStore.allPRs
       expect(all[0].number).toBe(10)
       expect(all[1].number).toBe(20)
+      expect(all[2].number).toBe(30)
     })
   })
 
@@ -209,20 +217,23 @@ describe('ReviewStore', () => {
       const cb = eventCallbacks[ReviewsUpdated]
       expect(cb).toBeDefined()
 
-      cb({ createdByMe: [makePR({ number: 10 })], reviewRequested: [makePR({ number: 20 })] })
+      cb({ createdByMe: [makePR({ number: 10 })], reviewRequested: [makePR({ number: 20 })], reviewedByMe: [makePR({ number: 30 })] })
 
       expect(reviewStore.createdByMe).toHaveLength(1)
       expect(reviewStore.createdByMe[0].number).toBe(10)
       expect(reviewStore.reviewRequested).toHaveLength(1)
       expect(reviewStore.reviewRequested[0].number).toBe(20)
+      expect(reviewStore.reviewedByMe).toHaveLength(1)
+      expect(reviewStore.reviewedByMe[0].number).toBe(30)
     })
 
     it('handles null in event data', () => {
       reviewStore.listen()
-      eventCallbacks[ReviewsUpdated]({ createdByMe: null, reviewRequested: null })
+      eventCallbacks[ReviewsUpdated]({ createdByMe: null, reviewRequested: null, reviewedByMe: null })
 
       expect(reviewStore.createdByMe).toHaveLength(0)
       expect(reviewStore.reviewRequested).toHaveLength(0)
+      expect(reviewStore.reviewedByMe).toHaveLength(0)
     })
 
     it('stopListening removes callback', () => {

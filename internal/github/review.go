@@ -16,7 +16,7 @@ import (
 // points before the doubling, sitting near GitHub's ~50K cutoff. The caps
 // below preserve every consumer (UnresolvedCount, ViewerHasApproved,
 // HasPendingChecks, Labels) but slash complexity ~85%.
-const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
+const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!, $reviewedQ: String!) {
   viewer { login }
   created: search(query: $createdQ, type: ISSUE, first: 50) {
     nodes {
@@ -114,6 +114,54 @@ const reviewSummaryQuery = `query($createdQ: String!, $requestedQ: String!) {
       }
     }
   }
+  reviewed: search(query: $reviewedQ, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        headRefName
+        isDraft
+        mergeable
+        createdAt
+        updatedAt
+        reviewDecision
+        author { login type: __typename }
+        repository { name nameWithOwner }
+        labels(first: 5) { nodes { name } }
+        commits(last: 1) {
+          nodes {
+            commit {
+              oid
+              statusCheckRollup {
+                state
+                contexts(first: 20) {
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                    }
+                    ... on StatusContext {
+                      name: context
+                      state
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        reviewThreads(first: 20) {
+          nodes { isResolved }
+        }
+        latestReviews(first: 10) {
+          nodes { state author { login } }
+        }
+      }
+    }
+  }
 }`
 
 type gqlReviewSummaryResponse struct {
@@ -127,6 +175,9 @@ type gqlReviewSummaryResponse struct {
 		Requested struct {
 			Nodes []gqlPR `json:"nodes"`
 		} `json:"requested"`
+		Reviewed struct {
+			Nodes []gqlPR `json:"nodes"`
+		} `json:"reviewed"`
 	} `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
@@ -142,8 +193,9 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 	const (
 		createdQuery   = "is:pr is:open author:@me"
 		requestedQuery = "is:pr is:open review-requested:@me"
+		reviewedQuery  = "is:pr is:open reviewed-by:@me"
 	)
-	cacheKey := createdQuery + "||" + requestedQuery
+	cacheKey := createdQuery + "||" + requestedQuery + "||" + reviewedQuery
 	if runtimeCacheEnabled(e) {
 		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
 			return cached, nil
@@ -158,7 +210,8 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 	resp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+reviewSummaryQuery,
 		"-f", "createdQ="+createdQuery,
-		"-f", "requestedQ="+requestedQuery)
+		"-f", "requestedQ="+requestedQuery,
+		"-f", "reviewedQ="+reviewedQuery)
 	if err != nil {
 		if runtimeCacheEnabled(e) {
 			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
@@ -179,12 +232,23 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 	summary := ReviewSummary{
 		CreatedByMe:     convertPRs(gqlResp.Data.Created.Nodes, gqlResp.Data.Viewer.Login),
 		ReviewRequested: convertPRs(gqlResp.Data.Requested.Nodes, gqlResp.Data.Viewer.Login),
+		ReviewedByMe:    approvedOnly(convertPRs(gqlResp.Data.Reviewed.Nodes, gqlResp.Data.Viewer.Login)),
 	}
 	if runtimeCacheEnabled(e) {
 		reviewSummaryCache.Set(cacheKey, summary, 20*time.Second)
 	}
 
 	return summary, nil
+}
+
+func approvedOnly(prs []PullRequest) []PullRequest {
+	out := prs[:0]
+	for i := range prs {
+		if prs[i].ViewerHasApproved {
+			out = append(out, prs[i])
+		}
+	}
+	return out
 }
 
 // HasPendingReview checks if the authenticated user has a pending (draft) review on a PR.

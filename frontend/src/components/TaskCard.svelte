@@ -65,6 +65,7 @@
 
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
+  const isReviewTask = $derived(t.tags?.includes('review') ?? false)
 
   function priorityMeta(p: string | undefined) {
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
@@ -188,7 +189,19 @@
       </span>
     {/if}
 
-    {#if topPR}
+    {#if topPR && isReviewTask}
+      {#if topPR.viewerHasApproved}
+        <span class="inline-flex items-center gap-1 rounded bg-success-500/15 px-1.5 py-0.5 font-medium text-success-700 dark:text-success-400" title="Approved; waiting for PR to merge">
+          <GitPullRequest size={12} />
+          #{topPR.number} Approved, waiting merge
+        </span>
+      {:else}
+        <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400" title="Review requested">
+          <GitPullRequest size={12} />
+          #{topPR.number} Review needed
+        </span>
+      {/if}
+    {:else if topPR}
       <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400" title={topPR.title}>
         <GitPullRequest size={12} />
         #{topPR.number}

@@ -26,6 +26,7 @@ type PullRequest struct {
 type ReviewSummary struct {
 	CreatedByMe     []PullRequest `json:"createdByMe"`
 	ReviewRequested []PullRequest `json:"reviewRequested"`
+	ReviewedByMe    []PullRequest `json:"reviewedByMe"`
 }
 
 // CheckRunInfo represents a single CI check run.

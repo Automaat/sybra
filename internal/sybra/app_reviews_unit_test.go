@@ -177,6 +177,23 @@ func TestReviewTaskMatchers(t *testing.T) {
 	}
 }
 
+func TestOpenReviewPRsIncludesApprovedReviews(t *testing.T) {
+	requested := github.PullRequest{Number: 1, Repository: "o/r"}
+	approved := github.PullRequest{Number: 2, Repository: "o/r", ViewerHasApproved: true}
+
+	got := openReviewPRs(github.ReviewSummary{
+		ReviewRequested: []github.PullRequest{requested},
+		ReviewedByMe:    []github.PullRequest{approved},
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Number != 1 || got[1].Number != 2 {
+		t.Fatalf("numbers = [%d %d], want [1 2]", got[0].Number, got[1].Number)
+	}
+}
+
 func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tasks")
 	store, err := task.NewStore(dir)
