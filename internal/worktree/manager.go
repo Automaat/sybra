@@ -119,6 +119,12 @@ func callPhase(fn func(string), phase string) {
 // onPhase is an optional callback that receives human-readable phase labels
 // as work progresses; pass nil when phase reporting is not needed.
 func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, error) {
+	if t.Slug != "" {
+		if err := task.ValidateSlug(t.Slug); err != nil {
+			return "", fmt.Errorf("task slug: %w", err)
+		}
+	}
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
@@ -165,12 +171,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 				callPhase(onPhase, "Pushing upstream…")
 				m.logPushForce(t.ID, wtBranch, project.PushForce(wtPath, wtBranch))
 			}
-			m.installChecks(wtPath, proj)
-			m.ensureBranch(t, wtBranch)
-			if err := writeContextFile(t, wtPath, wtBranch); err != nil {
-				m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-			}
-			return wtPath, nil
+			return m.finalizeWorktree(t, wtPath, wtBranch, proj)
 		}
 		// Worktree was wiped — fall through to create paths below.
 	}
@@ -198,12 +199,7 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 			return "", fmt.Errorf("setup on reused branch: %w", err)
 		}
-		m.installChecks(wtPath, proj)
-		m.ensureBranch(t, wtBranch)
-		if err := writeContextFile(t, wtPath, wtBranch); err != nil {
-			m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-		}
-		return wtPath, nil
+		return m.finalizeWorktree(t, wtPath, wtBranch, proj)
 	}
 
 	callPhase(onPhase, "Creating worktree…")
@@ -222,6 +218,17 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
 	}
 
+	m.ensureBranch(t, wtBranch)
+	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+	}
+	return wtPath, nil
+}
+
+// finalizeWorktree runs post-checkout hooks shared by the "reuse existing
+// worktree" and "checkout existing branch" fast-paths in PrepareForTask.
+func (m *Manager) finalizeWorktree(t task.Task, wtPath, wtBranch string, proj project.Project) (string, error) {
+	m.installChecks(wtPath, proj)
 	m.ensureBranch(t, wtBranch)
 	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
 		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)

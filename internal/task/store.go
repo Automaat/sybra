@@ -371,6 +371,9 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		t.Title = *u.Title
 	}
 	if u.Slug != nil {
+		if err := ValidateSlug(*u.Slug); err != nil {
+			return Task{}, "", err
+		}
 		t.Slug = *u.Slug
 	}
 	if u.Status != nil {
