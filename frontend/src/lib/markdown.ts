@@ -1,3 +1,4 @@
+import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { markedHighlight } from 'marked-highlight'
 import hljs from 'highlight.js'
@@ -28,7 +29,7 @@ export function renderMarkdown(text: string | undefined | null): string {
   if (!text) return ''
   const cached = cache.get(text)
   if (cached !== undefined) return cached
-  const html = marked.parse(text) as string
+  const html = DOMPurify.sanitize(marked.parse(text) as string)
   cache.set(text, html)
   return html
 }
