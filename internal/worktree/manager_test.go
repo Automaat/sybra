@@ -787,6 +787,32 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_BadSlugRejected proves the use-site guard: even if a
+// Task struct is constructed directly (bypassing the store and ParseBytes),
+// PrepareForTask rejects a path-traversal slug before calling PathFor.
+// This is defense-in-depth on top of the parse-time guard in ParseBytes.
+func TestPrepareForTask_BadSlugRejected(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	badTask := task.Task{
+		ID:        "abc12345678",
+		Slug:      "../../etc/passwd",
+		ProjectID: h.proj.ID,
+		Status:    task.StatusTodo,
+		AgentMode: "headless",
+	}
+	_, err := h.m.PrepareForTask(badTask, nil)
+	if err == nil {
+		t.Fatal("PrepareForTask with path-traversal slug: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "slug") {
+		t.Errorf("error should mention slug; got: %v", err)
+	}
+}
+
 func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)

@@ -100,6 +100,26 @@ agent_mode: supervised
 ---`,
 			wantErr: true,
 		},
+		{
+			name: "path traversal slug rejected",
+			input: `---
+id: bad2
+title: Bad slug
+status: todo
+slug: ../../etc/passwd
+---`,
+			wantErr: true,
+		},
+		{
+			name: "absolute path slug rejected",
+			input: `---
+id: bad3
+title: Absolute slug
+status: todo
+slug: /etc/passwd
+---`,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

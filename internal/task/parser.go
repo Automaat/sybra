@@ -60,6 +60,11 @@ func ParseBytes(data []byte) (Task, error) {
 			return Task{}, err
 		}
 	}
+	if t.Slug != "" {
+		if err := ValidateSlug(t.Slug); err != nil {
+			return Task{}, err
+		}
+	}
 	return t, nil
 }
 

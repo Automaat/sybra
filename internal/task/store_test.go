@@ -1377,3 +1377,45 @@ body
 		t.Errorf("ClosedAt = %v, want %v", *tasks[0].ClosedAt, want)
 	}
 }
+
+// TestStoreGet_PathTraversalSlugRejected is the regression guard for the
+// attack path: a task file edited outside Sybra with slug: ../../etc/passwd
+// must be rejected by the store on load, before the slug can propagate to
+// worktree path construction. Without the ParseBytes guard, Store.Get returns
+// the task and PrepareForTask computes a path outside the worktrees dir.
+func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tk, err := store.Create("test task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const badSlug = "../../etc/passwd"
+	malicious := "---\nid: " + tk.ID + "\ntitle: test task\nstatus: todo\nslug: " + badSlug + "\nagent_mode: headless\n---\n"
+	taskPath := filepath.Join(store.dir, tk.ID+".md")
+	if err := os.WriteFile(taskPath, []byte(malicious), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Get(tk.ID)
+	if err == nil {
+		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
+	}
+
+	// List must also skip the malformed file (it logs and continues).
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, task := range tasks {
+		if task.ID == tk.ID {
+			t.Errorf("malformed-slug task appeared in List: slug=%q", task.Slug)
+		}
+	}
+}
