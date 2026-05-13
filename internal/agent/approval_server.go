@@ -110,18 +110,17 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 
 	s.logger.Info("approval-server.request", "tool", input.ToolName, "tool_use_id", input.ToolUseID)
 
-	// Find the agent by session_id.
-	agentID := s.findAgentBySession(input.SessionID)
-	if agentID == "" {
-		s.logger.Warn("approval-server.no-agent", "session_id", input.SessionID)
-		// No agent found — auto-allow to avoid blocking.
+	// Auto-approve safe read-only tools regardless of session.
+	if isSafeTool(input.ToolName) {
 		s.respondAllow(w, input.ToolInput)
 		return
 	}
 
-	// Auto-approve safe read-only tools.
-	if isSafeTool(input.ToolName) {
-		s.respondAllow(w, input.ToolInput)
+	// Find the agent by session_id; deny if unknown.
+	agentID := s.findAgentBySession(input.SessionID)
+	if agentID == "" {
+		s.logger.Warn("approval-server.no-agent", "session_id", input.SessionID)
+		s.respondDeny(w, "Unknown session")
 		return
 	}
 
@@ -170,7 +169,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 			s.respondDeny(w, "User denied this action")
 		}
 	case <-r.Context().Done():
-		s.respondAllow(w, input.ToolInput) // timeout → allow to avoid deadlock
+		s.respondDeny(w, "Request canceled")
 	case <-time.After(5 * time.Minute):
 		s.respondDeny(w, "Approval timed out")
 	}

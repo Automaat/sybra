@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -86,15 +87,74 @@ func TestApprovalServer_UnknownSession(t *testing.T) {
 	t.Parallel()
 	srv := newTestApprovalServer(t)
 
-	// No manager set → unknown session → auto-allow.
+	// No manager set → unknown session → deny (fail-closed).
 	resp := postHook(t, srv.Addr(), map[string]any{
 		"session_id":  "unknown-session",
 		"tool_name":   "Bash",
 		"tool_use_id": "tuid-unknown",
 		"tool_input":  map[string]any{},
 	})
-	if resp.HookSpecificOutput.PermissionDecision != "allow" {
-		t.Errorf("expected allow for unknown session, got %q", resp.HookSpecificOutput.PermissionDecision)
+	if resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("expected deny for unknown session, got %q", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestApprovalServer_CanceledContext(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	fakeAgent := &Agent{
+		ID:        "fake-ag-cancel",
+		Mode:      "interactive",
+		SessionID: "session-cancel",
+		State:     StateRunning,
+	}
+	mgr.mu.Lock()
+	mgr.agents["fake-ag-cancel"] = fakeAgent
+	mgr.mu.Unlock()
+
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger())
+	if err != nil {
+		t.Fatalf("NewApprovalServer: %v", err)
+	}
+	srv.SetManager(mgr)
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body, _ := json.Marshal(map[string]any{
+		"session_id":  "session-cancel",
+		"tool_name":   "Bash",
+		"tool_use_id": "tuid-cancel",
+		"tool_input":  map[string]any{},
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "/hooks/pre-tool-use", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Cancel context shortly after handler starts waiting for approval.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	rr := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		srv.handlePreToolUse(rr, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler blocked after context cancellation")
+	}
+
+	var out hookResponse
+	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("expected deny on canceled context, got %q", out.HookSpecificOutput.PermissionDecision)
 	}
 }
 
