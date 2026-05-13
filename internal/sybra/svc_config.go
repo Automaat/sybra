@@ -28,10 +28,14 @@ type ConfigService struct {
 }
 
 // GetSettings returns the current app settings for the config UI.
+// Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
+// dedicated write-only methods (UpdateTodoistToken) to rotate them.
 func (s *ConfigService) GetSettings() AppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c := s.cfg
+	todoist := c.Todoist
+	todoist.APIToken = "" // never leak the token over the read API
 	return AppSettings{
 		Agent:        c.Agent,
 		Notification: c.Notification,
@@ -42,11 +46,29 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxFiles:  c.Logging.MaxFiles,
 		},
 		Audit:       c.Audit,
-		Todoist:     c.Todoist,
+		Todoist:     todoist,
 		Renovate:    c.Renovate,
 		Providers:   c.Providers,
 		Directories: c.Directories(),
 	}
+}
+
+// UpdateTodoistToken sets the Todoist API token and persists the config.
+// This is the only write path for the token — GetSettings never returns it.
+func (s *ConfigService) UpdateTodoistToken(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if token == "" {
+		return fmt.Errorf("token must not be empty")
+	}
+	s.cfg.Todoist.APIToken = token
+	if err := s.cfg.Save(); err != nil {
+		return err
+	}
+	if s.reloadHook != nil {
+		s.reloadHook()
+	}
+	return nil
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
@@ -90,7 +112,7 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
 		return fmt.Errorf("retentionDays must be 1–365")
 	}
-	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" {
+	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
 		return fmt.Errorf("todoist API token required when enabled")
 	}
 	if settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600 {
@@ -150,6 +172,10 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	next.Logging.MaxFiles = settings.Logging.MaxFiles
 	next.Audit = settings.Audit
 	next.Todoist = settings.Todoist
+	// Preserve the stored token when the caller sends a blank (redacted) value.
+	if settings.Todoist.APIToken == "" {
+		next.Todoist.APIToken = existing.Todoist.APIToken
+	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
 	return next
