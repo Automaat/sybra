@@ -26,6 +26,9 @@ func (s *testSvc) ReturnAndFail(v string) (string, error) {
 }
 func (s *testSvc) ObjIn(obj map[string]string) string { return obj["key"] }
 
+// AdminOnly is intentionally not in the allowlist — used by rejection tests.
+func (s *testSvc) AdminOnly() string { return "admin" }
+
 type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
@@ -33,7 +36,12 @@ func (e *testError) Error() string { return e.msg }
 func setup(t *testing.T) (*http.ServeMux, *httptest.Server) {
 	t.Helper()
 	mux := http.NewServeMux()
-	httpapi.Mount(mux, map[string]any{"TestSvc": &testSvc{}}, slog.Default())
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TestSvc": httpapi.NewService(&testSvc{},
+			"Echo", "Add", "Void", "Fail", "FailWith", "ReturnAndFail", "ObjIn",
+			// AdminOnly is intentionally absent from the allowlist.
+		),
+	}, slog.Default())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return mux, srv
@@ -136,6 +144,20 @@ func TestHandler_UnknownMethod(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestHandler_BlockedMethod verifies that a method present on the service but
+// absent from the allowlist returns 404, not the method's actual result.
+// This is a regression test for the allowlist enforcement introduced to prevent
+// unauthenticated callers from reaching privileged mutations (e.g. methods that
+// persist shell commands later executed via sh -c).
+func TestHandler_BlockedMethod(t *testing.T) {
+	_, srv := setup(t)
+	resp := post(t, srv, "TestSvc", "AdminOnly")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-allowlisted method, got %d", resp.StatusCode)
 	}
 }
 
