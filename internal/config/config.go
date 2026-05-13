@@ -536,7 +536,7 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IssueCooldownMinutes = 30
 	}
 	if cfg.Monitor.DispatchLimit <= 0 {
-		cfg.Monitor.DispatchLimit = 3
+		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
 	}
 	if cfg.Monitor.StuckHumanHours <= 0 {
 		cfg.Monitor.StuckHumanHours = 8

@@ -78,6 +78,42 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("agent:\n  max_concurrent: 10\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Monitor.DispatchLimit != 10 {
+		t.Fatalf("dispatch limit = %d, want 10", cfg.Monitor.DispatchLimit)
+	}
+}
+
+func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("agent:\n  max_concurrent: 10\nmonitor:\n  dispatch_limit: 4\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Monitor.DispatchLimit != 4 {
+		t.Fatalf("dispatch limit = %d, want 4", cfg.Monitor.DispatchLimit)
+	}
+}
+
 func TestLoadEnvOverride(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	t.Setenv("SYBRA_LOG_LEVEL", "error")
