@@ -85,12 +85,23 @@ func TestUpdateTodoistToken(t *testing.T) {
 	}
 }
 
-func TestUpdateTodoistToken_RejectsEmpty(t *testing.T) {
+func TestUpdateTodoistToken_ClearsToken(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Todoist.APIToken = "existing-token"
 	writeConfigYAML(t, cfgPath, svc.cfg)
 
-	if err := svc.UpdateTodoistToken(""); err == nil {
-		t.Error("expected error for empty token, got nil")
+	if err := svc.UpdateTodoistToken(""); err != nil {
+		t.Fatalf("UpdateTodoistToken empty: %v", err)
+	}
+	if svc.cfg.Todoist.APIToken != "" {
+		t.Errorf("in-memory token = %q, want empty", svc.cfg.Todoist.APIToken)
+	}
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "existing-token") {
+		t.Error("saved config still contains old token after clear")
 	}
 }
 

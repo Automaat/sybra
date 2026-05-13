@@ -53,14 +53,12 @@ func (s *ConfigService) GetSettings() AppSettings {
 	}
 }
 
-// UpdateTodoistToken sets the Todoist API token and persists the config.
+// UpdateTodoistToken sets or clears the Todoist API token and persists the config.
+// Pass an empty string to remove the stored token.
 // This is the only write path for the token — GetSettings never returns it.
 func (s *ConfigService) UpdateTodoistToken(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if token == "" {
-		return fmt.Errorf("token must not be empty")
-	}
 	s.cfg.Todoist.APIToken = token
 	if err := s.cfg.Save(); err != nil {
 		return err
