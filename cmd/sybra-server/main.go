@@ -212,7 +212,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func cspMiddleware(next http.Handler) http.Handler {
-	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; frame-ancestors 'none'"
+	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", policy)
 		next.ServeHTTP(w, r)
