@@ -859,9 +859,7 @@ func TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.disableSandbox != "" {
-				t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", tc.disableSandbox)
-			}
+			t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", tc.disableSandbox)
 
 			a := &Agent{ID: "a", Provider: "codex"}
 			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
@@ -893,6 +891,7 @@ func TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox(t *testing.T) {
 // codex always bypasses approvals even when RequirePermissions=true. Interactive
 // mode with RequirePermissions=true must use --sandbox workspace-write.
 func TestCodexSandboxArgs_HeadlessAlwaysBypasses(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
 	t.Run("headless_requirePerms_false", func(t *testing.T) {
 		args := codexSandboxArgs(false, true)
 		if !slices.Contains(args, "--dangerously-bypass-approvals-and-sandbox") {
