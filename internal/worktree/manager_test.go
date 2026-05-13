@@ -255,6 +255,54 @@ func TestValidatePath_PrefixEscapeBug(t *testing.T) {
 	}
 }
 
+// TestPathFor_ContainedForValidSlug verifies that PathFor always stays inside
+// the worktrees directory when the task has a Slugify-safe slug.
+func TestPathFor_ContainedForValidSlug(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := &Manager{dir: dir}
+
+	slugs := []string{"task", "my-task", "implement-auth", "fix-42", "a"}
+	for _, slug := range slugs {
+		tk := task.Task{ID: "abc12345", Slug: slug}
+		got := m.PathFor(tk)
+		rel, err := filepath.Rel(dir, got)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Errorf("PathFor(slug=%q) = %q escapes worktrees dir %q", slug, got, dir)
+		}
+	}
+}
+
+// TestPathFor_TraversalSlugWouldEscape documents why slug validation is
+// required: without validation a persisted slug with path separators or
+// dot-dot segments would make PathFor produce a path outside the worktrees
+// directory. ValidateSlug must reject every slug that would escape.
+func TestPathFor_TraversalSlugWouldEscape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := &Manager{dir: dir}
+
+	malicious := []string{
+		"../../etc/passwd",
+		"../sibling",
+		"..",
+		"/absolute",
+		"a/b",
+	}
+	for _, slug := range malicious {
+		tk := task.Task{ID: "abc12345", Slug: slug}
+		got := m.PathFor(tk)
+		rel, err := filepath.Rel(dir, got)
+		escapesDir := err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		if escapesDir {
+			// Path escapes: confirm ValidateSlug catches it.
+			if verr := task.ValidateSlug(slug); verr == nil {
+				t.Errorf("ValidateSlug(%q) = nil but PathFor produces escaping path %q", slug, got)
+			}
+		}
+	}
+}
+
 func TestCleanupOrphaned(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()

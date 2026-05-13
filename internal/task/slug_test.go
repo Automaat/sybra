@@ -5,6 +5,57 @@ import (
 	"testing"
 )
 
+func TestValidateSlug(t *testing.T) {
+	t.Parallel()
+	valid := []string{
+		"task",
+		"my-task",
+		"implement-auth-middleware",
+		"fix-bug-42",
+		"a",
+		"z9",
+		"a-b-c",
+		strings.Repeat("a", 40),
+	}
+	for _, s := range valid {
+		t.Run("valid/"+s, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateSlug(s); err != nil {
+				t.Errorf("ValidateSlug(%q) = %v, want nil", s, err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		slug string
+		desc string
+	}{
+		{"", "empty"},
+		{strings.Repeat("a", 41), "too long"},
+		{"../../etc/passwd", "path traversal"},
+		{"../sibling", "relative path"},
+		{"..", "dot-dot"},
+		{".", "dot"},
+		{"My-Task", "uppercase"},
+		{"my task", "space"},
+		{"my_task", "underscore"},
+		{"-leading", "leading hyphen"},
+		{"trailing-", "trailing hyphen"},
+		{"/absolute", "leading slash"},
+		{"a/b", "embedded slash"},
+		{"a\x00b", "null byte"},
+		{"foo\nbar", "newline"},
+	}
+	for _, tc := range invalid {
+		t.Run("invalid/"+tc.desc, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateSlug(tc.slug); err == nil {
+				t.Errorf("ValidateSlug(%q) = nil, want error (%s)", tc.slug, tc.desc)
+			}
+		})
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
