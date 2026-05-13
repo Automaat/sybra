@@ -27,6 +27,15 @@ func TestParseGitHubURL(t *testing.T) {
 		{"missing repo", "https://github.com/owner", "", "", true},
 		{"empty path", "https://github.com/", "", "", true},
 		{"empty string", "", "", "", true},
+		// path traversal / malicious inputs
+		{"dotdot owner", "https://github.com/../repo", "", "", true},
+		{"dotdot repo", "https://github.com/owner/..", "", "", true},
+		{"extra path segments", "https://github.com/owner/repo/extra", "", "", true},
+		{"path traversal extra segments", "https://github.com/owner/repo/../../etc/passwd", "", "", true},
+		{"ssh dotdot owner", "git@github.com:../malicious.git", "", "", true},
+		{"ssh extra segments", "git@github.com:owner/repo/extra.git", "", "", true},
+		{"dot in owner", "https://github.com/own.er/repo", "", "", true},
+		{"special char in repo", "https://github.com/owner/re@po", "", "", true},
 	}
 
 	for _, tt := range tests {
@@ -55,10 +64,16 @@ func TestSplitOwnerRepo(t *testing.T) {
 		wantErr   bool
 	}{
 		{"owner/repo", "owner", "repo", false},
-		{"owner/repo/extra", "owner", "repo", false},
+		{"owner/repo/extra", "", "", true},
 		{"owner/", "", "", true},
 		{"/repo", "", "", true},
 		{"noslash", "", "", true},
+		// dot segments and invalid names
+		{"../repo", "", "", true},
+		{"owner/..", "", "", true},
+		{"owner/.", "", "", true},
+		{"own.er/repo", "", "", true},
+		{"../etc/passwd", "", "", true},
 	}
 
 	for _, tt := range tests {
