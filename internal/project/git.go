@@ -93,8 +93,8 @@ func ParseGitHubURL(raw string) (owner, repo string, err error) {
 
 	// SSH: git@github.com:owner/repo.git
 	if path, ok := strings.CutPrefix(raw, "git@github.com:"); ok {
-		path = strings.TrimSuffix(path, ".git")
 		path = strings.TrimSuffix(path, "/")
+		path = strings.TrimSuffix(path, ".git")
 		return splitOwnerRepo(path)
 	}
 
@@ -108,8 +108,8 @@ func ParseGitHubURL(raw string) (owner, repo string, err error) {
 	}
 
 	path := strings.TrimPrefix(u.Path, "/")
-	path = strings.TrimSuffix(path, ".git")
 	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, ".git")
 	return splitOwnerRepo(path)
 }
 
