@@ -156,6 +156,17 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	if out.HookSpecificOutput.PermissionDecision != "deny" {
 		t.Errorf("expected deny on canceled context, got %q", out.HookSpecificOutput.PermissionDecision)
 	}
+
+	// Agent state must be restored after cancellation.
+	if fakeAgent.GetState() != StateRunning {
+		t.Errorf("expected state %q after cancel, got %q", StateRunning, fakeAgent.GetState())
+	}
+	fakeAgent.mu.RLock()
+	awaitingApproval := fakeAgent.AwaitingApproval
+	fakeAgent.mu.RUnlock()
+	if awaitingApproval {
+		t.Error("expected AwaitingApproval=false after canceled context")
+	}
 }
 
 func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {

@@ -153,9 +153,8 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Block until user responds or context is cancelled.
-	select {
-	case resp := <-ch:
+	// Restore agent state on all exit paths (approve, deny, canceled, timeout).
+	defer func() {
 		if s.agents != nil {
 			if a, err := s.agents.GetAgent(agentID); err == nil {
 				a.SetAwaitingApproval(false)
@@ -163,6 +162,11 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 				s.emit(events.AgentState(agentID), a)
 			}
 		}
+	}()
+
+	// Block until user responds or context is cancelled.
+	select {
+	case resp := <-ch:
 		if resp.Approved {
 			s.respondAllow(w, input.ToolInput)
 		} else {
