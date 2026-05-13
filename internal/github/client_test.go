@@ -18,6 +18,25 @@ func (f *fakeExecer) run(_ ...string) ([]byte, error) {
 	return f.output, f.err
 }
 
+type sequenceExecer struct {
+	outputs [][]byte
+	errs    []error
+	calls   int
+}
+
+func (s *sequenceExecer) run(_ ...string) ([]byte, error) {
+	i := s.calls
+	s.calls++
+	if i >= len(s.outputs) {
+		return nil, fmt.Errorf("unexpected call %d", i+1)
+	}
+	var err error
+	if i < len(s.errs) {
+		err = s.errs[i]
+	}
+	return s.outputs[i], err
+}
+
 // recordingExecer captures the args of the most recent run() invocation
 // so tests can assert which command was dispatched.
 type recordingExecer struct {
