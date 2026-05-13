@@ -70,17 +70,6 @@ export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
 }
 
 /**
- * ServiceRegistry returns the named service instances for HTTP dispatch.
- * All values are the concrete pointers Wails binds; the HTTP handler uses
- * reflection to call their exported methods.
- */
-export function ServiceRegistry(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(3128777629).then(($result: any) => {
-        return $$createType5($result);
-    });
-}
-
-/**
  * SetDesktopNotifications enables or disables macOS desktop notifications.
  */
 export function SetDesktopNotifications(enabled: boolean): $CancellablePromise<void> {
@@ -98,7 +87,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType6($result);
     });
 }
 
@@ -109,7 +98,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType6($result);
     });
 }
 
@@ -137,7 +126,7 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType8($result);
     });
 }
 
@@ -147,8 +136,7 @@ const $$createType1 = bgop$0.Operation.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = notification$0.Notification.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
-const $$createType6 = agent$0.Agent.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = application$0.Service.createFrom;
-const $$createType9 = $Create.Array($$createType8);
+const $$createType5 = agent$0.Agent.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = application$0.Service.createFrom;
+const $$createType8 = $Create.Array($$createType7);

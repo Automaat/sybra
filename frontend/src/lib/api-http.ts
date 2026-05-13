@@ -38,14 +38,14 @@ export function RespondApproval(arg1: string, arg2: boolean): Promise<void> { re
 export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { return call('AgentService', 'RespondEscalation', arg1, arg2) }
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
-export function OpenWorktree(arg1: string): Promise<void> { return call('AgentService', 'OpenWorktree', arg1) }
-export function ResumeInClaudeCode(arg1: string): Promise<void> { return call('AgentService', 'ResumeInClaudeCode', arg1) }
+export function OpenWorktree(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
+export function ResumeInClaudeCode(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<Notification>> { return call('App', 'ListNotifications') }
-export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
+export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
 export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boolean): Promise<Agent> { return call('App', 'StartAgent', arg1, arg2, arg3, arg4) }
 export function StartChat(arg1: string, arg2: string, arg3: string): Promise<Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
@@ -106,8 +106,8 @@ export function DeleteProject(arg1: string): Promise<void> { return call('Projec
 export function GetProject(arg1: string): Promise<Project> { return call('ProjectService', 'GetProject', arg1) }
 export function ListProjects(): Promise<Array<Project>> { return call('ProjectService', 'ListProjects') }
 export function ListWorktrees(arg1: string): Promise<Array<Worktree>> { return call('ProjectService', 'ListWorktrees', arg1) }
-export function OpenInEditor(arg1: string): Promise<void> { return call('ProjectService', 'OpenInEditor', arg1) }
-export function OpenInTerminal(arg1: string): Promise<void> { return call('ProjectService', 'OpenInTerminal', arg1) }
+export function OpenInEditor(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
+export function OpenInTerminal(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }
 

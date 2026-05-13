@@ -1,5 +1,6 @@
 // Package httpapi provides a reflection-based HTTP dispatcher that maps
-// POST /api/{service}/{method} to exported methods on registered service objects.
+// POST /api/{service}/{method} to explicitly allowlisted methods on registered
+// service objects.
 //
 // Request body: JSON array of positional arguments (omit body for zero-arg calls).
 // Response body: JSON-encoded return value (empty body for void returns).
@@ -22,9 +23,27 @@ import (
 // SYBRA_HTTPAPI_MAX_BODY_MB at process start if a larger payload is needed.
 const MaxRequestBody = 32 * 1024 * 1024
 
-// Mount registers POST /api/{service}/{method} handlers for every exported
-// method on each service in the registry. Unknown services/methods return 404.
-func Mount(mux *http.ServeMux, services map[string]any, logger *slog.Logger) {
+// Service bundles an implementation with its HTTP-accessible method allowlist.
+// Only method names present in the allowlist are callable via the HTTP API;
+// all other exported methods return 404.
+type Service struct {
+	Impl    any
+	methods map[string]struct{}
+}
+
+// NewService creates a Service that permits only the named methods over HTTP.
+func NewService(impl any, methods ...string) Service {
+	m := make(map[string]struct{}, len(methods))
+	for _, name := range methods {
+		m[name] = struct{}{}
+	}
+	return Service{Impl: impl, methods: m}
+}
+
+// Mount registers POST /api/{service}/{method} handlers for every service in
+// the registry. Only methods listed in each Service's allowlist are reachable;
+// unknown services or non-allowlisted methods return 404.
+func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger) {
 	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
 		svcName := r.PathValue("service")
 		methodName := r.PathValue("method")
@@ -35,7 +54,12 @@ func Mount(mux *http.ServeMux, services map[string]any, logger *slog.Logger) {
 			return
 		}
 
-		rv := reflect.ValueOf(svc)
+		if _, allowed := svc.methods[methodName]; !allowed {
+			http.Error(w, fmt.Sprintf("unknown method: %s.%s", svcName, methodName), http.StatusNotFound)
+			return
+		}
+
+		rv := reflect.ValueOf(svc.Impl)
 		m := rv.MethodByName(methodName)
 		if !m.IsValid() {
 			http.Error(w, fmt.Sprintf("unknown method: %s.%s", svcName, methodName), http.StatusNotFound)

@@ -167,7 +167,7 @@ func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.Ser
 	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
 
 	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, app.ServiceRegistry(), logger)
+	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger)
 
 	// Optional SPA static files.
 	if staticDir := os.Getenv("SYBRA_STATIC_DIR"); staticDir != "" {
