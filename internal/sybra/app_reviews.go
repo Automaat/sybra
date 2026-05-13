@@ -438,12 +438,22 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.detectPublishedReviews(tasks)
-	r.closeFinishedReviewTasks(tasks, summary.ReviewRequested)
+	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 
 	if prNeedsAttention(monitoredPRs) {
 		return prPollFast
 	}
 	return prPollSlow
+}
+
+func openReviewPRs(summary github.ReviewSummary) []github.PullRequest {
+	if len(summary.ReviewedByMe) == 0 {
+		return summary.ReviewRequested
+	}
+	prs := make([]github.PullRequest, 0, len(summary.ReviewRequested)+len(summary.ReviewedByMe))
+	prs = append(prs, summary.ReviewRequested...)
+	prs = append(prs, summary.ReviewedByMe...)
+	return prs
 }
 
 func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPRs []github.PullRequest) {

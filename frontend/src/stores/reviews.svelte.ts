@@ -5,6 +5,7 @@ import type { PullRequest, ReviewSummary } from '../../bindings/github.com/Autom
 class ReviewStore {
   createdByMe = $state<PullRequest[]>([])
   reviewRequested = $state<PullRequest[]>([])
+  reviewedByMe = $state<PullRequest[]>([])
   loading = $state(false)
   error = $state('')
   private cancelListener: (() => void) | null = null
@@ -16,7 +17,7 @@ class ReviewStore {
   get allPRs(): PullRequest[] {
     const seen = new Set<string>()
     const result: PullRequest[] = []
-    for (const pr of [...this.createdByMe, ...this.reviewRequested]) {
+    for (const pr of [...this.createdByMe, ...this.reviewRequested, ...this.reviewedByMe]) {
       const key = `${pr.repository}#${pr.number}`
       if (!seen.has(key)) {
         seen.add(key)
@@ -51,6 +52,7 @@ class ReviewStore {
       const result = await FetchReviews()
       this.createdByMe = result.createdByMe ?? []
       this.reviewRequested = result.reviewRequested ?? []
+      this.reviewedByMe = result.reviewedByMe ?? []
     } catch (e) {
       this.error = String(e)
     } finally {
@@ -63,6 +65,7 @@ class ReviewStore {
     this.cancelListener = EventsOn(ReviewsUpdated, (summary: ReviewSummary) => {
       this.createdByMe = summary.createdByMe ?? []
       this.reviewRequested = summary.reviewRequested ?? []
+      this.reviewedByMe = summary.reviewedByMe ?? []
     })
   }
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import TaskCard from './TaskCard.svelte'
 import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 vi.mock('../stores/notifications.svelte.js', () => ({
   notificationStore: {
@@ -10,6 +11,7 @@ vi.mock('../stores/notifications.svelte.js', () => ({
 }))
 
 const { notificationStore } = await import('../stores/notifications.svelte.js')
+const { reviewStore } = await import('../stores/reviews.svelte.js')
 
 const mockTask = {
   id: 'task-1',
@@ -39,7 +41,35 @@ const mockTask = {
   convertValues: () => {},
 } as unknown as Task
 
+function makePR(overrides: Record<string, unknown> = {}) {
+  return PullRequest.createFrom({
+    number: 42,
+    title: 'Review PR',
+    url: 'https://github.com/owner/repo/pull/42',
+    repository: 'owner/repo',
+    repoName: 'repo',
+    author: 'peer',
+    isDraft: false,
+    labels: [],
+    headRefName: '',
+    ciStatus: '',
+    reviewDecision: '',
+    mergeable: '',
+    unresolvedCount: 0,
+    viewerHasApproved: false,
+    createdAt: '2026-04-01T00:00:00Z',
+    updatedAt: '2026-04-01T00:00:00Z',
+    ...overrides,
+  })
+}
+
 describe('TaskCard', () => {
+  beforeEach(() => {
+    reviewStore.createdByMe = []
+    reviewStore.reviewRequested = []
+    reviewStore.reviewedByMe = []
+  })
+
   afterEach(() => {
     cleanup()
   })
@@ -118,6 +148,30 @@ describe('TaskCard', () => {
   it('does not show Needs Review badge for other statuses', () => {
     render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
     expect(screen.queryByText('Needs Review')).toBeNull()
+  })
+
+  it('shows review-needed badge for review-requested PR tasks', () => {
+    reviewStore.reviewRequested = [makePR()]
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42 } as Task,
+        onclick: () => {},
+      },
+    })
+
+    expect(screen.getByText(/Review needed/)).toBeDefined()
+  })
+
+  it('shows approved waiting-merge badge for approved review tasks', () => {
+    reviewStore.reviewedByMe = [makePR({ viewerHasApproved: true })]
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42 } as Task,
+        onclick: () => {},
+      },
+    })
+
+    expect(screen.getByText(/Approved, waiting merge/)).toBeDefined()
   })
 
   describe('timeAgo', () => {
