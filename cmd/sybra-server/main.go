@@ -84,7 +84,7 @@ func run() error {
 	mux := buildMux(logger, broker, app)
 
 	// CORS for dev (permissive; tighten for production).
-	handler := corsMiddleware(mux)
+	handler := cspMiddleware(corsMiddleware(mux))
 
 	port := os.Getenv("SYBRA_PORT")
 	if port == "" {
@@ -209,6 +209,14 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.fs.ServeHTTP(w, r)
+}
+
+func cspMiddleware(next http.Handler) http.Handler {
+	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", policy)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
