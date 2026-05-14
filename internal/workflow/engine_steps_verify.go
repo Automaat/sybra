@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/github"
 )
 
 // execEnsurePRClosesIssue verifies the task's PR closes its linked
@@ -27,7 +29,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing issue, pr, or project"}, nil
 	}
 
-	issueRepo, issueNum := parseIssueURL(t.Issue)
+	issueRepo, issueNum := github.ParseIssueURL(t.Issue)
 	if issueNum == 0 {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: unparseable issue url"}, nil
 	}

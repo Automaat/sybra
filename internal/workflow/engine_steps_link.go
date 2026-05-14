@@ -152,23 +152,3 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
-
-// parseIssueURL extracts owner/repo and issue number from a GitHub
-// issue URL like https://github.com/owner/repo/issues/123. Returns
-// ("", 0) if the URL doesn't match. Duplicated from internal/github
-// to keep the workflow package dependency-free.
-func parseIssueURL(rawURL string) (repo string, number int) {
-	const prefix = "https://github.com/"
-	if !strings.HasPrefix(rawURL, prefix) {
-		return "", 0
-	}
-	parts := strings.Split(strings.TrimPrefix(rawURL, prefix), "/")
-	if len(parts) < 4 || parts[2] != "issues" {
-		return "", 0
-	}
-	n, err := strconv.Atoi(parts[3])
-	if err != nil || n == 0 {
-		return "", 0
-	}
-	return parts[0] + "/" + parts[1], n
-}
