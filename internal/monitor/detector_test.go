@@ -456,7 +456,8 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 
-	t.Run("includes human_review_verdict when result has human decision", func(t *testing.T) {
+	t.Run("still fires anomaly when result has human decision", func(t *testing.T) {
+		// Human-review confirmed genuine human-required: operator reminder must still fire.
 		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
@@ -469,14 +470,51 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
 		report := Detect(in)
 		if len(report.Anomalies) != 1 {
-			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+			t.Fatalf("want 1 anomaly (confirmed human-blocked must not be suppressed), got %d", len(report.Anomalies))
+		}
+		if v, _ := report.Anomalies[0].Evidence["human_review_verdict"].(string); v != "human" {
+			t.Fatalf("want human_review_verdict=human in evidence, got %q", v)
+		}
+	})
+
+	t.Run("still fires anomaly when Verdict field is human", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly (confirmed human-blocked must not be suppressed), got %d", len(report.Anomalies))
+		}
+		if v, _ := report.Anomalies[0].Evidence["human_review_verdict"].(string); v != "human" {
+			t.Fatalf("want human_review_verdict=human in evidence, got %q", v)
+		}
+	})
+
+	t.Run("fires anomaly when result has sybra_bug decision", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result: "```sybra-verdict\n{\"decision\":\"sybra_bug\"}\n```",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly (sybra_bug fires), got %d", len(report.Anomalies))
 		}
 		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
 		if !ok {
 			t.Fatal("evidence missing human_review_verdict")
 		}
-		if got != "human" {
-			t.Errorf("human_review_verdict = %q, want %q", got, "human")
+		if got != "sybra_bug" {
+			t.Errorf("human_review_verdict = %q, want sybra_bug", got)
 		}
 	})
 
