@@ -1,25 +1,24 @@
 <script lang="ts">
-  import { Search, Filter, ChevronDown } from '@lucide/svelte'
+  import { Search, Filter } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { BOARD_COLUMNS } from '../lib/statuses.js'
+  import { BOARD_COLUMNS, type BoardColumn } from '../lib/statuses.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
-  import TaskCard from '../components/TaskCard.svelte'
   import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
   import AssignProjectDialog from '../components/AssignProjectDialog.svelte'
   import TaskListFilterBar from '../components/TaskListFilterBar.svelte'
-  import InlineTaskAdd from '../components/InlineTaskAdd.svelte'
+  import TaskListView from '../components/TaskListView.svelte'
+  import TaskBoardView from '../components/TaskBoardView.svelte'
   import MobileSheet from '../components/shell/MobileSheet.svelte'
-  import { viewport } from '../lib/viewport.svelte.js'
-  import { fly } from 'svelte/transition'
-  import { flip } from 'svelte/animate'
-  import { cubicOut } from 'svelte/easing'
-  import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import { viewModeStore } from '../lib/view-mode.svelte.js'
+  import {
+    handleTaskListKeydown,
+    type TaskListKeyAction,
+  } from '../lib/task-list-keyboard.js'
 
   interface Props {
     onselect: (id: string) => void
@@ -30,7 +29,6 @@
 
   const { onselect, filter, onnewTask, onfocusedtaskchange }: Props = $props()
 
-  let dragOverStatus = $state<string | null>(null)
   let filtersOpen = $state(false)
   let collapsedColumns = $state<Set<string>>(new Set(['testing', 'done']))
 
@@ -64,18 +62,22 @@
   let priorityPickerOpen = $state(false)
   let assignProjectOpen = $state(false)
 
-  function getColumnTasks(colIndex: number): Task[] {
-    const col = visibleColumns[colIndex]
-    if (!col) return []
+  function columnTasks(col: BoardColumn): Task[] {
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
     return filteredByStatuses(statuses)
+  }
+
+  function getColumnTasksByIdx(colIndex: number): Task[] {
+    const col = visibleColumns[colIndex]
+    if (!col) return []
+    return columnTasks(col)
   }
 
   const focusedTaskId = $derived.by((): string | null => {
     if (focusedColIdx < 0 || focusedRowIdx < 0) return null
     const tasks = viewMode === 'list' || viewMode === 'timeline'
       ? allFilteredTasks
-      : getColumnTasks(focusedColIdx)
+      : getColumnTasksByIdx(focusedColIdx)
     return tasks[focusedRowIdx]?.id ?? null
   })
 
@@ -84,20 +86,6 @@
   $effect(() => {
     onfocusedtaskchange?.(focusedTaskId)
   })
-
-  function focusFirstTask(): void {
-    if (viewMode === 'list' || viewMode === 'timeline') {
-      if (allFilteredTasks.length > 0) { focusedColIdx = 0; focusedRowIdx = 0 }
-      return
-    }
-    for (let ci = 0; ci < visibleColumns.length; ci++) {
-      if (getColumnTasks(ci).length > 0) {
-        focusedColIdx = ci
-        focusedRowIdx = 0
-        return
-      }
-    }
-  }
 
   function scrollFocusedIntoView(): void {
     requestAnimationFrame(() => {
@@ -135,152 +123,62 @@
     assignProjectOpen = false
   }
 
-  function handleBoardKeydown(e: KeyboardEvent): void {
-    const target = e.target as HTMLElement
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
-
-    // Don't handle if a picker is open — pickers capture keys themselves
-    if (statusPickerOpen || priorityPickerOpen || assignProjectOpen) return
-
-    const key = e.key
-    const isCmd = e.metaKey || e.ctrlKey
-
-    // Cmd+D → due date for focused task (navigate to task detail and open due date)
-    if (isCmd && key === 'd' && focusedTaskId) {
-      e.preventDefault()
-      onselect(focusedTaskId)
-      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('open-due-date')))
-      return
-    }
-
-    if (isCmd) return
-    if (e.altKey) return
-
-    if (key === '/' || key === 'F') {
-      e.preventDefault()
-      window.dispatchEvent(new CustomEvent('focus-search'))
-      return
-    }
-
-    if (viewMode === 'list' || viewMode === 'timeline') {
-      if (key === 'j' || key === 'ArrowDown') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        focusedRowIdx = Math.min(focusedRowIdx + 1, allFilteredTasks.length - 1)
-        scrollFocusedIntoView()
-        return
-      }
-      if (key === 'k' || key === 'ArrowUp') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
-        scrollFocusedIntoView()
-        return
-      }
-      if (viewMode === 'timeline') {
-        if (key === '+' || key === '=') {
-          e.preventDefault()
-          timelineRef?.cycleZoomIn()
-          return
+  function applyAction(a: TaskListKeyAction) {
+    switch (a.type) {
+      case 'set-focus':
+        focusedColIdx = a.colIdx
+        focusedRowIdx = a.rowIdx
+        if (a.scroll) scrollFocusedIntoView()
+        break
+      case 'clear-focus':
+        focusedColIdx = -1
+        focusedRowIdx = -1
+        break
+      case 'select-focused':
+        if (focusedTaskId) onselect(focusedTaskId)
+        break
+      case 'open-due-date-focused':
+        if (focusedTaskId) {
+          onselect(focusedTaskId)
+          requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('open-due-date')))
         }
-        if (key === '-') {
-          e.preventDefault()
-          timelineRef?.cycleZoomOut()
-          return
-        }
-      }
-    } else {
-      if (key === 'j' || key === 'ArrowDown') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        const tasks = getColumnTasks(focusedColIdx)
-        focusedRowIdx = Math.min(focusedRowIdx + 1, tasks.length - 1)
-        scrollFocusedIntoView()
-        return
-      }
-
-      if (key === 'k' || key === 'ArrowUp') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        focusedRowIdx = Math.max(focusedRowIdx - 1, 0)
-        scrollFocusedIntoView()
-        return
-      }
-
-      if (key === 'h' || key === 'ArrowLeft') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        for (let ci = focusedColIdx - 1; ci >= 0; ci--) {
-          const tasks = getColumnTasks(ci)
-          if (tasks.length > 0) {
-            focusedColIdx = ci
-            focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
-            scrollFocusedIntoView()
-            return
-          }
-        }
-        return
-      }
-
-      if (key === 'l' || key === 'ArrowRight') {
-        e.preventDefault()
-        if (focusedColIdx < 0) { focusFirstTask(); scrollFocusedIntoView(); return }
-        for (let ci = focusedColIdx + 1; ci < visibleColumns.length; ci++) {
-          const tasks = getColumnTasks(ci)
-          if (tasks.length > 0) {
-            focusedColIdx = ci
-            focusedRowIdx = Math.min(focusedRowIdx, tasks.length - 1)
-            scrollFocusedIntoView()
-            return
-          }
-        }
-        return
-      }
-    }
-
-    if (key === 'Enter' || key === 'e') {
-      const taskId = focusedTaskId
-      if (taskId) {
-        e.preventDefault()
-        onselect(taskId)
-      }
-      return
-    }
-
-    if (key === 'c' && !e.shiftKey) {
-      e.preventDefault()
-      onnewTask?.()
-      return
-    }
-
-    if (key === 'C' && e.shiftKey) {
-      e.preventDefault()
-      if (focusedTaskId) assignProjectOpen = true
-      return
-    }
-
-    if (key === 's' && focusedTaskId) {
-      e.preventDefault()
-      statusPickerOpen = true
-      return
-    }
-
-    if (key === 'p' && focusedTaskId) {
-      e.preventDefault()
-      priorityPickerOpen = true
-      return
-    }
-
-    if (key === 'Escape') {
-      focusedColIdx = -1
-      focusedRowIdx = -1
-      return
+        break
+      case 'focus-search':
+        window.dispatchEvent(new CustomEvent('focus-search'))
+        break
+      case 'open-picker':
+        if (a.kind === 'status') statusPickerOpen = true
+        else if (a.kind === 'priority') priorityPickerOpen = true
+        else assignProjectOpen = true
+        break
+      case 'new-task':
+        onnewTask?.()
+        break
+      case 'timeline-zoom':
+        if (a.dir === 'in') timelineRef?.cycleZoomIn()
+        else timelineRef?.cycleZoomOut()
+        break
     }
   }
 
+  function handleKeydown(e: KeyboardEvent) {
+    const lengths = visibleColumns.map((c) => columnTasks(c).length)
+    const result = handleTaskListKeydown(e, {
+      viewMode,
+      focusedColIdx,
+      focusedRowIdx,
+      focusedTaskId,
+      allFilteredTasksLength: allFilteredTasks.length,
+      columnTasksLengths: lengths,
+      anyPickerOpen: statusPickerOpen || priorityPickerOpen || assignProjectOpen,
+    })
+    if (result.preventDefault) e.preventDefault()
+    if (result.action) applyAction(result.action)
+  }
+
   $effect(() => {
-    window.addEventListener('keydown', handleBoardKeydown)
-    return () => window.removeEventListener('keydown', handleBoardKeydown)
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
   })
 
   // Listen for toggle-view event from App.svelte (Cmd+B)
@@ -318,7 +216,6 @@
     [...new Set(taskStore.list.flatMap((t: Task) => t.tags ?? []))].sort()
   )
 
-  // Derived: filter function
   function filteredByStatuses(statuses: string[]): Task[] {
     return taskStore.list.filter((t: Task) => {
       if (!statuses.includes(t.status)) return false
@@ -330,7 +227,6 @@
     })
   }
 
-  // All filtered tasks for list view (sorted by status order)
   const statusOrder: Record<string, number> = {
     'new': 0, 'todo': 1, 'planning': 2, 'plan-review': 3,
     'in-progress': 4, 'in-review': 5, 'testing': 6, 'test-plan-review': 7,
@@ -370,7 +266,6 @@
     selectedAgentMode = ''
   }
 
-  // Helpers retained for the mobile sheet
   function addTag(tag: string) {
     if (!selectedTags.includes(tag)) {
       selectedTags = [...selectedTags, tag]
@@ -386,32 +281,6 @@
     { value: 'headless', label: 'Headless' },
     { value: 'interactive', label: 'Interactive' },
   ]
-
-  async function handleDrop(e: DragEvent, targetStatus: string) {
-    e.preventDefault()
-    dragOverStatus = null
-    const taskId = e.dataTransfer?.getData('text/plain')
-    if (!taskId) return
-    const existing = taskStore.tasks.get(taskId)
-    if (!existing || existing.status === targetStatus) return
-    try {
-      await taskStore.update(taskId, { status: targetStatus })
-    } catch (err) {
-      notificationStore.pushLocal('error', 'Move failed', String(err))
-    }
-  }
-
-  function priorityIcon(p: string | undefined): string {
-    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
-  }
-
-  function priorityLabel(p: string | undefined): string {
-    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.label ?? 'None'
-  }
-
-  function priorityClasses(p: string | undefined): string {
-    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.classes ?? 'text-surface-400'
-  }
 </script>
 
 {#if statusPickerOpen && focusedTask}
@@ -481,50 +350,13 @@
   {:else if taskStore.error}
     <p class="m-auto text-sm text-error-500">{taskStore.error}</p>
   {:else if viewMode === 'list'}
-    <!-- List view -->
-    <div class="min-h-0 flex-1 overflow-y-auto">
-      <table class="w-full text-sm">
-        <thead class="sticky top-0 z-10 border-b border-surface-200 bg-surface-100 dark:border-surface-700 dark:bg-surface-900">
-          <tr>
-            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider w-8">P</th>
-            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Title</th>
-            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Status</th>
-            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden md:table-cell">Project</th>
-            <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden lg:table-cell">Updated</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each allFilteredTasks as t, rowIdx (t.id)}
-            {@const isFocused = focusedTaskId === t.id}
-            <tr
-              data-focused-task={isFocused ? '' : undefined}
-              class="cursor-pointer border-b border-surface-100 transition-colors dark:border-surface-800 {isFocused ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
-              onclick={() => onselect(t.id)}
-              onmouseenter={() => { focusedColIdx = 0; focusedRowIdx = rowIdx }}
-            >
-              <td class="px-4 py-2">
-                <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
-              </td>
-              <td class="px-4 py-2 font-medium">{t.title}</td>
-              <td class="px-4 py-2">
-                <span class="rounded-full px-2 py-0.5 text-xs font-semibold bg-surface-200 dark:bg-surface-700">{t.status}</span>
-              </td>
-              <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
-              <td class="hidden px-4 py-2 text-surface-400 text-xs lg:table-cell">
-                {t.updatedAt ? new Date(t.updatedAt).toLocaleDateString() : '—'}
-              </td>
-            </tr>
-          {/each}
-          {#if allFilteredTasks.length === 0}
-            <tr>
-              <td colspan="5" class="px-4 py-8 text-center text-surface-400">No tasks match your filters</td>
-            </tr>
-          {/if}
-        </tbody>
-      </table>
-    </div>
+    <TaskListView
+      tasks={allFilteredTasks}
+      focusedTaskId={focusedTaskId}
+      onselect={(id) => onselect(id)}
+      onhover={(rowIdx) => { focusedColIdx = 0; focusedRowIdx = rowIdx }}
+    />
   {:else if viewMode === 'timeline'}
-    <!-- Timeline / Gantt view -->
     <TaskTimeline
       bind:this={timelineRef}
       tasks={allFilteredTasks}
@@ -536,57 +368,15 @@
       }}
     />
   {:else}
-    <!-- Board columns -->
-    <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
-      {#each visibleColumns as col}
-        {@const statuses = col.includes.length > 0 ? col.includes : [col.status]}
-        {@const tasks = filteredByStatuses(statuses)}
-        {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          data-col-status={col.status}
-          class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[260px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
-          ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
-          ondragleave={() => { dragOverStatus = null }}
-          ondrop={(e) => handleDrop(e, col.status)}
-        >
-          <button
-            type="button"
-            onclick={() => toggleColumn(col.status)}
-            class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-200 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
-          >
-            <span class="flex items-center gap-2">
-              <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
-              <h2 class="text-sm font-semibold">{col.label}</h2>
-            </span>
-            <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
-              {tasks.length}
-            </span>
-          </button>
-          {#if !isCollapsed}
-            <div class="flex flex-col gap-2 px-2 pb-2 md:flex-1 md:overflow-y-auto">
-              {#each tasks as t (t.id)}
-                <div
-                  in:fly={{ y: -12, duration: 150, easing: cubicOut }}
-                  out:fly={{ y: 12, duration: 200, easing: cubicOut }}
-                  animate:flip={{ duration: 200, easing: cubicOut }}
-                >
-                  <TaskCard
-                    task={t}
-                    onclick={() => onselect(t.id)}
-                    focused={focusedTaskId === t.id}
-                    onstatuschange={(s) => moveTask(t.id, s)}
-                  />
-                </div>
-              {/each}
-            </div>
-            <div class="px-2 pb-2">
-              <InlineTaskAdd status={col.status} />
-            </div>
-          {/if}
-        </div>
-      {/each}
-    </div>
+    <TaskBoardView
+      visibleColumns={visibleColumns}
+      columnTasks={columnTasks}
+      focusedTaskId={focusedTaskId}
+      collapsedColumns={collapsedColumns}
+      onselect={(id) => onselect(id)}
+      onmove={moveTask}
+      ontogglecolumn={toggleColumn}
+    />
   {/if}
 </div>
 
