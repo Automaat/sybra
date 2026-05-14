@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,36 +26,41 @@ type Event struct {
 // Broker fans out named events to SSE subscribers.
 // The Emit method implements func(string, any) and can be passed directly to
 // WithEmit when constructing an App.
+//
+// Subscribers are stored in maps keyed by a monotonic uint64 ID so unsubscribe
+// is O(1). The ID is allocated lock-free via atomic; the lock is only held
+// across map insert/delete.
 type Broker struct {
 	mu      sync.RWMutex
-	subs    map[string][]chan string
-	allSubs []chan Event
+	nextID  atomic.Uint64
+	subs    map[string]map[uint64]chan string
+	allSubs map[uint64]chan Event
 }
 
 // New returns an initialised Broker.
 func New() *Broker {
-	return &Broker{subs: make(map[string][]chan string)}
+	return &Broker{
+		subs:    make(map[string]map[uint64]chan string),
+		allSubs: make(map[uint64]chan Event),
+	}
 }
 
 // SubscribeAll returns a channel that receives every emitted event regardless
-// of name, plus a cancel function that removes the subscription.
+// of name, plus a cancel function that removes the subscription. Cancel is
+// O(1) and must be called exactly once.
 func (b *Broker) SubscribeAll() (ch <-chan Event, cancel func()) {
 	inner := make(chan Event, chanBuf)
 	ch = inner
+	id := b.nextID.Add(1)
 
 	b.mu.Lock()
-	b.allSubs = append(b.allSubs, inner)
+	b.allSubs[id] = inner
 	b.mu.Unlock()
 
 	cancel = func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		for i, c := range b.allSubs {
-			if c == inner {
-				b.allSubs = append(b.allSubs[:i], b.allSubs[i+1:]...)
-				break
-			}
-		}
+		delete(b.allSubs, id)
+		b.mu.Unlock()
 		close(inner)
 	}
 	return
@@ -98,25 +104,31 @@ func (b *Broker) Emit(event string, data any) {
 }
 
 // Subscribe returns a receive channel for the named event and a cancel function
-// that removes the subscription.
+// that removes the subscription. Cancel is O(1) and must be called exactly
+// once.
 func (b *Broker) Subscribe(event string) (ch <-chan string, cancel func()) {
 	inner := make(chan string, chanBuf)
 	ch = inner
+	id := b.nextID.Add(1)
 
 	b.mu.Lock()
-	b.subs[event] = append(b.subs[event], inner)
+	bucket := b.subs[event]
+	if bucket == nil {
+		bucket = make(map[uint64]chan string)
+		b.subs[event] = bucket
+	}
+	bucket[id] = inner
 	b.mu.Unlock()
 
 	cancel = func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		chans := b.subs[event]
-		for i, c := range chans {
-			if c == inner {
-				b.subs[event] = append(chans[:i], chans[i+1:]...)
-				break
+		if bucket := b.subs[event]; bucket != nil {
+			delete(bucket, id)
+			if len(bucket) == 0 {
+				delete(b.subs, event)
 			}
 		}
+		b.mu.Unlock()
 		close(inner)
 	}
 	return
