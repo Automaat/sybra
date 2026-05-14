@@ -155,4 +155,38 @@ describe('WorkflowDetail', () => {
     await fireEvent.keyDown(window, { key: 'Escape' })
     expect(onback).toHaveBeenCalled()
   })
+
+  it('Cmd+S triggers save when dirty', async () => {
+    mockWorkflowGet.mockResolvedValue(makeDef())
+    mockWorkflowSave.mockResolvedValue(makeDef())
+    render(WorkflowDetail, { props: { workflowId: 'wf-1', onback: vi.fn() } })
+    await vi.waitFor(() => screen.getByText('my-workflow'))
+    await fireEvent.click(screen.getByText('+ Add step'))
+    await vi.waitFor(() => screen.getByText('unsaved'))
+    await fireEvent.keyDown(window, { key: 's', metaKey: true })
+    await vi.waitFor(() => {
+      expect(mockWorkflowSave).toHaveBeenCalled()
+    })
+  })
+
+  it('clears unsaved indicator after successful save', async () => {
+    mockWorkflowGet.mockResolvedValue(makeDef())
+    mockWorkflowSave.mockResolvedValue(makeDef())
+    render(WorkflowDetail, { props: { workflowId: 'wf-1', onback: vi.fn() } })
+    await vi.waitFor(() => screen.getByText('my-workflow'))
+    await fireEvent.click(screen.getByText('+ Add step'))
+    await vi.waitFor(() => screen.getByText('unsaved'))
+    await fireEvent.click(screen.getByText('Save'))
+    await vi.waitFor(() => {
+      expect(screen.queryByText('unsaved')).toBeNull()
+    })
+  })
+
+  it('+ Add step is enabled once definition loads', async () => {
+    mockWorkflowGet.mockResolvedValue(makeDef())
+    render(WorkflowDetail, { props: { workflowId: 'wf-1', onback: vi.fn() } })
+    await vi.waitFor(() => screen.getByText('my-workflow'))
+    const addBtn = screen.getByText('+ Add step') as HTMLButtonElement
+    expect(addBtn.disabled).toBe(false)
+  })
 })
