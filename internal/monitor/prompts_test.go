@@ -128,6 +128,9 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	if !strings.Contains(body, "sybra-cli update jkl012 --status todo") {
 		t.Error("hint should include actionable sybra-cli retry command with task id")
 	}
+	if !strings.Contains(body, "sybra-cli update jkl012 --mode interactive --status todo") {
+		t.Error("hint should include interactive-mode option for tasks whose scope exceeds automation")
+	}
 	if strings.Contains(body, "sybra_bug") {
 		t.Error("hint must not reference sybra_bug outcome — that path sets status=blocked, not human-required")
 	}
