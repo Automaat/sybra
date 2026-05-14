@@ -234,7 +234,7 @@ func suggestedInvestigation(a Anomaly) string {
 			}
 			hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 		} else if lastRole == "fix-review" && lastState == "stopped" {
-			hint += "- Fix-review agent pushed review fixes to the PR — re-check the PR for updated review status and approve or request further changes.\n"
+			hint += "- Fix-review agent finished — check the PR and agent log for the outcome, then approve or request further changes.\n"
 		}
 		return hint
 	default:

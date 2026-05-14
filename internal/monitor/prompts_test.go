@@ -158,7 +158,10 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t
 		t.Error("hint must not mention human-review when role is fix-review")
 	}
 	if !strings.Contains(body, "Fix-review agent") {
-		t.Error("hint should mention fix-review agent pushed fixes")
+		t.Error("hint should mention fix-review agent finished")
+	}
+	if strings.Contains(body, "pushed") {
+		t.Error("hint must not claim fixes were pushed — outcome is unknown")
 	}
 	if !strings.Contains(body, "PR") {
 		t.Error("hint should reference PR for fix-review case")
