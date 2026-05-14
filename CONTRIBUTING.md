@@ -26,9 +26,9 @@ cd frontend && npx vite build --profile
 
 ## Frontend Dependency Pin Strategy
 
-### Caret (`^`) — public UI libraries
+### Caret (`^`) — stable UI/runtime libraries
 
-Use caret for icon sets, UI kits, and runtime helpers where minor/patch updates are expected to be safe and security patches are desirable:
+Use caret for icon sets, UI kits, and stable runtime helpers where minor/patch updates are expected to be safe and security patches are desirable:
 
 ```json
 "@lucide/svelte": "^1.8.0",
@@ -37,15 +37,32 @@ Use caret for icon sets, UI kits, and runtime helpers where minor/patch updates 
 
 Before merging a Renovate PR that bumps these, visually verify that icons or layout have not regressed.
 
-### Exact pin — build tools
+### Exact pin — build tools and pre-release runtimes
 
-Pin build tools to an exact version to prevent unexpected toolchain drift:
+Pin to an exact version when drift is dangerous:
 
-```json
-"vite": "8.0.10",
-"vitest": "4.1.5",
-"typescript": "6.0.3"
-```
+- **Build/test toolchain** — silent regressions from minor bumps cost more than the cost of intentional upgrades:
+
+  ```json
+  "vite": "8.0.11",
+  "vitest": "4.1.5",
+  "typescript": "6.0.3"
+  ```
+
+- **Pre-release runtimes** — caret semantics give no compatibility guarantee between `alpha.N` versions, so pin exactly:
+
+  ```json
+  "@wailsio/runtime": "3.0.0-alpha.79"
+  ```
+
+### Enforcement
+
+The strategy is enforced in three layers — keep all three in sync when adding new packages:
+
+- **`frontend/scripts/check-pin-strategy.mjs`** classifies packages and fails on a range when an exact pin is required. Run locally via `cd frontend && npm run lint:pins`.
+- **`.githooks/pre-commit`** invokes the script whenever `frontend/package.json` is staged.
+- **CI** runs it as part of the *npm Lockfile Integrity* job.
+- **`renovate.json`** has matching `packageRules` so Renovate PRs always pin build tools and pre-release runtimes, and leave caret on stable UI libs.
 
 ### Lock file integrity
 

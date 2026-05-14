@@ -32,6 +32,49 @@
       "groupName": "patch dependencies"
     },
     {
+      "description": "Frontend build/test toolchain — exact pin (drift causes silent breakage). Mirrored by frontend/scripts/check-pin-strategy.mjs.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "vite",
+        "vitest",
+        "typescript",
+        "svelte",
+        "svelte-check",
+        "oxlint",
+        "tailwindcss",
+        "jsdom",
+        "@vitest/*",
+        "@playwright/*",
+        "@skeletonlabs/*",
+        "@sveltejs/*",
+        "@tailwindcss/*",
+        "@testing-library/*",
+        "@types/*"
+      ],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Pre-release runtime libs — exact pin (caret on alpha/beta has no semver guarantee)",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@wailsio/runtime"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Stable UI/runtime libs — keep caret, take semver-compatible bumps",
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "@lucide/svelte",
+        "@xyflow/svelte",
+        "dompurify",
+        "highlight.js",
+        "js-yaml",
+        "marked",
+        "marked-highlight",
+        "snarkdown"
+      ],
+      "rangeStrategy": "replace"
+    },
+    {
       "description": "Group vitest packages",
       "matchPackageNames": ["vitest", "@vitest/*"],
       "groupName": "vitest"
