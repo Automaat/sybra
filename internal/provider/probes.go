@@ -74,7 +74,7 @@ func parseClaudeAuthStatus(raw []byte) (Status, error) {
 	if len(trimmed) == 0 {
 		st.Reason = "probe_error"
 		st.Detail = "empty response"
-		return st, fmt.Errorf("claude auth status: empty response")
+		return st, errors.New("claude auth status: empty response")
 	}
 	var payload claudeAuthStatusJSON
 	if err := json.Unmarshal(trimmed, &payload); err != nil {
@@ -100,7 +100,7 @@ func parseCodexLoginStatus(raw []byte) (Status, error) {
 	if text == "" {
 		st.Reason = "probe_error"
 		st.Detail = "empty response"
-		return st, fmt.Errorf("codex login status: empty response")
+		return st, errors.New("codex login status: empty response")
 	}
 	if strings.Contains(text, "not logged in") || strings.Contains(text, "please run: codex login") || strings.Contains(text, "please run codex login") {
 		st.Reason = "logged_out"

@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 )
 
 func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // TestGetAgentRunConvoLog_ReplaysFromDisk confirms a stopped interactive

@@ -1,7 +1,6 @@
 package poll
 
 import (
-	"io"
 	"log/slog"
 	"sort"
 	"testing"
@@ -44,7 +43,7 @@ func newIssuesFetcherForTest(
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	f := NewIssuesFetcher(taskMgr, projStore, func(string, any) {}, logger, allowsType)
 
 	// Inject the labeled fetch so tests control the "gh" response.

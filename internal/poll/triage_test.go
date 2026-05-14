@@ -2,7 +2,6 @@ package poll
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -57,7 +56,7 @@ func TestTriageHandlerClassifiesNewTasks(t *testing.T) {
 
 	fc := &fakeClassifier{}
 	h := NewTriageHandler(mgr, ps, nil,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.DiscardHandler),
 		&config.TriageConfig{Enabled: true, PollSeconds: 5, Model: "sonnet"})
 	h.factory = func(string, *slog.Logger) triage.Classifier { return fc }
 	// Disable the 5-second debounce for the test.

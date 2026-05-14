@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -17,7 +18,7 @@ var validSlugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // digits, and interior hyphens; max 40 chars.
 func ValidateSlug(s string) error {
 	if s == "" {
-		return fmt.Errorf("slug must not be empty")
+		return errors.New("slug must not be empty")
 	}
 	if len(s) > 40 {
 		return fmt.Errorf("slug %q exceeds 40 chars", s)

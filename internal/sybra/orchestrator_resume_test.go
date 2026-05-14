@@ -113,7 +113,7 @@ updated_at: 2025-01-01T00:00:00Z
 		t.Fatal(err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	logDir := filepath.Join(home, "logs")
 	_ = os.MkdirAll(logDir, 0o755)
 

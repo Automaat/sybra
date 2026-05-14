@@ -1,24 +1,82 @@
 version: "2"
 
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
 linters:
+  default: standard
   enable:
+    # bug catchers (high signal, low noise)
+    - asasalint
+    - bidichk
     - bodyclose
-    - errcheck
+    - copyloopvar
+    - durationcheck
     - errorlint
     - exhaustive
-    - funlen
-    - gocritic
-    - gosec
-    - ineffassign
-    - modernize
+    - fatcontext
+    - intrange
+    - loggercheck
+    - makezero
+    - mirror
+    - musttag
     - nilerr
     - nilnesserr
     - nilnil
+    - reassign
+    - recvcheck
+    - sloglint
+    - wastedassign
+
+    # quality / perf
+    - dupword
+    - errname
+    - exptostd
+    - funlen
+    - gocheckcompilerdirectives
+    - gocritic
+    - goprintffuncname
+    - gosec
+    - modernize
     - nolintlint
-    - staticcheck
-    - unused
+    - nosprintfhostport
+    - perfsprint
+    - predeclared
+    - testableexamples
+    - thelper
+    - unconvert
+    - usestdlibvars
+    - usetesting
+
+    # dependency hygiene
+    - depguard
+
+    # deferred — require codebase-wide changes; re-enable after dedicated cleanup:
+    #   - containedctx   # top-level orchestrators legitimately hold a cancel ctx
+    #   - contextcheck   # 27 sites need ctx plumbed through more APIs
+    #   - noctx          # 9 sites need http.NewRequestWithContext / context-aware ctors
+    #   - tparallel      # 22 test funcs need t.Parallel() on their top-level
 
   settings:
+    depguard:
+      rules:
+        non-test:
+          files:
+            - "!$test"
+          deny:
+            - pkg: math/rand$
+              desc: use math/rand/v2 instead
+            - pkg: io/ioutil
+              desc: use os/io instead (deprecated since Go 1.16)
+        non-main:
+          files:
+            - "!**/main.go"
+            - "!**/main_other.go"
+          deny:
+            - pkg: log$
+              desc: use log/slog instead
+
     errcheck:
       check-type-assertions: true
 
@@ -37,6 +95,13 @@ linters:
         - G304 # file inclusion via variable — intentional in this app
         - G306 # WriteFile permissions 0644 — intentional for user-readable files
         - G703 # paths validated against known-good roots (homeDir/tmpDir + HasPrefix); gosec taint cannot verify the guard
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # struct field reordering rarely worth churn
+        - shadow # idiomatic Go re-declares err in nested blocks
+        - unusedwrite # too aggressive on test struct literals
 
     gocritic:
       enabled-checks:
@@ -92,16 +157,34 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+      allow-no-explanation:
+        - funlen
+
+    perfsprint:
+      strconcat: false # noisy on logging-heavy code
+      # Defer the fmt.Errorf("static") -> errors.New("static") rewrite — 50+
+      # call sites; re-enable after a dedicated cleanup PR.
+      error-format: false
+      errorf: false
+
+    sloglint:
+      no-mixed-args: true
+
+    usetesting:
+      # os.MkdirTemp is intentionally used over t.TempDir() in several test
+      # helpers to avoid cleanup races with background goroutines spawned by
+      # the system under test (see e.g. internal/sybra/app_test.go).
+      os-mkdir-temp: false
 
   exclusions:
+    warn-unused: true
     presets:
       - common-false-positives
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+      - std-error-handling
     rules:
       - linters:
+          - bodyclose
+          - dupword
           - errcheck
           - funlen
           - gosec

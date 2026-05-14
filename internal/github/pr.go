@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -100,7 +101,7 @@ func fetchPRWith(e execer, repo string, number int) (PullRequest, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "number,title,body,url,headRefName,author,labels")
 	if err != nil {
 		return PullRequest{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -159,7 +160,7 @@ func fetchPRStatsWith(e execer, repo string, number int) (PRStats, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "additions,deletions,changedFiles")
 	if err != nil {
 		return PRStats{}, fmt.Errorf("gh pr view %d stats: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -187,7 +188,7 @@ func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "state,mergedAt,mergeable,statusCheckRollup")
 	if err != nil {
 		return PRState{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -215,7 +216,7 @@ func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "files")
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view %d files: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -247,7 +248,7 @@ func fetchPRBranchWith(e execer, repo string, number int) (string, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "headRefName")
 	if err != nil {
 		return "", fmt.Errorf("gh pr view %d branch: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -276,7 +277,7 @@ func fetchPRContextWith(e execer, repo string, number int) (PRContext, error) {
 	}
 
 	// Fetch PR metadata: url, branch, and review bodies
-	out, err := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "url,headRefName,author,reviews")
 	if err != nil {
 		return PRContext{}, fmt.Errorf("gh pr view %d context: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -363,7 +364,7 @@ func fetchPRClosingIssuesWith(e execer, repo string, number int) (issues []int, 
 		}
 	}
 
-	out, runErr := e.run("pr", "view", fmt.Sprintf("%d", number),
+	out, runErr := e.run("pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "closingIssuesReferences,body")
 	if runErr != nil {
 		return nil, "", fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), runErr)
@@ -415,7 +416,7 @@ func mergePRWith(e execer, repo string, number int) error {
 	var lastOut []byte
 	var lastErr error
 	for attempt := 0; attempt <= len(mergeRetryDelays); attempt++ {
-		out, err := e.run("pr", "merge", fmt.Sprintf("%d", number),
+		out, err := e.run("pr", "merge", strconv.Itoa(number),
 			"--repo", repo, "--squash")
 		if err == nil {
 			if runtimeCacheEnabled(e) {
@@ -444,7 +445,7 @@ func MarkReady(repo string, number int) error {
 }
 
 func markReadyWith(e execer, repo string, number int) error {
-	out, err := e.run("pr", "ready", fmt.Sprintf("%d", number), "-R", repo)
+	out, err := e.run("pr", "ready", strconv.Itoa(number), "-R", repo)
 	if err != nil {
 		return fmt.Errorf("gh pr ready: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -460,7 +461,7 @@ func EditPRBody(repo string, number int, body string) error {
 }
 
 func editPRBodyWith(e execer, repo string, number int, body string) error {
-	out, err := e.run("pr", "edit", fmt.Sprintf("%d", number),
+	out, err := e.run("pr", "edit", strconv.Itoa(number),
 		"--repo", repo, "--body", body)
 	if err != nil {
 		return fmt.Errorf("gh pr edit %d: %s: %w", number, strings.TrimSpace(string(out)), err)

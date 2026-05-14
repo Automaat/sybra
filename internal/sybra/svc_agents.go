@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,7 +62,7 @@ func (s *AgentService) SendMessage(agentID, text string) error {
 // RespondApproval sends a tool approval decision from the frontend.
 func (s *AgentService) RespondApproval(toolUseID string, approved bool) error {
 	if s.approval == nil {
-		return fmt.Errorf("approval server not initialized")
+		return errors.New("approval server not initialized")
 	}
 	return s.approval.RespondApproval(toolUseID, approved)
 }
@@ -202,7 +203,7 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(string(diffOut))
+	sb.Write(diffOut)
 	for relPath := range strings.SplitSeq(strings.TrimSpace(string(lsOut)), "\n") {
 		if relPath == "" {
 			continue
@@ -233,7 +234,7 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 // Returns an error if the worktree does not exist or the OS command fails.
 func (s *AgentService) OpenWorktree(taskID string) error {
 	if s.worktrees == nil {
-		return fmt.Errorf("worktree manager not available")
+		return errors.New("worktree manager not available")
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {

@@ -679,12 +679,16 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 }
 
 func conflictPrompt(pr github.PullRequest) string {
-	filesCtx := ""
+	var filesCtx string
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
-		filesCtx = "\n\nFiles changed in this PR:\n"
+		var sb strings.Builder
+		sb.WriteString("\n\nFiles changed in this PR:\n")
 		for _, f := range files {
-			filesCtx += "- " + f + "\n"
+			sb.WriteString("- ")
+			sb.WriteString(f)
+			sb.WriteByte('\n')
 		}
+		filesCtx = sb.String()
 	}
 
 	return fmt.Sprintf(

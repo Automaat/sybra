@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -206,7 +205,7 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	got := make(chan task.Task, 1)
 
 	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		tasks:         tasks,
 	}
 	r.createReviewTaskWithTriage(github.PullRequest{
@@ -253,7 +252,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := task.NewManager(store, nil)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)

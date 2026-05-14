@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 )
 
@@ -192,5 +192,5 @@ func ResolveTransition(transitions []Transition, fields map[string]string) (stri
 	if len(transitions) == 0 {
 		return "", nil
 	}
-	return "", fmt.Errorf("no matching transition found")
+	return "", errors.New("no matching transition found")
 }

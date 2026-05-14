@@ -14,7 +14,7 @@ import (
 func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager) {
 	t.Helper()
 	ctx := t.Context()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	emitted := make(chan struct{}, 16)
 	emit := func(string, any) { emitted <- struct{}{} }
 	mgr := agent.NewManager(ctx, emit, logger, t.TempDir())

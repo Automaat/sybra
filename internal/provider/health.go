@@ -209,7 +209,7 @@ func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 		prev = &Status{Provider: name}
 		c.statuses[name] = prev
 	}
-	flip := false
+	var flip bool
 	if fromProbe {
 		// Active probes overwrite unconditionally, but preserve an in-flight
 		// rate-limit window when the probe still reports healthy — the window

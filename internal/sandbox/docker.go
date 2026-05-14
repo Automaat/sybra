@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -224,7 +225,7 @@ func (m *Manager) startDocker(ctx context.Context, taskID, worktreePath string, 
 		return nil, fmt.Errorf("docker compose up: %w\n%s", err, out)
 	}
 
-	portArgs := extendArgs(baseArgs, "port", entryService, fmt.Sprintf("%d", cfg.Port))
+	portArgs := extendArgs(baseArgs, "port", entryService, strconv.Itoa(cfg.Port))
 	var hostPort string
 	for i := range 5 {
 		out, portErr := runCmd(ctx, worktreePath, nil, "docker", portArgs...)
