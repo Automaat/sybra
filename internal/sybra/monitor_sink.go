@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/monitor"
@@ -67,7 +68,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 	title, _ := scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
 	scrubbedBody, redactions := scrub.Scrub(body, wctx.Blocklist)
 
-	if existing, ok := s.findOpenByTitle(title); ok {
+	if existing, ok := s.findOpen(title, a.Fingerprint); ok {
 		appended := appendRedetectedNote(existing.Body, scrubbedBody, s.now())
 		if _, err := s.tasks.Update(existing.ID, task.Update{Body: &appended}); err != nil {
 			s.logger.Warn("monitor.routing.local.append", "task_id", existing.ID, "err", err)
@@ -107,24 +108,27 @@ func (s *monitorRoutingSink) dispatchCreatedWorkflow(taskID string) {
 	s.dispatchCreated(taskID)
 }
 
-// findOpenByTitle returns the first non-terminal task whose Title equals the
-// fingerprint-stable issue title. Ok is false when no match exists or the
-// task list cannot be read.
-func (s *monitorRoutingSink) findOpenByTitle(title string) (task.Task, bool) {
+// findOpen returns the first non-terminal task that matches the monitor chore
+// by title or by fingerprint embedded in the body. Title matching covers the
+// normal case; fingerprint matching covers tasks that were renamed by the
+// triage agent (the body is never modified by triage, so the fingerprint line
+// written by DeterministicIssueBody survives a rename). Ok is false when no
+// match exists or the task list cannot be read.
+func (s *monitorRoutingSink) findOpen(title, fp string) (task.Task, bool) {
 	all, err := s.tasks.List()
 	if err != nil {
 		s.logger.Warn("monitor.routing.local.list", "err", err)
 		return task.Task{}, false
 	}
+	marker := "- Fingerprint: `" + fp + "`"
 	for i := range all {
 		t := &all[i]
-		if t.Title != title {
-			continue
-		}
 		if task.IsTerminalStatus(t.Status) {
 			continue
 		}
-		return *t, true
+		if t.Title == title || strings.Contains(t.Body, marker) {
+			return *t, true
+		}
 	}
 	return task.Task{}, false
 }
