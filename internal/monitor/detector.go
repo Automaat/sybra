@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -169,6 +171,17 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["last_agent_role"] = last.Role
 		}
 		ev["last_agent_state"] = last.State
+		if last.Role == "human-review" && last.State == "stopped" {
+			if last.Verdict != "" {
+				ev["human_review_verdict"] = last.Verdict
+			} else if last.Result != "" {
+				// Fallback for runs persisted before the Verdict field was
+				// added: parse from the truncated Result text.
+				if d := parseHumanReviewDecision(last.Result); d != "" {
+					ev["human_review_verdict"] = d
+				}
+			}
+		}
 	}
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
@@ -328,4 +341,27 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 		return true
 	}
 	return fn(projectID)
+}
+
+var humanReviewVerdictRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
+
+// parseHumanReviewDecision extracts the "decision" field from a sybra-verdict
+// fenced block embedded in the human-review agent result text. Returns "human"
+// or "sybra_bug" on success, empty string on any parse failure.
+func parseHumanReviewDecision(result string) string {
+	m := humanReviewVerdictRe.FindStringSubmatch(result)
+	if len(m) < 2 {
+		return ""
+	}
+	var v struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &v); err != nil {
+		return ""
+	}
+	d := strings.ToLower(strings.TrimSpace(v.Decision))
+	if d != "human" && d != "sybra_bug" {
+		return ""
+	}
+	return d
 }

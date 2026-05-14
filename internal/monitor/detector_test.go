@@ -400,6 +400,198 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 }
 
+func TestParseHumanReviewDecision(t *testing.T) {
+	cases := []struct {
+		name   string
+		result string
+		want   string
+	}{
+		{
+			name:   "human verdict",
+			result: "Analysis complete.\n\n```sybra-verdict\n{\"decision\":\"human\",\"summary\":\"needs human\"}\n```",
+			want:   "human",
+		},
+		{
+			name:   "sybra_bug verdict",
+			result: "```sybra-verdict\n{\"decision\":\"sybra_bug\",\"summary\":\"workflow misfire\"}\n```",
+			want:   "sybra_bug",
+		},
+		{
+			name:   "case insensitive decision",
+			result: "```sybra-verdict\n{\"decision\":\"HUMAN\"}\n```",
+			want:   "human",
+		},
+		{
+			name:   "no verdict block",
+			result: "No structured verdict here.",
+			want:   "",
+		},
+		{
+			name:   "invalid decision value",
+			result: "```sybra-verdict\n{\"decision\":\"maybe\"}\n```",
+			want:   "",
+		},
+		{
+			name:   "malformed json",
+			result: "```sybra-verdict\n{broken\n```",
+			want:   "",
+		},
+		{
+			name:   "empty result",
+			result: "",
+			want:   "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseHumanReviewDecision(tc.result)
+			if got != tc.want {
+				t.Errorf("parseHumanReviewDecision = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+
+	t.Run("includes human_review_verdict when result has human decision", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result: "Analysis.\n\n```sybra-verdict\n{\"decision\":\"human\",\"summary\":\"needs direct work\"}\n```",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict")
+		}
+		if got != "human" {
+			t.Errorf("human_review_verdict = %q, want %q", got, "human")
+		}
+	})
+
+	t.Run("omits human_review_verdict when result is empty", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Result: ""},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["human_review_verdict"]; ok {
+			t.Error("evidence should not contain human_review_verdict when result is empty")
+		}
+	})
+
+	t.Run("omits human_review_verdict when agent still running", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "running",
+					Result: "```sybra-verdict\n{\"decision\":\"human\"}\n```",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["human_review_verdict"]; ok {
+			t.Error("evidence should not contain human_review_verdict when agent is still running")
+		}
+	})
+
+	t.Run("omits human_review_verdict when role is not human-review", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "fix1", Role: "fix-review", State: "stopped",
+					Result: "```sybra-verdict\n{\"decision\":\"human\"}\n```",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["human_review_verdict"]; ok {
+			t.Error("evidence should not contain human_review_verdict when role is not human-review")
+		}
+	})
+
+	t.Run("uses Verdict field when set, even with truncated Result", func(t *testing.T) {
+		// Simulates a long review response where the sybra-verdict block was
+		// cut off during Result truncation but the Verdict field was populated
+		// from the live agent output at completion time.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result:  "Very long diagnostic writeup... (truncated)",
+					Verdict: "sybra_bug",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict")
+		}
+		if got != "sybra_bug" {
+			t.Errorf("human_review_verdict = %q, want %q", got, "sybra_bug")
+		}
+	})
+
+	t.Run("Verdict field takes priority over Result parsing", func(t *testing.T) {
+		// Verdict field wins even when Result also contains a parseable block.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result:  "```sybra-verdict\n{\"decision\":\"human\"}\n```",
+					Verdict: "sybra_bug",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict")
+		}
+		if got != "sybra_bug" {
+			t.Errorf("human_review_verdict = %q, want sybra_bug (Verdict field wins)", got)
+		}
+	})
+}
+
 func TestCounts(t *testing.T) {
 	tasks := []task.Task{
 		mkTask("a", task.StatusTodo),

@@ -126,13 +126,22 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
 	}
-	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, map[string]any{
+	runUpdates := map[string]any{
 		"state":      string(state),
 		"cost_usd":   cost,
 		"result":     truncated,
 		"log_file":   ag.LogPath,
 		"session_id": ag.GetSessionID(),
-	}); err != nil {
+	}
+	// For human-review agents, parse the verdict from the live (untruncated)
+	// output and persist it in its own field so detector.go can read it even
+	// when the full result text is longer than maxResultLen.
+	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+		if v, err := parseVerdict(finalAssistantText(ag)); err == nil {
+			runUpdates["verdict"] = v.Decision
+		}
+	}
+	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 

@@ -142,8 +142,12 @@ type AgentRun struct {
 	CostUSD   float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
 	Prompt    string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Result    string    `yaml:"result,omitempty" json:"result"`
-	LogFile   string    `yaml:"log_file,omitempty" json:"logFile"`
-	SessionID string    `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
+	// Verdict holds the parsed decision for human-review runs ("human" or
+	// "sybra_bug"). Extracted from live agent output at completion time so
+	// it survives Result truncation.
+	Verdict   string `yaml:"verdict,omitempty" json:"verdict,omitempty"`
+	LogFile   string `yaml:"log_file,omitempty" json:"logFile"`
+	SessionID string `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
 }
 
 type Task struct {
