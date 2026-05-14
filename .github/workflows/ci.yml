@@ -78,9 +78,8 @@ jobs:
           version: latest
 
   lint-nilaway:
-    name: Nilaway
+    name: Nilaway (advisory)
     runs-on: ubuntu-latest
-    continue-on-error: true # advisory until baseline is clean
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -92,9 +91,29 @@ jobs:
       - name: Install nilaway
         run: go install go.uber.org/nilaway/cmd/nilaway@latest
 
-      - name: Run nilaway
-        # Skip vendored Wails replace dirs and generated test fixtures.
-        run: nilaway -include-pkgs="github.com/Automaat/sybra" ./...
+      - name: Run nilaway (summary only, never fails)
+        # Findings are pre-existing; graduate to blocking after a dedicated
+        # cleanup PR fixes the baseline. Output is appended to the job
+        # summary so reviewers can see new regressions on each run.
+        run: |
+          set +e
+          nilaway -include-pkgs="github.com/Automaat/sybra" ./... > nilaway.out 2>&1
+          rc=$?
+          {
+            echo "### Nilaway findings"
+            echo
+            if [ "$rc" -eq 0 ]; then
+              echo "_No issues._"
+            else
+              echo "<details><summary>$(grep -c '^/' nilaway.out || echo 0) findings</summary>"
+              echo
+              echo '```'
+              cat nilaway.out
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
   lint-dockerfile:
     name: Dockerfile Lint
