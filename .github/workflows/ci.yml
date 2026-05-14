@@ -78,7 +78,7 @@ jobs:
           version: latest
 
   lint-nilaway:
-    name: Nilaway (advisory)
+    name: Nilaway
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -91,21 +91,29 @@ jobs:
       - name: Install nilaway
         run: go install go.uber.org/nilaway/cmd/nilaway@latest
 
-      - name: Run nilaway (summary only, never fails)
-        # Findings are pre-existing; graduate to blocking after a dedicated
-        # cleanup PR fixes the baseline. Output is appended to the job
-        # summary so reviewers can see new regressions on each run.
+      - name: Run nilaway
+        # Baseline ratchet: 31 pre-existing findings recorded at enforcement
+        # commit. Fails on any new nil-safety regression (count > baseline).
+        # Reduce NILAWAY_BASELINE to 0 once the follow-up cleanup PR lands.
         run: |
+          NILAWAY_BASELINE=31
           set +e
           nilaway -include-pkgs="github.com/Automaat/sybra" ./... > nilaway.out 2>&1
-          rc=$?
+          NILAWAY_EXIT=$?
+          FINDING_COUNT=$(grep -c '^/' nilaway.out)
+          set -e
+          if [ "$NILAWAY_EXIT" -ne 0 ] && [ "$FINDING_COUNT" -eq 0 ]; then
+            echo "::error::Nilaway exited ${NILAWAY_EXIT} with no parseable findings — crash or package-load failure."
+            cat nilaway.out >&2
+            exit "$NILAWAY_EXIT"
+          fi
           {
             echo "### Nilaway findings"
             echo
-            if [ "$rc" -eq 0 ]; then
+            if [ "$FINDING_COUNT" -eq 0 ]; then
               echo "_No issues._"
             else
-              echo "<details><summary>$(grep -c '^/' nilaway.out || echo 0) findings</summary>"
+              echo "<details><summary>${FINDING_COUNT} findings (baseline: ${NILAWAY_BASELINE})</summary>"
               echo
               echo '```'
               cat nilaway.out
@@ -113,7 +121,11 @@ jobs:
               echo "</details>"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          exit 0
+          if [ "$FINDING_COUNT" -gt "$NILAWAY_BASELINE" ]; then
+            echo "::error::Nilaway: ${FINDING_COUNT} findings exceeds baseline of ${NILAWAY_BASELINE}. Fix new nil-safety regressions before merging."
+            exit 1
+          fi
+          echo "Nilaway: ${FINDING_COUNT}/${NILAWAY_BASELINE} findings — OK"
 
   lint-dockerfile:
     name: Dockerfile Lint

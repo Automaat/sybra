@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { render, cleanup } from '@testing-library/svelte'
 
 vi.mock('@skeletonlabs/skeleton-svelte', async (importOriginal) => {
   const mod = await importOriginal<typeof import('@skeletonlabs/skeleton-svelte')>()
