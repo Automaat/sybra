@@ -12,7 +12,7 @@
     "build:desktop": "VITE_MODE=desktop vite build",
     "build:web": "VITE_MODE=web vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "oxlint .",
     "test": "vitest run",
     "test:watch": "vitest",
