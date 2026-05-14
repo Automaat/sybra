@@ -334,6 +334,26 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("human-review hint distinguishes filing failures from status bug", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "human-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		// All three failure-qualified variants must be listed so the agent can
+		// recognise a legitimately human-required task (issue filing failed)
+		// and not misreport it as a status-transition bug.
+		for _, variant := range []string{"no issue payload", "local task creation failed", "issue submission failed"} {
+			if !strings.Contains(prompt, variant) {
+				t.Errorf("prompt must name filing failure variant %q", variant)
+			}
+		}
+		// Bare sybra_bug (no qualifier) should still be flagged as a status bug.
+		if !strings.Contains(prompt, "sybra_bug") {
+			t.Error("prompt must still mention sybra_bug for the bare-verdict status-bug case")
+		}
+	})
+
 	t.Run("no human-review hint when agent still running", func(t *testing.T) {
 		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
 			"last_agent_role":  "human-review",
