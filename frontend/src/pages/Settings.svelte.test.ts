@@ -234,4 +234,156 @@ describe('Settings', () => {
       expect(screen.getByText('Providers')).toBeDefined()
     })
   })
+
+  it('renders Color Scheme options (system, light, dark)', () => {
+    mockGetSettings.mockReturnValue(new Promise(() => {}))
+    render(Settings)
+    expect(screen.getByText('System')).toBeDefined()
+    expect(screen.getByText('Light')).toBeDefined()
+    expect(screen.getByText('Dark')).toBeDefined()
+  })
+
+  it('persists colorScheme to localStorage when changed', async () => {
+    mockGetSettings.mockReturnValue(new Promise(() => {}))
+    render(Settings)
+    const select = screen.getByLabelText('Color Scheme') as HTMLSelectElement
+    await fireEvent.change(select, { target: { value: 'dark' } })
+    await vi.waitFor(() => {
+      expect(localStorage.getItem('colorScheme')).toBe('dark')
+    })
+  })
+
+  it('toggles dark class on html when dark selected', async () => {
+    mockGetSettings.mockReturnValue(new Promise(() => {}))
+    render(Settings)
+    const select = screen.getByLabelText('Color Scheme') as HTMLSelectElement
+    await fireEvent.change(select, { target: { value: 'dark' } })
+    await vi.waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(true)
+    })
+    await fireEvent.change(select, { target: { value: 'light' } })
+    await vi.waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(false)
+    })
+  })
+
+  it('Reset button appears when settings are dirty', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+    const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
+    await fireEvent.input(concurrencyInput, { target: { value: '7' } })
+    await vi.waitFor(() => {
+      expect(screen.getByText('Reset')).toBeDefined()
+    })
+  })
+
+  it('Reset button reverts pending changes', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+    const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
+    await fireEvent.input(concurrencyInput, { target: { value: '7' } })
+    await vi.waitFor(() => screen.getByText('Reset'))
+    await fireEvent.click(screen.getByText('Reset'))
+    await vi.waitFor(() => {
+      const after = screen.getByLabelText('Max Concurrent') as HTMLInputElement
+      expect(after.value).toBe('3')
+    })
+  })
+
+  it('renders Save and Reset only one button initially (Save)', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByText('Agent Defaults'))
+    expect(screen.getByText('Save')).toBeDefined()
+    expect(screen.queryByText('Reset')).toBeNull()
+  })
+
+  it('shows server version after GetVersion resolves', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    mockGetVersion.mockResolvedValue({ server: 'v2.7.0', client: 'v2.7.0' })
+    render(Settings)
+    await vi.waitFor(() => {
+      expect(screen.getByText('v2.7.0')).toBeDefined()
+    })
+  })
+
+  it('shows unavailable when GetVersion rejects', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    mockGetVersion.mockRejectedValue(new Error('no version'))
+    render(Settings)
+    await vi.waitFor(() => {
+      expect(screen.getByText('unavailable')).toBeDefined()
+    })
+  })
+
+  it('renders directories list for known dir keys', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => {
+      expect(screen.getByText('Directories')).toBeDefined()
+      expect(screen.getByDisplayValue('/home/.sybra/tasks')).toBeDefined()
+      expect(screen.getByDisplayValue('/home/.sybra/skills')).toBeDefined()
+    })
+  })
+
+  it('toggles desktop notifications checkbox', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByText('Notifications'))
+    const checkbox = screen.getByLabelText('Desktop notifications (macOS)') as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+    await fireEvent.click(checkbox)
+    await vi.waitFor(() => {
+      expect(checkbox.checked).toBe(true)
+    })
+  })
+
+  it('toggles autoTriage', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByText('Auto-triage'))
+    const label = screen.getByText('Auto-triage').closest('label')
+    const checkbox = label?.querySelector('input[type="checkbox"]') as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+    await fireEvent.click(checkbox)
+    await vi.waitFor(() => {
+      expect(checkbox.checked).toBe(true)
+    })
+  })
+
+  it('switches model options when provider changes to codex', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    mockGetCodexModels.mockResolvedValue([
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4' },
+    ])
+    render(Settings)
+    await vi.waitFor(() => screen.getByLabelText('Agent Type'))
+    const providerSelect = screen.getByLabelText('Agent Type') as HTMLSelectElement
+    await fireEvent.change(providerSelect, { target: { value: 'codex' } })
+    await vi.waitFor(() => {
+      expect(screen.getByText('GPT-5.4')).toBeDefined()
+    })
+  })
+
+  it('clears success message after save', async () => {
+    vi.useFakeTimers()
+    try {
+      mockGetSettings.mockResolvedValue({ ...mockSettings })
+      mockUpdateSettings.mockResolvedValue(undefined)
+      render(Settings)
+      await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+      const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
+      await fireEvent.input(concurrencyInput, { target: { value: '5' } })
+      await fireEvent.click(screen.getByText('Save'))
+      await vi.waitFor(() => screen.getByText('Settings saved'))
+      vi.advanceTimersByTime(3001)
+      await vi.waitFor(() => {
+        expect(screen.queryByText('Settings saved')).toBeNull()
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

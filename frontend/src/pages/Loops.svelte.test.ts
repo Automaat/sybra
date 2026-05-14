@@ -168,4 +168,125 @@ describe('Loops', () => {
     render(Loops)
     expect(screen.getByText('last: never')).toBeDefined()
   })
+
+  it('formats interval in days for >=86400 seconds', () => {
+    Object.assign(loopStore, { list: [makeLoop({ intervalSec: 86400 })] })
+    render(Loops)
+    expect(screen.getByText('every 1d')).toBeDefined()
+  })
+
+  it('formats interval in minutes for sub-hour values', () => {
+    Object.assign(loopStore, { list: [makeLoop({ intervalSec: 300 })] })
+    render(Loops)
+    expect(screen.getByText('every 5m')).toBeDefined()
+  })
+
+  it('formats interval in seconds for sub-minute values', () => {
+    Object.assign(loopStore, { list: [makeLoop({ intervalSec: 30 })] })
+    render(Loops)
+    expect(screen.getByText('every 30s')).toBeDefined()
+  })
+
+  it('shows "just now" for very recent lastRunAt', () => {
+    Object.assign(loopStore, {
+      list: [makeLoop({ lastRunAt: new Date(Date.now() - 5_000).toISOString() })],
+    })
+    render(Loops)
+    expect(screen.getByText('last: just now')).toBeDefined()
+  })
+
+  it('shows minutes-ago for recent lastRunAt', () => {
+    Object.assign(loopStore, {
+      list: [makeLoop({ lastRunAt: new Date(Date.now() - 5 * 60_000).toISOString() })],
+    })
+    render(Loops)
+    expect(screen.getByText('last: 5m ago')).toBeDefined()
+  })
+
+  it('shows hours-ago for older lastRunAt', () => {
+    Object.assign(loopStore, {
+      list: [makeLoop({ lastRunAt: new Date(Date.now() - 3 * 3600_000).toISOString() })],
+    })
+    render(Loops)
+    expect(screen.getByText('last: 3h ago')).toBeDefined()
+  })
+
+  it('shows days-ago for much older lastRunAt', () => {
+    Object.assign(loopStore, {
+      list: [makeLoop({ lastRunAt: new Date(Date.now() - 2 * 86400_000).toISOString() })],
+    })
+    render(Loops)
+    expect(screen.getByText('last: 2d ago')).toBeDefined()
+  })
+
+  it('calls loopStore.update with toggled enabled when Pause clicked', async () => {
+    mockUpdate.mockResolvedValue(undefined)
+    Object.assign(loopStore, { list: [makeLoop({ id: 'lp', enabled: true })] })
+    render(Loops)
+    await fireEvent.click(screen.getByText('Pause'))
+    expect(mockUpdate).toHaveBeenCalled()
+    const arg = mockUpdate.mock.calls[0][0]
+    expect(arg.enabled).toBe(false)
+  })
+
+  it('calls loopStore.update with enabled=true when Enable clicked', async () => {
+    mockUpdate.mockResolvedValue(undefined)
+    Object.assign(loopStore, { list: [makeLoop({ id: 'lp', enabled: false })] })
+    render(Loops)
+    await fireEvent.click(screen.getByText('Enable'))
+    expect(mockUpdate).toHaveBeenCalled()
+    const arg = mockUpdate.mock.calls[0][0]
+    expect(arg.enabled).toBe(true)
+  })
+
+  it('sets store error when runNow rejects', async () => {
+    mockRunNow.mockRejectedValue(new Error('run failed'))
+    Object.assign(loopStore, { list: [makeLoop({ id: 'lp' })] })
+    render(Loops)
+    await fireEvent.click(screen.getByText('Run now'))
+    await vi.waitFor(() => {
+      expect(loopStore.error).toContain('run failed')
+    })
+  })
+
+  it('sets store error when remove rejects', async () => {
+    mockRemove.mockRejectedValue(new Error('delete failed'))
+    Object.assign(loopStore, { list: [makeLoop({ id: 'lp' })] })
+    render(Loops)
+    await fireEvent.click(screen.getByText('Delete'))
+    await vi.waitFor(() => {
+      expect(loopStore.error).toContain('delete failed')
+    })
+  })
+
+  it('subscribes to LoopAgentUpdated event on mount', () => {
+    render(Loops)
+    expect(mockEventsOn).toHaveBeenCalledWith('loopagent:updated', expect.any(Function))
+  })
+
+  it('shows model badge when set', () => {
+    Object.assign(loopStore, { list: [makeLoop({ model: 'opus' })] })
+    render(Loops)
+    expect(screen.getByText('opus')).toBeDefined()
+  })
+
+  it('shows prompt text', () => {
+    Object.assign(loopStore, { list: [makeLoop({ prompt: '/check-deploys' })] })
+    render(Loops)
+    expect(screen.getByText('/check-deploys')).toBeDefined()
+  })
+
+  it('renders multiple loops independently', () => {
+    Object.assign(loopStore, {
+      list: [
+        makeLoop({ id: 'l1', name: 'one' }),
+        makeLoop({ id: 'l2', name: 'two', enabled: false }),
+      ],
+    })
+    render(Loops)
+    expect(screen.getByText('one')).toBeDefined()
+    expect(screen.getByText('two')).toBeDefined()
+    expect(screen.getByText('active')).toBeDefined()
+    expect(screen.getByText('paused')).toBeDefined()
+  })
 })

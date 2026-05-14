@@ -248,4 +248,201 @@ describe('Reviews', () => {
     render(Reviews)
     expect(screen.getByText('3')).toBeDefined()
   })
+
+  it('shows projectId in sidebar when set', () => {
+    const task = makeTask({ id: 't1', title: 'Scoped task', projectId: 'owner/repo' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    render(Reviews)
+    expect(screen.getByText('owner/repo')).toBeDefined()
+  })
+
+  it('shows View Task button when onviewtask is passed', async () => {
+    const task = makeTask({ id: 't1', title: 'Linkable task' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    const onviewtask = vi.fn()
+    render(Reviews, { props: { onviewtask } })
+    await fireEvent.click(screen.getByText('Linkable task'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('View Task →')).toBeDefined()
+    })
+    await fireEvent.click(screen.getByText('View Task →'))
+    expect(onviewtask).toHaveBeenCalledWith('t1')
+  })
+
+  it('renders Send Message button (disabled until feedback and live agent)', async () => {
+    const task = makeTask({ id: 't1', title: 'Send target' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockHasLivePlanAgent.mockResolvedValue(false)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Send target'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Send Message')).toBeDefined()
+    })
+  })
+
+  it('calls sendPlanMessage when Send Message clicked with live agent and feedback', async () => {
+    const task = makeTask({ id: 't1', title: 'Live agent task' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockHasLivePlanAgent.mockResolvedValue(true)
+    mockSendPlanMessage.mockResolvedValue(undefined)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Live agent task'))
+    await vi.waitFor(() => screen.getByPlaceholderText(/Rejection feedback/))
+    const textarea = screen.getByPlaceholderText(/Rejection feedback/)
+    await fireEvent.input(textarea, { target: { value: 'tighten section 3' } })
+    await fireEvent.click(screen.getByText('Send Message'))
+    await vi.waitFor(() => {
+      expect(mockSendPlanMessage).toHaveBeenCalledWith('t1', 'tighten section 3')
+    })
+  })
+
+  it('calls approveTestPlan for test-plan-review tasks', async () => {
+    const task = makeTask({ id: 't1', title: 'Test plan task', status: 'test-plan-review' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'test-plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockApproveTestPlan.mockResolvedValue(undefined)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Test plan task'))
+    await vi.waitFor(() => screen.getByText('Approve'))
+    await fireEvent.click(screen.getByText('Approve'))
+    await vi.waitFor(() => {
+      expect(mockApproveTestPlan).toHaveBeenCalledWith('t1')
+    })
+  })
+
+  it('calls rejectTestPlan with feedback for test-plan-review tasks', async () => {
+    const task = makeTask({ id: 't1', title: 'Test reject', status: 'test-plan-review' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'test-plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockRejectTestPlan.mockResolvedValue(undefined)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Test reject'))
+    await vi.waitFor(() => screen.getByPlaceholderText(/Rejection feedback/))
+    const textarea = screen.getByPlaceholderText(/Rejection feedback/)
+    await fireEvent.input(textarea, { target: { value: 'missing edge case' } })
+    await fireEvent.click(screen.getByText('Reject'))
+    await vi.waitFor(() => {
+      expect(mockRejectTestPlan).toHaveBeenCalledWith('t1', 'missing edge case')
+    })
+  })
+
+  it('renders Plan Critique section when planCritique is present', async () => {
+    const task = makeTask({
+      id: 't1',
+      title: 'Critiqued task',
+      planCritique: 'Plan needs more detail on auth',
+    })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Critiqued task'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Plan Critique (auto-review)')).toBeDefined()
+    })
+  })
+
+  it('shows error message when reject fails', async () => {
+    const task = makeTask({ id: 't1', title: 'Reject fails' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockRejectPlan.mockRejectedValue(new Error('reject error'))
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Reject fails'))
+    await vi.waitFor(() => screen.getByText('Reject'))
+    await fireEvent.click(screen.getByText('Reject'))
+    await vi.waitFor(() => {
+      expect(screen.getByText(/reject error/)).toBeDefined()
+    })
+  })
+
+  it('shows unresolved comments banner in detail panel when count > 0', async () => {
+    const task = makeTask({ id: 't1', title: 'Commented' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockUnresolvedCount.mockReturnValue(2)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Commented'))
+    await vi.waitFor(() => {
+      expect(screen.getByText(/2 unresolved comments/)).toBeDefined()
+    })
+  })
+
+  it('uses singular comment label when only one unresolved', async () => {
+    const task = makeTask({ id: 't1', title: 'One comment' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockUnresolvedCount.mockReturnValue(1)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('One comment'))
+    await vi.waitFor(() => {
+      expect(screen.getByText(/1 unresolved comment$/)).toBeDefined()
+    })
+  })
+
+  it('approve "a" keypress triggers plan approval', async () => {
+    const task = makeTask({ id: 't1', title: 'Keyboard task' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockApprovePlan.mockResolvedValue(undefined)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Keyboard task'))
+    await vi.waitFor(() => screen.getByText('Approve'))
+    await fireEvent.keyDown(window, { key: 'a' })
+    await vi.waitFor(() => {
+      expect(mockApprovePlan).toHaveBeenCalledWith('t1')
+    })
+  })
+
+  it('reject "r" keypress triggers plan rejection', async () => {
+    const task = makeTask({ id: 't1', title: 'Reject keyboard' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [task]
+      return []
+    })
+    taskItemsMap.set('t1', task)
+    mockRejectPlan.mockResolvedValue(undefined)
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Reject keyboard'))
+    await vi.waitFor(() => screen.getByText('Reject'))
+    await fireEvent.keyDown(window, { key: 'r' })
+    await vi.waitFor(() => {
+      expect(mockRejectPlan).toHaveBeenCalledWith('t1', '')
+    })
+  })
 })
