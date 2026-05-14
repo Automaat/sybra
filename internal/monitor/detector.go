@@ -181,12 +181,6 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			if verdict != "" {
 				ev["human_review_verdict"] = verdict
 			}
-			// Human-review confirmed genuine human-required: Sybra has already
-			// diagnosed the task and updated the body. Suppress the anomaly so
-			// we don't spawn repeated investigator agents for the same situation.
-			if verdict == "human" {
-				return nil
-			}
 		}
 	}
 	return &Anomaly{

@@ -456,8 +456,8 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 
-	t.Run("suppresses anomaly when result has human decision", func(t *testing.T) {
-		// Human-review confirmed genuine human-required: no investigator should spawn.
+	t.Run("still fires anomaly when result has human decision", func(t *testing.T) {
+		// Human-review confirmed genuine human-required: operator reminder must still fire.
 		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
@@ -469,12 +469,15 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
 		report := Detect(in)
-		if len(report.Anomalies) != 0 {
-			t.Fatalf("want 0 anomalies (suppressed), got %d", len(report.Anomalies))
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly (confirmed human-blocked must not be suppressed), got %d", len(report.Anomalies))
+		}
+		if v, _ := report.Anomalies[0].Evidence["human_review_verdict"].(string); v != "human" {
+			t.Fatalf("want human_review_verdict=human in evidence, got %q", v)
 		}
 	})
 
-	t.Run("suppresses anomaly when Verdict field is human", func(t *testing.T) {
+	t.Run("still fires anomaly when Verdict field is human", func(t *testing.T) {
 		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
@@ -483,8 +486,11 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
 		report := Detect(in)
-		if len(report.Anomalies) != 0 {
-			t.Fatalf("want 0 anomalies (suppressed), got %d", len(report.Anomalies))
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly (confirmed human-blocked must not be suppressed), got %d", len(report.Anomalies))
+		}
+		if v, _ := report.Anomalies[0].Evidence["human_review_verdict"].(string); v != "human" {
+			t.Fatalf("want human_review_verdict=human in evidence, got %q", v)
 		}
 	})
 
