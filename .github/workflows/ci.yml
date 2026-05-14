@@ -22,7 +22,7 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go tests
-        run: go test ./...
+        run: go test -race -timeout 5m ./...
 
   test-go-e2e:
     name: Go E2E Tests
@@ -37,7 +37,7 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go e2e tests
-        run: go test -tags e2e -timeout 10m ./internal/sybra/...
+        run: go test -race -tags e2e -timeout 10m ./internal/sybra/...
 
   test-frontend:
     name: Frontend Tests
@@ -76,6 +76,25 @@ jobs:
       - uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           version: latest
+
+  lint-nilaway:
+    name: Nilaway
+    runs-on: ubuntu-latest
+    continue-on-error: true # advisory until baseline is clean
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - name: Install nilaway
+        run: go install go.uber.org/nilaway/cmd/nilaway@latest
+
+      - name: Run nilaway
+        # Skip vendored Wails replace dirs and generated test fixtures.
+        run: nilaway -include-pkgs="github.com/Automaat/sybra" ./...
 
   lint-dockerfile:
     name: Dockerfile Lint

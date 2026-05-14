@@ -68,3 +68,5 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect; intentionally v0 by module name
 )
+
+require go.uber.org/goleak v1.3.0
