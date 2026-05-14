@@ -257,6 +257,36 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview_WithPR(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "pqr678",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:pqr678",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "pqr678",
+			"status":           "human-required",
+			"dwell_h":          10.0,
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+			"pr_number":        16601,
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if !strings.Contains(body, "PR #16601") {
+		t.Error("hint should include PR number when available")
+	}
+	if !strings.Contains(body, "CHANGES_REQUESTED") {
+		t.Error("hint should mention CHANGES_REQUESTED action")
+	}
+	if !strings.Contains(body, "sybra-cli update pqr678 --status done") {
+		t.Error("hint should include done command once PR merges")
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_FixReviewStillRunning(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,

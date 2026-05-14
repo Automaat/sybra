@@ -236,11 +236,11 @@ func suggestedInvestigation(a Anomaly) string {
 		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {
 			hint += "- Blocking reason: " + reason + "\n"
 		}
+		taskID, _ := a.Evidence["task_id"].(string)
+		prNum, _ := a.Evidence["pr_number"].(int)
 		lastRole, _ := a.Evidence["last_agent_role"].(string)
 		lastState, _ := a.Evidence["last_agent_state"].(string)
 		if lastRole == "human-review" && lastState == "stopped" {
-			taskID, _ := a.Evidence["task_id"].(string)
-			prNum, _ := a.Evidence["pr_number"].(int)
 			verdict, _ := a.Evidence["human_review_verdict"].(string)
 			if verdict == "human" {
 				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation).\n"
@@ -262,7 +262,15 @@ func suggestedInvestigation(a Anomaly) string {
 				hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 			}
 		} else if lastRole == "fix-review" && lastState == "stopped" {
-			hint += "- Fix-review agent finished — check the PR and agent log for the outcome, then approve or request further changes.\n"
+			hint += "- Fix-review agent finished — check the PR and agent log for the outcome.\n"
+			if prNum > 0 {
+				hint += fmt.Sprintf("- Check PR #%d review state: if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes and no conflicts, merge.\n", prNum)
+			} else {
+				hint += "- Check the PR state: address remaining comments, re-request review, or merge if approved.\n"
+			}
+			if taskID != "" {
+				hint += "- Once PR merges, mark task done: `sybra-cli update " + taskID + " --status done`.\n"
+			}
 		}
 		return hint
 	default:
