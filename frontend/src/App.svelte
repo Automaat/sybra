@@ -35,6 +35,7 @@
   import type { PaletteCtx } from './lib/palette-commands.js'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
   import TaskSidebar from './components/TaskSidebar.svelte'
+  import { handleAppKeydown, type AppKeyAction } from './lib/app-keyboard.js'
   import { Cloud, AlertTriangle } from '@lucide/svelte'
 
   const paletteCtx: PaletteCtx = {
@@ -162,111 +163,41 @@
       let pendingG = false
       let gTimer: ReturnType<typeof setTimeout> | null = null
 
-      function handleKeydown(e: KeyboardEvent) {
-        // Clear G-chord when a modifier key combo fires
-        if ((e.metaKey || e.ctrlKey || e.altKey) && pendingG) {
-          pendingG = false
-          if (gTimer) { clearTimeout(gTimer); gTimer = null }
-        }
-
-        if (e.metaKey && e.key === 'n') {
-          e.preventDefault()
-          quickAddOpen = true
-        }
-        if (e.metaKey && e.key === 'k') {
-          e.preventDefault()
-          commandPaletteOpen = true
-        }
-        if (e.metaKey && e.key === '/') {
-          e.preventDefault()
-          helpOpen = true
-        }
-        if (e.metaKey && e.key === '1') {
-          e.preventDefault()
-          navStore.reset({ kind: 'dashboard' })
-        }
-        if (e.metaKey && e.key === '2') {
-          e.preventDefault()
-          navStore.reset({ kind: 'task-list' })
-        }
-        if (e.metaKey && e.key === '3') {
-          e.preventDefault()
-          navStore.reset({ kind: 'project-list' })
-        }
-        if (e.metaKey && e.key === '4') {
-          e.preventDefault()
-          navStore.reset({ kind: 'agents' })
-        }
-        if (e.metaKey && e.key === '5') {
-          e.preventDefault()
-          navStore.reset({ kind: 'github' })
-        }
-        if (e.metaKey && e.key === '6') {
-          e.preventDefault()
-          navStore.reset({ kind: 'reviews' })
-        }
-        if (e.metaKey && e.key === '7') {
-          e.preventDefault()
-          navStore.reset({ kind: 'stats' })
-        }
-        if (e.metaKey && e.key === ',') {
-          e.preventDefault()
-          navStore.reset({ kind: 'settings' })
-        }
-        if (e.metaKey && e.key === 'f') {
-          e.preventDefault()
-          if (navStore.page.kind === 'github') {
-            window.dispatchEvent(new CustomEvent('focus-renovate-search'))
-          } else {
-            navStore.reset({ kind: 'task-list' })
-            requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
-          }
-        }
-        if (e.metaKey && e.key === 'b') {
-          e.preventDefault()
-          window.dispatchEvent(new CustomEvent('toggle-view'))
-        }
-        if (e.metaKey && e.key === 'i') {
-          e.preventDefault()
-          if (navStore.page.kind === 'task-list') {
+      function applyAction(action: AppKeyAction) {
+        switch (action.type) {
+          case 'open-quickadd': quickAddOpen = true; break
+          case 'open-palette': commandPaletteOpen = true; break
+          case 'open-help': helpOpen = true; break
+          case 'nav-reset': navStore.reset(action.page); break
+          case 'toggle-view':
+            window.dispatchEvent(new CustomEvent('toggle-view'))
+            break
+          case 'focus-search':
+            if (action.target === 'renovate') {
+              window.dispatchEvent(new CustomEvent('focus-renovate-search'))
+            } else {
+              navStore.reset({ kind: 'task-list' })
+              requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('focus-search')))
+            }
+            break
+          case 'toggle-sidebar':
             if (focusedTaskIdFromList) {
               sidebarTaskId = sidebarTaskId === focusedTaskIdFromList ? null : focusedTaskIdFromList
             } else {
               sidebarTaskId = null
             }
-          }
+            break
         }
+      }
 
-        // G-chord navigation and bare shortcuts: not in input/textarea/contenteditable
-        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-          const target = e.target as HTMLElement
-          const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
-          if (!inInput && e.shiftKey && e.key === '?') {
-            e.preventDefault()
-            helpOpen = true
-          }
-        }
-        if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-          const target = e.target as HTMLElement
-          const inInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
-          if (!inInput) {
-            if (pendingG) {
-              pendingG = false
-              if (gTimer) { clearTimeout(gTimer); gTimer = null }
-              if (e.key === 'i') { e.preventDefault(); navStore.reset({ kind: 'task-list' }) }
-              else if (e.key === 'a') { e.preventDefault(); navStore.reset({ kind: 'task-list', filter: 'in-progress' }) }
-              else if (e.key === 'p') { e.preventDefault(); navStore.reset({ kind: 'project-list' }) }
-              else if (e.key === 's') { e.preventDefault(); navStore.reset({ kind: 'settings' }) }
-              // unmapped letters: clear pendingG silently, no navigation
-              return
-            }
-            if (e.key === 'g') {
-              e.preventDefault()
-              pendingG = true
-              gTimer = setTimeout(() => { pendingG = false; gTimer = null }, 1500)
-              return
-            }
-          }
+      function handleKeydown(e: KeyboardEvent) {
+        const result = handleAppKeydown(e, { pendingG, currentPageKind: navStore.page.kind })
+        if (result.preventDefault) e.preventDefault()
+        if (result.action !== null) applyAction(result.action)
+        if (result.nextPendingG !== pendingG) {
+          if (gTimer) { clearTimeout(gTimer); gTimer = null }
+          pendingG = result.nextPendingG
+          if (pendingG) gTimer = setTimeout(() => { pendingG = false; gTimer = null }, 1500)
         }
       }
       window.addEventListener('keydown', handleKeydown)
