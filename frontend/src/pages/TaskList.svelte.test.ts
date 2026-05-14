@@ -33,6 +33,7 @@ vi.mock('../components/shell/MobileSheet.svelte', () => ({ default: () => {} }))
 const { taskStore } = await import('../stores/tasks.svelte.js')
 const { projectStore } = await import('../stores/projects.svelte.js')
 const { notificationStore } = await import('../stores/notifications.svelte.js')
+const { viewModeStore } = await import('../lib/view-mode.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
 const mockTask = (id: string, title: string, status = 'todo') => ({
@@ -54,6 +55,7 @@ describe('TaskList', () => {
     Object.assign(taskStore, { loading: false, error: '', list: [], tasks: new Map(), create: vi.fn(), update: vi.fn() })
     Object.assign(projectStore, { list: [] })
     vi.mocked(notificationStore.pushLocal).mockClear()
+    viewModeStore.set('board')
   })
 
   afterEach(() => {
@@ -210,6 +212,68 @@ describe('TaskList', () => {
       Object.assign(projectStore, { list: [] })
       render(TaskList, { props: { onselect: vi.fn() } })
       expect(screen.queryByText('All projects')).toBeNull()
+    })
+  })
+
+  describe('agent mode filter chip', () => {
+    it('renders All, Headless, Interactive buttons', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('All')).toBeDefined()
+      expect(screen.getByText('Headless')).toBeDefined()
+      expect(screen.getByText('Interactive')).toBeDefined()
+    })
+  })
+
+  describe('clear filters', () => {
+    it('does not show Clear filters when no filters active', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText('Clear filters')).toBeNull()
+    })
+  })
+
+  describe('done column visibility', () => {
+    it('hides Done column by default', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText(/^Done$/)).toBeNull()
+    })
+  })
+
+  describe('mobile filter trigger', () => {
+    it('renders mobile filters button', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByLabelText('Filters')).toBeDefined()
+    })
+
+    it('renders mobile search input', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      const inputs = screen.getAllByPlaceholderText('Search tasks...')
+      expect(inputs.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('optional callbacks', () => {
+    it('does not crash when onnewTask is omitted', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Todo')).toBeDefined()
+    })
+
+    it('does not crash when onfocusedtaskchange is omitted', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Todo')).toBeDefined()
+    })
+  })
+
+  describe('hint bar', () => {
+    it('does not render hint bar when no task focused', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText('open')).toBeNull()
+    })
+  })
+
+  describe('filter prop', () => {
+    it('renders without error when filter=in-progress is passed', () => {
+      render(TaskList, { props: { onselect: vi.fn(), filter: 'in-progress' } })
+      expect(screen.getByText('Todo')).toBeDefined()
     })
   })
 })
