@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // TestPRMonitorEligible exercises the scan predicate used by the PR monitor
@@ -237,6 +239,109 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	}
 	if len(files) != 1 {
 		t.Fatalf("created files = %d, want 1", len(files))
+	}
+}
+
+// TestCancelResolvedPRFixWorkflows covers the loop where pr-fix kept
+// re-spawning agents long after the underlying CI failure was resolved.
+// The fix: cancel any in-flight pr-fix workflow whose pr_issue_kind is no
+// longer present in the current MatchTaskPRs output.
+func TestCancelResolvedPRFixWorkflows(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := agent.NewManager(t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	// Seed three tasks. task.Create assigns IDs, so map fixture labels
+	// to the real generated IDs for the assertions below:
+	//   resolved — pr-fix active for ci_failure, no longer in issues → cancel
+	//   live     — pr-fix active for conflict, conflict still in issues → leave
+	//   other    — no workflow → nothing to do
+	ids := map[string]string{}
+	mkTask := func(label, kind string, hasWF bool, wfState workflow.ExecState) {
+		t.Helper()
+		created, err := tasks.Create(label, "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatalf("create %s: %v", label, err)
+		}
+		ids[label] = created.ID
+		pr := 100
+		upd := task.Update{PRNumber: &pr}
+		if hasWF {
+			wf := &workflow.Execution{
+				WorkflowID:  "pr-fix",
+				CurrentStep: "fix",
+				State:       wfState,
+				Variables:   map[string]string{"pr_issue_kind": kind},
+			}
+			upd.Workflow = &wf
+		}
+		if _, err := tasks.Update(created.ID, upd); err != nil {
+			t.Fatalf("update %s: %v", label, err)
+		}
+	}
+	mkTask("resolved", "ci_failure", true, workflow.ExecWaiting)
+	mkTask("live", "conflict", true, workflow.ExecWaiting)
+	mkTask("other", "", false, "")
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler:  DomainHandler{logger: logger},
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		workflowEngine: engine,
+	}
+	// "live" task's conflict is still detected. "resolved" task has no
+	// matching live issue — that's the case we want to cancel.
+	issues := []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: ids["live"]},
+	}
+	// Seed a handled marker so we can check Clear() was called.
+	r.prTracker.MarkHandled(ids["resolved"], github.PRIssueCIFailure, "sha-old")
+
+	r.cancelResolvedPRFixWorkflows(all, issues)
+
+	got, err := tasks.Get(ids["resolved"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Errorf("resolved workflow state = %+v, want completed", got.Workflow)
+	}
+	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
+		t.Errorf("resolved CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+	// Cooldown was cleared, so a future ci_failure on a new SHA can re-trigger.
+	if !r.prTracker.ShouldHandle(ids["resolved"], github.PRIssueCIFailure, "sha-new") {
+		t.Error("prTracker.Clear was not called for resolved task")
+	}
+
+	got, err = tasks.Get(ids["live"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Errorf("live workflow state = %+v, want still waiting", got.Workflow)
 	}
 }
 

@@ -391,6 +391,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	if len(matchers) > 0 {
 		issues := github.MatchTaskPRs(monitoredPRs, matchers)
 		r.prTracker.Cleanup()
+		r.cancelResolvedPRFixWorkflows(tasks, issues)
 
 		for i := range issues {
 			if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
@@ -444,6 +445,63 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		return prPollFast
 	}
 	return prPollSlow
+}
+
+// cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow
+// whose originating PR issue (`pr_issue_kind` in workflow vars) is no
+// longer present on the live PR. Prevents ResumeStalled from re-spawning
+// fix agents forever when the underlying CI failure or conflict has
+// since been resolved on a newer push.
+//
+// Without this, a pr-fix workflow remains in state=waiting on the `fix`
+// step until its agent succeeds or the task is deleted — there is no
+// trigger-re-evaluation between dispatch and completion. The orchestrator
+// loop then re-dispatches the step every minute, spawning a fresh agent
+// each time even though the PR is now green.
+func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue) {
+	if r.workflowEngine == nil {
+		return
+	}
+	// Index live issues per task so we can answer "kind K still present
+	// for task T?" in O(1).
+	liveByTask := make(map[string]map[string]bool, len(tasks))
+	for i := range issues {
+		set := liveByTask[issues[i].TaskID]
+		if set == nil {
+			set = make(map[string]bool, 2)
+			liveByTask[issues[i].TaskID] = set
+		}
+		set[string(issues[i].Kind)] = true
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Workflow == nil || t.Workflow.WorkflowID != "pr-fix" {
+			continue
+		}
+		if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
+			continue
+		}
+		kind := t.Workflow.Variables["pr_issue_kind"]
+		if kind == "" {
+			continue
+		}
+		if liveByTask[t.ID][kind] {
+			continue // condition still holds — let the workflow proceed
+		}
+		step, err := r.workflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+kind+" resolved")
+		if err != nil {
+			r.logger.Error("pr-monitor.cancel-resolved", "task_id", t.ID, "kind", kind, "err", err)
+			continue
+		}
+		// Clear cooldown so a future failure of the same kind on a new
+		// SHA re-triggers fresh (the closed-PR path does the same via
+		// prTracker.Cleanup; we need the explicit clear here because
+		// the PR is still open).
+		r.prTracker.Clear(t.ID, github.PRIssueKind(kind))
+		r.logger.Info("pr-monitor.cancel-resolved",
+			"task_id", t.ID, "kind", kind, "step", step, "pr", t.PRNumber)
+	}
 }
 
 func openReviewPRs(summary github.ReviewSummary) []github.PullRequest {
