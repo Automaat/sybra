@@ -172,14 +172,20 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 		}
 		ev["last_agent_state"] = last.State
 		if last.Role == "human-review" && last.State == "stopped" {
-			if last.Verdict != "" {
-				ev["human_review_verdict"] = last.Verdict
-			} else if last.Result != "" {
+			verdict := last.Verdict
+			if verdict == "" && last.Result != "" {
 				// Fallback for runs persisted before the Verdict field was
 				// added: parse from the truncated Result text.
-				if d := parseHumanReviewDecision(last.Result); d != "" {
-					ev["human_review_verdict"] = d
-				}
+				verdict = parseHumanReviewDecision(last.Result)
+			}
+			if verdict != "" {
+				ev["human_review_verdict"] = verdict
+			}
+			// Human-review confirmed genuine human-required: Sybra has already
+			// diagnosed the task and updated the body. Suppress the anomaly so
+			// we don't spawn repeated investigator agents for the same situation.
+			if verdict == "human" {
+				return nil
 			}
 		}
 	}
