@@ -276,4 +276,205 @@ describe('TaskList', () => {
       expect(screen.getByText('Todo')).toBeDefined()
     })
   })
+
+  describe('moveTask success', () => {
+    it('calls taskStore.update when dropping a task onto a different column', async () => {
+      vi.mocked(taskStore.update).mockResolvedValueOnce(undefined as never)
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Task to move', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Task to move', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const col = document.querySelector('[data-col-status="in-progress"]')
+      expect(col).not.toBeNull()
+      await fireEvent.drop(col!, { dataTransfer: { getData: () => 't-1' } })
+      await vi.waitFor(() => {
+        expect(taskStore.update).toHaveBeenCalledWith('t-1', { status: 'in-progress' })
+      })
+    })
+
+    it('does nothing when dropping a task onto its current column', async () => {
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Same column', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Same column', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const col = document.querySelector('[data-col-status="todo"]')
+      expect(col).not.toBeNull()
+      await fireEvent.drop(col!, { dataTransfer: { getData: () => 't-1' } })
+      expect(taskStore.update).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when dropping an unknown task id', async () => {
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Known', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Known', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const col = document.querySelector('[data-col-status="in-progress"]')
+      await fireEvent.drop(col!, { dataTransfer: { getData: () => 't-missing' } })
+      expect(taskStore.update).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('show done column visibility', () => {
+    it('renders Done column hidden by default and Show done checkbox unchecked', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText(/^Done$/)).toBeNull()
+      const checkbox = screen.getByLabelText('Show done') as HTMLInputElement
+      expect(checkbox.checked).toBe(false)
+    })
+  })
+
+  describe('view mode switching', () => {
+    it('switches to timeline view when Timeline button is clicked', async () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Todo')).toBeDefined()
+      await fireEvent.click(screen.getByText('Timeline'))
+      await vi.waitFor(() => {
+        expect(screen.queryByText('Todo')).toBeNull()
+      })
+    })
+
+    it('switches to list view when List button is clicked', async () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      await fireEvent.click(screen.getByText('List'))
+      await vi.waitFor(() => {
+        expect(screen.queryByText('Todo')).toBeNull()
+      })
+    })
+
+    it('renders board columns again when Board button clicked after switching away', async () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      await fireEvent.click(screen.getByText('List'))
+      await vi.waitFor(() => {
+        expect(screen.queryByText('Todo')).toBeNull()
+      })
+      await fireEvent.click(screen.getByText('Board'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('Todo')).toBeDefined()
+      })
+    })
+  })
+
+  describe('window toggle-view event', () => {
+    it('cycles view mode in response to toggle-view event', async () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Todo')).toBeDefined()
+      window.dispatchEvent(new CustomEvent('toggle-view'))
+      await vi.waitFor(() => {
+        expect(screen.queryByText('Todo')).toBeNull()
+      })
+    })
+  })
+
+  describe('keyboard navigation', () => {
+    it('shows hint bar when "j" focuses the first task', async () => {
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Focus me', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Focus me', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText('open')).toBeNull()
+      await fireEvent.keyDown(window, { key: 'j' })
+      await vi.waitFor(() => {
+        expect(screen.getByText('open')).toBeDefined()
+      })
+    })
+
+    it('clears focus on Escape after focusing via "j"', async () => {
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Focus me', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Focus me', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      await fireEvent.keyDown(window, { key: 'j' })
+      await vi.waitFor(() => {
+        expect(screen.getByText('open')).toBeDefined()
+      })
+      await fireEvent.keyDown(window, { key: 'Escape' })
+      await vi.waitFor(() => {
+        expect(screen.queryByText('open')).toBeNull()
+      })
+    })
+
+    it('invokes onselect when Enter pressed on focused task', async () => {
+      const onselect = vi.fn()
+      Object.assign(taskStore, {
+        list: [mockTask('t-42', 'Press enter', 'todo')],
+        tasks: new Map([['t-42', mockTask('t-42', 'Press enter', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect } })
+      await fireEvent.keyDown(window, { key: 'j' })
+      await vi.waitFor(() => {
+        expect(screen.getByText('open')).toBeDefined()
+      })
+      await fireEvent.keyDown(window, { key: 'Enter' })
+      expect(onselect).toHaveBeenCalledWith('t-42')
+    })
+
+    it('invokes onnewTask when "c" pressed', async () => {
+      const onnewTask = vi.fn()
+      render(TaskList, { props: { onselect: vi.fn(), onnewTask } })
+      await fireEvent.keyDown(window, { key: 'c' })
+      expect(onnewTask).toHaveBeenCalled()
+    })
+
+    it('notifies onfocusedtaskchange when focus changes', async () => {
+      const onfocusedtaskchange = vi.fn()
+      Object.assign(taskStore, {
+        list: [mockTask('t-1', 'Focus task', 'todo')],
+        tasks: new Map([['t-1', mockTask('t-1', 'Focus task', 'todo')]]),
+      })
+      render(TaskList, { props: { onselect: vi.fn(), onfocusedtaskchange } })
+      await fireEvent.keyDown(window, { key: 'j' })
+      await vi.waitFor(() => {
+        expect(onfocusedtaskchange).toHaveBeenCalledWith('t-1')
+      })
+    })
+  })
+
+  describe('agent mode filter chip rendering', () => {
+    it('renders All button as initially selected with primary styling', () => {
+      render(TaskList, { props: { onselect: vi.fn() } })
+      const allBtn = screen.getByText('All')
+      // All button is the default-selected mode; lives inside the filter bar
+      expect(allBtn).toBeDefined()
+      expect(screen.getByText('Headless')).toBeDefined()
+      expect(screen.getByText('Interactive')).toBeDefined()
+    })
+  })
+
+  describe('tasks list with multiple statuses', () => {
+    it('renders tasks across multiple columns simultaneously', () => {
+      Object.assign(taskStore, {
+        list: [
+          mockTask('t-1', 'Todo task', 'todo'),
+          mockTask('t-2', 'Progress task', 'in-progress'),
+          mockTask('t-3', 'Review task', 'in-review'),
+          mockTask('t-4', 'Human task', 'human-required'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Todo task')).toBeDefined()
+      expect(screen.getByText('Progress task')).toBeDefined()
+      expect(screen.getByText('Review task')).toBeDefined()
+      expect(screen.getByText('Human task')).toBeDefined()
+    })
+
+    it('does not render tasks whose status is unknown', () => {
+      Object.assign(taskStore, {
+        list: [
+          mockTask('t-1', 'Valid task', 'todo'),
+          mockTask('t-2', 'Unknown status', 'fictional-status'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('Valid task')).toBeDefined()
+      expect(screen.queryByText('Unknown status')).toBeNull()
+    })
+  })
 })

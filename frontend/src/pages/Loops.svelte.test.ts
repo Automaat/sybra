@@ -23,8 +23,6 @@ vi.mock('../stores/loops.svelte.js', () => ({
   loopStore: loopStoreMock,
 }))
 
-vi.mock('../components/shell/MobileSheet.svelte', () => ({ default: () => {} }))
-
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
@@ -288,5 +286,157 @@ describe('Loops', () => {
     expect(screen.getByText('two')).toBeDefined()
     expect(screen.getByText('active')).toBeDefined()
     expect(screen.getByText('paused')).toBeDefined()
+  })
+
+  describe('create form', () => {
+    it('opens the Create modal with empty defaults when + New Loop clicked', async () => {
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      expect(nameInput.value).toBe('')
+      const promptArea = screen.getByPlaceholderText('/sybra-self-monitor') as HTMLTextAreaElement
+      expect(promptArea.value).toBe('')
+    })
+
+    it('renders Create submit button (disabled when fields empty)', async () => {
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      const submitBtn = screen.getByText('Create') as HTMLButtonElement
+      expect(submitBtn.disabled).toBe(true)
+    })
+
+    it('closes the form when Cancel is clicked', async () => {
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      await fireEvent.click(screen.getByText('Cancel'))
+      await vi.waitFor(() => {
+        expect(screen.queryByText('New Loop Agent')).toBeNull()
+      })
+    })
+
+    it('calls loopStore.create with form values when Create clicked', async () => {
+      mockCreate.mockResolvedValue(undefined)
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      const promptArea = screen.getByPlaceholderText('/sybra-self-monitor') as HTMLTextAreaElement
+      await fireEvent.input(nameInput, { target: { value: 'my-loop' } })
+      await fireEvent.input(promptArea, { target: { value: '/run-thing' } })
+
+      const submitBtn = screen.getByText('Create') as HTMLButtonElement
+      await vi.waitFor(() => {
+        expect(submitBtn.disabled).toBe(false)
+      })
+      await fireEvent.click(submitBtn)
+
+      await vi.waitFor(() => {
+        expect(mockCreate).toHaveBeenCalled()
+      })
+      const arg = mockCreate.mock.calls[0][0]
+      expect(arg.name).toBe('my-loop')
+      expect(arg.prompt).toBe('/run-thing')
+      expect(arg.provider).toBe('claude')
+      expect(arg.enabled).toBe(true)
+      expect(arg.allowedTools).toEqual(['Bash', 'Read', 'Grep', 'Glob'])
+    })
+
+    it('shows error message when create rejects', async () => {
+      mockCreate.mockRejectedValue(new Error('server down'))
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      const promptArea = screen.getByPlaceholderText('/sybra-self-monitor') as HTMLTextAreaElement
+      await fireEvent.input(nameInput, { target: { value: 'x' } })
+      await fireEvent.input(promptArea, { target: { value: 'y' } })
+      await fireEvent.click(screen.getByText('Create'))
+      await vi.waitFor(() => {
+        expect(screen.getByText(/server down/)).toBeDefined()
+      })
+    })
+
+    it('sets interval to preset value when 6h preset clicked', async () => {
+      mockCreate.mockResolvedValue(undefined)
+      render(Loops)
+      await fireEvent.click(screen.getByText('+ New Loop'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('New Loop Agent')).toBeDefined()
+      })
+      await fireEvent.click(screen.getByText('6h'))
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      const promptArea = screen.getByPlaceholderText('/sybra-self-monitor') as HTMLTextAreaElement
+      await fireEvent.input(nameInput, { target: { value: 'six' } })
+      await fireEvent.input(promptArea, { target: { value: '/six' } })
+      await fireEvent.click(screen.getByText('Create'))
+      await vi.waitFor(() => {
+        expect(mockCreate).toHaveBeenCalled()
+      })
+      expect(mockCreate.mock.calls[0][0].intervalSec).toBe(21600)
+    })
+  })
+
+  describe('edit form', () => {
+    it('opens Edit modal pre-populated with loop fields', async () => {
+      Object.assign(loopStore, {
+        list: [
+          makeLoop({
+            id: 'lp-99',
+            name: 'existing-loop',
+            prompt: '/check',
+            intervalSec: 10800,
+            model: 'opus',
+            enabled: false,
+            allowedTools: ['Bash', 'Read'],
+          }),
+        ],
+      })
+      render(Loops)
+      await fireEvent.click(screen.getByText('Edit'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('Edit Loop Agent')).toBeDefined()
+      })
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      const promptArea = screen.getByPlaceholderText('/sybra-self-monitor') as HTMLTextAreaElement
+      expect(nameInput.value).toBe('existing-loop')
+      expect(promptArea.value).toBe('/check')
+      expect(screen.getByText('Update')).toBeDefined()
+    })
+
+    it('calls loopStore.update when Update clicked from edit form', async () => {
+      mockUpdate.mockResolvedValue(undefined)
+      Object.assign(loopStore, {
+        list: [
+          makeLoop({ id: 'lp-77', name: 'orig', prompt: '/p', intervalSec: 3600 }),
+        ],
+      })
+      render(Loops)
+      await fireEvent.click(screen.getByText('Edit'))
+      await vi.waitFor(() => {
+        expect(screen.getByText('Edit Loop Agent')).toBeDefined()
+      })
+      const nameInput = screen.getByPlaceholderText('sybra-self-monitor') as HTMLInputElement
+      await fireEvent.input(nameInput, { target: { value: 'renamed' } })
+      await fireEvent.click(screen.getByText('Update'))
+      await vi.waitFor(() => {
+        expect(mockUpdate).toHaveBeenCalled()
+      })
+      const arg = mockUpdate.mock.calls[0][0]
+      expect(arg.name).toBe('renamed')
+      expect(arg.id).toBe('lp-77')
+    })
   })
 })
