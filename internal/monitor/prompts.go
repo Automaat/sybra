@@ -93,6 +93,7 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 	statusReason, _ := a.Evidence["status_reason"].(string)
 	lastRole, _ := a.Evidence["last_agent_role"].(string)
 	lastState, _ := a.Evidence["last_agent_state"].(string)
+	prNumber, _ := a.Evidence["pr_number"].(int)
 
 	var extra strings.Builder
 	if statusReason != "" {
@@ -102,6 +103,9 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 		fmt.Fprintf(&extra, "Last agent: role=%s state=%s\n", lastRole, lastState)
 	} else if lastState != "" {
 		fmt.Fprintf(&extra, "Last agent: state=%s\n", lastState)
+	}
+	if prNumber > 0 {
+		fmt.Fprintf(&extra, "Linked PR: #%d\n", prNumber)
 	}
 	extraStr := extra.String()
 
@@ -228,8 +232,12 @@ func suggestedInvestigation(a Anomaly) string {
 		lastState, _ := a.Evidence["last_agent_state"].(string)
 		if lastRole == "human-review" && lastState == "stopped" {
 			taskID, _ := a.Evidence["task_id"].(string)
+			prNum, _ := a.Evidence["pr_number"].(int)
 			hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
 			if taskID != "" {
+				if prNum > 0 {
+					hint += fmt.Sprintf("- If note says awaiting PR review: check PR #%d for new reviewer feedback.\n", prNum)
+				}
 				hint += "- Note confirms human input needed: provide it, then `sybra-cli update " + taskID + " --status todo`.\n"
 				hint += "- If the note says scope exceeds automation, switch to interactive mode: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
 			}
