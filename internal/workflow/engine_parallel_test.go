@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -324,6 +325,43 @@ func TestParallel_ChildFailExhaustedFailsParent(t *testing.T) {
 	rec := findStepRecord(wf, "plan")
 	if rec == nil || rec.Status != "failed" {
 		t.Errorf("parent record after exhausted retries: %+v (want failed)", rec)
+	}
+}
+
+// TestParallel_AllSpawnsFail_AdvancesParent regresses a deadlock: when every
+// child in a parallel block fails at spawn time (e.g. missing project), no
+// agent ever runs, so HandleAgentComplete never fires. The engine must
+// advance the parent synchronously to status=failed instead of leaving the
+// workflow stuck in state=waiting forever.
+func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
+	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+
+	agents.SetFailSpawn(errors.New("project not registered locally"))
+
+	if err := engine.StartWorkflow("t1", "test-parallel-terminal"); err != nil {
+		t.Fatalf("StartWorkflow returned err = %v; engine must surface a failed parent record instead of bubbling the spawn error", err)
+	}
+
+	wf := mustWorkflow(t, tasks, "t1")
+	if _, still := wf.ParallelInflight["plan"]; still {
+		t.Errorf("ParallelInflight[plan] should be cleared after all spawns failed")
+	}
+	rec := findStepRecord(wf, "plan")
+	if rec == nil {
+		t.Fatal("parent step record missing — workflow deadlocked in state=waiting")
+	}
+	if rec.Status != "failed" {
+		t.Errorf("parent status = %q, want failed", rec.Status)
+	}
+	if wf.State == ExecWaiting {
+		t.Errorf("workflow state = %q, want terminal (not waiting)", wf.State)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Errorf("recorded successful StartAgent calls = %d, want 0 (spawn was armed to fail)", got)
 	}
 }
 
