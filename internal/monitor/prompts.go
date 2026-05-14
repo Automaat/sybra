@@ -231,7 +231,7 @@ func suggestedInvestigation(a Anomaly) string {
 			hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
 			if taskID != "" {
 				hint += "- Note confirms human input needed: provide it, then `sybra-cli update " + taskID + " --status todo`.\n"
-				hint += "- Note confirms task scope exceeds automation: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+				hint += "- If the note says scope exceeds automation, switch to interactive mode: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
 			}
 			hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
 		} else if lastRole == "fix-review" && lastState == "stopped" {
