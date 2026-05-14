@@ -119,14 +119,17 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	if !strings.Contains(body, "Human-review agent") {
 		t.Error("hint should mention human-review agent completed assessment")
 	}
-	if !strings.Contains(body, "sybra-verdict") {
-		t.Error("hint should reference sybra-verdict block in task body")
+	if strings.Contains(body, "sybra-verdict") {
+		t.Error("hint must not reference sybra-verdict block — onComplete writes a note section, not a raw JSON block")
+	}
+	if !strings.Contains(body, "auto-review note") {
+		t.Error("hint should reference the auto-review note written to the task body by onComplete")
 	}
 	if !strings.Contains(body, "sybra-cli update jkl012 --status todo") {
 		t.Error("hint should include actionable sybra-cli retry command with task id")
 	}
-	if !strings.Contains(body, "sybra_bug") {
-		t.Error("hint should explain sybra_bug verdict outcome")
+	if strings.Contains(body, "sybra_bug") {
+		t.Error("hint must not reference sybra_bug outcome — that path sets status=blocked, not human-required")
 	}
 }
 
