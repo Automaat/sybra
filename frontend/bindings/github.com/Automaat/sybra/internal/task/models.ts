@@ -26,6 +26,13 @@ export class AgentRun {
     "costUsd": number;
     "prompt"?: string;
     "result": string;
+
+    /**
+     * Verdict holds the parsed decision for human-review runs ("human" or
+     * "sybra_bug"). Extracted from live agent output at completion time so
+     * it survives Result truncation.
+     */
+    "verdict"?: string;
     "logFile": string;
     "sessionId"?: string;
 
