@@ -630,6 +630,77 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 }
 
+func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+
+	t.Run("RequiresLLM=false when human-review verdict is human", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be false when human-review confirmed verdict=human")
+		}
+	})
+
+	t.Run("RequiresLLM=true when human-review verdict is sybra_bug", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "sybra_bug"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if !report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be true when verdict is sybra_bug")
+		}
+	})
+
+	t.Run("RequiresLLM=true when no human-review ran", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if !report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be true when no human-review verdict is known")
+		}
+	})
+
+	t.Run("RequiresLLM=true when human-review still running", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "running", Verdict: "human"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		// Verdict field on a running agent is not surfaced, so RequiresLLM stays true.
+		if !report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be true when human-review is still running")
+		}
+	})
+}
+
 func TestCounts(t *testing.T) {
 	tasks := []task.Task{
 		mkTask("a", task.StatusTodo),

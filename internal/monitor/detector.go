@@ -183,11 +183,14 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			}
 		}
 	}
+	// When human-review already confirmed the task needs direct human work,
+	// the deterministic hint is sufficient — no LLM investigation adds value.
+	requiresLLM := ev["human_review_verdict"] != "human"
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,
 		Severity:    SeverityWarn,
-		RequiresLLM: true,
+		RequiresLLM: requiresLLM,
 		Fingerprint: Fingerprint(KindStuckHumanBlocked, t.ID, ev),
 		Evidence:    ev,
 		DetectedAt:  now,
