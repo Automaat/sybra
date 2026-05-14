@@ -317,6 +317,37 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("human-review hint when last agent is human-review stopped", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "human-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "Auto-review verdict") {
+			t.Error("prompt should direct agent to the Auto-review verdict section")
+		}
+		if !strings.Contains(prompt, "awaiting PR reviewer") {
+			t.Error("prompt should mention awaiting PR reviewer case")
+		}
+		if strings.Contains(prompt, "most recent agent log") {
+			t.Error("prompt should not ask agent to re-read agent log when human-review verdict exists")
+		}
+	})
+
+	t.Run("no human-review hint when agent still running", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "human-review",
+			"last_agent_state": "running",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if strings.Contains(prompt, "Auto-review verdict") {
+			t.Error("prompt must not reference Auto-review verdict while human-review is still running")
+		}
+		if !strings.Contains(prompt, "most recent agent log") {
+			t.Error("prompt should use standard investigation hint when agent is still running")
+		}
+	})
+
 	t.Run("omits linked PR when pr_number absent", func(t *testing.T) {
 		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(nil)}
 		prompt := DispatchPrompt(a, "owner/repo", "")
