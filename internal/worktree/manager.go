@@ -166,10 +166,11 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 				m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 			} else {
 				m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-				// Sync remote after rebase — local SHAs changed, remote still has
-				// old commits. create_pr push would fail with "diverged" otherwise.
-				callPhase(onPhase, "Pushing upstream…")
-				m.logPushForce(t.ID, wtBranch, project.PushForce(wtPath, wtBranch))
+				// Sync remote after rebase. PushSync picks the minimum mode —
+				// no-op when local matches remote, regular push for
+				// fast-forward, --force-with-lease only on divergence.
+				callPhase(onPhase, "Syncing upstream…")
+				m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
 			}
 			return m.finalizeWorktree(t, wtPath, wtBranch, proj)
 		}
@@ -191,8 +192,8 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
 		} else {
 			// Sync remote after rebase.
-			callPhase(onPhase, "Pushing upstream…")
-			m.logPushForce(t.ID, wtBranch, project.PushForce(wtPath, wtBranch))
+			callPhase(onPhase, "Syncing upstream…")
+			m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
 		}
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		callPhase(onPhase, "Running setup…")
@@ -729,14 +730,14 @@ func (m *Manager) ensureBranch(t task.Task, branch string) {
 	}
 }
 
-func (m *Manager) logPushForce(taskID, branch string, err error) {
+func (m *Manager) logPushSync(taskID, branch string, err error) {
 	if err == nil {
 		return
 	}
 	if errors.Is(err, project.ErrBranchMissing) {
-		m.logger.Info("worktree.push-force-skipped", "task_id", taskID, "branch", branch, "reason", "local branch ref missing")
+		m.logger.Info("worktree.push-sync-skipped", "task_id", taskID, "branch", branch, "reason", "local branch ref missing")
 	} else {
-		m.logger.Warn("worktree.push-force", "task_id", taskID, "branch", branch, "err", err)
+		m.logger.Warn("worktree.push-sync", "task_id", taskID, "branch", branch, "err", err)
 	}
 }
 

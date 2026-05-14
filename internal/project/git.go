@@ -22,7 +22,7 @@ var (
 	repoRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,100}$`)
 )
 
-// ErrBranchMissing is returned by PushForce when the local branch ref does not exist.
+// ErrBranchMissing is returned by PushSync when the local branch ref does not exist.
 var ErrBranchMissing = errors.New("local branch ref does not exist")
 
 // LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
@@ -413,11 +413,17 @@ func CurrentBranch(worktreePath string) (string, error) {
 	return strings.TrimSpace(branch), nil
 }
 
-// PushForce force-pushes the branch to the fork remote if present, else
-// origin, using --force-with-lease. Used after a local rebase to sync the
-// remote without overwriting commits from other authors. Returns
-// ErrBranchMissing if the local branch ref does not exist.
-func PushForce(worktreePath, branch string) error {
+// PushSync syncs the branch to the fork remote (if present) or origin using
+// the minimum mode required:
+//   - first push (remote tracking ref absent): regular push with -u
+//   - local SHA == remote tracking SHA: no-op
+//   - remote tracking SHA is an ancestor of local (fast-forward): regular push
+//   - histories diverged: --force-with-lease
+//
+// Compared to an unconditional force push, this avoids gratuitous rewrites of
+// the remote when a rebase was a no-op or the agent produced no new commits.
+// Returns ErrBranchMissing if the local branch ref does not exist.
+func PushSync(worktreePath, branch string) error {
 	if err := executil.Run(worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -425,7 +431,31 @@ func PushForce(worktreePath, branch string) error {
 		}
 		return err
 	}
-	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", PushRemote(worktreePath), branch)
+
+	remote := PushRemote(worktreePath)
+	localSHA, err := executil.Output(worktreePath, "git", "rev-parse", "--verify", "refs/heads/"+branch)
+	if err != nil {
+		return err
+	}
+
+	remoteSHA, remoteErr := executil.Output(worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
+	if remoteErr != nil {
+		// Remote tracking ref unknown — first push, set upstream.
+		return executil.Run(worktreePath, "git", "push", "-u", remote, branch)
+	}
+
+	if localSHA == remoteSHA {
+		return nil
+	}
+
+	// Fast-forward when remote SHA is reachable from local SHA.
+	ffCmd := exec.Command("git", "merge-base", "--is-ancestor", remoteSHA, localSHA)
+	ffCmd.Dir = worktreePath
+	if ffCmd.Run() == nil {
+		return executil.Run(worktreePath, "git", "push", "-u", remote, branch)
+	}
+
+	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", remote, branch)
 }
 
 func RemoveWorktree(barePath, worktreePath string) error {

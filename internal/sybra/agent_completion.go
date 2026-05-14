@@ -215,7 +215,7 @@ func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
 		}
 	}
 
-	if err := project.PushForce(wtPath, branch); err != nil {
+	if err := project.PushSync(wtPath, branch); err != nil {
 		if errors.Is(err, project.ErrBranchMissing) {
 			h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "reason", "local branch ref missing")
 			return

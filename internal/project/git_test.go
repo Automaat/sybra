@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1170,5 +1171,212 @@ func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
 		if wt.Path == wtPath {
 			t.Errorf("orphan %s still listed after prune", wt.Path)
 		}
+	}
+}
+
+// setupPushSyncWorktree builds: bare "remote" ← bare sybra clone ← worktree.
+// The worktree pushes against the remote bare, which accepts force pushes
+// and lets us inspect ref state to verify PushSync's mode selection.
+func setupPushSyncWorktree(t *testing.T) (remoteBare, wtPath, wtBranch string) {
+	t.Helper()
+	src := initRepoWithCommit(t)
+	remoteBare = filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", remoteBare).CombinedOutput(); err != nil {
+		t.Fatalf("init remote bare: %v: %s", err, out)
+	}
+	// Enable reflog on the bare so we can count actual ref updates per branch.
+	if out, err := exec.Command("git", "-C", remoteBare, "config", "core.logAllRefUpdates", "true").CombinedOutput(); err != nil {
+		t.Fatalf("config logAllRefUpdates: %v: %s", err, out)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "remote", "add", "rem", remoteBare},
+		{"-C", src, "push", "rem", "HEAD"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	sybraBare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(remoteBare, sybraBare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(sybraBare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath = filepath.Join(t.TempDir(), "wt")
+	wtBranch = "sybra/push-test"
+	if err := CreateWorktree(sybraBare, wtPath, wtBranch, branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return remoteBare, wtPath, wtBranch
+}
+
+// makeCommit writes a file and creates a commit in wtPath. Returns the new HEAD SHA.
+func makeCommit(t *testing.T, wtPath, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(wtPath, "data.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "change: " + content},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// remoteRefSHA returns the SHA the remote bare resolves for branch, or "" if absent.
+func remoteRefSHA(t *testing.T, remoteBare, branch string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", remoteBare, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// remoteReflogCount returns the number of reflog entries for branch on the remote bare.
+func remoteReflogCount(t *testing.T, remoteBare, branch string) int {
+	t.Helper()
+	cmd := exec.Command("git", "-C", remoteBare, "reflog", "show", "refs/heads/"+branch)
+	out, _ := cmd.Output() // empty output is fine when the ref has no entries yet
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return 0
+	}
+	return strings.Count(trimmed, "\n") + 1
+}
+
+func TestPushSync_BranchMissing(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath, _ := setupPushSyncWorktree(t)
+	if err := PushSync(wtPath, "no-such-branch"); !errors.Is(err, ErrBranchMissing) {
+		t.Fatalf("PushSync missing branch: got %v, want ErrBranchMissing", err)
+	}
+}
+
+func TestPushSync_FirstPushSetsTracking(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	localSHA := makeCommit(t, wtPath, "first")
+
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync first push: %v", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != localSHA {
+		t.Fatalf("remote SHA after first push = %q, want %q", got, localSHA)
+	}
+}
+
+func TestPushSync_NoopWhenSynced(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync first: %v", err)
+	}
+	entriesBefore := remoteReflogCount(t, remoteBare, branch)
+	if entriesBefore == 0 {
+		t.Fatalf("first push left no reflog entry (logAllRefUpdates may be off)")
+	}
+
+	// Second sync with no local changes must not touch the remote.
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync second (no-op): %v", err)
+	}
+	if got := remoteReflogCount(t, remoteBare, branch); got != entriesBefore {
+		t.Fatalf("remote reflog grew from %d to %d on a no-op sync (a push was issued)", entriesBefore, got)
+	}
+}
+
+func TestPushSync_FastForwardWithoutForce(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Reject force-pushes on the remote so a fast-forward must succeed without force.
+	if out, err := exec.Command("git", "-C", remoteBare, "config", "receive.denyNonFastForwards", "true").CombinedOutput(); err != nil {
+		t.Fatalf("denyNonFastForwards: %v: %s", err, out)
+	}
+
+	newSHA := makeCommit(t, wtPath, "two")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync fast-forward: %v", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != newSHA {
+		t.Fatalf("remote SHA after fast-forward = %q, want %q", got, newSHA)
+	}
+}
+
+func TestPushSync_DivergenceForcePushes(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	makeCommit(t, wtPath, "two")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Rewrite history locally so HEAD diverges from the remote tracking ref.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
+		t.Fatalf("reset: %v: %s", err, out)
+	}
+	divergedSHA := makeCommit(t, wtPath, "two-prime")
+
+	// Prove a regular push would now be rejected — only force-with-lease should succeed.
+	rejectCmd := exec.Command("git", "push", "origin", branch)
+	rejectCmd.Dir = wtPath
+	if out, err := rejectCmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected regular push to be rejected on divergence; succeeded: %s", out)
+	}
+
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync divergence: %v", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != divergedSHA {
+		t.Fatalf("remote SHA after force-with-lease = %q, want %q", got, divergedSHA)
 	}
 }
