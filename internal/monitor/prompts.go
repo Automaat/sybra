@@ -199,6 +199,8 @@ func suggestedInvestigation(kind AnomalyKind) string {
 		return "- Confirm the agent process actually exited; the watchdog has reset the task to `todo`.\n"
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
+	case KindStuckHumanBlocked:
+		return "- Review the blocking task: approve or reject the plan, or provide the context needed to unblock progress.\n"
 	default:
 		return "- See the dispatched agent's issue comment for proximate cause and next step.\n"
 	}
