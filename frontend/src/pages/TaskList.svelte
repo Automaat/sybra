@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { Search, Filter, ChevronDown, List, Columns, GanttChart } from '@lucide/svelte'
+  import { Search, Filter, ChevronDown } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
-  import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskCard from '../components/TaskCard.svelte'
   import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
   import AssignProjectDialog from '../components/AssignProjectDialog.svelte'
-  import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
+  import TaskListFilterBar from '../components/TaskListFilterBar.svelte'
+  import InlineTaskAdd from '../components/InlineTaskAdd.svelte'
   import MobileSheet from '../components/shell/MobileSheet.svelte'
   import { viewport } from '../lib/viewport.svelte.js'
   import { fly } from 'svelte/transition'
@@ -31,9 +31,6 @@
   const { onselect, filter, onnewTask, onfocusedtaskchange }: Props = $props()
 
   let dragOverStatus = $state<string | null>(null)
-  let addingToColumn = $state<string | null>(null)
-  let newTaskTitle = $state('')
-  let inputRef = $state<HTMLInputElement | null>(null)
   let filtersOpen = $state(false)
   let collapsedColumns = $state<Set<string>>(new Set(['testing', 'done']))
 
@@ -363,7 +360,7 @@
   )
 
   const hasActiveFilters = $derived(
-    searchQuery || selectedProjectId || selectedTags.length > 0 || selectedAgentMode
+    Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)
   )
 
   function clearFilters() {
@@ -401,47 +398,6 @@
       await taskStore.update(taskId, { status: targetStatus })
     } catch (err) {
       notificationStore.pushLocal('error', 'Move failed', String(err))
-    }
-  }
-
-  function openInlineAdd(status: string) {
-    addingToColumn = status
-    newTaskTitle = ''
-    requestAnimationFrame(() => inputRef?.focus())
-  }
-
-  function dismissInlineAdd() {
-    addingToColumn = null
-    newTaskTitle = ''
-  }
-
-  async function submitInlineAdd(status: string) {
-    const title = newTaskTitle.trim()
-    if (!title) return
-    newTaskTitle = ''
-    let created
-    try {
-      created = await taskStore.create(title, '', 'headless')
-    } catch (err) {
-      notificationStore.pushLocal('error', 'Create failed', String(err))
-      return
-    }
-    if (status !== 'new') {
-      try {
-        await taskStore.update(created.id, { status })
-      } catch (err) {
-        notificationStore.pushLocal('error', 'Failed to set status', String(err))
-      }
-    }
-    requestAnimationFrame(() => inputRef?.focus())
-  }
-
-  function handleInputKeydown(e: KeyboardEvent, status: string) {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      submitInlineAdd(status)
-    } else if (e.key === 'Escape') {
-      dismissInlineAdd()
     }
   }
 
@@ -507,85 +463,18 @@
   </div>
 
   <!-- Desktop filter bar -->
-  <div class="hidden flex-wrap items-center gap-3 border-b border-surface-200 px-6 py-3 dark:border-surface-800 md:flex">
-    <TaskFilterPanel
-      query={searchQuery}
-      onqueryChange={(q) => (searchQuery = q)}
-      focusEvent="focus-search"
-      showProject
-      selectedProjectId={selectedProjectId}
-      onprojectChange={(id) => (selectedProjectId = id)}
-      showTags
-      availableTags={allTags}
-      selectedTags={selectedTags}
-      ontagsChange={(tags) => (selectedTags = tags)}
-    />
-
-    <!-- Agent mode pills (TaskList-specific) -->
-    <div class="flex h-8 rounded-md border border-surface-300 dark:border-surface-700">
-      {#each agentModes as mode}
-        <button
-          type="button"
-          class="px-2.5 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {selectedAgentMode === mode.value
-            ? 'bg-primary-500 text-white dark:bg-primary-600'
-            : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
-          onclick={() => (selectedAgentMode = mode.value)}
-        >
-          {mode.label}
-        </button>
-      {/each}
-    </div>
-
-    <!-- Right side: clear + show done + view toggle -->
-    <div class="ml-auto flex items-center gap-3">
-      {#if hasActiveFilters}
-        <button
-          type="button"
-          class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
-          onclick={clearFilters}
-        >
-          Clear filters
-        </button>
-      {/if}
-      <button
-        type="button"
-        class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
-        onclick={() => navStore.reset({ kind: 'logbook' })}
-      >
-        Logbook →
-      </button>
-      <label class="flex items-center gap-1.5 text-xs text-surface-500">
-        <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
-        Show done
-      </label>
-      <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">
-        <button
-          type="button"
-          class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'list' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
-          onclick={() => { viewModeStore.set('list'); focusedColIdx = -1; focusedRowIdx = -1 }}
-        >
-          <List size={14} />
-          List
-        </button>
-        <button
-          type="button"
-          class="flex items-center gap-1 border-x border-surface-300 px-2 py-1 text-xs font-medium transition-colors dark:border-surface-700 {viewMode === 'board' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
-          onclick={() => { viewModeStore.set('board'); focusedColIdx = -1; focusedRowIdx = -1 }}
-        >
-          <Columns size={14} />
-          Board
-        </button>
-        <button
-          type="button"
-          class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'timeline' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
-          onclick={() => { viewModeStore.set('timeline'); focusedColIdx = -1; focusedRowIdx = -1 }}
-        >
-          <GanttChart size={14} />
-          Timeline
-        </button>
-      </div>
-    </div>
-  </div>
+  <TaskListFilterBar
+    bind:searchQuery
+    bind:selectedProjectId
+    bind:selectedTags
+    bind:selectedAgentMode
+    bind:showDone
+    {allTags}
+    {hasActiveFilters}
+    {viewMode}
+    onclear={clearFilters}
+    onviewchange={() => { focusedColIdx = -1; focusedRowIdx = -1 }}
+  />
 
   {#if taskStore.loading}
     <p class="m-auto text-sm opacity-60">Loading tasks...</p>
@@ -692,26 +581,7 @@
               {/each}
             </div>
             <div class="px-2 pb-2">
-              {#if addingToColumn === col.status}
-                <input
-                  bind:this={inputRef}
-                  bind:value={newTaskTitle}
-                  type="text"
-                  placeholder="Task title"
-                  class="w-full rounded-md border border-surface-300 bg-surface-50 px-2 py-2.5 text-base outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-600 dark:bg-surface-800 md:py-1.5 md:text-sm"
-                  onkeydown={(e) => handleInputKeydown(e, col.status)}
-                  onblur={() => dismissInlineAdd()}
-                />
-              {:else}
-                <button
-                  type="button"
-                  class="tap flex w-full items-center gap-1 rounded-md px-2 py-2.5 text-sm opacity-60 transition-opacity active:bg-surface-200 active:opacity-100 dark:active:bg-surface-800 md:py-1.5 md:hover:bg-surface-200 md:hover:opacity-100 dark:md:hover:bg-surface-800"
-                  onclick={() => openInlineAdd(col.status)}
-                  title="Add task (C)"
-                >
-                  <span class="text-base leading-none">+</span> Add task
-                </button>
-              {/if}
+              <InlineTaskAdd status={col.status} />
             </div>
           {/if}
         </div>
