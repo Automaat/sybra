@@ -84,6 +84,9 @@ done:
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+	if outFile == nil {
+		return false, nil
+	}
 	name, args, invokeEnv, command, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
 		return false, err

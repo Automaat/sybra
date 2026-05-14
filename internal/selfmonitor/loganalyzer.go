@@ -231,7 +231,7 @@ func (st *analyzerState) onAssistant(ev *agent.ClaudeEvent) {
 		st.summary.TotalToolCalls++
 		st.summary.ToolHistogram[t.Name]++
 		hash, sample := canonicalInputHash(t.Input)
-		if st.perToolHashes[t.Name] == nil {
+		if st.perToolSample[t.Name] == nil {
 			st.perToolHashes[t.Name] = map[string]int{}
 			st.perToolSample[t.Name] = map[string]map[string]any{}
 		}

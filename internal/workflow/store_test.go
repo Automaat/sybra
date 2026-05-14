@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func mustNewStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
 func newTestDef(id string) Definition {
 	return Definition{
 		ID:      id,
@@ -30,7 +39,7 @@ func TestNewStore(t *testing.T) {
 
 func TestStore_SaveAndGet(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	def := newTestDef("my-workflow")
 	if err := s.Save(def); err != nil {
@@ -51,7 +60,7 @@ func TestStore_SaveAndGet(t *testing.T) {
 
 func TestStore_Save_EmptyID(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 	if err := s.Save(Definition{}); err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -59,7 +68,7 @@ func TestStore_Save_EmptyID(t *testing.T) {
 
 func TestStore_Save_Invalid(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 	def := Definition{
 		ID:    "bad-wf",
 		Steps: []Step{{ID: "s1", Config: StepConfig{MaxRetries: 11}}},
@@ -71,7 +80,7 @@ func TestStore_Save_Invalid(t *testing.T) {
 
 func TestStore_List(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	for _, id := range []string{"wf-a", "wf-b", "wf-c"} {
 		if err := s.Save(newTestDef(id)); err != nil {
@@ -91,7 +100,10 @@ func TestStore_List(t *testing.T) {
 func TestStore_List_SkipsBadFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	s, _ := NewStore(dir)
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
 
 	if err := s.Save(newTestDef("good-wf")); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -114,7 +126,7 @@ func TestStore_List_SkipsBadFiles(t *testing.T) {
 
 func TestStore_Delete(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	if err := s.Save(newTestDef("to-delete")); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -129,7 +141,7 @@ func TestStore_Delete(t *testing.T) {
 
 func TestStore_Delete_NotFound(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 	if err := s.Delete("nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent workflow")
 	}
@@ -137,7 +149,7 @@ func TestStore_Delete_NotFound(t *testing.T) {
 
 func TestStore_SafePath_Traversal(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	traversalIDs := []string{
 		"../etc/passwd",
@@ -156,7 +168,7 @@ func TestStore_SafePath_Traversal(t *testing.T) {
 
 func TestStore_SafePath_Valid(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	// Should not error on path validation (file not found is fine here).
 	_, err := s.Get("valid-id")
@@ -177,7 +189,7 @@ func TestStore_SafePath_Valid(t *testing.T) {
 // filepath.Clean alone would let "/etc/passwd" resolve outside the store.
 func TestStore_SafePath_AbsoluteAndWeirdPaths(t *testing.T) {
 	t.Parallel()
-	s, _ := NewStore(t.TempDir())
+	s := mustNewStore(t)
 
 	badIDs := []string{
 		"/etc/passwd",

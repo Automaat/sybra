@@ -273,7 +273,11 @@ func TestParallel_ChildFailRetryThenSucceed(t *testing.T) {
 	if rec == nil {
 		t.Fatal("ParallelInflight cleared before retry")
 	}
-	if got := rec.Children["plan_b"]; got.Retries != 1 || got.Status != "pending" {
+	got := rec.Children["plan_b"]
+	if got == nil {
+		t.Fatal("plan_b child missing after retry")
+	}
+	if got.Retries != 1 || got.Status != "pending" {
 		t.Errorf("plan_b after retry: %+v (want retries=1 status=pending)", got)
 	}
 

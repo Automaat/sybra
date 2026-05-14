@@ -26,7 +26,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		wfExec.ParallelInflight = make(map[string]*ParallelChildren)
 	}
 	rec, exists := wfExec.ParallelInflight[step.ID]
-	if !exists {
+	if !exists || rec == nil {
 		rec = &ParallelChildren{
 			ParentStepID: step.ID,
 			StartedAt:    time.Now().UTC(),
@@ -278,6 +278,9 @@ func summarizeChildOutputs(rec *ParallelChildren) string {
 	}
 	parts := make([]string, 0, len(rec.Children))
 	for id, c := range rec.Children {
+		if c == nil {
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s=%s", id, c.Status))
 	}
 	slices.Sort(parts) // deterministic for test assertions

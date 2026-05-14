@@ -175,6 +175,9 @@ done:
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+	if outFile == nil {
+		return false, nil
+	}
 	cmd, stdout, stderrBuf, startErr := m.startConvoProcess(ctx, a, cfg)
 	if startErr != nil {
 		return false, startErr
