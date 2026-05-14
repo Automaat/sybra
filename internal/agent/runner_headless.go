@@ -6,17 +6,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
-	"github.com/Automaat/sybra/internal/provider"
 )
 
 // headlessEmitInterval caps per-agent stream event emission rate.
@@ -26,6 +22,13 @@ import (
 const headlessEmitInterval = 50 * time.Millisecond
 
 var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+
+// headlessScannerBuffer caps the size of a single NDJSON line. A result
+// event with a large content field (e.g. a dumped command output) can
+// approach this size. Exceeding it aborts the scanner with ErrTooLong and
+// is logged below — any regression that lowers this cap will surface in
+// stream_tooLong log lines.
+const headlessScannerBuffer = 4 * 1024 * 1024
 
 func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// outFile is opened lazily on first successful cmd.Start and shared across
@@ -158,149 +161,6 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	return false, nil
 }
 
-// reportProviderHealthSignal classifies the final error surface of a failed
-// run and forwards rate-limit / auth failures to the provider health gate so
-// the next scheduling attempt can fail over to a peer.
-func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) {
-	sample := buildErrorSample(stderrOut, attemptEvents)
-	var sig provider.Signal
-	var reason string
-	var retryAfter time.Duration
-	if a.Provider == "codex" {
-		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
-	} else {
-		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
-	}
-	if sig == provider.SignalNone {
-		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
-			m.logger.Info("agent.provider.signal.unknown",
-				"provider", a.Provider,
-				"errorType", sample.ErrorType,
-				"errorStatus", sample.ErrorStatus)
-		}
-		return
-	}
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
-}
-
-func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.ErrorSample {
-	sample := provider.ErrorSample{Stderr: stderrOut}
-	for i := range slices.Backward(attemptEvents) {
-		e := &attemptEvents[i]
-		if e.Type != "result" || e.Subtype != "error" {
-			continue
-		}
-		sample.ErrorType = e.ErrorType
-		sample.ErrorStatus = e.ErrorStatus
-		sample.Content = e.Content
-		break
-	}
-	return sample
-}
-
-// reportProviderHealthSignalConvo mirrors reportProviderHealthSignal for the
-// ConvoEvent stream used by conversational runners.
-func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) {
-	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
-	var sig provider.Signal
-	var reason string
-	var retryAfter time.Duration
-	if a.Provider == "codex" {
-		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
-	} else {
-		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
-	}
-	if sig == provider.SignalNone {
-		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
-			m.logger.Info("agent.provider.signal.unknown",
-				"provider", a.Provider,
-				"errorType", sample.ErrorType,
-				"errorStatus", sample.ErrorStatus)
-		}
-		return
-	}
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
-}
-
-func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {
-	sample := provider.ErrorSample{Stderr: stderrOut}
-	for i := range slices.Backward(attemptEvents) {
-		e := &attemptEvents[i]
-		if e.Type != "result" || e.Subtype != "error" {
-			continue
-		}
-		sample.ErrorType = e.ErrorType
-		sample.ErrorStatus = e.ErrorStatus
-		sample.Content = e.Text
-		break
-	}
-	return sample
-}
-
-// shouldRetry returns true when stderrOut or streamEvents indicate an Anthropic
-// 529 (overloaded) transient error that warrants a backoff retry.
-//
-// Structured fields on StreamEvent (ErrorType, ErrorStatus) are checked first.
-// Substring matching is used as a fallback and triggers a Warn log so format
-// regressions surface in logs without silently breaking retries.
-func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logger) bool {
-	for i := range streamEvents {
-		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" {
-			if streamEvents[i].ErrorType == "overloaded_error" || streamEvents[i].ErrorStatus == 529 {
-				return true
-			}
-		}
-	}
-	// Substring fallback: keeps working if Anthropic changes the error envelope.
-	if substringMatch529(stderrOut) {
-		warnSubstringFallback(logger)
-		return true
-	}
-	for i := range streamEvents {
-		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" && substringMatch529(streamEvents[i].Content) {
-			warnSubstringFallback(logger)
-			return true
-		}
-	}
-	return false
-}
-
-// shouldRetryConvo is the ConvoEvent variant of shouldRetry.
-func shouldRetryConvo(stderrOut string, convoEvents []ConvoEvent, logger *slog.Logger) bool {
-	for i := range convoEvents {
-		e := &convoEvents[i]
-		if e.Type == "result" && e.Subtype == "error" {
-			if e.ErrorType == "overloaded_error" || e.ErrorStatus == 529 {
-				return true
-			}
-		}
-	}
-	if substringMatch529(stderrOut) {
-		warnSubstringFallback(logger)
-		return true
-	}
-	for i := range convoEvents {
-		e := &convoEvents[i]
-		if e.Type == "result" && e.Subtype == "error" && substringMatch529(e.Text) {
-			warnSubstringFallback(logger)
-			return true
-		}
-	}
-	return false
-}
-
-func substringMatch529(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "529") || strings.Contains(lower, "overloaded")
-}
-
-func warnSubstringFallback(logger *slog.Logger) {
-	if logger != nil {
-		logger.Warn("agent.retry.substring-fallback",
-			"hint", "structured error fields absent; check if Anthropic changed error format")
-	}
-}
-
 // trackingReader wraps an io.Reader and calls touch on every Read, keeping
 // LastEventAt alive during extended thinking where no complete NDJSON lines
 // are emitted for several minutes.
@@ -316,13 +176,6 @@ func (t *trackingReader) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-
-// headlessScannerBuffer caps the size of a single NDJSON line. A result
-// event with a large content field (e.g. a dumped command output) can
-// approach this size. Exceeding it aborts the scanner with ErrTooLong and
-// is logged below — any regression that lowers this cap will surface in
-// stream_tooLong log lines.
-const headlessScannerBuffer = 4 * 1024 * 1024
 
 func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer) {
 	tracked := &trackingReader{r: stdout, touch: a.TouchLastEvent}
@@ -475,217 +328,6 @@ func (m *Manager) effectiveMaxTurns(a *Agent) int {
 		return perAgent
 	}
 	return global
-}
-
-// buildHeadlessInvocation builds the subprocess invocation for a headless
-// agent. The returned env slice contains "KEY=VALUE" entries the caller must
-// merge into cmd.Env (Bash tool timeout for claude is delivered this way —
-// claude has no CLI flag for it).
-func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []string, command string, err error) {
-	if a.Provider != "claude" && a.Provider != "codex" {
-		err = fmt.Errorf("unsupported provider: %s", a.Provider)
-		return
-	}
-	for _, tool := range cfg.AllowedTools {
-		if !safeArgRe.MatchString(tool) {
-			err = fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
-			return
-		}
-	}
-	if a.Model != "" && !safeArgRe.MatchString(a.Model) {
-		err = fmt.Errorf("invalid model %q: must match %s", a.Model, safeArgRe)
-		return
-	}
-
-	if a.Provider == "codex" {
-		name = "codex"
-		args = []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
-		// headless=true: --sandbox workspace-write requires approval prompts
-		// which auto-reject in headless mode (no TTY/UI). Always bypass.
-		args = append(args, codexSandboxArgs(cfg.RequirePermissions, true)...)
-		if a.Model != "" {
-			args = append(args, "--model", a.Model)
-		}
-		if a.sessionCWD != "" {
-			args = append(args, "-C", a.sessionCWD)
-		}
-		prompt := rewriteSkillInvocations(cfg.Prompt, discoverCodexSkills())
-		args = append(args, prompt)
-		command = "codex " + strings.Join(args, " ")
-		return
-	}
-
-	name = "claude"
-	args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
-	if sid := a.GetSessionID(); sid != "" {
-		args = append(args, "--resume", sid)
-	}
-	if len(cfg.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
-	} else if !cfg.RequirePermissions {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-	if a.Model != "" {
-		args = append(args, "--model", a.Model)
-	}
-	if cfg.BashTimeoutMs > 0 {
-		// Claude has no `--bashTimeoutMs` CLI flag — the supported channel is
-		// the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars. Set both
-		// so the configured value is honored even when it exceeds claude's
-		// built-in max (600000 ms).
-		ms := strconv.Itoa(cfg.BashTimeoutMs)
-		env = append(env,
-			"BASH_DEFAULT_TIMEOUT_MS="+ms,
-			"BASH_MAX_TIMEOUT_MS="+ms,
-		)
-	}
-	if cfg.ForkSubagent {
-		env = append(env, "CLAUDE_CODE_FORK_SUBAGENT=1")
-	}
-	command = "claude " + strings.Join(args, " ")
-	return
-}
-
-// claudeEventToStreamEvent converts a shared ClaudeEvent into a StreamEvent
-// for the headless runner. Tool uses are formatted as "[name] cmd/desc" strings.
-// Tool results are truncated to 500 chars.
-func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
-	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
-	switch e.Type {
-	case "system", "init":
-		ev.PluginErrors = e.PluginErrors
-	case "assistant":
-		if e.Message != nil {
-			ev.Content = formatHeadlessAssistant(e.Message)
-			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
-		}
-	case "user":
-		if e.Message != nil {
-			ev.Content = formatHeadlessToolResults(e.Message.ToolResults)
-		}
-	case "result":
-		if e.Result != nil {
-			ev.Content = e.Result.Text
-			ev.SessionID = e.Result.SessionID
-			ev.CostUSD = e.Result.CostUSD
-			ev.InputTokens = e.Result.InputTokens
-			ev.OutputTokens = e.Result.OutputTokens
-			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
-			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
-			ev.ReasoningTokens = e.Result.ReasoningTokens
-		}
-
-	}
-	return ev
-}
-
-// extractTodoWriteSteps scans tool uses for a TodoWrite call and returns the
-// parsed todo list. Returns nil if no TodoWrite call is present or parsing fails.
-func extractTodoWriteSteps(toolUses []ToolUseBlock) []PlanStep {
-	for i := range toolUses {
-		if toolUses[i].Name != "TodoWrite" {
-			continue
-		}
-		todosRaw, ok := toolUses[i].Input["todos"]
-		if !ok {
-			return nil
-		}
-		items, ok := todosRaw.([]any)
-		if !ok {
-			return nil
-		}
-		steps := make([]PlanStep, 0, len(items))
-		for _, item := range items {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			content, _ := m["content"].(string)
-			status, _ := m["status"].(string)
-			if content == "" {
-				continue
-			}
-			steps = append(steps, PlanStep{Content: content, Status: status})
-		}
-		return steps
-	}
-	return nil
-}
-
-// codexEventToStreamEvent converts a shared CodexEvent into a StreamEvent
-// for the headless runner.
-func codexEventToStreamEvent(e CodexEvent) StreamEvent {
-	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
-	switch e.Type {
-	case "assistant":
-		if e.Message != nil {
-			ev.Content = e.Message.Text
-		}
-	case "tool_use":
-		if e.Message != nil && len(e.Message.ToolUses) > 0 {
-			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
-			ev.Content = cmd
-		}
-	case "tool_result":
-		if e.Message != nil && len(e.Message.ToolResults) > 0 {
-			ev.Content = e.Message.ToolResults[0].Content
-		}
-	case "result":
-		if e.Result != nil {
-			ev.Content = e.Result.Text
-			ev.SessionID = e.Result.SessionID
-			ev.CostUSD = e.Result.CostUSD
-			ev.InputTokens = e.Result.InputTokens
-			ev.OutputTokens = e.Result.OutputTokens
-			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
-			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
-			ev.ReasoningTokens = e.Result.ReasoningTokens
-			ev.ErrorType = e.Result.ErrorType
-			ev.ErrorStatus = e.Result.ErrorStatus
-		}
-	}
-	return ev
-}
-
-// formatHeadlessAssistant produces the flat content string for headless assistant
-// events: joined text parts followed by "[name] cmd/desc" tool use lines.
-func formatHeadlessAssistant(msg *ClaudeMessage) string {
-	var parts []string
-	if msg.Text != "" {
-		parts = append(parts, msg.Text)
-	}
-	for _, tu := range msg.ToolUses {
-		if tu.Input == nil {
-			parts = append(parts, fmt.Sprintf("[%s]", tu.Name))
-			continue
-		}
-		desc, _ := tu.Input["description"].(string)
-		cmd, _ := tu.Input["command"].(string)
-		switch {
-		case desc != "":
-			parts = append(parts, fmt.Sprintf("[%s] %s", tu.Name, desc))
-		case cmd != "":
-			parts = append(parts, fmt.Sprintf("[%s] %s", tu.Name, cmd))
-		default:
-			parts = append(parts, fmt.Sprintf("[%s]", tu.Name))
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-// formatHeadlessToolResults joins tool result contents, truncating each to 500 chars.
-func formatHeadlessToolResults(results []ToolResultBlock) string {
-	var parts []string
-	for _, tr := range results {
-		content := tr.Content
-		if len(content) > 500 {
-			content = content[:500] + "..."
-		}
-		if content != "" {
-			parts = append(parts, content)
-		}
-	}
-	return strings.Join(parts, "\n")
 }
 
 func (m *Manager) handleError(a *Agent, err error) {
