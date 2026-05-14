@@ -5,6 +5,7 @@
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { BrowserOpenURL } from '$lib/api'
   import { formatDate, formatDueDateDisplay, parseNaturalDate } from '../../lib/dates.js'
+  import AssignProjectDialog from '../AssignProjectDialog.svelte'
 
   interface Props {
     task: Task
@@ -27,6 +28,18 @@
   let editingMaxTurns = $state(false)
   let maxTurnsDraft = $state('')
   let maxTurnsInputRef = $state<HTMLInputElement | null>(null)
+
+  let projectDialogOpen = $state(false)
+
+  async function assignProject(projectId: string) {
+    if ((task.projectId ?? '') === projectId) return
+    try {
+      await taskStore.update(task.id, { project_id: projectId })
+      error = ''
+    } catch (e) {
+      error = String(e)
+    }
+  }
 
   $effect(() => {
     if (editingMaxTurns && maxTurnsInputRef) maxTurnsInputRef.focus()
@@ -250,12 +263,23 @@
     {/if}
   </div>
 
-  {#if task.projectId}
-    <div class="flex flex-col gap-1">
-      <span class="font-medium text-surface-500">Project</span>
-      <span class="rounded bg-surface-200 px-2 py-0.5 font-mono dark:bg-surface-700">{task.projectId}</span>
-    </div>
+  <div class="flex flex-col gap-1">
+    <span class="font-medium text-surface-500">Project</span>
+    <button
+      type="button"
+      class="w-fit rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-300"
+      onclick={() => (projectDialogOpen = true)}
+      title="Click to change project"
+    >
+      {#if task.projectId}
+        <span class="rounded bg-surface-200 px-2 py-0.5 font-mono dark:bg-surface-700">{task.projectId}</span>
+      {:else}
+        <span class="text-xs italic text-surface-400">assign project</span>
+      {/if}
+    </button>
+  </div>
 
+  {#if task.projectId}
     <div class="flex flex-col gap-1">
       <span class="font-medium text-surface-500">Branch</span>
       <button
@@ -376,3 +400,9 @@
     {/if}
   </div>
 </div>
+
+<AssignProjectDialog
+  open={projectDialogOpen}
+  onOpenChange={(o) => (projectDialogOpen = o)}
+  onassign={assignProject}
+/>
