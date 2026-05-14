@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import PlanSteps from './PlanSteps.svelte'
 import type { PlanStep } from '$lib/plan-steps.js'

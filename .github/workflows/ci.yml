@@ -99,7 +99,14 @@ jobs:
           NILAWAY_BASELINE=31
           set +e
           nilaway -include-pkgs="github.com/Automaat/sybra" ./... > nilaway.out 2>&1
-          FINDING_COUNT=$(grep -c '^/' nilaway.out || echo 0)
+          NILAWAY_EXIT=$?
+          FINDING_COUNT=$(grep -c '^/' nilaway.out)
+          set -e
+          if [ "$NILAWAY_EXIT" -ne 0 ] && [ "$FINDING_COUNT" -eq 0 ]; then
+            echo "::error::Nilaway exited ${NILAWAY_EXIT} with no parseable findings — crash or package-load failure."
+            cat nilaway.out >&2
+            exit "$NILAWAY_EXIT"
+          fi
           {
             echo "### Nilaway findings"
             echo
