@@ -95,6 +95,61 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_NoReason(t *test
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "jkl012",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:jkl012",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "jkl012",
+			"status":           "human-required",
+			"dwell_h":          10.0,
+			"last_agent_role":  "human-review",
+			"last_agent_state": "stopped",
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if strings.Contains(body, "Approve or reject the plan") {
+		t.Error("human-required hint must not reference plan approval")
+	}
+	if !strings.Contains(body, "Human-review agent") {
+		t.Error("hint should mention human-review agent completed assessment")
+	}
+	if !strings.Contains(body, "auto-review note") {
+		t.Error("hint should reference auto-review note in task body")
+	}
+}
+
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_HumanReviewStillRunning(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "mno345",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:mno345",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "mno345",
+			"status":           "human-required",
+			"dwell_h":          3.0,
+			"last_agent_role":  "human-review",
+			"last_agent_state": "running",
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if strings.Contains(body, "Human-review agent") {
+		t.Error("hint must not claim review completed when agent is still running")
+	}
+	if strings.Contains(body, "auto-review note") {
+		t.Error("hint must not reference review note when agent is still running")
+	}
+}
+
 func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 	base := map[string]any{
 		"task_id":   "abc",
