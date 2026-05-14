@@ -160,6 +160,68 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "abc999",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:abc999",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":              "abc999",
+			"status":               "human-required",
+			"dwell_h":              10.0,
+			"last_agent_role":      "human-review",
+			"last_agent_state":     "stopped",
+			"human_review_verdict": "human",
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if !strings.Contains(body, "confirmed") {
+		t.Error("hint should say verdict was confirmed")
+	}
+	if !strings.Contains(body, "scope beyond automation") {
+		t.Error("hint should mention scope beyond automation")
+	}
+	if !strings.Contains(body, "sybra-cli update abc999 --mode interactive --status todo") {
+		t.Error("hint should include interactive hand-off command")
+	}
+	// When verdict is known-human, the conditional phrasing is no longer needed
+	if strings.Contains(body, "If the note says scope exceeds automation") {
+		t.Error("hint must not show conditional scope hint when verdict is already known")
+	}
+	if strings.Contains(body, "Note confirms human input needed") {
+		t.Error("hint must not show generic note-check when verdict is already known")
+	}
+}
+
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman_WithPR(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "abc999",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:abc999",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":              "abc999",
+			"status":               "human-required",
+			"dwell_h":              10.0,
+			"last_agent_role":      "human-review",
+			"last_agent_state":     "stopped",
+			"human_review_verdict": "human",
+			"pr_number":            777,
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if !strings.Contains(body, "PR #777") {
+		t.Error("hint should include PR number when available even with known verdict")
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,
