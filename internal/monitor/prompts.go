@@ -264,7 +264,7 @@ func suggestedInvestigation(a Anomaly) string {
 		} else if lastRole == "fix-review" && lastState == "stopped" {
 			hint += "- Fix-review agent finished — check the PR and agent log for the outcome.\n"
 			if prNum > 0 {
-				hint += fmt.Sprintf("- Check PR #%d review state: if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED merge.\n", prNum)
+				hint += fmt.Sprintf("- Check PR #%d review state: if CHANGES_REQUESTED run another fix-review agent; if REVIEW_REQUIRED re-request review; if APPROVED and CI passes and no conflicts, merge.\n", prNum)
 			} else {
 				hint += "- Check the PR state: address remaining comments, re-request review, or merge if approved.\n"
 			}
