@@ -186,6 +186,69 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	}
 }
 
+func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testing.T) {
+	t.Parallel()
+	sink, tasks, _ := newSinkTestEnv(t)
+	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pid := "kumahq/kuma"
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	a := monitor.Anomaly{
+		Kind:        monitor.KindStuckHumanBlocked,
+		TaskID:      src.ID,
+		Fingerprint: "stuck_human_blocked:" + src.ID,
+	}
+	// First submit creates the chore task.
+	body := "## Detection\n- Fingerprint: `stuck_human_blocked:" + src.ID + "`\n\n## Affected task\n- `" + src.ID + "`\n"
+	if _, err := sink.Submit(context.Background(), a, body); err != nil {
+		t.Fatalf("first Submit: %v", err)
+	}
+	// Simulate triage renaming the task (title changes, tags cleared).
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var chore *task.Task
+	for i := range all {
+		if strings.HasPrefix(all[i].Title, "[monitor]") {
+			chore = &all[i]
+			break
+		}
+	}
+	if chore == nil {
+		t.Fatalf("chore task not created")
+	}
+	renamed := "chore(sybra): unblock task " + src.ID + " stuck in human-required"
+	if _, err := tasks.Update(chore.ID, task.Update{Title: &renamed}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	// Second submit must dedup via fingerprint in body, not title.
+	created, err := sink.Submit(context.Background(), a, "new cycle evidence")
+	if err != nil {
+		t.Fatalf("second Submit: %v", err)
+	}
+	if created {
+		t.Fatalf("expected created=false on fingerprint-dedup hit after rename")
+	}
+	all, err = tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var open int
+	for _, tk := range all {
+		if strings.Contains(tk.Title, src.ID) && !task.IsTerminalStatus(tk.Status) {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("want 1 open chore task after dedup, got %d", open)
+	}
+}
+
 func TestMonitorRoutingSink_TerminalTaskReopensNew(t *testing.T) {
 	t.Parallel()
 	sink, tasks, _ := newSinkTestEnv(t)
