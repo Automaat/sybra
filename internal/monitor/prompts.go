@@ -226,7 +226,12 @@ func suggestedInvestigation(a Anomaly) string {
 		}
 		if lastRole, _ := a.Evidence["last_agent_role"].(string); lastRole == "human-review" {
 			if lastState, _ := a.Evidence["last_agent_state"].(string); lastState == "stopped" {
-				hint += "- Human-review agent already assessed this task — check the task body for the latest auto-review note.\n"
+				taskID, _ := a.Evidence["task_id"].(string)
+				hint += "- Human-review agent assessed this task — check the `sybra-verdict` block in the task body.\n"
+				if taskID != "" {
+					hint += "- Verdict `decision: \"human\"`: retry agent via `sybra-cli update " + taskID + " --status todo`.\n"
+				}
+				hint += "- Verdict `decision: \"sybra_bug\"`: bug report filed; no further action on the stuck task.\n"
 			}
 		}
 		return hint
