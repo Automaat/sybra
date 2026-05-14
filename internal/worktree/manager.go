@@ -382,6 +382,9 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)
 	}
+	if err := project.EnforceForkOnlyPush(wtPath); err != nil {
+		m.logger.Warn("fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+	}
 	return wtPath, nil
 }
 
@@ -718,6 +721,9 @@ func (m *Manager) installChecks(wtPath string, proj project.Project) {
 	checks := project.MergeChecks(repoChecks, proj.Checks)
 	if err := project.InstallHooks(wtPath, checks); err != nil {
 		m.logger.Warn("worktree.hooks", "path", wtPath, "err", err)
+	}
+	if err := project.EnforceForkOnlyPush(wtPath); err != nil {
+		m.logger.Warn("worktree.fork-only-push", "path", wtPath, "err", err)
 	}
 }
 

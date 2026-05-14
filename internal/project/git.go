@@ -398,6 +398,32 @@ func PushRemote(repoPath string) string {
 	return "origin"
 }
 
+// forkOnlyDisabledPushURL is the sentinel pushURL written to origin when a
+// fork remote exists. Agents using `git push origin <branch>` (with or
+// without --no-verify) hit a transport-level failure naming this sentinel,
+// so the error message itself documents the policy.
+const forkOnlyDisabledPushURL = "sybra-disabled-do-not-push-to-upstream-use-fork"
+
+// EnforceForkOnlyPush configures a worktree so pushes never reach origin
+// when a "fork" remote exists. It overrides remote.origin.pushurl with a
+// deliberately invalid value; git push fails before any network call, which
+// also means --no-verify cannot bypass this guard (unlike a pre-push hook).
+//
+// When no fork remote exists, any previously written sentinel pushurl is
+// cleared so single-remote workflows (pet projects without a fork) keep
+// pushing to origin normally. Foreign pushurl values (set by the user) are
+// left untouched.
+func EnforceForkOnlyPush(worktreePath string) error {
+	if _, err := executil.Output(worktreePath, "git", "config", "--get", "remote.fork.url"); err != nil {
+		current, getErr := executil.Output(worktreePath, "git", "config", "--get", "remote.origin.pushurl")
+		if getErr == nil && strings.TrimSpace(current) == forkOnlyDisabledPushURL {
+			_ = executil.Run(worktreePath, "git", "config", "--unset", "remote.origin.pushurl")
+		}
+		return nil
+	}
+	return executil.Run(worktreePath, "git", "remote", "set-url", "--push", "origin", forkOnlyDisabledPushURL)
+}
+
 // PushUpstream pushes branch to the fork remote if present, else origin,
 // with -u to set remote tracking.
 func PushUpstream(worktreePath, branch string) error {
