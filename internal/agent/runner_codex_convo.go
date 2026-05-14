@@ -186,7 +186,7 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	if a.sessionCWD != "" {
 		args = append(args, "-C", a.sessionCWD)
 	}
-	args = append(args, prompt)
+	args = append(args, rewriteSkillInvocations(prompt, discoverCodexSkills()))
 	return args
 }
 
