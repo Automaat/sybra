@@ -136,6 +136,30 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview_WithPR(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "jkl012",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:jkl012",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "jkl012",
+			"status":           "human-required",
+			"dwell_h":          10.0,
+			"last_agent_role":  "human-review",
+			"last_agent_state": "stopped",
+			"pr_number":        16601,
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if !strings.Contains(body, "PR #16601") {
+		t.Error("hint should include PR number when available")
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,
@@ -280,6 +304,24 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		}
 		if strings.Contains(prompt, "Last agent:") {
 			t.Error("prompt should not contain Last agent when absent")
+		}
+	})
+
+	t.Run("includes linked PR when pr_number set", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"pr_number": 16601,
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "Linked PR: #16601") {
+			t.Error("prompt missing Linked PR line")
+		}
+	})
+
+	t.Run("omits linked PR when pr_number absent", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(nil)}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if strings.Contains(prompt, "Linked PR:") {
+			t.Error("prompt should not contain Linked PR when pr_number absent")
 		}
 	})
 }

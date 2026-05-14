@@ -365,6 +365,39 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 			t.Error("last_agent_state should be absent when no runs")
 		}
 	})
+
+	t.Run("includes pr_number when set", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.PRNumber = 42
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["pr_number"]
+		if !ok {
+			t.Fatal("evidence missing pr_number")
+		}
+		if got != 42 {
+			t.Errorf("pr_number = %v, want 42", got)
+		}
+	})
+
+	t.Run("omits pr_number when zero", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["pr_number"]; ok {
+			t.Error("evidence should not contain pr_number when zero")
+		}
+	})
 }
 
 func TestCounts(t *testing.T) {

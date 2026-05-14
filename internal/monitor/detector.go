@@ -160,6 +160,9 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 	if t.StatusReason != "" {
 		ev["status_reason"] = t.StatusReason
 	}
+	if t.PRNumber > 0 {
+		ev["pr_number"] = t.PRNumber
+	}
 	if n := len(t.AgentRuns); n > 0 {
 		last := t.AgentRuns[n-1]
 		if last.Role != "" {
