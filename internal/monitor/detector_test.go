@@ -268,6 +268,105 @@ func TestDetect(t *testing.T) {
 	}
 }
 
+func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+
+	t.Run("includes status_reason when set", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.StatusReason = "watchdog: turn limit exceeded"
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["status_reason"]
+		if !ok {
+			t.Fatal("evidence missing status_reason")
+		}
+		if got != "watchdog: turn limit exceeded" {
+			t.Errorf("status_reason = %q, want %q", got, "watchdog: turn limit exceeded")
+		}
+	})
+
+	t.Run("omits status_reason when empty", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["status_reason"]; ok {
+			t.Error("evidence should not contain status_reason when empty")
+		}
+	})
+
+	t.Run("includes last_agent_role and last_agent_state", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "old", Role: "plan", State: "stopped"},
+				{AgentID: "new", Role: "fix-review", State: "stopped"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		ev := report.Anomalies[0].Evidence
+		if ev["last_agent_role"] != "fix-review" {
+			t.Errorf("last_agent_role = %q, want fix-review", ev["last_agent_role"])
+		}
+		if ev["last_agent_state"] != "stopped" {
+			t.Errorf("last_agent_state = %q, want stopped", ev["last_agent_state"])
+		}
+	})
+
+	t.Run("omits last_agent_role when role is empty", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "impl", Role: "", State: "stopped"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		ev := report.Anomalies[0].Evidence
+		if _, ok := ev["last_agent_role"]; ok {
+			t.Error("last_agent_role should be omitted when empty")
+		}
+		if ev["last_agent_state"] != "stopped" {
+			t.Errorf("last_agent_state = %q, want stopped", ev["last_agent_state"])
+		}
+	})
+
+	t.Run("omits last_agent fields when no runs", func(t *testing.T) {
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		ev := report.Anomalies[0].Evidence
+		if _, ok := ev["last_agent_role"]; ok {
+			t.Error("last_agent_role should be absent when no runs")
+		}
+		if _, ok := ev["last_agent_state"]; ok {
+			t.Error("last_agent_state should be absent when no runs")
+		}
+	})
+}
+
 func TestCounts(t *testing.T) {
 	tasks := []task.Task{
 		mkTask("a", task.StatusTodo),
