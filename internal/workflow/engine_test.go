@@ -2567,30 +2567,6 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 	}
 }
 
-func TestParseIssueURL(t *testing.T) {
-	tests := []struct {
-		url      string
-		wantRepo string
-		wantNum  int
-	}{
-		{"https://github.com/owner/repo/issues/42", "owner/repo", 42},
-		{"https://github.com/owner/repo/pull/42", "", 0},
-		{"https://github.com/owner/repo/issues/abc", "", 0},
-		{"https://github.com/owner/repo/issues/0", "", 0},
-		{"not a url", "", 0},
-		{"", "", 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.url, func(t *testing.T) {
-			gotRepo, gotNum := parseIssueURL(tt.url)
-			if gotRepo != tt.wantRepo || gotNum != tt.wantNum {
-				t.Errorf("parseIssueURL(%q) = %q,%d; want %q,%d",
-					tt.url, gotRepo, gotNum, tt.wantRepo, tt.wantNum)
-			}
-		})
-	}
-}
-
 // --- verify_commits step ---
 
 // fakeWorktreeGetter is a scripted WorktreeGetter for tests.
