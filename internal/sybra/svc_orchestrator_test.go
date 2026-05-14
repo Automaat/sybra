@@ -3,7 +3,6 @@
 package sybra
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"testing"
