@@ -224,15 +224,17 @@ func suggestedInvestigation(a Anomaly) string {
 		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {
 			hint += "- Blocking reason: " + reason + "\n"
 		}
-		if lastRole, _ := a.Evidence["last_agent_role"].(string); lastRole == "human-review" {
-			if lastState, _ := a.Evidence["last_agent_state"].(string); lastState == "stopped" {
-				taskID, _ := a.Evidence["task_id"].(string)
-				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
-				if taskID != "" {
-					hint += "- Note confirms 'needs human': provide the required input, then retry via `sybra-cli update " + taskID + " --status todo`.\n"
-				}
-				hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
+		lastRole, _ := a.Evidence["last_agent_role"].(string)
+		lastState, _ := a.Evidence["last_agent_state"].(string)
+		if lastRole == "human-review" && lastState == "stopped" {
+			taskID, _ := a.Evidence["task_id"].(string)
+			hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"
+			if taskID != "" {
+				hint += "- Note confirms 'needs human': provide the required input, then retry via `sybra-cli update " + taskID + " --status todo`.\n"
 			}
+			hint += "- Note shows unparseable or failed verdict: review the raw agent output in the note and act accordingly.\n"
+		} else if lastRole == "fix-review" && lastState == "stopped" {
+			hint += "- Fix-review agent finished — check the PR and agent log for the outcome, then approve or request further changes.\n"
 		}
 		return hint
 	default:

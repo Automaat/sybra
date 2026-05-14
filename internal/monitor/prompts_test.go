@@ -133,6 +133,64 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterHumanReview
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "pqr678",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:pqr678",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "pqr678",
+			"status":           "human-required",
+			"dwell_h":          10.0,
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if strings.Contains(body, "Approve or reject the plan") {
+		t.Error("human-required hint must not reference plan approval")
+	}
+	if strings.Contains(body, "Human-review agent") {
+		t.Error("hint must not mention human-review when role is fix-review")
+	}
+	if !strings.Contains(body, "Fix-review agent") {
+		t.Error("hint should mention fix-review agent finished")
+	}
+	if strings.Contains(body, "pushed") {
+		t.Error("hint must not claim fixes were pushed — outcome is unknown")
+	}
+	if !strings.Contains(body, "PR") {
+		t.Error("hint should reference PR for fix-review case")
+	}
+}
+
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_FixReviewStillRunning(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "stu901",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:stu901",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "stu901",
+			"status":           "human-required",
+			"dwell_h":          3.0,
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "running",
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if strings.Contains(body, "Fix-review agent") {
+		t.Error("hint must not claim fix-review completed when agent is still running")
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_HumanReviewStillRunning(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,
