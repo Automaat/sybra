@@ -122,3 +122,56 @@ func TestListSkillDirsMissingRoot(t *testing.T) {
 		t.Errorf("got %v, want nil for missing root", got)
 	}
 }
+
+func TestListPluginSkillDirs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Valid plugin layout: <root>/sai/staff-code-review/1.7.0/skills/staff-code-review/SKILL.md
+	mkSkill(t, root, "sai", "staff-code-review", "1.7.0", "staff-code-review")
+	// Older version of same skill — must dedupe.
+	mkSkill(t, root, "sai", "staff-code-review", "1.6.0", "staff-code-review")
+	// Different plugin under same marketplace.
+	mkSkill(t, root, "sai", "council", "1.5.0", "council")
+	// Different marketplace.
+	mkSkill(t, root, "anthropic-agent-skills", "document-skills", "f458cee31a75", "template")
+	// Hidden marketplace ignored.
+	mkSkill(t, root, ".hidden", "foo", "1.0.0", "foo")
+	// Skill dir missing SKILL.md is ignored.
+	if err := os.MkdirAll(filepath.Join(root, "sai", "no-skill", "1.0.0", "skills", "no-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := listPluginSkillDirs(root)
+	want := map[string]bool{
+		"staff-code-review": true,
+		"council":           true,
+		"template":          true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want keys %v", got, want)
+	}
+	for _, name := range got {
+		if !want[name] {
+			t.Errorf("unexpected skill %q in %v", name, got)
+		}
+	}
+}
+
+func TestListPluginSkillDirsMissingRoot(t *testing.T) {
+	t.Parallel()
+	if got := listPluginSkillDirs("/nonexistent/plugins/cache"); got != nil {
+		t.Errorf("got %v, want nil for missing root", got)
+	}
+}
+
+func mkSkill(t *testing.T, root, marketplace, plugin, version, skill string) {
+	t.Helper()
+	skillDir := filepath.Join(root, marketplace, plugin, version, "skills", skill)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
