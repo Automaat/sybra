@@ -1,5 +1,6 @@
-import { defineConfig } from 'vitest/config'
-import { loadEnv } from 'vite'
+/// <reference types="vitest/config" />
+
+import { defineConfig, loadEnv } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'url'
