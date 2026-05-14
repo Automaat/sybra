@@ -92,6 +92,9 @@ func TestCommentStore_Resolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
+	if len(comments) == 0 {
+		t.Fatal("expected at least 1 comment")
+	}
 	if !comments[0].Resolved {
 		t.Error("expected Resolved=true")
 	}

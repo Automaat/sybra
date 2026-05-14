@@ -60,6 +60,9 @@ func (p *ParallelChildren) AllChildrenDone() bool {
 		return false
 	}
 	for _, c := range p.Children {
+		if c == nil {
+			return false
+		}
 		if c.Status != "completed" && c.Status != "failed" {
 			return false
 		}
@@ -74,6 +77,9 @@ func (p *ParallelChildren) AnyChildFailed() bool {
 		return false
 	}
 	for _, c := range p.Children {
+		if c == nil {
+			continue
+		}
 		if c.Status == "failed" {
 			return true
 		}

@@ -217,7 +217,7 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	}
 
 	// Capture log records
-	var records []slog.Record
+	records := make([]slog.Record, 0)
 	handler := &recordHandler{records: &records}
 	logger := slog.New(handler)
 

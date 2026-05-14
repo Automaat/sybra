@@ -127,7 +127,10 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 		"tool_use_id": "tuid-cancel",
 		"tool_input":  map[string]any{},
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "/hooks/pre-tool-use", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/hooks/pre-tool-use", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	// Cancel context shortly after handler starts waiting for approval.

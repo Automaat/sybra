@@ -145,6 +145,9 @@ func Shutdown(ctx context.Context) error {
 }
 
 func createInstruments() error {
+	if meter == nil {
+		return nil
+	}
 	if err := createAgentInstruments(); err != nil {
 		return err
 	}
@@ -164,20 +167,24 @@ func createInstruments() error {
 }
 
 func createAgentInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if agentsStarted, err = meter.Int64Counter(
+	if agentsStarted, err = m.Int64Counter(
 		"sybra_agents_started_total",
 		metric.WithDescription("Count of agents started, by provider and mode."),
 	); err != nil {
 		return err
 	}
-	if agentsCompleted, err = meter.Int64Counter(
+	if agentsCompleted, err = m.Int64Counter(
 		"sybra_agents_completed_total",
 		metric.WithDescription("Count of agents that reached a terminal state, by result."),
 	); err != nil {
 		return err
 	}
-	agentDurationSecs, err = meter.Float64Histogram(
+	agentDurationSecs, err = m.Float64Histogram(
 		"sybra_agent_duration_seconds",
 		metric.WithDescription("Agent wall-clock duration from start to terminal state."),
 		metric.WithUnit("s"),
@@ -186,20 +193,24 @@ func createAgentInstruments() error {
 }
 
 func createTaskInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if tasksCreated, err = meter.Int64Counter(
+	if tasksCreated, err = m.Int64Counter(
 		"sybra_tasks_created_total",
 		metric.WithDescription("Tasks created via task.Manager."),
 	); err != nil {
 		return err
 	}
-	if tasksUpdated, err = meter.Int64Counter(
+	if tasksUpdated, err = m.Int64Counter(
 		"sybra_tasks_updated_total",
 		metric.WithDescription("Tasks updated via task.Manager."),
 	); err != nil {
 		return err
 	}
-	tasksDeleted, err = meter.Int64Counter(
+	tasksDeleted, err = m.Int64Counter(
 		"sybra_tasks_deleted_total",
 		metric.WithDescription("Tasks deleted via task.Manager."),
 	)
@@ -207,38 +218,42 @@ func createTaskInstruments() error {
 }
 
 func createPollInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if todoistPolls, err = meter.Int64Counter(
+	if todoistPolls, err = m.Int64Counter(
 		"sybra_todoist_polls_total",
 		metric.WithDescription("Todoist poll attempts, by result."),
 	); err != nil {
 		return err
 	}
-	if todoistImported, err = meter.Int64Counter(
+	if todoistImported, err = m.Int64Counter(
 		"sybra_todoist_items_imported_total",
 		metric.WithDescription("Todoist items imported as new tasks."),
 	); err != nil {
 		return err
 	}
-	if todoistCompleted, err = meter.Int64Counter(
+	if todoistCompleted, err = m.Int64Counter(
 		"sybra_todoist_items_completed_total",
 		metric.WithDescription("Todoist items marked complete by Sybra."),
 	); err != nil {
 		return err
 	}
-	if githubFetches, err = meter.Int64Counter(
+	if githubFetches, err = m.Int64Counter(
 		"sybra_github_fetches_total",
 		metric.WithDescription("GitHub Issues fetch attempts, by result."),
 	); err != nil {
 		return err
 	}
-	if githubImported, err = meter.Int64Counter(
+	if githubImported, err = m.Int64Counter(
 		"sybra_github_issues_imported_total",
 		metric.WithDescription("GitHub issues imported as tasks."),
 	); err != nil {
 		return err
 	}
-	renovatePolls, err = meter.Int64Counter(
+	renovatePolls, err = m.Int64Counter(
 		"sybra_renovate_polls_total",
 		metric.WithDescription("Renovate PR poll attempts, by result."),
 	)
@@ -246,26 +261,30 @@ func createPollInstruments() error {
 }
 
 func createOrchestratorInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if monitorTicks, err = meter.Int64Counter(
+	if monitorTicks, err = m.Int64Counter(
 		"sybra_monitor_ticks_total",
 		metric.WithDescription("Monitor service tick completions."),
 	); err != nil {
 		return err
 	}
-	if monitorAnomalies, err = meter.Int64Counter(
+	if monitorAnomalies, err = m.Int64Counter(
 		"sybra_monitor_anomalies_total",
 		metric.WithDescription("Monitor anomalies detected, by kind."),
 	); err != nil {
 		return err
 	}
-	if orchestratorTicks, err = meter.Int64Counter(
+	if orchestratorTicks, err = m.Int64Counter(
 		"sybra_orchestrator_ticks_total",
 		metric.WithDescription("Orchestrator loop iterations."),
 	); err != nil {
 		return err
 	}
-	orchestratorStaleRestarts, err = meter.Int64Counter(
+	orchestratorStaleRestarts, err = m.Int64Counter(
 		"sybra_orchestrator_stale_restarts_total",
 		metric.WithDescription("Orchestrator stale in-progress task restart attempts, by result."),
 	)
@@ -273,38 +292,42 @@ func createOrchestratorInstruments() error {
 }
 
 func createProviderInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if providerProbes, err = meter.Int64Counter(
+	if providerProbes, err = m.Int64Counter(
 		"sybra_provider_probes_total",
 		metric.WithDescription("Provider health probe attempts, by provider and result."),
 	); err != nil {
 		return err
 	}
-	if providerHealthFlips, err = meter.Int64Counter(
+	if providerHealthFlips, err = m.Int64Counter(
 		"sybra_provider_health_flips_total",
 		metric.WithDescription("Provider health state flips, by provider and direction (healthy/unhealthy)."),
 	); err != nil {
 		return err
 	}
-	if providerAuthFailures, err = meter.Int64Counter(
+	if providerAuthFailures, err = m.Int64Counter(
 		"sybra_provider_auth_failures_total",
 		metric.WithDescription("Provider auth-failure signals reported by runners."),
 	); err != nil {
 		return err
 	}
-	if providerRateLimits, err = meter.Int64Counter(
+	if providerRateLimits, err = m.Int64Counter(
 		"sybra_provider_rate_limits_total",
 		metric.WithDescription("Provider rate-limit signals reported by runners."),
 	); err != nil {
 		return err
 	}
-	if agentFailoversCounter, err = meter.Int64Counter(
+	if agentFailoversCounter, err = m.Int64Counter(
 		"sybra_agent_failovers_total",
 		metric.WithDescription("Agent scheduling failovers triggered by an unhealthy provider."),
 	); err != nil {
 		return err
 	}
-	agentsGatedCounter, err = meter.Int64Counter(
+	agentsGatedCounter, err = m.Int64Counter(
 		"sybra_agents_gated_total",
 		metric.WithDescription("Agent runs refused by the provider health gate, by provider and reason."),
 	)
@@ -312,32 +335,36 @@ func createProviderInstruments() error {
 }
 
 func createObservableGauges() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
 	var err error
-	if tasksByStatusGauge, err = meter.Int64ObservableGauge(
+	if tasksByStatusGauge, err = m.Int64ObservableGauge(
 		"sybra_tasks_by_status",
 		metric.WithDescription("Current task count grouped by status."),
 	); err != nil {
 		return err
 	}
-	if agentsActiveGauge, err = meter.Int64ObservableGauge(
+	if agentsActiveGauge, err = m.Int64ObservableGauge(
 		"sybra_agents_active",
 		metric.WithDescription("Current agents grouped by state."),
 	); err != nil {
 		return err
 	}
-	if renovatePRsGauge, err = meter.Int64ObservableGauge(
+	if renovatePRsGauge, err = m.Int64ObservableGauge(
 		"sybra_renovate_prs_fetched",
 		metric.WithDescription("Last observed count of open Renovate PRs."),
 	); err != nil {
 		return err
 	}
-	if providerHealthyG, err = meter.Int64ObservableGauge(
+	if providerHealthyG, err = m.Int64ObservableGauge(
 		"sybra_provider_healthy",
 		metric.WithDescription("Current provider health (1=healthy, 0=unhealthy), by provider."),
 	); err != nil {
 		return err
 	}
-	_, err = meter.RegisterCallback(
+	_, err = m.RegisterCallback(
 		observe,
 		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG,
 	)

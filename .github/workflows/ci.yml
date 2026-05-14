@@ -92,11 +92,8 @@ jobs:
         run: go install go.uber.org/nilaway/cmd/nilaway@latest
 
       - name: Run nilaway
-        # Baseline ratchet: 31 pre-existing findings recorded at enforcement
-        # commit. Fails on any new nil-safety regression (count > baseline).
-        # Reduce NILAWAY_BASELINE to 0 once the follow-up cleanup PR lands.
         run: |
-          NILAWAY_BASELINE=31
+          NILAWAY_BASELINE=0
           set +e
           nilaway -include-pkgs="github.com/Automaat/sybra" ./... > nilaway.out 2>&1
           NILAWAY_EXIT=$?

@@ -51,7 +51,7 @@ func TestSendEmitsEvent(t *testing.T) {
 		data  any
 	}
 	var mu sync.Mutex
-	var calls []emitCall
+	calls := make([]emitCall, 0)
 
 	emit := func(event string, data any) {
 		mu.Lock()
