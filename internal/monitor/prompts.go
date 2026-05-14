@@ -225,7 +225,9 @@ func suggestedInvestigation(a Anomaly) string {
 			hint += "- Blocking reason: " + reason + "\n"
 		}
 		if lastRole, _ := a.Evidence["last_agent_role"].(string); lastRole == "human-review" {
-			hint += "- Human-review agent already assessed this task — check the task body for the auto-review verdict.\n"
+			if lastState, _ := a.Evidence["last_agent_state"].(string); lastState == "stopped" {
+				hint += "- Human-review agent already assessed this task — check the task body for the latest auto-review note.\n"
+			}
 		}
 		return hint
 	default:
