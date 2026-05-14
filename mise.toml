@@ -26,7 +26,12 @@ run = "go build -o build/bin/sybra-cli ./cmd/sybra-cli"
 description = "Build CLI binary"
 
 [tasks.lint]
-run = ["golangci-lint run ./...", "cd frontend && npx oxlint .", "hadolint Dockerfile"]
+run = [
+  "golangci-lint run ./...",
+  "cd frontend && npx oxlint .",
+  "cd frontend && npm run lint:pins",
+  "hadolint Dockerfile",
+]
 description = "Run all linters"
 
 [tasks."build:frontend:desktop"]

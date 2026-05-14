@@ -3,8 +3,14 @@ set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
 
-# 1. package-lock parity with package.json
+# 1. package-lock parity + pin strategy when package.json is staged.
 if git diff --cached --name-only | grep -q "^frontend/package\.json$"; then
+  echo "frontend/package.json staged — verifying pin strategy..."
+  if ! (cd "$repo_root/frontend" && node scripts/check-pin-strategy.mjs); then
+    echo "ERROR: frontend pin strategy violated. See CONTRIBUTING.md."
+    exit 1
+  fi
+
   echo "frontend/package.json staged — verifying package-lock.json is in sync..."
   _lock="$repo_root/frontend/package-lock.json"
   _tmp=$(mktemp)

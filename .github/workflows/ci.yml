@@ -230,6 +230,9 @@ jobs:
           git diff --exit-code package-lock.json || \
             (echo "::error::frontend/package-lock.json out of sync. Run 'cd frontend && npm install' and commit the lockfile." && exit 1)
 
+      - name: Enforce frontend pin strategy
+        run: cd frontend && node scripts/check-pin-strategy.mjs
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest
