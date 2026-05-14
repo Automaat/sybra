@@ -1,7 +1,6 @@
 package skillsync_test
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 )
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func newSyncer() *skillsync.Syncer {

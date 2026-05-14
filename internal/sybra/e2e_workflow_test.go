@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -78,7 +77,7 @@ func buildTestBinaries(t *testing.T) string {
 }
 
 func e2eLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // setupE2E wires up real task store, workflow engine, agent manager with fake claude.

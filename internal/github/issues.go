@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -388,7 +389,7 @@ func fetchIssueWith(e execer, repo string, number int) (Issue, error) {
 		}
 	}
 
-	out, err := e.run("issue", "view", fmt.Sprintf("%d", number),
+	out, err := e.run("issue", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "number,title,body,url,labels,author")
 	if err != nil {
 		return Issue{}, fmt.Errorf("gh issue view %d: %s: %w", number, strings.TrimSpace(string(out)), err)

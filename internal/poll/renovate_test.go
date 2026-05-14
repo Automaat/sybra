@@ -1,7 +1,6 @@
 package poll
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,7 +24,7 @@ func TestRenovateHandlerRepos_FilterByProjectType(t *testing.T) {
 	writeProject(t, dir, "owner1--pet2.yaml", "owner1/pet2", "owner1", "pet2", project.ProjectTypePet)
 	writeProject(t, dir, "owner2--work1.yaml", "owner2/work1", "owner2", "work1", project.ProjectTypeWork)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	tests := []struct {
 		name      string

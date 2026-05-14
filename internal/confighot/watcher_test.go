@@ -2,7 +2,6 @@ package confighot
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 )
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func waitForCount(t *testing.T, count *atomic.Int64, want int64, timeout time.Duration) {

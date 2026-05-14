@@ -3,8 +3,8 @@ package monitor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -85,7 +85,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", err
 	}
 	if num > 0 {
-		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", fmt.Sprint(num), "--body", body)...); runErr != nil {
+		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", body)...); runErr != nil {
 			return false, foundURL, classifyGHError(runErr)
 		}
 		return false, foundURL, nil

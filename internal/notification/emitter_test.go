@@ -114,7 +114,7 @@ func TestBufferRingCapacity(t *testing.T) {
 	e.SetDesktop(false)
 
 	extra := 5
-	for i := 0; i < ringCap+extra; i++ {
+	for i := range ringCap + extra {
 		e.Send(LevelInfo, fmt.Sprintf("n%d", i), "", "", "")
 	}
 

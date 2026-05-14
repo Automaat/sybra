@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -213,7 +214,7 @@ func ApprovePR(repo string, number int) error {
 
 func approvePRWith(e execer, repo string, number int) error {
 	out, err := e.run("pr", "review", "--approve",
-		fmt.Sprintf("%d", number), "-R", repo)
+		strconv.Itoa(number), "-R", repo)
 	if err != nil {
 		return fmt.Errorf("gh pr review --approve %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}

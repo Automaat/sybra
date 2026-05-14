@@ -429,7 +429,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.reviewed":   strconv.FormatBool(t.Reviewed),
 	}
 	if t.PRNumber > 0 {
-		fields["task.pr_number"] = fmt.Sprintf("%d", t.PRNumber)
+		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)
 	}
 	return fields
 }

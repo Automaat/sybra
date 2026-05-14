@@ -1,12 +1,11 @@
 package worktree
 
 import (
-	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,7 +159,7 @@ func mustMarshalProject(t *testing.T, p project.Project) []byte {
 }
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func TestPathFor(t *testing.T) {
@@ -513,7 +512,7 @@ func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath string) {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath = filepath.Join(binDir, "invocations.log")
-	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit " + fmt.Sprintf("%d", exitCode) + "\n"
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit " + strconv.Itoa(exitCode) + "\n"
 	shimPath = filepath.Join(binDir, "mise")
 	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)

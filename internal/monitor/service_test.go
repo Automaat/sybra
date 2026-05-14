@@ -123,11 +123,11 @@ func (f *fakeSink) Submit(_ context.Context, a Anomaly, _ string) (bool, error) 
 	return f.createNext, nil
 }
 
-var errNotFound = errStr("not found")
+var errNotFound = strError("not found")
 
-type errStr string
+type strError string
 
-func (e errStr) Error() string { return string(e) }
+func (e strError) Error() string { return string(e) }
 
 func TestServiceTickEndToEnd(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)

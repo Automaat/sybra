@@ -220,7 +220,7 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 
 // containsPair returns true if args contains key followed immediately by val.
 func containsPair(args []string, key, val string) bool {
-	for i := 0; i < len(args)-1; i++ {
+	for i := range len(args) - 1 {
 		if args[i] == key && args[i+1] == val {
 			return true
 		}

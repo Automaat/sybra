@@ -154,10 +154,11 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 		if proj, pErr := o.projects.Get(t.ProjectID); pErr == nil && proj.Sandbox != nil {
 			inst := o.sandboxes.Get(taskID)
 			if inst == nil {
-				inst, err = o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
-				if err != nil {
-					o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", err)
-					err = nil // non-fatal: agent runs without sandbox
+				newInst, startErr := o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
+				if startErr != nil {
+					o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
+				} else {
+					inst = newInst
 				}
 			}
 			if inst != nil {
@@ -238,7 +239,7 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 		return nil, fmt.Errorf("invalid provider %q: must be claude or codex", providerName)
 	}
 	if strings.TrimSpace(projectID) == "" {
-		return nil, fmt.Errorf("project_id is required")
+		return nil, errors.New("project_id is required")
 	}
 	if _, err := o.projects.Get(projectID); err != nil {
 		return nil, fmt.Errorf("project %s: %w", projectID, err)

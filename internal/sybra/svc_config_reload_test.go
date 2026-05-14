@@ -2,7 +2,6 @@ package sybra
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -45,7 +44,7 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	logLevel := new(slog.LevelVar)
 	logLevel.Set(slog.LevelInfo)
 	emit := func(string, any) {}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	logDir := filepath.Join(home, "logs")
 	mgr := agent.NewManager(context.Background(), emit, logger, logDir)
 	mgr.SetMaxConcurrent(cfg.Agent.MaxConcurrent)

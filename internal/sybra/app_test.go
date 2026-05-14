@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -21,7 +20,7 @@ import (
 )
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func setupApp(t *testing.T) *App {

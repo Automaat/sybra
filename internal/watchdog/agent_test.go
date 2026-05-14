@@ -1,7 +1,6 @@
 package watchdog
 
 import (
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -37,7 +36,7 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	stopped := false
 	w := &Watchdog{
 		tasks:     tasks,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
@@ -68,7 +67,7 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 	stopped := false
 	w := &Watchdog{
 		tasks:     tasks,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 

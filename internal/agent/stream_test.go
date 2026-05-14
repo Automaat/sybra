@@ -48,6 +48,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "empty object",
 			line: `{}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "" {
 					t.Errorf("Type = %q, want empty", got.Type)
 				}
@@ -57,6 +58,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "system event with session_id",
 			line: `{"type":"system","session_id":"sess-123","subtype":"init"}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "system" {
 					t.Errorf("Type = %q, want system", got.Type)
 				}
@@ -72,6 +74,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "result event",
 			line: `{"type":"result","result":"done","session_id":"sess-456","total_cost_usd":0.05,"total_input_tokens":100,"total_output_tokens":50}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "result" {
 					t.Errorf("Type = %q, want result", got.Type)
 				}
@@ -99,6 +102,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "result event without cost",
 			line: `{"type":"result","result":"ok","session_id":"s1"}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Result == nil {
 					t.Fatal("Result is nil")
 				}
@@ -117,6 +121,7 @@ func TestParseClaudeLine(t *testing.T) {
 				`"usage":{"input_tokens":24,"output_tokens":10656,` +
 				`"cache_creation_input_tokens":48071,"cache_read_input_tokens":1070865}}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Result == nil {
 					t.Fatal("Result is nil")
 				}
@@ -141,6 +146,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "unknown event type preserved",
 			line: `{"type":"rate_limit_event","subtype":"throttle"}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "rate_limit_event" {
 					t.Errorf("Type = %q, want rate_limit_event", got.Type)
 				}
@@ -153,6 +159,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "assistant event with text content",
 			line: `{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "assistant" {
 					t.Errorf("Type = %q, want assistant", got.Type)
 				}
@@ -168,6 +175,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "user event with tool result",
 			line: `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"result text"}]}}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if got.Type != "user" {
 					t.Errorf("Type = %q, want user", got.Type)
 				}
@@ -186,6 +194,7 @@ func TestParseClaudeLine(t *testing.T) {
 			name: "raw is populated",
 			line: `{"type":"system","session_id":"s1"}`,
 			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
 				if len(got.Raw) == 0 {
 					t.Error("Raw is empty")
 				}
@@ -365,6 +374,7 @@ func TestExtractToolResults(t *testing.T) {
 			},
 			wantLen: 1,
 			check: func(t *testing.T, results []ToolResultBlock) {
+				t.Helper()
 				if results[0].Content != "tool output" {
 					t.Errorf("Content = %q, want tool output", results[0].Content)
 				}
@@ -401,6 +411,7 @@ func TestExtractToolResults(t *testing.T) {
 			},
 			wantLen: 1,
 			check: func(t *testing.T, results []ToolResultBlock) {
+				t.Helper()
 				if !results[0].IsError {
 					t.Error("IsError = false, want true")
 				}
@@ -421,6 +432,7 @@ func TestExtractToolResults(t *testing.T) {
 			},
 			wantLen: 1,
 			check: func(t *testing.T, results []ToolResultBlock) {
+				t.Helper()
 				if results[0].Content != "part1\npart2" {
 					t.Errorf("Content = %q, want part1\\npart2", results[0].Content)
 				}
@@ -435,6 +447,7 @@ func TestExtractToolResults(t *testing.T) {
 			},
 			wantLen: 1,
 			check: func(t *testing.T, results []ToolResultBlock) {
+				t.Helper()
 				if len(results[0].Content) != 3000 {
 					t.Errorf("len(Content) = %d, want 3000 (no truncation in shared parser)", len(results[0].Content))
 				}

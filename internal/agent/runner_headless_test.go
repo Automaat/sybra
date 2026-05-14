@@ -17,7 +17,7 @@ import (
 // and guardrails are left zero so no turn/cost limits fire.
 func newParseTestManager(t *testing.T) *Manager {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	emit := func(string, any) {}
 	return NewManager(context.Background(), emit, logger, t.TempDir())
 }
@@ -403,7 +403,7 @@ func TestGuardrails_MaxCostZeroMeansUnlimited(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0, MaxTurns: 0})
 
@@ -438,7 +438,7 @@ func TestGuardrails_MaxTurnsZeroMeansUnlimited(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxTurns: 0})
 
@@ -481,7 +481,7 @@ func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	// Cost cap set, but agent has spent $0 — well below 80% of $10.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
@@ -533,7 +533,7 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	// Cost cap $10, agent already spent $9 — above 80% threshold.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
@@ -586,7 +586,7 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 			managerRef.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	managerRef = m
 	// Start unlimited so result #1 doesn't escalate.
@@ -711,7 +711,7 @@ func TestGuardrails_PerAgentOverrideWins(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxTurns: 5})
 
@@ -744,7 +744,7 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	m := NewManager(context.Background(), emit, logger, t.TempDir())
 	// MaxCostUSD set; agent cost seeded above 80% threshold so auto-continue is suppressed.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 20})

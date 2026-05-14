@@ -1,7 +1,6 @@
 package sybra
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -60,7 +59,7 @@ func newDiffSvc(t *testing.T, tasksDir, worktreesDir string) (*AgentService, *ta
 	})
 	svc := &AgentService{
 		tasks:     task.NewManager(store, nil),
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 		cfg:       &config.Config{},
 		worktrees: wm,
 	}

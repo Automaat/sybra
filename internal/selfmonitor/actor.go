@@ -33,7 +33,7 @@ func (a *Actor) Act(_ context.Context, inv InvestigatedFinding) ActionRecord {
 	if inv.Verdict.Classification != VerdictConfirmed {
 		return ActionRecord{}
 	}
-	switch health.Category(inv.Finding.Category) {
+	switch inv.Finding.Category {
 	case health.CatTriageMismatch:
 		return a.flipAgentMode(inv)
 	default:

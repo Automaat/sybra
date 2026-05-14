@@ -118,7 +118,7 @@ func stripModelSuffix(m string) string {
 	if len(m) > 9 && m[len(m)-9] == '-' {
 		tail := m[len(m)-8:]
 		allDigits := true
-		for i := 0; i < len(tail); i++ {
+		for i := range len(tail) {
 			if tail[i] < '0' || tail[i] > '9' {
 				allDigits = false
 				break

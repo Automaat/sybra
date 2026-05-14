@@ -2,6 +2,7 @@ package task
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -38,7 +39,7 @@ func ParseBytes(data []byte) (Task, error) {
 	data = bytes.TrimPrefix(data, utf8BOM)
 	locs := frontmatterRe.FindAllIndex(data, 2)
 	if len(locs) < 2 {
-		return Task{}, fmt.Errorf("invalid frontmatter: expected --- delimiters")
+		return Task{}, errors.New("invalid frontmatter: expected --- delimiters")
 	}
 
 	fm := data[locs[0][1]:locs[1][0]]

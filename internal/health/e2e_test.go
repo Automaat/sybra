@@ -3,7 +3,6 @@ package health
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -61,7 +60,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 
-	silent := slog.New(slog.NewTextHandler(io.Discard, nil))
+	silent := slog.New(slog.DiscardHandler)
 	c := New(auditDir, tasks, home, silent, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -161,7 +160,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	tasks := task.NewManager(store, nil)
-	silent := slog.New(slog.NewTextHandler(io.Discard, nil))
+	silent := slog.New(slog.DiscardHandler)
 	c := New(auditDir, tasks, home, silent, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())

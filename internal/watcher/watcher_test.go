@@ -2,7 +2,6 @@ package watcher
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,7 +14,7 @@ import (
 )
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func waitReady(t *testing.T, w *Watcher) {

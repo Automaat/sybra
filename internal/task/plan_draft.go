@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,7 @@ func (s *PlanDraftStore) sidecarPath(taskID, name string) string {
 // scheme used by IsSidecarFile).
 func (s *PlanDraftStore) validate(name string) error {
 	if name == "" {
-		return fmt.Errorf("plan draft name is empty")
+		return errors.New("plan draft name is empty")
 	}
 	if !validDraftName.MatchString(name) {
 		return fmt.Errorf("plan draft name %q must match [a-zA-Z0-9_-]+", name)
