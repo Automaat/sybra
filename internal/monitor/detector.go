@@ -157,6 +157,16 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 		"budget_h":  budget.Hours(),
 		"file_path": t.FilePath,
 	}
+	if t.StatusReason != "" {
+		ev["status_reason"] = t.StatusReason
+	}
+	if n := len(t.AgentRuns); n > 0 {
+		last := t.AgentRuns[n-1]
+		if last.Role != "" {
+			ev["last_agent_role"] = last.Role
+		}
+		ev["last_agent_state"] = last.State
+	}
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,
