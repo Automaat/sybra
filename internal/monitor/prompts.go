@@ -260,9 +260,11 @@ func suggestedInvestigation(a Anomaly) string {
 				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation).\n"
 				if taskID != "" {
 					if prNum > 0 {
-						hint += fmt.Sprintf("- If waiting on PR review: check PR #%d for new reviewer feedback.\n", prNum)
+						hint += fmt.Sprintf("- Check PR #%d review state: if APPROVED and CI passes, merge; if CHANGES_REQUESTED, address comments then run a fix-review agent; if REVIEW_REQUIRED, re-request review.\n", prNum)
+						hint += "- Once PR merges, mark task done: `sybra-cli update " + taskID + " --status done`.\n"
+					} else {
+						hint += "- To hand off for interactive work: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
 					}
-					hint += "- To hand off for interactive work: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
 				}
 			} else {
 				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"

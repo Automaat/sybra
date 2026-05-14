@@ -220,6 +220,22 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman_Wit
 	if !strings.Contains(body, "PR #777") {
 		t.Error("hint should include PR number when available even with known verdict")
 	}
+	if !strings.Contains(body, "APPROVED") {
+		t.Error("hint should mention APPROVED case")
+	}
+	if !strings.Contains(body, "CHANGES_REQUESTED") {
+		t.Error("hint should mention CHANGES_REQUESTED case")
+	}
+	if !strings.Contains(body, "REVIEW_REQUIRED") {
+		t.Error("hint should mention REVIEW_REQUIRED case")
+	}
+	if !strings.Contains(body, "sybra-cli update abc999 --status done") {
+		t.Error("hint should include done command once PR merges")
+	}
+	// When there is a PR, no need for interactive hand-off — the PR flow handles it
+	if strings.Contains(body, "--mode interactive --status todo") {
+		t.Error("hint must not show interactive hand-off when a PR is linked")
+	}
 }
 
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview(t *testing.T) {
