@@ -2,14 +2,10 @@
   import { onMount } from 'svelte'
   import { GetSettings, UpdateSettings, GetVersion, GetCodexModels } from '$lib/api'
   import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
-  import {
-    GetProviderHealth,
-    ProviderHealthEnabled,
-    SetProviderAutoFailover,
-    SetProviderEnabled,
-  } from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
-  import { EventsOn } from '$lib/api'
-  import * as ev from '../lib/events.js'
+  import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
+  import LoggingPanel from '../components/settings/LoggingPanel.svelte'
+  import TodoistPanel from '../components/settings/TodoistPanel.svelte'
+  import RenovatePanel from '../components/settings/RenovatePanel.svelte'
 
   type ColorScheme = 'system' | 'light' | 'dark'
 
@@ -98,69 +94,8 @@
     settings = JSON.parse(original)
   }
 
-  type ProviderHealthEntry = {
-    provider: string
-    healthy: boolean
-    reason: string
-    detail?: string
-    lastCheck?: string
-    ratelimitedUntil?: string
-  }
-  let providerHealthEnabled = $state(false)
-  let providerHealthMap = $state<Record<string, ProviderHealthEntry>>({})
-  let providerError = $state('')
-
-  async function loadProviderHealth() {
-    try {
-      providerHealthEnabled = await ProviderHealthEnabled()
-      if (!providerHealthEnabled) return
-      const list = (await GetProviderHealth()) ?? []
-      const next: Record<string, ProviderHealthEntry> = {}
-      for (const p of list) next[p.provider] = p as ProviderHealthEntry
-      providerHealthMap = next
-    } catch (e) {
-      providerError = String(e)
-    }
-  }
-
-  $effect(() => {
-    loadProviderHealth()
-    const unsub = EventsOn(ev.ProviderHealth, (p: ProviderHealthEntry) => {
-      if (!p?.provider) return
-      providerHealthMap = { ...providerHealthMap, [p.provider]: p }
-    })
-    return () => unsub()
-  })
-
-  async function onAutoFailoverChange(e: Event) {
-    if (!settings) return
-    const value = (e.target as HTMLInputElement).checked
-    try {
-      await SetProviderAutoFailover(value)
-      settings.providers.autoFailover = value
-      original = JSON.stringify(settings)
-    } catch (err) {
-      providerError = String(err)
-    }
-  }
-
-  async function onProviderEnabledChange(name: 'claude' | 'codex', e: Event) {
-    if (!settings) return
-    const value = (e.target as HTMLInputElement).checked
-    try {
-      await SetProviderEnabled(name, value)
-      settings.providers[name].enabled = value
-      original = JSON.stringify(settings)
-      await loadProviderHealth()
-    } catch (err) {
-      providerError = String(err)
-    }
-  }
-
-  function healthBadgeClass(p: ProviderHealthEntry): string {
-    if (p.healthy) return 'bg-success-500/20 text-success-600 dark:text-success-300'
-    if (p.reason === 'disabled') return 'bg-surface-300 text-surface-600 dark:bg-surface-600 dark:text-surface-300'
-    return 'bg-error-500/20 text-error-600 dark:text-error-300'
+  function syncOriginal() {
+    if (settings) original = JSON.stringify(settings)
   }
 
   const modelOptions = $derived.by(() => {
@@ -290,59 +225,7 @@
       </div>
     </div>
 
-    <!-- Providers -->
-    {#if providerHealthEnabled}
-      <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-        <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Providers</h2>
-        {#if providerError}
-          <div class="mb-3 text-xs text-error-500">{providerError}</div>
-        {/if}
-        <div class="flex flex-col gap-3">
-          {#each ['claude', 'codex'] as name (name)}
-            {@const p = providerHealthMap[name]}
-            <div class="flex items-center justify-between gap-3 rounded border border-surface-200 bg-white px-3 py-2 dark:border-surface-700 dark:bg-surface-900">
-              <div class="flex flex-col">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium capitalize">{name}</span>
-                  {#if p}
-                    <span class="rounded px-1.5 py-0.5 text-xs {healthBadgeClass(p)}">
-                      {p.healthy ? 'healthy' : p.reason}
-                    </span>
-                  {/if}
-                </div>
-                {#if p?.detail}
-                  <span class="text-xs text-surface-400">{p.detail}</span>
-                {/if}
-                {#if p?.lastCheck}
-                  <span class="text-xs text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
-                {/if}
-              </div>
-              <label class="flex cursor-pointer items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  class="h-4 w-4 cursor-pointer rounded border-surface-300"
-                  checked={name === 'claude' ? settings.providers.claude.enabled : settings.providers.codex.enabled}
-                  onchange={(e) => onProviderEnabledChange(name as 'claude' | 'codex', e)}
-                />
-                <span>Enabled</span>
-              </label>
-            </div>
-          {/each}
-          <label class="flex cursor-pointer items-center gap-3 pt-2">
-            <input
-              type="checkbox"
-              class="h-4 w-4 cursor-pointer rounded border-surface-300"
-              checked={settings.providers.autoFailover}
-              onchange={onAutoFailoverChange}
-            />
-            <span class="text-sm">Auto-failover between providers when one is unhealthy</span>
-          </label>
-          <span class="text-xs text-surface-400">
-            Health check interval: {settings.providers.healthCheck.intervalSeconds}s. Edit config.yaml to change.
-          </span>
-        </div>
-      </div>
-    {/if}
+    <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
 
     <!-- Notifications -->
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
@@ -386,158 +269,11 @@
       </div>
     </div>
 
-    <!-- Logging & Audit -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Logging & Audit</h2>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="log-level">Log Level</label>
-          <select
-            id="log-level"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.logging.level}
-          >
-            <option value="debug">Debug</option>
-            <option value="info">Info</option>
-            <option value="warn">Warn</option>
-            <option value="error">Error</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="log-max-size">Max Log Size (MB)</label>
-          <input
-            id="log-max-size"
-            type="number"
-            min="1"
-            max="500"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.logging.maxSizeMB}
-          />
-          <span class="text-xs text-surface-400">1–500 MB</span>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="log-max-files">Max Log Files</label>
-          <input
-            id="log-max-files"
-            type="number"
-            min="1"
-            max="50"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.logging.maxFiles}
-          />
-          <span class="text-xs text-surface-400">1–50 files</span>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="audit-retention">Audit Retention (days)</label>
-          <input
-            id="audit-retention"
-            type="number"
-            min="1"
-            max="365"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.audit.retentionDays}
-          />
-          <span class="text-xs text-surface-400">1–365 days</span>
-        </div>
-      </div>
-      <div class="mt-4">
-        <label class="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-4 w-4 cursor-pointer rounded border-surface-300"
-            bind:checked={settings.audit.enabled}
-          />
-          <span class="text-sm">Enable audit logging</span>
-        </label>
-      </div>
-    </div>
+    <LoggingPanel settings={settings} />
 
-    <!-- Todoist -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Todoist</h2>
-      <div class="flex flex-col gap-4">
-        <label class="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-4 w-4 cursor-pointer rounded border-surface-300"
-            bind:checked={settings.todoist.enabled}
-          />
-          <div>
-            <span class="text-sm font-medium">Enable Todoist sync</span>
-            <p class="text-xs text-surface-400">Pull tasks from a Todoist project and close them when done</p>
-          </div>
-        </label>
-        {#if settings.todoist.enabled}
-          <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-medium" for="todoist-token">API Token</label>
-              <input
-                id="todoist-token"
-                type="password"
-                placeholder="Your Todoist API token"
-                class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-                bind:value={settings.todoist.apiToken}
-              />
-              <span class="text-xs text-surface-400">Settings → Integrations → API token</span>
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-medium" for="todoist-project">Project ID</label>
-              <input
-                id="todoist-project"
-                type="text"
-                placeholder="Todoist project ID"
-                class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-                bind:value={settings.todoist.projectId}
-              />
-              <span class="text-xs text-surface-400">ID from project URL</span>
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-sm font-medium" for="todoist-poll">Poll Interval (seconds)</label>
-              <input
-                id="todoist-poll"
-                type="number"
-                min="30"
-                max="3600"
-                class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-                bind:value={settings.todoist.pollSeconds}
-              />
-              <span class="text-xs text-surface-400">30–3600 seconds</span>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </div>
+    <TodoistPanel settings={settings} />
 
-    <!-- Renovate -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Renovate</h2>
-      <div class="flex flex-col gap-4">
-        <label class="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-4 w-4 cursor-pointer rounded border-surface-300"
-            bind:checked={settings.renovate.enabled}
-          />
-          <div>
-            <span class="text-sm font-medium">Enable Renovate PR tracking</span>
-            <p class="text-xs text-surface-400">Show Renovate bot PRs for registered projects</p>
-          </div>
-        </label>
-        {#if settings.renovate.enabled}
-          <div class="flex flex-col gap-1 sm:max-w-sm">
-            <label class="text-sm font-medium" for="renovate-author">PR Author</label>
-            <input
-              id="renovate-author"
-              type="text"
-              placeholder="app/renovate"
-              class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-              bind:value={settings.renovate.author}
-            />
-            <span class="text-xs text-surface-400">GitHub author filter (default: app/renovate)</span>
-          </div>
-        {/if}
-      </div>
-    </div>
+    <RenovatePanel settings={settings} />
 
     <!-- Version (read-only) -->
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
