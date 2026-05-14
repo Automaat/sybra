@@ -536,6 +536,60 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 			t.Error("evidence should not contain human_review_verdict when role is not human-review")
 		}
 	})
+
+	t.Run("uses Verdict field when set, even with truncated Result", func(t *testing.T) {
+		// Simulates a long review response where the sybra-verdict block was
+		// cut off during Result truncation but the Verdict field was populated
+		// from the live agent output at completion time.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result:  "Very long diagnostic writeup... (truncated)",
+					Verdict: "sybra_bug",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict")
+		}
+		if got != "sybra_bug" {
+			t.Errorf("human_review_verdict = %q, want %q", got, "sybra_bug")
+		}
+	})
+
+	t.Run("Verdict field takes priority over Result parsing", func(t *testing.T) {
+		// Verdict field wins even when Result also contains a parseable block.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result:  "```sybra-verdict\n{\"decision\":\"human\"}\n```",
+					Verdict: "sybra_bug",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict")
+		}
+		if got != "sybra_bug" {
+			t.Errorf("human_review_verdict = %q, want sybra_bug (Verdict field wins)", got)
+		}
+	})
 }
 
 func TestCounts(t *testing.T) {
