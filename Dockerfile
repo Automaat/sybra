@@ -17,12 +17,29 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 
 # Stage 3: Runtime — node:24-slim for claude CLI (Node.js-based)
 #
-# Layer ordering targets pull-time on re-deploys: the heavy, version-pinned
-# tool layers sit above the thin sybra-binary + web-assets layers. Bumping
-# sybra invalidates only the last two COPY layers (~20MB); bumping a tool
-# ARG invalidates just that tool's layer. Pinned versions keep layer digests
-# stable across rebuilds (unpinned `apt-get` / `npm install` would otherwise
-# regenerate the blob on every build even when inputs are unchanged).
+# Layer cache strategy (DO NOT REORDER without updating
+# scripts/check-dockerfile-layers.sh):
+#
+#   A. apt system packages + gh repo   — heaviest, rare changes
+#   B. klaudiush binary                — pinned via ARG, rare
+#   C. node CLIs (claude, codex)       — pinned via ARG, monthly bumps
+#   D. mise binary                     — pinned via ARG, rare
+#   E. non-root user + static config   — never changes
+#   F+G. sybra binaries + web assets   — per-commit, thin (~20MB)
+#
+# Invariants enforced by scripts/check-dockerfile-layers.sh in CI:
+#   - Each "# --- Layer X:" marker appears exactly once, in order
+#   - `apt-get install` only inside Layer A
+#   - `npm install -g` only inside Layer C
+#   - `COPY --from=<builder>` only inside Layer F+G
+#   - HEALTHCHECK uses curl (not node -e)
+#   - Every FROM is sha256-pinned
+#
+# Why it matters: bumping sybra invalidates only the last COPY layers;
+# bumping a tool ARG invalidates just that tool's layer. If `apt-get
+# install` ever lands in Layer F+G, the apt cache silently regenerates
+# on every sybra commit and image size balloons. The linter catches that
+# before it reaches main.
 FROM node:24-slim@sha256:24dc26ef1e3c3690f27ebc4136c9c186c3133b25563ae4d7f0692e4d1fe5db0e AS runtime
 
 # Pipe failures in subsequent RUN blocks should fail the build.
@@ -139,7 +156,7 @@ WORKDIR /home/sybra
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:'+process.env.SYBRA_PORT+'/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+    CMD curl -sf "http://localhost:${SYBRA_PORT}/health" || exit 1
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
 #   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)
