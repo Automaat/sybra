@@ -1,32 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { EventsOn, GetProviderHealth, ProviderHealthEnabled } from '$lib/api'
-  import * as ev from './lib/events.js'
-  import { taskStore } from './stores/tasks.svelte.js'
-  import { agentStore } from './stores/agents.svelte.js'
-  import { projectStore } from './stores/projects.svelte.js'
-  import { notificationStore } from './stores/notifications.svelte.js'
-  import { bgopStore } from './stores/bgops.svelte.js'
-  import { navStore, type Page } from './lib/navigation.svelte.js'
+  import { navStore } from './lib/navigation.svelte.js'
   import { viewport } from './lib/viewport.svelte.js'
   import { connectionStore } from './stores/connection.svelte.js'
   import AppShell from './components/shell/AppShell.svelte'
-  import TaskList from './pages/TaskList.svelte'
-  import TaskDetail from './pages/TaskDetail.svelte'
-  import Agents from './pages/Agents.svelte'
-  import AgentDetail from './pages/AgentDetail.svelte'
-  import ProjectList from './pages/ProjectList.svelte'
-  import ProjectDetail from './pages/ProjectDetail.svelte'
-  import Dashboard from './pages/Dashboard.svelte'
-  import GitHub from './pages/GitHub.svelte'
-  import Stats from './pages/Stats.svelte'
-  import Reviews from './pages/Reviews.svelte'
-  import Settings from './pages/Settings.svelte'
-  import ChatList from './pages/ChatList.svelte'
-  import ChatDetail from './pages/ChatDetail.svelte'
-  import WorkflowList from './pages/WorkflowList.svelte'
-  import WorkflowDetail from './pages/WorkflowDetail.svelte'
-  import Logbook from './pages/Logbook.svelte'
   import CreateTaskDialog from './components/CreateTaskDialog.svelte'
   import CreateProjectDialog from './components/CreateProjectDialog.svelte'
   import QuickAddTask from './components/QuickAddTask.svelte'
@@ -34,9 +11,14 @@
   import CommandPalette from './components/CommandPalette.svelte'
   import type { PaletteCtx } from './lib/palette-commands.js'
   import KeyboardHelp from './components/KeyboardHelp.svelte'
-  import TaskSidebar from './components/TaskSidebar.svelte'
+  import AppWarningsBanner from './components/AppWarningsBanner.svelte'
+  import PageRouter from './components/PageRouter.svelte'
   import { handleAppKeydown, type AppKeyAction } from './lib/app-keyboard.js'
-  import { Cloud, AlertTriangle } from '@lucide/svelte'
+  import {
+    startAppLifecycle,
+    type ProviderHealth,
+    type DegradedWarning,
+  } from './lib/app-lifecycle.js'
 
   const paletteCtx: PaletteCtx = {
     navigate: (page) => { commandPaletteOpen = false; navStore.reset(page) },
@@ -45,18 +27,7 @@
     openKeyboardHelp: () => { commandPaletteOpen = false; helpOpen = true },
   }
 
-  type DegradedWarning = { subsystem: string; reason: string }
   let degradedWarnings = $state<DegradedWarning[]>([])
-
-  type ProviderHealth = {
-    provider: string
-    healthy: boolean
-    reason: string
-    detail?: string
-    lastCheck?: string
-    ratelimitedUntil?: string
-    failoverActive?: boolean
-  }
   let providerHealth = $state<Record<string, ProviderHealth>>({})
   const unhealthyProviders = $derived(
     Object.values(providerHealth).filter(p => !p.healthy && p.reason !== 'disabled' && p.reason !== 'unknown')
@@ -79,81 +50,24 @@
     return null
   })
 
-  function onEvents(events: string[], handler: () => void): () => void {
-    const unsubs = events.map(e => EventsOn(e, handler))
-    return () => unsubs.forEach(u => u())
-  }
-
-  // Coalesce bursts of backend events into a single handler call. The backend
-  // can fire dozens of task:updated events per second when agents churn
-  // (restart-stale loops, rapid workflow advances, large headless sessions);
-  // a full taskStore.load() on every event re-builds the reactive Map and
-  // forces every kanban card to re-render, which saturates the WebKit main
-  // thread and freezes the UI even though the Go side is idle.
-  function debounced(fn: () => void, wait = 150): () => void {
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let lastInvoke = 0
-    return () => {
-      const now = Date.now()
-      if (now - lastInvoke >= wait && timer === null) {
-        lastInvoke = now
-        fn()
-        return
-      }
-      if (timer !== null) clearTimeout(timer)
-      timer = setTimeout(() => {
-        lastInvoke = Date.now()
-        timer = null
-        fn()
-      }, wait)
-    }
-  }
-
   $effect(() => {
     // This effect is lifecycle (mount/unmount), not reactive: it must NOT track
     // any reads from the store loads it kicks off, otherwise the writes those
     // loads make to $state stores would re-run this effect, which would cancel
     // every subscription and EventSource connection and re-create them in a
     // tight loop (~60×/s in the wild — caused full UI flicker on the web build).
-    const cleanup = untrack(() => {
-      const stopConnection = connectionStore.start()
-      taskStore.load()
-      taskStore.startPolling()
-      agentStore.load()
-      agentStore.startPolling()
-      projectStore.load()
-      projectStore.startPolling()
-
-      const reloadTasks = debounced(() => taskStore.load(), 150)
-      const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
-      notificationStore.load()
-      const unsubNotif = notificationStore.listen()
-      bgopStore.load()
-      const unsubBgops = bgopStore.listen()
-      const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => {
-        degradedWarnings = [...degradedWarnings, w]
+    const stopLifecycle = untrack(() =>
+      startAppLifecycle({
+        onDegraded: (w) => { degradedWarnings = [...degradedWarnings, w] },
+        onProviderHealthSnapshot: (snapshot) => { providerHealth = snapshot },
+        onProviderHealth: (p) => { providerHealth = { ...providerHealth, [p.provider]: p } },
+        onQuitConfirm: () => {
+          quitConfirmVisible = true
+          if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
+          quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
+        },
       })
-      // Seed provider health snapshot on mount then listen for flips.
-      ProviderHealthEnabled().then(enabled => {
-        if (!enabled) return
-        GetProviderHealth().then(list => {
-          const next: Record<string, ProviderHealth> = {}
-          for (const p of list ?? []) next[p.provider] = p as ProviderHealth
-          providerHealth = next
-        }).catch(() => {})
-      }).catch(() => {})
-      const unsubProviderHealth = EventsOn(ev.ProviderHealth, (p: ProviderHealth) => {
-        if (!p?.provider) return
-        providerHealth = { ...providerHealth, [p.provider]: p }
-      })
-      const unsubQuit = EventsOn(ev.AppQuitConfirm, () => {
-        quitConfirmVisible = true
-        if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
-        quitConfirmTimer = setTimeout(() => { quitConfirmVisible = false }, 3000)
-      })
-      return { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit, unsubBgops }
-    })
-    const { stopConnection, unsubTasks, unsubNotif, unsubDegraded, unsubProviderHealth, unsubQuit, unsubBgops } = cleanup
+    )
 
     // Keyboard shortcuts only on devices with a fine pointer (mouse/keyboard).
     // Touch-only devices (iPhone, iPad without keyboard) skip listener entirely.
@@ -208,17 +122,8 @@
     }
 
     return () => {
-      stopConnection()
-      unsubTasks()
-      unsubNotif()
-      unsubBgops()
-      unsubDegraded()
-      unsubProviderHealth()
-      unsubQuit()
+      stopLifecycle()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
-      taskStore.stopPolling()
-      agentStore.stopPolling()
-      projectStore.stopPolling()
       removeKeyHandler?.()
     }
   })
@@ -231,127 +136,27 @@
 </script>
 
 <AppShell onsearch={() => (commandPaletteOpen = true)} {primaryAction}>
-  {#if !connectionStore.online}
-    <div class="flex shrink-0 items-center gap-2 border-b border-warning-600 bg-warning-800/90 px-4 py-2 text-sm text-warning-100">
-      <Cloud size={16} class="shrink-0" />
-      <span>
-        <strong>Offline</strong> — task board is read-only.
-        {connectionStore.networkOnline ? 'Backend unreachable.' : 'No network connection.'}
-        Agents cannot start; GitHub sync will resume when reconnected.
-      </span>
-    </div>
-  {/if}
+  <AppWarningsBanner
+    online={connectionStore.online}
+    networkOnline={connectionStore.networkOnline}
+    unhealthyProviders={unhealthyProviders}
+    degradedWarnings={degradedWarnings}
+    ondismissDegraded={(i) => { degradedWarnings = degradedWarnings.filter((_, j) => j !== i) }}
+  />
 
-  {#if unhealthyProviders.length > 0}
-    <div class="flex shrink-0 flex-col gap-0.5">
-      {#each unhealthyProviders as p (p.provider)}
-        <div class="flex items-center gap-2 bg-error-800/90 border-b border-error-600 px-4 py-2 text-error-100 text-sm">
-          <AlertTriangle size={16} class="shrink-0" />
-          <span>
-            <strong>{p.provider}</strong> unavailable — {p.reason}
-            {#if p.ratelimitedUntil}· until {new Date(p.ratelimitedUntil).toLocaleTimeString()}{/if}
-            {#if p.failoverActive}· failing over to peer{/if}
-          </span>
-        </div>
-      {/each}
-    </div>
-  {/if}
-
-  {#if degradedWarnings.length > 0}
-    <div class="flex shrink-0 flex-col gap-0.5">
-      {#each degradedWarnings as w, i (w.subsystem)}
-        <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
-          <AlertTriangle size={16} class="shrink-0" />
-          <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>
-          <button
-            type="button"
-            class="ml-auto opacity-60 hover:opacity-100 text-xs"
-            onclick={() => { degradedWarnings = degradedWarnings.filter((_, j) => j !== i) }}
-            aria-label="Dismiss"
-          >✕</button>
-        </div>
-      {/each}
-    </div>
-  {/if}
-
-  <main class="flex min-h-0 flex-1 {navStore.page.kind === 'task-list' && sidebarTaskId ? 'flex-row overflow-hidden' : 'flex-col overflow-y-auto'}">
-    {#if navStore.page.kind === 'dashboard'}
-      <Dashboard onviewagent={navAgentDetail} />
-    {:else if navStore.page.kind === 'task-list'}
-      <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <TaskList
-          onselect={(id) => { sidebarTaskId = null; navTaskDetail(id) }}
-          filter={navStore.page.filter}
-          onnewTask={() => (quickAddOpen = true)}
-          onfocusedtaskchange={(id) => (focusedTaskIdFromList = id)}
-        />
-      </div>
-      {#if sidebarTaskId}
-        <TaskSidebar
-          taskId={sidebarTaskId}
-          onclose={() => (sidebarTaskId = null)}
-          onviewagent={navAgentDetail}
-          onviewtask={(id) => { sidebarTaskId = null; navTaskDetail(id) }}
-        />
-      {/if}
-    {:else if navStore.page.kind === 'task-detail'}
-      <TaskDetail
-        taskId={navStore.page.taskId}
-        onback={() => navStore.back()}
-        onviewagent={navAgentDetail}
-        ondelete={() => navStore.back()}
-        onreviewplan={() => navStore.reset({ kind: 'reviews' })}
-      />
-    {:else if navStore.page.kind === 'project-list'}
-      <ProjectList
-        onselect={navProjectDetail}
-        onadd={() => (projectDialogOpen = true)}
-      />
-    {:else if navStore.page.kind === 'project-detail'}
-      <ProjectDetail
-        projectId={navStore.page.projectId}
-        onback={() => navStore.back()}
-        onviewtask={navTaskDetail}
-      />
-    {:else if navStore.page.kind === 'chats'}
-      <ChatList onselect={navChatDetail} />
-    {:else if navStore.page.kind === 'chat-detail'}
-      <ChatDetail
-        agentId={navStore.page.agentId}
-        onback={() => navStore.back()}
-        onviewtask={navTaskDetail}
-      />
-    {:else if navStore.page.kind === 'agents'}
-      <Agents
-        initialTab={navStore.page.tab}
-        onselect={navAgentDetail}
-      />
-    {:else if navStore.page.kind === 'agent-detail'}
-      <AgentDetail
-        agentId={navStore.page.agentId}
-        onback={() => navStore.back()}
-        onviewtask={navTaskDetail}
-        onnavigate={navAgentDetail}
-      />
-    {:else if navStore.page.kind === 'github'}
-      <GitHub />
-    {:else if navStore.page.kind === 'reviews'}
-      <Reviews onviewtask={navTaskDetail} />
-    {:else if navStore.page.kind === 'stats'}
-      <Stats />
-    {:else if navStore.page.kind === 'workflows'}
-      <WorkflowList onselect={navWorkflowDetail} />
-    {:else if navStore.page.kind === 'workflow-detail'}
-      <WorkflowDetail
-        workflowId={navStore.page.workflowId}
-        onback={() => navStore.back()}
-      />
-    {:else if navStore.page.kind === 'logbook'}
-      <Logbook onviewtask={navTaskDetail} />
-    {:else if navStore.page.kind === 'settings'}
-      <Settings />
-    {/if}
-  </main>
+  <PageRouter
+    sidebarTaskId={sidebarTaskId}
+    onsidebarclose={() => (sidebarTaskId = null)}
+    onfocusedtaskchange={(id) => (focusedTaskIdFromList = id)}
+    navTaskDetail={navTaskDetail}
+    navAgentDetail={navAgentDetail}
+    navChatDetail={navChatDetail}
+    navProjectDetail={navProjectDetail}
+    navWorkflowDetail={navWorkflowDetail}
+    onnewTask={() => (quickAddOpen = true)}
+    onnewProject={() => (projectDialogOpen = true)}
+    onselectTaskFromList={(id) => { sidebarTaskId = null; navTaskDetail(id) }}
+  />
 </AppShell>
 
 <CreateTaskDialog
