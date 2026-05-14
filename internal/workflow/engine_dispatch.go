@@ -194,3 +194,51 @@ func (e *Engine) HasActiveWorkflow(taskID string) bool {
 	}
 	return t.Workflow.State != ExecCompleted && t.Workflow.State != ExecFailed
 }
+
+// CancelWorkflow terminates a task's active workflow without running any
+// remaining steps. Stops in-flight agents for the task, marks the workflow
+// ExecCompleted with the cancellation reason recorded in variables, and
+// clears CurrentStep so ResumeStalled stops re-dispatching.
+//
+// No-op when the task has no workflow or its workflow already terminated.
+// Returns the prior current step ID for the caller's log line; empty when
+// the workflow had already ended.
+//
+// Does NOT fire OnComplete — cascading the cancel into the next workflow
+// (e.g. simple-task-review on ready-review) is rarely what the caller
+// wants, and pr-monitor wants the task to fall back to its prior state.
+func (e *Engine) CancelWorkflow(taskID, reason string) (string, error) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Workflow == nil {
+		return "", nil
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
+		return "", nil
+	}
+
+	priorStep := t.Workflow.CurrentStep
+
+	// Stop any in-flight agents first so their completion callback runs
+	// against the about-to-be-terminal workflow (HandleAgentComplete's
+	// terminal guard at engine_events.go:128 turns it into a no-op).
+	e.agents.StopAgentsForTask(taskID, "")
+
+	now := time.Now().UTC()
+	wfExec := t.Workflow
+	wfExec.State = ExecCompleted
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	if reason != "" {
+		wfExec.SetVar("cancel_reason", reason)
+	}
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return priorStep, err
+	}
+	e.logger.Info("workflow.cancelled",
+		"task_id", taskID, "workflow", wfExec.WorkflowID,
+		"step", priorStep, "reason", reason)
+	return priorStep, nil
+}

@@ -835,6 +835,67 @@ func TestHasActiveWorkflow(t *testing.T) {
 	}
 }
 
+func TestCancelWorkflow(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "active", Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "pr-fix",
+			CurrentStep: "fix",
+			State:       ExecWaiting,
+			Variables:   map[string]string{"pr_issue_kind": "ci_failure"},
+		}})
+	tasks.Put(TaskInfo{ID: "completed", Status: "done",
+		Workflow: &Execution{WorkflowID: "pr-fix", State: ExecCompleted}})
+	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
+
+	// Pretend an agent is running for "active" so we can verify it's stopped.
+	if _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+
+	step, err := engine.CancelWorkflow("active", "ci_failure resolved")
+	if err != nil {
+		t.Fatalf("CancelWorkflow active: %v", err)
+	}
+	if step != "fix" {
+		t.Errorf("returned step = %q, want %q", step, "fix")
+	}
+	got, err := tasks.GetTask("active")
+	if err != nil {
+		t.Fatalf("get active: %v", err)
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Errorf("State = %s, want %s", got.Workflow.State, ExecCompleted)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Errorf("CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CompletedAt == nil {
+		t.Error("CompletedAt not set")
+	}
+	if got.Workflow.Variables["cancel_reason"] != "ci_failure resolved" {
+		t.Errorf("cancel_reason = %q", got.Workflow.Variables["cancel_reason"])
+	}
+	if agents.HasRunningAgent("active") {
+		t.Error("agent still running after cancel")
+	}
+
+	// Already-terminal workflow → no-op, no error.
+	if step, err := engine.CancelWorkflow("completed", "x"); err != nil || step != "" {
+		t.Errorf("cancel completed: step=%q err=%v", step, err)
+	}
+
+	// No workflow attached → no-op, no error.
+	if step, err := engine.CancelWorkflow("no-wf", "x"); err != nil || step != "" {
+		t.Errorf("cancel no-wf: step=%q err=%v", step, err)
+	}
+}
+
 func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
