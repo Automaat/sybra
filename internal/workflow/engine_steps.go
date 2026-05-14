@@ -142,7 +142,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
 // through AdvanceStep via the existing agentSteps mapping.
-func (e *Engine) execParallel(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
+func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) error {
 	if len(step.Parallel) < 2 {
 		return fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
 	}
@@ -199,6 +199,14 @@ func (e *Engine) execParallel(taskID string, step *Step, wfExec *Execution, ctx 
 			status.Status = "failed"
 			status.Output = "spawn failed: " + err.Error()
 		}
+	}
+
+	// If every child terminated at spawn time (all failed, or a resume found
+	// every slot already terminal), no agent will fire HandleAgentComplete to
+	// drive advanceParallelChild. Advance the parent synchronously instead so
+	// the workflow doesn't deadlock in state=waiting.
+	if rec.AllChildrenDone() {
+		return e.finalizeParallelParent(taskID, def, step, wfExec)
 	}
 
 	return e.tasks.SetWorkflow(taskID, wfExec)
@@ -339,8 +347,20 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		return e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
-	// All children terminated — collapse into a single parent step record
-	// and advance via parent's Next.
+	return e.finalizeParallelParent(taskID, def, parent, wfExec)
+}
+
+// finalizeParallelParent collapses a parallel block whose children have all
+// reached terminal status into a single parent StepRecord and advances via
+// the parent's Next. Called from advanceParallelChild on the last
+// completion, and from execParallel when every child failed at spawn time
+// (no agent ever ran → no completion callback will fire).
+func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *Step, wfExec *Execution) error {
+	rec := wfExec.ParallelInflight[parent.ID]
+	if rec == nil {
+		return nil
+	}
+
 	parentStatus := "completed"
 	if rec.AnyChildFailed() {
 		parentStatus = "failed"
@@ -363,7 +383,6 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
 	}
 
-	// Re-read task for latest state (children may have written sidecars).
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		return err

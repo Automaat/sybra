@@ -198,12 +198,13 @@ type sentPrompt struct {
 }
 
 type mockAgents struct {
-	mu      sync.Mutex
-	calls   []startCall
-	prompts []sentPrompt
-	running map[string]string // taskID -> agentID
-	roles   map[string]string // taskID+"/"+role -> agentID
-	counter int
+	mu        sync.Mutex
+	calls     []startCall
+	prompts   []sentPrompt
+	running   map[string]string // taskID -> agentID
+	roles     map[string]string // taskID+"/"+role -> agentID
+	counter   int
+	failSpawn error // when non-nil, StartAgent returns this error and records nothing
 }
 
 func newMockAgents() *mockAgents {
@@ -216,6 +217,9 @@ func newMockAgents() *mockAgents {
 func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failSpawn != nil {
+		return "", m.failSpawn
+	}
 	m.counter++
 	id := fmt.Sprintf("agent-%d", m.counter)
 	m.calls = append(m.calls, startCall{
@@ -226,6 +230,15 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
 	return id, nil
+}
+
+// SetFailSpawn arms the mock so the next StartAgent calls return err. Pass
+// nil to disarm. Used to simulate spawn-time failures (e.g. unregistered
+// project) that the workflow engine must handle without deadlocking.
+func (m *mockAgents) SetFailSpawn(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failSpawn = err
 }
 
 func (m *mockAgents) HasRunningAgent(taskID string) bool {

@@ -283,7 +283,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		case StepRunAgent:
 			return e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepParallel:
-			return e.execParallel(taskID, step, wfExec, ctx)
+			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return e.execWaitHuman(taskID, step, wfExec)
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview:
