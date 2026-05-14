@@ -1,0 +1,92 @@
+<script lang="ts">
+  import { ChevronDown } from '@lucide/svelte'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+  import type { BoardColumn } from '../lib/statuses.js'
+  import TaskCard from './TaskCard.svelte'
+  import InlineTaskAdd from './InlineTaskAdd.svelte'
+  import { viewport } from '../lib/viewport.svelte.js'
+  import { fly } from 'svelte/transition'
+  import { flip } from 'svelte/animate'
+  import { cubicOut } from 'svelte/easing'
+
+  interface Props {
+    visibleColumns: BoardColumn[]
+    /** Tasks for a given column's statuses. Caller filters; we render. */
+    columnTasks: (col: BoardColumn) => Task[]
+    focusedTaskId: string | null
+    collapsedColumns: Set<string>
+    onselect: (id: string) => void
+    onmove: (taskId: string, status: string) => void
+    ontogglecolumn: (status: string) => void
+  }
+
+  const {
+    visibleColumns,
+    columnTasks,
+    focusedTaskId,
+    collapsedColumns,
+    onselect,
+    onmove,
+    ontogglecolumn,
+  }: Props = $props()
+
+  let dragOverStatus = $state<string | null>(null)
+
+  async function handleDrop(e: DragEvent, targetStatus: string) {
+    e.preventDefault()
+    dragOverStatus = null
+    const taskId = e.dataTransfer?.getData('text/plain')
+    if (!taskId) return
+    onmove(taskId, targetStatus)
+  }
+</script>
+
+<div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
+  {#each visibleColumns as col}
+    {@const tasks = columnTasks(col)}
+    {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      data-col-status={col.status}
+      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[260px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
+      ondragleave={() => { dragOverStatus = null }}
+      ondrop={(e) => handleDrop(e, col.status)}
+    >
+      <button
+        type="button"
+        onclick={() => ontogglecolumn(col.status)}
+        class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-200 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
+      >
+        <span class="flex items-center gap-2">
+          <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
+          <h2 class="text-sm font-semibold">{col.label}</h2>
+        </span>
+        <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
+          {tasks.length}
+        </span>
+      </button>
+      {#if !isCollapsed}
+        <div class="flex flex-col gap-2 px-2 pb-2 md:flex-1 md:overflow-y-auto">
+          {#each tasks as t (t.id)}
+            <div
+              in:fly={{ y: -12, duration: 150, easing: cubicOut }}
+              out:fly={{ y: 12, duration: 200, easing: cubicOut }}
+              animate:flip={{ duration: 200, easing: cubicOut }}
+            >
+              <TaskCard
+                task={t}
+                onclick={() => onselect(t.id)}
+                focused={focusedTaskId === t.id}
+                onstatuschange={(s) => onmove(t.id, s)}
+              />
+            </div>
+          {/each}
+        </div>
+        <div class="px-2 pb-2">
+          <InlineTaskAdd status={col.status} />
+        </div>
+      {/if}
+    </div>
+  {/each}
+</div>
