@@ -460,6 +460,63 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("fix-review hint when last agent is fix-review stopped", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if strings.Contains(prompt, "most recent agent log") {
+			t.Error("prompt must not ask agent to re-read agent log when fix-review already ran")
+		}
+		if !strings.Contains(prompt, "reviewDecision") {
+			t.Error("prompt should direct agent to check PR review state")
+		}
+		if !strings.Contains(prompt, "CHANGES_REQUESTED") {
+			t.Error("prompt should mention CHANGES_REQUESTED case")
+		}
+		if !strings.Contains(prompt, "REVIEW_REQUIRED") {
+			t.Error("prompt should mention REVIEW_REQUIRED case")
+		}
+	})
+
+	t.Run("fix-review hint includes task done command", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "sybra-cli update abc --status done") {
+			t.Error("prompt should include done command for task id")
+		}
+	})
+
+	t.Run("fix-review hint includes PR number when available", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+			"pr_number":        16601,
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "PR #16601") {
+			t.Error("prompt should mention specific PR number when available")
+		}
+	})
+
+	t.Run("no fix-review hint when agent still running", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "running",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if strings.Contains(prompt, "reviewDecision") {
+			t.Error("prompt must not reference PR review state while fix-review is still running")
+		}
+		if !strings.Contains(prompt, "most recent agent log") {
+			t.Error("prompt should use standard investigation hint when fix-review agent is still running")
+		}
+	})
+
 	t.Run("omits linked PR when pr_number absent", func(t *testing.T) {
 		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(nil)}
 		prompt := DispatchPrompt(a, "owner/repo", "")

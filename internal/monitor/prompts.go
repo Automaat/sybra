@@ -116,6 +116,20 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 - If the verdict says "awaiting PR reviewer": confirm the PR is still open and unreviewed, then report that as the blocker with "request review / wait for reviewer" as the next step.
 - If the verdict note contains "sybra_bug (no issue payload)", "sybra_bug (local task creation failed)", or "sybra_bug (issue submission failed)": issue filing failed on a transient or empty-payload error — the task is correctly in human-required. Report the specific failure text as the blocker with "retry issue filing or investigate the filing error" as the next step.
 - If the verdict note says "sybra_bug" without a failure qualifier in parentheses: the task should be in blocked status, not human-required; report that as the blocker.`
+	} else if lastRole == "fix-review" && lastState == "stopped" {
+		prRef := "the PR"
+		if prNumber > 0 {
+			prRef = fmt.Sprintf("PR #%d", prNumber)
+		}
+		doneCmd := ""
+		if taskID != "" {
+			doneCmd = "\n- Once " + prRef + " merges, mark task done: `sybra-cli update " + taskID + " --status done`."
+		}
+		investigationHint = "- A fix-review agent already ran — skip the agent log and check " + prRef + " review state with `gh pr view --json reviewDecision,statusCheckRollup`.\n" +
+			"- If CHANGES_REQUESTED: new review comments arrived — report that as the blocker with \"run another fix-review agent\" as the next step.\n" +
+			"- If REVIEW_REQUIRED: fixes were pushed but review was not re-requested — report \"awaiting re-review\" with \"re-request review\" as the next step.\n" +
+			"- If APPROVED and CI passes: report \"ready to merge\" with \"merge the PR\" as the next step." +
+			doneCmd
 	}
 
 	return fmt.Sprintf(`You are the sybra monitor stuck-task investigator.
