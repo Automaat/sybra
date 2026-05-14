@@ -109,6 +109,15 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 	}
 	extraStr := extra.String()
 
+	investigationHint := `- Read the task file and the most recent agent log under ~/.sybra/logs/agents matching this task id.
+- Identify the actual blocker in one sentence and propose the next concrete step a human could take.`
+	if lastRole == "human-review" && lastState == "stopped" {
+		investigationHint = `- A human-review agent has already assessed this task. Read the "## Auto-review verdict" section (or the most recent "## Re-detected" block) in the task file — use that verdict as the blocker summary instead of re-reading the agent log.
+- If the verdict says "awaiting PR reviewer": confirm the PR is still open and unreviewed, then report that as the blocker with "request review / wait for reviewer" as the next step.
+- If the verdict note contains "sybra_bug (no issue payload)", "sybra_bug (local task creation failed)", or "sybra_bug (issue submission failed)": issue filing failed on a transient or empty-payload error — the task is correctly in human-required. Report the specific failure text as the blocker with "retry issue filing or investigate the filing error" as the next step.
+- If the verdict note says "sybra_bug" without a failure qualifier in parentheses: the task should be in blocked status, not human-required; report that as the blocker.`
+	}
+
 	return fmt.Sprintf(`You are the sybra monitor stuck-task investigator.
 
 Task: %s — %q
@@ -116,8 +125,7 @@ Status: %s   Dwell: %.1fh
 Task file: %s
 %s
 Read-only investigation:
-- Read the task file and the most recent agent log under ~/.sybra/logs/agents matching this task id.
-- Identify the actual blocker in one sentence and propose the next concrete step a human could take.
+%s
 - Then dedup against open issues and either create or comment one on the repo below.
 
 GitHub issue handling:
@@ -129,7 +137,7 @@ GitHub issue handling:
 
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","blocker":"<one phrase>","nextStep":"<imperative sentence>"}`,
-		taskID, title, status, dwell, filePath, extraStr,
+		taskID, title, status, dwell, filePath, extraStr, investigationHint,
 		issueRepo, taskID, issueRepo, taskID, issueRepo, issueRepo, taskID,
 	)
 }
