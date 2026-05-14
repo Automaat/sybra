@@ -1107,6 +1107,178 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 	}
 }
 
+// TestEnforceForkOnlyPush_BlocksOriginPush proves the transport-level guard:
+// when a fork remote exists, an agent's `git push origin <branch>` fails
+// before the network call, regardless of --no-verify. This is the deterministic
+// floor that backs up the prompt-level guidance pointing agents at fork.
+func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	originBare := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", originBare).CombinedOutput(); err != nil {
+		t.Fatalf("init origin bare: %v: %s", err, out)
+	}
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	for _, args := range [][]string{
+		{"remote", "set-url", "origin", originBare},
+		{"remote", "add", "fork", forkBare},
+		{"checkout", "-b", "fix/route-test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := EnforceForkOnlyPush(wtPath); err != nil {
+		t.Fatalf("EnforceForkOnlyPush: %v", err)
+	}
+
+	// Push to origin must fail. --no-verify ensures we're testing the
+	// transport-level guard, not a pre-push hook.
+	pushCmd := exec.Command("git", "push", "--no-verify", "origin", "fix/route-test")
+	pushCmd.Dir = wtPath
+	out, err := pushCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("push to origin should fail when fork remote exists; got success: %s", out)
+	}
+	if !strings.Contains(string(out), forkOnlyDisabledPushURL) {
+		t.Errorf("push error should reference sentinel pushurl so the cause is obvious; got: %s", out)
+	}
+
+	// Push to fork must still work.
+	pushFork := exec.Command("git", "push", "fork", "fix/route-test")
+	pushFork.Dir = wtPath
+	if out, err := pushFork.CombinedOutput(); err != nil {
+		t.Fatalf("push to fork should succeed: %v: %s", err, out)
+	}
+}
+
+// TestEnforceForkOnlyPush_NoForkLeavesOriginPushable confirms the guard is
+// dormant on single-remote repos (pet projects without a fork) — pushing to
+// origin must keep working.
+func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	originBare := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", originBare).CombinedOutput(); err != nil {
+		t.Fatalf("init origin bare: %v: %s", err, out)
+	}
+	for _, args := range [][]string{
+		{"remote", "set-url", "origin", originBare},
+		{"checkout", "-b", "feat/route-test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := EnforceForkOnlyPush(wtPath); err != nil {
+		t.Fatalf("EnforceForkOnlyPush: %v", err)
+	}
+
+	pushCmd := exec.Command("git", "push", "origin", "feat/route-test")
+	pushCmd.Dir = wtPath
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		t.Fatalf("push to origin should succeed without a fork remote: %v: %s", err, out)
+	}
+}
+
+// TestEnforceForkOnlyPush_RestoresAfterForkRemoved verifies the sentinel
+// pushurl is cleared when the fork remote disappears, so removing the fork
+// reverts the worktree to normal origin pushes. Foreign pushurl values set
+// by the user are left untouched.
+func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	originBare := filepath.Join(t.TempDir(), "origin.git")
+	if out, err := exec.Command("git", "init", "--bare", originBare).CombinedOutput(); err != nil {
+		t.Fatalf("init origin bare: %v: %s", err, out)
+	}
+	forkBare := filepath.Join(t.TempDir(), "fork.git")
+	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
+		t.Fatalf("init fork bare: %v: %s", err, out)
+	}
+	for _, args := range [][]string{
+		{"remote", "set-url", "origin", originBare},
+		{"remote", "add", "fork", forkBare},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := EnforceForkOnlyPush(wtPath); err != nil {
+		t.Fatalf("EnforceForkOnlyPush (with fork): %v", err)
+	}
+
+	rm := exec.Command("git", "remote", "remove", "fork")
+	rm.Dir = wtPath
+	if out, err := rm.CombinedOutput(); err != nil {
+		t.Fatalf("remove fork: %v: %s", err, out)
+	}
+
+	if err := EnforceForkOnlyPush(wtPath); err != nil {
+		t.Fatalf("EnforceForkOnlyPush (after fork removed): %v", err)
+	}
+
+	got, _ := exec.Command("git", "-C", wtPath, "config", "--get", "remote.origin.pushurl").Output()
+	if trimmed := strings.TrimSpace(string(got)); trimmed != "" {
+		t.Errorf("pushurl should be cleared after fork remote removed; got %q", trimmed)
+	}
+}
+
+// TestEnforceForkOnlyPush_PreservesForeignPushURL ensures the guard does not
+// trample a user-set pushurl when no fork remote exists. We only own the
+// sentinel value.
+func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath := initWorktree(t)
+
+	foreignURL := "https://user.example.com/custom-push-url.git"
+	for _, args := range [][]string{
+		{"remote", "set-url", "--push", "origin", foreignURL},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := EnforceForkOnlyPush(wtPath); err != nil {
+		t.Fatalf("EnforceForkOnlyPush: %v", err)
+	}
+
+	got, _ := exec.Command("git", "-C", wtPath, "config", "--get", "remote.origin.pushurl").Output()
+	if trimmed := strings.TrimSpace(string(got)); trimmed != foreignURL {
+		t.Errorf("user pushurl clobbered; got %q want %q", trimmed, foreignURL)
+	}
+}
+
 // TestListWorktrees_OrphanedAdminDir covers the recovery mismatch where a
 // user manually rm -rfs the working tree directory but leaves the
 // `.git/worktrees/<name>/` admin entry. `git worktree list` still reports the

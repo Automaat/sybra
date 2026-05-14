@@ -543,8 +543,16 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		prompt = fmt.Sprintf(
 			"Fix failing CI on branch `%s` (PR #%d). "+
 				"Check the failing run with `gh run view --log-failed`, "+
-				"fix the code, commit and push. No unrelated changes.",
-			issue.PR.HeadRefName, issue.PR.Number,
+				"fix the code, commit and push. No unrelated changes.\n\n"+
+				"Push to the same remote the PR was opened from — never "+
+				"to `origin` when a `fork` remote exists:\n"+
+				"```sh\n"+
+				"PUSH_REMOTE=origin\n"+
+				"if git config --get remote.fork.url >/dev/null; then "+
+				"PUSH_REMOTE=fork; fi\n"+
+				"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
+				"```",
+			issue.PR.HeadRefName, issue.PR.Number, issue.PR.HeadRefName,
 		)
 		r.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -629,15 +637,18 @@ func conflictPrompt(pr github.PullRequest) string {
 			"git fetch origin\n"+
 			"git rebase refs/remotes/origin/main\n"+
 			"# resolve each conflict, git add, git rebase --continue\n"+
-			"git push --force-with-lease\n"+
+			"PUSH_REMOTE=origin\n"+
+			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+			"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
+			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- If rebase produces more than 3 conflicting files, run `git rebase --abort` and stop — the task needs human review\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, filesCtx,
+		pr.HeadRefName, pr.Number, pr.HeadRefName, filesCtx,
 	)
 }
 
