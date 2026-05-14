@@ -90,12 +90,27 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 	status, _ := a.Evidence["status"].(string)
 	dwell, _ := a.Evidence["dwell_h"].(float64)
 	filePath, _ := a.Evidence["file_path"].(string)
+	statusReason, _ := a.Evidence["status_reason"].(string)
+	lastRole, _ := a.Evidence["last_agent_role"].(string)
+	lastState, _ := a.Evidence["last_agent_state"].(string)
+
+	var extra strings.Builder
+	if statusReason != "" {
+		fmt.Fprintf(&extra, "Status reason: %s\n", statusReason)
+	}
+	if lastRole != "" {
+		fmt.Fprintf(&extra, "Last agent: role=%s state=%s\n", lastRole, lastState)
+	} else if lastState != "" {
+		fmt.Fprintf(&extra, "Last agent: state=%s\n", lastState)
+	}
+	extraStr := extra.String()
+
 	return fmt.Sprintf(`You are the sybra monitor stuck-task investigator.
 
 Task: %s — %q
 Status: %s   Dwell: %.1fh
 Task file: %s
-
+%s
 Read-only investigation:
 - Read the task file and the most recent agent log under ~/.sybra/logs/agents matching this task id.
 - Identify the actual blocker in one sentence and propose the next concrete step a human could take.
@@ -110,7 +125,7 @@ GitHub issue handling:
 
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","blocker":"<one phrase>","nextStep":"<imperative sentence>"}`,
-		taskID, title, status, dwell, filePath,
+		taskID, title, status, dwell, filePath, extraStr,
 		issueRepo, taskID, issueRepo, taskID, issueRepo, issueRepo, taskID,
 	)
 }

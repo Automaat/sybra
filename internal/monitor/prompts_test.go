@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,67 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_NoReason(t *test
 	if !strings.Contains(body, "status_reason") {
 		t.Error("human-required hint missing status_reason reference")
 	}
+}
+
+func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
+	base := map[string]any{
+		"task_id":   "abc",
+		"title":     "some task",
+		"status":    "human-required",
+		"dwell_h":   9.0,
+		"file_path": "/path/abc.md",
+	}
+	copyEv := func(extra map[string]any) map[string]any {
+		m := make(map[string]any, len(base)+len(extra))
+		maps.Copy(m, base)
+		maps.Copy(m, extra)
+		return m
+	}
+
+	t.Run("includes status_reason", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"status_reason": "watchdog: turn limit exceeded",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "watchdog: turn limit exceeded") {
+			t.Error("prompt missing status_reason")
+		}
+	})
+
+	t.Run("includes last_agent_role_and_state", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "fix-review") {
+			t.Error("prompt missing last_agent_role")
+		}
+		if !strings.Contains(prompt, "stopped") {
+			t.Error("prompt missing last_agent_state")
+		}
+	})
+
+	t.Run("includes last_agent_state_without_role", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_state": "running",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "running") {
+			t.Error("prompt missing last_agent_state")
+		}
+	})
+
+	t.Run("omits extra lines when evidence absent", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(nil)}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if strings.Contains(prompt, "Status reason:") {
+			t.Error("prompt should not contain Status reason when absent")
+		}
+		if strings.Contains(prompt, "Last agent:") {
+			t.Error("prompt should not contain Last agent when absent")
+		}
+	})
 }
 
 func TestDeterministicIssueBody_DefaultFallback(t *testing.T) {
