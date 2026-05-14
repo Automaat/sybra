@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // DeterministicIssueBody renders the issue body the IssueSink files for
@@ -26,7 +28,7 @@ func DeterministicIssueBody(a Anomaly) string {
 	if len(a.Evidence) > 0 {
 		fmt.Fprintf(&b, "## Evidence\n```json\n%s\n```\n\n", evidenceJSON(a.Evidence))
 	}
-	fmt.Fprintf(&b, "## Suggested investigation\n%s\n", suggestedInvestigation(a.Kind))
+	fmt.Fprintf(&b, "## Suggested investigation\n%s\n", suggestedInvestigation(a))
 	return b.String()
 }
 
@@ -191,8 +193,8 @@ func evidenceJSON(ev map[string]any) string {
 	return string(b)
 }
 
-func suggestedInvestigation(kind AnomalyKind) string {
-	switch kind {
+func suggestedInvestigation(a Anomaly) string {
+	switch a.Kind {
 	case KindOverDispatchLimit:
 		return "- Cap concurrent agents in `agent.MaxConcurrent` or stop in-progress runs that have been live longer than expected.\n"
 	case KindLostAgent:
@@ -200,7 +202,14 @@ func suggestedInvestigation(kind AnomalyKind) string {
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
 	case KindStuckHumanBlocked:
-		return "- Review the blocking task: approve or reject the plan, or provide the context needed to unblock progress.\n"
+		if status, _ := a.Evidence["status"].(string); status == string(task.StatusPlanReview) {
+			return "- Approve or reject the plan to advance the task.\n"
+		}
+		hint := "- Review the task file and `status_reason`, then provide the required human input to unblock progress.\n"
+		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {
+			hint += "- Blocking reason: " + reason + "\n"
+		}
+		return hint
 	default:
 		return "- See the dispatched agent's issue comment for proximate cause and next step.\n"
 	}
