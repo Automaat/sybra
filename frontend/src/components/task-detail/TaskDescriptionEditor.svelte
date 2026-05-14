@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { renderMarkdown } from '../../lib/markdown.js'
@@ -9,9 +10,19 @@
 
   const { task }: Props = $props()
 
+  const PLAN_COLLAPSED_KEY = 'task-detail:plan-collapsed'
+
   let editing = $state(false)
   let draft = $state('')
   let error = $state('')
+  let planCollapsed = $state(typeof localStorage !== 'undefined' && localStorage.getItem(PLAN_COLLAPSED_KEY) === '1')
+
+  function togglePlan() {
+    planCollapsed = !planCollapsed
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PLAN_COLLAPSED_KEY, planCollapsed ? '1' : '0')
+    }
+  }
 
   const renderedBody = $derived(renderMarkdown(task.body))
   const renderedPlan = $derived(renderMarkdown(task.plan))
@@ -89,13 +100,21 @@
 
 {#if task.plan}
   <div class="flex flex-col gap-1">
-    <div class="flex items-center gap-2">
+    <button
+      type="button"
+      class="flex w-fit items-center gap-2 text-left"
+      onclick={togglePlan}
+      aria-expanded={!planCollapsed}
+    >
+      <ChevronRight size={14} class="text-surface-400 transition-transform {planCollapsed ? '' : 'rotate-90'}" />
       <span class="text-sm font-medium text-surface-500">Plan</span>
       <span class="text-xs text-surface-400 italic">read-only · edit via sybra-cli --plan</span>
-    </div>
-    <div class="rounded-lg border border-surface-300 bg-surface-100 p-4 dark:border-surface-600 dark:bg-surface-900">
-      <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedPlan}</div>
-    </div>
+    </button>
+    {#if !planCollapsed}
+      <div class="rounded-lg border border-surface-300 bg-surface-100 p-4 dark:border-surface-600 dark:bg-surface-900">
+        <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedPlan}</div>
+      </div>
+    {/if}
   </div>
 {/if}
 

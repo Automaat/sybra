@@ -263,7 +263,7 @@
       <!-- Plan content -->
       <div class="flex-1 overflow-y-auto px-6 py-4">
         {#if selectedTask.planCritique}
-          <details open class="mb-4 rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
+          <details class="mb-4 rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
             <summary class="cursor-pointer px-4 py-2 text-sm font-semibold text-warning-800 dark:text-warning-300">
               Plan Critique (auto-review)
             </summary>
