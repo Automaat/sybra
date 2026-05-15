@@ -81,7 +81,15 @@ func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 	if !ok {
 		return TaskInfo{}, fmt.Errorf("task %s not found", id)
 	}
-	return *t, nil
+	cp := *t
+	// Shallow-copy the Execution struct so concurrent callers each get their
+	// own State field — mirroring the file-backed store which always
+	// deserializes a fresh object.
+	if t.Workflow != nil {
+		wf := *t.Workflow
+		cp.Workflow = &wf
+	}
+	return cp, nil
 }
 
 func (m *memTasks) ListTasks() ([]TaskInfo, error) {
@@ -143,7 +151,10 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
 	}
-	t.Workflow = wf
+	// Store a copy so the engine's wfExec pointer is decoupled from the
+	// store — mirrors the file-backed store which always serializes/deserializes.
+	wfCopy := *wf
+	t.Workflow = &wfCopy
 	return nil
 }
 
