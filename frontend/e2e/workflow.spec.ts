@@ -62,7 +62,7 @@ test.describe('Plan Review Workflow', () => {
       has: page.locator('h2', { hasText: 'Planning' }),
     })
     await expect(
-      planningCol.getByText('Refactor logging system'),
+      planningCol.locator('h3').filter({ hasText: 'Refactor logging system' }),
     ).toBeVisible()
   })
 
@@ -72,7 +72,7 @@ test.describe('Plan Review Workflow', () => {
     await goToTaskList(page)
 
     await page
-      .getByRole('button', { name: 'Refactor logging system' })
+      .locator('button', { has: page.locator('h3', { hasText: 'Refactor logging system' }) })
       .click()
     await expect(
       page.locator('h1', { hasText: 'Refactor logging system' }),
@@ -91,7 +91,7 @@ test.describe('Plan Review Workflow', () => {
     await goToTaskList(page)
 
     await page
-      .getByRole('button', { name: 'Refactor logging system' })
+      .locator('button', { has: page.locator('h3', { hasText: 'Refactor logging system' }) })
       .click()
     await expect(
       page.locator('h1', { hasText: 'Refactor logging system' }),
@@ -120,7 +120,9 @@ test.describe('Plan Reviews Page', () => {
   test('displays plan-review tasks in dedicated view', async ({ page }) => {
     await goToPlanReviews(page)
 
-    await expect(page.getByText('Refactor logging system')).toBeVisible({
+    await expect(
+      page.locator('span.text-sm.font-medium', { hasText: 'Refactor logging system' }),
+    ).toBeVisible({
       timeout: 5_000,
     })
   })
@@ -129,7 +131,13 @@ test.describe('Plan Reviews Page', () => {
     await goToPlanReviews(page)
 
     // Click on the plan task to select it
-    await page.getByText('Refactor logging system').click()
+    await page
+      .locator('button', {
+        has: page.locator('span.text-sm.font-medium', {
+          hasText: 'Refactor logging system',
+        }),
+      })
+      .click()
     await page.waitForTimeout(500)
 
     // Feedback textarea should be visible
@@ -144,8 +152,8 @@ test.describe('Task Status Badge', () => {
     await goToTaskList(page)
 
     // The task card should be visible in the board
-    const card = page.getByRole('button', {
-      name: 'Refactor logging system',
+    const card = page.locator('button', {
+      has: page.locator('h3', { hasText: 'Refactor logging system' }),
     })
     await expect(card).toBeVisible()
   })
