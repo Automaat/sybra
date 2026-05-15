@@ -100,6 +100,12 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 	}
 	if _, err := s.tasks.Update(newTask.ID, update); err != nil {
 		s.logger.Warn("monitor.routing.local.tag", "new_task_id", newTask.ID, "err", err)
+		if isPlanReviewAnomaly(a) {
+			// Update failed: task is stuck in todo with no workflow dispatched
+			// and human-required status not applied. Fail Submit so the anomaly
+			// is not silently dropped and can be retried on the next cycle.
+			return false, err
+		}
 	}
 	if !isPlanReviewAnomaly(a) {
 		s.dispatchCreatedWorkflow(newTask.ID)
