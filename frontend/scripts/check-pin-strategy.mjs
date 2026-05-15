@@ -48,8 +48,8 @@ function isExactVersion(version) {
 
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 const all = {
-  ...(pkg.dependencies ?? {}),
-  ...(pkg.devDependencies ?? {}),
+  ...pkg.dependencies,
+  ...pkg.devDependencies,
 };
 
 const violations = [];

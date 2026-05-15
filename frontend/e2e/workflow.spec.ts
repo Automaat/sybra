@@ -62,7 +62,7 @@ test.describe('Plan Review Workflow', () => {
       has: page.locator('h2', { hasText: 'Planning' }),
     })
     await expect(
-      planningCol.getByText('Refactor logging system'),
+      planningCol.locator('h3').filter({ hasText: 'Refactor logging system' }),
     ).toBeVisible()
   })
 
@@ -72,7 +72,7 @@ test.describe('Plan Review Workflow', () => {
     await goToTaskList(page)
 
     await page
-      .getByRole('button', { name: 'Refactor logging system' })
+      .locator('button', { has: page.locator('h3', { hasText: 'Refactor logging system' }) })
       .click()
     await expect(
       page.locator('h1', { hasText: 'Refactor logging system' }),
@@ -91,7 +91,7 @@ test.describe('Plan Review Workflow', () => {
     await goToTaskList(page)
 
     await page
-      .getByRole('button', { name: 'Refactor logging system' })
+      .locator('button', { has: page.locator('h3', { hasText: 'Refactor logging system' }) })
       .click()
     await expect(
       page.locator('h1', { hasText: 'Refactor logging system' }),
@@ -144,8 +144,8 @@ test.describe('Task Status Badge', () => {
     await goToTaskList(page)
 
     // The task card should be visible in the board
-    const card = page.getByRole('button', {
-      name: 'Refactor logging system',
+    const card = page.locator('button', {
+      has: page.locator('h3', { hasText: 'Refactor logging system' }),
     })
     await expect(card).toBeVisible()
   })
