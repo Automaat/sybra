@@ -634,6 +634,20 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 
+	t.Run("RequiresLLM=false when status is plan-review", func(t *testing.T) {
+		tk := mkTask("a", task.StatusPlanReview, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be false for plan-review — action is deterministic")
+		}
+	})
+
 	t.Run("RequiresLLM=false when human-review verdict is human", func(t *testing.T) {
 		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
