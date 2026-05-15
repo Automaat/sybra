@@ -71,7 +71,7 @@ func TestPRMonitorEligible(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "human-required with PR — not eligible, needs operator action first",
+			name: "human-required with PR — excluded from pr-fix dispatch (see prClosedEligible for auto-done)",
 			tk:   task.Task{Status: task.StatusHumanRequired, PRNumber: 42},
 			want: false,
 		},
@@ -81,6 +81,63 @@ func TestPRMonitorEligible(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := prMonitorEligible(&tt.tk); got != tt.want {
 				t.Errorf("prMonitorEligible(%+v) = %v, want %v", tt.tk, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrClosedEligible(t *testing.T) {
+	tests := []struct {
+		name string
+		tk   task.Task
+		want bool
+	}{
+		{
+			name: "in-review with PR — eligible (via prMonitorEligible)",
+			tk:   task.Task{Status: task.StatusInReview, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "in-progress with PR — eligible (via prMonitorEligible)",
+			tk:   task.Task{Status: task.StatusInProgress, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "human-required with PR — eligible for auto-done when merged",
+			tk:   task.Task{Status: task.StatusHumanRequired, PRNumber: 42},
+			want: true,
+		},
+		{
+			name: "human-required with branch only — not eligible (no PR to detect)",
+			tk:   task.Task{Status: task.StatusHumanRequired, Branch: "feat"},
+			want: false,
+		},
+		{
+			name: "human-required review tag — excluded (inbound review, handled separately)",
+			tk:   task.Task{Status: task.StatusHumanRequired, PRNumber: 42, Tags: []string{"review"}},
+			want: false,
+		},
+		{
+			name: "human-required chat task — excluded",
+			tk:   task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42},
+			want: false,
+		},
+		{
+			name: "todo with PR — not eligible",
+			tk:   task.Task{Status: task.StatusTodo, PRNumber: 42},
+			want: false,
+		},
+		{
+			name: "done with PR — not eligible (terminal)",
+			tk:   task.Task{Status: task.StatusDone, PRNumber: 42},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prClosedEligible(&tt.tk); got != tt.want {
+				t.Errorf("prClosedEligible(%+v) = %v, want %v", tt.tk, got, tt.want)
 			}
 		})
 	}
