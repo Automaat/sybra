@@ -341,6 +341,70 @@ func TestServiceTick_PlanReviewStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
+func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		// human-required stuck with human-review verdict: remediated in-process.
+		mkTask("hr-stuck", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{{
+				Role:    "human-review",
+				State:   "stopped",
+				Verdict: "human",
+			}}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:        cfg,
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+
+	// Remediator must have refreshed the status reason (no status change).
+	if len(tasks.updates) != 1 {
+		t.Fatalf("want 1 task update, got %d", len(tasks.updates))
+	}
+	u := tasks.updates[0]
+	if u.id != "hr-stuck" {
+		t.Errorf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status != nil {
+		t.Errorf("status must not change for human-required stuck, got %v", u.u.Status)
+	}
+	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
+		t.Error("status_reason should be set")
+	}
+
+	// Sink must NOT receive the anomaly — no meta-task created.
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see human-required anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not be called for human-required anomaly, got %d calls", len(disp.calls))
+	}
+
+	if len(report.Remediated) != 1 {
+		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
 func TestParseFirstMatchingIssue(t *testing.T) {
 	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
 	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")
