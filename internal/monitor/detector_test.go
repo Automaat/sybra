@@ -716,6 +716,33 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 		}
 	})
 
+	t.Run("RequiresLLM=false when Verdict field empty but Result has human verdict", func(t *testing.T) {
+		// Simulates the real-world case for task af1213a4: budget-exhausted task
+		// escalated to human-required, single human-review run completed with the
+		// decision embedded in the Result text (Verdict field was not yet
+		// populated in this era). Detector must fall back to parsing Result.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result: "Analysis.\n\n```sybra-verdict\n{\"decision\":\"human\",\"summary\":\"budget exhausted\"}\n```",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be false when Result contains a human verdict (Verdict field fallback)")
+		}
+		if v, _ := report.Anomalies[0].Evidence["human_review_verdict"].(string); v != "human" {
+			t.Errorf("human_review_verdict = %q, want human", v)
+		}
+	})
+
 	t.Run("RequiresLLM=true when human-review verdict is sybra_bug", func(t *testing.T) {
 		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
