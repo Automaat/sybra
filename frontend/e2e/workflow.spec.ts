@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { readdir, unlink, copyFile } from 'node:fs/promises'
+import { readdir, unlink, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -25,7 +25,12 @@ async function cleanupCreatedTasks() {
 async function ensurePlanFixture() {
   const src = join(import.meta.dirname, 'fixtures', 'plan0001.md')
   const dst = join(TASKS_DIR, 'plan0001.md')
-  await copyFile(src, dst)
+  // Rewrite timestamps to now so the monitor does not flag the task as stuck
+  const now = new Date().toISOString()
+  let content = await readFile(src, 'utf8')
+  content = content.replace(/created_at: .+/, `created_at: ${now}`)
+  content = content.replace(/updated_at: .+/, `updated_at: ${now}`)
+  await writeFile(dst, content)
 }
 
 async function goToTaskList(page: Page) {
@@ -46,6 +51,7 @@ async function goToPlanReviews(page: Page) {
 }
 
 test.beforeAll(async () => {
+  await cleanupCreatedTasks()
   await ensurePlanFixture()
 })
 
