@@ -217,24 +217,22 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman_Wit
 
 	body := DeterministicIssueBody(a)
 
-	if !strings.Contains(body, "PR #777") {
-		t.Error("hint should include PR number when available even with known verdict")
+	// verdict=human means genuine human input is needed regardless of PR state
+	if !strings.Contains(body, "scope") {
+		t.Error("hint should mention scope/human-input reason")
 	}
-	if !strings.Contains(body, "APPROVED") {
-		t.Error("hint should mention APPROVED case")
+	if !strings.Contains(body, "sybra-cli update abc999 --mode interactive --status todo") {
+		t.Error("hint should include interactive hand-off command even when PR is linked")
 	}
-	if !strings.Contains(body, "CHANGES_REQUESTED") {
-		t.Error("hint should mention CHANGES_REQUESTED case")
+	// Must not redirect to PR merge automation — human input is the blocker, not PR state
+	if strings.Contains(body, "APPROVED") {
+		t.Error("hint must not suggest merging the PR when verdict=human")
 	}
-	if !strings.Contains(body, "REVIEW_REQUIRED") {
-		t.Error("hint should mention REVIEW_REQUIRED case")
+	if strings.Contains(body, "CHANGES_REQUESTED") {
+		t.Error("hint must not show PR review state hints when verdict=human")
 	}
-	if !strings.Contains(body, "sybra-cli update abc999 --status done") {
-		t.Error("hint should include done command once PR merges")
-	}
-	// When there is a PR, no need for interactive hand-off — the PR flow handles it
-	if strings.Contains(body, "--mode interactive --status todo") {
-		t.Error("hint must not show interactive hand-off when a PR is linked")
+	if strings.Contains(body, "--status done") {
+		t.Error("hint must not tell operator to mark done via PR merge when human input is still needed")
 	}
 }
 
