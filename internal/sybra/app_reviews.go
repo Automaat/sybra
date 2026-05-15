@@ -97,17 +97,25 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		return prPollSlow
 	}
 
-	var matchers []github.TaskMatcher
+	var (
+		matchers       []github.TaskMatcher
+		closedMatchers []github.TaskMatcher
+	)
 	for i := range tasks {
-		if !prMonitorEligible(&tasks[i]) {
-			continue
-		}
-		matchers = append(matchers, github.TaskMatcher{
+		m := github.TaskMatcher{
 			ID:        tasks[i].ID,
 			PRNumber:  tasks[i].PRNumber,
 			Branch:    tasks[i].Branch,
 			ProjectID: tasks[i].ProjectID,
-		})
+		}
+		if prMonitorEligible(&tasks[i]) {
+			matchers = append(matchers, m)
+			closedMatchers = append(closedMatchers, m)
+		} else if prClosedEligible(&tasks[i]) {
+			// human-required tasks are excluded from pr-fix dispatch but still
+			// advance to done when their PR is merged.
+			closedMatchers = append(closedMatchers, m)
+		}
 	}
 
 	monitoredPRs := r.monitoredPRs(summary)
@@ -141,8 +149,10 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			}
 			r.handlePRIssue(issues[i])
 		}
+	}
 
-		closedPRs := github.DetectClosedTaskPRs(monitoredPRs, matchers, github.FetchPRState)
+	if len(closedMatchers) > 0 {
+		closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, github.FetchPRState)
 		for _, c := range closedPRs {
 			if r.agents.HasRunningAgentForTask(c.TaskID) {
 				r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
@@ -279,6 +289,20 @@ func prMonitorEligible(t *task.Task) bool {
 	default:
 		return false
 	}
+}
+
+// prClosedEligible is a superset of prMonitorEligible: it additionally includes
+// human-required tasks that carry a PR number. Those tasks are excluded from
+// pr-fix dispatch and auto-merge (they need operator attention) but should
+// still advance to done when their PR is merged or closed.
+func prClosedEligible(t *task.Task) bool {
+	if prMonitorEligible(t) {
+		return true
+	}
+	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+		return false
+	}
+	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
 }
 
 func prNeedsAttention(prs []github.PullRequest) bool {
