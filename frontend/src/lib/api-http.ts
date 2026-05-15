@@ -21,7 +21,17 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
     headers: { 'Content-Type': 'application/json' },
     body: args.length > 0 ? JSON.stringify(args) : undefined,
   })
-  if (!res.ok) throw new Error(await res.text())
+  if (!res.ok) {
+    const rawText = await res.text()
+    // web-mode only: desktop Wails IPC errors never reach this path
+    let parsed: unknown = null
+    try { parsed = JSON.parse(rawText) } catch { /* fall through to rawText */ }
+    if (parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as Record<string, unknown>).error === 'string') {
+      const p = parsed as { error: string; code?: string }
+      throw Object.assign(new Error(p.error), { code: p.code })
+    }
+    throw new Error(rawText)
+  }
   const text = await res.text()
   return (text ? JSON.parse(text) : undefined) as T
 }
