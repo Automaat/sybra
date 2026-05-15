@@ -257,7 +257,7 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) []stri
 		if a.RequiresLLM {
 			continue
 		}
-		if a.Kind != KindLostAgent && a.Kind != KindUntriaged && !isPlanReviewStuck(a) {
+		if a.Kind != KindLostAgent && a.Kind != KindUntriaged && !isPlanReviewStuck(a) && !isHumanRequiredStuck(a) {
 			continue
 		}
 		label, err := s.rem.Apply(ctx, a)
@@ -309,7 +309,7 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	for i := range anoms {
 		a := anoms[i]
-		if a.RequiresLLM || isPlanReviewStuck(a) {
+		if a.RequiresLLM || isPlanReviewStuck(a) || isHumanRequiredStuck(a) {
 			continue
 		}
 		if !s.state.canIssue(a.Fingerprint, now, cooldown) {
