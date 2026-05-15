@@ -36,7 +36,7 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	if id := s.agentID; id != "" {
 		if a, err := s.agents.GetAgent(id); err == nil && a.GetState() != agent.StateStopped {
 			s.mu.Unlock()
-			return fmt.Errorf("orchestrator already running")
+			return conflictError("orchestrator already running")
 		}
 		s.agentID = ""
 	}
@@ -74,7 +74,7 @@ func (s *OrchestratorService) StopOrchestrator() error {
 	s.mu.Unlock()
 
 	if id == "" {
-		return fmt.Errorf("orchestrator not running")
+		return conflictError("orchestrator not running")
 	}
 	if err := s.agents.StopAgent(id); err != nil {
 		return fmt.Errorf("stop orchestrator: %w", err)

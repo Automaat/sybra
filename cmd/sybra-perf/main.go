@@ -458,6 +458,23 @@ func waitHealthy(ctx context.Context, baseURL string, timeout time.Duration) err
 
 // ==================== API client ====================
 
+// formatAPIError decodes a JSON error envelope from the httpapi server.
+// Falls back to trimmed raw body text when the body is not a valid envelope.
+func formatAPIError(status int, body []byte) string {
+	var env struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && env.Error != "" {
+		return fmt.Sprintf("%s [%s] (HTTP %d)", env.Error, env.Code, status)
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		text = http.StatusText(status)
+	}
+	return fmt.Sprintf("%s (HTTP %d)", text, status)
+}
+
 type apiClient struct {
 	baseURL string
 	http    *http.Client
@@ -497,7 +514,7 @@ func (c *apiClient) call(service, method string, args []any, out any) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s.%s: %s (%d)", service, method, strings.TrimSpace(string(msg)), resp.StatusCode)
+		return fmt.Errorf("%s.%s: %s", service, method, formatAPIError(resp.StatusCode, msg))
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)

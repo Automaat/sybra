@@ -4,11 +4,13 @@
 //
 // Request body: JSON array of positional arguments (omit body for zero-arg calls).
 // Response body: JSON-encoded return value (empty body for void returns).
-// Errors: HTTP 500 with plain-text error message.
+// Errors: JSON {"error","code"} envelope; HTTP status reflects the failure class;
+// internal (5xx) errors are sanitized — the raw error appears only in server logs.
 package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -50,19 +52,19 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 
 		svc, ok := services[svcName]
 		if !ok {
-			http.Error(w, fmt.Sprintf("unknown service: %s", svcName), http.StatusNotFound)
+			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown service: %s", svcName))
 			return
 		}
 
 		if _, allowed := svc.methods[methodName]; !allowed {
-			http.Error(w, fmt.Sprintf("unknown method: %s.%s", svcName, methodName), http.StatusNotFound)
+			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
 			return
 		}
 
 		rv := reflect.ValueOf(svc.Impl)
 		m := rv.MethodByName(methodName)
 		if !m.IsValid() {
-			http.Error(w, fmt.Sprintf("unknown method: %s.%s", svcName, methodName), http.StatusNotFound)
+			respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
 			return
 		}
 
@@ -75,7 +77,12 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 		// Read body once.
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				respondError(w, logger, http.StatusRequestEntityTooLarge, ErrCodeTooLarge, "request body too large")
+			} else {
+				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "failed to read request body")
+			}
 			return
 		}
 
@@ -83,14 +90,14 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 		var rawArgs []json.RawMessage
 		if len(body) > 0 {
 			if err := json.Unmarshal(body, &rawArgs); err != nil {
-				http.Error(w, "decode args: "+err.Error(), http.StatusBadRequest)
+				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, "invalid JSON in args")
 				return
 			}
 		}
 
 		numIn := mt.NumIn()
 		if len(rawArgs) != numIn {
-			http.Error(w, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, numIn, len(rawArgs)), http.StatusBadRequest)
+			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, numIn, len(rawArgs)))
 			return
 		}
 
@@ -101,7 +108,7 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 			// Allocate a pointer to the param type so json.Unmarshal can fill it.
 			ptr := reflect.New(paramType)
 			if err := json.Unmarshal(rawArgs[i], ptr.Interface()); err != nil {
-				http.Error(w, fmt.Sprintf("arg %d: %s", i, err.Error()), http.StatusBadRequest)
+				respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("arg %d: invalid argument type", i))
 				return
 			}
 			in[i] = ptr.Elem()
@@ -116,9 +123,14 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 			if last.Type().Implements(errType) {
 				if !last.IsNil() {
 					callErr, _ := last.Interface().(error)
-					logger.Warn("httpapi.call.error",
-						"service", svcName, "method", methodName, "err", callErr)
-					http.Error(w, callErr.Error(), http.StatusInternalServerError)
+					var ce ClientError
+					if errors.As(callErr, &ce) {
+						respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
+					} else {
+						logger.Warn("httpapi.call.error",
+							"service", svcName, "method", methodName, "err", callErr)
+						respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+					}
 					return
 				}
 				out = out[:len(out)-1]
@@ -139,3 +151,14 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 }
 
 var errType = reflect.TypeFor[error]()
+
+// codeForStatus maps an HTTP status returned by a ClientError to the
+// structured error code included in the JSON response envelope.
+func codeForStatus(status int) ErrorCode {
+	switch status {
+	case http.StatusConflict:
+		return ErrCodeConflict
+	default:
+		return ErrCodeValidation
+	}
+}

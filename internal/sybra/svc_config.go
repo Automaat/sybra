@@ -85,33 +85,33 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 func (s *ConfigService) validateSettings(settings AppSettings) error {
 	validProviders := map[string]bool{"": true, "claude": true, "codex": true}
 	if !validProviders[settings.Agent.Provider] {
-		return fmt.Errorf("invalid provider: %q", settings.Agent.Provider)
+		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
 	}
 	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
-		return fmt.Errorf("invalid model: %q", settings.Agent.Model)
+		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
 	}
 	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
 	if !validModes[settings.Agent.Mode] {
-		return fmt.Errorf("invalid mode: %q", settings.Agent.Mode)
+		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
 	}
 	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 10 {
-		return fmt.Errorf("maxConcurrent must be 1–10")
+		return validationError("maxConcurrent must be 1–10")
 	}
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[settings.Logging.Level] {
-		return fmt.Errorf("invalid log level: %q", settings.Logging.Level)
+		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))
 	}
 	if settings.Logging.MaxSizeMB < 1 || settings.Logging.MaxSizeMB > 500 {
-		return fmt.Errorf("maxSizeMB must be 1–500")
+		return validationError("maxSizeMB must be 1–500")
 	}
 	if settings.Logging.MaxFiles < 1 || settings.Logging.MaxFiles > 50 {
-		return fmt.Errorf("maxFiles must be 1–50")
+		return validationError("maxFiles must be 1–50")
 	}
 	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
-		return fmt.Errorf("retentionDays must be 1–365")
+		return validationError("retentionDays must be 1–365")
 	}
 	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
-		return fmt.Errorf("todoist API token required when enabled")
+		return validationError("todoist API token required when enabled")
 	}
 	if settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600 {
 		settings.Todoist.PollSeconds = 120
