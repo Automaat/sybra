@@ -183,9 +183,9 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			}
 		}
 	}
-	// When human-review already confirmed the task needs direct human work,
-	// the deterministic hint is sufficient — no LLM investigation adds value.
-	requiresLLM := ev["human_review_verdict"] != "human"
+	// plan-review is always deterministic: human must approve or reject the plan.
+	// For human-required, skip LLM only when human-review confirmed verdict=human.
+	requiresLLM := t.Status != task.StatusPlanReview && ev["human_review_verdict"] != "human"
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,
