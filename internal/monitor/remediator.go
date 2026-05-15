@@ -34,10 +34,13 @@ func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
 	case KindUntriaged:
 		return r.tagUntriaged(a)
 	case KindStuckHumanBlocked:
-		if !isPlanReviewStuck(a) {
-			return "", fmt.Errorf("remediator: stuck_human_blocked remediation only applies to plan-review")
+		if isPlanReviewStuck(a) {
+			return r.remediatePlanReviewStuck(a)
 		}
-		return r.remediatePlanReviewStuck(a)
+		if isHumanRequiredStuck(a) {
+			return r.remediateHumanRequiredStuck(a)
+		}
+		return "", fmt.Errorf("remediator: stuck_human_blocked remediation requires plan-review or human-required status")
 	default:
 		return "", fmt.Errorf("remediator: kind %q has no in-process action", a.Kind)
 	}
@@ -87,6 +90,22 @@ func (r *remediator) remediatePlanReviewStuck(a Anomaly) (string, error) {
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
 
+// remediateHumanRequiredStuck refreshes the status reason on a task that is
+// already human-required and has exceeded its dwell budget. Updating the task
+// file stamps a new UpdatedAt, resetting the dwell timer and suppressing
+// repeated meta-task creation for the same block.
+func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
+	if a.TaskID == "" {
+		return "", fmt.Errorf("stuck_human_blocked without task id")
+	}
+	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
+	upd := task.Update{}
+	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+		return "", fmt.Errorf("tag human-required task %s stalled: %w", a.TaskID, err)
+	}
+	return string(a.Kind) + ":" + a.TaskID, nil
+}
+
 // isPlanReviewStuck reports whether a is a stuck_human_blocked anomaly for a
 // plan-review task. These are remediated in-process (task promoted to
 // human-required) and must not reach the issue sink, which would create a
@@ -97,4 +116,16 @@ func isPlanReviewStuck(a Anomaly) bool {
 	}
 	status, _ := a.Evidence["status"].(string)
 	return status == string(task.StatusPlanReview)
+}
+
+// isHumanRequiredStuck reports whether a is a stuck_human_blocked anomaly for
+// a task already in human-required status. These are remediated in-process
+// (status reason refreshed to reset the dwell timer) and must not reach the
+// issue sink, which would create a redundant meta-task.
+func isHumanRequiredStuck(a Anomaly) bool {
+	if a.Kind != KindStuckHumanBlocked {
+		return false
+	}
+	status, _ := a.Evidence["status"].(string)
+	return status == string(task.StatusHumanRequired)
 }
