@@ -72,7 +72,7 @@ RUN curl -sSfL https://klaudiu.sh/install.sh \
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.136
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.129.0
+ARG CODEX_VERSION=0.130.0
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
