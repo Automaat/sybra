@@ -405,18 +405,17 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
-// TestServiceTick_HumanRequiredStuck_StaleVerdictPreserved verifies that when
-// the latest human-review run has an unparsable result (e.g. 529), the earlier
-// "human" verdict from an older run IS used. The detector scans runs newest-
-// to-oldest and surfaces the first parseable verdict, so RequiresLLM=false and
-// the anomaly is remediated in-process rather than dispatched.
-func TestServiceTick_HumanRequiredStuck_StaleVerdictPreserved(t *testing.T) {
+// TestServiceTick_HumanRequiredStuck_FailedRunKeepsVerdict verifies that a
+// failed latest human-review run (e.g. 529 with no parsable result) does NOT
+// mask the "human" verdict from an earlier stopped run. The detector scans
+// runs newest-to-oldest, so the verdict stands: RequiresLLM=false and the
+// anomaly is remediated directly rather than dispatched to an LLM.
+func TestServiceTick_HumanRequiredStuck_FailedRunKeepsVerdict(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 	tasks := &fakeTasks{tasks: []task.Task{
-		// Two human-review runs: older ended with Verdict="human", latest ended
-		// with unparsable 529 result. Detector scans backward and finds the
-		// earlier verdict — task is genuinely human-required, no LLM needed.
+		// Two human-review runs: older ended with Verdict="human", latest
+		// ended with an unparsable 529 result. The earlier verdict must win.
 		mkTask("hr-stale", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
@@ -446,17 +445,15 @@ func TestServiceTick_HumanRequiredStuck_StaleVerdictPreserved(t *testing.T) {
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
 		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
 	}
-	// Earlier "human" verdict is preserved — failed retry must not mask it.
+	// Failed last run must not mask the earlier "human" verdict.
 	if report.Anomalies[0].RequiresLLM {
-		t.Error("RequiresLLM must be false: earlier human verdict must not be masked by a failed retry")
+		t.Error("RequiresLLM must be false: earlier human verdict still applies")
 	}
 
-	// Remediated in-process (dwell reset) — dispatcher must not fire.
+	// Deterministic verdict → remediated directly, dispatcher untouched.
 	if len(disp.calls) != 0 {
-		t.Fatalf("want 0 dispatcher calls, got %d", len(disp.calls))
+		t.Fatalf("dispatcher must not be called, got %d calls", len(disp.calls))
 	}
-
-	// Task must appear in Remediated.
 	if len(report.Remediated) != 1 {
 		t.Fatalf("want 1 remediated, got %d: %v", len(report.Remediated), report.Remediated)
 	}
