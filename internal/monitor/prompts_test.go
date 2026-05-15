@@ -287,6 +287,33 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview_W
 	}
 }
 
+func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_AfterFixReview_WithPR_MergedCase(t *testing.T) {
+	a := Anomaly{
+		Kind:        KindStuckHumanBlocked,
+		TaskID:      "pqr678",
+		Severity:    SeverityWarn,
+		Fingerprint: "stuck_human_blocked:pqr678",
+		DetectedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		Evidence: map[string]any{
+			"task_id":          "pqr678",
+			"status":           "human-required",
+			"dwell_h":          10.0,
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+			"pr_number":        16601,
+		},
+	}
+
+	body := DeterministicIssueBody(a)
+
+	if !strings.Contains(body, "MERGED") {
+		t.Error("hint should mention MERGED case for already-merged PRs")
+	}
+	if !strings.Contains(body, "sybra-cli update pqr678 --status done") {
+		t.Error("hint should include done command for merged PR case")
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_FixReviewStillRunning(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,
@@ -500,6 +527,20 @@ func TestDispatchPrompt_StuckHumanBlocked_ExtraEvidence(t *testing.T) {
 		prompt := DispatchPrompt(a, "owner/repo", "")
 		if !strings.Contains(prompt, "PR #16601") {
 			t.Error("prompt should mention specific PR number when available")
+		}
+	})
+
+	t.Run("fix-review hint includes MERGED case", func(t *testing.T) {
+		a := Anomaly{Kind: KindStuckHumanBlocked, Evidence: copyEv(map[string]any{
+			"last_agent_role":  "fix-review",
+			"last_agent_state": "stopped",
+		})}
+		prompt := DispatchPrompt(a, "owner/repo", "")
+		if !strings.Contains(prompt, "state=MERGED") {
+			t.Error("prompt should mention MERGED case for fix-review")
+		}
+		if !strings.Contains(prompt, "state,reviewDecision") {
+			t.Error("prompt should include state field in gh pr view command")
 		}
 	})
 
