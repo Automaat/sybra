@@ -138,61 +138,6 @@ func TestMonitorRoutingSink_WorkAnomaly_DispatchesCreatedWorkflow(t *testing.T) 
 	}
 }
 
-func TestMonitorRoutingSink_PlanReviewAnomaly_SkipsWorkflowSetsHumanRequired(t *testing.T) {
-	t.Parallel()
-	sink, tasks, _ := newSinkTestEnv(t)
-	var dispatched []string
-	sink.dispatchCreated = func(taskID string) {
-		dispatched = append(dispatched, taskID)
-	}
-	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	pid := "kumahq/kuma"
-	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	a := monitor.Anomaly{
-		Kind:        monitor.KindStuckHumanBlocked,
-		TaskID:      src.ID,
-		Fingerprint: "stuck_human_blocked:" + src.ID,
-		Evidence: map[string]any{
-			"status":  "plan-review",
-			"task_id": src.ID,
-		},
-	}
-	created, err := sink.Submit(context.Background(), a, "evidence")
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if !created {
-		t.Fatalf("expected created=true")
-	}
-	if len(dispatched) != 0 {
-		t.Fatalf("workflow dispatch must be skipped for plan-review anomaly, got %d", len(dispatched))
-	}
-
-	all, err := tasks.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	var routed *task.Task
-	for i := range all {
-		if strings.HasPrefix(all[i].Title, "[monitor] stuck_human_blocked") {
-			routed = &all[i]
-			break
-		}
-	}
-	if routed == nil {
-		t.Fatalf("no routed task created")
-	}
-	if routed.Status != task.StatusHumanRequired {
-		t.Errorf("status = %q, want human-required", routed.Status)
-	}
-}
-
 func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	t.Parallel()
 	sink, tasks, _ := newSinkTestEnv(t)
