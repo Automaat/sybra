@@ -405,6 +405,80 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
+// TestServiceTick_HumanRequiredStuck_DowngradedLLM covers the scenario that
+// produced a spurious meta-task for task 47676b42: the last human-review run
+// failed (API overloaded, no parseable verdict) so RequiresLLM was initially
+// true, but DowngradeLLMForTask downgraded it to false because the task
+// belongs to a work-typed project. The remediator must still stamp UpdatedAt
+// and the sink must never be called.
+func TestServiceTick_HumanRequiredStuck_DowngradedLLM(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		// human-required stuck with a failed last human-review (no verdict).
+		mkTask("hr-downgrade", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				// First run concluded "human" — would not be checked without PR #840.
+				{Role: "human-review", State: "stopped", Verdict: "human"},
+				// Last run failed: API 529, empty result, no verdict.
+				{Role: "human-review", State: "stopped", Result: "API Error: 529 Overloaded."},
+			}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		// DowngradeLLMForTask returns true for all tasks — simulates the
+		// work-project check that fired for the real 47676b42 task.
+		DowngradeLLMForTask: func(string) bool { return true },
+		Dispatcher:          disp,
+		Sink:                sink,
+		Logger:              slog.Default(),
+		Now:                 func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+	if report.Anomalies[0].RequiresLLM {
+		t.Error("RequiresLLM must be false after DowngradeLLMForTask")
+	}
+
+	// Remediator must have stamped UpdatedAt (empty update).
+	if len(tasks.updates) != 1 {
+		t.Fatalf("want 1 task update (dwell reset), got %d", len(tasks.updates))
+	}
+	u := tasks.updates[0]
+	if u.id != "hr-downgrade" {
+		t.Errorf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status != nil {
+		t.Errorf("status must not change, got %v", u.u.Status)
+	}
+
+	// Neither sink nor dispatcher must fire.
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see downgraded anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not fire after downgrade, got %d calls", len(disp.calls))
+	}
+
+	if len(report.Remediated) != 1 {
+		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
 func TestParseFirstMatchingIssue(t *testing.T) {
 	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
 	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")
