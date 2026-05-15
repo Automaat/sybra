@@ -91,14 +91,40 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 		pid := s.projectID
 		update.ProjectID = &pid
 	}
+	// plan-review stuck tasks require a human to approve or reject the plan —
+	// no agent work is actionable. Set human-required immediately and skip the
+	// triage→implement workflow so no agent is dispatched.
+	if isPlanReviewAnomaly(a) {
+		st := task.StatusHumanRequired
+		update.Status = &st
+	}
 	if _, err := s.tasks.Update(newTask.ID, update); err != nil {
 		s.logger.Warn("monitor.routing.local.tag", "new_task_id", newTask.ID, "err", err)
+		if isPlanReviewAnomaly(a) {
+			// Update failed: task is stuck in todo with no workflow dispatched
+			// and human-required status not applied. Fail Submit so the anomaly
+			// is not silently dropped and can be retried on the next cycle.
+			return false, err
+		}
 	}
-	s.dispatchCreatedWorkflow(newTask.ID)
+	if !isPlanReviewAnomaly(a) {
+		s.dispatchCreatedWorkflow(newTask.ID)
+	}
 	s.logger.Info("monitor.routing.local",
 		"kind", a.Kind, "src_task_id", a.TaskID,
 		"new_task_id", newTask.ID, "project_id", s.projectID, "redactions", redactions)
 	return true, nil
+}
+
+// isPlanReviewAnomaly reports whether the anomaly is a stuck_human_blocked
+// detection for a task in plan-review status. Resolution is always deterministic
+// (approve or reject the plan) — no LLM or agent work adds value.
+func isPlanReviewAnomaly(a monitor.Anomaly) bool {
+	if a.Kind != monitor.KindStuckHumanBlocked {
+		return false
+	}
+	status, _ := a.Evidence["status"].(string)
+	return status == string(task.StatusPlanReview)
 }
 
 func (s *monitorRoutingSink) dispatchCreatedWorkflow(taskID string) {
