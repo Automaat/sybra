@@ -130,7 +130,7 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 			mergedCmd = "`sybra-cli update " + taskID + " --status done`"
 		}
 		investigationHint = "- A fix-review agent already ran — skip the agent log and check " + prRef + " state with `gh pr view --json state,reviewDecision,statusCheckRollup`.\n" +
-			"- If state=MERGED: the PR has already been merged — run " + mergedCmd + " and exit immediately.\n" +
+			"- If state=MERGED: the PR has already been merged. Run " + mergedCmd + ". Skip issue filing and output: {\"issueNumber\":null,\"action\":\"remediated\",\"blocker\":\"PR already merged\",\"nextStep\":\"none\"}.\n" +
 			"- If CHANGES_REQUESTED: new review comments arrived — report that as the blocker with \"run another fix-review agent\" as the next step.\n" +
 			"- If REVIEW_REQUIRED: fixes were pushed but review was not re-requested — report \"awaiting re-review\" with \"re-request review\" as the next step.\n" +
 			"- If APPROVED and CI passes: report \"ready to merge\" with \"merge the PR\" as the next step." +
@@ -155,7 +155,7 @@ GitHub issue handling:
 - On miss: gh issue create --repo %s --title "[monitor] stuck_human_blocked: %s" --body "..." --label monitor,bug
 
 Output exactly one final JSON line:
-{"issueNumber":N,"action":"created"|"commented","blocker":"<one phrase>","nextStep":"<imperative sentence>"}`,
+{"issueNumber":N,"action":"created"|"commented"|"remediated","blocker":"<one phrase>","nextStep":"<imperative sentence>"}`,
 		taskID, title, status, dwell, filePath, extraStr, investigationHint,
 		issueRepo, taskID, issueRepo, taskID, issueRepo, issueRepo, taskID,
 	)
