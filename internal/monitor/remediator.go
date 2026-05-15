@@ -33,6 +33,11 @@ func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
 		return r.resetLostAgent(a)
 	case KindUntriaged:
 		return r.tagUntriaged(a)
+	case KindStuckHumanBlocked:
+		if !isPlanReviewStuck(a) {
+			return "", fmt.Errorf("remediator: stuck_human_blocked remediation only applies to plan-review")
+		}
+		return r.remediatePlanReviewStuck(a)
 	default:
 		return "", fmt.Errorf("remediator: kind %q has no in-process action", a.Kind)
 	}
@@ -63,4 +68,33 @@ func (r *remediator) tagUntriaged(a Anomaly) (string, error) {
 		return "", fmt.Errorf("tag untriaged task %s: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
+}
+
+// remediatePlanReviewStuck sets a plan-review stuck task to human-required
+// so it surfaces on the blocked queue without spawning a new meta-task.
+// Only called when isPlanReviewStuck(a) is true.
+func (r *remediator) remediatePlanReviewStuck(a Anomaly) (string, error) {
+	if a.TaskID == "" {
+		return "", fmt.Errorf("stuck_human_blocked without task id")
+	}
+	upd := task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("monitor: plan-review stalled"),
+	}
+	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+		return "", fmt.Errorf("set plan-review task %s human-required: %w", a.TaskID, err)
+	}
+	return string(a.Kind) + ":" + a.TaskID, nil
+}
+
+// isPlanReviewStuck reports whether a is a stuck_human_blocked anomaly for a
+// plan-review task. These are remediated in-process (task promoted to
+// human-required) and must not reach the issue sink, which would create a
+// redundant meta-task.
+func isPlanReviewStuck(a Anomaly) bool {
+	if a.Kind != KindStuckHumanBlocked {
+		return false
+	}
+	status, _ := a.Evidence["status"].(string)
+	return status == string(task.StatusPlanReview)
 }

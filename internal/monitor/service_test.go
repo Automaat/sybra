@@ -285,6 +285,62 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	}
 }
 
+func TestServiceTick_PlanReviewStuck_RemediatesDirectly(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		// plan-review stuck: service must set it to human-required in-process.
+		mkTask("pr-stuck", task.StatusPlanReview, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:        cfg,
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+
+	// Remediator must have set the task to human-required.
+	if len(tasks.updates) != 1 {
+		t.Fatalf("want 1 task update, got %d", len(tasks.updates))
+	}
+	u := tasks.updates[0]
+	if u.id != "pr-stuck" {
+		t.Errorf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status == nil || *u.u.Status != task.StatusHumanRequired {
+		t.Errorf("status = %v, want human-required", u.u.Status)
+	}
+
+	// Sink must NOT receive the plan-review anomaly — no meta-task created.
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see plan-review anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not be called for plan-review anomaly, got %d calls", len(disp.calls))
+	}
+
+	if len(report.Remediated) != 1 {
+		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
 func TestParseFirstMatchingIssue(t *testing.T) {
 	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
 	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")
