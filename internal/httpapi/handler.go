@@ -123,9 +123,14 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 			if last.Type().Implements(errType) {
 				if !last.IsNil() {
 					callErr, _ := last.Interface().(error)
-					logger.Warn("httpapi.call.error",
-						"service", svcName, "method", methodName, "err", callErr)
-					respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+					var ce ClientError
+					if errors.As(callErr, &ce) {
+						respondError(w, logger, ce.HTTPStatus(), codeForStatus(ce.HTTPStatus()), ce.Error())
+					} else {
+						logger.Warn("httpapi.call.error",
+							"service", svcName, "method", methodName, "err", callErr)
+						respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")
+					}
 					return
 				}
 				out = out[:len(out)-1]
@@ -146,3 +151,14 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 }
 
 var errType = reflect.TypeFor[error]()
+
+// codeForStatus maps an HTTP status returned by a ClientError to the
+// structured error code included in the JSON response envelope.
+func codeForStatus(status int) ErrorCode {
+	switch status {
+	case http.StatusConflict:
+		return ErrCodeConflict
+	default:
+		return ErrCodeValidation
+	}
+}

@@ -12,9 +12,19 @@ type ErrorCode string
 const (
 	ErrCodeNotFound   ErrorCode = "not_found"
 	ErrCodeValidation ErrorCode = "validation_error"
+	ErrCodeConflict   ErrorCode = "conflict"
 	ErrCodeTooLarge   ErrorCode = "payload_too_large"
 	ErrCodeInternal   ErrorCode = "internal_error"
 )
+
+// ClientError is implemented by service errors that are safe to surface to
+// HTTP clients (validation failures, precondition/state errors). The handler
+// passes the message and status through instead of sanitizing to 500.
+// Service packages implement this locally — no import of httpapi required.
+type ClientError interface {
+	error
+	HTTPStatus() int
+}
 
 type errorEnvelope struct {
 	Error string    `json:"error"`

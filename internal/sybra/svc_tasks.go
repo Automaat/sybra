@@ -127,15 +127,15 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			string(task.StatusCancelled): true,
 		}
 		if agentBlockedStatuses[status] && s.agents.HasRunningAgentForTask(id) {
-			return cur, fmt.Errorf("cannot move to %q: stop the running agent first", status)
+			return cur, conflictError(fmt.Sprintf("cannot move to %q: stop the running agent first", status))
 		}
 
 		if status == string(task.StatusTesting) {
 			if cur.Workflow != nil &&
 				cur.Workflow.State != workflow.ExecCompleted &&
 				cur.Workflow.State != workflow.ExecFailed {
-				return cur, fmt.Errorf("cannot move to testing: task has active workflow %q (state=%s)",
-					cur.Workflow.WorkflowID, cur.Workflow.State)
+				return cur, conflictError(fmt.Sprintf("cannot move to testing: task has active workflow %q (state=%s)",
+					cur.Workflow.WorkflowID, cur.Workflow.State))
 			}
 		}
 	}

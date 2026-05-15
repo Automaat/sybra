@@ -25,6 +25,8 @@ func (s *testSvc) ReturnAndFail(v string) (string, error) {
 	return "", &testError{v}
 }
 func (s *testSvc) ObjIn(obj map[string]string) string { return obj["key"] }
+func (s *testSvc) ClientFail400() error               { return &testClientError{400, "bad input"} }
+func (s *testSvc) ClientFail409() error               { return &testClientError{409, "already running"} }
 
 // AdminOnly is intentionally not in the allowlist — used by rejection tests.
 func (s *testSvc) AdminOnly() string { return "admin" }
@@ -32,6 +34,15 @@ func (s *testSvc) AdminOnly() string { return "admin" }
 type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
+
+// testClientError implements httpapi.ClientError without importing the package.
+type testClientError struct {
+	status int
+	msg    string
+}
+
+func (e *testClientError) Error() string   { return e.msg }
+func (e *testClientError) HTTPStatus() int { return e.status }
 
 func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	t.Helper()
@@ -41,6 +52,7 @@ func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TestSvc": httpapi.NewService(&testSvc{},
 			"Echo", "Add", "Void", "Fail", "FailWith", "ReturnAndFail", "ObjIn",
+			"ClientFail400", "ClientFail409",
 			// AdminOnly is intentionally absent from the allowlist.
 		),
 	}, logger)
@@ -157,6 +169,41 @@ func TestHandler_ErrorReturn(t *testing.T) {
 	}
 	if !strings.Contains(logs, "boom") {
 		t.Fatalf("expected raw error 'boom' in logs; got: %s", logs)
+	}
+}
+
+func TestHandler_ClientErrorPassthrough(t *testing.T) {
+	_, srv, logBuf := setup(t)
+
+	cases := []struct {
+		method     string
+		wantStatus int
+		wantMsg    string
+		wantCode   string
+	}{
+		{"ClientFail400", http.StatusBadRequest, "bad input", string(httpapi.ErrCodeValidation)},
+		{"ClientFail409", http.StatusConflict, "already running", string(httpapi.ErrCodeConflict)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			resp := post(t, srv, "TestSvc", tc.method)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+			msg, code := decodeErr(t, resp)
+			if msg != tc.wantMsg {
+				t.Fatalf("expected client message %q, got %q", tc.wantMsg, msg)
+			}
+			if code != tc.wantCode {
+				t.Fatalf("expected code %q, got %q", tc.wantCode, code)
+			}
+			// ClientErrors must NOT appear in server logs as internal errors.
+			if strings.Contains(logBuf.String(), "httpapi.call.error") {
+				t.Fatal("ClientError must not be logged as internal error")
+			}
+		})
 	}
 }
 
