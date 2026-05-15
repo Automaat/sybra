@@ -479,6 +479,76 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM(t *testing.T) {
 	}
 }
 
+// TestServiceTick_HumanRequiredStuck_EarlierRunHuman covers the PR #840 fix:
+// when a prior human-review run concluded "human" and a later run failed
+// (no verdict), the detector emits RequiresLLM=false without requiring
+// DowngradeLLMForTask. The remediator stamps UpdatedAt and neither sink
+// nor dispatcher fires.
+func TestServiceTick_HumanRequiredStuck_EarlierRunHuman(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-multi-run", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{Role: "human-review", State: "stopped", Verdict: "human"},
+				// Second run failed: API overloaded, no verdict.
+				{Role: "human-review", State: "stopped", Result: "API Error: 529 Overloaded."},
+			}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		// No DowngradeLLMForTask: the "human" verdict from run 1 alone must
+		// suppress RequiresLLM.
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+	if report.Anomalies[0].RequiresLLM {
+		t.Error("RequiresLLM must be false: earlier run concluded 'human'")
+	}
+	if report.Anomalies[0].Evidence["human_review_verdict"] != "human" {
+		t.Errorf("evidence human_review_verdict must be 'human', got %v",
+			report.Anomalies[0].Evidence["human_review_verdict"])
+	}
+
+	if len(tasks.updates) != 1 {
+		t.Fatalf("want 1 task update (dwell reset), got %d", len(tasks.updates))
+	}
+	if tasks.updates[0].id != "hr-multi-run" {
+		t.Errorf("updated wrong task: %q", tasks.updates[0].id)
+	}
+	if tasks.updates[0].u.Status != nil {
+		t.Errorf("status must not change, got %v", tasks.updates[0].u.Status)
+	}
+
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see anomaly, got %d submissions", len(sink.submissions))
+	}
+	if len(disp.calls) != 0 {
+		t.Fatalf("dispatcher must not fire, got %d calls", len(disp.calls))
+	}
+	if len(report.Remediated) != 1 {
+		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+	}
+}
+
 func TestParseFirstMatchingIssue(t *testing.T) {
 	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
 	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")

@@ -171,17 +171,11 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["last_agent_role"] = last.Role
 		}
 		ev["last_agent_state"] = last.State
-		if last.Role == "human-review" && last.State == "stopped" {
-			verdict := last.Verdict
-			if verdict == "" && last.Result != "" {
-				// Fallback for runs persisted before the Verdict field was
-				// added: parse from the truncated Result text.
-				verdict = parseHumanReviewDecision(last.Result)
-			}
-			if verdict != "" {
-				ev["human_review_verdict"] = verdict
-			}
-		}
+	}
+	// Scan all runs so a failed later run cannot override an earlier
+	// confirmed-human verdict (the condition that produced task 47676b42).
+	if v := humanReviewVerdict(t.AgentRuns); v != "" {
+		ev["human_review_verdict"] = v
 	}
 	// plan-review is always deterministic: human must approve or reject the plan.
 	// For human-required, skip LLM only when human-review confirmed verdict=human.
@@ -344,6 +338,31 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 		return true
 	}
 	return fn(projectID)
+}
+
+// humanReviewVerdict returns the effective verdict across all human-review
+// runs. "human" is treated as final and returned immediately so a failed
+// later run (e.g. API 529 with no parseable result) cannot override an
+// earlier confirmed-human conclusion.
+func humanReviewVerdict(runs []task.AgentRun) string {
+	var last string
+	for i := range runs {
+		r := &runs[i]
+		if r.Role != "human-review" || r.State != "stopped" {
+			continue
+		}
+		v := r.Verdict
+		if v == "" && r.Result != "" {
+			v = parseHumanReviewDecision(r.Result)
+		}
+		if v == "human" {
+			return "human"
+		}
+		if v != "" {
+			last = v
+		}
+	}
+	return last
 }
 
 var humanReviewVerdictRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
