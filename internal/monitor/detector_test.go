@@ -628,6 +628,37 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 			t.Errorf("human_review_verdict = %q, want sybra_bug (Verdict field wins)", got)
 		}
 	})
+
+	t.Run("uses earlier verdict when last run has no parseable result", func(t *testing.T) {
+		// Simulates: human-review ran and returned "human", then a second
+		// human-review attempt was dispatched but failed with an API error
+		// (result has no sybra-verdict block). The earlier verdict must win.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{
+					AgentID: "rev1", Role: "human-review", State: "stopped",
+					Result: "Analysis.\n\n```sybra-verdict\n{\"decision\":\"human\",\"summary\":\"project not registered\"}\n```",
+				},
+				{
+					AgentID: "rev2", Role: "human-review", State: "stopped",
+					Result: "API Error: 529 Overloaded. This is a server-side issue, usually temporary.",
+				},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		got, ok := report.Anomalies[0].Evidence["human_review_verdict"]
+		if !ok {
+			t.Fatal("evidence missing human_review_verdict; failed last run should not mask earlier verdict")
+		}
+		if got != "human" {
+			t.Errorf("human_review_verdict = %q, want human", got)
+		}
+	})
 }
 
 func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
@@ -711,6 +742,28 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 		// Verdict field on a running agent is not surfaced, so RequiresLLM stays true.
 		if !report.Anomalies[0].RequiresLLM {
 			t.Error("RequiresLLM must be true when human-review is still running")
+		}
+	})
+
+	t.Run("RequiresLLM=false when earlier run has human verdict and last run failed", func(t *testing.T) {
+		// Simulates the real-world case: first human-review returned "human",
+		// second attempt hit API 529 with no parseable result. The task is still
+		// genuinely human-required — should not spawn an LLM investigation.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+				{AgentID: "rev2", Role: "human-review", State: "stopped",
+					Result: "API Error: 529 Overloaded."},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be false: earlier human verdict must not be masked by a failed last run")
 		}
 	})
 }

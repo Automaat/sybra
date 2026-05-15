@@ -3,6 +3,7 @@ package monitor
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,16 +172,12 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["last_agent_role"] = last.Role
 		}
 		ev["last_agent_state"] = last.State
-		if last.Role == "human-review" && last.State == "stopped" {
-			verdict := last.Verdict
-			if verdict == "" && last.Result != "" {
-				// Fallback for runs persisted before the Verdict field was
-				// added: parse from the truncated Result text.
-				verdict = parseHumanReviewDecision(last.Result)
-			}
-			if verdict != "" {
-				ev["human_review_verdict"] = verdict
-			}
+		// Scan all runs newest-to-oldest for the first parseable human-review
+		// verdict. Checking only the last run misses earlier successful verdicts
+		// when the most recent human-review run failed (e.g. API 529 Overloaded)
+		// and left an empty result with no sybra-verdict block.
+		if verdict := lastHumanReviewVerdict(t.AgentRuns); verdict != "" {
+			ev["human_review_verdict"] = verdict
 		}
 	}
 	// plan-review is always deterministic: human must approve or reject the plan.
@@ -344,6 +341,26 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 		return true
 	}
 	return fn(projectID)
+}
+
+// lastHumanReviewVerdict returns the verdict from the most recent stopped
+// human-review run that produced a parseable sybra-verdict. It scans backward
+// so that a later failed/overloaded run (empty or unparseable result) does not
+// mask a successful verdict from an earlier run.
+func lastHumanReviewVerdict(runs []task.AgentRun) string {
+	for i := range slices.Backward(runs) {
+		r := &runs[i]
+		if r.Role != "human-review" || r.State != "stopped" {
+			continue
+		}
+		if r.Verdict != "" {
+			return r.Verdict
+		}
+		if v := parseHumanReviewDecision(r.Result); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 var humanReviewVerdictRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
