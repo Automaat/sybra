@@ -341,6 +341,55 @@ func TestServiceTick_PlanReviewStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
+func TestServiceTick_DowngradeLLM_HumanRequired_GoesToSink(t *testing.T) {
+	// Regression: work-typed human-required tasks have RequiresLLM downgraded
+	// to false. They must reach the sink (not the dispatcher) so the routing
+	// sink can dedup against the existing meta-task instead of spawning a new
+	// LLM agent that would leak work-project identifiers.
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-work", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour) // past 8h budget
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		// Downgrade LLM for the work-typed task — mirrors what App does for
+		// kumahq/kuma and other work-typed projects.
+		DowngradeLLMForTask: func(id string) bool { return id == "hr-work" },
+		Dispatcher:          disp,
+		Sink:                sink,
+		Logger:              slog.Default(),
+		Now:                 func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+	// Downgrade must have cleared RequiresLLM.
+	if report.Anomalies[0].RequiresLLM {
+		t.Errorf("RequiresLLM must be false after downgrade")
+	}
+	// Dispatcher must not be called — the anomaly is deterministic after downgrade.
+	if len(disp.calls) != 0 {
+		t.Errorf("dispatcher must not be called for downgraded anomaly, got %d calls", len(disp.calls))
+	}
+	// Sink must receive the anomaly for dedup/routing.
+	if len(sink.submissions) != 1 {
+		t.Errorf("sink must receive 1 submission, got %d", len(sink.submissions))
+	}
+}
+
 func TestParseFirstMatchingIssue(t *testing.T) {
 	out := []byte(`[{"number":42,"title":"unrelated","url":"https://github.com/o/r/issues/42"},{"number":87,"title":"[monitor] failure_spike","url":"https://github.com/o/r/issues/87"}]`)
 	num, url := parseFirstMatchingIssue(out, "[monitor] failure_spike")
