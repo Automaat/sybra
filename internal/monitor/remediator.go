@@ -34,10 +34,13 @@ func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
 	case KindUntriaged:
 		return r.tagUntriaged(a)
 	case KindStuckHumanBlocked:
-		if !isPlanReviewStuck(a) {
-			return "", fmt.Errorf("remediator: stuck_human_blocked remediation only applies to plan-review")
+		if isPlanReviewStuck(a) {
+			return r.remediatePlanReviewStuck(a)
 		}
-		return r.remediatePlanReviewStuck(a)
+		if isHumanRequiredStuck(a) {
+			return r.remediateHumanRequiredStuck(a)
+		}
+		return "", fmt.Errorf("remediator: stuck_human_blocked remediation only applies to plan-review or human-required")
 	default:
 		return "", fmt.Errorf("remediator: kind %q has no in-process action", a.Kind)
 	}
@@ -87,6 +90,20 @@ func (r *remediator) remediatePlanReviewStuck(a Anomaly) (string, error) {
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
 
+// remediateHumanRequiredStuck touches a human-required task to bump UpdatedAt
+// and reset the dwell timer. status_reason is left unchanged so the human
+// retains the original blocker context. This suppresses repeated meta-task
+// creation without changing the task's visibility on the blocked queue.
+func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
+	if a.TaskID == "" {
+		return "", fmt.Errorf("stuck_human_blocked without task id")
+	}
+	if _, err := r.tasks.Update(a.TaskID, task.Update{}); err != nil {
+		return "", fmt.Errorf("acknowledge human-required task %s: %w", a.TaskID, err)
+	}
+	return string(a.Kind) + ":" + a.TaskID, nil
+}
+
 // isPlanReviewStuck reports whether a is a stuck_human_blocked anomaly for a
 // plan-review task. These are remediated in-process (task promoted to
 // human-required) and must not reach the issue sink, which would create a
@@ -97,4 +114,15 @@ func isPlanReviewStuck(a Anomaly) bool {
 	}
 	status, _ := a.Evidence["status"].(string)
 	return status == string(task.StatusPlanReview)
+}
+
+// isHumanRequiredStuck reports whether a is a stuck_human_blocked anomaly for
+// a human-required task. These are remediated in-process (dwell reset via
+// status-reason stamp) and must not reach the issue sink.
+func isHumanRequiredStuck(a Anomaly) bool {
+	if a.Kind != KindStuckHumanBlocked {
+		return false
+	}
+	status, _ := a.Evidence["status"].(string)
+	return status == string(task.StatusHumanRequired)
 }
