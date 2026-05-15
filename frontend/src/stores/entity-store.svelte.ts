@@ -1,8 +1,14 @@
+// Minimum gap between backend fetches. A burst of load() calls inside this
+// window collapses to one leading fetch plus one trailing fetch.
+const MIN_LOAD_INTERVAL_MS = 500
+
 export class EntityStore<T extends { id: string }> {
   items = $state<Map<string, T>>(new Map())
   loading = $state(false)
   error = $state('')
   private pollTimer: ReturnType<typeof setInterval> | null = null
+  private trailingTimer: ReturnType<typeof setTimeout> | null = null
+  private trailingPending = false
   private inFlight: Promise<void> | null = null
   private lastLoadAt = 0
 
@@ -26,14 +32,38 @@ export class EntityStore<T extends { id: string }> {
   }
 
   async load(): Promise<void> {
-    // Coalesce concurrent callers and throttle to at most one fetch per 500ms.
-    // Initial loads (empty items) bypass the throttle so first render always fetches.
-    if (this.inFlight) return this.inFlight
+    // A fetch already in flight absorbs this caller, but flags a trailing
+    // fetch: the running request may have read the backend before the change
+    // that triggered this call landed.
+    if (this.inFlight) {
+      this.trailingPending = true
+      return this.inFlight
+    }
+    // Throttle to one fetch per MIN_LOAD_INTERVAL_MS. Initial loads (empty
+    // items) always fetch so first render is never delayed. A throttled call
+    // is never dropped — it schedules a trailing fetch, otherwise a live
+    // event (task:created/updated/deleted) arriving just after a load would
+    // be invisible until the next poll, up to 30s later.
     const isInitial = this.items.size === 0
     if (!isInitial) {
       const sinceLast = Date.now() - this.lastLoadAt
-      if (sinceLast < 500) return
+      if (sinceLast < MIN_LOAD_INTERVAL_MS) {
+        this.scheduleTrailingLoad(MIN_LOAD_INTERVAL_MS - sinceLast)
+        return
+      }
     }
+    return this.runLoad(isInitial)
+  }
+
+  private scheduleTrailingLoad(delayMs: number): void {
+    if (this.trailingTimer !== null) return
+    this.trailingTimer = setTimeout(() => {
+      this.trailingTimer = null
+      void this.load()
+    }, delayMs)
+  }
+
+  private runLoad(isInitial: boolean): Promise<void> {
     if (isInitial) this.loading = true
     this.error = ''
     this.inFlight = (async () => {
@@ -48,6 +78,10 @@ export class EntityStore<T extends { id: string }> {
         if (isInitial) this.loading = false
         this.lastLoadAt = Date.now()
         this.inFlight = null
+        if (this.trailingPending) {
+          this.trailingPending = false
+          this.scheduleTrailingLoad(MIN_LOAD_INTERVAL_MS)
+        }
       }
     })()
     return this.inFlight
@@ -63,5 +97,10 @@ export class EntityStore<T extends { id: string }> {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
+    if (this.trailingTimer) {
+      clearTimeout(this.trailingTimer)
+      this.trailingTimer = null
+    }
+    this.trailingPending = false
   }
 }

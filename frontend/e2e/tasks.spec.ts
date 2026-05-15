@@ -251,14 +251,15 @@ test.describe('Navigation Rail', () => {
 })
 
 test.describe('Task watcher', () => {
-  test('board updates when task file is created externally', { tag: '@flaky' }, async ({ page }) => {
-    test.setTimeout(35_000)
+  test('board updates when task file is created externally', async ({ page }) => {
     await goToTaskList(page)
     await waitForTasks(page)
 
     const title = `E2E External Task ${Date.now()}`
     await createExternalTaskFile(title)
 
-    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 30_000 })
+    // Watcher debounce (200ms) + SSE delivery + store trailing fetch (≤500ms)
+    // settle well under a second; 10s is generous headroom for CI.
+    await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: 10_000 })
   })
 })
