@@ -262,12 +262,9 @@ func suggestedInvestigation(a Anomaly) string {
 		if lastRole == "human-review" && lastState == "stopped" {
 			verdict, _ := a.Evidence["human_review_verdict"].(string)
 			if verdict == "human" {
-				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation).\n"
+				hint += "- Human-review agent confirmed: this task requires direct human input (scope beyond automation — credentials, creative decision, or ambiguous requirement).\n"
 				if taskID != "" {
-					if prNum > 0 {
-						hint += fmt.Sprintf("- If waiting on PR review: check PR #%d for new reviewer feedback.\n", prNum)
-					}
-					hint += "- To hand off for interactive work: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
+					hint += "- Review the task body and the auto-review note, provide the required input, then unblock: `sybra-cli update " + taskID + " --mode interactive --status todo`.\n"
 				}
 			} else {
 				hint += "- Human-review agent assessed this task — check the latest auto-review note in the task body.\n"

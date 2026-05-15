@@ -217,8 +217,22 @@ func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired_VerdictHuman_Wit
 
 	body := DeterministicIssueBody(a)
 
-	if !strings.Contains(body, "PR #777") {
-		t.Error("hint should include PR number when available even with known verdict")
+	// verdict=human means genuine human input is needed regardless of PR state
+	if !strings.Contains(body, "scope") {
+		t.Error("hint should mention scope/human-input reason")
+	}
+	if !strings.Contains(body, "sybra-cli update abc999 --mode interactive --status todo") {
+		t.Error("hint should include interactive hand-off command even when PR is linked")
+	}
+	// Must not redirect to PR merge automation — human input is the blocker, not PR state
+	if strings.Contains(body, "APPROVED") {
+		t.Error("hint must not suggest merging the PR when verdict=human")
+	}
+	if strings.Contains(body, "CHANGES_REQUESTED") {
+		t.Error("hint must not show PR review state hints when verdict=human")
+	}
+	if strings.Contains(body, "--status done") {
+		t.Error("hint must not tell operator to mark done via PR merge when human input is still needed")
 	}
 }
 
