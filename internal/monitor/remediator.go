@@ -98,9 +98,8 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
-	upd := task.Update{
-		StatusReason: task.Ptr("monitor: human-required stalled"),
-	}
+	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
+	upd := task.Update{}
 	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
 		return "", fmt.Errorf("tag human-required task %s stalled: %w", a.TaskID, err)
 	}

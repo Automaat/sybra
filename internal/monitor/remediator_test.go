@@ -42,7 +42,7 @@ func TestRemediator_PlanReviewStuck_SetsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestRemediator_StuckHumanBlocked_HumanRequired_SetsStatusReason(t *testing.T) {
+func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *testing.T) {
 	t.Parallel()
 	existing := mkTask("hr1", task.StatusHumanRequired, func(t *task.Task) {
 		t.StatusReason = "waiting for credentials from ops team"
@@ -73,8 +73,8 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_SetsStatusReason(t *testing.
 	if u.u.Status != nil {
 		t.Errorf("status must not change, got %v", u.u.Status)
 	}
-	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
-		t.Error("status_reason should be set")
+	if u.u.StatusReason != nil {
+		t.Errorf("status_reason must not change, got %q", *u.u.StatusReason)
 	}
 }
 

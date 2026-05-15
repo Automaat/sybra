@@ -388,8 +388,8 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	if u.u.Status != nil {
 		t.Errorf("status must not change for human-required stuck, got %v", u.u.Status)
 	}
-	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
-		t.Error("status_reason should be set")
+	if u.u.StatusReason != nil {
+		t.Errorf("status_reason must not change, got %q", *u.u.StatusReason)
 	}
 
 	// Sink must NOT receive the anomaly — no meta-task created.
