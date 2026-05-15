@@ -350,8 +350,12 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 func lastHumanReviewVerdict(runs []task.AgentRun) string {
 	for i := range slices.Backward(runs) {
 		r := &runs[i]
-		if r.Role != "human-review" || r.State != "stopped" {
+		if r.Role != "human-review" {
 			continue
+		}
+		// A running human-review means a verdict is in flight; block any older verdict.
+		if r.State != "stopped" {
+			return ""
 		}
 		if r.Verdict != "" {
 			return r.Verdict

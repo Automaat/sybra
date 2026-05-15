@@ -629,6 +629,26 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		}
 	})
 
+	t.Run("omits verdict when running human-review follows stopped human verdict", func(t *testing.T) {
+		// History: [stopped verdict=human, running human-review].
+		// Older verdict must not be surfaced while a newer review is still in flight.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+				{AgentID: "rev2", Role: "human-review", State: "running"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["human_review_verdict"]; ok {
+			t.Error("evidence must not contain human_review_verdict while a newer human-review is running")
+		}
+	})
+
 	t.Run("uses earlier verdict when last run has no parseable result", func(t *testing.T) {
 		// Simulates: human-review ran and returned "human", then a second
 		// human-review attempt was dispatched but failed with an API error
@@ -742,6 +762,26 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 		// Verdict field on a running agent is not surfaced, so RequiresLLM stays true.
 		if !report.Anomalies[0].RequiresLLM {
 			t.Error("RequiresLLM must be true when human-review is still running")
+		}
+	})
+
+	t.Run("RequiresLLM=true when running human-review follows stopped human verdict", func(t *testing.T) {
+		// History: [stopped verdict=human, running human-review].
+		// Running review blocks stale verdict — treat as unknown until it completes.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+				{AgentID: "rev2", Role: "human-review", State: "running"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if !report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be true while a newer human-review is still running")
 		}
 	})
 
