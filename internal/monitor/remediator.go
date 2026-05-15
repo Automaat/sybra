@@ -40,7 +40,7 @@ func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
 		if isHumanRequiredStuck(a) {
 			return r.remediateHumanRequiredStuck(a)
 		}
-		return "", fmt.Errorf("remediator: stuck_human_blocked remediation only applies to plan-review or human-required")
+		return "", fmt.Errorf("remediator: stuck_human_blocked remediation requires plan-review or human-required status")
 	default:
 		return "", fmt.Errorf("remediator: kind %q has no in-process action", a.Kind)
 	}
@@ -90,16 +90,18 @@ func (r *remediator) remediatePlanReviewStuck(a Anomaly) (string, error) {
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
 
-// remediateHumanRequiredStuck touches a human-required task to bump UpdatedAt
-// and reset the dwell timer. status_reason is left unchanged so the human
-// retains the original blocker context. This suppresses repeated meta-task
-// creation without changing the task's visibility on the blocked queue.
+// remediateHumanRequiredStuck refreshes the status reason on a task that is
+// already human-required and has exceeded its dwell budget. Updating the task
+// file stamps a new UpdatedAt, resetting the dwell timer and suppressing
+// repeated meta-task creation for the same block.
 func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
-	if _, err := r.tasks.Update(a.TaskID, task.Update{}); err != nil {
-		return "", fmt.Errorf("acknowledge human-required task %s: %w", a.TaskID, err)
+	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
+	upd := task.Update{}
+	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+		return "", fmt.Errorf("tag human-required task %s stalled: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
@@ -117,8 +119,9 @@ func isPlanReviewStuck(a Anomaly) bool {
 }
 
 // isHumanRequiredStuck reports whether a is a stuck_human_blocked anomaly for
-// a human-required task. These are remediated in-process (dwell reset via
-// status-reason stamp) and must not reach the issue sink.
+// a task already in human-required status. These are remediated in-process
+// (status reason refreshed to reset the dwell timer) and must not reach the
+// issue sink, which would create a redundant meta-task.
 func isHumanRequiredStuck(a Anomaly) bool {
 	if a.Kind != KindStuckHumanBlocked {
 		return false

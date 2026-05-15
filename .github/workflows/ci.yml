@@ -273,6 +273,8 @@ jobs:
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
+          monitor:
+            stuck_human_hours: 99999
           EOF
         env:
           SYBRA_HOME: /tmp/sybra-e2e
@@ -367,6 +369,8 @@ jobs:
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: claude
+          monitor:
+            stuck_human_hours: 99999
           EOF
         env:
           SYBRA_HOME: /tmp/sybra-e2e
