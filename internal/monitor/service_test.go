@@ -405,25 +405,73 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
-// TestServiceTick_HumanRequiredStuck_DowngradedLLM covers the scenario that
-// produced a spurious meta-task for task 47676b42: the last human-review run
-// failed (API overloaded, no parseable verdict) so RequiresLLM was initially
-// true, but DowngradeLLMForTask downgraded it to false because the task
-// belongs to a work-typed project. The remediator must still stamp UpdatedAt
-// and the sink must never be called.
-func TestServiceTick_HumanRequiredStuck_DowngradedLLM(t *testing.T) {
+// TestServiceTick_HumanRequiredStuck_StaleVerdictIgnored verifies that when
+// the latest human-review run has an unparsable result (e.g. 529), the stale
+// "human" verdict from an older run is NOT used. The detector must derive
+// human_review_verdict from the last run only, so RequiresLLM=true and the
+// anomaly is dispatched rather than directly remediated.
+func TestServiceTick_HumanRequiredStuck_StaleVerdictIgnored(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 	tasks := &fakeTasks{tasks: []task.Task{
-		// human-required stuck with a failed last human-review (no verdict).
-		mkTask("hr-downgrade", task.StatusHumanRequired, func(t *task.Task) {
+		// Two human-review runs: older ended with Verdict="human", latest ended
+		// with unparsable 529 result. The detector must look at the last run only.
+		mkTask("hr-stale", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
-				// First run concluded "human" — would not be checked without PR #840.
 				{Role: "human-review", State: "stopped", Verdict: "human"},
-				// Last run failed: API 529, empty result, no verdict.
-				{Role: "human-review", State: "stopped", Result: "API Error: 529 Overloaded."},
+				{Role: "human-review", State: "stopped", Result: "HTTP 529 service overloaded"},
 			}
+		}),
+	}}
+	disp := &fakeDispatcher{}
+	sink := &fakeSink{createNext: true}
+	svc := NewService(Deps{
+		Cfg:        cfg,
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: disp,
+		Sink:       sink,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
+		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	}
+	// Latest run has no parsable verdict → stale "human" must be ignored.
+	if !report.Anomalies[0].RequiresLLM {
+		t.Error("RequiresLLM must be true when latest run has unparsable result")
+	}
+
+	// Dispatcher is invoked (RequiresLLM=true path).
+	if len(disp.calls) != 1 {
+		t.Fatalf("want 1 dispatcher call, got %d", len(disp.calls))
+	}
+
+	// No direct remediation — task must NOT appear in Remediated.
+	if len(report.Remediated) != 0 {
+		t.Fatalf("want 0 remediated, got %d: %v", len(report.Remediated), report.Remediated)
+	}
+}
+
+// TestServiceTick_HumanRequiredStuck_DowngradedLLM covers the work-typed-task
+// path: detector emits RequiresLLM=true (no human-review verdict yet), but
+// DowngradeLLMForTask forces it to false. The remediation must still dwell-reset
+// the task without dispatching an LLM agent or filing an issue.
+func TestServiceTick_HumanRequiredStuck_DowngradedLLM_RemediatesDirectly(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	tasks := &fakeTasks{tasks: []task.Task{
+		// human-required with no human-review run → RequiresLLM=true from detector.
+		mkTask("hr-work", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
 		}),
 	}}
 	disp := &fakeDispatcher{}
@@ -433,9 +481,8 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM(t *testing.T) {
 		Tasks:  tasks,
 		Audit:  fakeAudit{},
 		Agents: nilAgentLister{},
-		// DowngradeLLMForTask returns true for all tasks — simulates the
-		// work-project check that fired for the real 47676b42 task.
-		DowngradeLLMForTask: func(string) bool { return true },
+		// Simulate DowngradeLLMForTask returning true for work-typed tasks.
+		DowngradeLLMForTask: func(taskID string) bool { return taskID == "hr-work" },
 		Dispatcher:          disp,
 		Sink:                sink,
 		Logger:              slog.Default(),
@@ -454,24 +501,27 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM(t *testing.T) {
 		t.Error("RequiresLLM must be false after DowngradeLLMForTask")
 	}
 
-	// Remediator must have stamped UpdatedAt (empty update).
+	// Dwell reset: one empty update, status and status_reason unchanged.
 	if len(tasks.updates) != 1 {
 		t.Fatalf("want 1 task update (dwell reset), got %d", len(tasks.updates))
 	}
 	u := tasks.updates[0]
-	if u.id != "hr-downgrade" {
+	if u.id != "hr-work" {
 		t.Errorf("updated wrong task: %q", u.id)
 	}
 	if u.u.Status != nil {
 		t.Errorf("status must not change, got %v", u.u.Status)
 	}
-
-	// Neither sink nor dispatcher must fire.
-	if len(sink.submissions) != 0 {
-		t.Fatalf("sink must not see downgraded anomaly, got %d submissions", len(sink.submissions))
+	if u.u.StatusReason != nil {
+		t.Errorf("status_reason must not change, got %q", *u.u.StatusReason)
 	}
+
+	// No LLM dispatch and no issue filed for downgraded work-typed tasks.
 	if len(disp.calls) != 0 {
-		t.Fatalf("dispatcher must not fire after downgrade, got %d calls", len(disp.calls))
+		t.Fatalf("dispatcher must not be called for downgraded anomaly, got %d calls", len(disp.calls))
+	}
+	if len(sink.submissions) != 0 {
+		t.Fatalf("sink must not see downgraded human-required anomaly, got %d submissions", len(sink.submissions))
 	}
 
 	if len(report.Remediated) != 1 {
