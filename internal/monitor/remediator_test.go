@@ -42,11 +42,12 @@ func TestRemediator_PlanReviewStuck_SetsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestRemediator_HumanRequiredStuck_RefreshesStatusReason(t *testing.T) {
+func TestRemediator_HumanRequiredStuck_PreservesStatusReason(t *testing.T) {
 	t.Parallel()
-	ft := &fakeTasks{tasks: []task.Task{
-		mkTask("hr1", task.StatusHumanRequired),
-	}}
+	existing := mkTask("hr1", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "waiting for credentials from ops team"
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
 	rem := newRemediator(ft)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
@@ -73,8 +74,9 @@ func TestRemediator_HumanRequiredStuck_RefreshesStatusReason(t *testing.T) {
 	if u.u.Status != nil {
 		t.Errorf("status should not be changed, got %v", u.u.Status)
 	}
-	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
-		t.Error("status_reason should be set")
+	// status_reason must not be overwritten — the existing blocker context must survive
+	if u.u.StatusReason != nil {
+		t.Errorf("status_reason should not be set in update, got %q", *u.u.StatusReason)
 	}
 }
 

@@ -90,18 +90,15 @@ func (r *remediator) remediatePlanReviewStuck(a Anomaly) (string, error) {
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
 
-// remediateHumanRequiredStuck refreshes the status reason on a human-required
-// task, stamping UpdatedAt to reset the dwell timer. This suppresses repeated
-// meta-task creation without changing the task's visibility on the blocked
-// queue — the task stays human-required where a human can act on it.
+// remediateHumanRequiredStuck touches a human-required task to bump UpdatedAt
+// and reset the dwell timer. status_reason is left unchanged so the human
+// retains the original blocker context. This suppresses repeated meta-task
+// creation without changing the task's visibility on the blocked queue.
 func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
-	upd := task.Update{
-		StatusReason: task.Ptr("monitor: human-required acknowledged"),
-	}
-	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+	if _, err := r.tasks.Update(a.TaskID, task.Update{}); err != nil {
 		return "", fmt.Errorf("acknowledge human-required task %s: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
