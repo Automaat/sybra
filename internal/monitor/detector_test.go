@@ -713,6 +713,30 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 			t.Error("RequiresLLM must be true when human-review is still running")
 		}
 	})
+
+	t.Run("RequiresLLM=true when running human-review follows stopped verdict=human", func(t *testing.T) {
+		// History: [stopped verdict=human, running human-review]. The newer
+		// in-flight run must block reuse of the older verdict — the running
+		// review may reach a different conclusion.
+		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
+				{AgentID: "rev2", Role: "human-review", State: "running"},
+			}
+		})
+		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
+		report := Detect(in)
+		if len(report.Anomalies) != 1 {
+			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+		}
+		if _, ok := report.Anomalies[0].Evidence["human_review_verdict"]; ok {
+			t.Error("human_review_verdict must not be set while a newer review is running")
+		}
+		if !report.Anomalies[0].RequiresLLM {
+			t.Error("RequiresLLM must be true when newer human-review is still running")
+		}
+	})
 }
 
 func TestCounts(t *testing.T) {

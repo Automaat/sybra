@@ -114,6 +114,46 @@ describe('TaskStore', () => {
 
       expect(taskStore.loading).toBe(false)
     })
+
+    it('runs a trailing fetch when throttled instead of dropping the load', async () => {
+      vi.useFakeTimers()
+      try {
+        mockListTasks.mockResolvedValue([makeTask({ id: 't1' })])
+        await taskStore.load()
+        expect(mockListTasks).toHaveBeenCalledTimes(1)
+
+        // A load within the 500ms window is throttled — but a live event
+        // (task:created/updated/deleted) must not be lost. The throttled call
+        // schedules a trailing fetch rather than returning empty-handed.
+        mockListTasks.mockResolvedValue([makeTask({ id: 't1' }), makeTask({ id: 't2' })])
+        await taskStore.load()
+        expect(mockListTasks).toHaveBeenCalledTimes(1)
+
+        await vi.advanceTimersByTimeAsync(500)
+        expect(mockListTasks).toHaveBeenCalledTimes(2)
+        expect(taskStore.tasks.size).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('coalesces a burst of throttled loads into one trailing fetch', async () => {
+      vi.useFakeTimers()
+      try {
+        mockListTasks.mockResolvedValue([makeTask({ id: 't1' })])
+        await taskStore.load()
+        expect(mockListTasks).toHaveBeenCalledTimes(1)
+
+        await taskStore.load()
+        await taskStore.load()
+        await taskStore.load()
+
+        await vi.advanceTimersByTimeAsync(500)
+        expect(mockListTasks).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   describe('get', () => {

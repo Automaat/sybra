@@ -344,7 +344,15 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 // runs. "human" is treated as final and returned immediately so a failed
 // later run (e.g. API 529 with no parseable result) cannot override an
 // earlier confirmed-human conclusion.
+// A running human-review supersedes any older stopped verdict — the in-flight
+// run may produce a different decision, so we must wait for it to finish.
 func humanReviewVerdict(runs []task.AgentRun) string {
+	for i := range runs {
+		r := &runs[i]
+		if r.Role == "human-review" && r.State == "running" {
+			return ""
+		}
+	}
 	var last string
 	for i := range runs {
 		r := &runs[i]
