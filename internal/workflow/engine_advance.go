@@ -18,7 +18,21 @@ import (
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.acquireInflight(taskID) // blocks until any concurrent advance releases
-	defer e.releaseInflight(taskID)
+
+	// Use an idempotent release so we can unlock before executeSteps while
+	// still having a defer as a safety net for early-return paths. Releasing
+	// before executeSteps is required: execRunAgent calls StopAgentsForTask
+	// which may wait for completing agents; those agents' onComplete callbacks
+	// call AdvanceStep and block on acquireInflight — holding the lock through
+	// executeSteps would deadlock that sequence.
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			e.releaseInflight(taskID)
+		}
+	}
+	defer release()
 
 	ctx, skip, err := e.loadAdvanceContext(taskID, output)
 	if err != nil || skip {
@@ -57,6 +71,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 				return err
 			}
+			release()
 			return e.executeSteps(taskID, &def, currentStep, wfExec)
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
@@ -87,6 +102,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
+	release()
 	return e.executeSteps(taskID, &def, nextStep, wfExec)
 }
 
