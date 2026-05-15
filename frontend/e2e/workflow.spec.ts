@@ -120,7 +120,9 @@ test.describe('Plan Reviews Page', () => {
   test('displays plan-review tasks in dedicated view', async ({ page }) => {
     await goToPlanReviews(page)
 
-    await expect(page.getByText('Refactor logging system')).toBeVisible({
+    await expect(
+      page.locator('span.text-sm.font-medium', { hasText: 'Refactor logging system' }),
+    ).toBeVisible({
       timeout: 5_000,
     })
   })
@@ -129,7 +131,13 @@ test.describe('Plan Reviews Page', () => {
     await goToPlanReviews(page)
 
     // Click on the plan task to select it
-    await page.getByText('Refactor logging system').click()
+    await page
+      .locator('button', {
+        has: page.locator('span.text-sm.font-medium', {
+          hasText: 'Refactor logging system',
+        }),
+      })
+      .click()
     await page.waitForTimeout(500)
 
     // Feedback textarea should be visible
