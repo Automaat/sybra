@@ -89,27 +89,38 @@ func TestSyncDirRemovesOrphans(t *testing.T) {
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	keep := []byte("---\nname: keep\ndescription: test\n---\n\n# keep")
-	if err := os.WriteFile(filepath.Join(srcDir, "keep.md"), keep, 0o644); err != nil {
+	keep := []byte("---\nname: sybra-keep\ndescription: test\n---\n\n# sybra-keep")
+	if err := os.WriteFile(filepath.Join(srcDir, "sybra-keep.md"), keep, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	dstDir := filepath.Join(t.TempDir(), "dst-skills")
-	orphan := filepath.Join(dstDir, "orphan")
-	if err := os.MkdirAll(orphan, 0o755); err != nil {
+	sybraOrphan := filepath.Join(dstDir, "sybra-orphan")
+	if err := os.MkdirAll(sybraOrphan, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(orphan, "SKILL.md"), []byte("---\nname: orphan\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sybraOrphan, "SKILL.md"), []byte("---\nname: sybra-orphan\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	userSkill := filepath.Join(dstDir, "ship-issue")
+	if err := os.MkdirAll(userSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("---\nname: ship-issue\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	newSyncer().SyncDir(srcDir, dstDir)
 
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Errorf("orphan skill dir should be removed: stat err=%v", err)
+	if _, err := os.Stat(sybraOrphan); !os.IsNotExist(err) {
+		t.Errorf("sybra- orphan skill dir should be removed: stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dstDir, "keep", "SKILL.md")); err != nil {
-		t.Errorf("keep/SKILL.md missing: %v", err)
+	if _, err := os.Stat(filepath.Join(userSkill, "SKILL.md")); err != nil {
+		t.Errorf("user skill without sybra- prefix must be preserved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "sybra-keep", "SKILL.md")); err != nil {
+		t.Errorf("sybra-keep/SKILL.md missing: %v", err)
 	}
 }
 

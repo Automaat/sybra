@@ -280,8 +280,13 @@ func (s *Syncer) syncFS(fsys fs.FS, srcDir, dst string, prune bool) map[string]s
 }
 
 // removeOrphans deletes dst/<name>/ subdirs whose names are absent from
-// srcNames, but only when the subdir holds a SKILL.md (so we never touch
-// unrelated content the user dropped there).
+// srcNames, but only when:
+//   - the subdir name starts with "sybra-" (sybra owns that namespace), and
+//   - the subdir holds a SKILL.md (so we never touch unrelated content the
+//     user dropped there).
+//
+// Restricting to the sybra- prefix protects user-authored skills that
+// happen to live in a shared destination like ~/.claude/skills.
 func (s *Syncer) removeOrphans(dst, cleanDst string, srcNames map[string]struct{}) {
 	dstEntries, err := os.ReadDir(dst)
 	if err != nil {
@@ -289,6 +294,9 @@ func (s *Syncer) removeOrphans(dst, cleanDst string, srcNames map[string]struct{
 	}
 	for _, e := range dstEntries {
 		if !e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), "sybra-") {
 			continue
 		}
 		if _, ok := srcNames[e.Name()]; ok {
