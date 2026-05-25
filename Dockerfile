@@ -1,5 +1,5 @@
 # Stage 1: Build web frontend
-FROM node:24-slim@sha256:24dc26ef1e3c3690f27ebc4136c9c186c3133b25563ae4d7f0692e4d1fe5db0e AS frontend-builder
+FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -40,7 +40,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 # install` ever lands in Layer F+G, the apt cache silently regenerates
 # on every sybra commit and image size balloons. The linter catches that
 # before it reaches main.
-FROM node:24-slim@sha256:24dc26ef1e3c3690f27ebc4136c9c186c3133b25563ae4d7f0692e4d1fe5db0e AS runtime
+FROM node:24-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf AS runtime
 
 # Pipe failures in subsequent RUN blocks should fail the build.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
