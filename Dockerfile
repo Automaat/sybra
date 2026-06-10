@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build:web
 
 # Stage 2: Build sybra-server binary
-FROM golang:1.26.3-bookworm@sha256:386d475a660466863d9f8c766fec64d7fdad3edac2c6a05020c09534d71edb4b AS go-builder
+FROM golang:1.26.4-bookworm@sha256:5d2b868674b57c9e48cdd39e891acce4196b6926ca6d11e9c270a8f85106203d AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -64,13 +64,13 @@ RUN apt-get update \
 
 # --- Layer B: klaudiush binary ---
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.32.1
+ARG KLAUDIUSH_VERSION=v1.32.4
 RUN curl -sSfL https://klaudiu.sh/install.sh \
          | sh -s -- -b /usr/local/bin -v "${KLAUDIUSH_VERSION}"
 
 # --- Layer C: node CLIs (claude code + codex), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.139
+ARG CLAUDE_CODE_VERSION=2.1.168
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.137.0
 RUN npm install -g \
