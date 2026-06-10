@@ -1,6 +1,6 @@
 module github.com/Automaat/sybra
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
