@@ -32,7 +32,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 
 | Layer | Stack |
 |-------|-------|
-| Backend | Go 1.26.3, Wails v3 alpha (`v3.0.0-alpha.87`) — darwin desktop |
+| Backend | Go 1.26.4, Wails v3 alpha (`v3.0.0-alpha.87`) — darwin desktop |
 | Frontend | Svelte 5, TypeScript 6, Skeleton UI v4, Tailwind v4 |
 | IPC | Wails v3 services + typed events (no HTTP, no WebSocket on desktop) |
 | File format | YAML frontmatter + GFM markdown |
@@ -40,7 +40,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 
 ## Getting started
 
-**Prerequisites:** Go 1.26.3, Node 24, [mise](https://mise.jdx.dev/). Desktop builds run on macOS only (Wails v3 alpha needs gtk3/webkit2gtk-4.1 on Linux, which CI does not install).
+**Prerequisites:** Go 1.26.4, Node 24, [mise](https://mise.jdx.dev/). Desktop builds run on macOS only (Wails v3 alpha needs gtk3/webkit2gtk-4.1 on Linux, which CI does not install).
 
 ```bash
 # Install tool versions

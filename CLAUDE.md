@@ -80,7 +80,7 @@ sybra/
 
 ### Backend
 
-- **Go 1.26.3**
+- **Go 1.26.4**
 - **Wails v3 alpha** (`v3.0.0-alpha.87`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
@@ -95,7 +95,7 @@ sybra/
 
 ### Tooling
 
-- **mise** — tool version management (Go 1.26.3, Node 24)
+- **mise** — tool version management (Go 1.26.4, Node 24)
 - **golangci-lint v2** — Go linting (gocritic, nilerr, nilnesserr, nilnil, nolintlint, modernize)
 - **oxlint** — frontend linting
 - **GitHub Actions** — CI (lint-go, lint-frontend, build)
