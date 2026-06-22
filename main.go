@@ -27,6 +27,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sybra"
 )
@@ -88,6 +89,23 @@ func run() error {
 	desktopEvents := newDesktopEmitter(ctx, logger, func(event string, data any) {
 		v3app.Event.Emit(event, data)
 	})
+	// Surface a wedged UI thread via an OS-native notification (osascript),
+	// which does not depend on the frozen webview. Run async so the emit pump
+	// never blocks on the alert. The backend keeps running; only the window is
+	// frozen, so restart is the recovery — Wails main-thread APIs (Reload)
+	// route through the same blocked path and cannot self-heal.
+	desktopEvents.onStall = func(d time.Duration) {
+		go func() {
+			_ = notification.SendDesktop("Sybra UI stalled",
+				fmt.Sprintf("No UI updates for %s — the window is likely frozen. Restart Sybra to recover; the backend keeps running.", d.Round(time.Second)))
+		}()
+	}
+	desktopEvents.onRecovered = func(d time.Duration) {
+		go func() {
+			_ = notification.SendDesktop("Sybra UI recovered",
+				fmt.Sprintf("UI updates resumed after %s.", d.Round(time.Second)))
+		}()
+	}
 	v3emit = desktopEvents.Emit
 
 	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
