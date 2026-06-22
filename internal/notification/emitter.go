@@ -29,8 +29,22 @@ func New(emit func(event string, data any)) *Emitter {
 	}
 }
 
-// Send creates and broadcasts a notification.
+// Send creates and broadcasts a notification, honouring the desktop toggle.
 func (e *Emitter) Send(level Level, title, message, taskID, agentID string) {
+	e.mu.RLock()
+	desktop := e.desktop
+	e.mu.RUnlock()
+	e.send(level, title, message, taskID, agentID, desktop)
+}
+
+// Alert sends an OS-native desktop notification regardless of the desktop
+// toggle. For critical conditions (e.g. a stalled UI) that must reach the user
+// even when the in-app event path is broken and the toggle is off.
+func (e *Emitter) Alert(level Level, title, message string) {
+	e.send(level, title, message, "", "", true)
+}
+
+func (e *Emitter) send(level Level, title, message, taskID, agentID string, desktop bool) {
 	n := Notification{
 		ID:        uuid.NewString(),
 		Level:     level,
@@ -50,7 +64,7 @@ func (e *Emitter) Send(level Level, title, message, taskID, agentID string) {
 
 	e.emit(events.Notification, n)
 
-	if e.desktop {
+	if desktop {
 		_ = e.desktopFn(title, message)
 	}
 }

@@ -81,7 +81,7 @@ sybra/
 ### Backend
 
 - **Go 1.26.4**
-- **Wails v3 alpha** (`v3.0.0-alpha.87`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
+- **Wails v3 alpha** (`v3.0.0-alpha.98-tui`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
 
