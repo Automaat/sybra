@@ -135,6 +135,35 @@ describe('ProjectDetail', () => {
     })
   })
 
+  it('shows a summary instead of empty buckets when all tasks are terminal', async () => {
+    mockGet.mockResolvedValue(mockProject)
+    mockTaskList.push(
+      { id: 'a', projectId: 'owner/repo', status: 'done', updatedAt: '2026-04-01T00:00:00Z' },
+      { id: 'b', projectId: 'owner/repo', status: 'cancelled', updatedAt: '2026-04-01T00:00:00Z' },
+    )
+    render(ProjectDetail, {
+      props: { projectId: 'owner/repo', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText(/No active tasks — 1 done, 1 cancelled/)).toBeDefined()
+    })
+    expect(screen.queryByRole('heading', { name: 'In Progress' })).toBeNull()
+  })
+
+  it('does not show empty buckets for a task with an unknown status', async () => {
+    mockGet.mockResolvedValue(mockProject)
+    // A status outside the board columns and not done/cancelled must not be
+    // counted as "active" and leave six all-zero columns.
+    mockTaskList.push({ id: 'x', projectId: 'owner/repo', status: 'mystery', updatedAt: '2026-04-01T00:00:00Z' })
+    render(ProjectDetail, {
+      props: { projectId: 'owner/repo', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByText(/No active tasks — 0 done, 1 other/)).toBeDefined()
+    })
+    expect(screen.queryByRole('heading', { name: 'In Progress' })).toBeNull()
+  })
+
   it('shows Delete button after loading', async () => {
     mockGet.mockResolvedValue(mockProject)
     render(ProjectDetail, {

@@ -131,6 +131,14 @@
     }))
   )
 
+  // Tasks placed in the active board columns. Anything outside (done, cancelled,
+  // or an unknown/legacy status) is excluded so a project with no on-board tasks
+  // never renders as six empty buckets.
+  const boardCount = $derived(tasksByColumn.reduce((n, c) => n + c.tasks.length, 0))
+  const doneCount = $derived(projectTasks.filter(t => t.status === 'done').length)
+  const cancelledCount = $derived(projectTasks.filter(t => t.status === 'cancelled').length)
+  const otherCount = $derived(Math.max(0, projectTasks.length - boardCount - doneCount - cancelledCount))
+
   async function deleteProject() {
     if (!p) return
     deleting = true
@@ -239,12 +247,21 @@
 
       {#if activeTab === 'tasks'}
         <div class="flex flex-col gap-3">
-          <div class="flex items-center justify-between">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span class="text-sm font-medium text-surface-500">Tasks ({projectTasks.length})</span>
+            {#if projectTasks.length > 0}
+              <span class="text-xs text-surface-400">
+                {boardCount} active · {doneCount} done{#if cancelledCount > 0} · {cancelledCount} cancelled{/if}{#if otherCount > 0} · {otherCount} other{/if}
+              </span>
+            {/if}
           </div>
 
           {#if projectTasks.length === 0}
             <p class="py-4 text-center text-sm text-surface-400">No tasks assigned to this project</p>
+          {:else if boardCount === 0}
+            <p class="py-4 text-center text-sm text-surface-400">
+              No active tasks — {doneCount} done{#if cancelledCount > 0}, {cancelledCount} cancelled{/if}{#if otherCount > 0}, {otherCount} other{/if}.
+            </p>
           {:else}
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {#each tasksByColumn as col (col.status)}

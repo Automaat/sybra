@@ -14,6 +14,16 @@ vi.mock('../stores/projects.svelte.js', () => ({
   projectStore: mockProjectStore,
 }))
 
+const mockTaskList: any[] = []
+vi.mock('../stores/tasks.svelte.js', () => ({
+  taskStore: { get list() { return mockTaskList } },
+}))
+
+let mockPRsByRepo: Record<string, any[]> = {}
+vi.mock('../stores/reviews.svelte.js', () => ({
+  reviewStore: { byRepo: (repo: string) => mockPRsByRepo[repo] ?? [] },
+}))
+
 const ProjectList = (await import('./ProjectList.svelte')).default
 
 const mockProject = {
@@ -31,6 +41,8 @@ describe('ProjectList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockProjectList.length = 0
+    mockTaskList.length = 0
+    mockPRsByRepo = {}
     mockProjectStore.loading = false
     mockProjectStore.error = ''
   })
@@ -39,20 +51,18 @@ describe('ProjectList', () => {
     cleanup()
   })
 
-  it('renders Projects heading', () => {
+  it('does not render an in-body header or duplicate create button', () => {
+    mockProjectList.push(mockProject)
     render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('Projects')).toBeDefined()
+    // The page title + create button live in the app top bar now.
+    expect(screen.queryByText('Projects')).toBeNull()
+    expect(screen.queryByText('+ Add Project')).toBeNull()
   })
 
-  it('shows Add Project button', () => {
-    render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('+ Add Project')).toBeDefined()
-  })
-
-  it('calls onadd when Add Project clicked', async () => {
+  it('calls onadd from the empty-state button', async () => {
     const onadd = vi.fn()
     render(ProjectList, { props: { onselect: vi.fn(), onadd } })
-    await fireEvent.click(screen.getByText('+ Add Project'))
+    await fireEvent.click(screen.getByText('Add your first project'))
     expect(onadd).toHaveBeenCalledOnce()
   })
 
@@ -102,5 +112,20 @@ describe('ProjectList', () => {
     render(ProjectList, { props: { onselect, onadd: vi.fn() } })
     await fireEvent.click(screen.getByText('owner/repo'))
     expect(onselect).toHaveBeenCalledWith('owner/repo')
+  })
+
+  it('shows active-task and open-PR counts on the card', () => {
+    mockProjectList.push(mockProject)
+    mockTaskList.push(
+      { projectId: 'owner/repo', status: 'in-progress', updatedAt: '2026-04-02T00:00:00Z' },
+      { projectId: 'owner/repo', status: 'done', updatedAt: '2026-04-01T00:00:00Z' },
+      { projectId: 'owner/repo', status: 'mystery', updatedAt: '2026-04-01T00:00:00Z' },
+      { projectId: 'other/repo', status: 'todo', updatedAt: '2026-04-03T00:00:00Z' },
+    )
+    mockPRsByRepo = { 'owner/repo': [{ number: 1 }, { number: 2 }] }
+    render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
+    // done, unknown status, and the other project are all excluded from "active".
+    expect(screen.getByText('1 active')).toBeDefined()
+    expect(screen.getByText('2 PRs')).toBeDefined()
   })
 })

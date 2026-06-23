@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { Folder } from '@lucide/svelte'
+  import { Folder, GitPullRequest, ListChecks } from '@lucide/svelte'
   import { projectStore } from '../stores/projects.svelte.js'
-  import { formatShortDate } from '../lib/dates.js'
+  import { taskStore } from '../stores/tasks.svelte.js'
+  import { reviewStore } from '../stores/reviews.svelte.js'
+  import { BOARD_COLUMNS } from '../lib/statuses.js'
+  import { formatShortDate, timeAgo } from '../lib/dates.js'
 
   interface Props {
     onselect: (id: string) => void
@@ -9,20 +12,36 @@
   }
 
   const { onselect, onadd }: Props = $props()
+
+  // "Active" = sits in an active board column (matches Project Detail's board
+  // count); terminal and unknown/legacy statuses are excluded.
+  const ACTIVE_STATUSES = new Set<string>(BOARD_COLUMNS.flatMap((c) => [c.status, ...c.includes]))
+
+  function activeTaskCount(projectId: string): number {
+    return taskStore.list.filter((t) => t.projectId === projectId && ACTIVE_STATUSES.has(t.status)).length
+  }
+
+  function openPRCount(owner: string, repo: string): number {
+    return reviewStore.byRepo(`${owner}/${repo}`).length
+  }
+
+  /** Most recent task activity for a project, as a relative label (empty if none). */
+  function lastActivity(projectId: string): string {
+    let latestMs = 0
+    let latest = ''
+    for (const t of taskStore.list) {
+      if (t.projectId !== projectId || !t.updatedAt) continue
+      const ms = Date.parse(t.updatedAt)
+      if (!Number.isNaN(ms) && ms > latestMs) {
+        latestMs = ms
+        latest = t.updatedAt
+      }
+    }
+    return latest ? timeAgo(latest) : ''
+  }
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-lg font-semibold">Projects</h2>
-    <button
-      type="button"
-      class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600"
-      onclick={onadd}
-    >
-      + Add Project
-    </button>
-  </div>
-
   {#if projectStore.loading && projectStore.list.length === 0}
     <p class="text-sm opacity-60">Loading projects...</p>
   {:else if projectStore.error}
@@ -42,6 +61,9 @@
   {:else}
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {#each projectStore.list as p (p.id)}
+        {@const active = activeTaskCount(p.id)}
+        {@const prs = openPRCount(p.owner, p.repo)}
+        {@const activity = lastActivity(p.id)}
         <button
           type="button"
           class="flex flex-col gap-2 rounded-lg border border-surface-300 bg-surface-50 p-4 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
@@ -56,8 +78,21 @@
               <span class="rounded px-1.5 py-0.5 text-xs font-medium bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400">pet</span>
             {/if}
           </div>
-          <div class="flex items-center gap-2 text-xs text-surface-500">
-            <span>Added {formatShortDate(p.createdAt)}</span>
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-surface-500">
+            <span class="inline-flex items-center gap-1" title="Active tasks">
+              <ListChecks size={13} class="shrink-0" />
+              {active} active
+            </span>
+            {#if prs > 0}
+              <span class="inline-flex items-center gap-1" title="Open pull requests">
+                <GitPullRequest size={13} class="shrink-0" />
+                {prs} PR{prs === 1 ? '' : 's'}
+              </span>
+            {/if}
+            {#if activity}
+              <span title="Last task activity">· {activity}</span>
+            {/if}
+            <span class="ml-auto opacity-70">Added {formatShortDate(p.createdAt)}</span>
           </div>
         </button>
       {/each}
