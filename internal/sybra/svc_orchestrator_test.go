@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 )
@@ -94,25 +95,36 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	svc, mgr := newOrchSvcForTest(t)
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
-	// Seed a stale/wedged orchestrator: a stopped agent the service still
-	// points at. Before the fix this was handled, but a paused-no-session
-	// agent (the real wedge) was treated as "running" and never replaced;
-	// orchestratorReplaceable now covers both, and StartOrchestrator must
-	// reap the stale agent and swap in a fresh one.
-	stale, err := mgr.Run(agent.RunConfig{TaskID: "stale", Name: "stale", Mode: "interactive", Prompt: "hi", Dir: t.TempDir()})
+	// Seed the exact production wedge: a conversational agent started with no
+	// kickoff prompt parks in StatePaused, and the block_silent fake emits
+	// nothing so it never gets a session id. Before the fix this paused-no-
+	// session state was treated as "running" and never replaced.
+	wedged, err := mgr.Run(agent.RunConfig{
+		TaskID: "wedged", Name: "wedged", Mode: "interactive", Dir: t.TempDir(),
+	})
 	if err != nil {
-		t.Fatalf("seed stale agent: %v", err)
+		t.Fatalf("seed wedged agent: %v", err)
 	}
-	if err := mgr.StopAgent(stale.ID); err != nil {
-		t.Fatalf("stop seed agent: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a, gerr := mgr.GetAgent(wedged.ID)
+		if gerr == nil && a.GetState() == agent.StatePaused && a.GetSessionID() == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("wedged agent never parked in paused-no-session")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	svc.agentID = stale.ID
+	svc.agentID = wedged.ID
 
+	// orchestratorReplaceable must treat paused-no-session as replaceable, so
+	// StartOrchestrator reaps the wedged brain and swaps in a fresh one.
 	if err := svc.StartOrchestrator(); err != nil {
 		t.Fatalf("StartOrchestrator over a wedged brain should succeed: %v", err)
 	}
-	if got := svc.GetOrchestratorAgentID(); got == "" || got == stale.ID {
-		t.Errorf("expected a fresh orchestrator id, got %q (stale was %q)", got, stale.ID)
+	if got := svc.GetOrchestratorAgentID(); got == "" || got == wedged.ID {
+		t.Errorf("expected a fresh orchestrator id, got %q (wedged was %q)", got, wedged.ID)
 	}
 }
 
