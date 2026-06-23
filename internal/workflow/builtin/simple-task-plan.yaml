@@ -142,8 +142,8 @@ steps:
     next:
       - goto: require_plan
 
-  # Guard: the plan agent can exit cleanly without producing a plan (e.g.
-  # /sybra-plan failed or the agent skipped the write). Mirrors
+  # Guard: the plan agent can exit cleanly without producing a plan (e.g. the
+  # council/plan flow failed or the agent skipped the write). Mirrors
   # require_plan_critique below: flips to human-required so the failure is
   # visible instead of silently advancing into critique_plan with an empty plan.
   - id: require_plan
