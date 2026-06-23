@@ -80,7 +80,6 @@
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
   <!-- Header -->
   <div class="flex items-center gap-3 border-b border-surface-200 px-4 py-3 dark:border-surface-700">
-    <h1 class="text-lg font-semibold">Logbook</h1>
     <span class="text-sm text-surface-400">{logbookTasks.length} closed</span>
   </div>
 

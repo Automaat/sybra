@@ -93,10 +93,10 @@ describe('Settings', () => {
     })
   })
 
-  it('renders Settings heading', () => {
+  it('renders the appearance section', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    expect(screen.getByText('Settings')).toBeDefined()
+    expect(screen.getByText('Appearance')).toBeDefined()
   })
 
   it('renders Agent Defaults section after load', async () => {

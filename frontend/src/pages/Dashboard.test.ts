@@ -88,9 +88,9 @@ describe('Dashboard', () => {
     cleanup()
   })
 
-  it('renders dashboard heading', () => {
+  it('renders the task status breakdown', () => {
     render(Dashboard, { props: { onviewagent: vi.fn() } })
-    expect(screen.getByText('Dashboard')).toBeTruthy()
+    expect(screen.getByText('Task Status')).toBeTruthy()
   })
 
   it('shows stat cards with correct counts', () => {

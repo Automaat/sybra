@@ -132,7 +132,7 @@ describe('NavStore', () => {
   describe('pageTitle', () => {
     it.each([
       [{ kind: 'dashboard' }, 'Dashboard'],
-      [{ kind: 'task-list' }, 'Tasks'],
+      [{ kind: 'task-list' }, 'Board'],
       [{ kind: 'task-detail', taskId: 't1' }, 'Task Detail'],
       [{ kind: 'project-list' }, 'Projects'],
       [{ kind: 'project-detail', projectId: 'p1' }, 'Project Detail'],

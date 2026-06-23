@@ -58,8 +58,6 @@
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
-  <h1 class="text-2xl font-bold">Dashboard</h1>
-
   <!-- Stats row -->
   <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
     <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">

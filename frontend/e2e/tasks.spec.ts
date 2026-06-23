@@ -77,7 +77,7 @@ test.describe('Task List', () => {
   test('shows app bar with Tasks title and New Task button', async ({ page }) => {
     await goToTaskList(page)
 
-    await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
+    await expect(page.locator('h2', { hasText: 'Board' })).toBeVisible()
     await expect(page.getByText('+ New Task')).toBeVisible()
   })
 
@@ -142,7 +142,7 @@ test.describe('Task Detail', () => {
 
     await page.getByText('Back to tasks').click()
 
-    await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
+    await expect(page.locator('h2', { hasText: 'Board' })).toBeVisible()
     await expect(page.getByText('Implement auth middleware')).toBeVisible()
   })
 
@@ -246,7 +246,7 @@ test.describe('Navigation Rail', () => {
     const navTrigger = page.locator('[data-part="trigger"]', { hasText: /Board/ })
     await navTrigger.click()
 
-    await expect(page.locator('h2', { hasText: 'Tasks' })).toBeVisible()
+    await expect(page.locator('h2', { hasText: 'Board' })).toBeVisible()
   })
 })
 

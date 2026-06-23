@@ -22,7 +22,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
   },
   {
     scope: 'task-list',
-    label: 'Task Board',
+    label: 'Board',
     shortcuts: [
       { keys: 'J  /  ↓', description: 'Move focus down' },
       { keys: 'K  /  ↑', description: 'Move focus up' },
@@ -65,7 +65,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
     scope: 'global',
     label: 'Quick Navigation',
     shortcuts: [
-      { keys: 'G  I', description: 'All Tasks' },
+      { keys: 'G  I', description: 'Board' },
       { keys: 'G  A', description: 'Active (In Progress)' },
       { keys: 'G  P', description: 'Projects' },
       { keys: 'G  S', description: 'Settings' },

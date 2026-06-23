@@ -60,9 +60,9 @@ describe('ChatList', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders Chats heading', () => {
+  it('renders the new-chat action', () => {
     render(ChatList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('Chats')).toBeDefined()
+    expect(screen.getByText('+ New Chat')).toBeDefined()
   })
 
   it('shows + New Chat button', () => {

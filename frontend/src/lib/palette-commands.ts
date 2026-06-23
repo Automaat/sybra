@@ -75,7 +75,7 @@ export function buildCommands(ctx: PaletteCtx): Command[] {
   // --- PAGES ---
   const pageEntries: { id: string; title: string; shortcut?: string; page: Page }[] = [
     { id: 'page:dashboard', title: 'Dashboard', shortcut: '⌘1', page: { kind: 'dashboard' } },
-    { id: 'page:task-list', title: 'Tasks', shortcut: '⌘2', page: { kind: 'task-list' } },
+    { id: 'page:task-list', title: 'Board', shortcut: '⌘2', page: { kind: 'task-list' } },
     { id: 'page:project-list', title: 'Projects', shortcut: '⌘3', page: { kind: 'project-list' } },
     { id: 'page:agents', title: 'Agents', shortcut: '⌘4', page: { kind: 'agents' } },
     { id: 'page:github', title: 'GitHub', shortcut: '⌘5', page: { kind: 'github' } },

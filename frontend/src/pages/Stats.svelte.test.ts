@@ -58,9 +58,9 @@ describe('Stats', () => {
     cleanup()
   })
 
-  it('renders Stats heading', () => {
+  it('renders the page with a refresh control', () => {
     render(Stats, { props: {} })
-    expect(screen.getByText('Stats')).toBeDefined()
+    expect(screen.getByText('Refresh')).toBeDefined()
   })
 
   it('shows period tabs', () => {
