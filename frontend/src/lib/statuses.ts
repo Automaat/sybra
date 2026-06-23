@@ -20,6 +20,11 @@ export interface StatusMeta {
   pillClasses: string
 }
 
+export type StatusOption<T extends string = string> = {
+  value: T
+  label: string
+}
+
 /** All valid statuses — mirrors Go internal/task/model.go */
 export const ALL_STATUSES: StatusMeta[] = [
   {
@@ -140,11 +145,6 @@ export const STATUS_MAP: Record<string, StatusMeta> = Object.fromEntries(
   ALL_STATUSES.map((s) => [s.value, s]),
 )
 
-/** For dropdowns / segmented controls */
-export const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = ALL_STATUSES.map(
-  ({ value, label }) => ({ value, label }),
-)
-
 export interface BoardColumn {
   status: TaskStatus
   label: string
@@ -162,3 +162,58 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]
+
+/**
+ * Core user-facing status set: the active board columns plus the terminal
+ * states (`done`, `cancelled`). Granular states (new, plan-review,
+ * ready-review, test-plan-review, blocked) are internal/derived — set by
+ * automations, not picked by hand. Users choose from this small set so a
+ * task's status always lines up with a board column.
+ */
+export const CORE_STATUSES: TaskStatus[] = [
+  ...BOARD_COLUMNS.map((c) => c.status),
+  'done',
+  'cancelled',
+]
+
+const CORE_STATUS_SET: ReadonlySet<TaskStatus> = new Set(CORE_STATUSES)
+
+/** Core statuses as dropdown/picker options. */
+export const CORE_STATUS_OPTIONS: StatusOption<TaskStatus>[] = CORE_STATUSES.map(
+  (value) => ({ value, label: STATUS_MAP[value].label }),
+)
+
+function isCoreStatus(status: string): status is TaskStatus {
+  return CORE_STATUS_SET.has(status as TaskStatus)
+}
+
+/** Granular status → the core (column) status it rolls up to. */
+const STATUS_TO_CORE: Record<string, TaskStatus> = (() => {
+  const map: Record<string, TaskStatus> = {}
+  for (const col of BOARD_COLUMNS) {
+    map[col.status] = col.status
+    for (const folded of col.includes) map[folded] = col.status
+  }
+  return map
+})()
+
+/** Roll any status up to its core (column) status; terminal states map to self. */
+export function coreStatus(status: TaskStatus): TaskStatus
+export function coreStatus(status: string): string
+export function coreStatus(status: string): string {
+  return STATUS_TO_CORE[status] ?? status
+}
+
+/**
+ * Picker options for a task whose current status is `current`. Normally the
+ * core set, but if `current` rolls up to something outside the core set (an
+ * unknown/legacy status), its own value is appended so the control never
+ * mislabels or silently reassigns it.
+ */
+export function statusOptionsFor(current: TaskStatus): StatusOption<TaskStatus>[]
+export function statusOptionsFor(current: string): StatusOption<string>[]
+export function statusOptionsFor(current: string): StatusOption<string>[] {
+  const core = coreStatus(current)
+  if (isCoreStatus(core)) return CORE_STATUS_OPTIONS
+  return [...CORE_STATUS_OPTIONS, { value: core, label: STATUS_MAP[core]?.label ?? core }]
+}

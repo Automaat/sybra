@@ -5,7 +5,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { STATUS_OPTIONS, awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
+  import { statusOptionsFor, coreStatus, awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
@@ -260,13 +260,13 @@
   {#if onstatuschange}
     <div class="mt-2 flex justify-end">
       <select
-        value={t.status}
+        value={coreStatus(t.status)}
         onchange={handleStatusChange}
         onclick={(e) => e.stopPropagation()}
         class="tap rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
         aria-label="Change status"
       >
-        {#each STATUS_OPTIONS as opt}
+        {#each statusOptionsFor(t.status) as opt}
           <option value={opt.value} disabled={hasRunningAgent && AGENT_BLOCKED_STATUSES.has(opt.value)}>{opt.label}</option>
         {/each}
       </select>

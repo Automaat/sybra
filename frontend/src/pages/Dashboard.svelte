@@ -23,6 +23,13 @@
   const tasksByStatus = $derived(
     Object.fromEntries(ALL_STATUSES.map(s => [s.value, taskStore.byStatus(s.value).length]))
   )
+
+  // Most statuses sit at 0; hide empty buckets behind a toggle to cut the noise.
+  let showAllStatuses = $state(false)
+  const visibleStatuses = $derived(
+    showAllStatuses ? ALL_STATUSES : ALL_STATUSES.filter(s => (tasksByStatus[s.value] ?? 0) > 0)
+  )
+  const emptyStatusCount = $derived(ALL_STATUSES.length - visibleStatuses.length)
   const totalTasks = $derived(taskStore.list.length)
 
   const totalCost = $derived(
@@ -75,13 +82,27 @@
 
   <!-- Task status breakdown -->
   <div class="flex flex-col gap-2">
-    <span class="text-sm font-medium text-surface-500">Task Status</span>
+    <div class="flex items-center gap-3">
+      <span class="text-sm font-medium text-surface-500">Task Status</span>
+      {#if totalTasks > 0 && (showAllStatuses || emptyStatusCount > 0)}
+        <button
+          type="button"
+          class="text-xs text-surface-400 hover:text-surface-600 dark:hover:text-surface-300"
+          onclick={() => (showAllStatuses = !showAllStatuses)}
+        >
+          {showAllStatuses ? 'Hide empty' : `Show all (${emptyStatusCount} empty)`}
+        </button>
+      {/if}
+    </div>
     <div class="flex flex-wrap gap-3">
-      {#each ALL_STATUSES as s (s.value)}
+      {#each visibleStatuses as s (s.value)}
         <span class="rounded px-2.5 py-1 text-xs {s.pillClasses}">
           {s.label} <strong>{tasksByStatus[s.value]}</strong>
         </span>
       {/each}
+      {#if visibleStatuses.length === 0}
+        <span class="text-xs text-surface-400">No tasks yet</span>
+      {/if}
     </div>
   </div>
 
