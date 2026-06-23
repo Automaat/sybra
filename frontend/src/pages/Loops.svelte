@@ -4,6 +4,7 @@
   import { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
   import { EventsOn } from '$lib/api'
   import { LoopAgentUpdated } from '../lib/events.js'
+  import { timeAgo } from '$lib/dates.js'
 
   let showForm = $state(false)
   let editing = $state<LoopAgent | null>(null)
@@ -34,14 +35,9 @@
   }
 
   function formatRelative(dateStr: string | any): string {
-    if (!dateStr) return 'never'
     const d = new Date(dateStr)
-    if (isNaN(d.getTime()) || d.getTime() === 0) return 'never'
-    const diff = Date.now() - d.getTime()
-    if (diff < 60_000) return 'just now'
-    if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`
-    if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`
-    return `${Math.round(diff / 86_400_000)}d ago`
+    if (!dateStr || isNaN(d.getTime()) || d.getTime() === 0) return 'never'
+    return timeAgo(d)
   }
 
   function formatCost(cost: number): string {

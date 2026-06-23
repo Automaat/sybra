@@ -3,6 +3,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { AgentPhase } from '$lib/agent-phases.js'
   import AgentStateBadge from '../AgentStateBadge.svelte'
+  import { formatDateTime } from '$lib/dates.js'
 
   interface Props {
     a: Agent
@@ -16,11 +17,6 @@
   const { a, phase, stepText, linkedTask, onstop, onviewtask }: Props = $props()
 
   const isRunning = $derived(a.state === 'running')
-
-  function formatDate(date: any): string {
-    if (!date) return '-'
-    return new Date(date).toLocaleString()
-  }
 </script>
 
 <div class="flex flex-col gap-6">
@@ -131,7 +127,7 @@
     {/if}
     <div class="flex flex-col gap-1">
       <span class="font-medium text-surface-500">Started</span>
-      <span>{formatDate(a.startedAt)}</span>
+      <span>{formatDateTime(a.startedAt)}</span>
     </div>
   </div>
 </div>

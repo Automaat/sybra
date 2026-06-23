@@ -8,6 +8,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { BOARD_COLUMNS } from '../lib/statuses.js'
+  import { formatDateTime } from '../lib/dates.js'
   import TaskCard from '../components/TaskCard.svelte'
   import WorktreeList from '../components/WorktreeList.svelte'
 
@@ -155,10 +156,6 @@
     }
   }
 
-  function formatDate(date: any): string {
-    if (!date) return '-'
-    return new Date(date).toLocaleString()
-  }
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
@@ -222,8 +219,8 @@
       </div>
 
       <div class="flex gap-6 text-xs text-surface-400">
-        <span>Created: {formatDate(p.createdAt)}</span>
-        <span>Updated: {formatDate(p.updatedAt)}</span>
+        <span>Created: {formatDateTime(p.createdAt)}</span>
+        <span>Updated: {formatDateTime(p.updatedAt)}</span>
       </div>
 
       <hr class="border-surface-300 dark:border-surface-600" />

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Folder } from '@lucide/svelte'
   import { projectStore } from '../stores/projects.svelte.js'
+  import { formatShortDate } from '../lib/dates.js'
 
   interface Props {
     onselect: (id: string) => void
@@ -8,11 +9,6 @@
   }
 
   const { onselect, onadd }: Props = $props()
-
-  function formatDate(date: any): string {
-    if (!date) return '-'
-    return new Date(date).toLocaleDateString()
-  }
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
@@ -61,7 +57,7 @@
             {/if}
           </div>
           <div class="flex items-center gap-2 text-xs text-surface-500">
-            <span>Added {formatDate(p.createdAt)}</span>
+            <span>Added {formatShortDate(p.createdAt)}</span>
           </div>
         </button>
       {/each}

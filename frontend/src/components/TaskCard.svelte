@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { timeAgo } from '$lib/dates.js'
   import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy, AlertTriangle } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -74,16 +75,6 @@
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
   }
 
-  function timeAgo(date: any): string {
-    if (!date) return ''
-    const now = Date.now()
-    const then = new Date(date).getTime()
-    const diff = Math.floor((now - then) / 1000)
-    if (diff < 60) return 'just now'
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-    return `${Math.floor(diff / 86400)}d ago`
-  }
 </script>
 
 <div

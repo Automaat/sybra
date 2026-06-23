@@ -1,5 +1,6 @@
 <script lang="ts">
   import { commentStore } from '../stores/comments.svelte.js'
+  import { formatDateTime } from '$lib/dates.js'
 
 
   let { taskId, planBody } = $props<{ taskId: string; planBody: string }>()
@@ -40,10 +41,6 @@
     await commentStore.remove(taskId, commentId)
   }
 
-  function formatTime(ts: any): string {
-    if (!ts) return ''
-    return new Date(ts).toLocaleString()
-  }
 </script>
 
 <div class="font-mono text-sm">
@@ -83,7 +80,7 @@
               >Delete</button>
             </div>
           </div>
-          <div class="mt-1 text-xs text-surface-400">{formatTime(comment.createdAt)}</div>
+          <div class="mt-1 text-xs text-surface-400">{formatDateTime(comment.createdAt)}</div>
         </div>
       {/each}
 

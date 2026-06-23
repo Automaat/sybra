@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   parseNaturalDate,
   formatDueDateDisplay,
-  formatDate,
+  formatDateTime,
+  formatShortDate,
+  timeAgo,
   toUtcDayStart,
   toUtcDayEnd,
 } from './dates.js'
@@ -87,13 +89,56 @@ describe('formatDueDateDisplay', () => {
   })
 })
 
-describe('formatDate', () => {
+describe('formatDateTime', () => {
   it('returns "-" for falsy', () => {
-    expect(formatDate(null)).toBe('-')
-    expect(formatDate(undefined)).toBe('-')
+    expect(formatDateTime(null)).toBe('-')
+    expect(formatDateTime(undefined)).toBe('-')
+  })
+  it('returns "-" for an invalid date', () => {
+    expect(formatDateTime('not-a-date')).toBe('-')
   })
   it('returns localized string for valid date', () => {
-    expect(formatDate('2026-01-01T00:00:00Z')).not.toBe('-')
+    expect(formatDateTime('2026-01-01T00:00:00Z')).not.toBe('-')
+  })
+})
+
+describe('formatShortDate', () => {
+  it('returns em dash for falsy or invalid', () => {
+    expect(formatShortDate(null)).toBe('—')
+    expect(formatShortDate('nope')).toBe('—')
+  })
+  // Derive the locale's own year token so assertions hold regardless of locale/numerals.
+  const yearToken = (d: Date) => new Intl.DateTimeFormat(undefined, { year: 'numeric' }).format(d)
+  it('omits the year for the current year', () => {
+    const now = new Date()
+    const out = formatShortDate(new Date(now.getFullYear(), 5, 23, 12))
+    expect(out).not.toContain(yearToken(now))
+  })
+  it('includes the year for other years', () => {
+    const other = new Date(2020, 5, 23, 12)
+    expect(formatShortDate(other)).toContain(yearToken(other))
+  })
+})
+
+describe('timeAgo', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-01T12:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  it('returns empty string for falsy or invalid', () => {
+    expect(timeAgo(null)).toBe('')
+    expect(timeAgo('nope')).toBe('')
+  })
+  it('returns "just now" under a minute', () => {
+    expect(timeAgo('2026-04-01T11:59:30Z')).toBe('just now')
+  })
+  it('returns minutes, hours, and days', () => {
+    expect(timeAgo('2026-04-01T11:55:00Z')).toBe('5m ago')
+    expect(timeAgo('2026-04-01T09:00:00Z')).toBe('3h ago')
+    expect(timeAgo('2026-03-30T12:00:00Z')).toBe('2d ago')
   })
 })
 

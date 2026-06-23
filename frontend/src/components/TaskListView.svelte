@@ -2,6 +2,7 @@
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import StatusBadge from './StatusBadge.svelte'
+  import { formatShortDate } from '../lib/dates.js'
 
   interface Props {
     tasks: Task[]
@@ -54,7 +55,7 @@
           </td>
           <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
           <td class="hidden px-4 py-2 text-surface-400 text-xs lg:table-cell">
-            {t.updatedAt ? new Date(t.updatedAt).toLocaleDateString() : '—'}
+            {formatShortDate(t.updatedAt)}
           </td>
         </tr>
       {/each}
