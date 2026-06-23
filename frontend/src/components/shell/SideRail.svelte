@@ -20,7 +20,7 @@
   interface NavItem {
     kind: string[]
     label: string
-    icon: Component
+    icon: Component<{ size?: number }>
     title?: string
     onclick: () => void
   }
