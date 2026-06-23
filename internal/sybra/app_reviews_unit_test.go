@@ -456,3 +456,29 @@ func TestMonitoredPRs(t *testing.T) {
 		})
 	}
 }
+
+func TestHasReviewTask_ScopedByProject(t *testing.T) {
+	r := &ReviewHandler{}
+	existing := []task.Task{
+		{ProjectID: "org/a", PRNumber: 42, Tags: []string{"review"}},
+		{ProjectID: "org/a", PRNumber: 7, Tags: []string{"backend"}}, // not a review task
+	}
+	tests := []struct {
+		name      string
+		projectID string
+		prNumber  int
+		want      bool
+	}{
+		{"same project + number is a duplicate", "org/a", 42, true},
+		{"same number, different project is not", "org/b", 42, false},
+		{"same project, different number is not", "org/a", 99, false},
+		{"matching number without review tag is not", "org/a", 7, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := r.hasReviewTask(existing, tt.projectID, tt.prNumber); got != tt.want {
+				t.Errorf("hasReviewTask(%q, %d) = %v, want %v", tt.projectID, tt.prNumber, got, tt.want)
+			}
+		})
+	}
+}
