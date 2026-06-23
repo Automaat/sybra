@@ -217,14 +217,18 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 		m.logger.Warn("review.worktree.fetch", "project", proj.ID, "err", err)
 	}
 
-	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
-	if err != nil {
-		return "", fmt.Errorf("fetch pr branch: %w", err)
-	}
-
 	wtPath := m.PathFor(t)
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		return wtPath, nil
+	}
+
+	// The branch name is only a log annotation now (the checkout uses the PR
+	// head ref below), so a transient gh failure must not block worktree
+	// creation.
+	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
+	if err != nil {
+		m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", err)
+		branch = ""
 	}
 
 	// Check out the PR head via refs/pull/<N>/head rather than
