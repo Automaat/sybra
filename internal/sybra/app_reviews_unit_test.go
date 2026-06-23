@@ -9,8 +9,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // TestPRMonitorEligible exercises the scan predicate used by the PR monitor
@@ -494,6 +496,89 @@ func TestTriageReviewSmall(t *testing.T) {
 					tt.additions, tt.files, got, tt.wantSmall)
 			}
 		})
+	}
+}
+
+// TestPrepareWorktree_CircuitBreaker verifies the stateful failure counter:
+// each call that fails worktree creation increments a per-task counter, and
+// once that counter reaches wtFailureLimit the task is escalated to
+// human-required and the counter is reset.
+func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	// Create a task with a project_id; PrepareForTask will fail immediately
+	// because "owner/repo" is not registered in the project store.
+	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projID := "owner/repo"
+	tk, err = tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(projID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projStore, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := worktree.New(worktree.Config{
+		WorktreesDir: filepath.Join(tmp, "worktrees"),
+		Projects:     projStore,
+		Tasks:        tasks,
+		Logger:       slog.New(slog.DiscardHandler),
+		LogsDir:      filepath.Join(tmp, "logs"),
+	})
+
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+		worktrees:     wt,
+		wtFailures:    make(map[string]int),
+	}
+
+	issue := github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: tk.ID,
+		PR:     github.PullRequest{Number: 1, HeadRefName: "feat/x"},
+	}
+
+	// Failures 1–(wtFailureLimit-1): return ("", false) without escalating.
+	for i := range wtFailureLimit - 1 {
+		_, ok := r.prepareWorktree(tk, issue)
+		if ok {
+			t.Fatalf("call %d: want ok=false on worktree error", i+1)
+		}
+		got, err := tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: task escalated too early (want %d failures before trip)", i+1, wtFailureLimit)
+		}
+	}
+
+	// wtFailureLimit-th failure opens the circuit and escalates the task.
+	_, ok := r.prepareWorktree(tk, issue)
+	if ok {
+		t.Fatal("circuit-open call: want ok=false")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q after circuit break, want human-required", got.Status)
+	}
+	// Counter must be deleted so the next task start doesn't carry stale state.
+	if n := r.wtFailures[tk.ID]; n != 0 {
+		t.Fatalf("wtFailures[%s] = %d after circuit trip, want 0", tk.ID, n)
 	}
 }
 

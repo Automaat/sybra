@@ -42,6 +42,9 @@ type ReviewHandler struct {
 	// re-dispatched to pr-fix when CI fails. nil = renovate disabled.
 	renovatePRsFn       func() []github.PullRequest
 	transientFetchFails int
+	// wtFailures tracks consecutive worktree-creation failures per task ID.
+	// Once a task hits wtFailureLimit, it is escalated to human-required.
+	wtFailures map[string]int
 }
 
 func newReviewHandler(
@@ -63,6 +66,7 @@ func newReviewHandler(
 		prTracker:     prTracker,
 		worktrees:     worktrees,
 		renovatePRsFn: renovatePRsFn,
+		wtFailures:    make(map[string]int),
 	}
 }
 
