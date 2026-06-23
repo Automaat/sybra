@@ -13,6 +13,7 @@ import { projectStore } from '../stores/projects.svelte.js'
 import { notificationStore } from '../stores/notifications.svelte.js'
 import { bgopStore } from '../stores/bgops.svelte.js'
 import { connectionStore } from '../stores/connection.svelte.js'
+import { reviewStore } from '../stores/reviews.svelte.js'
 
 export type DegradedWarning = { subsystem: string; reason: string }
 
@@ -71,6 +72,9 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
   agentStore.startPolling()
   projectStore.load()
   projectStore.startPolling()
+  // Seed PR data so project cards show open-PR counts before the GitHub page is
+  // ever opened. The GitHub page owns the live polling.
+  reviewStore.load()
 
   const reloadTasks = debounced(() => taskStore.load(), 150)
   const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
