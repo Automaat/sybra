@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 import StatusPicker from './StatusPicker.svelte'
-import { STATUS_OPTIONS } from '../lib/statuses.js'
+import { CORE_STATUS_OPTIONS } from '../lib/statuses.js'
 
 afterEach(() => {
   cleanup()
 })
 
 describe('StatusPicker', () => {
-  it('renders all status options', () => {
+  it('renders the core status options', () => {
     render(StatusPicker, { props: { currentStatus: 'todo', onpick: vi.fn(), onclose: vi.fn() } })
-    for (const opt of STATUS_OPTIONS) {
+    for (const opt of CORE_STATUS_OPTIONS) {
       expect(screen.getByText(opt.label)).toBeDefined()
     }
   })
@@ -47,42 +47,42 @@ describe('StatusPicker', () => {
 
   it('navigates down with ArrowDown key from first option', async () => {
     const onpick = vi.fn()
-    // Start at index 0 ('new') so ArrowDown goes to index 1
-    render(StatusPicker, { props: { currentStatus: STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
+    // Start at index 0 ('todo') so ArrowDown goes to index 1
+    render(StatusPicker, { props: { currentStatus: CORE_STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
     await fireEvent.keyDown(window, { key: 'ArrowDown' })
     await fireEvent.keyDown(window, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith(STATUS_OPTIONS[1].value)
+    expect(onpick).toHaveBeenCalledWith(CORE_STATUS_OPTIONS[1].value)
   })
 
   it('navigates down with j key', async () => {
     const onpick = vi.fn()
-    // Start at index 0 ('new') so j goes to index 1
-    render(StatusPicker, { props: { currentStatus: STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
+    // Start at index 0 ('todo') so j goes to index 1
+    render(StatusPicker, { props: { currentStatus: CORE_STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
     await fireEvent.keyDown(window, { key: 'j' })
     await fireEvent.keyDown(window, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith(STATUS_OPTIONS[1].value)
+    expect(onpick).toHaveBeenCalledWith(CORE_STATUS_OPTIONS[1].value)
   })
 
   it('navigates up with ArrowUp key and does not go below 0', async () => {
     const onpick = vi.fn()
-    render(StatusPicker, { props: { currentStatus: STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
+    render(StatusPicker, { props: { currentStatus: CORE_STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
     await fireEvent.keyDown(window, { key: 'ArrowUp' })
     await fireEvent.keyDown(window, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith(STATUS_OPTIONS[0].value)
+    expect(onpick).toHaveBeenCalledWith(CORE_STATUS_OPTIONS[0].value)
   })
 
   it('navigates up with k key', async () => {
     const onpick = vi.fn()
     // Start at index 2 so k goes to index 1
-    render(StatusPicker, { props: { currentStatus: STATUS_OPTIONS[2].value, onpick, onclose: vi.fn() } })
+    render(StatusPicker, { props: { currentStatus: CORE_STATUS_OPTIONS[2].value, onpick, onclose: vi.fn() } })
     await fireEvent.keyDown(window, { key: 'k' })
     await fireEvent.keyDown(window, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith(STATUS_OPTIONS[1].value)
+    expect(onpick).toHaveBeenCalledWith(CORE_STATUS_OPTIONS[1].value)
   })
 
   it('does not navigate past last option with ArrowDown', async () => {
     const onpick = vi.fn()
-    const lastStatus = STATUS_OPTIONS[STATUS_OPTIONS.length - 1].value
+    const lastStatus = CORE_STATUS_OPTIONS[CORE_STATUS_OPTIONS.length - 1].value
     render(StatusPicker, { props: { currentStatus: lastStatus, onpick, onclose: vi.fn() } })
     for (let i = 0; i < 5; i++) {
       await fireEvent.keyDown(window, { key: 'ArrowDown' })
@@ -93,9 +93,9 @@ describe('StatusPicker', () => {
 
   it('selects current option with Enter key', async () => {
     const onpick = vi.fn()
-    // Start at first option ('new')
-    render(StatusPicker, { props: { currentStatus: STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
+    // Start at first option ('todo')
+    render(StatusPicker, { props: { currentStatus: CORE_STATUS_OPTIONS[0].value, onpick, onclose: vi.fn() } })
     await fireEvent.keyDown(window, { key: 'Enter' })
-    expect(onpick).toHaveBeenCalledWith(STATUS_OPTIONS[0].value)
+    expect(onpick).toHaveBeenCalledWith(CORE_STATUS_OPTIONS[0].value)
   })
 })

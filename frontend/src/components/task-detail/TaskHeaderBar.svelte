@@ -5,7 +5,7 @@
   import { agentStore } from '../../stores/agents.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { StartReview, StartFixReview } from '$lib/api'
-  import { STATUS_OPTIONS, STATUS_MAP } from '../../lib/statuses.js'
+  import { statusOptionsFor, STATUS_MAP, coreStatus } from '../../lib/statuses.js'
 
   interface Props {
     task: Task
@@ -14,7 +14,7 @@
 
   const { task, ondelete }: Props = $props()
 
-  const statusOptions = STATUS_OPTIONS
+  const statusOptions = $derived(statusOptionsFor(task.status))
 
   // Statuses that conflict with a running agent
   const AGENT_BLOCKED_STATUSES = new Set(['new', 'todo', 'done'])
@@ -228,9 +228,9 @@
     <select
       bind:this={statusSelectRef}
       data-testid="task-status-select"
-      class="cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-semibold transition-opacity hover:opacity-80 {STATUS_MAP[task.status]?.badgeClasses ?? 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}"
+      class="cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-semibold transition-opacity hover:opacity-80 {STATUS_MAP[coreStatus(task.status)]?.badgeClasses ?? 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'}"
       style="appearance: auto"
-      value={task.status}
+      value={coreStatus(task.status)}
       onchange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
       title="Click to change status"
     >

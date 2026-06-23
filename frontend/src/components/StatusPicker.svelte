@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { STATUS_OPTIONS } from '../lib/statuses.js'
+  import { statusOptionsFor, coreStatus } from '../lib/statuses.js'
 
   interface Props {
     currentStatus: string
@@ -9,14 +9,21 @@
 
   const { currentStatus, onpick, onclose }: Props = $props()
 
-  let selectedIdx = $state(STATUS_OPTIONS.findIndex(s => s.value === currentStatus))
+  const options = $derived(statusOptionsFor(currentStatus))
+
+  // Highlight the core status the current (possibly granular) status rolls up to.
+  function initialIdx(): number {
+    const opts = statusOptionsFor(currentStatus)
+    return Math.max(0, opts.findIndex((s) => s.value === coreStatus(currentStatus)))
+  }
+  let selectedIdx = $state(initialIdx())
 
   $effect(() => {
     function handleKeydown(e: KeyboardEvent) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onclose(); return }
       if (e.key === 'ArrowDown' || e.key === 'j') {
         e.preventDefault()
-        selectedIdx = Math.min(selectedIdx + 1, STATUS_OPTIONS.length - 1)
+        selectedIdx = Math.min(selectedIdx + 1, options.length - 1)
         return
       }
       if (e.key === 'ArrowUp' || e.key === 'k') {
@@ -26,7 +33,7 @@
       }
       if (e.key === 'Enter') {
         e.preventDefault()
-        onpick(STATUS_OPTIONS[selectedIdx].value)
+        onpick(options[selectedIdx].value)
         return
       }
     }
@@ -51,7 +58,7 @@
       <p class="text-xs font-semibold uppercase tracking-wider text-surface-400">Change Status <kbd class="ml-1 rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">S</kbd></p>
     </div>
     <ul class="py-1">
-      {#each STATUS_OPTIONS as opt, i}
+      {#each options as opt, i}
         <li>
           <button
             type="button"
@@ -59,7 +66,7 @@
             onclick={() => onpick(opt.value)}
           >
             <span>{opt.label}</span>
-            {#if opt.value === currentStatus}
+            {#if opt.value === coreStatus(currentStatus)}
               <span class="text-xs text-surface-400">current</span>
             {/if}
           </button>
