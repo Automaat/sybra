@@ -50,6 +50,13 @@ describe('SideRail', () => {
     expect(screen.getByText('S')).toBeDefined()
   })
 
+  it('renders the nav group headers', () => {
+    render(SideRail)
+    for (const group of ['Work', 'Sessions', 'Build', 'Data']) {
+      expect(screen.getByText(group)).toBeDefined()
+    }
+  })
+
   it('calls navStore.reset when Board clicked', async () => {
     const { navStore } = await import('../../lib/navigation.svelte.js')
     render(SideRail)
