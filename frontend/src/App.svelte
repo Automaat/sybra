@@ -34,8 +34,8 @@
     },
   }
 
-  // Focus mode persists across sessions (localStorage) but the board view mode
-  // does not (sessionStorage), so re-apply the list default once on startup.
+  // Focus mode leads with the list view, so re-apply it on startup since the
+  // persisted view mode may be board.
   if (focusModeStore.enabled) viewModeStore.set('list')
 
   let degradedWarnings = $state<DegradedWarning[]>([])

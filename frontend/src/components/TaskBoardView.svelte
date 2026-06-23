@@ -31,6 +31,28 @@
   }: Props = $props()
 
   let dragOverStatus = $state<string | null>(null)
+  // Empty desktop columns collapse to a thin rail; clicking one expands it so
+  // tasks can still be added there.
+  let expandedEmpty = $state<Set<string>>(new Set())
+
+  function expandEmpty(status: string) {
+    expandedEmpty = new Set(expandedEmpty).add(status)
+  }
+
+  // Drop the expand override once a column has tasks, so it re-collapses to a
+  // thin rail if it later empties out again (rather than staying expanded).
+  $effect(() => {
+    let changed = false
+    const next = new Set(expandedEmpty)
+    for (const status of expandedEmpty) {
+      const col = visibleColumns.find((c) => c.status === status)
+      if (col && columnTasks(col).length > 0) {
+        next.delete(status)
+        changed = true
+      }
+    }
+    if (changed) expandedEmpty = next
+  })
 
   async function handleDrop(e: DragEvent, targetStatus: string) {
     e.preventDefault()
@@ -45,6 +67,24 @@
   {#each visibleColumns as col}
     {@const tasks = columnTasks(col)}
     {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
+    {@const isThin = viewport.isDesktop && tasks.length === 0 && !expandedEmpty.has(col.status)}
+    {#if isThin}
+      <!-- Thin rail for an empty desktop column — stays a drop target; click to expand. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <button
+        type="button"
+        data-col-status={col.status}
+        onclick={() => expandEmpty(col.status)}
+        ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
+        ondragleave={() => { dragOverStatus = null }}
+        ondrop={(e) => handleDrop(e, col.status)}
+        title="{col.label} (empty) — click to expand"
+        class="hidden shrink-0 flex-col items-center gap-2 rounded-lg border-t-4 bg-surface-100 py-3 transition-colors hover:bg-surface-200 dark:bg-surface-900 dark:hover:bg-surface-800 md:flex md:w-10 {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      >
+        <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-[10px] font-medium text-surface-400 dark:bg-surface-700">0</span>
+        <h2 class="text-xs font-medium text-surface-400 [writing-mode:vertical-rl]">{col.label}</h2>
+      </button>
+    {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       data-col-status={col.status}
@@ -88,5 +128,6 @@
         </div>
       {/if}
     </div>
+    {/if}
   {/each}
 </div>

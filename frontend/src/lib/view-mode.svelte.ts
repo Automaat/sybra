@@ -5,12 +5,14 @@ const STORAGE_KEY = 'taskViewMode'
 
 function loadStored(): ViewMode {
   try {
-    const v = sessionStorage.getItem(STORAGE_KEY)
+    const v = localStorage.getItem(STORAGE_KEY)
     if (v === 'list' || v === 'board' || v === 'timeline') return v
   } catch {
-    // sessionStorage unavailable (SSR / restricted context)
+    // localStorage unavailable (SSR / restricted context)
   }
-  return 'board'
+  // List is the most scannable surface and stays useful even when the board's
+  // columns are mostly empty, so it's the default first paint.
+  return 'list'
 }
 
 function createViewModeStore() {
@@ -23,7 +25,7 @@ function createViewModeStore() {
     set(v: ViewMode): void {
       mode = v
       try {
-        sessionStorage.setItem(STORAGE_KEY, v)
+        localStorage.setItem(STORAGE_KEY, v)
       } catch {
         // ignore
       }
@@ -32,7 +34,7 @@ function createViewModeStore() {
       const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length]
       mode = next
       try {
-        sessionStorage.setItem(STORAGE_KEY, next)
+        localStorage.setItem(STORAGE_KEY, next)
       } catch {
         // ignore
       }

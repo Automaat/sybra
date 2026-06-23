@@ -28,6 +28,7 @@ test.describe('Provider smoke: board', { tag: '@integration' }, () => {
     test(`board loads [${spec.provider}]`, async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
+      await page.getByRole('button', { name: 'Board view' }).click()
       await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
       await expect(page.getByRole('heading', { name: 'Todo' })).toBeVisible()
       await expect(page.getByRole('heading', { name: 'In Progress' })).toBeVisible()

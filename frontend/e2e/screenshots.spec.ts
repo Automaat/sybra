@@ -39,6 +39,8 @@ async function applyTheme(context: BrowserContext, theme: 'light' | 'dark') {
 async function goToTaskList(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
+  // List is the default view now; switch to the board for these column-based shots.
+  await page.getByRole('button', { name: 'Board view' }).click()
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
 }
 

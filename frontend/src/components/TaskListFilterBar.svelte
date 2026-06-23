@@ -94,6 +94,7 @@
     <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">
       <button
         type="button"
+        aria-label="List view"
         class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'list' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
         onclick={() => pickViewMode('list')}
       >
@@ -102,6 +103,7 @@
       </button>
       <button
         type="button"
+        aria-label="Board view"
         class="flex items-center gap-1 border-x border-surface-300 px-2 py-1 text-xs font-medium transition-colors dark:border-surface-700 {viewMode === 'board' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
         onclick={() => pickViewMode('board')}
       >
@@ -110,6 +112,7 @@
       </button>
       <button
         type="button"
+        aria-label="Timeline view"
         class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'timeline' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
         onclick={() => pickViewMode('timeline')}
       >

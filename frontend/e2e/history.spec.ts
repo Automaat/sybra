@@ -123,6 +123,7 @@ test.describe('TaskDetail agent history', () => {
     await page.goto('/')
     // Navigate into the fixture task via the Board → task card flow.
     await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
+    await page.getByRole('button', { name: 'Board view' }).click()
     await page.locator('button:has(h3)', { hasText: 'history fixture task' }).first().click()
 
     // Agent history section must be present with the fixture agent.
