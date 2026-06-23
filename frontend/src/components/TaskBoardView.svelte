@@ -70,7 +70,6 @@
     {@const isThin = viewport.isDesktop && tasks.length === 0 && !expandedEmpty.has(col.status)}
     {#if isThin}
       <!-- Thin rail for an empty desktop column — stays a drop target; click to expand. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button
         type="button"
         data-col-status={col.status}
@@ -82,7 +81,7 @@
         class="hidden shrink-0 flex-col items-center gap-2 rounded-lg border-t-4 bg-surface-100 py-3 transition-colors hover:bg-surface-200 dark:bg-surface-900 dark:hover:bg-surface-800 md:flex md:w-10 {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
       >
         <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-[10px] font-medium text-surface-400 dark:bg-surface-700">0</span>
-        <h2 class="text-xs font-medium text-surface-400 [writing-mode:vertical-rl]">{col.label}</h2>
+        <span role="heading" aria-level="2" class="text-xs font-medium text-surface-400 [writing-mode:vertical-rl]">{col.label}</span>
       </button>
     {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
