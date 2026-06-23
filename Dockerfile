@@ -70,7 +70,7 @@ RUN curl -sSfL https://klaudiu.sh/install.sh \
 
 # --- Layer C: node CLIs (claude code + codex), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.183
+ARG CLAUDE_CODE_VERSION=2.1.185
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.139.0
 RUN npm install -g \
@@ -90,7 +90,7 @@ RUN npm install -g \
 # own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
 #
 # renovate: datasource=github-releases depName=jdx/mise
-ARG MISE_VERSION=v2026.6.12
+ARG MISE_VERSION=v2026.6.13
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) MISE_ARCH=x64 ;; \
