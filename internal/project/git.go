@@ -154,6 +154,20 @@ func FetchOrigin(barePath string) error {
 	return executil.Run(barePath, "git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
+// FetchPRHead fetches a pull request's head commit into a stable local ref and
+// returns that ref. GitHub exposes every PR's head at refs/pull/<N>/head on the
+// upstream remote — including PRs opened from forks, whose head branch never
+// lands under refs/remotes/origin/*. Checking out the returned ref therefore
+// works where refs/remotes/origin/<branch> does not.
+func FetchPRHead(barePath string, prNumber int) (string, error) {
+	localRef := fmt.Sprintf("refs/remotes/origin/pr/%d", prNumber)
+	refspec := fmt.Sprintf("+refs/pull/%d/head:%s", prNumber, localRef)
+	if err := executil.Run(barePath, "git", "fetch", "origin", refspec); err != nil {
+		return "", err
+	}
+	return localRef, nil
+}
+
 // SyncLocalBranch fast-forwards refs/heads/<branch> in the bare clone to match
 // refs/remotes/origin/<branch> if the local branch is strictly behind the remote.
 // If the local branch has commits ahead of (or diverged from) origin, it is left

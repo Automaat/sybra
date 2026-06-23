@@ -227,7 +227,13 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 		return wtPath, nil
 	}
 
-	ref := "refs/remotes/origin/" + branch
+	// Check out the PR head via refs/pull/<N>/head rather than
+	// refs/remotes/origin/<branch>: a fork PR's head branch never lands under
+	// origin, so the latter fails with "invalid reference".
+	ref, err := project.FetchPRHead(proj.ClonePath, t.PRNumber)
+	if err != nil {
+		return "", fmt.Errorf("fetch pr head: %w", err)
+	}
 	if err := project.CreateWorktreeDetached(proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
