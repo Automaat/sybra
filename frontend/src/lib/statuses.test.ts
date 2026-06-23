@@ -62,7 +62,7 @@ describe('statusOptionsFor', () => {
     expect(statusOptionsFor('in-progress')).toBe(CORE_STATUS_OPTIONS)
   })
 
-  it('returns just the core options for a folded granular status', () => {
+  it('returns just the core options for a folded or terminal status', () => {
     expect(statusOptionsFor('blocked')).toBe(CORE_STATUS_OPTIONS)
     expect(statusOptionsFor('cancelled')).toBe(CORE_STATUS_OPTIONS)
   })

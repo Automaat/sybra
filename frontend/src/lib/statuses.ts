@@ -20,6 +20,11 @@ export interface StatusMeta {
   pillClasses: string
 }
 
+export type StatusOption<T extends string = string> = {
+  value: T
+  label: string
+}
+
 /** All valid statuses — mirrors Go internal/task/model.go */
 export const ALL_STATUSES: StatusMeta[] = [
   {
@@ -159,10 +164,11 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 ]
 
 /**
- * Core user-facing status set: the active board columns plus `done`. Granular
- * states (new, plan-review, ready-review, test-plan-review, blocked, cancelled)
- * are internal/derived — set by automations, not picked by hand. Users choose
- * from this small set so a task's status always lines up with a board column.
+ * Core user-facing status set: the active board columns plus the terminal
+ * states (`done`, `cancelled`). Granular states (new, plan-review,
+ * ready-review, test-plan-review, blocked) are internal/derived — set by
+ * automations, not picked by hand. Users choose from this small set so a
+ * task's status always lines up with a board column.
  */
 export const CORE_STATUSES: TaskStatus[] = [
   ...BOARD_COLUMNS.map((c) => c.status),
@@ -170,10 +176,16 @@ export const CORE_STATUSES: TaskStatus[] = [
   'cancelled',
 ]
 
+const CORE_STATUS_SET: ReadonlySet<TaskStatus> = new Set(CORE_STATUSES)
+
 /** Core statuses as dropdown/picker options. */
-export const CORE_STATUS_OPTIONS: { value: TaskStatus; label: string }[] = CORE_STATUSES.map(
+export const CORE_STATUS_OPTIONS: StatusOption<TaskStatus>[] = CORE_STATUSES.map(
   (value) => ({ value, label: STATUS_MAP[value].label }),
 )
+
+function isCoreStatus(status: string): status is TaskStatus {
+  return CORE_STATUS_SET.has(status as TaskStatus)
+}
 
 /** Granular status → the core (column) status it rolls up to. */
 const STATUS_TO_CORE: Record<string, TaskStatus> = (() => {
@@ -186,8 +198,10 @@ const STATUS_TO_CORE: Record<string, TaskStatus> = (() => {
 })()
 
 /** Roll any status up to its core (column) status; terminal states map to self. */
-export function coreStatus(status: string): TaskStatus {
-  return STATUS_TO_CORE[status] ?? (status as TaskStatus)
+export function coreStatus(status: TaskStatus): TaskStatus
+export function coreStatus(status: string): string
+export function coreStatus(status: string): string {
+  return STATUS_TO_CORE[status] ?? status
 }
 
 /**
@@ -196,8 +210,10 @@ export function coreStatus(status: string): TaskStatus {
  * unknown/legacy status), its own value is appended so the control never
  * mislabels or silently reassigns it.
  */
-export function statusOptionsFor(current: string): { value: TaskStatus; label: string }[] {
+export function statusOptionsFor(current: TaskStatus): StatusOption<TaskStatus>[]
+export function statusOptionsFor(current: string): StatusOption<string>[]
+export function statusOptionsFor(current: string): StatusOption<string>[] {
   const core = coreStatus(current)
-  if (CORE_STATUSES.includes(core)) return CORE_STATUS_OPTIONS
+  if (isCoreStatus(core)) return CORE_STATUS_OPTIONS
   return [...CORE_STATUS_OPTIONS, { value: core, label: STATUS_MAP[core]?.label ?? core }]
 }
