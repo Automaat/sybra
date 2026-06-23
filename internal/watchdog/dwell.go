@@ -33,13 +33,20 @@ func dwellBudget(tags []string) time.Duration {
 }
 
 // hasBlocker reports whether the task body declares an upstream blocker via a
-// "## Blocked by" heading or an inline "Blocked by #NNN" reference. Tasks with
+// "## Blocked by" heading or a standalone "Blocked by #NNN" line. Tasks with
 // a recognised blocker are skipped by the dwell watchdog — they are
 // intentionally idle and should not be escalated until the blocker clears.
+//
+// Matching is line-anchored to avoid false positives from prose that contains
+// the phrase mid-sentence (e.g. "it depends on Blocked by #123").
 func hasBlocker(body string) bool {
-	lower := strings.ToLower(body)
-	return strings.Contains(lower, "## blocked by") ||
-		strings.Contains(lower, "blocked by #")
+	for line := range strings.SplitSeq(body, "\n") {
+		trimmed := strings.TrimSpace(strings.ToLower(line))
+		if strings.HasPrefix(trimmed, "## blocked by") || strings.HasPrefix(trimmed, "blocked by #") {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Watchdog) checkDwell(now time.Time) {

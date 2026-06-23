@@ -18,7 +18,8 @@ func TestHasBlocker(t *testing.T) {
 		{"no blocker", "## Description\nDo the thing.", false},
 		{"h2 blocked by", "## Blocked by\n\nhttps://github.com/org/repo/issues/42", true},
 		{"h2 blocked by lowercase", "## blocked by\n\nsome text", true},
-		{"inline blocked by issue ref", "depends on Blocked by #123", true},
+		{"inline blocked by standalone line", "Blocked by #123\nsome other text", true},
+		{"inline blocked by prose — not a blocker", "depends on Blocked by #123", false},
 		{"partial match no hash", "## Description\nblocked by upstream change", false},
 		{"mid-body heading", "## Summary\nsome work\n\n## Blocked by\n\n#99", true},
 	}
