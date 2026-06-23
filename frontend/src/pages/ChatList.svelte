@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { timeAgo } from '$lib/dates.js'
-  import { agentDisplayName } from '$lib/agent-name.js'
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
-  import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
+  import AgentListRow from '../components/AgentListRow.svelte'
   import NewChatDialog from '../components/NewChatDialog.svelte'
   import { MessageCircle } from '@lucide/svelte'
 
@@ -29,11 +27,6 @@
   const interactiveAgents = $derived(
     agentStore.list.filter((a: Agent) => a.mode === 'interactive'),
   )
-
-  function agentPhaseConfig(a: Agent) {
-    return PHASE_CONFIG[getAgentPhase(a.state, a.escalationReason, undefined, a.awaitingApproval)]
-  }
-
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
@@ -60,43 +53,9 @@
       </button>
     </div>
   {:else}
-    <div class="flex flex-col gap-2">
+    <div class="flex flex-col gap-1.5">
       {#each interactiveAgents as a (a.id)}
-        <button
-          type="button"
-          class="flex items-center gap-3 rounded-lg border border-surface-200 bg-white p-4 text-left transition-colors
-            hover:bg-surface-50 dark:border-surface-700 dark:bg-surface-800 dark:hover:bg-surface-750"
-          onclick={() => onselect(a.id)}
-        >
-          <!-- Status dot -->
-          <span class="h-2.5 w-2.5 shrink-0 rounded-full {agentPhaseConfig(a).dotClasses}
-            {agentPhaseConfig(a).animate ? 'animate-pulse' : ''}"></span>
-
-          <!-- Content -->
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
-              <span class="truncate text-sm font-medium text-surface-900 dark:text-surface-100">
-                {agentDisplayName(a)}
-              </span>
-              {#if a.project}
-                <span class="shrink-0 rounded bg-surface-100 px-1.5 py-0.5 text-[10px] text-surface-500 dark:bg-surface-700">
-                  {a.project}
-                </span>
-              {/if}
-            </div>
-            <p class="mt-0.5 text-xs text-surface-500">
-              {agentPhaseConfig(a).label}
-            </p>
-          </div>
-
-          <!-- Meta -->
-          <div class="flex shrink-0 flex-col items-end gap-1">
-            {#if a.costUsd > 0}
-              <span class="text-xs text-surface-500">${a.costUsd.toFixed(2)}</span>
-            {/if}
-            <span class="text-[10px] text-surface-400">{timeAgo(a.startedAt)}</span>
-          </div>
-        </button>
+        <AgentListRow agent={a} onclick={() => onselect(a.id)} />
       {/each}
     </div>
   {/if}

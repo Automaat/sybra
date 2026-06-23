@@ -77,14 +77,17 @@ describe('AgentList', () => {
     expect(screen.getByText('Start an agent from a task to see it here')).toBeDefined()
   })
 
-  it('renders agent cards when agents exist', () => {
+  it('renders agents in a dense list (not a card grid)', () => {
     const agents = [
       makeAgent({ id: 'a1', state: 'running' }),
       makeAgent({ id: 'a2', state: 'idle' }),
     ]
     mockByState.mockReturnValue(agents)
-    render(AgentList, { props: { onselect: vi.fn() } })
+    const { container } = render(AgentList, { props: { onselect: vi.fn() } })
     expect(screen.queryByText('No agents')).toBeNull()
     expect(mockByState).toHaveBeenCalledWith('all')
+    // Shared list layout: a vertical flex stack of rows, not a 3-col grid.
+    expect(container.querySelector('.flex.flex-col.gap-1\\.5')).not.toBeNull()
+    expect(container.querySelector('.grid')).toBeNull()
   })
 })
