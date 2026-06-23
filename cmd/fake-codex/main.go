@@ -74,6 +74,10 @@ func runExec() {
 		emitAgentMessage("Triaging task...")
 		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
 		emitTurnCompleted(100, 20)
+	case "triage_to_planning_noplan":
+		emitAgentMessage("Triaging task...")
+		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,noplan")
+		emitTurnCompleted(100, 20)
 	case "plan_critic_success":
 		runCodexPlanCriticSuccess(taskID)
 	case "plan_critic_no_save":
