@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { focusModeStore } from './focus-mode.svelte.js'
 
 describe('focusModeStore', () => {
@@ -7,8 +7,18 @@ describe('focusModeStore', () => {
     focusModeStore.set(false)
   })
 
-  it('defaults to disabled', () => {
-    expect(focusModeStore.enabled).toBe(false)
+  it('initializes disabled when storage is empty', async () => {
+    vi.resetModules()
+    localStorage.removeItem('focusMode')
+    const { focusModeStore: fresh } = await import('./focus-mode.svelte.js')
+    expect(fresh.enabled).toBe(false)
+  })
+
+  it('initializes enabled when storage says so', async () => {
+    vi.resetModules()
+    localStorage.setItem('focusMode', 'true')
+    const { focusModeStore: fresh } = await import('./focus-mode.svelte.js')
+    expect(fresh.enabled).toBe(true)
   })
 
   it('set() updates the flag and persists', () => {
