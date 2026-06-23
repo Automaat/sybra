@@ -12,7 +12,40 @@ const (
 	ghLowBudgetThreshold  = 150
 	ghOptionalCooldown    = 30 * time.Second
 	ghFallbackRateBackoff = 1 * time.Minute
+	ghMaxRetries          = 2
+	ghRetryBaseBackoff    = 500 * time.Millisecond
 )
+
+// ghRetrySleep waits before a transient-error retry (backoff grows with the
+// attempt). A package var so tests can stub out the real delay.
+var ghRetrySleep = func(attempt int) {
+	time.Sleep(time.Duration(attempt+1) * ghRetryBaseBackoff)
+}
+
+// isTransientGHError reports whether a gh api failure looks like a transient
+// gateway/network blip worth retrying — a 502/503/504 gateway response, a
+// connection timeout, or a dropped stream — as opposed to a 4xx/auth error, a
+// plain 500 (often a real server-side bug, not transient), or a rate limit.
+// Rate limits are deliberately excluded: the request gate already paces those
+// via notBefore backoff, and retrying them immediately would only make things
+// worse.
+func isTransientGHError(out []byte, err error) bool {
+	if err == nil || isRateLimitedMessage(string(out)) {
+		return false
+	}
+	msg := strings.ToLower(string(out))
+	for _, sig := range []string{
+		"http 502", "http 503", "http 504",
+		"operation timed out", "i/o timeout", "deadline exceeded",
+		"connection reset", "connection refused",
+		"stream error", "unexpected eof", "tls handshake",
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
 
 type ttlCache[T any] struct {
 	mu    sync.RWMutex
@@ -227,10 +260,38 @@ func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, er
 	cmdArgs = append(cmdArgs, "--include")
 	cmdArgs = append(cmdArgs, args...)
 
-	out, err := e.run(cmdArgs...)
-	resp := parseGHHTTPResponse(out)
-	ghGate.observe(resp, err)
+	// Retry transient gateway/network failures (502/503/504, timeouts,
+	// dropped streams), but only for reads: a write (--method
+	// POST/PUT/PATCH/DELETE) that returned a transient error may already have
+	// applied server-side, so retrying it could double-act.
+	write := isWriteRequest(args)
+	var resp ghHTTPResponse
+	var err error
+	for attempt := 0; ; attempt++ {
+		var out []byte
+		out, err = e.run(cmdArgs...)
+		resp = parseGHHTTPResponse(out)
+		ghGate.observe(resp, err)
+		if err == nil || write || attempt >= ghMaxRetries || !isTransientGHError(out, err) {
+			break
+		}
+		ghRetrySleep(attempt)
+	}
 	return resp, err
+}
+
+// isWriteRequest reports whether the gh api args specify a mutating HTTP
+// method, so the retry path can leave writes alone.
+func isWriteRequest(args []string) bool {
+	for i, a := range args {
+		if (a == "--method" || a == "-X") && i+1 < len(args) {
+			switch strings.ToUpper(args[i+1]) {
+			case "POST", "PUT", "PATCH", "DELETE":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func runtimeCacheEnabled(e execer) bool {
