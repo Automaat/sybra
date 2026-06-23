@@ -3,6 +3,7 @@
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
+  import { agentDisplayName } from '$lib/agent-name.js'
 
   interface Props {
     agents: Agent[]
@@ -35,6 +36,7 @@
       {@const linkedTask = a.taskId ? taskStore.tasks.get(a.taskId) : null}
       {@const phase = getAgentPhase(a.state, a.escalationReason, linkedTask?.status, a.awaitingApproval)}
       {@const config = PHASE_CONFIG[phase]}
+      {@const label = agentDisplayName(a, linkedTask?.title)}
       <button
         type="button"
         onclick={() => { onnavigate(a.id) }}
@@ -44,8 +46,8 @@
             : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
       >
         <span class="h-2 w-2 shrink-0 rounded-full {config.dotClasses} {config.animate ? 'animate-pulse-subtle' : ''}"></span>
-        <span class="min-w-0 flex-1 truncate leading-snug" title={linkedTask?.title ?? a.name ?? a.id}>
-          {linkedTask?.title ?? a.name ?? a.id}
+        <span class="min-w-0 flex-1 truncate leading-snug" title={label}>
+          {label}
         </span>
         {#if agentStore.stepTexts.get(a.id)}
           <span class="truncate text-[9px] italic text-surface-400 max-w-[80px]" title={agentStore.stepTexts.get(a.id)}>

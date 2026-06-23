@@ -6,6 +6,9 @@ import {
   agentPluginErrors,
 } from '../lib/events.js'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { taskStore } from '../stores/tasks.svelte.js'
+
+const mockTasks = taskStore.tasks as Map<string, unknown>
 
 const mockStop = vi.fn()
 const mockUpdateAgent = vi.fn()
@@ -74,6 +77,7 @@ describe('AgentDetail', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockAgents.clear()
+    mockTasks.clear()
     for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
   })
 
@@ -98,8 +102,19 @@ describe('AgentDetail', () => {
     })
   })
 
-  it('shows project name as title', async () => {
+  it('shows the session name as the title', async () => {
     mockAgents.set('agent-1', { ...mockAgent })
+    render(AgentDetail, {
+      props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      const heading = screen.getByRole('heading', { level: 1 })
+      expect(heading.textContent).toBe('test-session')
+    })
+  })
+
+  it('shows the project as the title when there is no name', async () => {
+    mockAgents.set('agent-1', { ...mockAgent, name: '' })
     render(AgentDetail, {
       props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
     })
@@ -109,15 +124,31 @@ describe('AgentDetail', () => {
     })
   })
 
-  it('falls back to agent id when project is empty', async () => {
-    mockAgents.set('agent-1', { ...mockAgent, project: '' })
+  it('shows a labelled session id when name, project and task are empty', async () => {
+    mockAgents.set('agent-1', { ...mockAgent, name: '', project: '', taskId: '' })
     render(AgentDetail, {
       props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
     })
     await vi.waitFor(() => {
       const heading = screen.getByRole('heading', { level: 1 })
-      expect(heading.textContent).toBe('agent-1')
+      expect(heading.textContent).toBe('Session agent-1')
     })
+  })
+
+  it('shows the task name once for a role-prefixed agent with a linked task', async () => {
+    // Review agent: name is `review:<task title>`, task linked. The heading is
+    // the task title; the role-stripped subtitle must not repeat it.
+    mockTasks.set('task-1', { id: 'task-1', title: 'Fix the auth bug' })
+    mockAgents.set('agent-1', { ...mockAgent, name: 'review:Fix the auth bug' })
+    render(AgentDetail, {
+      props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Fix the auth bug')
+    })
+    // Appears exactly once — no duplicate subtitle, no `review:` prefix anywhere.
+    expect(screen.getAllByText('Fix the auth bug')).toHaveLength(1)
+    expect(screen.queryByText('review:Fix the auth bug')).toBeNull()
   })
 
   it('shows Stop button when agent is running', async () => {
@@ -174,7 +205,7 @@ describe('AgentDetail', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('headless')).toBeDefined()
       expect(screen.getByText('external')).toBeDefined()
-      expect(screen.getByText('task-1')).toBeDefined()
+      expect(screen.getByText('View task →')).toBeDefined()
       expect(screen.getByText('$0.57')).toBeDefined()
       expect(screen.getByText('12345')).toBeDefined()
       expect(screen.getByText('sess-123')).toBeDefined()

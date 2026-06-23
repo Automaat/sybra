@@ -1,5 +1,6 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
+  import { agentDisplayName } from '$lib/agent-name.js'
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
@@ -75,7 +76,7 @@
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
               <span class="truncate text-sm font-medium text-surface-900 dark:text-surface-100">
-                {a.name || a.taskId || a.id}
+                {agentDisplayName(a)}
               </span>
               {#if a.project}
                 <span class="shrink-0 rounded bg-surface-100 px-1.5 py-0.5 text-[10px] text-surface-500 dark:bg-surface-700">
