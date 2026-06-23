@@ -18,6 +18,14 @@
   }
   let selectedIdx = $state(initialIdx())
 
+  // Picking the bucket the task is already in is a no-op — don't overwrite a
+  // granular status (e.g. blocked) with its rolled-up core (human-required)
+  // just because the user confirmed the highlighted "current" option.
+  function pick(value: string) {
+    if (value === coreStatus(currentStatus)) { onclose(); return }
+    onpick(value)
+  }
+
   $effect(() => {
     function handleKeydown(e: KeyboardEvent) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onclose(); return }
@@ -33,7 +41,7 @@
       }
       if (e.key === 'Enter') {
         e.preventDefault()
-        onpick(options[selectedIdx].value)
+        pick(options[selectedIdx].value)
         return
       }
     }
@@ -63,7 +71,7 @@
           <button
             type="button"
             class="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left text-sm transition-colors {i === selectedIdx ? 'bg-primary-500/15 text-primary-700 dark:text-primary-300' : 'hover:bg-surface-200 dark:hover:bg-surface-700'}"
-            onclick={() => onpick(opt.value)}
+            onclick={() => pick(opt.value)}
           >
             <span>{opt.label}</span>
             {#if opt.value === coreStatus(currentStatus)}
