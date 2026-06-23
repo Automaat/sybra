@@ -60,7 +60,7 @@ class NavStore {
     const p = this.page
     switch (p.kind) {
       case 'dashboard': return 'Dashboard'
-      case 'task-list': return 'Tasks'
+      case 'task-list': return 'Board'
       case 'task-detail': return 'Task Detail'
       case 'project-list': return 'Projects'
       case 'project-detail': return 'Project Detail'

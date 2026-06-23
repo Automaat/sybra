@@ -38,9 +38,9 @@ describe('WorkflowList', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders Workflows heading', () => {
+  it('loads workflows on mount', () => {
     render(WorkflowList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('Workflows')).toBeDefined()
+    expect(workflowStore.load).toHaveBeenCalled()
   })
 
   it('shows loading message when loading with empty list', () => {

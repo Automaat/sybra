@@ -18,8 +18,7 @@ import { test, expect, type Page } from '@playwright/test'
 async function goToChats(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-  // Sidebar nav also has an "h2 Chats" heading, so scope to the main region.
-  await expect(page.getByRole('main').getByRole('heading', { name: 'Chats' })).toBeVisible()
+  await expect(page.locator('h2', { hasText: 'Chats' })).toBeVisible()
 }
 
 test.describe('Chat list', () => {

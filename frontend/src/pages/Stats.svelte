@@ -52,8 +52,7 @@
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
-  <div class="flex items-center justify-between">
-    <h1 class="text-2xl font-bold">Stats</h1>
+  <div class="flex items-center justify-end">
     <button
       type="button"
       class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"

@@ -15,10 +15,6 @@
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
-  <div class="flex items-center justify-between">
-    <h2 class="text-lg font-semibold">Workflows</h2>
-  </div>
-
   {#if workflowStore.loading && workflowStore.list.length === 0}
     <p class="text-sm opacity-60">Loading workflows...</p>
   {:else if workflowStore.error}

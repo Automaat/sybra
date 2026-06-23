@@ -78,7 +78,7 @@ for (const theme of ['light', 'dark'] as const) {
     test('dashboard', async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Dashboard/ }).click()
-      await page.locator('h1', { hasText: 'Dashboard' }).waitFor()
+      await page.locator('h2', { hasText: 'Dashboard' }).waitFor()
       await shot(page, theme, 'dashboard')
     })
 
@@ -176,14 +176,14 @@ for (const theme of ['light', 'dark'] as const) {
     test('chats', async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.getByRole('main').getByRole('heading', { name: 'Chats' }).waitFor()
+      await page.locator('h2', { hasText: 'Chats' }).waitFor()
       await shot(page, theme, 'chats')
     })
 
     test('chats-new-chat-dialog', async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.getByRole('main').getByRole('heading', { name: 'Chats' }).waitFor()
+      await page.locator('h2', { hasText: 'Chats' }).waitFor()
       await page.getByRole('main').getByRole('button', { name: /New Chat/ }).first().click()
       await page.getByRole('dialog').waitFor()
       await shot(page, theme, 'chats-new-chat-dialog')
@@ -192,7 +192,7 @@ for (const theme of ['light', 'dark'] as const) {
     test('chat-detail', async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Chats/ }).click()
-      await page.getByRole('main').getByRole('heading', { name: 'Chats' }).waitFor()
+      await page.locator('h2', { hasText: 'Chats' }).waitFor()
       // Open the first existing chat session if present
       const firstChat = page.getByRole('main').getByRole('listitem').first()
       if (await firstChat.count() > 0 && await firstChat.isVisible()) {
@@ -397,7 +397,7 @@ for (const theme of ['light', 'dark'] as const) {
     test('settings', async ({ page }) => {
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Settings/ }).click()
-      await page.locator('h1', { hasText: 'Settings' }).waitFor()
+      await page.locator('h2', { hasText: 'Settings' }).waitFor()
       await shot(page, theme, 'settings')
     })
   })

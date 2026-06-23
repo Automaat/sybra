@@ -4,7 +4,7 @@ import { selectedProviders } from './lib/providers.js'
 async function goToSettings(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Settings/ }).click()
-  await expect(page.locator('h1', { hasText: 'Settings' })).toBeVisible()
+  await expect(page.locator('h2', { hasText: 'Settings' })).toBeVisible()
   await expect(page.locator('#agent-provider')).toBeVisible()
 }
 
