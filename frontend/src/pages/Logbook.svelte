@@ -2,7 +2,7 @@
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesDateRange } from '../lib/task-filters.js'
-  import { toUtcDayStart, toUtcDayEnd } from '../lib/dates.js'
+  import { toUtcDayStart, toUtcDayEnd, formatShortDate } from '../lib/dates.js'
   import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
   import StatusBadge from '../components/StatusBadge.svelte'
 
@@ -75,12 +75,6 @@
     dateTo = ''
   }
 
-  function formatClosed(val: unknown): string {
-    if (!val) return '—'
-    const d = new Date(val as string | number | Date)
-    if (isNaN(d.getTime())) return '—'
-    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-  }
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -183,7 +177,7 @@
                   {/each}
                 </div>
               </td>
-              <td class="px-4 py-2 text-xs text-surface-400">{formatClosed(t.closedAt)}</td>
+              <td class="px-4 py-2 text-xs text-surface-400">{formatShortDate(t.closedAt)}</td>
             </tr>
           {/each}
         </tbody>

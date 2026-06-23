@@ -67,9 +67,35 @@ export function formatDueDateDisplay(date: unknown): string {
   })
 }
 
-export function formatDate(date: unknown): string {
+/** Absolute date + time in the user's locale (e.g. "4/2/2026, 10:00:00 AM"). */
+export function formatDateTime(date: unknown): string {
   if (!date) return '-'
-  return new Date(date as string | number | Date).toLocaleString()
+  const d = new Date(date as string | number | Date)
+  return isNaN(d.getTime()) ? '-' : d.toLocaleString()
+}
+
+/** Compact date: "Jun 23" in the current year, "Jun 23, 2025" otherwise. */
+export function formatShortDate(date: unknown): string {
+  if (!date) return '—'
+  const d = new Date(date as string | number | Date)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
+  })
+}
+
+/** Relative "time ago": empty string when absent, else just now / Nm / Nh / Nd ago. */
+export function timeAgo(date: unknown): string {
+  if (!date) return ''
+  const then = new Date(date as string | number | Date).getTime()
+  if (isNaN(then)) return ''
+  const diff = Math.floor((Date.now() - then) / 1000)
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
 }
 
 // UTC-anchored day boundaries for date-range filtering. Used by Logbook.

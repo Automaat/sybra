@@ -3,7 +3,7 @@
   import type { ConvoEvent, StreamEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
-  import { formatDate } from '../../lib/dates.js'
+  import { formatDateTime } from '../../lib/dates.js'
   import StreamOutput from '../StreamOutput.svelte'
   import MessageBubble from '../MessageBubble.svelte'
   import ProviderLogo from '../ProviderLogo.svelte'
@@ -95,7 +95,7 @@
             {#if run.costUsd > 0}
               <span>${run.costUsd.toFixed(4)}</span>
             {/if}
-            <span>{formatDate(run.startedAt)}</span>
+            <span>{formatDateTime(run.startedAt)}</span>
             <ChevronDown size={16} class="transition-transform {expandedRun === run.agentId ? 'rotate-180' : ''}" />
           </div>
         </button>

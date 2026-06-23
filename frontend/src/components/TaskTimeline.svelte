@@ -9,6 +9,7 @@
   } from '../lib/timeline-gantt.js'
   import { STATUS_MAP } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import { formatShortDate } from '../lib/dates.js'
 
   interface Props {
     tasks: Task[]
@@ -55,10 +56,6 @@
     return PRIORITY_OPTIONS.find((o) => o.value === (p ?? ''))?.classes ?? 'text-surface-400'
   }
 
-  function formatDate(d: string | undefined): string {
-    if (!d) return '—'
-    return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-  }
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -146,7 +143,7 @@
               </span>
               <span class="truncate text-sm font-medium">{t.title}</span>
               <span class="ml-auto shrink-0 text-xs text-surface-400">
-                {formatDate(t.createdAt)}
+                {formatShortDate(t.createdAt)}
               </span>
             </div>
 
@@ -172,7 +169,7 @@
                 <span
                   class="pointer-events-none absolute text-warning-500 dark:text-warning-400"
                   style="left: calc({duePct}% - 5px); top: 50%; transform: translateY(-50%); font-size: 10px"
-                  title="Due {formatDate(t.dueDate)}"
+                  title="Due {formatShortDate(t.dueDate)}"
                 >◆</span>
               {/if}
             </div>

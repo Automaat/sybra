@@ -6,6 +6,7 @@
   import AgentStateBadge from './AgentStateBadge.svelte'
   import { clock } from '$lib/clock.svelte.js'
   import { formatElapsed } from '$lib/elapsed.js'
+  import { timeAgo } from '$lib/dates.js'
 
   interface Props {
     agent: Agent
@@ -29,17 +30,6 @@
   const isActivePhase = $derived(
     phase === 'running' || phase === 'blocked' || phase === 'waiting' || phase === 'human-required',
   )
-
-  function timeAgo(date: any): string {
-    if (!date) return ''
-    const now = Date.now()
-    const then = new Date(date).getTime()
-    const diff = Math.floor((now - then) / 1000)
-    if (diff < 60) return 'just now'
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-    return `${Math.floor(diff / 86400)}d ago`
-  }
 </script>
 
 <button

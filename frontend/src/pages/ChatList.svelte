@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { timeAgo } from '$lib/dates.js'
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
@@ -32,16 +33,6 @@
     return PHASE_CONFIG[getAgentPhase(a.state, a.escalationReason, undefined, a.awaitingApproval)]
   }
 
-  function timeAgo(date: string | undefined): string {
-    if (!date) return ''
-    const ms = Date.now() - new Date(date).getTime()
-    const mins = Math.floor(ms / 60000)
-    if (mins < 1) return 'just now'
-    if (mins < 60) return `${mins}m ago`
-    const hrs = Math.floor(mins / 60)
-    if (hrs < 24) return `${hrs}h ago`
-    return `${Math.floor(hrs / 24)}d ago`
-  }
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">

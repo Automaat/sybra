@@ -4,7 +4,7 @@
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { BrowserOpenURL } from '$lib/api'
-  import { formatDate } from '../../lib/dates.js'
+  import { formatDateTime } from '../../lib/dates.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
   import TaskDueDateEditor from './TaskDueDateEditor.svelte'
@@ -164,8 +164,8 @@
 </div>
 
 <div class="flex flex-wrap items-center gap-4 text-xs text-surface-400">
-  <span>Created: {formatDate(task.createdAt)}</span>
-  <span>Updated: {formatDate(task.updatedAt)}</span>
+  <span>Created: {formatDateTime(task.createdAt)}</span>
+  <span>Updated: {formatDateTime(task.updatedAt)}</span>
   <div class="flex items-center gap-1">
     <span>Due:</span>
     <TaskDueDateEditor bind:this={dueDateEditor} {task} onerror={handleError} />
