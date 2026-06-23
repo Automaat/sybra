@@ -29,19 +29,20 @@
 
   // Single-line intent under the name: live step text while running, the
   // pending action otherwise, falling back to a distinct session name.
-  const intent = $derived(
-    phase === 'running'
-      ? (agentStore.stepTexts.get(a.id) ?? 'Working...')
-      : phase === 'human-required'
-        ? 'Waiting for human input'
-        : phase === 'waiting'
-          ? 'Waiting for reply'
-          : phase === 'blocked'
-            ? 'Awaiting tool approval'
-            : subtitle && subtitle !== heading
-              ? subtitle
-              : '',
-  )
+  const intent = $derived.by(() => {
+    switch (phase) {
+      case 'running':
+        return agentStore.stepTexts.get(a.id) ?? 'Working...'
+      case 'human-required':
+        return 'Waiting for human input'
+      case 'waiting':
+        return 'Waiting for reply'
+      case 'blocked':
+        return 'Awaiting tool approval'
+      default:
+        return subtitle && subtitle !== heading ? subtitle : ''
+    }
+  })
 </script>
 
 <button
