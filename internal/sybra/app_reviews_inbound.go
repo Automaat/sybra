@@ -182,16 +182,20 @@ func (r *ReviewHandler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []gi
 		if matches[i].PR.ReviewDecision == "APPROVED" {
 			continue
 		}
-		if r.hasReviewTask(tasks, matches[i].PR.Number) {
+		if r.hasReviewTask(tasks, matches[i].ProjectID, matches[i].PR.Number) {
 			continue
 		}
 		r.createReviewTask(matches[i].PR, matches[i].ProjectID)
 	}
 }
 
-func (r *ReviewHandler) hasReviewTask(tasks []task.Task, prNumber int) bool {
+func (r *ReviewHandler) hasReviewTask(tasks []task.Task, projectID string, prNumber int) bool {
 	for i := range tasks {
-		if tasks[i].PRNumber == prNumber && slices.Contains(tasks[i].Tags, "review") {
+		// PR numbers are per-repo, so a review task only suppresses another
+		// PR with the same number when they belong to the same project.
+		if tasks[i].ProjectID == projectID &&
+			tasks[i].PRNumber == prNumber &&
+			slices.Contains(tasks[i].Tags, "review") {
 			return true
 		}
 	}
