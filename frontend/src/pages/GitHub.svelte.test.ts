@@ -98,10 +98,10 @@ describe('GitHub', () => {
     cleanup()
   })
 
-  it('renders tab bar with My PRs, Reviews, Renovate, Issues', () => {
+  it('renders tab bar with My PRs, PR Reviews, Renovate, Issues', () => {
     render(GitHub, { props: {} })
     expect(screen.getByText('My PRs')).toBeDefined()
-    expect(screen.getByText('Reviews')).toBeDefined()
+    expect(screen.getByText('PR Reviews')).toBeDefined()
     expect(screen.getByText('Renovate')).toBeDefined()
     expect(screen.getByText('Issues')).toBeDefined()
   })
@@ -122,9 +122,9 @@ describe('GitHub', () => {
     expect(mockRenovateLoad).toHaveBeenCalled()
   })
 
-  it('switches to Reviews tab', async () => {
+  it('switches to PR Reviews tab', async () => {
     render(GitHub, { props: {} })
-    await fireEvent.click(screen.getByText('Reviews'))
+    await fireEvent.click(screen.getByText('PR Reviews'))
     expect(screen.getByText('No pending review requests')).toBeDefined()
   })
 
