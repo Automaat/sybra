@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { fade } from 'svelte/transition'
   import { PHASE_CONFIG, type AgentPhase } from '$lib/agent-phases.js'
 
   interface Props {
@@ -19,9 +18,9 @@
 
 <span class="inline-flex items-center gap-1 rounded-full font-medium transition-all duration-150 {pillSize} {config.badgeClasses}">
   {#if config.animate}
-    <span transition:fade={{ duration: 150 }} class="animate-pulse-subtle rounded-full {dotSize} {config.dotClasses}"></span>
+    <span class="animate-pulse-subtle rounded-full {dotSize} {config.dotClasses}"></span>
   {:else if showDot}
-    <span transition:fade={{ duration: 150 }} class="rounded-full {dotSize} {config.dotClasses}"></span>
+    <span class="rounded-full {dotSize} {config.dotClasses}"></span>
   {/if}
   {config.label}
 </span>
