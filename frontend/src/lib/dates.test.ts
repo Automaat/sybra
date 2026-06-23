@@ -107,13 +107,16 @@ describe('formatShortDate', () => {
     expect(formatShortDate(null)).toBe('—')
     expect(formatShortDate('nope')).toBe('—')
   })
+  // Derive the locale's own year token so assertions hold regardless of locale/numerals.
+  const yearToken = (d: Date) => new Intl.DateTimeFormat(undefined, { year: 'numeric' }).format(d)
   it('omits the year for the current year', () => {
-    const thisYear = new Date().getFullYear()
-    const out = formatShortDate(`${thisYear}-06-23T12:00:00`)
-    expect(out).not.toMatch(/\d{4}/)
+    const now = new Date()
+    const out = formatShortDate(new Date(now.getFullYear(), 5, 23, 12))
+    expect(out).not.toContain(yearToken(now))
   })
   it('includes the year for other years', () => {
-    expect(formatShortDate('2020-06-23T12:00:00')).toMatch(/2020/)
+    const other = new Date(2020, 5, 23, 12)
+    expect(formatShortDate(other)).toContain(yearToken(other))
   })
 })
 
