@@ -116,6 +116,30 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "untriaged not flagged within grace period",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) {
+					t.Tags = nil
+					t.CreatedAt = now
+				})},
+				Cfg: cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "untriaged flagged after grace period",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) {
+					t.Tags = nil
+					t.CreatedAt = now.Add(-20 * time.Minute)
+				})},
+				Cfg: cfg,
+			},
+			want: []AnomalyKind{KindUntriaged},
+		},
+		{
 			name: "stuck_human_blocked on plan-review past budget",
 			in: DetectInput{
 				Now: now,

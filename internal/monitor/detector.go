@@ -120,11 +120,21 @@ func detectPerTask(in DetectInput) []Anomaly {
 	return out
 }
 
+// untriagedGracePeriod is how long a freshly created task is left alone before
+// it can be flagged as untriaged. A new task.created workflow (triage) needs a
+// moment to pick the task up and assign tags/mode; flagging immediately
+// produces spurious "untriaged" anomalies — and, for work-typed tasks, a
+// scrubbed sybra-bug — for perfectly normal new tasks.
+const untriagedGracePeriod = 15 * time.Minute
+
 func detectUntriaged(t *task.Task, now time.Time) *Anomaly {
 	if t.Status != task.StatusTodo {
 		return nil
 	}
 	if len(t.Tags) > 0 && t.AgentMode != "" {
+		return nil
+	}
+	if !t.CreatedAt.IsZero() && now.Sub(t.CreatedAt) < untriagedGracePeriod {
 		return nil
 	}
 	ev := map[string]any{
