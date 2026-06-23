@@ -28,6 +28,9 @@
 //   - auth_error: emits auth-failure text then exits 1
 //   - malformed_pr_output: emits large malformed PR-ish text (no valid URL)
 //   - signal_kill: emits system+assistant then kills self with SIGTERM
+//   - block_silent: emits nothing and blocks on stdin until EOF. Simulates the
+//     wedged orchestrator brain — a conversational agent started with no
+//     kickoff prompt that parks in StatePaused with no session id.
 //   - hang: emits system+assistant then blocks indefinitely. Used to simulate
 //     an agent that Sybra's StopAgent has to kill mid-run.
 //
@@ -132,10 +135,7 @@ func runScenario(scenario, taskID string) bool {
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
 	case "interactive_implement":
-		emitSystem()
-		emitAssistant("Implementing interactively...")
-		emitResult("Implementation done. PR created")
-		_, _ = io.Copy(io.Discard, os.Stdin)
+		runInteractiveImplement()
 	case "evaluate":
 		emitSystem()
 		emitAssistant("Evaluating...")
@@ -149,6 +149,12 @@ func runScenario(scenario, taskID string) bool {
 		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 	case "signal_kill":
 		runSignalKill()
+	case "block_silent":
+		// Emit nothing and block on stdin until EOF. Reproduces the wedged
+		// orchestrator brain: a conversational agent started with no kickoff
+		// prompt parks in StatePaused with no session id (none is ever
+		// emitted) and idles on stdin forever.
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "hang":
 		runHang()
 	case "auth_error":
@@ -167,6 +173,16 @@ func runScenario(scenario, taskID string) bool {
 		return false
 	}
 	return true
+}
+
+// runInteractiveImplement emits a full implement result then blocks on stdin
+// until EOF, simulating a real conversational claude agent that stays alive
+// between turns and exits when the parent closes stdin.
+func runInteractiveImplement() {
+	emitSystem()
+	emitAssistant("Implementing interactively...")
+	emitResult("Implementation done. PR created")
+	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
 // runSignalKill emits a start event then kills itself with SIGTERM, simulating

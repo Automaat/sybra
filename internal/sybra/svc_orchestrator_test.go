@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 )
@@ -82,6 +83,59 @@ func TestOrchestratorService_StopWhenNotRunning(t *testing.T) {
 
 	if err := svc.StopOrchestrator(); err == nil {
 		t.Error("expected error stopping an orchestrator that was never started")
+	}
+}
+
+func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
+	binDir := buildTestBinaries(t)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	svc, mgr := newOrchSvcForTest(t)
+	t.Cleanup(func() { _ = svc.StopOrchestrator() })
+
+	// Seed the exact production wedge: a conversational agent started with no
+	// kickoff prompt parks in StatePaused, and the block_silent fake emits
+	// nothing so it never gets a session id. Before the fix this paused-no-
+	// session state was treated as "running" and never replaced. Pin the
+	// scenario via ExtraEnv (appended to the subprocess env, overriding the
+	// process-global FAKE_CLAUDE_SCENARIO) so a sibling e2e test cannot race
+	// the seed's async subprocess exec and hand it a session-emitting scenario.
+	wedged, err := mgr.Run(agent.RunConfig{
+		TaskID: "wedged", Name: "wedged", Mode: "interactive", Dir: t.TempDir(),
+		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=block_silent"},
+	})
+	if err != nil {
+		t.Fatalf("seed wedged agent: %v", err)
+	}
+	// The seed agent reaches StatePaused asynchronously once its runner
+	// spawns the (silent) process, so poll rather than assume. The ceiling is
+	// generous for loaded CI; the loop exits as soon as the state settles.
+	var lastState agent.State
+	var lastSession string
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if a, gerr := mgr.GetAgent(wedged.ID); gerr == nil {
+			lastState, lastSession = a.GetState(), a.GetSessionID()
+			if lastState == agent.StatePaused && lastSession == "" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("wedged agent never parked in paused-no-session (last state=%q session=%q)", lastState, lastSession)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	svc.agentID = wedged.ID
+
+	// orchestratorReplaceable must treat paused-no-session as replaceable, so
+	// StartOrchestrator reaps the wedged brain and swaps in a fresh one.
+	if err := svc.StartOrchestrator(); err != nil {
+		t.Fatalf("StartOrchestrator over a wedged brain should succeed: %v", err)
+	}
+	if got := svc.GetOrchestratorAgentID(); got == "" || got == wedged.ID {
+		t.Errorf("expected a fresh orchestrator id, got %q (wedged was %q)", got, wedged.ID)
 	}
 }
 
