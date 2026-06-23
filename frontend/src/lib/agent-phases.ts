@@ -36,8 +36,9 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
     phase: 'waiting',
     label: 'Waiting',
     body: 'Agent has paused and is waiting for your reply.',
-    dotClasses: 'bg-surface-400 dark:bg-surface-500',
-    badgeClasses: 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300',
+    // Distinct from the gray "Queued" — "Waiting" means it's your turn.
+    dotClasses: 'bg-secondary-500',
+    badgeClasses: 'bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200',
     animate: false,
     faded: false,
   },

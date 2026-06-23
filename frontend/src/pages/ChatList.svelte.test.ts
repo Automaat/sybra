@@ -8,6 +8,7 @@ vi.mock('../stores/agents.svelte.js', () => ({
   agentStore: {
     get list() { return mockAgentList },
     get agents() { return new Map() },
+    stepTexts: new Map(),
   },
 }))
 
@@ -19,15 +20,6 @@ vi.mock('../stores/projects.svelte.js', () => ({
 }))
 
 vi.mock('../components/NewChatDialog.svelte', () => ({ default: () => {} }))
-
-vi.mock('$lib/agent-phases.js', () => ({
-  getAgentPhase: vi.fn(() => 'active'),
-  PHASE_CONFIG: {
-    active: { label: 'Running', dotClasses: 'bg-green-500', animate: true },
-    done: { label: 'Done', dotClasses: 'bg-gray-500', animate: false },
-    blocked: { label: 'Blocked', dotClasses: 'bg-red-500', animate: false },
-  },
-}))
 
 const ChatList = (await import('./ChatList.svelte')).default
 
@@ -119,5 +111,12 @@ describe('ChatList', () => {
     render(ChatList, { props: { onselect: vi.fn() } })
     expect(screen.getByText('interactive')).toBeDefined()
     expect(screen.queryByText('headless-agent')).toBeNull()
+  })
+
+  it('renders a paused chat with the distinct Waiting badge (not gray)', () => {
+    mockAgentList.push(makeAgent({ state: 'paused' }))
+    render(ChatList, { props: { onselect: vi.fn() } })
+    // The shared badge uses the secondary palette for Waiting, not surface gray.
+    expect(screen.getByText('Waiting').className).toContain('secondary')
   })
 })

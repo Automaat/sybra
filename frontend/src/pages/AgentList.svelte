@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
   import { agentStore } from '../stores/agents.svelte.js'
-  import AgentCard from '../components/AgentCard.svelte'
+  import AgentListRow from '../components/AgentListRow.svelte'
   import { EventsOn } from '$lib/api'
   import { agentOutput } from '../lib/events.js'
   import { extractStepText } from '$lib/step-text.js'
@@ -64,9 +64,9 @@
       <p class="text-sm">Start an agent from a task to see it here</p>
     </div>
   {:else}
-    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div class="flex flex-col gap-1.5">
       {#each filtered as a (a.id)}
-        <AgentCard agent={a} onclick={() => onselect(a.id)} />
+        <AgentListRow agent={a} onclick={() => onselect(a.id)} />
       {/each}
     </div>
   {/if}
