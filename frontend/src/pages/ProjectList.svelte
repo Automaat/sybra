@@ -3,6 +3,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
+  import { BOARD_COLUMNS } from '../lib/statuses.js'
   import { formatShortDate, timeAgo } from '../lib/dates.js'
 
   interface Props {
@@ -12,10 +13,12 @@
 
   const { onselect, onadd }: Props = $props()
 
-  const TERMINAL = new Set(['done', 'cancelled'])
+  // "Active" = sits in an active board column (matches Project Detail's board
+  // count); terminal and unknown/legacy statuses are excluded.
+  const ACTIVE_STATUSES = new Set<string>(BOARD_COLUMNS.flatMap((c) => [c.status, ...c.includes]))
 
   function activeTaskCount(projectId: string): number {
-    return taskStore.list.filter((t) => t.projectId === projectId && !TERMINAL.has(t.status)).length
+    return taskStore.list.filter((t) => t.projectId === projectId && ACTIVE_STATUSES.has(t.status)).length
   }
 
   function openPRCount(owner: string, repo: string): number {
@@ -24,9 +27,15 @@
 
   /** Most recent task activity for a project, as a relative label (empty if none). */
   function lastActivity(projectId: string): string {
+    let latestMs = 0
     let latest = ''
     for (const t of taskStore.list) {
-      if (t.projectId === projectId && t.updatedAt && t.updatedAt > latest) latest = t.updatedAt
+      if (t.projectId !== projectId || !t.updatedAt) continue
+      const ms = Date.parse(t.updatedAt)
+      if (!Number.isNaN(ms) && ms > latestMs) {
+        latestMs = ms
+        latest = t.updatedAt
+      }
     }
     return latest ? timeAgo(latest) : ''
   }

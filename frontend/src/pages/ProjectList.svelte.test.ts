@@ -119,11 +119,13 @@ describe('ProjectList', () => {
     mockTaskList.push(
       { projectId: 'owner/repo', status: 'in-progress', updatedAt: '2026-04-02T00:00:00Z' },
       { projectId: 'owner/repo', status: 'done', updatedAt: '2026-04-01T00:00:00Z' },
+      { projectId: 'owner/repo', status: 'mystery', updatedAt: '2026-04-01T00:00:00Z' },
       { projectId: 'other/repo', status: 'todo', updatedAt: '2026-04-03T00:00:00Z' },
     )
     mockPRsByRepo = { 'owner/repo': [{ number: 1 }, { number: 2 }] }
     render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('1 active')).toBeDefined() // done + other project excluded
+    // done, unknown status, and the other project are all excluded from "active".
+    expect(screen.getByText('1 active')).toBeDefined()
     expect(screen.getByText('2 PRs')).toBeDefined()
   })
 })
