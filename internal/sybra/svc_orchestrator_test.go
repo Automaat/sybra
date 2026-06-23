@@ -85,6 +85,37 @@ func TestOrchestratorService_StopWhenNotRunning(t *testing.T) {
 	}
 }
 
+func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
+	binDir := buildTestBinaries(t)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	svc, mgr := newOrchSvcForTest(t)
+	t.Cleanup(func() { _ = svc.StopOrchestrator() })
+
+	// Seed a stale/wedged orchestrator: a stopped agent the service still
+	// points at. Before the fix this was handled, but a paused-no-session
+	// agent (the real wedge) was treated as "running" and never replaced;
+	// orchestratorReplaceable now covers both, and StartOrchestrator must
+	// reap the stale agent and swap in a fresh one.
+	stale, err := mgr.Run(agent.RunConfig{TaskID: "stale", Name: "stale", Mode: "interactive", Prompt: "hi", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("seed stale agent: %v", err)
+	}
+	if err := mgr.StopAgent(stale.ID); err != nil {
+		t.Fatalf("stop seed agent: %v", err)
+	}
+	svc.agentID = stale.ID
+
+	if err := svc.StartOrchestrator(); err != nil {
+		t.Fatalf("StartOrchestrator over a wedged brain should succeed: %v", err)
+	}
+	if got := svc.GetOrchestratorAgentID(); got == "" || got == stale.ID {
+		t.Errorf("expected a fresh orchestrator id, got %q (stale was %q)", got, stale.ID)
+	}
+}
+
 func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))

@@ -60,21 +60,23 @@ type OrchestratorService struct {
 // turn, as instructed by orchestrator/CLAUDE.md. Provider is pinned to claude
 // because /sybra-monitor is a Claude-only skill.
 func (s *OrchestratorService) StartOrchestrator() error {
+	// Hold the lock across agents.Run so two concurrent callers (the 1-minute
+	// auto-start loop and the UI Start button) cannot both pass the replaceable
+	// guard and leak an orphan brain that takes a real turn. Start is rare and
+	// off any hot path, so holding the lock over the bounded process spawn is
+	// acceptable.
 	s.mu.Lock()
-	stale := ""
+	defer s.mu.Unlock()
+
 	if id := s.agentID; id != "" {
 		if a, err := s.agents.GetAgent(id); err == nil && !orchestratorReplaceable(a) {
-			s.mu.Unlock()
 			return conflictError("orchestrator already running")
 		}
 		// Existing agent is stopped, or wedged-paused with no session — reap
-		// it so a freshly kicked-off orchestrator can replace it.
-		stale = id
+		// it so a freshly kicked-off orchestrator can replace it. StopAgent is
+		// idempotent on an already-terminal agent.
+		_ = s.agents.StopAgent(id)
 		s.agentID = ""
-	}
-	s.mu.Unlock()
-	if stale != "" {
-		_ = s.agents.StopAgent(stale)
 	}
 
 	a, err := s.agents.Run(agent.RunConfig{
@@ -88,10 +90,7 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)
 	}
-
-	s.mu.Lock()
 	s.agentID = a.ID
-	s.mu.Unlock()
 
 	s.logger.Info("orchestrator.started", "agent_id", a.ID)
 	if s.audit != nil {
