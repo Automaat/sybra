@@ -42,6 +42,8 @@
 <div class="relative">
   <button
     type="button"
+    aria-haspopup="listbox"
+    aria-expanded={open}
     class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors {selected.length > 0
       ? 'border-primary-500 bg-primary-500/10 text-primary-700 dark:text-primary-300'
       : 'border-surface-300 bg-surface-50 hover:bg-surface-200 dark:border-surface-700 dark:bg-surface-800'}"
@@ -74,6 +76,7 @@
           <li>
             <button
               type="button"
+              aria-pressed={selected.includes(tag)}
               class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-200 dark:hover:bg-surface-700"
               onclick={() => toggle(tag)}
             >
