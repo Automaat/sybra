@@ -12,7 +12,38 @@ const (
 	ghLowBudgetThreshold  = 150
 	ghOptionalCooldown    = 30 * time.Second
 	ghFallbackRateBackoff = 1 * time.Minute
+	ghMaxRetries          = 2
+	ghRetryBaseBackoff    = 500 * time.Millisecond
 )
+
+// ghRetrySleep waits before a transient-error retry (backoff grows with the
+// attempt). A package var so tests can stub out the real delay.
+var ghRetrySleep = func(attempt int) {
+	time.Sleep(time.Duration(attempt+1) * ghRetryBaseBackoff)
+}
+
+// isTransientGHError reports whether a gh api failure looks like a transient
+// gateway/network blip worth retrying (5xx, timeout, dropped connection), as
+// opposed to a 4xx/auth error or a rate limit. Rate limits are deliberately
+// excluded — the request gate already paces those via notBefore backoff, and
+// retrying them immediately would only make things worse.
+func isTransientGHError(out []byte, err error) bool {
+	if err == nil || isRateLimitedMessage(string(out)) {
+		return false
+	}
+	msg := strings.ToLower(string(out))
+	for _, sig := range []string{
+		"http 502", "http 503", "http 504",
+		"operation timed out", "i/o timeout", "deadline exceeded",
+		"connection reset", "connection refused",
+		"stream error", "unexpected eof", "tls handshake",
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
 
 type ttlCache[T any] struct {
 	mu    sync.RWMutex
@@ -227,9 +258,21 @@ func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, er
 	cmdArgs = append(cmdArgs, "--include")
 	cmdArgs = append(cmdArgs, args...)
 
-	out, err := e.run(cmdArgs...)
-	resp := parseGHHTTPResponse(out)
-	ghGate.observe(resp, err)
+	// Retry transient gateway/network failures (502/503/504, timeouts,
+	// dropped streams) — these are read-only API calls, so a retry is safe
+	// and spares the caller a spurious "fetch failed" on a GitHub blip.
+	var resp ghHTTPResponse
+	var err error
+	for attempt := 0; ; attempt++ {
+		var out []byte
+		out, err = e.run(cmdArgs...)
+		resp = parseGHHTTPResponse(out)
+		ghGate.observe(resp, err)
+		if err == nil || attempt >= ghMaxRetries || !isTransientGHError(out, err) {
+			break
+		}
+		ghRetrySleep(attempt)
+	}
 	return resp, err
 }
 
