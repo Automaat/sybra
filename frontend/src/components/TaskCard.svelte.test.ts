@@ -150,6 +150,30 @@ describe('TaskCard', () => {
     expect(screen.queryByText('Needs Review')).toBeNull()
   })
 
+  it('shows Needs You badge for human-required status', () => {
+    render(TaskCard, { props: { task: { ...mockTask, status: 'human-required' as Task['status'] }, onclick: () => {} } })
+    expect(screen.getByText('Needs You')).toBeDefined()
+  })
+
+  it('shows Blocked badge for blocked status', () => {
+    render(TaskCard, { props: { task: { ...mockTask, status: 'blocked' as Task['status'] }, onclick: () => {} } })
+    expect(screen.getByText('Blocked')).toBeDefined()
+  })
+
+  it('adds red left-border accent for awaits-human statuses', () => {
+    const { container } = render(TaskCard, {
+      props: { task: { ...mockTask, status: 'plan-review' as Task['status'] }, onclick: () => {} },
+    })
+    expect(container.querySelector('.border-l-error-500')).not.toBeNull()
+  })
+
+  it('omits the awaits-human accent for agent-driven statuses', () => {
+    const { container } = render(TaskCard, {
+      props: { task: { ...mockTask, status: 'in-review' as Task['status'] }, onclick: () => {} },
+    })
+    expect(container.querySelector('.border-l-error-500')).toBeNull()
+  })
+
   it('shows review-needed badge for review-requested PR tasks', () => {
     reviewStore.reviewRequested = [makePR()]
     render(TaskCard, {

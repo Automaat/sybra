@@ -4,7 +4,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { STATUS_OPTIONS } from '../lib/statuses.js'
+  import { STATUS_OPTIONS, awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
 
   interface Props {
@@ -67,6 +67,9 @@
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
   const isReviewTask = $derived(t.tags?.includes('review') ?? false)
 
+  // Task is waiting on the user (not an agent) — drives the red tile accent.
+  const needsYou = $derived(awaitsHuman(t.status))
+
   function priorityMeta(p: string | undefined) {
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
   }
@@ -85,7 +88,7 @@
 
 <div
   data-focused-task={focused ? '' : undefined}
-  class="group w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {dragging ? 'opacity-40 shadow-lg' : ''}"
+  class="group w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {needsYou ? 'border-l-4 border-l-error-500 dark:border-l-error-400' : ''} {needsYou && !focused ? 'ring-2 ring-error-400/40 dark:ring-error-500/40' : ''} {dragging ? 'opacity-40 shadow-lg' : ''}"
 >
   <button
     type="button"
@@ -169,9 +172,9 @@
       </span>
     {/if}
 
-    {#if t.status === 'plan-review'}
+    {#if needsYou}
       <span class="inline-flex items-center gap-1 rounded bg-error-200 px-1.5 py-0.5 font-semibold text-error-800 dark:bg-error-700 dark:text-error-200">
-        Needs Review
+        {awaitsHumanLabel(t.status)}
       </span>
     {/if}
 

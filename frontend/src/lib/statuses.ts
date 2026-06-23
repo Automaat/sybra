@@ -102,6 +102,39 @@ export const ALL_STATUSES: StatusMeta[] = [
   },
 ]
 
+/**
+ * Statuses that await the user's own action — distinct from agent-driven
+ * review states (`in-review`, `ready-review`) where an agent is working.
+ * Mirrors orchestrator/CLAUDE.md: plan-review/test-plan-review wait for the
+ * human to approve/reject; human-required/blocked need human input.
+ */
+export const AWAITS_HUMAN: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  'human-required',
+  'plan-review',
+  'test-plan-review',
+  'blocked',
+])
+
+/** True when a task is waiting on the user (not on an agent). */
+export function awaitsHuman(status: string): boolean {
+  return AWAITS_HUMAN.has(status as TaskStatus)
+}
+
+/** Short pill label for an awaits-human task; empty when not awaiting. */
+export function awaitsHumanLabel(status: string): string {
+  switch (status) {
+    case 'plan-review':
+    case 'test-plan-review':
+      return 'Needs Review'
+    case 'blocked':
+      return 'Blocked'
+    case 'human-required':
+      return 'Needs You'
+    default:
+      return ''
+  }
+}
+
 /** O(1) lookup by status value */
 export const STATUS_MAP: Record<string, StatusMeta> = Object.fromEntries(
   ALL_STATUSES.map((s) => [s.value, s]),
