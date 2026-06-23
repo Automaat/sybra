@@ -7,7 +7,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError, agentPluginErrors } from '../lib/events.js'
   import AgentErrorBanner from '../components/AgentErrorBanner.svelte'
-  import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
+  import { getAgentPhase } from '$lib/agent-phases.js'
   import { buildStreamTimeline, buildConvoTimeline } from '$lib/timeline.js'
   import { extractLatestPlanSteps, extractLatestPlanStepsFromConvo } from '$lib/plan-steps.js'
   import AgentHeader from '../components/agent-view/AgentHeader.svelte'
@@ -67,7 +67,6 @@
         )
       : 'done',
   )
-  const phaseConfig = $derived(PHASE_CONFIG[phase])
 
   // Timeline entries — reactive to store changes
   const streamOutputs = $derived(agentStore.outputs.get(agentId) ?? [])
@@ -299,7 +298,6 @@
       <AgentHeader
         {a}
         {phase}
-        {phaseConfig}
         stepText={agentStore.stepTexts.get(agentId)}
         {linkedTask}
         onstop={handleStop}

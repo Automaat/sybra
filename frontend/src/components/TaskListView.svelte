@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import StatusBadge from './StatusBadge.svelte'
 
   interface Props {
     tasks: Task[]
@@ -49,7 +50,7 @@
           </td>
           <td class="px-4 py-2 font-medium">{t.title}</td>
           <td class="px-4 py-2">
-            <span class="rounded-full px-2 py-0.5 text-xs font-semibold bg-surface-200 dark:bg-surface-700">{t.status}</span>
+            <StatusBadge status={t.status} />
           </td>
           <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
           <td class="hidden px-4 py-2 text-surface-400 text-xs lg:table-cell">

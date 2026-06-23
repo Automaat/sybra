@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
-  import { STATUS_MAP } from '../lib/statuses.js'
   import { matchesQuery, matchesProject, matchesTags, matchesDateRange } from '../lib/task-filters.js'
   import { toUtcDayStart, toUtcDayEnd } from '../lib/dates.js'
   import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
+  import StatusBadge from '../components/StatusBadge.svelte'
 
   interface Props {
     onviewtask: (id: string) => void
@@ -167,18 +167,13 @@
         </thead>
         <tbody>
           {#each filteredTasks as t (t.id)}
-            {@const meta = STATUS_MAP[t.status]}
             <tr
               class="cursor-pointer border-b border-surface-100 transition-colors hover:bg-surface-100 dark:border-surface-800 dark:hover:bg-surface-800"
               onclick={() => onviewtask(t.id)}
             >
               <td class="px-4 py-2 font-medium">{t.title}</td>
               <td class="px-4 py-2">
-                {#if meta}
-                  <span class="rounded-full px-2 py-0.5 text-xs font-semibold {meta.badgeClasses}">{meta.label}</span>
-                {:else}
-                  <span class="rounded-full px-2 py-0.5 text-xs font-semibold bg-surface-200 dark:bg-surface-700">{t.status}</span>
-                {/if}
+                <StatusBadge status={t.status} />
               </td>
               <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
               <td class="hidden px-4 py-2 lg:table-cell">
