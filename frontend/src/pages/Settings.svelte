@@ -6,6 +6,14 @@
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
   import TodoistPanel from '../components/settings/TodoistPanel.svelte'
   import RenovatePanel from '../components/settings/RenovatePanel.svelte'
+  import { focusModeStore } from '../lib/focus-mode.svelte.js'
+  import { viewModeStore } from '../lib/view-mode.svelte.js'
+
+  function setFocusMode(on: boolean) {
+    focusModeStore.set(on)
+    // Focus mode leads with the simpler list view.
+    if (on) viewModeStore.set('list')
+  }
 
   type ColorScheme = 'system' | 'light' | 'dark'
 
@@ -168,6 +176,18 @@
       </select>
       <span class="text-xs text-surface-400">Applied immediately, no save needed</span>
     </div>
+    <label class="mt-4 flex items-start gap-3">
+      <input
+        type="checkbox"
+        class="mt-0.5 h-4 w-4 accent-primary-500"
+        checked={focusModeStore.enabled}
+        onchange={(e) => setFocusMode((e.target as HTMLInputElement).checked)}
+      />
+      <span class="flex flex-col">
+        <span class="text-sm font-medium">Focus mode</span>
+        <span class="text-xs text-surface-400">Cleaner, minimal surface — collapses the sidebar and leads with the list view. Advanced views stay reachable via “More”.</span>
+      </span>
+    </label>
   </div>
 
   {#if settings}

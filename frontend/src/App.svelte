@@ -14,6 +14,8 @@
   import AppWarningsBanner from './components/AppWarningsBanner.svelte'
   import PageRouter from './components/PageRouter.svelte'
   import { handleAppKeydown, type AppKeyAction } from './lib/app-keyboard.js'
+  import { focusModeStore } from './lib/focus-mode.svelte.js'
+  import { viewModeStore } from './lib/view-mode.svelte.js'
   import {
     startAppLifecycle,
     type ProviderHealth,
@@ -25,7 +27,16 @@
     openNewTask: () => { commandPaletteOpen = false; dialogOpen = true },
     openNewProject: () => { commandPaletteOpen = false; projectDialogOpen = true },
     openKeyboardHelp: () => { commandPaletteOpen = false; helpOpen = true },
+    toggleFocus: () => {
+      commandPaletteOpen = false
+      focusModeStore.toggle()
+      if (focusModeStore.enabled) viewModeStore.set('list')
+    },
   }
+
+  // Focus mode persists across sessions (localStorage) but the board view mode
+  // does not (sessionStorage), so re-apply the list default once on startup.
+  if (focusModeStore.enabled) viewModeStore.set('list')
 
   let degradedWarnings = $state<DegradedWarning[]>([])
   let providerHealth = $state<Record<string, ProviderHealth>>({})

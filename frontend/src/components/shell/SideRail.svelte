@@ -1,9 +1,15 @@
 <script lang="ts">
-  import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive } from '@lucide/svelte'
+  import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
+  import { focusModeStore } from '../../lib/focus-mode.svelte.js'
+
+  // Focus mode collapses the rail to the core destinations; "More" expands the
+  // full grouped nav so advanced views stay reachable.
+  const PRIMARY_LABELS = ['Board', 'Reviews', 'Chats', 'Agents']
+  let moreExpanded = $state(false)
 
   const interactiveAgentCount = $derived(
     agentStore.list.filter(a => a.mode === 'interactive' && (a.state === 'running' || a.state === 'paused')).length
@@ -73,6 +79,17 @@
     title: 'Settings (Cmd+,)',
     onclick: () => navStore.reset({ kind: 'settings' }),
   }
+
+  const primaryItems = $derived(
+    groups.flatMap((g) => g.items).filter((i) => PRIMARY_LABELS.includes(i.label)),
+  )
+  // Minimal rail only when focus mode is on and the user hasn't expanded "More".
+  const minimal = $derived(focusModeStore.enabled && !moreExpanded)
+
+  // Collapse "More" whenever focus mode turns off, so re-enabling starts minimal.
+  $effect(() => {
+    if (!focusModeStore.enabled) moreExpanded = false
+  })
 </script>
 
 {#snippet navButton(item: NavItem)}
@@ -107,15 +124,41 @@
     <span class="text-lg font-bold">S</span>
   </div>
   <div class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1">
-    {#each groups as group, gi}
-      {#if gi > 0}
-        <div class="mx-2 mb-0.5 mt-1.5 border-t border-surface-200 dark:border-surface-700"></div>
-      {/if}
-      <span class="px-1 pb-0.5 text-center text-[8px] font-semibold uppercase tracking-wider text-surface-400">{group.label}</span>
-      {#each group.items as item}
+    {#if minimal}
+      {#each primaryItems as item}
         {@render navButton(item)}
       {/each}
-    {/each}
+      <button
+        type="button"
+        onclick={() => (moreExpanded = true)}
+        title="More"
+        class="flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[10px] font-medium text-surface-600 transition-colors hover:bg-surface-200 dark:text-surface-400 dark:hover:bg-surface-700"
+      >
+        <ChevronDown size={18} />
+        <span class="leading-tight">More</span>
+      </button>
+    {:else}
+      {#each groups as group, gi}
+        {#if gi > 0}
+          <div class="mx-2 mb-0.5 mt-1.5 border-t border-surface-200 dark:border-surface-700"></div>
+        {/if}
+        <span class="px-1 pb-0.5 text-center text-[8px] font-semibold uppercase tracking-wider text-surface-400">{group.label}</span>
+        {#each group.items as item}
+          {@render navButton(item)}
+        {/each}
+      {/each}
+      {#if focusModeStore.enabled}
+        <button
+          type="button"
+          onclick={() => (moreExpanded = false)}
+          title="Less"
+          class="mt-1.5 flex flex-col items-center gap-0.5 rounded-md px-1 py-1.5 text-[10px] font-medium text-surface-600 transition-colors hover:bg-surface-200 dark:text-surface-400 dark:hover:bg-surface-700"
+        >
+          <ChevronUp size={18} />
+          <span class="leading-tight">Less</span>
+        </button>
+      {/if}
+    {/if}
   </div>
   <div class="shrink-0 border-t border-surface-200 px-1 py-1 dark:border-surface-700">
     {@render navButton(settingsItem)}
