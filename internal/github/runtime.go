@@ -259,8 +259,10 @@ func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, er
 	cmdArgs = append(cmdArgs, args...)
 
 	// Retry transient gateway/network failures (502/503/504, timeouts,
-	// dropped streams) — these are read-only API calls, so a retry is safe
-	// and spares the caller a spurious "fetch failed" on a GitHub blip.
+	// dropped streams), but only for reads: a write (--method
+	// POST/PUT/PATCH/DELETE) that returned a transient error may already have
+	// applied server-side, so retrying it could double-act.
+	write := isWriteRequest(args)
 	var resp ghHTTPResponse
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -268,12 +270,26 @@ func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, er
 		out, err = e.run(cmdArgs...)
 		resp = parseGHHTTPResponse(out)
 		ghGate.observe(resp, err)
-		if err == nil || attempt >= ghMaxRetries || !isTransientGHError(out, err) {
+		if err == nil || write || attempt >= ghMaxRetries || !isTransientGHError(out, err) {
 			break
 		}
 		ghRetrySleep(attempt)
 	}
 	return resp, err
+}
+
+// isWriteRequest reports whether the gh api args specify a mutating HTTP
+// method, so the retry path can leave writes alone.
+func isWriteRequest(args []string) bool {
+	for i, a := range args {
+		if (a == "--method" || a == "-X") && i+1 < len(args) {
+			switch strings.ToUpper(args[i+1]) {
+			case "POST", "PUT", "PATCH", "DELETE":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func runtimeCacheEnabled(e execer) bool {

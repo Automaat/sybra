@@ -81,3 +81,38 @@ func TestRunGHAPIWith_NoRetryOnRateLimit(t *testing.T) {
 		t.Errorf("calls = %d, want 1 (rate limits are paced by the gate, not retried)", se.calls)
 	}
 }
+
+func TestRunGHAPIWith_NoRetryOnWrite(t *testing.T) {
+	stubRetrySleep(t)
+
+	tr := []byte("gh: HTTP 502")
+	se := &sequenceExecer{
+		outputs: [][]byte{tr, tr, tr},
+		errs:    []error{fmt.Errorf("e"), fmt.Errorf("e"), fmt.Errorf("e")},
+	}
+
+	// A POST mutation must not be retried even on a transient error — it may
+	// already have applied server-side.
+	if _, err := runGHAPIWith(se, "", "repos/o/r/pulls/1/requested_reviewers", "--method", "POST"); err == nil {
+		t.Fatal("want error")
+	}
+	if se.calls != 1 {
+		t.Errorf("calls = %d, want 1 (writes are not retried)", se.calls)
+	}
+}
+
+func TestRunGHAPIWith_NoRetryOnSuccess(t *testing.T) {
+	stubRetrySleep(t)
+
+	se := &sequenceExecer{
+		outputs: [][]byte{[]byte("HTTP/2.0 200 OK\n\n{}")},
+		errs:    []error{nil},
+	}
+
+	if _, err := runGHAPIWith(se, "", "graphql"); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if se.calls != 1 {
+		t.Errorf("calls = %d, want 1 (no retry on first-try success)", se.calls)
+	}
+}
