@@ -16,16 +16,24 @@
     return val === null ? fallback : val === 'true'
   }
 
+  function setStorageBool(key: string, val: boolean): void {
+    try {
+      localStorage.setItem(key, String(val))
+    } catch {
+      // storage disabled / quota exceeded — preference just won't persist
+    }
+  }
+
   // Default to two panes (the center step-list + output); the agents sidebar and
   // the session workspace are collapsed behind toggles to avoid cramping.
   let sidebarCollapsed = $state(getStorageBool('sybra.workspace.leftCollapsed', true))
   let workspaceCollapsed = $state(getStorageBool('sybra.workspace.rightCollapsed', true))
 
   $effect(() => {
-    localStorage.setItem('sybra.workspace.leftCollapsed', String(sidebarCollapsed))
+    setStorageBool('sybra.workspace.leftCollapsed', sidebarCollapsed)
   })
   $effect(() => {
-    localStorage.setItem('sybra.workspace.rightCollapsed', String(workspaceCollapsed))
+    setStorageBool('sybra.workspace.rightCollapsed', workspaceCollapsed)
   })
 </script>
 
@@ -35,6 +43,7 @@
     type="button"
     onclick={() => { sidebarCollapsed = !sidebarCollapsed }}
     title={sidebarCollapsed ? 'Show agents' : 'Hide agents'}
+    aria-label={sidebarCollapsed ? 'Show agents' : 'Hide agents'}
     class="hidden shrink-0 rounded p-1 text-surface-400 hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-200 md:flex"
   >
     {#if sidebarCollapsed}
@@ -68,6 +77,7 @@
     type="button"
     onclick={() => { workspaceCollapsed = !workspaceCollapsed }}
     title={workspaceCollapsed ? 'Show workspace' : 'Hide workspace'}
+    aria-label={workspaceCollapsed ? 'Show workspace' : 'Hide workspace'}
     class="hidden shrink-0 rounded p-1 text-surface-400 hover:bg-surface-200 hover:text-surface-700 dark:hover:bg-surface-700 dark:hover:text-surface-200 lg:flex"
   >
     {#if workspaceCollapsed}
