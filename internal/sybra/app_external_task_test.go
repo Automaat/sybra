@@ -7,12 +7,14 @@ import (
 
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // TestApp_MaybeStartWorkflowForExternalTask covers the dispatch path for tasks
 // created outside the GUI (e.g. via sybra-cli, which writes the file directly).
-// The matching task.created workflow must attach for a fresh todo task, and the
-// status guard must prevent re-dispatch onto non-fresh tasks.
+// The matching task.created workflow must attach for a fresh todo task, the
+// status guard must prevent re-dispatch onto non-fresh tasks, and re-firing
+// onto a task that already owns an active workflow must be a no-op.
 func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	taskSvc, app := setupTaskService(t)
 	app.workflowEngine = taskSvc.workflowEngine
@@ -41,8 +43,37 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	todoPath := write("ext-todo", task.StatusTodo)
 	app.maybeStartWorkflowForExternalTask(todoPath)
 	app.wg.Wait()
-	if tk, _ := app.tasks.Get("ext-todo"); tk.Workflow == nil || tk.Workflow.WorkflowID != "simple-task-plan" {
+	tk, err := app.tasks.Get("ext-todo")
+	if err != nil {
+		t.Fatalf("get ext-todo: %v", err)
+	}
+	if tk.Workflow == nil || tk.Workflow.WorkflowID != "simple-task-plan" {
 		t.Fatalf("fresh todo task: expected simple-task-plan workflow attached, got %+v", tk.Workflow)
+	}
+
+	// Idempotency: re-firing onto a task that already owns an active workflow
+	// must not restart it. Pin a known active workflow, fire again, and assert
+	// the step is untouched (DispatchEvent rejects the active workflow and the
+	// helper swallows ErrWorkflowAlreadyActive — no double-start, no error).
+	activePath := write("ext-active", task.StatusTodo)
+	if _, err := app.tasks.UpdateMap("ext-active", map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "triage",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.maybeStartWorkflowForExternalTask(activePath)
+	app.wg.Wait()
+	ak, err := app.tasks.Get("ext-active")
+	if err != nil {
+		t.Fatalf("get ext-active: %v", err)
+	}
+	if ak.Workflow == nil || ak.Workflow.CurrentStep != "triage" {
+		t.Errorf("re-fire onto active workflow should be a no-op, got %+v", ak.Workflow)
 	}
 
 	// Done task → the status guard prevents re-dispatch (simple-task-plan's
@@ -51,8 +82,12 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	donePath := write("ext-done", task.StatusDone)
 	app.maybeStartWorkflowForExternalTask(donePath)
 	app.wg.Wait()
-	if tk, _ := app.tasks.Get("ext-done"); tk.Workflow != nil {
-		t.Errorf("done task: expected no workflow, got %+v", tk.Workflow)
+	dk, err := app.tasks.Get("ext-done")
+	if err != nil {
+		t.Fatalf("get ext-done: %v", err)
+	}
+	if dk.Workflow != nil {
+		t.Errorf("done task: expected no workflow, got %+v", dk.Workflow)
 	}
 
 	// Sidecar files share the tasks dir and also fire TaskCreated — must be a
