@@ -21,7 +21,7 @@ const (
 )
 
 const (
-	reviewSmallAdditions = 200
+	reviewSmallAdditions = 40
 	reviewSmallFiles     = 5
 )
 
