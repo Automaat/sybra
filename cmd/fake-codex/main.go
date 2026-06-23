@@ -63,17 +63,13 @@ func runExec() {
 		emitAgentMessage("Working on it...")
 		os.Exit(0)
 	case "triage":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "todo", "--tags", "small")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "todo", "--tags", "small")
 	case "triage_to_planning":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "planning", "--tags", "large")
 	case "triage_to_planning_nocritic":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "planning", "--tags", "large,nocritic")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "planning", "--tags", "large,nocritic")
+	case "triage_to_planning_noplan":
+		codexTriage(taskID, "--status", "planning", "--tags", "large,noplan")
 	case "plan_critic_success":
 		runCodexPlanCriticSuccess(taskID)
 	case "plan_critic_no_save":
@@ -81,17 +77,11 @@ func runExec() {
 	case "code_review_success":
 		runCodexCodeReviewSuccess(taskID)
 	case "triage_to_done":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "done")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "done")
 	case "triage_to_in_review":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "in-review")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "in-review")
 	case "triage_to_human_required":
-		emitAgentMessage("Triaging task...")
-		runCLI(taskID, "update", taskID, "--status", "human-required")
-		emitTurnCompleted(100, 20)
+		codexTriage(taskID, "--status", "human-required")
 	case "overloaded_error":
 		emitError("Service overloaded (529)")
 		os.Exit(1)
@@ -255,6 +245,14 @@ func popScenario() string {
 		return s
 	}
 	return "success"
+}
+
+// codexTriage emits a triage turn that updates the task via sybra-cli with the
+// given fields (e.g. --status/--tags), mirroring the real codex triage step.
+func codexTriage(taskID string, updateArgs ...string) {
+	emitAgentMessage("Triaging task...")
+	runCLI(taskID, "update", append([]string{taskID}, updateArgs...)...)
+	emitTurnCompleted(100, 20)
 }
 
 func runCLI(taskID, subcmd string, args ...string) {

@@ -30,6 +30,13 @@ var (
 	// this set and the size/type sets are rejected.
 	domainTags = []string{"backend", "frontend", "infra", "docs", "ci", "auth", "db", "test"}
 
+	// escapeHatchTags are workflow-routing opt-outs, not part of the
+	// classifier's assignable vocabulary. They are accepted by NormalizeTags
+	// (so they aren't stripped) and preserved through triage (see Apply) so a
+	// human/orchestrator can set them on a task without triage dropping them.
+	// `noplan` skips the plan pipeline; `nocritic` skips the plan critique.
+	escapeHatchTags = []string{"noplan", "nocritic"}
+
 	// tagAliases normalize common abbreviations into the canonical tag.
 	tagAliases = map[string]string{
 		"be":        "backend",
@@ -83,7 +90,8 @@ func NormalizeTags(raw []string) ([]string, error) {
 func isKnownTag(t string) bool {
 	return slices.Contains(domainTags, t) ||
 		slices.Contains(validSizes, t) ||
-		slices.Contains(validTypes, t)
+		slices.Contains(validTypes, t) ||
+		slices.Contains(escapeHatchTags, t)
 }
 
 // ValidateVerdict ensures all enumerated fields are in their allowed set and

@@ -47,6 +47,16 @@ steps:
           operator: equals
           value: done
         goto: ""
+      # noplan escape hatch: skip the plan/critique/human-review pipeline and
+      # hand straight to implementation. Checked before the planning route so
+      # it wins even if triage set status=planning. The terminal guards above
+      # still take precedence, so a noplan task triage finished is not forced
+      # into implement.
+      - when:
+          field: task.tags
+          operator: contains
+          value: noplan
+        goto: set_in_progress_and_end
       - when:
           field: task.status
           operator: equals

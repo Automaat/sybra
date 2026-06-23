@@ -2,6 +2,7 @@ package triage
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -50,7 +51,16 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	}
 
 	if len(v.Tags) > 0 {
-		updates["tags"] = v.Tags
+		// Preserve escape-hatch routing tags (noplan/nocritic) already on the
+		// task — the classifier vocabulary excludes them, so replacing tags
+		// wholesale would silently drop a manually-set opt-out.
+		tags := v.Tags
+		for _, hatch := range escapeHatchTags {
+			if slices.Contains(t.Tags, hatch) && !slices.Contains(tags, hatch) {
+				tags = append(tags, hatch)
+			}
+		}
+		updates["tags"] = tags
 	}
 
 	mode := RouteMode(v.Mode, v.Type, projectType)

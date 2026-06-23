@@ -18,6 +18,7 @@ func TestNormalizeTags(t *testing.T) {
 		{"dedupe", []string{"backend", "backend", "BE"}, []string{"backend"}, false},
 		{"whitespace+case", []string{" Backend ", "SMALL"}, []string{"backend", "small"}, false},
 		{"empty", []string{}, []string{}, false},
+		{"escape-hatch kept", []string{"backend", "noplan", "nocritic"}, []string{"backend", "noplan", "nocritic"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

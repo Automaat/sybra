@@ -76,6 +76,72 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTask_TriageNoplanRouting locks the noplan escape hatch in
+// the triage step's transition table: a noplan tag routes straight to
+// implement (winning over a planning status), terminal statuses still win over
+// noplan, and the absence of noplan preserves the normal plan/implement split.
+func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("triage")
+	if step == nil {
+		t.Fatal("triage step not found in simple-task-plan")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "planning_without_noplan_goes_to_plan",
+			fields: map[string]string{"task.status": "planning", "task.tags": "backend,feature"},
+			want:   "plan",
+		},
+		{
+			name:   "noplan_skips_planning_even_when_status_planning",
+			fields: map[string]string{"task.status": "planning", "task.tags": "backend,noplan"},
+			want:   "set_in_progress_and_end",
+		},
+		{
+			name:   "todo_without_noplan_hands_off_to_implement",
+			fields: map[string]string{"task.status": "todo", "task.tags": "backend"},
+			want:   "set_in_progress_and_end",
+		},
+		{
+			name:   "terminal_status_wins_over_noplan",
+			fields: map[string]string{"task.status": "done", "task.tags": "backend,noplan"},
+			want:   "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuiltinTestingTask_MaybeCritiqueReplanSkip is the testing-task
 // mirror of the simple-task replan-skip guarantee above.
 func TestBuiltinTestingTask_MaybeCritiqueReplanSkip(t *testing.T) {

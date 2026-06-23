@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,6 +54,32 @@ func TestApplyRewritesTitleAndPreservesOriginal(t *testing.T) {
 	}
 	if len(updated.Tags) != 3 {
 		t.Errorf("tags: got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesEscapeHatchTags(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("trivial typo fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A human/orchestrator set noplan on the task before triage runs.
+	created.Tags = []string{"noplan"}
+
+	// Classifier verdict does not include noplan (it's outside the vocabulary).
+	v := Verdict{
+		Title: "fix(docs): typo",
+		Tags:  []string{"docs", "small", "docs"},
+		Size:  "small",
+		Type:  "docs",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, "noplan") {
+		t.Errorf("noplan escape-hatch tag dropped by triage; got %v", updated.Tags)
 	}
 }
 
