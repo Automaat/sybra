@@ -19,6 +19,14 @@
   let autoScroll = $state(true)
   let flashIndex = $state<number | null>(null)
 
+  // `system` rows (system-reminders) and empty-content rows are low signal, but
+  // we de-emphasise rather than hide them: the timeline indexes the full event
+  // array (so removal would break click/scroll sync) and Claude tool results
+  // arrive as `user` rows that must stay readable.
+  function isQuiet(e: StreamEvent): boolean {
+    return e.type === 'system' || (e.content ?? '').trim().length === 0
+  }
+
   const typeStyles: Record<string, { label: string; classes: string }> = {
     init: { label: 'INIT', classes: 'bg-surface-300 text-surface-800 dark:bg-surface-600 dark:text-surface-200' },
     assistant: { label: 'ASST', classes: 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200' },
@@ -113,7 +121,7 @@
         {@const style = typeStyles[event.type] ?? { label: event.type.toUpperCase(), classes: 'bg-surface-300 text-surface-800 dark:bg-surface-700 dark:text-surface-200' }}
         <div
           data-event-index={i}
-          class="flex items-start gap-2 rounded transition-colors duration-300
+          class="flex items-start gap-2 rounded transition-colors duration-300 {isQuiet(event) ? 'opacity-50' : ''}
             {flashIndex === i ? 'bg-warning-900/40' : ''}"
         >
           <span class="mt-0.5 inline-block shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold {style.classes}">

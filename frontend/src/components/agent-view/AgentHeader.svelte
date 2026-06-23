@@ -21,8 +21,8 @@
 
 <div class="flex flex-col gap-6">
   <div class="flex items-start justify-between gap-4">
-    <div>
-      <h1 class="text-2xl font-bold">{a.project || a.id}</h1>
+    <div class="min-w-0">
+      <h1 class="break-words text-2xl font-bold">{a.project || a.id}</h1>
       {#if a.name}
         <span class="text-sm text-surface-400">{a.name}</span>
       {/if}
