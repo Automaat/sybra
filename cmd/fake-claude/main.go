@@ -14,6 +14,7 @@
 //   - triage: runs sybra-cli to set status=todo, tags=small, emits result
 //   - triage_to_planning: runs sybra-cli to set status=planning, tags=large
 //   - triage_to_planning_nocritic: like triage_to_planning but adds nocritic tag
+//   - triage_to_planning_noplan: like triage_to_planning but adds noplan tag
 //   - triage_to_done: runs sybra-cli to set status=done
 //   - triage_to_in_review: runs sybra-cli to set status=in-review
 //   - triage_to_human_required: runs sybra-cli to set status=human-required
@@ -118,6 +119,8 @@ func runScenario(scenario, taskID string) bool {
 		runTriage(taskID, "planning", "large")
 	case "triage_to_planning_nocritic":
 		runTriage(taskID, "planning", "large,nocritic")
+	case "triage_to_planning_noplan":
+		runTriage(taskID, "planning", "large,noplan")
 	case "plan_critic_success":
 		runPlanCriticSuccess(taskID)
 	case "plan_critic_no_save":
@@ -144,9 +147,7 @@ func runScenario(scenario, taskID string) bool {
 		}
 		emitResult("Evaluation complete. Status set to in-review.")
 	case "pr_created":
-		emitSystem()
-		emitAssistant("Implementing and pushing PR...")
-		emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
+		runPRCreated()
 	case "signal_kill":
 		runSignalKill()
 	case "block_silent":
@@ -183,6 +184,14 @@ func runInteractiveImplement() {
 	emitAssistant("Implementing interactively...")
 	emitResult("Implementation done. PR created")
 	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+// runPRCreated emits an implement result whose text carries a PR URL, so the
+// mechanical link-PR step can extract the number via regex.
+func runPRCreated() {
+	emitSystem()
+	emitAssistant("Implementing and pushing PR...")
+	emitResult("Implementation done. Created PR https://github.com/test-org/test-repo/pull/42")
 }
 
 // runSignalKill emits a start event then kills itself with SIGTERM, simulating

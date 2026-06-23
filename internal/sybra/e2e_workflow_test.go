@@ -2597,6 +2597,47 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	}
 }
 
+// TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning verifies the noplan escape
+// hatch: a task triage tags `noplan` skips the entire plan/critique/review
+// pipeline and hands straight off to implementation, even though triage set
+// status=planning.
+func TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning(t *testing.T) {
+	env := setupE2EMulti(t, []string{
+		"triage_to_planning_noplan", // triage: status=planning, tags=large,noplan
+	})
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
+
+	created, err := env.tasks.Create("noplan fast-path", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "simple-task-plan completes via the noplan fast-path", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepIDs := stepIDsFromHistory(tk.Workflow)
+	for _, banned := range []string{"plan", "critique_plan", "review_plan"} {
+		if slices.Contains(stepIDs, banned) {
+			t.Errorf("noplan task ran the %q step; expected it skipped\nhistory: %v", banned, stepIDs)
+		}
+	}
+	if !slices.Contains(stepIDs, "set_in_progress_and_end") {
+		t.Errorf("expected hand-off to implement (set_in_progress_and_end)\nhistory: %v", stepIDs)
+	}
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status = %q, want in-progress", tk.Status)
+	}
+}
+
 // TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits verifies triage can
 // terminate simple-task directly on terminal statuses without running plan or
 // implementation.
