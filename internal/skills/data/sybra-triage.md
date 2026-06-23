@@ -30,7 +30,7 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
    - Picks size (small|medium|large), type (bug|feature|refactor|review|chore|docs), and mode (headless|interactive)
    - Auto-matches a registered project if a github.com URL is in the title or body
    - Applies routing rules (work non-reviews → planning; medium/large features → planning; everything else → todo)
-   - The plan workflow honors two escape-hatch tags **when already present** on a task — `noplan` skips planning entirely (triage → implement), `nocritic` keeps planning but skips the plan critique. The classifier does not assign these itself (they're outside its tag vocabulary and would be stripped); set them manually or via the orchestrator on trivial/well-specified tasks.
+   - The plan workflow honors two escape-hatch tags on a task — `noplan` skips planning entirely (triage → implement), `nocritic` keeps planning but skips the plan critique. The classifier does not assign these itself, but it **preserves** them when already set, so a human/orchestrator can tag a trivial/well-specified task before triage and the opt-out survives.
    - Forces `interactive` mode for `work` projects unless it's a PR review
    - Writes a `triage.classified` audit event
 
