@@ -98,9 +98,13 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	// Seed the exact production wedge: a conversational agent started with no
 	// kickoff prompt parks in StatePaused, and the block_silent fake emits
 	// nothing so it never gets a session id. Before the fix this paused-no-
-	// session state was treated as "running" and never replaced.
+	// session state was treated as "running" and never replaced. Pin the
+	// scenario via ExtraEnv (appended to the subprocess env, overriding the
+	// process-global FAKE_CLAUDE_SCENARIO) so a sibling e2e test cannot race
+	// the seed's async subprocess exec and hand it a session-emitting scenario.
 	wedged, err := mgr.Run(agent.RunConfig{
 		TaskID: "wedged", Name: "wedged", Mode: "interactive", Dir: t.TempDir(),
+		ExtraEnv: []string{"FAKE_CLAUDE_SCENARIO=block_silent"},
 	})
 	if err != nil {
 		t.Fatalf("seed wedged agent: %v", err)
