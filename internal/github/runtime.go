@@ -23,10 +23,12 @@ var ghRetrySleep = func(attempt int) {
 }
 
 // isTransientGHError reports whether a gh api failure looks like a transient
-// gateway/network blip worth retrying (5xx, timeout, dropped connection), as
-// opposed to a 4xx/auth error or a rate limit. Rate limits are deliberately
-// excluded — the request gate already paces those via notBefore backoff, and
-// retrying them immediately would only make things worse.
+// gateway/network blip worth retrying — a 502/503/504 gateway response, a
+// connection timeout, or a dropped stream — as opposed to a 4xx/auth error, a
+// plain 500 (often a real server-side bug, not transient), or a rate limit.
+// Rate limits are deliberately excluded: the request gate already paces those
+// via notBefore backoff, and retrying them immediately would only make things
+// worse.
 func isTransientGHError(out []byte, err error) bool {
 	if err == nil || isRateLimitedMessage(string(out)) {
 		return false
