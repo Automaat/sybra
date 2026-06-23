@@ -33,6 +33,7 @@ function makeCtx(overrides: Partial<PaletteCtx> = {}): PaletteCtx {
     openNewTask: vi.fn(),
     openNewProject: vi.fn(),
     openKeyboardHelp: vi.fn(),
+    toggleFocus: vi.fn(),
     ...overrides,
   }
 }
@@ -90,6 +91,15 @@ describe('buildCommands', () => {
       expect(cmd.shortcut).toBe('⌘/')
       cmd.run()
       expect(openKeyboardHelp).toHaveBeenCalled()
+    })
+
+    it('includes toggle-focus action', () => {
+      const toggleFocus = vi.fn()
+      const cmds = buildCommands(makeCtx({ toggleFocus }))
+      const cmd = cmds.find(c => c.id === 'action:toggle-focus')!
+      expect(cmd.title).toBe('Toggle Focus Mode')
+      cmd.run()
+      expect(toggleFocus).toHaveBeenCalled()
     })
   })
 

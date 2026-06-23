@@ -29,6 +29,7 @@ export interface PaletteCtx {
   openNewTask: () => void
   openNewProject: () => void
   openKeyboardHelp: () => void
+  toggleFocus: () => void
 }
 
 const ACTIVE_AGENT_STATES = new Set(['running', 'waiting', 'errored'])
@@ -62,6 +63,13 @@ export function buildCommands(ctx: PaletteCtx): Command[] {
     section: 'action',
     shortcut: '⌘/',
     run: ctx.openKeyboardHelp,
+  })
+  cmds.push({
+    id: 'action:toggle-focus',
+    title: 'Toggle Focus Mode',
+    section: 'action',
+    keywords: ['focus', 'simplify', 'simple', 'minimal'],
+    run: ctx.toggleFocus,
   })
 
   // --- PAGES ---
