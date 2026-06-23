@@ -217,17 +217,27 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 		m.logger.Warn("review.worktree.fetch", "project", proj.ID, "err", err)
 	}
 
-	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
-	if err != nil {
-		return "", fmt.Errorf("fetch pr branch: %w", err)
-	}
-
 	wtPath := m.PathFor(t)
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		return wtPath, nil
 	}
 
-	ref := "refs/remotes/origin/" + branch
+	// The branch name is only a log annotation now (the checkout uses the PR
+	// head ref below), so a transient gh failure must not block worktree
+	// creation.
+	branch, err := m.prBranch(t.ProjectID, t.PRNumber)
+	if err != nil {
+		m.logger.Warn("review.worktree.pr-branch", "project", proj.ID, "pr", t.PRNumber, "err", err)
+		branch = ""
+	}
+
+	// Check out the PR head via refs/pull/<N>/head rather than
+	// refs/remotes/origin/<branch>: a fork PR's head branch never lands under
+	// origin, so the latter fails with "invalid reference".
+	ref, err := project.FetchPRHead(proj.ClonePath, t.PRNumber)
+	if err != nil {
+		return "", fmt.Errorf("fetch pr head: %w", err)
+	}
 	if err := project.CreateWorktreeDetached(proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}

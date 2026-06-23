@@ -1552,3 +1552,70 @@ func TestPushSync_DivergenceForcePushes(t *testing.T) {
 		t.Fatalf("remote SHA after force-with-lease = %q, want %q", got, divergedSHA)
 	}
 }
+
+func TestFetchPRHead(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	// Build an upstream whose PR-42 head commit is reachable ONLY via
+	// refs/pull/42/head — never as a normal branch head. This mirrors a fork
+	// PR: the head branch lives in the fork, but GitHub still publishes the
+	// head at refs/pull/<N>/head on the upstream.
+	upstream := initRepoWithCommit(t)
+	run := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", upstream}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	defBranch, err := exec.Command("git", "-C", upstream, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("default branch: %v: %s", err, defBranch)
+	}
+	run("checkout", "-b", "fork-feature")
+	if err := os.WriteFile(filepath.Join(upstream, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "fork feature")
+	shaOut, err := exec.Command("git", "-C", upstream, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse: %v: %s", err, shaOut)
+	}
+	prSHA := strings.TrimSpace(string(shaOut))
+	run("update-ref", "refs/pull/42/head", prSHA)
+	run("checkout", strings.TrimSpace(string(defBranch)))
+	run("branch", "-D", "fork-feature")
+
+	// A plain bare clone copies heads only — not refs/pull/* — so the PR
+	// commit is absent until FetchPRHead pulls it on demand.
+	bare := filepath.Join(t.TempDir(), "clone.git")
+	if err := CloneBare(upstream, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+
+	ref, err := FetchPRHead(bare, 42)
+	if err != nil {
+		t.Fatalf("FetchPRHead: %v", err)
+	}
+	if ref != "refs/sybra/pr/42" {
+		t.Errorf("ref = %q, want refs/sybra/pr/42", ref)
+	}
+	got, err := exec.Command("git", "-C", bare, "rev-parse", ref).CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse %s: %v: %s", ref, err, got)
+	}
+	if strings.TrimSpace(string(got)) != prSHA {
+		t.Errorf("fetched ref at %q, want %q", strings.TrimSpace(string(got)), prSHA)
+	}
+
+	// The detached worktree that PrepareForReview creates must succeed from
+	// the fetched PR head — the original failure mode.
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktreeDetached(bare, wtPath, ref); err != nil {
+		t.Fatalf("CreateWorktreeDetached from PR head: %v", err)
+	}
+}
