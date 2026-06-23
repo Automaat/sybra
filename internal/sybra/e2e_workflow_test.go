@@ -2422,9 +2422,9 @@ func agentRunRoles(t task.Task) []string {
 // agent runs is the externally observable proof the step ran.
 func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	// Single-opus plan flow scenarios:
-	//   triage → plan → maybe_critique → critique_plan →
-	//   require_plan_critique → reset_for_address → address_critique →
-	//   review_plan.
+	//   triage → plan → require_plan → validate_plan_refs → maybe_critique →
+	//   critique_plan → require_plan_critique → reset_for_address →
+	//   address_critique → review_plan.
 	env := setupE2EMulti(t, []string{
 		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
@@ -2496,8 +2496,9 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 // would render only the plan. The guard must flip the task to human-required
 // and halt the workflow.
 func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
-	// Single-opus plan flow: triage → plan → critique_plan (no_save) →
-	// require_plan_critique guard fires.
+	// Single-opus plan flow: triage → plan → require_plan → validate_plan_refs
+	// → maybe_critique → critique_plan (no_save) → require_plan_critique guard
+	// fires.
 	env := setupE2EMulti(t, []string{
 		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
@@ -2550,8 +2551,8 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 // a task tagged "nocritic" must bypass critique_plan via the maybe_critique
 // condition step and reach review_plan with no plan-critic agent ever spawned.
 func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
-	// Single-opus plan flow: triage → plan → maybe_critique (skipped via
-	// nocritic) → review_plan.
+	// Single-opus plan flow: triage → plan → require_plan → validate_plan_refs
+	// → maybe_critique (skipped via nocritic) → review_plan.
 	env := setupE2EMulti(t, []string{
 		"triage_to_planning_nocritic", // triage sets status=planning, tags=large,nocritic
 		"write_sidecar_success",       // plan — writes the plan sidecar

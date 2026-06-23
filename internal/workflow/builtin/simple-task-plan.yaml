@@ -65,12 +65,14 @@ steps:
     next:
       - goto: ""
 
-  # Single-provider planning: one opus agent reads the codebase and writes the
-  # canonical plan sidecar directly via /sybra-plan. The adversarial review is
-  # the separate codex critique_plan step below. The prior dual-provider
-  # (Claude + Codex) parallel block plus the /plan-fork converge pass were
-  # removed: converge critiqued the plan a second time (it nests /plan-critic)
-  # and the two parallel planners could confabulate each other's task identity.
+  # Single plan step: one opus agent runs /sybra-plan to produce the canonical
+  # plan sidecar. /sybra-plan does its own persona-driven planning + synthesis
+  # internally, so this one step replaces the prior THREE: two parallel plan
+  # agents (each writing a draft) plus a separate /plan-fork converge pass.
+  # That converge re-critiqued the plan (it nests /plan-critic, duplicating the
+  # codex critique_plan step below), and the two parallel planners could
+  # confabulate each other's task identity into the synthesized plan. The
+  # adversarial review is now solely the codex critique_plan step below.
   - id: plan
     name: Plan
     type: run_agent
