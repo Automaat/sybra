@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
-  import { matchesQuery, matchesProject, matchesTags, matchesDateRange } from '../lib/task-filters.js'
+  import { matchesQuery, matchesProject, matchesDateRange } from '../lib/task-filters.js'
+  import { canonicalTags, matchesCanonicalTags } from '../lib/tags.js'
   import { toUtcDayStart, toUtcDayEnd, formatShortDate } from '../lib/dates.js'
   import TaskFilterPanel from '../components/TaskFilterPanel.svelte'
+  import TagFilterPopover from '../components/TagFilterPopover.svelte'
   import StatusBadge from '../components/StatusBadge.svelte'
 
   interface Props {
@@ -32,7 +34,7 @@
   )
 
   const allTags = $derived(
-    [...new Set(logbookTasks.flatMap((t: Task) => t.tags ?? []))].sort(),
+    canonicalTags(logbookTasks.flatMap((t: Task) => t.tags ?? [])),
   )
 
   const filteredTasks = $derived.by(() => {
@@ -44,7 +46,7 @@
         if (selectedStatus !== 'all' && t.status !== selectedStatus) return false
         if (!matchesQuery(t, searchQuery)) return false
         if (!matchesProject(t, selectedProjectId)) return false
-        if (!matchesTags(t, selectedTags)) return false
+        if (!matchesCanonicalTags(t.tags, selectedTags)) return false
         if (!matchesDateRange(t, from, to, 'closedAt')) return false
         return true
       })
@@ -102,6 +104,10 @@
       hasActive={hasActiveFilters}
     />
 
+    {#if allTags.length > 0}
+      <TagFilterPopover tags={allTags} selected={selectedTags} onchange={(s) => (selectedTags = s)} />
+    {/if}
+
     <!-- Sort toggle (page-specific, kept inline) -->
     <button
       type="button"
@@ -112,26 +118,6 @@
       {sortAsc ? '↑ Oldest' : '↓ Newest'}
     </button>
   </div>
-
-  <!-- Tag filter row -->
-  {#if allTags.length > 0}
-    <div class="flex flex-wrap gap-1.5 border-b border-surface-200 px-4 py-2 dark:border-surface-700">
-      {#each allTags as tag}
-        <button
-          type="button"
-          class="rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors {selectedTags.includes(tag)
-            ? 'border-primary-500 bg-primary-500 text-white'
-            : 'border-surface-300 bg-surface-100 text-surface-600 hover:bg-surface-200 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300}'}"
-          onclick={() =>
-            selectedTags.includes(tag)
-              ? (selectedTags = selectedTags.filter((t) => t !== tag))
-              : (selectedTags = [...selectedTags, tag])}
-        >
-          {tag}
-        </button>
-      {/each}
-    </div>
-  {/if}
 
   <!-- Task list -->
   <div class="min-h-0 flex-1 overflow-y-auto">
@@ -171,7 +157,7 @@
               <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
               <td class="hidden px-4 py-2 lg:table-cell">
                 <div class="flex flex-wrap gap-1">
-                  {#each t.tags ?? [] as tag}
+                  {#each canonicalTags(t.tags ?? []) as tag}
                     <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-xs dark:bg-surface-700">{tag}</span>
                   {/each}
                 </div>

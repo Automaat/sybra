@@ -238,13 +238,13 @@ describe('Logbook', () => {
   })
 
   describe('tag filtering', () => {
-    it('renders tag pills from logbook tasks', () => {
+    it('lists tags in the filter popover', async () => {
       Object.assign(taskStore, {
         list: [makeTask({ id: 't1', status: 'done', tags: ['backend', 'api'] })],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const tagButtons = screen.getAllByText('backend')
-      expect(tagButtons.length).toBeGreaterThan(0)
+      await fireEvent.click(screen.getByText('Filter by tag'))
+      expect(screen.getAllByText('backend').length).toBeGreaterThan(0)
     })
 
     it('filters tasks by selected tag', async () => {
@@ -255,13 +255,31 @@ describe('Logbook', () => {
         ],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
-      const tagPills = screen.getAllByText('backend')
-      await fireEvent.click(tagPills[0])
+      await fireEvent.click(screen.getByText('Filter by tag'))
+      // First 'backend' in DOM order is the popover option (filter bar precedes the table).
+      await fireEvent.click(screen.getAllByText('backend')[0].closest('button')!)
       expect(screen.getByText('Backend task')).toBeDefined()
       expect(screen.queryByText('Frontend task')).toBeNull()
     })
 
-    it('does not show tag pills from non-logbook tasks', () => {
+    it('normalizes duplicate tag variants to one canonical option', async () => {
+      Object.assign(taskStore, {
+        list: [
+          makeTask({ id: 't1', title: 'Bug A', status: 'done', tags: ['kind/bug'] }),
+          makeTask({ id: 't2', title: 'Bug B', status: 'done', tags: ['bug'] }),
+        ],
+      })
+      render(Logbook, { props: { onviewtask: vi.fn() } })
+      await fireEvent.click(screen.getByText('Filter by tag'))
+      // Both variants collapse to a single canonical 'bug' option in the popover.
+      const bugOptions = screen.getAllByText('bug').filter((el) => el.closest('button'))
+      await fireEvent.click(bugOptions[0].closest('button')!)
+      // Selecting canonical 'bug' matches both the 'bug' and 'kind/bug' tasks.
+      expect(screen.getByText('Bug A')).toBeDefined()
+      expect(screen.getByText('Bug B')).toBeDefined()
+    })
+
+    it('does not list tags from non-logbook tasks in the popover', async () => {
       Object.assign(taskStore, {
         list: [
           makeTask({ id: 't1', status: 'done', tags: ['done-tag'] }),
@@ -269,6 +287,8 @@ describe('Logbook', () => {
         ],
       })
       render(Logbook, { props: { onviewtask: vi.fn() } })
+      await fireEvent.click(screen.getByText('Filter by tag'))
+      expect(screen.getAllByText('done-tag').length).toBeGreaterThan(0)
       expect(screen.queryByText('todo-tag')).toBeNull()
     })
   })
