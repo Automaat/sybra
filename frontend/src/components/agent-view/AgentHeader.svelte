@@ -4,6 +4,7 @@
   import type { AgentPhase } from '$lib/agent-phases.js'
   import AgentStateBadge from '../AgentStateBadge.svelte'
   import { formatDateTime } from '$lib/dates.js'
+  import { agentDisplayName, cleanAgentName, shortId } from '$lib/agent-name.js'
 
   interface Props {
     a: Agent
@@ -17,14 +18,21 @@
   const { a, phase, stepText, linkedTask, onstop, onviewtask }: Props = $props()
 
   const isRunning = $derived(a.state === 'running')
+  const heading = $derived(agentDisplayName(a, linkedTask?.title))
+  // Show the session name only when it adds something beyond the heading.
+  const subtitle = $derived(cleanAgentName(a.name))
+  const showSubtitle = $derived(subtitle.length > 0 && subtitle !== heading)
 </script>
 
 <div class="flex flex-col gap-6">
   <div class="flex items-start justify-between gap-4">
     <div class="min-w-0">
-      <h1 class="break-words text-2xl font-bold">{a.project || a.id}</h1>
-      {#if a.name}
-        <span class="text-sm text-surface-400">{a.name}</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <h1 class="break-words text-2xl font-bold">{heading}</h1>
+        <span class="rounded bg-surface-200 px-1.5 py-0.5 font-mono text-[10px] text-surface-500 dark:bg-surface-700 dark:text-surface-400" title="Agent ID: {a.id}">{shortId(a.id)}</span>
+      </div>
+      {#if showSubtitle}
+        <span class="text-sm text-surface-400">{subtitle}</span>
       {/if}
       {#if phase === 'running'}
         <p class="mt-0.5 text-sm italic text-surface-400">
@@ -69,7 +77,7 @@
           class="text-left text-primary-500 hover:underline"
           onclick={() => onviewtask(a.taskId)}
         >
-          {linkedTask?.title ?? a.taskId}
+          View task →
         </button>
       </div>
     {/if}
@@ -87,12 +95,6 @@
       <div class="flex flex-col gap-1">
         <span class="font-medium text-surface-500">Project</span>
         <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{a.project}</span>
-      </div>
-    {/if}
-    {#if a.name}
-      <div class="flex flex-col gap-1">
-        <span class="font-medium text-surface-500">Session Name</span>
-        <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{a.name}</span>
       </div>
     {/if}
     {#if a.external}

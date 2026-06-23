@@ -7,6 +7,7 @@
   import { clock } from '$lib/clock.svelte.js'
   import { formatElapsed } from '$lib/elapsed.js'
   import { timeAgo } from '$lib/dates.js'
+  import { agentDisplayName, cleanAgentName } from '$lib/agent-name.js'
 
   interface Props {
     agent: Agent
@@ -16,6 +17,9 @@
   const { agent: a, onclick }: Props = $props()
 
   const linkedTask = $derived(a.taskId ? taskStore.tasks.get(a.taskId) : null)
+
+  const heading = $derived(agentDisplayName(a, linkedTask?.title))
+  const subtitle = $derived(cleanAgentName(a.name))
 
   const phase = $derived(
     getAgentPhase(
@@ -39,9 +43,9 @@
 >
   <div class="mb-2 flex items-start justify-between gap-2">
     <div class="flex flex-col gap-0.5">
-      <h3 class="text-sm font-semibold leading-tight {config.faded ? 'text-surface-400 dark:text-surface-500' : ''}">{linkedTask?.title ?? (a.project || a.id)}</h3>
-      {#if a.name}
-        <span class="text-xs text-surface-400">{a.name}</span>
+      <h3 class="text-sm font-semibold leading-tight {config.faded ? 'text-surface-400 dark:text-surface-500' : ''}">{heading}</h3>
+      {#if subtitle && subtitle !== heading}
+        <span class="text-xs text-surface-400">{subtitle}</span>
       {/if}
       {#if phase === 'running'}
         <span class="text-xs italic text-surface-400">

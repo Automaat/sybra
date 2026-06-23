@@ -106,10 +106,11 @@ describe('ChatList', () => {
     expect(screen.getByText('org/myrepo')).toBeDefined()
   })
 
-  it('shows agent id when name and taskId are empty', () => {
-    mockAgentList.push(makeAgent({ name: '', taskId: '', id: 'agent-abc123' }))
+  it('shows a friendly session label instead of a bare id', () => {
+    mockAgentList.push(makeAgent({ name: '', taskId: '', project: '', id: 'ext-codex-abcdef12' }))
     render(ChatList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('agent-abc123')).toBeDefined()
+    // Trailing entropy kept so distinct ext-codex- sessions don't collide.
+    expect(screen.getByText('Session abcdef12')).toBeDefined()
   })
 
   it('only shows interactive agents (not headless)', () => {

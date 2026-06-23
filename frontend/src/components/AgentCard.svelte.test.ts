@@ -67,14 +67,14 @@ describe('AgentCard', () => {
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('Implement auth')
   })
 
-  it('renders agent project name in heading when no linked task', () => {
-    render(AgentCard, { props: { agent: makeAgent(), onclick: () => {} } })
+  it('renders the project in the heading when there is no task or name', () => {
+    render(AgentCard, { props: { agent: makeAgent({ name: '' }), onclick: () => {} } })
     expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('sybra')
   })
 
-  it('renders agent id as fallback when project is empty and no linked task', () => {
-    render(AgentCard, { props: { agent: makeAgent({ project: '' }), onclick: () => {} } })
-    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('agent-1')
+  it('renders a labelled session id when project, name and task are empty', () => {
+    render(AgentCard, { props: { agent: makeAgent({ project: '', name: '', taskId: '' }), onclick: () => {} } })
+    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('Session agent-1')
   })
 
   it('renders agent name when present', () => {
