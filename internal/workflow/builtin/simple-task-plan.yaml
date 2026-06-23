@@ -113,12 +113,12 @@ steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
           2. Read the relevant source files so the plan is grounded in the
              real code (name files and symbols you will touch).
-          3. Convene the council on the implementation approach:
-             `/council core-eng <concise task summary + the approach options
-             you are weighing, grounded in the files you read>`. The personas
-             will debate tradeoffs and surface risks from opposed engineering
-             lenses. If /council is unavailable in this environment, plan
-             directly using the same multi-lens scrutiny.
+          3. Convene the council on the implementation approach: run
+             `/council core-eng` and pass it a concise task summary plus the
+             approach options you are weighing, grounded in the files you read.
+             The personas will debate tradeoffs and surface risks from opposed
+             engineering lenses. If /council is unavailable in this
+             environment, plan directly using the same multi-lens scrutiny.
           4. Synthesize the council's debate into a single detailed
              implementation plan that names files, symbols (with `path:line`
              references), the ordered steps, and per-step verification
