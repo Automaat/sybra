@@ -65,153 +65,49 @@ steps:
     next:
       - goto: ""
 
-  # Dual-provider planning: Claude and Codex generate plans in parallel,
-  # each as a headless one-shot writing its raw output to a per-child
-  # plan_draft sidecar (auto-keyed by child step ID). The convergence step
-  # below merges the drafts via /plan-fork into the canonical plan field.
-  #
-  # Adding a third provider = adding a third entry in `parallel`. No code
-  # changes to the engine or sidecar layer.
+  # Single-provider planning: one opus agent reads the codebase and writes the
+  # canonical plan sidecar directly via /sybra-plan. The adversarial review is
+  # the separate codex critique_plan step below. The prior dual-provider
+  # (Claude + Codex) parallel block plus the /plan-fork converge pass were
+  # removed: converge critiqued the plan a second time (it nests /plan-critic)
+  # and the two parallel planners could confabulate each other's task identity.
   - id: plan
-    name: Plan (parallel)
-    type: parallel
-    parallel:
-      - id: plan_claude
-        name: Plan (Claude)
-        type: run_agent
-        config:
-          role: plan
-          provider: claude
-          mode: headless
-          model: opus
-          needs_worktree: true
-          max_retries: 1
-          prompt: >-
-            Plan task {{.Task.ID}} using the /sybra-plan skill.
-
-            IDENTITY (read first, before anything else):
-              - Your task ID is {{.Task.ID}}.
-              - Your worktree is your current working directory (`pwd`).
-              - Your branch is the checked-out branch
-                (`git rev-parse --abbrev-ref HEAD`).
-              - For the canonical source of truth, read `./.sybra-context.md` —
-                this file is auto-written by Sybra into every task worktree.
-
-            DO NOT reference any other task ID, branch, or worktree path in
-            your plan. If `git branch -a` reveals sibling branches like
-            `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
-            other concurrent tasks against the same project repo and have
-            nothing to do with you.
-
-            Steps:
-              1. Run: sybra-cli --json get {{.Task.ID}}
-              2. Read the codebase and produce a detailed implementation plan
-                 that names files, symbols (with `path:line` references), the
-                 ordered steps, and per-step verification criteria.
-              3. Write the full plan markdown to /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
-
-            Do NOT call sybra-cli update — Sybra will ingest your file as the
-            plan_draft.{{.Step.ID}} sidecar after you exit. Do NOT modify the
-            task plan field. Do NOT change the task status.
-          allowed_tools:
-            - Bash
-            - Read
-            - Grep
-            - Glob
-            - Write
-            - Skill
-            - Agent
-          import_sidecar:
-            kind: plan_draft
-            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
-      - id: plan_codex
-        name: Plan (Codex)
-        type: run_agent
-        config:
-          role: plan
-          provider: codex
-          mode: headless
-          needs_worktree: true
-          max_retries: 1
-          prompt: >-
-            Plan task {{.Task.ID}}.
-
-            IDENTITY (read first, before anything else):
-              - Your task ID is {{.Task.ID}}.
-              - Your worktree is your current working directory (`pwd`).
-              - Your branch is the checked-out branch
-                (`git rev-parse --abbrev-ref HEAD`).
-              - For the canonical source of truth, read `./.sybra-context.md` —
-                this file is auto-written by Sybra into every task worktree.
-
-            DO NOT reference any other task ID, branch, or worktree path in
-            your plan. If `git branch -a` reveals sibling branches like
-            `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
-            other concurrent tasks against the same project repo and have
-            nothing to do with you.
-
-            Steps:
-              1. Run: sybra-cli --json get {{.Task.ID}} — read the task
-                 title, body, and project context.
-              2. Read the relevant source files. Produce a detailed
-                 implementation plan that names: file paths, symbols with
-                 `path:line` references, ordered steps, and per-step
-                 verification criteria (test command + expected outcome).
-              3. Write the full plan markdown to /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
-
-            Do NOT call sybra-cli update — Sybra will ingest your file as the
-            plan_draft.{{.Step.ID}} sidecar after you exit. Do NOT modify the
-            task plan field or status.
-          import_sidecar:
-            kind: plan_draft
-            from: /tmp/sybra-plan-draft-{{.Step.ID}}-{{.Task.ID}}.md
-    next:
-      - goto: converge_plans
-
-  # Converge the parallel drafts into a single synthesized plan via the
-  # /plan-fork skill. Runs on whichever provider Sybra defaults to, since
-  # /plan-fork is a Claude Code skill that nests /plan-critic for the final
-  # gate.
-  - id: converge_plans
-    name: Converge Plans
+    name: Plan
     type: run_agent
     config:
       role: plan
+      provider: claude
       mode: headless
-      model: sonnet
+      model: opus
       needs_worktree: true
       max_retries: 1
       prompt: >-
-        Converge the parallel plan drafts for task {{.Task.ID}} into a
-        single synthesized plan via /plan-fork.
+        Plan task {{.Task.ID}} using the /sybra-plan skill.
 
         IDENTITY (read first, before anything else):
           - Your task ID is {{.Task.ID}}.
-          - Your worktree is `pwd`. Your branch is
-            `git rev-parse --abbrev-ref HEAD`.
-          - Read `./.sybra-context.md` for the canonical identity beacon.
-          - If a draft mentions a branch, worktree, or task ID that differs
-            from the identity above, that is contamination — strip it out
-            of the synthesized plan and substitute your own identity.
+          - Your worktree is your current working directory (`pwd`).
+          - Your branch is the checked-out branch
+            (`git rev-parse --abbrev-ref HEAD`).
+          - For the canonical source of truth, read `./.sybra-context.md` —
+            this file is auto-written by Sybra into every task worktree.
 
-        Drafts (read each one before invoking the skill):
-        {{- range $name, $content := .Task.PlanDrafts }}
-          - {{$name}}: ~/.sybra/tasks/{{$.Task.ID}}.plan-draft-{{$name}}.md
-        {{- end }}
+        DO NOT reference any other task ID, branch, or worktree path in
+        your plan. If `git branch -a` reveals sibling branches like
+        `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
+        other concurrent tasks against the same project repo and have
+        nothing to do with you.
 
         Steps:
-          1. List the available drafts in ~/.sybra/tasks/ with the
-             pattern {{.Task.ID}}.plan-draft-*.md
-          2. Pick the two drafts (typically plan_claude and plan_codex) and
-             invoke:
-             /plan-fork <plan-a-path> <plan-b-path> --task {{.Task.ID}} --out /tmp/sybra-plan-{{.Task.ID}}.md
-          3. Capture only the synthesized plan markdown to
-             /tmp/sybra-plan-{{.Task.ID}}.md (the skill writes there directly
-             when --out is passed).
+          1. Run: sybra-cli --json get {{.Task.ID}}
+          2. Read the codebase and produce a detailed implementation plan
+             that names files, symbols (with `path:line` references), the
+             ordered steps, and per-step verification criteria.
+          3. Write the full plan markdown to /tmp/sybra-plan-{{.Task.ID}}.md
 
-        Sybra will ingest /tmp/sybra-plan-{{.Task.ID}}.md as the task's
+        Do NOT call sybra-cli update — Sybra will ingest your file as the
         plan sidecar after you exit. Do NOT modify the task plan field
-        directly via sybra-cli. Do NOT change the task status.
+        directly. Do NOT change the task status.
       allowed_tools:
         - Bash
         - Read
