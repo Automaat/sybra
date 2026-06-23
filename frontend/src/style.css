@@ -94,8 +94,11 @@ html, body {
 .elevation-popover { box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.35), 0 4px 6px -4px rgb(0 0 0 / 0.35); }
 .elevation-modal   { box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5); }
 
-.dark .elevation-popover { background-color: var(--color-surface-900); border-color: var(--color-surface-700); }
-.dark .elevation-modal   { background-color: var(--color-surface-900); border-color: var(--color-surface-700); }
+.dark .elevation-popover,
+.dark .elevation-modal {
+  background-color: var(--color-surface-900);
+  border-color: var(--color-surface-700);
+}
 
 /* Shared overlay scrim: dim + blur whatever sits behind a modal/popover. */
 .modal-backdrop {
