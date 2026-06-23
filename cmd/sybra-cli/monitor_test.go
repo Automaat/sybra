@@ -1,12 +1,35 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// backdateCreatedAt rewrites a task file's created_at so detectUntriaged's
+// creation grace period does not exempt it — used by tests that assert
+// untriaged detection rather than the grace window itself.
+func backdateCreatedAt(t *testing.T, home, id string, age time.Duration) {
+	t.Helper()
+	p := filepath.Join(home, "tasks", id+".md")
+	tk, err := task.Parse(p)
+	if err != nil {
+		t.Fatalf("parse %s: %v", id, err)
+	}
+	tk.CreatedAt = time.Now().Add(-age).UTC()
+	data, err := task.Marshal(tk)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", id, err)
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", id, err)
+	}
+}
 
 func TestMonitorScanEmptyBoard(t *testing.T) {
 	setupStore(t)
@@ -26,7 +49,7 @@ func TestMonitorScanEmptyBoard(t *testing.T) {
 }
 
 func TestMonitorScanDetectsUntriagedAndOverDispatch(t *testing.T) {
-	setupStore(t)
+	dir := setupStore(t)
 
 	// Plant 4 in-progress tasks (over the default DispatchLimit of 3) plus
 	// an untriaged todo task. Tags are empty on one; a second has a full
@@ -57,8 +80,12 @@ func TestMonitorScanDetectsUntriagedAndOverDispatch(t *testing.T) {
 	createHeadless("in-progress b", task.StatusInProgress, []string{"medium"})
 	createHeadless("in-progress c", task.StatusInProgress, []string{"medium"})
 	createHeadless("in-progress d", task.StatusInProgress, []string{"medium"})
-	createHeadless("untriaged todo", task.StatusTodo, nil)
+	untriagedID := createHeadless("untriaged todo", task.StatusTodo, nil)
 	createHeadless("triaged todo", task.StatusTodo, []string{"medium"})
+
+	// detectUntriaged exempts freshly created tasks; backdate this one past
+	// the grace window so it is still flagged (this test asserts detection).
+	backdateCreatedAt(t, dir, untriagedID, 30*time.Minute)
 
 	code, out := runCLI(t, "--json", "monitor", "scan")
 	if code != 0 {
