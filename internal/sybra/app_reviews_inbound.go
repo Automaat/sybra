@@ -41,6 +41,12 @@ func (r *ReviewHandler) createReviewTaskWithTriage(pr github.PullRequest, projec
 	go triage(t)
 }
 
+// triageReviewSmall returns true when the PR is below both size thresholds and
+// should be routed to human-required rather than dispatched to a review agent.
+func triageReviewSmall(additions, changedFiles int) bool {
+	return additions < reviewSmallAdditions && changedFiles < reviewSmallFiles
+}
+
 func (r *ReviewHandler) triageReview(t task.Task) {
 	stats, err := github.FetchPRStats(t.ProjectID, t.PRNumber)
 	if err != nil {
@@ -57,7 +63,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 
 	r.logger.Info("review.triage", "task_id", t.ID, "additions", stats.Additions, "files", stats.ChangedFiles)
 
-	if stats.Additions < reviewSmallAdditions && stats.ChangedFiles < reviewSmallFiles {
+	if triageReviewSmall(stats.Additions, stats.ChangedFiles) {
 		reason := fmt.Sprintf("PR too small for agent review (%d additions, %d files)", stats.Additions, stats.ChangedFiles)
 		if _, err := r.tasks.Update(t.ID, task.Update{
 			Status:       task.Ptr(task.StatusHumanRequired),

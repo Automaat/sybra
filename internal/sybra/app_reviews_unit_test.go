@@ -457,6 +457,46 @@ func TestMonitoredPRs(t *testing.T) {
 	}
 }
 
+// TestTriageReviewSmall guards the reviewSmallAdditions (40) and
+// reviewSmallFiles (5) thresholds. Both conditions must hold for the PR to be
+// routed to human-required; if either meets or exceeds its limit the review
+// agent should be dispatched.
+func TestTriageReviewSmall(t *testing.T) {
+	tests := []struct {
+		name      string
+		additions int
+		files     int
+		wantSmall bool
+	}{
+		// Both strictly below threshold → too small for agent
+		{"39 additions, 4 files — below both limits", 39, 4, true},
+		{"0 additions, 0 files — zero-sized PR", 0, 0, true},
+		{"1 addition, 1 file — minimal PR", 1, 1, true},
+
+		// additions at exact threshold → no longer small (dispatch agent)
+		{"40 additions, 4 files — additions at limit", 40, 4, false},
+		// files at exact threshold → no longer small (dispatch agent)
+		{"39 additions, 5 files — files at limit", 39, 5, false},
+		// both at threshold
+		{"40 additions, 5 files — both at limit", 40, 5, false},
+		// both above threshold
+		{"200 additions, 20 files — large PR", 200, 20, false},
+		// one well above, one below
+		{"100 additions, 1 file — additions above, files below", 100, 1, false},
+		{"1 addition, 10 files — additions below, files above", 1, 10, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := triageReviewSmall(tt.additions, tt.files)
+			if got != tt.wantSmall {
+				t.Errorf("triageReviewSmall(%d, %d) = %v, want %v",
+					tt.additions, tt.files, got, tt.wantSmall)
+			}
+		})
+	}
+}
+
 func TestHasReviewTask_ScopedByProject(t *testing.T) {
 	r := &ReviewHandler{}
 	existing := []task.Task{
