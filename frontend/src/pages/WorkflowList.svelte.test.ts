@@ -38,9 +38,9 @@ describe('WorkflowList', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders the empty state when there are no workflows', () => {
+  it('loads workflows on mount', () => {
     render(WorkflowList, { props: { onselect: vi.fn() } })
-    expect(screen.getByText('No workflows found')).toBeDefined()
+    expect(workflowStore.load).toHaveBeenCalled()
   })
 
   it('shows loading message when loading with empty list', () => {

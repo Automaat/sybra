@@ -74,7 +74,7 @@ test.describe('Task List', () => {
     await expect(page.getByRole('heading', { name: 'Done' })).not.toBeVisible()
   })
 
-  test('shows app bar with Tasks title and New Task button', async ({ page }) => {
+  test('shows app bar with Board title and New Task button', async ({ page }) => {
     await goToTaskList(page)
 
     await expect(page.locator('h2', { hasText: 'Board' })).toBeVisible()
