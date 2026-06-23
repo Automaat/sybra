@@ -1,19 +1,19 @@
 <script lang="ts">
   import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
-  import type { PhaseConfig, AgentPhase } from '$lib/agent-phases.js'
+  import type { AgentPhase } from '$lib/agent-phases.js'
+  import AgentStateBadge from '../AgentStateBadge.svelte'
 
   interface Props {
     a: Agent
     phase: AgentPhase
-    phaseConfig: PhaseConfig
     stepText?: string
     linkedTask?: Task | null
     onstop: () => void
     onviewtask: (taskId: string) => void
   }
 
-  const { a, phase, phaseConfig, stepText, linkedTask, onstop, onviewtask }: Props = $props()
+  const { a, phase, stepText, linkedTask, onstop, onviewtask }: Props = $props()
 
   const isRunning = $derived(a.state === 'running')
 
@@ -51,14 +51,7 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
-      <span class="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium {phaseConfig.badgeClasses}">
-        {#if phaseConfig.animate}
-          <span class="h-2 w-2 animate-pulse-subtle rounded-full {phaseConfig.dotClasses}"></span>
-        {:else if phase !== 'queued' && phase !== 'done'}
-          <span class="h-2 w-2 rounded-full {phaseConfig.dotClasses}"></span>
-        {/if}
-        {phaseConfig.label}
-      </span>
+      <AgentStateBadge {phase} size="md" />
       {#if isRunning}
         <button
           type="button"

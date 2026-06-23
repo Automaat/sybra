@@ -2,8 +2,8 @@
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
-  import { fade } from 'svelte/transition'
   import { getAgentPhase, PHASE_CONFIG } from '$lib/agent-phases.js'
+  import AgentStateBadge from './AgentStateBadge.svelte'
   import { clock } from '$lib/clock.svelte.js'
   import { formatElapsed } from '$lib/elapsed.js'
 
@@ -71,14 +71,7 @@
         </span>
       {/if}
     </div>
-    <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all duration-150 {config.badgeClasses}">
-      {#if config.animate}
-        <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 animate-pulse-subtle rounded-full {config.dotClasses}"></span>
-      {:else if phase !== 'queued' && phase !== 'done'}
-        <span transition:fade={{ duration: 150 }} class="h-1.5 w-1.5 rounded-full {config.dotClasses}"></span>
-      {/if}
-      {config.label}
-    </span>
+    <AgentStateBadge {phase} />
   </div>
 
   {#if phase === 'human-required'}
