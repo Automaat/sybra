@@ -2,8 +2,10 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -186,6 +188,49 @@ func (a *App) initStatusHook() {
 					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
 				}
 			}
+		}
+	})
+}
+
+// maybeStartWorkflowForExternalTask starts the matching task.created workflow
+// for a task that appeared on disk outside the GUI CreateTask path — most
+// importantly via sybra-cli, the documented primary task interface. Without
+// this, CLI-created tasks never get a workflow and sit inert in todo: the
+// orchestrator can triage them but no implementation ever starts. Mirrors
+// TaskService.startCreatedWorkflow. Idempotent: DispatchEvent serializes per
+// task and rejects a task that already owns a non-terminal workflow, so the
+// watcher firing TaskCreated several times for one file is harmless.
+func (a *App) maybeStartWorkflowForExternalTask(path string) {
+	if a.workflowEngine == nil || a.tasks == nil {
+		return
+	}
+	id := strings.TrimSuffix(filepath.Base(path), ".md")
+	if id == "" {
+		return
+	}
+	a.wg.Go(func() {
+		t, err := a.tasks.Get(id)
+		if err != nil {
+			return
+		}
+		// Only fresh, pre-implementation tasks. simple-task-plan's trigger has
+		// no status condition, so without this guard a task.created dispatch
+		// could restart planning on an in-review/done task.
+		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
+			return
+		}
+		if t.Workflow != nil &&
+			t.Workflow.State != "" &&
+			t.Workflow.State != workflow.ExecCompleted &&
+			t.Workflow.State != workflow.ExecFailed {
+			return
+		}
+		if a.agents.HasRunningAgentForTask(id) {
+			return
+		}
+		if _, err := a.workflowEngine.DispatchEvent(id, "task.created", nil, nil); err != nil &&
+			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			a.logger.Error("workflow.external-create.failed", "task_id", id, "err", err)
 		}
 	})
 }

@@ -213,6 +213,12 @@ func (a *App) Startup(ctx context.Context) error {
 				} else {
 					store.InvalidatePath(path)
 				}
+				// A task file appearing outside GUI CreateTask (e.g. via
+				// sybra-cli) must still get its task.created workflow, or it
+				// sits inert in todo with nothing to dispatch it.
+				if event == events.TaskCreated {
+					a.maybeStartWorkflowForExternalTask(path)
+				}
 			}
 		}
 		a.emit(event, data)
