@@ -105,16 +105,23 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed wedged agent: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	// The seed agent reaches StatePaused asynchronously once its runner
+	// spawns the (silent) process, so poll rather than assume. The ceiling is
+	// generous for loaded CI; the loop exits as soon as the state settles.
+	var lastState agent.State
+	var lastSession string
+	deadline := time.Now().Add(30 * time.Second)
 	for {
-		a, gerr := mgr.GetAgent(wedged.ID)
-		if gerr == nil && a.GetState() == agent.StatePaused && a.GetSessionID() == "" {
-			break
+		if a, gerr := mgr.GetAgent(wedged.ID); gerr == nil {
+			lastState, lastSession = a.GetState(), a.GetSessionID()
+			if lastState == agent.StatePaused && lastSession == "" {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("wedged agent never parked in paused-no-session")
+			t.Fatalf("wedged agent never parked in paused-no-session (last state=%q session=%q)", lastState, lastSession)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	svc.agentID = wedged.ID
 
