@@ -23,10 +23,10 @@
 
   const contentClass = $derived(
     variant === 'bottom'
-      ? 'flex max-h-[92dvh] w-full flex-col overflow-y-auto rounded-t-2xl bg-surface-50 pb-safe shadow-2xl dark:bg-surface-950 md:max-h-[85dvh] md:max-w-lg md:rounded-2xl md:pb-0'
+      ? 'elevation-modal flex max-h-[92dvh] w-full flex-col overflow-y-auto rounded-t-2xl pb-safe md:max-h-[85dvh] md:max-w-lg md:rounded-2xl md:pb-0'
       : variant === 'top'
-        ? 'flex max-h-[92dvh] w-full flex-col overflow-y-auto rounded-b-2xl bg-surface-50 pt-safe shadow-2xl dark:bg-surface-950 md:max-h-[80dvh] md:max-w-lg md:rounded-2xl md:pt-0'
-        : 'flex max-h-[92dvh] w-full max-w-lg flex-col overflow-y-auto rounded-2xl bg-surface-50 shadow-2xl dark:bg-surface-950'
+        ? 'elevation-modal flex max-h-[92dvh] w-full flex-col overflow-y-auto rounded-b-2xl pt-safe md:max-h-[80dvh] md:max-w-lg md:rounded-2xl md:pt-0'
+        : 'elevation-modal flex max-h-[92dvh] w-full max-w-lg flex-col overflow-y-auto rounded-2xl'
   )
 </script>
 
@@ -34,7 +34,7 @@
   {open}
   onOpenChange={(d) => onOpenChange(d.open)}
 >
-  <Dialog.Backdrop class={backdropClass ?? 'fixed inset-0 z-40 bg-black/50'} />
+  <Dialog.Backdrop class={backdropClass ?? 'modal-backdrop fixed inset-0 z-40'} />
   <Dialog.Positioner class={positionerClass}>
     <Dialog.Content class={contentClass}>
       {#if open}

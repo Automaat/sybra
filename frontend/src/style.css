@@ -76,3 +76,30 @@ html, body {
 @utility animate-pulse-subtle {
   animation: pulse-subtle 2s ease-in-out infinite;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Overlay elevation (dark theme): page (surface-950) < popover < modal.
+ * Both lift the surface to surface-900 off the near-black page and deepen the
+ * shadow so overlays read as distinct planes instead of a flat "sea of black";
+ * the modal goes further with a larger shadow and the blurred .modal-backdrop.
+ * Light theme keeps a near-white surface and leans on the shadow + border.
+ * Apply these instead of hand-rolling bg/border/shadow per overlay component.
+ * (On-page cards already sit on their own surface token, styled per-screen.)
+ * ────────────────────────────────────────────────────────────────────────── */
+.elevation-popover,
+.elevation-modal {
+  background-color: var(--color-surface-50);
+  border: 1px solid var(--color-surface-200);
+}
+.elevation-popover { box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.35), 0 4px 6px -4px rgb(0 0 0 / 0.35); }
+.elevation-modal   { box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5); }
+
+.dark .elevation-popover { background-color: var(--color-surface-900); border-color: var(--color-surface-700); }
+.dark .elevation-modal   { background-color: var(--color-surface-900); border-color: var(--color-surface-700); }
+
+/* Shared overlay scrim: dim + blur whatever sits behind a modal/popover. */
+.modal-backdrop {
+  background-color: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}

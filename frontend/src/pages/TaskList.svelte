@@ -454,7 +454,7 @@
       <span class="text-sm font-medium">Show done</span>
     </label>
 
-    <div class="sticky bottom-0 -mx-5 -mb-5 flex gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95">
+    <div class="sticky bottom-0 -mx-5 -mb-5 flex gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-900/95">
       <button
         type="button"
         onclick={() => { clearFilters(); filtersOpen = false }}

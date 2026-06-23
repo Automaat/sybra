@@ -107,7 +107,7 @@
   }
 </script>
 
-<MobileSheet {open} onOpenChange={(o) => { if (!o) onclose() }} variant="top" backdropClass="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm">
+<MobileSheet {open} onOpenChange={(o) => { if (!o) onclose() }} variant="top">
   <div class="flex flex-col">
     <!-- Search bar -->
     <div class="flex items-center gap-3 border-b border-surface-200 px-4 dark:border-surface-700">

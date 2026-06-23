@@ -37,13 +37,13 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+  class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop"
   onclick={onclose}
   onkeydown={(e) => e.key === 'Escape' && onclose()}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="min-w-[200px] rounded-xl border border-surface-300 bg-surface-50 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
+    class="min-w-[200px] rounded-xl elevation-popover"
     onclick={(e) => e.stopPropagation()}
     onkeydown={(e) => e.stopPropagation()}
   >

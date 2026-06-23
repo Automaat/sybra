@@ -219,7 +219,7 @@
           <p class="text-sm text-error-500">{error}</p>
         {/if}
 
-        <div class="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-950/95 md:-mx-6 md:-mb-6 md:px-6 md:pb-4">
+        <div class="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-900/95 md:-mx-6 md:-mb-6 md:px-6 md:pb-4">
           <button
             type="button"
             onclick={() => { onOpenChange(false); reset() }}
