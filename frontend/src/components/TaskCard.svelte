@@ -1,12 +1,13 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
-  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy, AlertTriangle } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy, AlertTriangle, MoreHorizontal } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { statusOptionsFor, coreStatus, awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
+  import { awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import StatusPicker from './StatusPicker.svelte'
 
   interface Props {
     task: Task
@@ -17,14 +18,9 @@
 
   const { task: t, onclick, focused = false, onstatuschange }: Props = $props()
 
-  function handleStatusChange(e: Event) {
-    e.stopPropagation()
-    const value = (e.currentTarget as HTMLSelectElement).value
-    if (value !== t.status) onstatuschange?.(value)
-  }
-
   let dragging = $state(false)
   let copiedBranch = $state(false)
+  let moveMenuOpen = $state(false)
 
   const taskBranchName = $derived(
     'sybra/' + (t.slug ? t.slug + '-' + t.id : t.id)
@@ -57,13 +53,6 @@
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running' && !a.name?.startsWith('triage:') && !a.name?.startsWith('eval:') && !a.name?.startsWith('plan:'))
   )
 
-  const hasRunningAgent = $derived(
-    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running')
-  )
-
-  // Statuses that conflict with a running agent — cannot move to these while agent is active
-  const AGENT_BLOCKED_STATUSES = new Set(['new', 'todo', 'done'])
-
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
   const isReviewTask = $derived(t.tags?.includes('review') ?? false)
@@ -79,7 +68,7 @@
 
 <div
   data-focused-task={focused ? '' : undefined}
-  class="group w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {needsYou ? 'border-l-4 border-l-error-500 dark:border-l-error-400' : ''} {needsYou && !focused ? 'ring-2 ring-error-400/40 dark:ring-error-500/40' : ''} {dragging ? 'opacity-40 shadow-lg' : ''}"
+  class="group relative w-full select-none rounded-lg border bg-surface-50 p-3 text-left transition-all duration-100 active:bg-surface-100 dark:bg-surface-800 dark:active:bg-surface-700 md:hover:bg-surface-100 md:dark:hover:bg-surface-700 {focused ? 'border-primary-400 ring-2 ring-primary-400/50 dark:border-primary-500 dark:ring-primary-500/50' : 'border-surface-300 dark:border-surface-600'} {needsYou ? 'border-l-4 border-l-error-500 dark:border-l-error-400' : ''} {needsYou && !focused ? 'ring-2 ring-error-400/40 dark:ring-error-500/40' : ''} {dragging ? 'opacity-40 shadow-lg' : ''}"
 >
   <button
     type="button"
@@ -258,18 +247,21 @@
     </div>
   {/if}
   {#if onstatuschange}
-    <div class="mt-2 flex justify-end">
-      <select
-        value={coreStatus(t.status)}
-        onchange={handleStatusChange}
-        onclick={(e) => e.stopPropagation()}
-        class="tap rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
-        aria-label="Change status"
-      >
-        {#each statusOptionsFor(t.status) as opt}
-          <option value={opt.value} disabled={hasRunningAgent && AGENT_BLOCKED_STATUSES.has(opt.value)}>{opt.label}</option>
-        {/each}
-      </select>
-    </div>
+    <button
+      type="button"
+      onclick={(e) => { e.stopPropagation(); moveMenuOpen = true }}
+      class="absolute right-1 top-1 rounded p-1 text-surface-400 opacity-0 transition-opacity hover:bg-surface-200 hover:text-surface-600 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-surface-600 dark:hover:text-surface-300"
+      aria-label="Move task"
+      title="Move to…"
+    >
+      <MoreHorizontal size={14} />
+    </button>
+    {#if moveMenuOpen}
+      <StatusPicker
+        currentStatus={t.status}
+        onpick={(s) => { onstatuschange?.(s); moveMenuOpen = false }}
+        onclose={() => { moveMenuOpen = false }}
+      />
+    {/if}
   {/if}
 </div>

@@ -28,7 +28,10 @@
 
   $effect(() => {
     function handleKeydown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onclose(); return }
+      // Modal: own the keyboard so keys never leak to the board behind it
+      // (it can be opened from a card "⋯" menu, which leaves board hotkeys live).
+      e.stopImmediatePropagation()
+      if (e.key === 'Escape') { e.preventDefault(); onclose(); return }
       if (e.key === 'ArrowDown' || e.key === 'j') {
         e.preventDefault()
         selectedIdx = Math.min(selectedIdx + 1, options.length - 1)

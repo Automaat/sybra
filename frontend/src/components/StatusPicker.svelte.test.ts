@@ -45,6 +45,16 @@ describe('StatusPicker', () => {
     expect(onclose).toHaveBeenCalled()
   })
 
+  it('does not leak keys to listeners behind it (e.g. the board)', async () => {
+    const behind = vi.fn()
+    window.addEventListener('keydown', behind) // bubble phase, like the board's hotkeys
+    render(StatusPicker, { props: { currentStatus: 'todo', onpick: vi.fn(), onclose: vi.fn() } })
+    await fireEvent.keyDown(window, { key: 'j' }) // handled by the picker
+    await fireEvent.keyDown(window, { key: 's' }) // not handled, must still be swallowed
+    expect(behind).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', behind)
+  })
+
   it('navigates down with ArrowDown key from first option', async () => {
     const onpick = vi.fn()
     // Start at index 0 ('todo') so ArrowDown goes to index 1

@@ -102,6 +102,19 @@ describe('TaskCard', () => {
     expect(handler).toHaveBeenCalledOnce()
   })
 
+  it('does not render the move menu without onstatuschange', () => {
+    render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
+    expect(screen.queryByLabelText('Move task')).toBeNull()
+  })
+
+  it('opens the move menu and changes status via the picker', async () => {
+    const onstatuschange = vi.fn()
+    render(TaskCard, { props: { task: mockTask, onclick: () => {}, onstatuschange } })
+    await fireEvent.click(screen.getByLabelText('Move task'))
+    await fireEvent.click(screen.getByText('In Progress'))
+    expect(onstatuschange).toHaveBeenCalledWith('in-progress')
+  })
+
   describe('copyBranch error handling', () => {
     beforeEach(() => {
       Object.defineProperty(navigator, 'clipboard', {
