@@ -8,8 +8,11 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+const wtFailureLimit = 5
 
 func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
@@ -72,20 +75,9 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		return
 	}
 
-	dir := ""
-	if t.ProjectID != "" {
-		var d string
-		var wtErr error
-		if issue.Kind == github.PRIssueConflict {
-			d, wtErr = r.worktrees.PrepareForFix(t, issue.PR.Number)
-		} else {
-			d, wtErr = r.worktrees.PrepareForTask(t, nil)
-		}
-		if wtErr != nil {
-			r.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)
-			return
-		}
-		dir = d
+	dir, ok := r.prepareWorktree(t, issue)
+	if !ok {
+		return
 	}
 
 	if r.workflowEngine == nil {
@@ -127,6 +119,46 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		"task_id", t.ID, "issue", string(issue.Kind),
 		"pr", issue.PR.Number, "workflow", wfID,
 	)
+}
+
+// prepareWorktree sets up the fix worktree for the given task and PR issue.
+// Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
+// consecutive failures. Returns ("", true) when no worktree is needed.
+func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (string, bool) {
+	if t.ProjectID == "" {
+		return "", true
+	}
+	var (
+		d     string
+		wtErr error
+	)
+	if issue.Kind == github.PRIssueConflict {
+		d, wtErr = r.worktrees.PrepareForFix(t, issue.PR.Number)
+	} else {
+		d, wtErr = r.worktrees.PrepareForTask(t, nil)
+	}
+	if wtErr != nil {
+		if r.wtFailures == nil {
+			r.wtFailures = make(map[string]int)
+		}
+		r.wtFailures[t.ID]++
+		if r.wtFailures[t.ID] >= wtFailureLimit {
+			delete(r.wtFailures, t.ID)
+			r.logger.Error("pr-monitor.worktree.circuit-open",
+				"task_id", t.ID, "failures", wtFailureLimit, "err", wtErr)
+			if _, uerr := r.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+			}); uerr != nil {
+				r.logger.Error("pr-monitor.worktree.escalate", "task_id", t.ID, "err", uerr)
+			}
+			return "", false
+		}
+		r.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)
+		return "", false
+	}
+	delete(r.wtFailures, t.ID)
+	return d, true
 }
 
 func conflictPrompt(pr github.PullRequest) string {

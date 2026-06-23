@@ -1,7 +1,9 @@
 package watchdog
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -30,6 +32,16 @@ func dwellBudget(tags []string) time.Duration {
 	}
 }
 
+// hasBlocker reports whether the task body declares an upstream blocker via a
+// "## Blocked by" heading or an inline "Blocked by #NNN" reference. Tasks with
+// a recognised blocker are skipped by the dwell watchdog — they are
+// intentionally idle and should not be escalated until the blocker clears.
+func hasBlocker(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "## blocked by") ||
+		strings.Contains(lower, "blocked by #")
+}
+
 func (w *Watchdog) checkDwell(now time.Time) {
 	tasks, err := w.tasks.List()
 	if err != nil {
@@ -44,11 +56,14 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		if t.Status != task.StatusTodo && t.Status != task.StatusInProgress {
 			continue
 		}
+		if hasBlocker(t.Body) {
+			continue
+		}
 		budget := dwellBudget(t.Tags)
 		if now.Sub(t.UpdatedAt) <= budget {
 			continue
 		}
-		reason := "dwell exceeded size tag budget"
+		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)
 		w.logger.Info("watchdog.dwell.escalate",
 			"task_id", t.ID, "status", string(t.Status),
 			"dwell_h", now.Sub(t.UpdatedAt).Hours(), "budget_h", budget.Hours())
