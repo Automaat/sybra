@@ -75,14 +75,13 @@ steps:
     next:
       - goto: ""
 
-  # Single plan step: one opus agent runs /sybra-plan to produce the canonical
-  # plan sidecar. /sybra-plan does its own persona-driven planning + synthesis
-  # internally, so this one step replaces the prior THREE: two parallel plan
-  # agents (each writing a draft) plus a separate /plan-fork converge pass.
-  # That converge re-critiqued the plan (it nests /plan-critic, duplicating the
-  # codex critique_plan step below), and the two parallel planners could
-  # confabulate each other's task identity into the synthesized plan. The
-  # adversarial review is now solely the codex critique_plan step below.
+  # Single plan step: one opus agent convenes the council of experts
+  # (/council core-eng) to debate the implementation approach, then synthesizes
+  # that debate into the canonical plan sidecar. core-eng is pinned so the
+  # skill never reaches its interactive profile-selection (this runs headless).
+  # This one step replaces the prior THREE (two parallel plan agents + a
+  # /plan-fork converge that re-critiqued the plan); the adversarial review is
+  # now solely the codex critique_plan step below.
   - id: plan
     name: Plan
     type: run_agent
@@ -94,7 +93,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       prompt: >-
-        Plan task {{.Task.ID}} using the /sybra-plan skill.
+        Plan task {{.Task.ID}} by convening the expert council.
 
         IDENTITY (read first, before anything else):
           - Your task ID is {{.Task.ID}}.
@@ -112,10 +111,19 @@ steps:
 
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
-          2. Read the codebase and produce a detailed implementation plan
-             that names files, symbols (with `path:line` references), the
-             ordered steps, and per-step verification criteria.
-          3. Write the full plan markdown to /tmp/sybra-plan-{{.Task.ID}}.md
+          2. Read the relevant source files so the plan is grounded in the
+             real code (name files and symbols you will touch).
+          3. Convene the council on the implementation approach:
+             `/council core-eng <concise task summary + the approach options
+             you are weighing, grounded in the files you read>`. The personas
+             will debate tradeoffs and surface risks from opposed engineering
+             lenses. If /council is unavailable in this environment, plan
+             directly using the same multi-lens scrutiny.
+          4. Synthesize the council's debate into a single detailed
+             implementation plan that names files, symbols (with `path:line`
+             references), the ordered steps, and per-step verification
+             criteria.
+          5. Write the full plan markdown to /tmp/sybra-plan-{{.Task.ID}}.md
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         plan sidecar after you exit. Do NOT modify the task plan field
