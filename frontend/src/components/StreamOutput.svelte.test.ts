@@ -59,6 +59,39 @@ describe('StreamOutput', () => {
     })
   })
 
+  it('de-emphasises system rows but keeps user (tool-result) content readable', async () => {
+    mockGetOutput.mockResolvedValue([
+      makeTSE('assistant', 'Real output'),
+      makeTSE('user', 'tool result body'), // Claude tool results — must stay visible
+      makeTSE('system', 'system reminder'),
+    ])
+
+    render(StreamOutput, { props: { agentId: 'test-1' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('Real output')).toBeDefined()
+    })
+    // Tool-result content stays at full prominence; the system row is dimmed.
+    const toolRow = screen.getByText('tool result body').closest('[data-event-index]')
+    expect(toolRow?.className).not.toContain('opacity-50')
+    const systemRow = screen.getByText('system reminder').closest('[data-event-index]')
+    expect(systemRow?.className).toContain('opacity-50')
+  })
+
+  it('keeps full-array indices so timeline sync is not broken', async () => {
+    mockGetOutput.mockResolvedValue([
+      makeTSE('assistant', 'first'),
+      makeTSE('system', 'noise'),
+      makeTSE('assistant', 'third'),
+    ])
+
+    render(StreamOutput, { props: { agentId: 'test-1' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('third').closest('[data-event-index]')?.getAttribute('data-event-index')).toBe('2')
+    })
+  })
+
   it('renders unknown event type label as uppercase', async () => {
     mockGetOutput.mockResolvedValue([makeTSE('custom', 'data')])
 
