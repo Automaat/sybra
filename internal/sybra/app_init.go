@@ -201,10 +201,17 @@ func (a *App) initStatusHook() {
 // task and rejects a task that already owns a non-terminal workflow, so the
 // watcher firing TaskCreated several times for one file is harmless.
 func (a *App) maybeStartWorkflowForExternalTask(path string) {
-	if a.workflowEngine == nil || a.tasks == nil {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
-	id := strings.TrimSuffix(filepath.Base(path), ".md")
+	base := filepath.Base(path)
+	// Sidecar files (plan/critique/review) share the tasks dir and also fire
+	// TaskCreated; they are not tasks, so skip them up front rather than
+	// spending a goroutine + Get that would fail anyway.
+	if task.IsSidecarFile(base) {
+		return
+	}
+	id := strings.TrimSuffix(base, ".md")
 	if id == "" {
 		return
 	}
