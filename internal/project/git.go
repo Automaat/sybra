@@ -160,7 +160,10 @@ func FetchOrigin(barePath string) error {
 // lands under refs/remotes/origin/*. Checking out the returned ref therefore
 // works where refs/remotes/origin/<branch> does not.
 func FetchPRHead(barePath string, prNumber int) (string, error) {
-	localRef := fmt.Sprintf("refs/remotes/origin/pr/%d", prNumber)
+	// Store under refs/sybra/* rather than refs/remotes/origin/* so a real
+	// upstream branch named pr/<N> (which FetchOrigin maps to
+	// refs/remotes/origin/pr/<N>) cannot collide with the fetched PR head.
+	localRef := fmt.Sprintf("refs/sybra/pr/%d", prNumber)
 	refspec := fmt.Sprintf("+refs/pull/%d/head:%s", prNumber, localRef)
 	if err := executil.Run(barePath, "git", "fetch", "origin", refspec); err != nil {
 		return "", err

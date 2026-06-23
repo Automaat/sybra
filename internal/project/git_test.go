@@ -1601,8 +1601,8 @@ func TestFetchPRHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchPRHead: %v", err)
 	}
-	if ref != "refs/remotes/origin/pr/42" {
-		t.Errorf("ref = %q, want refs/remotes/origin/pr/42", ref)
+	if ref != "refs/sybra/pr/42" {
+		t.Errorf("ref = %q, want refs/sybra/pr/42", ref)
 	}
 	got, err := exec.Command("git", "-C", bare, "rev-parse", ref).CombinedOutput()
 	if err != nil {
