@@ -122,10 +122,10 @@ steps:
     next:
       - goto: require_plan
 
-  # Guard: convergence can exit cleanly without producing a plan (e.g.
-  # /plan-fork rejected both drafts as broken). Mirrors require_plan_critique
-  # below: flips to human-required so the failure is visible instead of
-  # silently advancing into critique_plan with an empty plan.
+  # Guard: the plan agent can exit cleanly without producing a plan (e.g.
+  # /sybra-plan failed or the agent skipped the write). Mirrors
+  # require_plan_critique below: flips to human-required so the failure is
+  # visible instead of silently advancing into critique_plan with an empty plan.
   - id: require_plan
     name: Require Plan
     type: require_sidecar
@@ -140,10 +140,9 @@ steps:
       - goto: validate_plan_refs
 
   # Cross-task contamination guard: rejects plans that reference branches or
-  # worktree paths belonging to OTHER tasks. The fa6919fc → a9375bad incident
-  # showed two parallel plan agents against the same project can confabulate a
-  # sibling task's identity into the synthesized plan; the impl agent then
-  # committed to the wrong branch and left fa6919fc's branch empty. Flipping
+  # worktree paths belonging to OTHER tasks. A plan agent against a shared
+  # project repo can confabulate a sibling task's identity (branch/worktree)
+  # into the plan; the impl agent then commits to the wrong branch. Flipping
   # to human-required keeps the failure visible.
   - id: validate_plan_refs
     name: Validate Plan References
