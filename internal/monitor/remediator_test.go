@@ -7,6 +7,70 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
+	t.Parallel()
+	withRun := func(t *task.Task) {
+		t.AgentRuns = []task.AgentRun{
+			{AgentID: "old-agent", State: "stopped"},
+			{AgentID: "lost-agent", State: "running"},
+		}
+	}
+	ft := &fakeTasks{tasks: []task.Task{
+		mkTask("task1", task.StatusInProgress, withRun),
+	}}
+	rem := newRemediator(ft)
+	a := Anomaly{Kind: KindLostAgent, TaskID: "task1"}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+
+	// Task must be reset to todo.
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 task update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status == nil || *u.u.Status != task.StatusTodo {
+		t.Errorf("status = %v, want todo", u.u.Status)
+	}
+
+	// Running agent run must be marked stopped before the task update.
+	if len(ft.runUpdates) != 1 {
+		t.Fatalf("want 1 run update, got %d", len(ft.runUpdates))
+	}
+	ru := ft.runUpdates[0]
+	if ru.taskID != "task1" {
+		t.Errorf("runUpdate taskID = %q, want task1", ru.taskID)
+	}
+	if ru.agentID != "lost-agent" {
+		t.Errorf("runUpdate agentID = %q, want lost-agent", ru.agentID)
+	}
+	if ru.updates["state"] != "stopped" {
+		t.Errorf("runUpdate state = %v, want stopped", ru.updates["state"])
+	}
+}
+
+func TestRemediator_LostAgent_NoRunningRun_SkipsRunUpdate(t *testing.T) {
+	t.Parallel()
+	ft := &fakeTasks{tasks: []task.Task{
+		mkTask("task2", task.StatusInProgress),
+	}}
+	rem := newRemediator(ft)
+	a := Anomaly{Kind: KindLostAgent, TaskID: "task2"}
+
+	_, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(ft.runUpdates) != 0 {
+		t.Errorf("want 0 run updates when no running agent run, got %d", len(ft.runUpdates))
+	}
+}
+
 func TestRemediator_PlanReviewStuck_SetsHumanRequired(t *testing.T) {
 	t.Parallel()
 	ft := &fakeTasks{tasks: []task.Task{

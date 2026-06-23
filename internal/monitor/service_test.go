@@ -13,14 +13,21 @@ import (
 )
 
 type fakeTasks struct {
-	mu      sync.Mutex
-	tasks   []task.Task
-	updates []taskUpdate
+	mu         sync.Mutex
+	tasks      []task.Task
+	updates    []taskUpdate
+	runUpdates []runUpdate
 }
 
 type taskUpdate struct {
 	id string
 	u  task.Update
+}
+
+type runUpdate struct {
+	taskID  string
+	agentID string
+	updates map[string]any
 }
 
 func (f *fakeTasks) List() ([]task.Task, error) {
@@ -59,6 +66,28 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 		return f.tasks[i], nil
 	}
 	return task.Task{}, errNotFound
+}
+
+func (f *fakeTasks) UpdateRun(taskID, agentID string, updates map[string]any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runUpdates = append(f.runUpdates, runUpdate{taskID: taskID, agentID: agentID, updates: updates})
+	for i := range f.tasks {
+		if f.tasks[i].ID != taskID {
+			continue
+		}
+		for j := range f.tasks[i].AgentRuns {
+			if f.tasks[i].AgentRuns[j].AgentID != agentID {
+				continue
+			}
+			if v, ok := updates["state"].(string); ok {
+				f.tasks[i].AgentRuns[j].State = v
+			}
+			return nil
+		}
+		return nil
+	}
+	return errNotFound
 }
 
 type fakeAudit struct {
