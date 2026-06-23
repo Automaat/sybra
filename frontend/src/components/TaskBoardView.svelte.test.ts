@@ -8,6 +8,11 @@ vi.mock('../stores/notifications.svelte.js', () => ({
   notificationStore: { pushLocal: vi.fn() },
 }))
 
+// Drives the empty-column thin-rail (desktop only); default off keeps the
+// existing populated-column tests on the normal layout.
+const vpMock = vi.hoisted(() => ({ isDesktop: false }))
+vi.mock('../lib/viewport.svelte.js', () => ({ viewport: vpMock }))
+
 const TaskBoardView = (await import('./TaskBoardView.svelte')).default
 
 const columns = [
@@ -25,7 +30,63 @@ function columnTasks(col: { status: string }) {
 }
 
 describe('TaskBoardView', () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vpMock.isDesktop = false
+  })
+
+  it('collapses an empty desktop column to a thin rail, expandable on click', async () => {
+    vpMock.isDesktop = true
+    const cols = [
+      { status: 'todo', label: 'Todo', border: '', includes: [] },
+      { status: 'testing', label: 'Testing', border: '', includes: [] },
+    ]
+    // todo has a task; testing is empty → thin rail.
+    const ct = (col: { status: string }) =>
+      (col.status === 'todo' ? [tasks[0]] : []) as never[]
+    render(TaskBoardView, {
+      props: {
+        visibleColumns: cols as never,
+        columnTasks: ct as never,
+        focusedTaskId: null,
+        collapsedColumns: new Set<string>(),
+        onselect: vi.fn(),
+        onmove: vi.fn(),
+        ontogglecolumn: vi.fn(),
+      },
+    })
+    const rail = screen.getByTitle(/Testing \(empty\)/)
+    expect(rail.textContent).toContain('0')
+    await fireEvent.click(rail)
+    // Expanding replaces the thin rail with the normal column.
+    expect(screen.queryByTitle(/Testing \(empty\)/)).toBeNull()
+  })
+
+  it('drops a task onto an empty thin rail and fires onmove', async () => {
+    vpMock.isDesktop = true
+    const onmove = vi.fn()
+    const cols = [
+      { status: 'todo', label: 'Todo', border: '', includes: [] },
+      { status: 'testing', label: 'Testing', border: '', includes: [] },
+    ]
+    const ct = (col: { status: string }) =>
+      (col.status === 'todo' ? [tasks[0]] : []) as never[]
+    render(TaskBoardView, {
+      props: {
+        visibleColumns: cols as never,
+        columnTasks: ct as never,
+        focusedTaskId: null,
+        collapsedColumns: new Set<string>(),
+        onselect: vi.fn(),
+        onmove,
+        ontogglecolumn: vi.fn(),
+      },
+    })
+    const rail = screen.getByTitle(/Testing \(empty\)/)
+    const dataTransfer = { getData: () => 't1' }
+    await fireEvent.drop(rail, { dataTransfer })
+    expect(onmove).toHaveBeenCalledWith('t1', 'testing')
+  })
 
   it('renders one column per visibleColumns entry', () => {
     render(TaskBoardView, {
