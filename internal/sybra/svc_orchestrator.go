@@ -15,6 +15,34 @@ import (
 // so the frontend and tests can identify it in agent listings.
 const orchestratorAgentName = "orchestrator"
 
+// orchestratorKickoffPrompt is the first user message delivered to the
+// orchestrator brain so it actually takes a turn. The conversational runner
+// only sends an initial message when RunConfig.Prompt is non-empty; without it
+// the agent is parked in StatePaused, idle on stdin, and never bootstraps its
+// monitor loop or dispatches work (it just sits silent forever).
+const orchestratorKickoffPrompt = "Start your orchestrator session now. Follow your " +
+	"operating instructions in CLAUDE.md: first ensure your recurring monitor loop is " +
+	"scheduled via CronCreate(schedule=\"*/5 * * * *\", prompt=\"/sybra-monitor\") if it is " +
+	"not already, then run one /sybra-monitor cycle to triage and dispatch ready work."
+
+// orchestratorReplaceable reports whether an existing orchestrator agent should
+// be reaped and replaced rather than treated as "already running". A crashed
+// agent is StateStopped. A conversational agent that was started without a
+// kickoff prompt parks in StatePaused with no session id and idles on stdin
+// forever — that is the wedged-brain failure mode, so it is replaceable. A
+// paused-between-turns agent that already established a session is healthy and
+// must be left alone (otherwise the 1-minute auto-start loop would churn it).
+func orchestratorReplaceable(a *agent.Agent) bool {
+	switch a.GetState() {
+	case agent.StateStopped:
+		return true
+	case agent.StatePaused:
+		return a.GetSessionID() == ""
+	default:
+		return false
+	}
+}
+
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
 	agents *agent.Manager
@@ -33,20 +61,28 @@ type OrchestratorService struct {
 // because /sybra-monitor is a Claude-only skill.
 func (s *OrchestratorService) StartOrchestrator() error {
 	s.mu.Lock()
+	stale := ""
 	if id := s.agentID; id != "" {
-		if a, err := s.agents.GetAgent(id); err == nil && a.GetState() != agent.StateStopped {
+		if a, err := s.agents.GetAgent(id); err == nil && !orchestratorReplaceable(a) {
 			s.mu.Unlock()
 			return conflictError("orchestrator already running")
 		}
+		// Existing agent is stopped, or wedged-paused with no session — reap
+		// it so a freshly kicked-off orchestrator can replace it.
+		stale = id
 		s.agentID = ""
 	}
 	s.mu.Unlock()
+	if stale != "" {
+		_ = s.agents.StopAgent(stale)
+	}
 
 	a, err := s.agents.Run(agent.RunConfig{
 		Name:                   orchestratorAgentName,
 		Mode:                   "interactive",
 		Dir:                    config.HomeDir(),
 		Provider:               "claude",
+		Prompt:                 orchestratorKickoffPrompt,
 		IgnoreConcurrencyLimit: true,
 	})
 	if err != nil {
@@ -99,7 +135,10 @@ func (s *OrchestratorService) IsOrchestratorRunning() bool {
 	if err != nil {
 		return false
 	}
-	return a.GetState() != agent.StateStopped
+	// A wedged-paused or stopped orchestrator is not actually doing work, so
+	// it does not count as running — this lets maybeStartOrchestrator replace
+	// it instead of trusting a stale in-memory state forever.
+	return !orchestratorReplaceable(a)
 }
 
 // GetOrchestratorAgentID returns the current orchestrator agent id, or empty
