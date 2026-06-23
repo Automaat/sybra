@@ -319,7 +319,7 @@ for (const theme of ['light', 'dark'] as const) {
 
     test('github-reviews', async ({ page }) => {
       await goToGitHub(page)
-      await page.getByRole('button', { name: /^Reviews/ }).click()
+      await page.getByRole('button', { name: /^PR Reviews/ }).click()
       await page.getByText('feat(orchestrator): multi-agent task routing').waitFor()
       await shot(page, theme, 'github-reviews')
     })
