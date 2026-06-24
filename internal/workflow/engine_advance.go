@@ -369,7 +369,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	case StepRerequestReview:
 		return e.execRerequestReview(taskID, step, t)
 	case StepVerifyCommits:
-		return e.execVerifyCommits(taskID, step, t)
+		return e.execVerifyCommits(taskID, step, wfExec, t)
 	case StepLinkPRAndReview:
 		return e.execLinkPRAndReview(taskID, step, wfExec, t)
 	case StepEvaluate:

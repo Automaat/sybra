@@ -174,7 +174,7 @@ func resolveOriginBase(ctx context.Context, wtPath string) string {
 	return "origin/main"
 }
 
-func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if e.worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
@@ -208,6 +208,21 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, t TaskInfo) (StepO
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
+		// A crashed implementation agent (e.g. API error mid-run) leaves a fresh
+		// worktree branch sitting exactly on the base tip — git-indistinguishable
+		// from "work already merged via another branch". Marking such a task done
+		// silently discards the uncommitted work. Disambiguate with the upstream
+		// agent step's outcome: a failed implement step means the branch is empty
+		// because the agent died, not because the fix already shipped. Route to
+		// human-required so the run is surfaced, not closed.
+		if wfExec.LastAgentStepFailed() {
+			reason := "implementation agent failed before committing — no commits on branch"
+			if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+				e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+			}
+			e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}, nil
+		}
 		// Disambiguate "no commits ahead" between two cases:
 		//   (a) HEAD == base ref tip → branch is identical to base. Implementation
 		//       was already on origin (e.g. merged via a different branch before

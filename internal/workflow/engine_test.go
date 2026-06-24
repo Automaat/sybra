@@ -2649,7 +2649,7 @@ func TestExecVerifyCommits_NoGetterSkips(t *testing.T) {
 	// worktrees nil by default
 
 	ti := TaskInfo{ID: "t1"}
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), ti)
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, ti)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2669,7 +2669,7 @@ func TestExecVerifyCommits_NoWorktreeSkips(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2691,7 +2691,7 @@ func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
 	wtDir := makeGitRepo(t, true /* withExtraCommit */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2719,7 +2719,7 @@ func TestExecVerifyCommits_GitErrorFlipsHumanRequired(t *testing.T) {
 	// simulating the broken-worktree scenario from the synapse→sybra rename.
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2749,7 +2749,7 @@ func TestExecVerifyCommits_GitErrorReasonContainsDiagnosis(t *testing.T) {
 	// both fail with the same fatal so diagnosis surfaces it.
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2794,7 +2794,7 @@ func TestExecVerifyCommits_RetriesAfterTransientFailure(t *testing.T) {
 	// First call may or may not actually be blocked by the lock depending
 	// on git behavior — but the retry path always runs once per error,
 	// and we just need the final outcome to be "commits verified".
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2822,7 +2822,7 @@ func TestExecVerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2857,7 +2857,7 @@ func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	wtDir := makeGitRepoBehindOrigin(t)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2870,6 +2870,48 @@ func TestExecVerifyCommits_BranchAncestorOfBaseMarksDone(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "done" {
 		t.Errorf("task status = %q, want done", ti.Status)
+	}
+}
+
+// TestExecVerifyCommits_AgentFailedFlipsHumanRequired covers the false-positive
+// auto-close: a fresh worktree branch sits exactly on origin/main (no commits
+// ahead, HEAD == base.tip — git-identical to "already merged") *because the
+// implementation agent crashed before committing*, not because the fix shipped.
+// With a failed agent step in history, the task must flip to human-required so
+// the run is surfaced, never silently marked done.
+func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Same git state as TestExecVerifyCommits_BranchAtBaseMarksDone: HEAD ==
+	// origin/main, so branchMergedIntoBase would otherwise mark the task done.
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	// The upstream implement step failed (agent died mid-run).
+	wfExec := &Execution{StepHistory: []StepRecord{
+		{StepID: "implement", Status: "failed", AgentID: "a1", Provider: "claude"},
+	}}
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "agent failed before commit") {
+		t.Errorf("Output = %q, want 'agent failed before commit'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "agent failed before committing") {
+		t.Errorf("status reason = %q, want 'agent failed before committing'", reason)
 	}
 }
 
