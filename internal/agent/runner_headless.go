@@ -503,7 +503,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 			a.SetSessionID(event.SessionID)
 			m.saveRegistry(a)
 		}
-		if a.Provider == "codex" {
+		if isCodex {
 			if p := resolveCodexSessionFile(event.SessionID); p != "" {
 				a.SetSessionFilePath(p)
 			}

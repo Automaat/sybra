@@ -58,11 +58,14 @@ func (m *Manager) ReattachAll() []*Agent {
 			// finalize so the workflow advances instead of re-running it.
 			// Otherwise (a genuine crash), bridge its captured session id to
 			// the task so restart-stale recovery resumes instead of redoing.
-			if !m.finalizeIfCompleted(r) {
-				m.persistDeadSession(r)
+			// Retain the record (skip delete) when the bridge fails so a later
+			// startup retries it rather than losing the session permanently.
+			if m.finalizeIfCompleted(r) || m.persistDeadSession(r) {
+				_ = reg.Delete(r.ID)
+				m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
+			} else {
+				m.logger.Warn("agent.reattach.bridge-retry", "id", r.ID, "task", r.TaskID)
 			}
-			_ = reg.Delete(r.ID)
-			m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 			continue
 		}
 
@@ -127,15 +130,24 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 // resumes the conversation via --resume instead of cold-restarting and
 // redoing work. The session id otherwise lives only in the registry record
 // (the completion callback that normally writes it to the AgentRun never
-// ran on a hard crash) and would be lost when the record is deleted. No-op
-// without a sink, a captured session id, or a task.
-func (m *Manager) persistDeadSession(r Record) {
+// ran on a hard crash) and would be lost when the record is deleted.
+//
+// Returns true when the record is safe to delete: nothing to bridge (no
+// sink, session id, or task) or the bridge succeeded. Returns false only
+// when the bridge was attempted and the sink failed, so the caller retains
+// the record for a later retry rather than losing the session.
+func (m *Manager) persistDeadSession(r Record) (done bool) {
 	sink := m.sessionSinkFn()
 	if sink == nil || r.SessionID == "" || r.TaskID == "" {
-		return
+		return true
 	}
-	m.logger.Info("agent.reattach.resume-session", "id", r.ID, "task", r.TaskID, "session", r.SessionID)
-	sink(r.TaskID, r.ID, r.SessionID)
+	if err := sink(r.TaskID, r.ID, r.SessionID); err != nil {
+		m.logger.Warn("agent.reattach.resume-session.failed",
+			"id", r.ID, "task", r.TaskID, "session_id", r.SessionID, "err", err)
+		return false
+	}
+	m.logger.Info("agent.reattach.resume-session", "id", r.ID, "task", r.TaskID, "session_id", r.SessionID)
+	return true
 }
 
 // reattachHeadless tails a reattached subprocess's log file from

@@ -369,10 +369,11 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 		t.Fatalf("EnableSurviveRestart: %v", err)
 	}
 	var gotTask, gotAgent, gotSession atomic.Value
-	m.SetSessionSink(func(taskID, agentID, sessionID string) {
+	m.SetSessionSink(func(taskID, agentID, sessionID string) error {
 		gotTask.Store(taskID)
 		gotAgent.Store(agentID)
 		gotSession.Store(sessionID)
+		return nil
 	})
 
 	// Dead process (PID 0), session captured in the registry record.
@@ -394,6 +395,35 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 	}
 	if list, _ := m.reg.List(); len(list) != 0 {
 		t.Fatal("expected record deleted after bridge")
+	}
+}
+
+// TestReattachAll_RetainsRecordWhenBridgeFails verifies a sink error keeps
+// the registry record (for a later retry) instead of deleting it and losing
+// the session id.
+func TestReattachAll_RetainsRecordWhenBridgeFails(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "crash2.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	m.SetSessionSink(func(_, _, _ string) error { return fmt.Errorf("task store down") })
+
+	if err := m.reg.Save(Record{ID: "crash2", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, SessionID: "s"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	m.ReattachAll()
+
+	list, _ := m.reg.List()
+	if len(list) != 1 {
+		t.Fatalf("expected record retained on bridge failure, got %d", len(list))
 	}
 }
 
