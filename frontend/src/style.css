@@ -60,6 +60,16 @@ html, body {
   height: 100%;
 }
 
+/* Light-mode tertiary text (timestamps, hints, meta) uses surface-400, which on
+ * the near-white canvas reads at ~1.7:1 — far fainter than the same token on
+ * dark's near-black page (~10:1). Lift it one step in light only so secondary
+ * text is as legible as it is in dark. Scoped to :not(.dark) and to the literal
+ * `text-surface-400` class, so `dark:text-surface-400` and dark mode are
+ * untouched. */
+html:not(.dark) .text-surface-400 {
+  color: var(--color-surface-500);
+}
+
 [data-active] {
   background-color: var(--color-surface-200);
 }

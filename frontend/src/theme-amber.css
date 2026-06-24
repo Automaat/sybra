@@ -48,7 +48,10 @@
   --default-border-width: 1px;
   --default-divide-width: 1px;
   --default-ring-width: 1px;
-  --body-background-color: var(--color-surface-50);
+  /* Light canvas sits one step below the card surface (surface-50) so white
+   * cards, chrome and dialogs lift off it — mirroring dark's 950-page /
+   * 900-card layering. Recessed troughs (board columns) drop to surface-200. */
+  --body-background-color: var(--color-surface-100);
   --body-background-color-dark: var(--color-surface-950);
 
   /* ── primary: amber 55deg ───────────────────────────────────────────────── */
@@ -209,10 +212,12 @@
 
   /* ── surface: warm 33deg ────────────────────────────────────────────────── */
   /* light → dark: parchment white (#faf8f7) to warm black (#110e0b)          */
-  --color-surface-50:  oklch(98%   0.003 30deg);
-  --color-surface-100: oklch(96%   0.004 31deg);
-  --color-surface-200: oklch(93%   0.005 32deg);
-  --color-surface-300: oklch(88%   0.007 33deg);
+  /* Light top end retuned for a 3-plane system: near-white cards (50) lift off
+   * a soft warm-gray canvas (100); 200 is a clearly recessed trough/border.   */
+  --color-surface-50:  oklch(99.3% 0.0025 30deg);
+  --color-surface-100: oklch(97%   0.004  31deg);
+  --color-surface-200: oklch(92%   0.006  32deg);
+  --color-surface-300: oklch(86%   0.009  33deg);
   --color-surface-400: oklch(80%   0.008 33deg);
   --color-surface-500: oklch(65%   0.009 34deg);
   --color-surface-600: oklch(50%   0.010 34deg);

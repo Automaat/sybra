@@ -84,7 +84,7 @@
   {/if}
 
   <!-- Period tabs -->
-  <div class="flex gap-1 rounded-lg bg-surface-100 p-1 dark:bg-surface-800">
+  <div class="flex gap-1 rounded-lg bg-surface-200 p-1 dark:bg-surface-800">
     {#each periods as p (p.key)}
       <button
         type="button"
