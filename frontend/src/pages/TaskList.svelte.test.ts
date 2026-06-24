@@ -34,6 +34,7 @@ const { taskStore } = await import('../stores/tasks.svelte.js')
 const { projectStore } = await import('../stores/projects.svelte.js')
 const { notificationStore } = await import('../stores/notifications.svelte.js')
 const { viewModeStore } = await import('../lib/view-mode.svelte.js')
+const { focusModeStore } = await import('../lib/focus-mode.svelte.js')
 const TaskList = (await import('./TaskList.svelte')).default
 
 const mockTask = (id: string, title: string, status = 'todo') => ({
@@ -56,6 +57,7 @@ describe('TaskList', () => {
     Object.assign(projectStore, { list: [] })
     vi.mocked(notificationStore.pushLocal).mockClear()
     viewModeStore.set('board')
+    focusModeStore.set(false)
   })
 
   afterEach(() => {
@@ -116,11 +118,20 @@ describe('TaskList', () => {
   })
 
   describe('view mode buttons', () => {
-    it('renders List, Board, and Timeline buttons', () => {
+    it('renders List, Board, and the de-emphasized Timeline button', () => {
       render(TaskList, { props: { onselect: vi.fn() } })
       expect(screen.getByText('List')).toBeDefined()
       expect(screen.getByText('Board')).toBeDefined()
       expect(screen.getByText('Timeline')).toBeDefined()
+    })
+
+    it('hides the advanced Timeline button in focus mode', () => {
+      focusModeStore.set(true)
+      viewModeStore.set('board')
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.getByText('List')).toBeDefined()
+      expect(screen.getByText('Board')).toBeDefined()
+      expect(screen.queryByText('Timeline')).toBeNull()
     })
 
     it('renders Show done checkbox', () => {

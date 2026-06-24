@@ -1,6 +1,8 @@
 export type ViewMode = 'list' | 'board' | 'timeline'
 
-const MODES: ViewMode[] = ['list', 'board', 'timeline']
+// The quick-switch cycle (⌘B) rotates only the primary views. Timeline is a
+// de-emphasized advanced view, reachable via its own button, not the cycle.
+const CYCLE_MODES: ViewMode[] = ['list', 'board']
 const STORAGE_KEY = 'taskViewMode'
 
 function loadStored(): ViewMode {
@@ -31,7 +33,8 @@ function createViewModeStore() {
       }
     },
     cycle(): void {
-      const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length]
+      // From timeline (or any non-primary), indexOf is -1 → lands on 'list'.
+      const next = CYCLE_MODES[(CYCLE_MODES.indexOf(mode) + 1) % CYCLE_MODES.length]
       mode = next
       try {
         localStorage.setItem(STORAGE_KEY, next)

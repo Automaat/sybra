@@ -3,6 +3,7 @@
   import TaskFilterPanel from './TaskFilterPanel.svelte'
   import { navStore } from '../lib/navigation.svelte.js'
   import { viewModeStore, type ViewMode } from '../lib/view-mode.svelte.js'
+  import { focusModeStore } from '../lib/focus-mode.svelte.js'
 
   interface Props {
     searchQuery: string
@@ -91,11 +92,12 @@
       <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
       Show done
     </label>
+    <!-- Primary views: List / Board. Timeline is demoted to an advanced option. -->
     <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">
       <button
         type="button"
         aria-label="List view"
-        class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'list' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+        class="flex items-center gap-1 rounded-l-md px-2 py-1 text-xs font-medium transition-colors {viewMode === 'list' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
         onclick={() => pickViewMode('list')}
       >
         <List size={14} />
@@ -104,21 +106,28 @@
       <button
         type="button"
         aria-label="Board view"
-        class="flex items-center gap-1 border-x border-surface-300 px-2 py-1 text-xs font-medium transition-colors dark:border-surface-700 {viewMode === 'board' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+        class="flex items-center gap-1 rounded-r-md border-l border-surface-300 px-2 py-1 text-xs font-medium transition-colors dark:border-surface-700 {viewMode === 'board' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
         onclick={() => pickViewMode('board')}
       >
         <Columns size={14} />
         Board
       </button>
+    </div>
+    {#if !focusModeStore.enabled}
+      <!-- Advanced: the Timeline (Gantt) is de-emphasized; focus mode (which
+           always forces the list view) hides it entirely. -->
       <button
         type="button"
-        aria-label="Timeline view"
-        class="flex items-center gap-1 px-2 py-1 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {viewMode === 'timeline' ? 'bg-primary-500 text-white dark:bg-primary-600' : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
+        aria-label="Timeline view (advanced)"
+        title="Timeline — advanced view"
+        class="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors {viewMode === 'timeline'
+          ? 'bg-primary-500 text-white dark:bg-primary-600'
+          : 'text-surface-400 hover:bg-surface-200 hover:text-surface-600 dark:text-surface-500 dark:hover:bg-surface-700 dark:hover:text-surface-300'}"
         onclick={() => pickViewMode('timeline')}
       >
         <GanttChart size={14} />
         Timeline
       </button>
-    </div>
+    {/if}
   </div>
 </div>

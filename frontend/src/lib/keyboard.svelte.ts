@@ -15,7 +15,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: '⌘1 – ⌘7', description: 'Navigate pages' },
       { keys: '⌘,', description: 'Settings' },
       { keys: '⌘F  /  /', description: 'Focus task search' },
-      { keys: '⌘B', description: 'Cycle view: List → Board → Timeline' },
+      { keys: '⌘B', description: 'Cycle view: List ↔ Board' },
       { keys: '⌘I', description: 'Open task detail sidebar' },
       { keys: '⌘=  /  ⌘-  /  ⌘0', description: 'Zoom in / out / reset' },
     ],
