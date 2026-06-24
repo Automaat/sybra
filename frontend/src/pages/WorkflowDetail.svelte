@@ -14,6 +14,7 @@
     TRIGGER_NODE_ID,
     type StepNodeData,
   } from '../lib/workflow-graph.js'
+  import { layoutGraph } from '../lib/graph-layout.js'
 
   type Selection = { kind: 'step'; step: Step } | { kind: 'trigger' } | null
 
@@ -98,6 +99,10 @@
   function handleStepAdd() {
     if (!def) return
     const id = `step-${crypto.randomUUID().slice(0, 8)}`
+    // Drop the new node below the current graph so it never lands on top of an
+    // existing one; the user can drag it or hit Auto-layout to re-flow.
+    const baseX = nodes.reduce((min, n) => Math.min(min, n.position.x), 0)
+    const belowY = nodes.reduce((max, n) => Math.max(max, n.position.y), 0) + (nodes.length ? 120 : 0)
     const newStep = new Step({
       id,
       name: 'New step',
@@ -105,7 +110,7 @@
       config: new StepConfig({}),
       next: [],
       parallel: [],
-      position: new Position({ x: 100 + def.steps.length * 40, y: 100 + def.steps.length * 40 }),
+      position: new Position({ x: baseX, y: belowY }),
     })
     def.steps = [...def.steps, newStep]
     rebuildGraphFrom(def)
@@ -122,6 +127,11 @@
 
   function handlePositionChange(nodeId: string, x: number, y: number) {
     nodes = nodes.map((n) => (n.id === nodeId ? { ...n, position: { x, y } } : n))
+    dirty = true
+  }
+
+  function handleAutoLayout() {
+    nodes = layoutGraph(nodes, edges)
     dirty = true
   }
 
@@ -174,6 +184,15 @@
     {#if dirty}
       <span class="text-xs text-warning-500">unsaved</span>
     {/if}
+    <button
+      type="button"
+      class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-1.5 text-sm font-medium hover:bg-surface-200 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-700 dark:hover:bg-surface-600"
+      onclick={handleAutoLayout}
+      disabled={!def || nodes.length === 0}
+      title="Re-arrange the graph into a layered layout"
+    >
+      Auto-layout
+    </button>
     <button
       type="button"
       class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-1.5 text-sm font-medium hover:bg-surface-200 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-700 dark:hover:bg-surface-600"

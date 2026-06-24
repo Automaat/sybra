@@ -42,6 +42,7 @@
     "vitest": "4.1.8"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@lucide/svelte": "^1.8.0",
     "@wailsio/runtime": "3.0.0-alpha.79",
     "@xyflow/svelte": "^1.5.2",
