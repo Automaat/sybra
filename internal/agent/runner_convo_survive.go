@@ -180,43 +180,15 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	return false, nil
 }
 
-// runConvoAttemptSurvive_oneShotInput writes a single user message to a
-// regular file and returns an O_RDONLY handle to it. A regular file gives
-// the child a natural EOF after its one message (so a one-shot turn runs
-// then exits) and survives the parent's death (no pipe to break). The
-// record's StdinPath is left empty, which is how reattach recognizes a
-// one-shot agent (tail-only, no FIFO to reopen).
-func (m *Manager) oneShotStdinFile(a *Agent, prompt string) (*os.File, error) {
-	reg := m.registry()
-	if reg == nil {
-		return nil, fmt.Errorf("survive convo: registry not enabled")
-	}
-	path := reg.fifoPath(a.ID) // a plain file here, cleaned up by reg.Delete
-	var data []byte
-	if prompt != "" {
-		enc, err := encodeUserMessage(prompt)
-		if err != nil {
-			return nil, err
-		}
-		data = enc
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return nil, fmt.Errorf("write oneshot stdin: %w", err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open oneshot stdin: %w", err)
-	}
-	return f, nil
-}
-
 // runConvoAttemptSurviveOneShot runs a detached one-shot conversational
-// turn: feed the single message via a file stdin (natural EOF), stream
-// output to the log file, and tail until the turn completes and the process
-// exits — so an interrupted one-shot step finishes across a restart instead
-// of faking completion via stale recovery.
+// turn: the prompt is passed as a CLI argument (no stdin), output is
+// streamed to the log file, and the tailer follows it until the turn
+// completes and the process exits — so an interrupted one-shot step
+// finishes across a restart instead of faking completion via stale
+// recovery. No FIFO is created, so the registry record's StdinPath stays
+// empty, which is how reattach recognizes a one-shot (tail-only).
 func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
-	args := m.buildConvoArgs(a, cfg)
+	args := m.buildOneShotConvoArgs(a, cfg)
 	cmd := exec.Command("claude", args...)
 	configureDetached(cmd)
 	if a.sessionCWD != "" {
@@ -225,13 +197,8 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	if len(cfg.ExtraEnv) > 0 {
 		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
 	}
-
-	inFile, inErr := m.oneShotStdinFile(a, cfg.Prompt)
-	if inErr != nil {
-		return false, inErr
-	}
-	defer func() { _ = inFile.Close() }() // child keeps its own dup after Start
-	cmd.Stdin = inFile
+	// No stdin: the prompt is an argument; a nil Stdin reads from /dev/null,
+	// which claude -p <prompt> never touches.
 
 	if *outFile == nil {
 		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
@@ -451,6 +418,12 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 		return
 	}
 
+	// No cmd.Wait runs for a reattached agent, so GetExitErr is nil. A turn
+	// that vanished without a terminal result is a crash — mark it so the
+	// completion handler stalls instead of advancing on partial work.
+	if !a.hasTerminalConvoResult() {
+		a.SetExitErr(errReattachedGone)
+	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)

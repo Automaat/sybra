@@ -460,6 +460,20 @@ func (a *Agent) hasTerminalResult() bool {
 	return false
 }
 
+// hasTerminalConvoResult is hasTerminalResult for the conversational buffer:
+// reports whether a non-error result event was seen, so a reattached convo
+// agent that vanished mid-turn is not finalized as success.
+func (a *Agent) hasTerminalConvoResult() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for i := range a.convoBuffer {
+		if a.convoBuffer[i].Type == "result" && a.convoBuffer[i].Subtype != "error" {
+			return true
+		}
+	}
+	return false
+}
+
 // GetLastEventAt returns the most recent event timestamp.
 func (a *Agent) GetLastEventAt() time.Time {
 	a.mu.RLock()

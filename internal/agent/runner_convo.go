@@ -63,12 +63,35 @@ func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
 const convoEmitInterval = 50 * time.Millisecond
 
 func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
+	// Interactive session: messages arrive on stdin as stream-json.
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 	}
+	return append(args, m.convoCommonArgs(a, cfg)...)
+}
+
+// buildOneShotConvoArgs builds args for a single detached conversational
+// turn: the prompt is passed as an argument (no stdin), so the process needs
+// no FIFO, reads nothing from stdin, runs the one turn, and exits — which
+// makes it survive a restart while still emitting the same stream-json the
+// convo parser consumes. (A regular-file stdin does NOT work: claude only
+// reads stream-json from a pipe, not a regular file.)
+func (m *Manager) buildOneShotConvoArgs(a *Agent, cfg RunConfig) []string {
+	args := []string{
+		"-p", cfg.Prompt,
+		"--output-format", "stream-json",
+		"--verbose",
+	}
+	return append(args, m.convoCommonArgs(a, cfg)...)
+}
+
+// convoCommonArgs returns the resume/permission/model/approval-hook flags
+// shared by the interactive and one-shot conversational invocations.
+func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
+	args := make([]string, 0, 8)
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}

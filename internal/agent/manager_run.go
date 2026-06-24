@@ -74,8 +74,8 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	// Pre-mark detached so a shutdown racing the runner goroutine already
 	// knows to leave this agent's subprocess running. The runner re-asserts
 	// it after a successful Start. Detached applies to headless and to
-	// interactive Claude (non-one-shot, FIFO-backed) survival; codex
-	// interactive (spawns per turn) and one-shot stay on the legacy path.
+	// interactive Claude (one-shot via file-arg prompt, sessions via FIFO);
+	// codex interactive (spawns per turn) stays on the legacy path.
 	if m.survives() && willDetach(cfg, a.Provider) {
 		a.setDetached(true)
 	}

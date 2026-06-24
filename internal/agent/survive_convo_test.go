@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,37 @@ func TestWillDetach(t *testing.T) {
 		if got != c.want {
 			t.Errorf("willDetach(mode=%s provider=%s oneShot=%v)=%v, want %v", c.mode, c.provider, c.oneShot, got, c.want)
 		}
+	}
+}
+
+// TestBuildOneShotConvoArgs verifies a one-shot survival turn passes the
+// prompt as an argument with NO --input-format — claude only reads
+// stream-json from a pipe, not a regular file, so one-shot survival must
+// feed the prompt via argv, not stdin.
+func TestBuildOneShotConvoArgs(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	a := &Agent{ID: "x", Provider: "claude", Model: "sonnet"}
+	args := m.buildOneShotConvoArgs(a, RunConfig{Prompt: "do the thing", RequirePermissions: false})
+
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--input-format") {
+		t.Fatalf("one-shot must not use --input-format (stdin stream-json): %q", joined)
+	}
+	// The prompt must be the argument immediately after -p.
+	found := false
+	for i := range len(args) - 1 {
+		if args[i] == "-p" {
+			if args[i+1] != "do the thing" {
+				t.Fatalf("expected prompt as arg after -p, got %q", args[i+1])
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected -p <prompt> in args: %q", joined)
+	}
+	if !strings.Contains(joined, "--output-format stream-json") {
+		t.Fatalf("expected stream-json output: %q", joined)
 	}
 }
 
