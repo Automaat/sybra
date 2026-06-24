@@ -38,6 +38,11 @@ func (r *Recovery) RestartStaleInProgress() {
 			continue
 		}
 		if slices.Contains(t.Tags, "review") {
+			// For review tasks whose last headless run completed (state: stopped,
+			// non-empty result) but the workflow step was never recorded, advance
+			// the workflow now. This bridges completions lost across app restarts
+			// when the agent ran without survival support.
+			r.recoverCompletedHeadlessRun(&t)
 			continue
 		}
 		// Tasks with a terminal workflow stuck at in-progress: restart the
@@ -197,6 +202,57 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 		AgentID:  lr.AgentID,
 		Provider: lr.Provider,
 		Success:  true,
+	})
+}
+
+// recoverCompletedHeadlessRun advances the workflow for a headless agent whose
+// run completed successfully (state: stopped, non-empty result) but whose step
+// was never recorded in the workflow history. This bridges the gap when the
+// HandleAgentComplete callback is lost across an app restart — e.g. when the
+// agent ran before the survival registry was active.
+//
+// Guards: only fires when the workflow is non-terminal, the current step has no
+// history record (not yet processed), and no agent is currently running.
+func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) {
+	lr := lastAgentRun(t)
+	if lr == nil {
+		return
+	}
+	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) || lr.Result == "" {
+		return
+	}
+	if r.WorkflowEngine == nil || t.Workflow == nil {
+		return
+	}
+	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
+		return
+	}
+	if t.Workflow.CurrentStep == "" {
+		return
+	}
+	// Skip if the current step already has a history record — it was processed
+	// (completed or failed) and any stall belongs to a downstream step.
+	if t.Workflow.RecordForStep(t.Workflow.CurrentStep) != nil {
+		return
+	}
+	if r.Agents.HasRunningAgentForTask(t.ID) {
+		return
+	}
+	r.Logger.Info("recover-completed-headless-run",
+		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
+	// Set Recovered so downstream steps know .Prev.Output is from a stored
+	// result, not a freshly produced one — same contract as recoverStaleInteractive.
+	wf := t.Workflow
+	wf.Recovered = true
+	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+		r.Logger.Error("recover-completed-headless.set-recovered", "task_id", t.ID, "err", err)
+		return
+	}
+	r.WorkflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
+		AgentID:  lr.AgentID,
+		Provider: lr.Provider,
+		Success:  true,
+		Result:   lr.Result,
 	})
 }
 
