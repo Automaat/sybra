@@ -22,5 +22,11 @@ export function isFixtureWorkflow(wf: WorkflowLike): boolean {
  * e2e suite sets the flag so its fixture stays reachable in the list.
  */
 export function showFixtures(): boolean {
-  return typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY) === 'true'
+  if (typeof localStorage === 'undefined') return false
+  try {
+    return localStorage.getItem(STORAGE_KEY) === 'true'
+  } catch {
+    // storage blocked (private mode, restricted context) — default to hidden
+    return false
+  }
 }
