@@ -298,9 +298,10 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     mockProviderHealthEnabled.mockResolvedValue(false)
     render(Settings)
-    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
-    // Give the async ProviderHealthEnabled() resolve a chance to settle.
-    await Promise.resolve()
+    // Wait until the gating call has resolved and the rail has rendered, then
+    // assert the Providers entry never appears — no brittle microtask flush.
+    await vi.waitFor(() => expect(mockProviderHealthEnabled).toHaveBeenCalled())
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Defaults' })).toBeDefined())
     expect(screen.queryByRole('button', { name: 'Providers' })).toBeNull()
   })
 

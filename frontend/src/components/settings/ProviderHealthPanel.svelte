@@ -2,7 +2,6 @@
   import {
     EventsOn,
     GetProviderHealth,
-    ProviderHealthEnabled,
     SetProviderAutoFailover,
     SetProviderEnabled,
   } from '$lib/api'
@@ -11,10 +10,14 @@
 
   interface Props {
     settings: AppSettings
+    // Whether provider health checks run server-side. Resolved once by the
+    // parent (Settings) so the rail entry and this pane share one source of
+    // truth — the tab is never shown while the panel renders blank.
+    enabled: boolean
     onsettingschange: () => void
   }
 
-  const { settings, onsettingschange }: Props = $props()
+  const { settings, enabled, onsettingschange }: Props = $props()
 
   type ProviderHealthEntry = {
     provider: string
@@ -25,14 +28,12 @@
     ratelimitedUntil?: string
   }
 
-  let enabled = $state(false)
   let map = $state<Record<string, ProviderHealthEntry>>({})
   let error = $state('')
 
   async function load() {
+    if (!enabled) return
     try {
-      enabled = await ProviderHealthEnabled()
-      if (!enabled) return
       const list = (await GetProviderHealth()) ?? []
       const next: Record<string, ProviderHealthEntry> = {}
       for (const p of list) next[p.provider] = p as ProviderHealthEntry

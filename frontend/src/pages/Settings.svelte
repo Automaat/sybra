@@ -372,7 +372,7 @@
 
           <!-- Providers (server-gated) -->
           {#if active === 'provider-health'}
-            <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
+            <ProviderHealthPanel {settings} enabled={providerHealthEnabled} onsettingschange={syncOriginal} />
           {/if}
 
           <!-- Orchestrator -->
