@@ -138,4 +138,11 @@
   :global(.markdown-body h1, .markdown-body h2, .markdown-body h3) { margin: 0.5em 0 0.25em; font-weight: 600; }
   :global(.markdown-body blockquote) { border-left: 3px solid currentColor; padding-left: 0.75em; opacity: 0.8; margin: 0.25em 0; }
   :global(.markdown-body a) { text-decoration: underline; }
+  /* Non-interactive checklist glyphs (replacing GFM's disabled checkboxes). */
+  :global(.markdown-body .task-check) {
+    display: inline-block; width: 1.1em; margin-right: 0.15em;
+    text-align: center; opacity: 0.55;
+  }
+  :global(.markdown-body .task-check--done) { color: var(--color-success-600); opacity: 1; }
+  :global(.markdown-body li:has(.task-check)) { list-style: none; }
 </style>

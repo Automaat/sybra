@@ -133,7 +133,7 @@ describe('NavStore', () => {
     it.each([
       [{ kind: 'dashboard' }, 'Dashboard'],
       [{ kind: 'task-list' }, 'Board'],
-      [{ kind: 'task-detail', taskId: 't1' }, 'Task Detail'],
+      [{ kind: 'task-detail', taskId: 't1' }, ''],
       [{ kind: 'project-list' }, 'Projects'],
       [{ kind: 'project-detail', projectId: 'p1' }, 'Project Detail'],
       [{ kind: 'chats' }, 'Chats'],

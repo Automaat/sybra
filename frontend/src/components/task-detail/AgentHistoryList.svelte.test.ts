@@ -87,12 +87,28 @@ describe('AgentHistoryList', () => {
     })
   })
 
-  it('shows error message when log fetch fails', async () => {
+  it('shows a recoverable, human error with a retry when log fetch fails', async () => {
     mockGetRunLog.mockRejectedValue(new Error('boom'))
     render(AgentHistoryList, { props: { task: baseTask as never } })
     await fireEvent.click(screen.getByText('a-old-1'))
     await waitFor(() => {
-      expect(screen.getByText(/Failed to load log: boom/)).toBeDefined()
+      expect(screen.getByText(/Couldn't load this run's log/)).toBeDefined()
+      expect(screen.getByText('Retry')).toBeDefined()
+      // The raw error stays available under "Details", not as the headline.
+      expect(screen.getByText(/boom/)).toBeDefined()
+    })
+  })
+
+  it('Retry re-fetches the log and recovers', async () => {
+    mockGetRunLog.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce([])
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByText('a-old-1'))
+    await waitFor(() => expect(screen.getByText('Retry')).toBeDefined())
+    await fireEvent.click(screen.getByText('Retry'))
+    await waitFor(() => {
+      expect(mockGetRunLog).toHaveBeenCalledTimes(2)
+      // Error cleared; the empty successful load falls through to "No output".
+      expect(screen.queryByText(/Couldn't load this run's log/)).toBeNull()
     })
   })
 

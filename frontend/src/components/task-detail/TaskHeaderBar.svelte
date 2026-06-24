@@ -290,7 +290,9 @@
       </span>
     {/if}
     {#if task.reviewed}
-      <span class="inline-flex items-center gap-1 rounded-full bg-success-200 px-2 py-0.5 text-xs font-medium text-success-800 dark:bg-success-700 dark:text-success-200" title="Review agent completed">
+      <!-- A passive status label, not a control: no pill/button chrome, so it
+           reads as "this has been reviewed", not a toggle to click. -->
+      <span class="inline-flex items-center gap-1 text-xs font-medium text-success-600 dark:text-success-400" title="The review agent has run for this task">
         ✓ Reviewed
       </span>
     {/if}

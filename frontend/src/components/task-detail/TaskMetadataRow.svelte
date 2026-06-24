@@ -69,7 +69,9 @@
 <div class="flex gap-6 text-sm">
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Agent Mode</span>
-    <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{task.agentMode}</span>
+    <!-- Read-only: plain text, no pill chrome, so it doesn't imply the
+         click-to-edit affordance the Project/Tags pills carry. -->
+    <span class="text-surface-700 dark:text-surface-300">{task.agentMode}</span>
   </div>
 
   <div class="flex flex-col gap-1">
@@ -133,6 +135,9 @@
     </div>
   {/if}
 
+  <!-- Per-run knobs stay editable (they're the only place to set them), but
+       render quietly at their default so they don't shout: Fork shows a muted
+       "disabled", Max Turns a muted "global default". -->
   {#if task.agentMode === 'headless'}
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Fork Subagents</span>

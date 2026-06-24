@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronDown } from '@lucide/svelte'
+  import { ChevronDown, RefreshCw } from '@lucide/svelte'
   import type { ConvoEvent, StreamEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
@@ -30,18 +30,10 @@
     (task.agentRuns ?? []).filter((r) => r.state !== 'running').reverse(),
   )
 
-  async function toggleRunLog(agentId: string) {
-    if (expandedRun === agentId) {
-      expandedRun = null
-      return
-    }
-    expandedRun = agentId
+  async function loadRunLog(agentId: string) {
     const run = (task.agentRuns ?? []).find((r) => r.agentId === agentId)
     const isInteractive = run?.mode === 'interactive'
-    const alreadyLoaded = isInteractive
-      ? runLogConvoEvents.has(agentId)
-      : runLogStreamEvents.has(agentId)
-    if (alreadyLoaded || runLogLoading.has(agentId) || !task.id) return
+    if (runLogLoading.has(agentId) || !task.id) return
     runLogLoading = new Set([...runLogLoading, agentId])
     try {
       if (isInteractive) {
@@ -67,6 +59,33 @@
     const next = new Set(runLogLoading)
     next.delete(agentId)
     runLogLoading = next
+  }
+
+  async function toggleRunLog(agentId: string) {
+    if (expandedRun === agentId) {
+      expandedRun = null
+      return
+    }
+    expandedRun = agentId
+    const run = (task.agentRuns ?? []).find((r) => r.agentId === agentId)
+    const isInteractive = run?.mode === 'interactive'
+    const alreadyLoaded = isInteractive
+      ? runLogConvoEvents.has(agentId)
+      : runLogStreamEvents.has(agentId)
+    if (alreadyLoaded) return
+    await loadRunLog(agentId)
+  }
+
+  // Drop the cached empty result + error so the next load re-fetches.
+  async function retryRunLog(agentId: string) {
+    const run = (task.agentRuns ?? []).find((r) => r.agentId === agentId)
+    if (run?.mode === 'interactive') {
+      const m = new Map(runLogConvoEvents); m.delete(agentId); runLogConvoEvents = m
+    } else {
+      const m = new Map(runLogStreamEvents); m.delete(agentId); runLogStreamEvents = m
+    }
+    const e = new Map(runLogError); e.delete(agentId); runLogError = e
+    await loadRunLog(agentId)
   }
 </script>
 
@@ -118,7 +137,25 @@
             {:else if run.mode !== 'interactive' && (runLogStreamEvents.get(run.agentId)?.length ?? 0) > 0}
               <StreamOutput staticEvents={runLogStreamEvents.get(run.agentId)} />
             {:else if runLogError.has(run.agentId)}
-              <p class="py-4 text-center text-xs text-error-600 dark:text-error-400">Failed to load log: {runLogError.get(run.agentId)}</p>
+              <div class="flex flex-col items-center gap-2 py-4 text-center text-xs text-surface-500">
+                <p>Couldn't load this run's log — it may not have been written yet.</p>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-surface-300 px-2 py-1 font-medium text-surface-600 transition-colors hover:bg-surface-200 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-700"
+                    onclick={() => retryRunLog(run.agentId)}
+                  >
+                    <RefreshCw size={12} /> Retry
+                  </button>
+                  {#if run.logFile}
+                    <span class="font-mono text-surface-400" title={run.logFile}>{run.logFile}</span>
+                  {/if}
+                </div>
+                <details class="w-full">
+                  <summary class="cursor-pointer text-surface-400">Details</summary>
+                  <p class="mt-1 break-words font-mono text-surface-400">{runLogError.get(run.agentId)}</p>
+                </details>
+              </div>
             {:else if run.result}
               <pre class="max-h-[60dvh] md:max-h-[600px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-surface-300 bg-surface-100 p-3 text-xs text-surface-700 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-300">{run.result}</pre>
             {:else}
