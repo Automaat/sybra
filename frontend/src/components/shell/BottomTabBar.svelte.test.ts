@@ -3,7 +3,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
 const mockReset = vi.fn()
 vi.mock('../../lib/navigation.svelte.js', () => ({
-  navStore: { reset: (...a: unknown[]) => mockReset(...a), get activeTab() { return 'task-list' } },
+  navStore: { reset: (...a: unknown[]) => mockReset(...a), get activeTab() { return 'board' } },
 }))
 vi.mock('../../stores/tasks.svelte.js', () => ({
   taskStore: { byStatus: () => [] },

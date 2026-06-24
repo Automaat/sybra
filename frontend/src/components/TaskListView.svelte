@@ -17,9 +17,12 @@
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
   }
 
+  // The set of real (non-"None") priority values, derived from the options.
+  const SET_PRIORITIES = new Set(PRIORITY_OPTIONS.map((o) => o.value).filter(Boolean))
+
   // Hide the Priority column entirely until at least one task has a priority,
   // so it doesn't waste scarce width (notably on mobile) showing only "–".
-  const hasPriorities = $derived(tasks.some((t) => priorityIcon(t.priority) !== '–'))
+  const hasPriorities = $derived(tasks.some((t) => SET_PRIORITIES.has(t.priority ?? '')))
   const colCount = $derived(hasPriorities ? 5 : 4)
 
   function priorityLabel(p: string | undefined): string {
