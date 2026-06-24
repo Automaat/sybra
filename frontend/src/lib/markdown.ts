@@ -96,7 +96,10 @@ export function renderChecklistMarkdown(text: string | undefined | null): string
     const done = input.hasAttribute('checked')
     const span = doc.createElement('span')
     span.className = done ? 'task-check task-check--done' : 'task-check'
-    span.setAttribute('aria-hidden', 'true')
+    // Expose the completion state to assistive tech (the glyph carries meaning),
+    // rather than hiding it.
+    span.setAttribute('role', 'img')
+    span.setAttribute('aria-label', done ? 'done' : 'to do')
     span.textContent = done ? '✓' : '○'
     input.replaceWith(span)
   }

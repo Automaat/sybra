@@ -32,7 +32,11 @@
       <span class="px-2 text-base font-bold text-primary-600 dark:text-primary-400">S</span>
     {/if}
 
-    <h1 class="flex-1 truncate text-base font-semibold">{navStore.pageTitle}</h1>
+    {#if navStore.pageTitle}
+      <h1 class="flex-1 truncate text-base font-semibold">{navStore.pageTitle}</h1>
+    {:else}
+      <div class="flex-1"></div>
+    {/if}
 
     <button
       type="button"
