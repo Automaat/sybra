@@ -351,6 +351,20 @@ func (a *App) initAgentConfig() {
 		a.agents.SetSessionSink(func(taskID, agentID, sessionID string) error {
 			return a.tasks.UpdateRun(taskID, agentID, map[string]any{"session_id": sessionID})
 		})
+		// Skip recreating a codex chat agent whose task was deleted. Only a
+		// definite not-exist returns false; a transient error fails open
+		// (retain the record) so a surviving chat is not lost to a flaky read.
+		a.agents.SetTaskExists(func(taskID string) bool {
+			_, err := a.tasks.Get(taskID)
+			if err == nil {
+				return true
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				return false
+			}
+			a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
+			return true
+		})
 	}
 	a.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,

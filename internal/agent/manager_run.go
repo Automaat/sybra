@@ -48,19 +48,20 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 
 	now := time.Now().UTC()
 	a := &Agent{
-		ID:          id,
-		TaskID:      cfg.TaskID,
-		Name:        cfg.Name,
-		Mode:        cfg.Mode,
-		Provider:    resolvedProvider,
-		Model:       normalizeModel(resolvedProvider, cfg.Model),
-		Prompt:      cfg.Prompt,
-		State:       StateRunning,
-		StartedAt:   now,
-		LastEventAt: now,
-		cancel:      cancel,
-		sessionCWD:  cfg.Dir,
-		MaxTurns:    cfg.MaxTurns,
+		ID:                 id,
+		TaskID:             cfg.TaskID,
+		Name:               cfg.Name,
+		Mode:               cfg.Mode,
+		Provider:           resolvedProvider,
+		Model:              normalizeModel(resolvedProvider, cfg.Model),
+		Prompt:             cfg.Prompt,
+		State:              StateRunning,
+		StartedAt:          now,
+		LastEventAt:        now,
+		cancel:             cancel,
+		sessionCWD:         cfg.Dir,
+		MaxTurns:           cfg.MaxTurns,
+		requirePermissions: cfg.RequirePermissions,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)
@@ -72,11 +73,11 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		a.escalationCh = make(chan bool, 1)
 	}
 	// Pre-mark detached so a shutdown racing the runner goroutine already
-	// knows to leave this agent's subprocess running. The runner re-asserts
-	// it after a successful Start. Detached applies to headless and to
-	// interactive Claude (one-shot via file-arg prompt, sessions via FIFO);
-	// codex interactive (spawns per turn) stays on the legacy path.
-	if m.survives() && willDetach(cfg, a.Provider) {
+	// knows to leave this agent's record alive. Headless and interactive
+	// Claude survive as detached processes; codex interactive has no
+	// persistent process and survives by recreate-on-restart, but is still
+	// marked so ShutdownWithGrace leaves its record for recreate.
+	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
 	}
 
@@ -101,7 +102,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	case "interactive":
 		if a.Provider == "codex" {
 			a.promptCh = make(chan string, 1)
-			go m.runCodexConversational(ctx, a, cfg)
+			go m.runCodexConversational(ctx, a, cfg, false)
 		} else {
 			a.approvalCh = make(chan ApprovalResponse, 1)
 			go m.runConversational(ctx, a, cfg)

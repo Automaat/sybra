@@ -70,8 +70,24 @@ func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 // Each turn spawns a fresh `codex exec --json` process. After turn.completed
 // the agent transitions to StatePaused and waits for the next prompt on
 // promptCh. OneShot skips the wait and exits after the first turn.
-func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunConfig) {
+//
+// resumeWait starts the loop already idle (skip the first turn, wait for the
+// next prompt) — used when reattaching a recreated codex agent after a
+// restart.
+//
+// Restart survival: codex convo has no persistent process between turns, so
+// it "survives" by recreate-on-restart. When survival is on, the agent is
+// recorded; on a shutdown (ctx cancel that is NOT an intentional stop) the
+// goroutine returns WITHOUT finalizing, leaving the record for the next
+// startup to recreate. A normal completion / user-close finalizes and
+// deletes the record.
+func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunConfig, resumeWait bool) {
+	survived := false
 	defer func() {
+		if survived {
+			m.logger.Info("agent.codex.convo.detach", "id", a.ID, "reason", "shutdown")
+			return
+		}
 		a.SetState(StateStopped)
 		m.logger.Info("agent.codex.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
@@ -82,7 +98,17 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 		m.markAgentDone(a)
 	}()
 
-	outFile, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+	// On recreate (resume), append to the existing log so the rehydrated
+	// chat history is preserved across restarts; a fresh run opens a new
+	// file. Without this, each restart would open a new empty log and the
+	// next restart would rehydrate zero history.
+	var outFile *os.File
+	var fileErr error
+	if existing := a.GetLogPath(); existing != "" {
+		outFile, fileErr = os.OpenFile(existing, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	} else {
+		outFile, fileErr = logging.NewAgentOutputFile(m.logDir, a.ID)
+	}
 	if fileErr != nil {
 		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
 	}
@@ -96,18 +122,36 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 		logWriter = outFile
 	}
 
+	// Record the agent so a restart can recreate it (the log path is now set).
+	if m.survives() {
+		a.setDetached(true)
+		m.saveRegistry(a)
+	}
+
+	// shutdownSurvive reports whether a ctx cancel should leave the agent
+	// running for recreate (survival on, app shutdown, not an intentional stop).
+	shutdownSurvive := func() bool {
+		return m.survives() && ctx.Err() != nil && !a.WasStopped()
+	}
+
 	prompt := cfg.Prompt
 	for {
-		if !m.runCodexTurn(ctx, a, cfg, prompt, logWriter) {
-			return
-		}
+		if !resumeWait {
+			if !m.runCodexTurn(ctx, a, cfg, prompt, logWriter) {
+				if shutdownSurvive() {
+					survived = true
+				}
+				return
+			}
 
-		a.SetState(StatePaused)
-		m.emit(events.AgentState(a.ID), a)
+			a.SetState(StatePaused)
+			m.emit(events.AgentState(a.ID), a)
 
-		if cfg.OneShot {
-			return
+			if cfg.OneShot {
+				return
+			}
 		}
+		resumeWait = false
 
 		a.mu.RLock()
 		ch := a.promptCh
@@ -115,6 +159,9 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 
 		select {
 		case <-ctx.Done():
+			if shutdownSurvive() {
+				survived = true
+			}
 			return
 		case next, ok := <-ch:
 			if !ok {
@@ -254,6 +301,37 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 		m.emit(events.AgentConvo(a.ID), *pending)
 	}
 	return gotResult
+}
+
+// rehydrateCodexConvoFromLog replays a codex conversational agent's log into
+// its convo buffer (and session id) without emitting events, so a recreated
+// agent shows its prior chat history after a restart.
+func rehydrateCodexConvoFromLog(a *Agent, path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		parsed, perr := ParseCodexLine(line)
+		if perr != nil {
+			continue
+		}
+		ev := codexEventToConvoEvent(parsed)
+		if ev.Type == "" {
+			continue
+		}
+		a.AppendConvo(ev)
+		if ev.SessionID != "" {
+			a.SetSessionID(ev.SessionID)
+		}
+	}
 }
 
 // sendCodexPrompt delivers a follow-up prompt to a Codex conversational agent.
