@@ -96,7 +96,66 @@ describe('Settings', () => {
   it('renders the appearance section', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    expect(screen.getByText('Appearance')).toBeDefined()
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeDefined()
+  })
+
+  it('renders the section sub-nav and clarifies save scope', () => {
+    mockGetSettings.mockReturnValue(new Promise(() => {}))
+    render(Settings)
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+    expect(nav).toBeDefined()
+    // Sub-nav exposes the sections as quick links.
+    expect(screen.getByRole('button', { name: 'Orchestrator' })).toBeDefined()
+    // Save scope is spelled out (immediate vs save-together).
+    expect(screen.getByText(/apply instantly/)).toBeDefined()
+  })
+
+  it('scrolls to a settings-gated section via its sub-nav link', async () => {
+    mockGetSettings.mockResolvedValue(mockSettings)
+    // jsdom has no native scrollIntoView; stub it and restore so it can't leak.
+    const orig = Element.prototype.scrollIntoView
+    const scrollSpy = vi.fn()
+    Element.prototype.scrollIntoView = scrollSpy as never
+    try {
+      render(Settings)
+      // Logging only renders inside {#if settings}; wait for load so the anchor exists.
+      await vi.waitFor(() => screen.getByText('Logging & Audit'))
+      await fireEvent.click(screen.getByRole('button', { name: 'Logging' }))
+      expect(scrollSpy).toHaveBeenCalled()
+    } finally {
+      if (orig) Element.prototype.scrollIntoView = orig
+      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
+  })
+
+  it('keeps another section dirty when a provider toggles (no baseline wipe)', async () => {
+    mockGetSettings.mockResolvedValue(structuredClone(mockSettings))
+    mockProviderHealthEnabled.mockResolvedValue(true)
+    mockSetProviderAutoFailover.mockResolvedValue(undefined)
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('heading', { name: 'Notifications' }))
+    // Dirty a non-provider section.
+    await fireEvent.click(screen.getByLabelText('Desktop notifications (macOS)'))
+    expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false)
+    // Toggle a provider setting — it persists immediately and reconciles ONLY the
+    // providers sub-tree, so the pending Notifications edit must survive.
+    await fireEvent.click(screen.getByLabelText(/Auto-failover between providers/))
+    await vi.waitFor(() => expect(mockSetProviderAutoFailover).toHaveBeenCalled())
+    expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByText('Unsaved changes')).toBeDefined()
+  })
+
+  it('every sub-nav link resolves to a rendered section anchor', async () => {
+    mockGetSettings.mockResolvedValue(mockSettings)
+    const navIds = [
+      'appearance', 'agent-defaults', 'provider-health', 'notifications',
+      'orchestrator', 'logging', 'todoist', 'renovate', 'version', 'directories',
+    ]
+    const { container } = render(Settings)
+    await vi.waitFor(() => screen.getByRole('heading', { name: 'Directories' }))
+    for (const id of navIds) {
+      expect(container.querySelector(`#${id}`), `missing anchor #${id}`).not.toBeNull()
+    }
   })
 
   it('renders Agent Defaults section after load', async () => {
@@ -111,7 +170,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Notifications')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Notifications' })).toBeDefined()
     })
   })
 
@@ -119,7 +178,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Orchestrator')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Orchestrator' })).toBeDefined()
     })
   })
 
@@ -135,7 +194,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Directories')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined()
     })
   })
 
@@ -187,7 +246,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Todoist')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Todoist' })).toBeDefined()
     })
   })
 
@@ -204,7 +263,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Renovate')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Renovate' })).toBeDefined()
     })
   })
 
@@ -212,14 +271,14 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Version')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Version' })).toBeDefined()
     })
   })
 
   it('shows Appearance section with Color Scheme select', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    expect(screen.getByText('Appearance')).toBeDefined()
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeDefined()
     expect(screen.getByLabelText('Color Scheme')).toBeDefined()
   })
 
@@ -322,7 +381,7 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
     await vi.waitFor(() => {
-      expect(screen.getByText('Directories')).toBeDefined()
+      expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined()
       expect(screen.getByDisplayValue('/home/.sybra/tasks')).toBeDefined()
       expect(screen.getByDisplayValue('/home/.sybra/skills')).toBeDefined()
     })
@@ -331,7 +390,7 @@ describe('Settings', () => {
   it('toggles desktop notifications checkbox', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByText('Notifications'))
+    await vi.waitFor(() => screen.getByRole('heading', { name: 'Notifications' }))
     const checkbox = screen.getByLabelText('Desktop notifications (macOS)') as HTMLInputElement
     expect(checkbox.checked).toBe(false)
     await fireEvent.click(checkbox)
