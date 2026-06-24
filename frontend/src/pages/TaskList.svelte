@@ -4,7 +4,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { BOARD_COLUMNS, type BoardColumn } from '../lib/statuses.js'
+  import { BOARD_COLUMNS, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
@@ -261,6 +261,11 @@
     effectiveShowDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
   )
 
+  // Tasks awaiting the user across all columns (same set as the per-card red
+  // attention border) — surfaced as a persistent board-toolbar counter so an
+  // awaiting task is never missed when its column scrolls off-screen.
+  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status)).length)
+
   const hasActiveFilters = $derived(
     Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)
   )
@@ -347,6 +352,7 @@
     {allTags}
     {hasActiveFilters}
     {viewMode}
+    {needYouCount}
     onclear={clearFilters}
     onviewchange={() => { focusedColIdx = -1; focusedRowIdx = -1 }}
   />
