@@ -63,12 +63,35 @@ func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
 const convoEmitInterval = 50 * time.Millisecond
 
 func (m *Manager) buildConvoArgs(a *Agent, cfg RunConfig) []string {
+	// Interactive session: messages arrive on stdin as stream-json.
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 	}
+	return append(args, m.convoCommonArgs(a, cfg)...)
+}
+
+// buildOneShotConvoArgs builds args for a single detached conversational
+// turn: the prompt is passed as an argument (no stdin), so the process needs
+// no FIFO, reads nothing from stdin, runs the one turn, and exits — which
+// makes it survive a restart while still emitting the same stream-json the
+// convo parser consumes. (A regular-file stdin does NOT work: claude only
+// reads stream-json from a pipe, not a regular file.)
+func (m *Manager) buildOneShotConvoArgs(a *Agent, cfg RunConfig) []string {
+	args := []string{
+		"-p", cfg.Prompt,
+		"--output-format", "stream-json",
+		"--verbose",
+	}
+	return append(args, m.convoCommonArgs(a, cfg)...)
+}
+
+// convoCommonArgs returns the resume/permission/model/approval-hook flags
+// shared by the interactive and one-shot conversational invocations.
+func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
+	args := make([]string, 0, 8)
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}
@@ -188,10 +211,14 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	if outFile == nil {
 		return false, nil
 	}
-	// Detached survival applies to interactive (non-one-shot) Claude agents.
-	// One-shot runs must keep the pipe path: they signal completion by
-	// closing stdin to send EOF, which a never-EOF survival FIFO cannot do.
-	if m.survives() && !cfg.OneShot {
+	// Detached survival for interactive Claude agents (this path is only
+	// reached for Claude; codex uses runCodexConversational). A one-shot run
+	// passes its prompt as an argument (no stdin); interactive sessions use a
+	// never-EOF FIFO for follow-ups.
+	if m.survives() {
+		if cfg.OneShot {
+			return m.runConvoAttemptSurviveOneShot(ctx, a, cfg, outFile, tailOffset)
+		}
 		return m.runConvoAttemptSurvive(ctx, a, cfg, outFile, tailOffset)
 	}
 	cmd, stdout, stderrBuf, startErr := m.startConvoProcess(ctx, a, cfg)
@@ -369,8 +396,9 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 	}
 }
 
-// writeUserMessage writes a user message to the agent's stdin in stream-json format.
-func (m *Manager) writeUserMessage(a *Agent, text string) error {
+// encodeUserMessage renders a user message as a newline-terminated
+// stream-json line for claude's stdin.
+func encodeUserMessage(text string) ([]byte, error) {
 	msg := map[string]any{
 		"type": "user",
 		"message": map[string]any{
@@ -380,9 +408,17 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
+		return nil, fmt.Errorf("marshal message: %w", err)
 	}
-	data = append(data, '\n')
+	return append(data, '\n'), nil
+}
+
+// writeUserMessage writes a user message to the agent's stdin in stream-json format.
+func (m *Manager) writeUserMessage(a *Agent, text string) error {
+	data, err := encodeUserMessage(text)
+	if err != nil {
+		return err
+	}
 
 	a.stdinMu.Lock()
 	defer a.stdinMu.Unlock()

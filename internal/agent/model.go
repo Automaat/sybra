@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os/exec"
+	"slices"
 	"sync"
 	"time"
 )
@@ -458,6 +459,21 @@ func (a *Agent) hasTerminalResult() bool {
 		}
 	}
 	return false
+}
+
+// lastConvoResult reports whether a terminal result event was observed in
+// the conversational buffer and whether that result was an error, scanning
+// newest-first. Used by reattach completion to tell a clean finish from an
+// error completion from a process that vanished mid-turn.
+func (a *Agent) lastConvoResult() (found, isError bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for i := range slices.Backward(a.convoBuffer) {
+		if a.convoBuffer[i].Type == "result" {
+			return true, a.convoBuffer[i].Subtype == "error"
+		}
+	}
+	return false, false
 }
 
 // GetLastEventAt returns the most recent event timestamp.

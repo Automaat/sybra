@@ -63,6 +63,15 @@ export class AgentDefaults {
      */
     "surviveRestart": boolean | null;
 
+    /**
+     * ApprovalPort pins the localhost port of the PreToolUse approval
+     * server. The hook URL is baked into a permission-gated agent's
+     * --settings at spawn, so a fixed port lets a detached agent's approval
+     * requests still resolve after a restart. 0 (default) binds a random
+     * port (no cross-restart approval survival).
+     */
+    "approvalPort": number;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -106,6 +115,9 @@ export class AgentDefaults {
         }
         if (!("surviveRestart" in $$source)) {
             this["surviveRestart"] = null;
+        }
+        if (!("approvalPort" in $$source)) {
+            this["approvalPort"] = 0;
         }
 
         Object.assign(this, $$source);

@@ -180,6 +180,102 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	return false, nil
 }
 
+// runConvoAttemptSurviveOneShot runs a detached one-shot conversational
+// turn: the prompt is passed as a CLI argument (no stdin), output is
+// streamed to the log file, and the tailer follows it until the turn
+// completes and the process exits — so an interrupted one-shot step
+// finishes across a restart instead of faking completion via stale
+// recovery. No FIFO is created, so the registry record's StdinPath stays
+// empty, which is how reattach recognizes a one-shot (tail-only).
+func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
+	args := m.buildOneShotConvoArgs(a, cfg)
+	cmd := exec.Command("claude", args...)
+	configureDetached(cmd)
+	if a.sessionCWD != "" {
+		cmd.Dir = a.sessionCWD
+	}
+	if len(cfg.ExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	}
+	// No stdin: the prompt is an argument; a nil Stdin reads from /dev/null,
+	// which claude -p <prompt> never touches.
+
+	if *outFile == nil {
+		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+		if fileErr != nil {
+			return false, fmt.Errorf("open agent log: %w", fileErr)
+		}
+		a.SetLogPath(f.Name())
+		*outFile = f
+	}
+	cmd.Stdout = *outFile
+
+	stderrPath := (*outFile).Name() + ".stderr"
+	if stderrF, sErr := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); sErr == nil {
+		cmd.Stderr = stderrF
+		defer func() { _ = stderrF.Close() }()
+	}
+
+	if startErr := cmd.Start(); startErr != nil {
+		return false, fmt.Errorf("start claude: %w", startErr)
+	}
+	a.SetCmd(cmd)
+	a.setDetached(true)
+	// StdinPath intentionally left unset: reattach treats a record with no
+	// StdinPath as a one-shot (tail-only) agent.
+	m.saveRegistry(a)
+	m.logger.Info("agent.convo.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true, "oneshot", true)
+
+	procDone := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(procDone)
+	}()
+
+	prevLen := len(a.ConvoOutput())
+	startOffset := int64(0)
+	if tailOffset != nil {
+		startOffset = *tailOffset
+	}
+	exited, endOffset := m.tailConvoFile(ctx, a, (*outFile).Name(), startOffset, true, procDone)
+	if tailOffset != nil {
+		*tailOffset = endOffset
+	}
+	if !exited {
+		m.logger.Info("agent.convo.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown", "oneshot", true)
+		return false, errSurviveShutdown
+	}
+
+	select {
+	case <-procDone:
+	default:
+		return false, nil
+	}
+
+	var stderrOut string
+	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
+		stderrOut = string(b)
+	}
+	if stderrOut != "" {
+		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
+	}
+	if waitErr != nil {
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
+		a.SetExitErr(waitErr)
+		all := a.ConvoOutput()
+		if prevLen > len(all) {
+			prevLen = len(all)
+		}
+		attemptEvents := all[prevLen:]
+		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
+			return true, nil
+		}
+		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
+	}
+	return false, nil
+}
+
 // tailConvoFile follows a detached/reattached conversational agent's log
 // file from startOffset, feeding each complete line through
 // processConvoLine. Semantics mirror tailHeadlessFile: exited=true when the
@@ -298,26 +394,38 @@ func rehydrateConvoFromLog(a *Agent, path string) int64 {
 // reattachConvo resumes a live detached conversational agent: reopen its
 // stdin FIFO so follow-ups still reach the child, then tail its log until it
 // exits or the app shuts down.
-func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64, procStart string) {
-	if sp := a.GetStdinPath(); sp != "" {
-		if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
-			a.stdinMu.Lock()
-			a.stdinPipe = fifo
-			a.stdinMu.Unlock()
-		} else {
-			m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
+func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64, procStart string, oneShot bool) {
+	// A one-shot agent's stdin (a regular file) was already consumed; only an
+	// interactive session needs its FIFO reopened for follow-ups.
+	if !oneShot {
+		if sp := a.GetStdinPath(); sp != "" {
+			if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
+				a.stdinMu.Lock()
+				a.stdinPipe = fifo
+				a.stdinMu.Unlock()
+			} else {
+				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
+			}
 		}
 	}
 
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 
-	exited, _ := m.tailConvoFile(ctx, a, a.GetLogPath(), startOffset, false, procDone)
+	exited, _ := m.tailConvoFile(ctx, a, a.GetLogPath(), startOffset, oneShot, procDone)
 	if !exited {
 		m.logger.Info("agent.reattach.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown")
 		return
 	}
 
+	// No cmd.Wait runs for a reattached agent, so GetExitErr is nil. Infer
+	// the outcome from the terminal result: none -> crash (errReattachedGone);
+	// an error result -> a real failure; a success result -> leave nil.
+	if found, isError := a.lastConvoResult(); !found {
+		a.SetExitErr(errReattachedGone)
+	} else if isError {
+		a.SetExitErr(errReattachedResultError)
+	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)

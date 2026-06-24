@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,8 +24,9 @@ func TestWillDetach(t *testing.T) {
 		{"headless", "claude", false, true},
 		{"headless", "codex", false, true},
 		{"interactive", "claude", false, true},
-		{"interactive", "claude", true, false}, // one-shot stays on pipe path
+		{"interactive", "claude", true, true},  // one-shot survives via prompt arg
 		{"interactive", "codex", false, false}, // codex spawns per turn
+		{"interactive", "codex", true, false},  // codex one-shot also legacy
 		{"interactive", "", false, true},       // empty provider normalizes to claude
 		{"chat", "claude", false, false},       // unknown mode
 	}
@@ -33,6 +35,37 @@ func TestWillDetach(t *testing.T) {
 		if got != c.want {
 			t.Errorf("willDetach(mode=%s provider=%s oneShot=%v)=%v, want %v", c.mode, c.provider, c.oneShot, got, c.want)
 		}
+	}
+}
+
+// TestBuildOneShotConvoArgs verifies a one-shot survival turn passes the
+// prompt as an argument with NO --input-format — claude only reads
+// stream-json from a pipe, not a regular file, so one-shot survival must
+// feed the prompt via argv, not stdin.
+func TestBuildOneShotConvoArgs(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	a := &Agent{ID: "x", Provider: "claude", Model: "sonnet"}
+	args := m.buildOneShotConvoArgs(a, RunConfig{Prompt: "do the thing", RequirePermissions: false})
+
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--input-format") {
+		t.Fatalf("one-shot must not use --input-format (stdin stream-json): %q", joined)
+	}
+	// The prompt must be the argument immediately after -p.
+	found := false
+	for i := range len(args) - 1 {
+		if args[i] == "-p" {
+			if args[i+1] != "do the thing" {
+				t.Fatalf("expected prompt as arg after -p, got %q", args[i+1])
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected -p <prompt> in args: %q", joined)
+	}
+	if !strings.Contains(joined, "--output-format stream-json") {
+		t.Fatalf("expected stream-json output: %q", joined)
 	}
 }
 
@@ -157,6 +190,71 @@ func TestRegistryDelete_RemovesFIFO(t *testing.T) {
 	}
 	if _, err := os.Stat(fifo); !os.IsNotExist(err) {
 		t.Fatalf("expected FIFO removed on Delete, stat err=%v", err)
+	}
+}
+
+// TestReattachInteractive_OneShotTailOnly verifies a one-shot survival
+// record (no FIFO / empty StdinPath) reattaches tail-only and finalizes
+// when its single turn completes — no FIFO reopen required.
+func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
+	prev := reattachPIDPoll
+	reattachPIDPoll = 50 * time.Millisecond
+	t.Cleanup(func() { reattachPIDPoll = prev })
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "os9.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	history := `{"type":"system","subtype":"init","session_id":"sess-os"}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(history), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(regDir); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	var completed atomic.Bool
+	m.SetOnComplete(func(*Agent) { completed.Store(true) })
+
+	result := `{"type":"result","result":"done","session_id":"sess-os","total_cost_usd":0.1}`
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 0.3; printf '%%s\\n' '%s' >> %q", result, logPath))
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+
+	// One-shot survival record: StdinPath intentionally empty.
+	rec := Record{
+		ID: "os9", TaskID: "t-os", Mode: "interactive", Provider: "claude",
+		PID: cmd.Process.Pid, LogPath: logPath, StdinPath: "",
+		SessionID: "sess-os", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(cmd.Process.Pid),
+	}
+	if err := m.reg.Save(rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got := m.ReattachAll()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 reattached one-shot agent, got %d", len(got))
+	}
+	if _, err := m.GetAgent("os9"); err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for !completed.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for one-shot reattach to complete")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatalf("expected registry empty after completion, got %d", len(list))
 	}
 }
 

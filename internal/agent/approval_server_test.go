@@ -4,16 +4,49 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+// TestNewApprovalServer_PinnedPort verifies the approval server binds the
+// configured port (so a detached agent's baked hook URL survives restart),
+// and that 0 binds a random port.
+func TestNewApprovalServer_PinnedPort(t *testing.T) {
+	// Find a currently-free port.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), port)
+	if err != nil {
+		t.Fatalf("NewApprovalServer pinned: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	if !strings.HasSuffix(srv.Addr(), ":"+strconv.Itoa(port)) {
+		t.Fatalf("addr %q does not use pinned port %d", srv.Addr(), port)
+	}
+
+	rnd, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewApprovalServer random: %v", err)
+	}
+	t.Cleanup(func() { _ = rnd.Shutdown(context.Background()) })
+	if rnd.Addr() == "" {
+		t.Fatal("random-port server has empty addr")
+	}
+}
+
 func newTestApprovalServer(t *testing.T) *ApprovalServer {
 	t.Helper()
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger())
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -113,7 +146,7 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	mgr.agents["fake-ag-cancel"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger())
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -187,7 +220,7 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 	mgr.agents["fake-ag-1"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger())
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -225,7 +258,7 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 	mgr.agents["fake-ag-2"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger())
+	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
