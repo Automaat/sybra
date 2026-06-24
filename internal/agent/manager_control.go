@@ -95,6 +95,14 @@ func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
 
 	for _, a := range targets {
 		m.logger.Info("agent.kill-for-task", "agent_id", a.ID, "task_id", taskID)
+		// A detached subprocess cannot be killed via ctx-cancel or stdin EOF
+		// (own session, never-EOF FIFO stdin). Mark it stopped so its tailer
+		// finalizes, and signal it by PID so the process actually dies before
+		// the caller cleans up the worktree it is using.
+		if a.isDetached() {
+			a.MarkStopped()
+			m.signalKill(a)
+		}
 		if a.cancel != nil {
 			a.cancel()
 		}
@@ -134,11 +142,12 @@ func (m *Manager) StopAgent(agentID string) error {
 
 	a.MarkStopped()
 	// Send SIGINT first so CC can restore terminal modes and persist the
-	// session ID for --resume. Escalate to SIGKILL only after the grace window.
-	if a.Mode == "headless" {
-		if cmd := a.GetCmd(); cmd != nil {
-			stopWithSIGINT(cmd, a.done, stopSIGINTGrace)
-		}
+	// session ID for --resume. Escalate to SIGKILL only after the grace
+	// window. Detached agents (headless, or interactive whose stdin is a
+	// never-EOF O_RDWR FIFO) cannot be stopped by closing stdin, so they
+	// must be signalled by PID/handle.
+	if a.Mode == "headless" || a.isDetached() {
+		m.signalKill(a)
 	}
 	if a.cancel != nil {
 		a.cancel()

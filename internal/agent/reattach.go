@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -161,6 +162,12 @@ func (m *Manager) persistDeadSession(r Record) (done bool) {
 // Returns the reattached agent, or nil when the process is gone or a
 // duplicate already exists.
 func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
+	// A record without a FIFO path is not a detached survival agent (e.g. a
+	// leaked one-shot record); never reattach it as a live session.
+	if r.StdinPath == "" {
+		_ = reg.Delete(r.ID)
+		return nil
+	}
 	if !reattachAlive(r) {
 		_ = reg.Delete(r.ID)
 		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive")
@@ -172,9 +179,10 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 	if r.LogPath != "" {
 		startOffset = rehydrateConvoFromLog(a, r.LogPath)
 	}
-	// Interactive agents sit idle (Paused) between user turns; reattach in
-	// that state. processConvoLine flips to Running when a follow-up fires.
-	a.SetState(StatePaused)
+	// Resume in the right state: Paused if the last turn finished (idle,
+	// waiting for the user), Running if the agent was mid-generation at
+	// restart — so a follow-up is queued, not injected mid-turn.
+	a.SetState(convoResumeState(a.ConvoOutput()))
 
 	ctx, cancel := context.WithCancel(m.ctx)
 	a.cancel = cancel
@@ -194,6 +202,22 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 	go m.reattachConvo(ctx, a, startOffset, r.ProcStartedAt)
 	m.emit(events.AgentState(a.ID), a)
 	return a
+}
+
+// convoResumeState infers a reattached conversational agent's state from
+// its rehydrated buffer: Running when the most recent turn-shaping event is
+// an assistant event (mid-generation), Paused when it is a result (idle
+// between turns) or there is nothing yet.
+func convoResumeState(evs []ConvoEvent) State {
+	for i := range slices.Backward(evs) {
+		switch evs[i].Type {
+		case "result":
+			return StatePaused
+		case "assistant":
+			return StateRunning
+		}
+	}
+	return StatePaused
 }
 
 // reattachHeadless tails a reattached subprocess's log file from

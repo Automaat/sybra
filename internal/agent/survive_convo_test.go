@@ -92,6 +92,74 @@ func TestRehydrateConvoFromLog(t *testing.T) {
 	}
 }
 
+// TestProcessConvoLine_RegistryGatedByDetached locks in the fix for the
+// one-shot leak: only a detached agent persists a registry record; a
+// non-detached (one-shot/legacy) interactive agent must not, while still
+// capturing the session id.
+func TestProcessConvoLine_RegistryGatedByDetached(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	st := &convoEmitState{}
+
+	// Non-detached one-shot: session captured, NO registry record.
+	a := &Agent{ID: "os1", Mode: "interactive", Provider: "claude"}
+	m.processConvoLine(a, []byte(`{"type":"system","subtype":"init","session_id":"s1"}`), st, true)
+	if a.GetSessionID() != "s1" {
+		t.Fatalf("expected session captured even when not detached, got %q", a.GetSessionID())
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatalf("non-detached agent must not write a registry record, got %d", len(list))
+	}
+
+	// Detached survival agent: record written.
+	a2 := &Agent{ID: "d1", Mode: "interactive", Provider: "claude", StartedAt: time.Now().UTC()}
+	a2.setDetached(true)
+	m.processConvoLine(a2, []byte(`{"type":"system","subtype":"init","session_id":"s2"}`), st, false)
+	if list, _ := m.reg.List(); len(list) != 1 {
+		t.Fatalf("detached agent must write a registry record, got %d", len(list))
+	}
+}
+
+func TestConvoResumeState(t *testing.T) {
+	cases := []struct {
+		name   string
+		events []ConvoEvent
+		want   State
+	}{
+		{"empty", nil, StatePaused},
+		{"ended with result", []ConvoEvent{{Type: "assistant"}, {Type: "result"}}, StatePaused},
+		{"mid-generation after result", []ConvoEvent{{Type: "result"}, {Type: "assistant"}}, StateRunning},
+		{"assistant only", []ConvoEvent{{Type: "system"}, {Type: "assistant"}}, StateRunning},
+	}
+	for _, c := range cases {
+		if got := convoResumeState(c.events); got != c.want {
+			t.Errorf("%s: convoResumeState=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRegistryDelete_RemovesFIFO(t *testing.T) {
+	s, err := newRegistryStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("newRegistryStore: %v", err)
+	}
+	if err := s.Save(Record{ID: "f1", Mode: "interactive", Provider: "claude"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	fifo := s.fifoPath("f1")
+	if err := makeFIFO(fifo); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	if err := s.Delete("f1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(fifo); !os.IsNotExist(err) {
+		t.Fatalf("expected FIFO removed on Delete, stat err=%v", err)
+	}
+}
+
 // TestReattachInteractive_ReattachesLiveAgent reattaches a live detached
 // conversational agent, rehydrates its buffer, reopens its FIFO, streams a
 // late event, and finalizes when the process exits.

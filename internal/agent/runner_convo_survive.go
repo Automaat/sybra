@@ -56,6 +56,10 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 	}
 	cmd.Stdin = fifo
 	a.stdinMu.Lock()
+	if a.stdinPipe != nil {
+		// Close a prior attempt's FIFO writer before replacing it.
+		_ = a.stdinPipe.Close()
+	}
 	a.stdinPipe = fifo
 	a.stdinMu.Unlock()
 	a.setStdinPath(fifoPath)

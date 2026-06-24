@@ -121,6 +121,14 @@ func (m *Manager) markAgentDone(a *Agent) {
 	}
 	a.doneOnce.Do(func() {
 		close(a.done)
+		// Close the stdin pipe/FIFO and drop the registry record + FIFO file
+		// so a completed agent leaks neither an fd nor an on-disk pipe.
+		a.stdinMu.Lock()
+		if a.stdinPipe != nil {
+			_ = a.stdinPipe.Close()
+			a.stdinPipe = nil
+		}
+		a.stdinMu.Unlock()
 		if reg := m.registry(); reg != nil {
 			_ = reg.Delete(a.ID)
 		}

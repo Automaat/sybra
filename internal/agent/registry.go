@@ -81,8 +81,12 @@ func (s *registryStore) List() ([]Record, error) {
 	return out, nil
 }
 
-// Delete removes the record file. A missing file is not an error.
+// Delete removes the record file and the agent's stdin FIFO (if any). A
+// missing file is not an error.
 func (s *registryStore) Delete(id string) error {
+	// Best-effort FIFO cleanup so detached conversational agents don't leak
+	// a named pipe per run under the agents dir.
+	_ = os.Remove(s.fifoPath(id))
 	if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete record: %w", err)
 	}

@@ -326,11 +326,14 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 
 	switch event.Type {
 	case "system":
-		if event.SessionID != "" {
-			// Capture the session id (and persist for survival) as soon as it
-			// appears, so a restart can resume / reattach the conversation.
-			if a.GetSessionID() != event.SessionID {
-				a.SetSessionID(event.SessionID)
+		if event.SessionID != "" && a.GetSessionID() != event.SessionID {
+			// Capture the session id as soon as it appears so a restart can
+			// resume the conversation. Only persist a registry record for a
+			// detached (FIFO-backed survival) agent — a one-shot or legacy
+			// interactive agent must not leave a record, or reattach would
+			// mis-recover it as a survivable session and stall the workflow.
+			a.SetSessionID(event.SessionID)
+			if a.isDetached() {
 				m.saveRegistry(a)
 			}
 		}
@@ -387,6 +390,10 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	if a.stdinPipe == nil {
 		return fmt.Errorf("stdin pipe closed")
 	}
+	// Note: a message larger than the pipe buffer (~64KB) written while the
+	// child is not draining stdin blocks here under stdinMu until the child
+	// reads. In practice messages are far smaller and the child consumes
+	// stdin promptly; very large pastes are the only way to stall this.
 	if _, err := a.stdinPipe.Write(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
