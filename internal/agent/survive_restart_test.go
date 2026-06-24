@@ -259,6 +259,30 @@ func TestTailHeadlessFile_StopVsShutdown(t *testing.T) {
 	})
 }
 
+// TestTailHeadlessFile_EndOffsetExcludesPartialLine verifies the tailer
+// returns the byte offset after the last COMPLETE line, not raw bytes read
+// — so a resume never skips the start of a still-incomplete trailing line.
+func TestTailHeadlessFile_EndOffsetExcludesPartialLine(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	logPath := filepath.Join(t.TempDir(), "tail.ndjson")
+	complete := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}` + "\n"
+	partial := `{"type":"result","result":"in-flight` // no newline yet
+	if err := os.WriteFile(logPath, []byte(complete+partial), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	a := &Agent{ID: "o", Provider: "claude"}
+	procDone := make(chan struct{})
+	close(procDone) // process already exited
+
+	exited, end := m.tailHeadlessFile(context.Background(), a, logPath, 0, procDone)
+	if !exited {
+		t.Fatal("expected exited=true")
+	}
+	if end != int64(len(complete)) {
+		t.Fatalf("expected endOffset=%d (after complete line only), got %d", len(complete), end)
+	}
+}
+
 // TestReattachAll_RecoversCompletedDuringDowntime verifies a run that
 // finished while the app was down (process gone, log has a terminal result)
 // is finalized via onComplete instead of being dropped and re-run.

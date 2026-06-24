@@ -165,10 +165,15 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 				close(done)
 				return
 			}
-			if procStart != "" && processStartString(pid) != procStart {
-				// PID reused by an unrelated process — our agent is gone.
-				close(done)
-				return
+			// Best-effort PID-reuse guard, matching reattachAlive: only act on
+			// a definite mismatch. An empty current start time (ps unavailable)
+			// must NOT be treated as a mismatch, or a still-running agent would
+			// be wrongly marked gone.
+			if procStart != "" {
+				if cur := processStartString(pid); cur != "" && cur != procStart {
+					close(done)
+					return
+				}
 			}
 		}
 	}

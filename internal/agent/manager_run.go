@@ -72,9 +72,10 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		a.escalationCh = make(chan bool, 1)
 		// Pre-mark detached so a shutdown racing the runner goroutine
 		// already knows to leave this agent's subprocess running. The
-		// runner re-asserts this after a successful Start.
+		// runner re-asserts this after a successful Start. Use the mutexed
+		// setter — detached is guarded by mu and read via isDetached().
 		if m.survives() {
-			a.detached = true
+			a.setDetached(true)
 		}
 	}
 

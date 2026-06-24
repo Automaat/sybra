@@ -320,6 +320,11 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 	var lastEmit time.Time
 	isCodex := normalizeProvider(a.Provider) == "codex"
 
+	// end is the byte position after the last complete line consumed: total
+	// bytes read minus any trailing partial line still buffered. Resuming a
+	// retry or reattach from here never re-reads or skips a line.
+	end := func() int64 { return offset - int64(len(buf)) }
+
 	// drain reads all bytes appended since offset, splits complete lines,
 	// and processes them. Returns true if a guardrail asked to stop.
 	drain := func() (stop bool) {
@@ -363,29 +368,29 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 		// not survive — fall through and finalize. Checked before the select
 		// so a simultaneously-ready procDone never wins the shutdown race.
 		if ctx.Err() != nil && !a.WasStopped() {
-			return false, offset
+			return false, end()
 		}
 
 		if drain() {
 			// Guardrail kill: force the child to stop, wait for it, finalize.
 			m.signalKill(a)
 			waitExit()
-			return true, offset
+			return true, end()
 		}
 
 		select {
 		case <-procDone:
 			drain()
-			return true, offset
+			return true, end()
 		case <-ctx.Done():
 			if a.WasStopped() {
 				// Intentional stop: the child is being terminated; wait for
 				// it, then finalize.
 				waitExit()
-				return true, offset
+				return true, end()
 			}
 			// App shutdown: leave the detached child running for reattach.
-			return false, offset
+			return false, end()
 		case <-time.After(headlessTailPoll):
 		}
 	}
@@ -434,11 +439,6 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	m.reportScannerError(a, scanner.Err())
 }
 
-// processHeadlessLine parses one NDJSON line, appends and emits the event,
-// captures session/plugin metadata, and applies the turn and cost
-// guardrails. Returns true when a guardrail decision says to stop the
-// stream. Shared by the pipe-backed streamer and the file tailer; it never
-// writes the log file (the caller or the child process owns that).
 // parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using
 // the provider-appropriate parser. Shared by the live line handler and the
 // reattach rehydrator.
@@ -457,6 +457,11 @@ func parseHeadlessEvent(line []byte, isCodex bool) (StreamEvent, error) {
 	return claudeEventToStreamEvent(ce), nil
 }
 
+// processHeadlessLine parses one NDJSON line, appends and emits the event,
+// captures session/plugin metadata, and applies the turn and cost
+// guardrails. Returns true when a guardrail decision says to stop the
+// stream. Shared by the pipe-backed streamer and the file tailer; it never
+// writes the log file (the caller or the child process owns that).
 func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, isCodex bool) (stop bool) {
 	var event StreamEvent
 	var parseErr error
