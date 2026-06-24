@@ -1,10 +1,14 @@
 <script lang="ts">
   import { statsStore } from '../stores/stats.svelte.js'
+  import { periodCutoff, dailyCost, costByProject, type StatsPeriod } from '$lib/stats-charts.js'
+  import StatsLineChart from '../components/stats/StatsLineChart.svelte'
+  import StatsBarChart from '../components/stats/StatsBarChart.svelte'
 
-
-  type Period = 'today' | 'thisWeek' | 'thisMonth' | 'allTime'
+  type Period = StatsPeriod
 
   let period = $state<Period>('allTime')
+  // Captured once so the period cutoffs don't recompute on every clock tick.
+  const now = new Date()
 
   const periods: { key: Period; label: string }[] = [
     { key: 'today', label: 'Today' },
@@ -13,9 +17,22 @@
     { key: 'allTime', label: 'All Time' },
   ]
 
+  const periodLabel = $derived(periods.find((p) => p.key === period)?.label ?? '')
+
   const summary = $derived(
     statsStore.data ? statsStore.data[period] : null,
   )
+
+  // Charts are derived from the recent-runs sample, filtered to the selected
+  // period. The backend caps that sample at 50; when it's full, older runs are
+  // not represented, so the captions flag it and the tables below stay
+  // authoritative for full totals.
+  const recentRuns = $derived(statsStore.data?.recentRuns ?? [])
+  // The backend only caps recentRuns once there are MORE than 50 total runs.
+  const sampleCapped = $derived((statsStore.data?.allTime?.totalRuns ?? 0) > 50)
+  const cutoff = $derived(periodCutoff(period, now))
+  const costSeries = $derived(dailyCost(recentRuns, cutoff, now))
+  const projectCosts = $derived(costByProject(recentRuns, cutoff))
 
   $effect(() => {
     statsStore.load()
@@ -108,6 +125,26 @@
         {#if summary.totalReasoningTokens}
           <p class="mt-0.5 text-xs text-surface-400">{formatTokens(summary.totalReasoningTokens)} reasoning</p>
         {/if}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Charts -->
+  {#if statsStore.data}
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <div class="mb-3 flex items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-surface-500">Cost over time</h3>
+          <span class="text-[10px] text-surface-400">{periodLabel}{#if sampleCapped} · recent 50 runs{/if}</span>
+        </div>
+        <StatsLineChart points={costSeries} />
+      </div>
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <div class="mb-3 flex items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-surface-500">Cost by project</h3>
+          <span class="text-[10px] text-surface-400">{periodLabel}{#if sampleCapped} · recent 50 runs{/if}</span>
+        </div>
+        <StatsBarChart bars={projectCosts} />
       </div>
     </div>
   {/if}
