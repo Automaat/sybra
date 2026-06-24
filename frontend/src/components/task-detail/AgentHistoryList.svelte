@@ -4,6 +4,8 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
   import { formatDateTime } from '../../lib/dates.js'
+  import { formatCostShort } from '../../lib/cost.js'
+  import { runStateClasses } from '../../lib/agent-run.js'
   import StreamOutput from '../StreamOutput.svelte'
   import MessageBubble from '../MessageBubble.svelte'
   import ProviderLogo from '../ProviderLogo.svelte'
@@ -85,15 +87,13 @@
             {/if}
             <span class="font-mono text-surface-400">{run.agentId}</span>
             <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{run.mode}</span>
-            <span
-              class="rounded px-1.5 py-0.5 {run.state === 'stopped' ? 'bg-surface-200 dark:bg-surface-700' : 'bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200'}"
-            >
+            <span class="rounded px-1.5 py-0.5 {runStateClasses(run.state || 'running')}">
               {run.state || 'running'}
             </span>
           </div>
           <div class="flex items-center gap-3 text-surface-400">
             {#if run.costUsd > 0}
-              <span>${run.costUsd.toFixed(4)}</span>
+              <span class="tabular-nums">{formatCostShort(run.costUsd)}</span>
             {/if}
             <span>{formatDateTime(run.startedAt)}</span>
             <ChevronDown size={16} class="transition-transform {expandedRun === run.agentId ? 'rotate-180' : ''}" />

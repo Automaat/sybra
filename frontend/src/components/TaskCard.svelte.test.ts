@@ -196,7 +196,8 @@ describe('TaskCard', () => {
       },
     })
 
-    expect(screen.getByText(/Review needed/)).toBeDefined()
+    expect(screen.getByTitle('Review requested')).toBeDefined()
+    expect(screen.getByText(/#42/)).toBeDefined()
   })
 
   it('shows approved waiting-merge badge for approved review tasks', () => {
@@ -208,7 +209,8 @@ describe('TaskCard', () => {
       },
     })
 
-    expect(screen.getByText(/Approved, waiting merge/)).toBeDefined()
+    expect(screen.getByTitle('Approved; waiting for PR to merge')).toBeDefined()
+    expect(screen.getByText('✓')).toBeDefined()
   })
 
   describe('timeAgo', () => {
