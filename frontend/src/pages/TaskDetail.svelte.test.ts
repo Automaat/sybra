@@ -157,7 +157,7 @@ describe('TaskDetail', () => {
       props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
     })
     await vi.waitFor(() => {
-      expect(screen.getByText('Delete')).toBeDefined()
+      expect(screen.getByLabelText('More actions')).toBeDefined()
     })
   })
 
@@ -169,9 +169,13 @@ describe('TaskDetail', () => {
       props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete },
     })
     await vi.waitFor(() => {
-      expect(screen.getByText('Delete')).toBeDefined()
+      expect(screen.getByLabelText('More actions')).toBeDefined()
     })
-    screen.getByText('Delete').click()
+    screen.getByLabelText('More actions').click()
+    await vi.waitFor(() => {
+      expect(screen.getByText('Delete task')).toBeDefined()
+    })
+    screen.getByText('Delete task').click()
     await vi.waitFor(() => {
       expect(mockRemove).toHaveBeenCalledWith('task-1')
       expect(ondelete).toHaveBeenCalled()
@@ -288,8 +292,8 @@ describe('TaskDetail', () => {
       await vi.waitFor(() => {
         expect(screen.getByText('Test Task')).toBeDefined()
       })
-      const copyBtn = screen.getByText('Copy ID')
-      await fireEvent.click(copyBtn)
+      await fireEvent.click(screen.getByLabelText('More actions'))
+      await fireEvent.click(screen.getByText('Copy ID'))
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('task-1')
     })
 
@@ -302,8 +306,8 @@ describe('TaskDetail', () => {
       await vi.waitFor(() => {
         expect(screen.getByText('Test Task')).toBeDefined()
       })
-      const copyBtn = screen.getByText('Copy ID')
-      await fireEvent.click(copyBtn)
+      await fireEvent.click(screen.getByLabelText('More actions'))
+      await fireEvent.click(screen.getByText('Copy ID'))
       await vi.waitFor(() => {
         expect(mockPushLocal).toHaveBeenCalledWith('error', 'Copy failed', expect.any(String))
       })

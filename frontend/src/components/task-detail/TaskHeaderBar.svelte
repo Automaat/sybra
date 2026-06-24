@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Copy } from '@lucide/svelte'
+  import { MoreHorizontal } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
@@ -29,6 +29,27 @@
   let reviewLoading = $state(false)
   let fixReviewLoading = $state(false)
   let error = $state('')
+  let menuOpen = $state(false)
+
+  function closeMenu() {
+    menuOpen = false
+    // Drop any lingering "Copied!" so reopening shows the default labels.
+    copied = false
+    copiedBranch = false
+  }
+
+  $effect(() => {
+    if (!menuOpen) return
+    function onKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        closeMenu()
+      }
+    }
+    window.addEventListener('keydown', onKeydown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeydown, { capture: true })
+  })
 
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
@@ -305,32 +326,53 @@
         Fixing review
       </span>
     {/if}
-    <button
-      type="button"
-      class="rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
-      onclick={copyId}
-      title="Copy task ID (⌘.)"
-    >
-      {copied ? 'Copied!' : 'Copy ID'}
-    </button>
-    {#if task.projectId}
+    <!-- Secondary / utility actions tucked into an overflow menu. -->
+    <div class="relative">
       <button
         type="button"
-        class="inline-flex items-center gap-1 rounded bg-surface-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-surface-600"
-        onclick={copyBranch}
-        title="Copy branch name (⇧⌘.)"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label="More actions"
+        title="More actions"
+        class="rounded p-1 text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 dark:hover:bg-surface-700 dark:hover:text-surface-200"
+        onclick={() => (menuOpen = !menuOpen)}
       >
-        <Copy size={12} />
-        {copiedBranch ? 'Copied!' : 'Copy branch'}
+        <MoreHorizontal size={16} />
       </button>
-    {/if}
-    <button
-      type="button"
-      class="rounded bg-error-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-error-600 disabled:opacity-50"
-      onclick={deleteTask}
-      disabled={deleting}
-    >
-      {deleting ? 'Deleting...' : 'Delete'}
-    </button>
+
+      {#if menuOpen}
+        <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
+        <div role="menu" class="absolute right-0 z-50 mt-1 w-44 rounded-lg py-1 elevation-popover">
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center px-3 py-1.5 text-left text-xs hover:bg-surface-200 dark:hover:bg-surface-700"
+            onclick={copyId}
+          >
+            {copied ? 'Copied!' : 'Copy ID'}
+          </button>
+          {#if task.projectId}
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center px-3 py-1.5 text-left text-xs hover:bg-surface-200 dark:hover:bg-surface-700"
+              onclick={copyBranch}
+            >
+              {copiedBranch ? 'Copied!' : 'Copy branch'}
+            </button>
+          {/if}
+          <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center px-3 py-1.5 text-left text-xs text-error-600 hover:bg-error-50 disabled:opacity-50 dark:text-error-400 dark:hover:bg-error-950"
+            onclick={() => { closeMenu(); deleteTask() }}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting...' : 'Delete task'}
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 </div>
