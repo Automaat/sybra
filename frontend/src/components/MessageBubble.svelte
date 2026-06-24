@@ -10,8 +10,9 @@
 
   const { event }: Props = $props()
 
-  // Tool results larger than this are CC-offloaded to a temp file and arrive
-  // with the internal absolute path inline; collapse them rather than leak it.
+  // The backend truncates tool-result content to 2000 chars + "..." (see
+  // internal/agent/runner_convo.go), so anything longer is a truncated/oversized
+  // result whose head can contain an internal absolute path — collapse it.
   const OVERSIZED_RESULT = 2000
 
   function isOversized(content: string): boolean {
@@ -116,7 +117,7 @@
       <span
         title="input ↓ / output ↑ tokens"
         aria-label="{(event.inputTokens ?? 0).toLocaleString()} input tokens, {(event.outputTokens ?? 0).toLocaleString()} output tokens"
-      >{event.inputTokens?.toLocaleString()}↓ {event.outputTokens?.toLocaleString()}↑</span>
+      >{(event.inputTokens ?? 0).toLocaleString()}↓ {(event.outputTokens ?? 0).toLocaleString()}↑</span>
     {/if}
   </div>
 {/if}

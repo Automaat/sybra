@@ -142,6 +142,12 @@ describe('MessageBubble', () => {
     expect(span.getAttribute('aria-label')).toBe('50 input tokens, 1,200 output tokens')
   })
 
+  it('renders a zero token side as 0, not blank', () => {
+    const ev = makeEvent({ type: 'result', inputTokens: 0, outputTokens: 1200 })
+    render(MessageBubble, { props: { event: ev } })
+    expect(screen.getByText(/^0↓ 1,200↑$/)).toBeDefined()
+  })
+
   it('shows DONE badge for result event', () => {
     const ev = makeEvent({ type: 'result', costUsd: 0.01 })
     render(MessageBubble, { props: { event: ev } })
