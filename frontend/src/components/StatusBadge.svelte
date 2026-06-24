@@ -15,6 +15,6 @@
   )
 </script>
 
-<span class="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-100 {resolved.badgeClasses}">
+<span class="inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-100 {resolved.badgeClasses}">
   {resolved.label}
 </span>

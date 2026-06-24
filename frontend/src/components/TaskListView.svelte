@@ -17,6 +17,11 @@
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
   }
 
+  // Hide the Priority column entirely until at least one task has a priority,
+  // so it doesn't waste scarce width (notably on mobile) showing only "–".
+  const hasPriorities = $derived(tasks.some((t) => priorityIcon(t.priority) !== '–'))
+  const colCount = $derived(hasPriorities ? 5 : 4)
+
   function priorityLabel(p: string | undefined): string {
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.label ?? 'None'
   }
@@ -26,11 +31,13 @@
   }
 </script>
 
-<div class="min-h-0 flex-1 overflow-y-auto">
+<div class="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
   <table class="w-full text-sm">
     <thead class="sticky top-0 z-10 border-b border-surface-200 bg-surface-100 dark:border-surface-700 dark:bg-surface-900">
       <tr>
-        <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider w-8">P</th>
+        {#if hasPriorities}
+          <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider w-8">P</th>
+        {/if}
         <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Title</th>
         <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Status</th>
         <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden md:table-cell">Project</th>
@@ -46,11 +53,13 @@
           onclick={() => onselect(t.id)}
           onmouseenter={() => onhover(rowIdx)}
         >
-          <td class="px-4 py-2">
-            <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
-          </td>
+          {#if hasPriorities}
+            <td class="px-4 py-2">
+              <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
+            </td>
+          {/if}
           <td class="px-4 py-2 font-medium">{t.title}</td>
-          <td class="px-4 py-2">
+          <td class="whitespace-nowrap px-4 py-2">
             <StatusBadge status={t.status} />
           </td>
           <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
@@ -61,7 +70,7 @@
       {/each}
       {#if tasks.length === 0}
         <tr>
-          <td colspan="5" class="px-4 py-8 text-center text-surface-400">No tasks match your filters</td>
+          <td colspan={colCount} class="px-4 py-8 text-center text-surface-400">No tasks match your filters</td>
         </tr>
       {/if}
     </tbody>

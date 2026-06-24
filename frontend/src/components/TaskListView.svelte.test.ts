@@ -30,6 +30,22 @@ describe('TaskListView', () => {
     expect(screen.getByText('Second')).toBeDefined()
   })
 
+  it('shows the Priority (P) column when a task has a priority', () => {
+    render(TaskListView, {
+      props: { tasks: tasks as never, focusedTaskId: null, onselect: vi.fn(), onhover: vi.fn() },
+    })
+    expect(screen.getByRole('columnheader', { name: 'P' })).toBeDefined()
+  })
+
+  it('hides the Priority column when no task has a priority', () => {
+    const none = tasks.map((t) => ({ ...t, priority: '' }))
+    render(TaskListView, {
+      props: { tasks: none as never, focusedTaskId: null, onselect: vi.fn(), onhover: vi.fn() },
+    })
+    expect(screen.queryByRole('columnheader', { name: 'P' })).toBeNull()
+    expect(screen.getByText('First')).toBeDefined()
+  })
+
   it('shows project for tasks that have one, em-dash otherwise', () => {
     render(TaskListView, {
       props: {
