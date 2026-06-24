@@ -126,10 +126,10 @@ export function awaitsHuman(status: string): boolean {
 }
 
 /**
- * Canonical, human-facing label for a status — the single source of truth used
- * identically on the board pill, list cell, detail dropdown, and move popover.
- * One state, one word, everywhere. Unknown values pass through verbatim so the
- * UI never mislabels a legacy/unrecognised status.
+ * Canonical, human-facing label for a status — the label every status surface
+ * (board pill, list cell, move popover) should resolve through so one state
+ * reads the same wherever it appears. Unknown values pass through verbatim so
+ * the UI never mislabels a legacy/unrecognised status.
  */
 export function statusLabel(status: string): string {
   return STATUS_MAP[status]?.label ?? status

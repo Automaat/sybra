@@ -250,7 +250,7 @@
       This control selects among the core (column) statuses, so it shows the
       rolled-up value. A granular awaiting sub-state (e.g. plan-review) still
       reads as its column name ("Planning") here; surfacing that sub-state as a
-      banner under the title is tracked separately (detail-loses-substate).
+      banner under the title is tracked separately in issue #983.
     -->
     <select
       bind:this={statusSelectRef}
