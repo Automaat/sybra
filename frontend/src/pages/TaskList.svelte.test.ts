@@ -134,14 +134,17 @@ describe('TaskList', () => {
       expect(screen.queryByText('Timeline')).toBeNull()
     })
 
-    it('renders Show done checkbox', () => {
+    it('renders the Show done checkbox in list view', () => {
+      viewModeStore.set('list')
       render(TaskList, { props: { onselect: vi.fn() } })
       expect(screen.getByLabelText('Show done')).toBeDefined()
     })
 
-    it('renders Logbook link', () => {
+    it('routes done to the Logbook in board view (no broken Show done)', () => {
+      viewModeStore.set('board')
       render(TaskList, { props: { onselect: vi.fn() } })
-      expect(screen.getByText('Logbook →')).toBeDefined()
+      expect(screen.getByText('Done → Logbook')).toBeDefined()
+      expect(screen.queryByLabelText('Show done')).toBeNull()
     })
   })
 
@@ -332,9 +335,18 @@ describe('TaskList', () => {
   })
 
   describe('show done column visibility', () => {
-    it('renders Done column hidden by default and Show done checkbox unchecked', () => {
+    it('hides the Done column and the broken Show done toggle in board view', () => {
+      viewModeStore.set('board')
       render(TaskList, { props: { onselect: vi.fn() } })
+      // No Done column on the board; done tasks are routed to the Logbook.
       expect(screen.queryByText(/^Done$/)).toBeNull()
+      expect(screen.queryByLabelText('Show done')).toBeNull()
+      expect(screen.getByText('Done → Logbook')).toBeDefined()
+    })
+
+    it('offers a working Show done toggle (unchecked) in list view', () => {
+      viewModeStore.set('list')
+      render(TaskList, { props: { onselect: vi.fn() } })
       const checkbox = screen.getByLabelText('Show done') as HTMLInputElement
       expect(checkbox.checked).toBe(false)
     })

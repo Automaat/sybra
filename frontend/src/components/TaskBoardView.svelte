@@ -4,6 +4,7 @@
   import type { BoardColumn } from '../lib/statuses.js'
   import TaskCard from './TaskCard.svelte'
   import InlineTaskAdd from './InlineTaskAdd.svelte'
+  import { agentStore } from '../stores/agents.svelte.js'
   import { viewport } from '../lib/viewport.svelte.js'
   import { fly } from 'svelte/transition'
   import { flip } from 'svelte/animate'
@@ -54,6 +55,13 @@
     if (changed) expandedEmpty = next
   })
 
+  // A static "agents working now" count per column — the live activity cue the
+  // board otherwise lacks, without an animated pulse keeping a swarm in motion.
+  function runningCount(tasks: Task[]): number {
+    const list = agentStore.list ?? []
+    return tasks.filter((t) => list.some((a) => a.taskId === t.id && a.state === 'running')).length
+  }
+
   async function handleDrop(e: DragEvent, targetStatus: string) {
     e.preventDefault()
     dragOverStatus = null
@@ -66,6 +74,7 @@
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
   {#each visibleColumns as col}
     {@const tasks = columnTasks(col)}
+    {@const rc = runningCount(tasks)}
     {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
     {@const isThin = viewport.isDesktop && tasks.length === 0 && !expandedEmpty.has(col.status)}
     {#if isThin}
@@ -101,8 +110,19 @@
           <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
           <h2 class="text-sm font-semibold">{col.label}</h2>
         </span>
-        <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
-          {tasks.length}
+        <span class="flex items-center gap-1.5">
+          {#if rc > 0}
+            <span
+              class="inline-flex items-center gap-1 text-xs font-medium text-success-700 dark:text-success-400"
+              title="{rc} agent(s) working in this column"
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
+              {rc}
+            </span>
+          {/if}
+          <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
+            {tasks.length}
+          </span>
         </span>
       </button>
       {#if !isCollapsed}
