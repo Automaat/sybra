@@ -20,10 +20,20 @@ Knobs:
 
 Baseline reference (M4 Max, `-benchtime=2s`):
 
-- `BenchmarkStoreList/n=1000` ≈ 39 ms/op — UI refresh hot path budget.
-- `BenchmarkParseClaudeLine_Mixed` ≈ 2.4 µs/op — every NDJSON line pays this.
+- `BenchmarkStoreList/n=1000` ≈ 90 µs/op — UI refresh hot path budget (served
+  from the in-memory list cache; cold rebuild parses every file).
+- `BenchmarkStoreGet` ≈ 40 µs/op, 169 allocs — single-task detail read.
+- `BenchmarkStoreUpdate` ≈ 270 µs/op, 236 allocs — Get-modify-marshal-write.
+- `BenchmarkParseClaudeLine_Mixed` ≈ 2.7 µs/op — every NDJSON line pays this.
 - `BenchmarkEmit_AllSubscribers/subs=100` ≈ 18 µs/op — SSE fanout cost.
 - `BenchmarkWatcherSameFileCoalescing` — verifies N writes → 1 emission.
+
+> Plan-draft scan optimization (2026-06): `Store.Get` used to call
+> `PlanDraftStore.List`, which scanned the whole tasks dir on every read
+> (~20% of server CPU, ~50% of allocations under churn). Write paths (Update,
+> Delete, watcher status hook) now use a parse-only `Store.read`, and the
+> detail `Get` path is backed by a negative-cache index in `PlanDraftStore`.
+> Net: `StoreGet` 446 µs → 40 µs, `StoreUpdate` 378 µs → 270 µs.
 
 Compare two runs:
 

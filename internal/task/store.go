@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -214,21 +215,39 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 }
 
 func (s *Store) Get(id string) (Task, error) {
-	path, err := s.safePath(id)
+	t, err := s.read(id)
 	if err != nil {
-		return Task{}, err
-	}
-	t, err := Parse(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Task{}, fmt.Errorf("task %s not found", id)
-		}
 		return Task{}, err
 	}
 	t.Plan, _ = s.plans.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 	t.CodeReview, _ = s.codeReviews.Read(t.ID)
 	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+	return t, nil
+}
+
+// read parses just the task file for id, skipping the sidecar fan-out that
+// Get performs. Write paths (Update, Delete) and the watcher status hook only
+// need the task's own frontmatter/body — the sidecar fields are yaml:"-" so
+// Marshal never serializes them, and no List() consumer reads them off a
+// cached entry. Loading them there is pure waste, dominated by
+// PlanDraftStore.List, which scans the entire tasks dir (~one lstat per file)
+// on every call. That scan was ~20% of server CPU and ~50% of allocations
+// under churn because Update/Delete/OnExternalUpdate each paid it.
+func (s *Store) read(id string) (Task, error) {
+	path, err := s.safePath(id)
+	if err != nil {
+		return Task{}, err
+	}
+	t, err := Parse(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Wrap so callers can detect the missing file via
+			// errors.Is(err, os.ErrNotExist) instead of string matching.
+			return Task{}, fmt.Errorf("task %s not found: %w", id, err)
+		}
+		return Task{}, err
+	}
 	return t, nil
 }
 
@@ -315,7 +334,7 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 }
 
 func (s *Store) Delete(id string) error {
-	t, err := s.Get(id)
+	t, err := s.read(id)
 	if err != nil {
 		return err
 	}
@@ -361,7 +380,7 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 // status. Lets callers (Manager.Update) wire status-change hooks without a
 // redundant Get to read the previous value before the write.
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
-	t, err := s.Get(id)
+	t, err := s.read(id)
 	if err != nil {
 		return Task{}, "", err
 	}
@@ -474,6 +493,12 @@ func (s *Store) InvalidatePath(path string) {
 	}
 	base := filepath.Base(path)
 	if IsSidecarFile(base) {
+		// An external plan-draft write/delete must drop the draft index so a
+		// draft-less negative-cache hit can't mask a draft that appeared on
+		// disk out-of-process.
+		if IsPlanDraftFile(base) {
+			s.planDrafts.invalidateIndex()
+		}
 		s.invalidateListCache()
 		return
 	}
@@ -481,7 +506,30 @@ func (s *Store) InvalidatePath(path string) {
 	if id == "" {
 		return
 	}
-	s.invalidateListCache()
+	// Targeted refresh instead of a blanket invalidate: a single task file
+	// changed (commonly the fsnotify echo of our OWN AtomicWrite ~200ms
+	// earlier), so re-read just that file and patch its one cache entry rather
+	// than dropping the whole list and forcing the next List() to re-parse and
+	// re-clone every task. Keeps the list cache warm under active agent write
+	// load, where it was perpetually cold.
+	s.refreshCachedTask(id)
+}
+
+// refreshCachedTask re-reads a single task (with sidecars, so List output is
+// identical to a full rebuild) and patches its entry in the warm list cache.
+// A vanished file removes the entry; an unexpected read error falls back to a
+// full invalidate. No-op when the cache is cold (storeTaskCache guards on it).
+func (s *Store) refreshCachedTask(id string) {
+	t, err := s.Get(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.deleteCachedTask(id)
+			return
+		}
+		s.invalidateListCache()
+		return
+	}
+	s.storeTaskCache(t)
 }
 
 func (s *Store) cachedList() ([]Task, bool) {

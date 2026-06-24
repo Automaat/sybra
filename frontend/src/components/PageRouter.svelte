@@ -1,22 +1,30 @@
 <script lang="ts">
+  // Eager: the daily-driver pages reachable on first paint (default route is
+  // task-list) — keeping them static avoids a navigation chunk fetch on the
+  // hot path.
   import TaskList from '../pages/TaskList.svelte'
   import TaskDetail from '../pages/TaskDetail.svelte'
-  import Agents from '../pages/Agents.svelte'
-  import AgentDetail from '../pages/AgentDetail.svelte'
-  import ProjectList from '../pages/ProjectList.svelte'
-  import ProjectDetail from '../pages/ProjectDetail.svelte'
   import Dashboard from '../pages/Dashboard.svelte'
-  import GitHub from '../pages/GitHub.svelte'
-  import Stats from '../pages/Stats.svelte'
-  import Reviews from '../pages/Reviews.svelte'
-  import Settings from '../pages/Settings.svelte'
-  import ChatList from '../pages/ChatList.svelte'
-  import ChatDetail from '../pages/ChatDetail.svelte'
-  import WorkflowList from '../pages/WorkflowList.svelte'
-  import WorkflowDetail from '../pages/WorkflowDetail.svelte'
-  import Logbook from '../pages/Logbook.svelte'
   import TaskSidebar from './TaskSidebar.svelte'
   import { navStore } from '../lib/navigation.svelte.js'
+  import { lazyComponent } from '../lib/lazy.js'
+
+  // Lazy: rarer / heavier routes, each emitted as its own async chunk so they
+  // stay out of the initial bundle. WorkflowDetail alone pulls @xyflow
+  // (~80 kB gzip); GitHub/Stats/Reviews/Settings add more page-only code.
+  const loadAgents = lazyComponent(() => import('../pages/Agents.svelte'))
+  const loadAgentDetail = lazyComponent(() => import('../pages/AgentDetail.svelte'))
+  const loadProjectList = lazyComponent(() => import('../pages/ProjectList.svelte'))
+  const loadProjectDetail = lazyComponent(() => import('../pages/ProjectDetail.svelte'))
+  const loadGitHub = lazyComponent(() => import('../pages/GitHub.svelte'))
+  const loadStats = lazyComponent(() => import('../pages/Stats.svelte'))
+  const loadReviews = lazyComponent(() => import('../pages/Reviews.svelte'))
+  const loadSettings = lazyComponent(() => import('../pages/Settings.svelte'))
+  const loadChatList = lazyComponent(() => import('../pages/ChatList.svelte'))
+  const loadChatDetail = lazyComponent(() => import('../pages/ChatDetail.svelte'))
+  const loadWorkflowList = lazyComponent(() => import('../pages/WorkflowList.svelte'))
+  const loadWorkflowDetail = lazyComponent(() => import('../pages/WorkflowDetail.svelte'))
+  const loadLogbook = lazyComponent(() => import('../pages/Logbook.svelte'))
 
   interface Props {
     sidebarTaskId: string | null
@@ -76,52 +84,78 @@
       onreviewplan={() => navStore.reset({ kind: 'reviews' })}
     />
   {:else if navStore.page.kind === 'project-list'}
-    <ProjectList
-      onselect={navProjectDetail}
-      onadd={onnewProject}
-    />
+    {#await loadProjectList() then ProjectList}
+      <ProjectList
+        onselect={navProjectDetail}
+        onadd={onnewProject}
+      />
+    {/await}
   {:else if navStore.page.kind === 'project-detail'}
-    <ProjectDetail
-      projectId={navStore.page.projectId}
-      onback={() => navStore.back()}
-      onviewtask={navTaskDetail}
-    />
+    {#await loadProjectDetail() then ProjectDetail}
+      <ProjectDetail
+        projectId={navStore.page.projectId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+      />
+    {/await}
   {:else if navStore.page.kind === 'chats'}
-    <ChatList onselect={navChatDetail} />
+    {#await loadChatList() then ChatList}
+      <ChatList onselect={navChatDetail} />
+    {/await}
   {:else if navStore.page.kind === 'chat-detail'}
-    <ChatDetail
-      agentId={navStore.page.agentId}
-      onback={() => navStore.back()}
-      onviewtask={navTaskDetail}
-    />
+    {#await loadChatDetail() then ChatDetail}
+      <ChatDetail
+        agentId={navStore.page.agentId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+      />
+    {/await}
   {:else if navStore.page.kind === 'agents'}
-    <Agents
-      initialTab={navStore.page.tab}
-      onselect={navAgentDetail}
-    />
+    {#await loadAgents() then Agents}
+      <Agents
+        initialTab={navStore.page.tab}
+        onselect={navAgentDetail}
+      />
+    {/await}
   {:else if navStore.page.kind === 'agent-detail'}
-    <AgentDetail
-      agentId={navStore.page.agentId}
-      onback={() => navStore.back()}
-      onviewtask={navTaskDetail}
-      onnavigate={navAgentDetail}
-    />
+    {#await loadAgentDetail() then AgentDetail}
+      <AgentDetail
+        agentId={navStore.page.agentId}
+        onback={() => navStore.back()}
+        onviewtask={navTaskDetail}
+        onnavigate={navAgentDetail}
+      />
+    {/await}
   {:else if navStore.page.kind === 'github'}
-    <GitHub />
+    {#await loadGitHub() then GitHub}
+      <GitHub />
+    {/await}
   {:else if navStore.page.kind === 'reviews'}
-    <Reviews onviewtask={navTaskDetail} />
+    {#await loadReviews() then Reviews}
+      <Reviews onviewtask={navTaskDetail} />
+    {/await}
   {:else if navStore.page.kind === 'stats'}
-    <Stats />
+    {#await loadStats() then Stats}
+      <Stats />
+    {/await}
   {:else if navStore.page.kind === 'workflows'}
-    <WorkflowList onselect={navWorkflowDetail} />
+    {#await loadWorkflowList() then WorkflowList}
+      <WorkflowList onselect={navWorkflowDetail} />
+    {/await}
   {:else if navStore.page.kind === 'workflow-detail'}
-    <WorkflowDetail
-      workflowId={navStore.page.workflowId}
-      onback={() => navStore.back()}
-    />
+    {#await loadWorkflowDetail() then WorkflowDetail}
+      <WorkflowDetail
+        workflowId={navStore.page.workflowId}
+        onback={() => navStore.back()}
+      />
+    {/await}
   {:else if navStore.page.kind === 'logbook'}
-    <Logbook onviewtask={navTaskDetail} />
+    {#await loadLogbook() then Logbook}
+      <Logbook onviewtask={navTaskDetail} />
+    {/await}
   {:else if navStore.page.kind === 'settings'}
-    <Settings />
+    {#await loadSettings() then Settings}
+      <Settings />
+    {/await}
   {/if}
 </main>

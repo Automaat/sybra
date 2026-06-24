@@ -93,7 +93,9 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 
-	t, err := m.store.Get(id)
+	// Only Status is needed here; use the parse-only read to avoid the
+	// per-call sidecar dir scan on every external file change.
+	t, err := m.store.read(id)
 	if err != nil {
 		return
 	}

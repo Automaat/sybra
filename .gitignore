@@ -39,3 +39,6 @@ frontend/playwright-report/
 sybra-server
 core.*
 /fake-codex
+
+# Perf artifacts
+/perf-profiles/
