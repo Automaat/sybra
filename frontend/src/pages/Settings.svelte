@@ -154,7 +154,8 @@
   ]
 
   function scrollToSection(id: string) {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    document.getElementById(id)?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
   }
 </script>
 
@@ -162,7 +163,7 @@
   <!-- Sticky save bar + section sub-nav -->
   <div class="sticky top-0 z-10 -mx-4 flex flex-col gap-2 border-b border-surface-200 bg-surface-100/95 px-4 py-2 backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 md:-mx-6 md:px-6">
     <div class="flex items-center justify-between gap-3">
-      <p class="hidden text-xs text-surface-400 sm:block">
+      <p class="min-w-0 text-xs leading-tight text-surface-400">
         Appearance &amp; provider toggles apply instantly · other settings save together
       </p>
       <div class="flex shrink-0 flex-nowrap items-center gap-2">
