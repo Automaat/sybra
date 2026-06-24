@@ -103,7 +103,17 @@
   }
 
   function syncOriginal() {
-    if (settings) original = JSON.stringify(settings)
+    if (!settings) return
+    // Provider toggles persist immediately on their own; fold ONLY the providers
+    // sub-tree into the saved baseline. Resetting the whole baseline here would
+    // silently clear (and on reload drop) unsaved edits in other sections.
+    try {
+      const base = original ? JSON.parse(original) : {}
+      base.providers = JSON.parse(JSON.stringify($state.snapshot(settings.providers)))
+      original = JSON.stringify(base)
+    } catch {
+      original = JSON.stringify(settings)
+    }
   }
 
   const modelOptions = $derived.by(() => {
@@ -128,39 +138,75 @@
       settings.agent.model = ''
     }
   })
+
+  // Anchored section sub-nav so the page isn't one long scroll.
+  const navSections = [
+    { id: 'appearance', label: 'Appearance' },
+    { id: 'agent-defaults', label: 'Agent' },
+    { id: 'provider-health', label: 'Providers' },
+    { id: 'notifications', label: 'Notifications' },
+    { id: 'orchestrator', label: 'Orchestrator' },
+    { id: 'logging', label: 'Logging' },
+    { id: 'todoist', label: 'Todoist' },
+    { id: 'renovate', label: 'Renovate' },
+    { id: 'version', label: 'Version' },
+    { id: 'directories', label: 'Directories' },
+  ]
+
+  function scrollToSection(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
-  <div class="flex items-center justify-end">
-    <div class="flex items-center gap-2">
-      {#if successMsg}
-        <span class="text-sm text-success-500">{successMsg}</span>
-      {/if}
-      {#if error}
-        <span class="text-sm text-error-500">{error}</span>
-      {/if}
-      {#if dirty}
+  <!-- Sticky save bar + section sub-nav -->
+  <div class="sticky top-0 z-10 -mx-4 flex flex-col gap-2 border-b border-surface-200 bg-surface-100/95 px-4 py-2 backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 md:-mx-6 md:px-6">
+    <div class="flex items-center justify-between gap-3">
+      <p class="hidden text-xs text-surface-400 sm:block">
+        Appearance &amp; provider toggles apply instantly · other settings save together
+      </p>
+      <div class="flex shrink-0 flex-nowrap items-center gap-2">
+        {#if successMsg}
+          <span class="text-sm text-success-500">{successMsg}</span>
+        {/if}
+        {#if error}
+          <span class="text-sm text-error-500">{error}</span>
+        {/if}
+        {#if dirty}
+          <span class="text-xs font-medium text-warning-600 dark:text-warning-400">Unsaved changes</span>
+          <button
+            type="button"
+            class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
+            onclick={reset}
+          >
+            Reset
+          </button>
+        {/if}
         <button
           type="button"
-          class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
-          onclick={reset}
+          class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+          onclick={save}
+          disabled={!dirty || saving}
         >
-          Reset
+          {saving ? 'Saving…' : 'Save'}
         </button>
-      {/if}
-      <button
-        type="button"
-        class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
-        onclick={save}
-        disabled={!dirty || saving}
-      >
-        {saving ? 'Saving…' : 'Save'}
-      </button>
+      </div>
     </div>
+    <nav class="flex gap-1 overflow-x-auto" aria-label="Settings sections">
+      {#each navSections as s (s.id)}
+        <button
+          type="button"
+          class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 dark:hover:bg-surface-700 dark:hover:text-surface-200"
+          onclick={() => scrollToSection(s.id)}
+        >
+          {s.label}
+        </button>
+      {/each}
+    </nav>
   </div>
 
   <!-- Appearance (localStorage-backed, no save required) -->
-  <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+  <div id="appearance" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
     <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Appearance</h2>
     <div class="flex flex-col gap-1 sm:max-w-xs">
       <label class="text-sm font-medium" for="color-scheme">Color Scheme</label>
@@ -191,7 +237,7 @@
 
   {#if settings}
     <!-- Agent Defaults -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <div id="agent-defaults" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Agent Defaults</h2>
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <div class="flex flex-col gap-1">
@@ -244,10 +290,12 @@
       </div>
     </div>
 
-    <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
+    <section id="provider-health" class="scroll-mt-28">
+      <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
+    </section>
 
     <!-- Notifications -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <div id="notifications" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Notifications</h2>
       <label class="flex cursor-pointer items-center gap-3">
         <input
@@ -260,7 +308,7 @@
     </div>
 
     <!-- Orchestrator -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <div id="orchestrator" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Orchestrator</h2>
       <div class="flex flex-col gap-3">
         <label class="flex cursor-pointer items-center gap-3">
@@ -288,14 +336,20 @@
       </div>
     </div>
 
-    <LoggingPanel settings={settings} />
+    <section id="logging" class="scroll-mt-28">
+      <LoggingPanel settings={settings} />
+    </section>
 
-    <TodoistPanel settings={settings} />
+    <section id="todoist" class="scroll-mt-28">
+      <TodoistPanel settings={settings} />
+    </section>
 
-    <RenovatePanel settings={settings} />
+    <section id="renovate" class="scroll-mt-28">
+      <RenovatePanel settings={settings} />
+    </section>
 
     <!-- Version (read-only) -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <div id="version" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Version</h2>
       <div class="flex flex-col gap-2">
         <div class="flex items-center gap-3">
@@ -310,7 +364,7 @@
     </div>
 
     <!-- Directories (read-only) -->
-    <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
+    <div id="directories" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
       <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Directories</h2>
       <div class="flex flex-col gap-2">
         {#each dirOrder as key (key)}
