@@ -132,6 +132,20 @@ func (e *Execution) RecordForStep(stepID string) *StepRecord {
 	return nil
 }
 
+// LastAgentStepFailed reports whether the most recent step that ran an agent
+// (AgentID set) terminated with status "failed". verify_commits uses this to
+// tell "agent crashed before committing" (→ human-required) apart from "branch
+// already merged into base" (→ done): both leave a fresh worktree branch on the
+// base tip with no commits ahead, so git alone cannot distinguish them.
+func (e *Execution) LastAgentStepFailed() bool {
+	for i := range slices.Backward(e.StepHistory) {
+		if e.StepHistory[i].AgentID != "" {
+			return e.StepHistory[i].Status == "failed"
+		}
+	}
+	return false
+}
+
 // StepRecord captures the result of executing one step.
 type StepRecord struct {
 	StepID    string    `yaml:"step_id" json:"stepId"`
