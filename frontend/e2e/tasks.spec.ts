@@ -108,7 +108,9 @@ test.describe('Task Detail', () => {
 
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await expect(page.getByText('Back to tasks')).toBeVisible()
-    await expect(page.locator('h2', { hasText: 'Task Detail' })).toBeVisible()
+    // The generic "Task Detail" chrome heading is intentionally gone — the task
+    // title (h1) plus "Back to tasks" are the heading and orientation.
+    await expect(page.locator('h2', { hasText: 'Task Detail' })).toHaveCount(0)
   })
 
   test('shows task metadata', async ({ page }) => {
