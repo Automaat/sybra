@@ -335,13 +335,13 @@
         aria-label="More actions"
         title="More actions"
         class="rounded p-1 text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 dark:hover:bg-surface-700 dark:hover:text-surface-200"
-        onclick={() => (menuOpen = !menuOpen)}
+        onclick={() => (menuOpen ? closeMenu() : (menuOpen = true))}
       >
         <MoreHorizontal size={16} />
       </button>
 
       {#if menuOpen}
-        <button type="button" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
+        <button type="button" tabindex="-1" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
         <div role="menu" class="absolute right-0 z-50 mt-1 w-44 rounded-lg py-1 elevation-popover">
           <button
             type="button"
