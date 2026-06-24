@@ -37,7 +37,12 @@ func (r *Recovery) RestartStaleInProgress() {
 		if r.Agents.HasRunningAgentForTask(t.ID) {
 			continue
 		}
-		if slices.Contains(t.Tags, "review") {
+		if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
+			// recoverCompletedHeadlessRun handled this task (last headless run
+			// completed but workflow step was never recorded). Skip the generic
+			// stale-restart path only when it actually fired HandleAgentComplete;
+			// unmatched review tasks (running agent, empty result, missing workflow,
+			// etc.) fall through so they can still be restarted.
 			continue
 		}
 		// Tasks with a terminal workflow stuck at in-progress: restart the
@@ -198,6 +203,61 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 		Provider: lr.Provider,
 		Success:  true,
 	})
+}
+
+// recoverCompletedHeadlessRun advances the workflow for a headless agent whose
+// run completed successfully (state: stopped, non-empty result) but whose step
+// was never recorded in the workflow history. This bridges the gap when the
+// HandleAgentComplete callback is lost across an app restart — e.g. when the
+// agent ran before the survival registry was active.
+//
+// Guards: only fires when the workflow is non-terminal, the current step has no
+// history record (not yet processed), and no agent is currently running.
+// recoverCompletedHeadlessRun returns true when it fires HandleAgentComplete,
+// false when the task does not match the "completed but callback lost" shape.
+// Callers should only skip generic stale-restart logic on a true return.
+func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
+	lr := lastAgentRun(t)
+	if lr == nil {
+		return false
+	}
+	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) || lr.Result == "" {
+		return false
+	}
+	if r.WorkflowEngine == nil || t.Workflow == nil {
+		return false
+	}
+	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
+		return false
+	}
+	if t.Workflow.CurrentStep == "" {
+		return false
+	}
+	// Skip if the current step already has a history record — it was processed
+	// (completed or failed) and any stall belongs to a downstream step.
+	if t.Workflow.RecordForStep(t.Workflow.CurrentStep) != nil {
+		return false
+	}
+	if r.Agents.HasRunningAgentForTask(t.ID) {
+		return false
+	}
+	r.Logger.Info("recover-completed-headless-run",
+		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
+	// Set Recovered so downstream steps know .Prev.Output is from a stored
+	// result, not a freshly produced one — same contract as recoverStaleInteractive.
+	wf := t.Workflow
+	wf.Recovered = true
+	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+		r.Logger.Error("recover-completed-headless.set-recovered", "task_id", t.ID, "err", err)
+		return false
+	}
+	r.WorkflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
+		AgentID:  lr.AgentID,
+		Provider: lr.Provider,
+		Success:  true,
+		Result:   lr.Result,
+	})
+	return true
 }
 
 func lastAgentRun(t *task.Task) *task.AgentRun {
