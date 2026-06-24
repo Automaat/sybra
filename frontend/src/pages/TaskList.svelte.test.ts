@@ -146,6 +146,34 @@ describe('TaskList', () => {
       expect(screen.getByText('Done → Logbook')).toBeDefined()
       expect(screen.queryByLabelText('Show done')).toBeNull()
     })
+
+    it('surfaces a persistent "need you" count on the board', () => {
+      viewModeStore.set('board')
+      Object.assign(taskStore, {
+        list: [
+          mockTask('h1', 'Blocked task', 'human-required'),
+          mockTask('p1', 'Plan to review', 'plan-review'),
+          mockTask('t1', 'Normal task', 'todo'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      // 2 of 3 tasks await the user — visible regardless of horizontal scroll.
+      expect(screen.getByText('2 need you')).toBeDefined()
+    })
+
+    it('hides the need-you counter in list view even when tasks await', () => {
+      viewModeStore.set('list')
+      Object.assign(taskStore, { list: [mockTask('h1', 'Blocked', 'human-required')] })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText(/need you/)).toBeNull()
+    })
+
+    it('hides the need-you counter on the board when nothing awaits', () => {
+      viewModeStore.set('board')
+      Object.assign(taskStore, { list: [mockTask('t1', 'Normal', 'todo')] })
+      render(TaskList, { props: { onselect: vi.fn() } })
+      expect(screen.queryByText(/need you/)).toBeNull()
+    })
   })
 
   describe('task selection', () => {

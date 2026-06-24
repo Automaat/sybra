@@ -14,6 +14,8 @@
     showDone: boolean
     hasActiveFilters: boolean
     viewMode: ViewMode
+    /** Count of tasks awaiting the user — surfaced persistently on the board. */
+    needYouCount?: number
     onclear: () => void
     onviewchange?: () => void
   }
@@ -27,6 +29,7 @@
     showDone = $bindable(),
     hasActiveFilters,
     viewMode,
+    needYouCount = 0,
     onclear,
     onviewchange,
   }: Props = $props()
@@ -96,6 +99,18 @@
         <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
         Show done
       </label>
+    {/if}
+    {#if viewMode === 'board' && needYouCount > 0}
+      <!-- Persistent "needs you" count (tasks awaiting you across all columns):
+           visible in the toolbar regardless of horizontal scroll, so an
+           awaiting task isn't missed when its column sits off-screen. -->
+      <span
+        class="inline-flex items-center gap-1.5 rounded-full bg-error-100 px-2.5 py-1 text-xs font-semibold text-error-700 dark:bg-error-900/50 dark:text-error-300"
+        title="{needYouCount} task(s) need you"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-error-500"></span>
+        {needYouCount} need you
+      </span>
     {/if}
     <!-- Primary views: List / Board. Timeline is demoted to an advanced option. -->
     <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">

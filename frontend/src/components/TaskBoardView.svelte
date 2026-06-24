@@ -36,6 +36,41 @@
   // tasks can still be added there.
   let expandedEmpty = $state<Set<string>>(new Set())
 
+  // Scroll-shadow: when the board overflows horizontally (e.g. 6 columns at
+  // laptop width), fade the right edge so it's obvious a column is off-screen
+  // and scrollable — the Human Required column must never be silently hidden.
+  let scrollEl = $state<HTMLDivElement | null>(null)
+  let canScrollLeft = $state(false)
+  let canScrollRight = $state(false)
+
+  function updateScroll() {
+    const el = scrollEl
+    if (!el) return
+    canScrollLeft = el.scrollLeft > 1
+    canScrollRight = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  }
+
+  // Fade whichever edge(s) have off-screen columns, so it's always visible that
+  // the board scrolls (and which way) — no column is silently hidden.
+  const maskStyle = $derived.by(() => {
+    if (!canScrollLeft && !canScrollRight) return undefined
+    const left = canScrollLeft ? 'transparent, #000 3rem' : '#000'
+    const right = canScrollRight ? '#000 calc(100% - 3rem), transparent' : '#000'
+    const grad = `linear-gradient(to right, ${left}, ${right})`
+    // no-repeat: a gradient ending in transparent must not tile and leave
+    // transparent seams mid-board.
+    return `mask-image: ${grad}; -webkit-mask-image: ${grad}; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat`
+  })
+
+  $effect(() => {
+    // Recompute on mount and whenever layout changes the board's scrollWidth
+    // without a scroll event: the column set, or an empty rail expanding /
+    // auto-collapsing. (Plus viewport resize via the listener.)
+    if (visibleColumns && expandedEmpty && collapsedColumns) updateScroll()
+    window.addEventListener('resize', updateScroll)
+    return () => window.removeEventListener('resize', updateScroll)
+  })
+
   function expandEmpty(status: string) {
     expandedEmpty = new Set(expandedEmpty).add(status)
   }
@@ -76,7 +111,12 @@
   }
 </script>
 
-<div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6">
+<div
+  bind:this={scrollEl}
+  onscroll={updateScroll}
+  class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6"
+  style={maskStyle}
+>
   {#each visibleColumns as col}
     {@const tasks = columnTasks(col)}
     {@const rc = runningCount(tasks)}
@@ -101,7 +141,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       data-col-status={col.status}
-      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[260px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[200px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
       ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
       ondragleave={() => { dragOverStatus = null }}
       ondrop={(e) => handleDrop(e, col.status)}
