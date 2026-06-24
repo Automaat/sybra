@@ -2,7 +2,7 @@
   import { ChevronRight } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
-  import { renderMarkdown } from '../../lib/markdown.js'
+  import { renderMarkdown, renderChecklistMarkdown } from '../../lib/markdown.js'
 
   interface Props {
     task: Task
@@ -24,7 +24,7 @@
     }
   }
 
-  const renderedBody = $derived(renderMarkdown(task.body))
+  const renderedBody = $derived(renderChecklistMarkdown(task.body))
   const renderedPlan = $derived(renderMarkdown(task.plan))
   const renderedCodeReview = $derived(renderMarkdown(task.codeReview))
 
@@ -110,7 +110,7 @@
     >
       <ChevronRight size={14} class="text-surface-400 transition-transform {planCollapsed ? '' : 'rotate-90'}" />
       <span class="text-sm font-medium text-surface-500">Plan</span>
-      <span class="text-xs text-surface-400 italic">read-only · edit via sybra-cli --plan</span>
+      <span class="text-xs text-surface-400 italic">read-only</span>
     </button>
     {#if !planCollapsed}
       <div class="rounded-lg border border-surface-300 bg-surface-100 p-4 dark:border-surface-600 dark:bg-surface-900">

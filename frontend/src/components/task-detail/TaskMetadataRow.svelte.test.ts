@@ -48,6 +48,16 @@ describe('TaskMetadataRow', () => {
   })
   afterEach(cleanup)
 
+  it('keeps the per-run knobs editable even at their default value', () => {
+    // They render quietly at default (muted "disabled"/"global default") but
+    // stay present — they are the only place to set max turns / fork.
+    render(TaskMetadataRow, { props: { task: baseTask as never } })
+    expect(screen.getByText('Fork Subagents')).toBeDefined()
+    expect(screen.getByText('disabled')).toBeDefined()
+    expect(screen.getByText('Max Turns')).toBeDefined()
+    expect(screen.getByText('global default')).toBeDefined()
+  })
+
   it('renders agent mode + tags + project + branch + issue + allowed tools', () => {
     render(TaskMetadataRow, { props: { task: baseTask as never } })
     expect(screen.getByText('Agent Mode')).toBeDefined()

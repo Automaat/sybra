@@ -11,6 +11,7 @@ vi.mock('../../stores/tasks.svelte.js', () => ({
 
 vi.mock('../../lib/markdown.js', () => ({
   renderMarkdown: (s: unknown) => (s ? `<p>${s}</p>` : ''),
+  renderChecklistMarkdown: (s: unknown) => (s ? `<p>${s}</p>` : ''),
 }))
 
 const TaskDescriptionEditor = (await import('./TaskDescriptionEditor.svelte')).default

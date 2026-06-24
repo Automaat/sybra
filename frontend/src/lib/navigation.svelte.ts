@@ -61,7 +61,10 @@ class NavStore {
     switch (p.kind) {
       case 'dashboard': return 'Dashboard'
       case 'task-list': return 'Board'
-      case 'task-detail': return 'Task Detail'
+      // The detail page promotes the task title to its own heading (with a
+      // "Back to tasks" chevron), so a generic "Task Detail" chrome heading is
+      // pure redundancy — suppress it.
+      case 'task-detail': return ''
       case 'project-list': return 'Projects'
       case 'project-detail': return 'Project Detail'
       case 'chats': return 'Chats'

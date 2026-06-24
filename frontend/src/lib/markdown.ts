@@ -82,3 +82,23 @@ export function renderMarkdown(text: string | undefined | null): string {
   }
   return html
 }
+
+// GFM task lists render as disabled <input type=checkbox> — the strongest
+// "click me" signifier in the body, yet inert. Swap each for a non-interactive
+// status glyph so a checklist reads as progress, not a dead control. Parse the
+// (already-sanitised) HTML so we key off the real `checked` attribute, never a
+// stray "checked"/"checkbox" sitting inside some other attribute's value.
+export function renderChecklistMarkdown(text: string | undefined | null): string {
+  const html = renderMarkdown(text)
+  if (!html.includes('type="checkbox"') || typeof DOMParser === 'undefined') return html
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  for (const input of Array.from(doc.querySelectorAll('input[type="checkbox"]'))) {
+    const done = input.hasAttribute('checked')
+    const span = doc.createElement('span')
+    span.className = done ? 'task-check task-check--done' : 'task-check'
+    span.setAttribute('aria-hidden', 'true')
+    span.textContent = done ? '✓' : '○'
+    input.replaceWith(span)
+  }
+  return doc.body.innerHTML
+}
