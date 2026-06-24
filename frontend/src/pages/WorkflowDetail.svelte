@@ -101,8 +101,8 @@
     const id = `step-${crypto.randomUUID().slice(0, 8)}`
     // Drop the new node below the current graph so it never lands on top of an
     // existing one; the user can drag it or hit Auto-layout to re-flow.
-    const baseX = nodes.length ? Math.min(...nodes.map((n) => n.position.x)) : 0
-    const belowY = nodes.length ? Math.max(...nodes.map((n) => n.position.y)) + 120 : 0
+    const baseX = nodes.reduce((min, n) => Math.min(min, n.position.x), 0)
+    const belowY = nodes.reduce((max, n) => Math.max(max, n.position.y), 0) + (nodes.length ? 120 : 0)
     const newStep = new Step({
       id,
       name: 'New step',
