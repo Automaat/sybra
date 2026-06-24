@@ -98,6 +98,56 @@ describe('MessageBubble', () => {
     expect(screen.getByText('Error occurred')).toBeDefined()
   })
 
+  it('collapses an oversized tool result without leaking its inline path', () => {
+    const big = 'x'.repeat(2500) + '\nsaved to /var/folders/zz/secret/output.txt'
+    const ev = makeEvent({
+      type: 'user',
+      toolResults: [
+        ToolResultBlock.createFrom({ toolUseId: 'tu1', content: big, isError: false }),
+      ],
+    })
+    render(MessageBubble, { props: { event: ev } })
+    expect(screen.getByText('Output too large — view file')).toBeDefined()
+    expect(screen.queryByText(/\/var\/folders/)).toBeNull()
+  })
+
+  it('still renders a normal-sized tool result', () => {
+    const ev = makeEvent({
+      type: 'user',
+      toolResults: [
+        ToolResultBlock.createFrom({ toolUseId: 'tu1', content: 'normal output', isError: false }),
+      ],
+    })
+    render(MessageBubble, { props: { event: ev } })
+    expect(screen.getByText('normal output')).toBeDefined()
+    expect(screen.queryByText('Output too large — view file')).toBeNull()
+  })
+
+  it('does not collapse a large error result (keeps the failure detail)', () => {
+    const bigErr = 'compile error: ' + 'detail '.repeat(400) // > 2000 chars
+    const ev = makeEvent({
+      type: 'user',
+      toolResults: [ToolResultBlock.createFrom({ toolUseId: 'tu1', content: bigErr, isError: true })],
+    })
+    render(MessageBubble, { props: { event: ev } })
+    expect(screen.queryByText('Output too large — view file')).toBeNull()
+    expect(screen.getByText(/compile error/)).toBeDefined()
+  })
+
+  it('labels the token arrows for tooltip and screen readers', () => {
+    const ev = makeEvent({ type: 'result', inputTokens: 50, outputTokens: 1200 })
+    render(MessageBubble, { props: { event: ev } })
+    const span = screen.getByText(/1,200/)
+    expect(span.getAttribute('title')).toContain('input')
+    expect(span.getAttribute('aria-label')).toBe('50 input tokens, 1,200 output tokens')
+  })
+
+  it('renders a zero token side as 0, not blank', () => {
+    const ev = makeEvent({ type: 'result', inputTokens: 0, outputTokens: 1200 })
+    render(MessageBubble, { props: { event: ev } })
+    expect(screen.getByText(/^0↓ 1,200↑$/)).toBeDefined()
+  })
+
   it('shows DONE badge for result event', () => {
     const ev = makeEvent({ type: 'result', costUsd: 0.01 })
     render(MessageBubble, { props: { event: ev } })
