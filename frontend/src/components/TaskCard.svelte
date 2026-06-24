@@ -5,7 +5,7 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
+  import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import StatusPicker from './StatusPicker.svelte'
@@ -61,6 +61,14 @@
 
   // Task is waiting on the user (not an agent) — drives the red tile accent.
   const needsYou = $derived(awaitsHuman(t.status))
+
+  // A granular sub-state folded into this column that ISN'T an attention state
+  // (e.g. `new` in Todo, `ready-review` in In Review). The column shows the
+  // workflow stage; this quiet badge shows the precise sub-state, keeping the
+  // two board axes separate instead of silently merging the state away.
+  const subStateLabel = $derived(
+    !needsYou && coreStatus(t.status) !== t.status ? statusLabel(t.status) : '',
+  )
 
   function priorityMeta(p: string | undefined) {
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
@@ -165,6 +173,10 @@
       <Pill role="attention" class="bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200">
         {awaitsHumanLabel(t.status)}
       </Pill>
+    {:else if subStateLabel}
+      <span class="inline-flex items-center rounded-full bg-surface-200 px-2 py-0.5 text-surface-600 dark:bg-surface-700 dark:text-surface-300">
+        {subStateLabel}
+      </span>
     {/if}
 
     {#if agentRunning}

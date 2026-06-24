@@ -173,6 +173,18 @@ describe('TaskCard', () => {
     expect(screen.getByText('Human Required')).toBeDefined()
   })
 
+  it('shows a quiet sub-state badge for a folded non-attention status', () => {
+    // `new` rolls up to the Todo column; surface the precise sub-state so the
+    // two board axes (stage column vs sub-state) stay separate.
+    render(TaskCard, { props: { task: { ...mockTask, status: 'new' as Task['status'] }, onclick: () => {} } })
+    expect(screen.getByText('New')).toBeDefined()
+  })
+
+  it('does not show a sub-state badge for a plain core status', () => {
+    render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
+    expect(screen.queryByText('Todo')).toBeNull()
+  })
+
   it('shows Blocked badge for blocked status', () => {
     render(TaskCard, { props: { task: { ...mockTask, status: 'blocked' as Task['status'] }, onclick: () => {} } })
     expect(screen.getByText('Blocked')).toBeDefined()
