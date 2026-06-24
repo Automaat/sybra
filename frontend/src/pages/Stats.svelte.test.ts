@@ -306,7 +306,7 @@ describe('Stats', () => {
     expect(screen.getByText('org/other')).toBeDefined()
   })
 
-  it('flags the 50-run sample cap on the charts', () => {
+  it('flags the sample cap on the charts when there are more than 50 runs', () => {
     const s = makeSummary()
     const runs = Array.from({ length: 50 }, (_, i) => ({
       id: `r${i}`, taskId: `t${i}`, projectId: 'org/repo', role: 'plan', mode: 'headless',
@@ -314,7 +314,8 @@ describe('Stats', () => {
       timestamp: '2026-05-01T10:00:00Z', outcome: 'completed',
     }))
     mockStatsStore.data = StatsResponse.createFrom({
-      today: s, thisWeek: s, thisMonth: s, allTime: s,
+      // The backend caps recentRuns only when total runs exceeds 50.
+      today: s, thisWeek: s, thisMonth: s, allTime: makeSummary({ totalRuns: 60 }),
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
       recentRuns: runs,
     })

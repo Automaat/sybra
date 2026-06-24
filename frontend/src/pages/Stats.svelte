@@ -28,7 +28,8 @@
   // not represented, so the captions flag it and the tables below stay
   // authoritative for full totals.
   const recentRuns = $derived(statsStore.data?.recentRuns ?? [])
-  const sampleCapped = $derived(recentRuns.length >= 50)
+  // The backend only caps recentRuns once there are MORE than 50 total runs.
+  const sampleCapped = $derived((statsStore.data?.allTime?.totalRuns ?? 0) > 50)
   const cutoff = $derived(periodCutoff(period, now))
   const costSeries = $derived(dailyCost(recentRuns, cutoff, now))
   const projectCosts = $derived(costByProject(recentRuns, cutoff))

@@ -25,7 +25,10 @@ export function periodCutoff(period: StatsPeriod, now: Date): Date | null {
 }
 
 function runDate(r: RunRecord): Date {
-  return new Date(r.timestamp as unknown as string)
+  // The binding types timestamp as time.Time, defaulting to null; `new Date(null)`
+  // is the epoch (not NaN), so coalesce missing values to an invalid date.
+  const ts = r.timestamp as unknown as string | null | undefined
+  return ts == null ? new Date(NaN) : new Date(ts)
 }
 
 function pad(n: number): string {

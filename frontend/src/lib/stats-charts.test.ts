@@ -47,8 +47,12 @@ describe('dailyCost', () => {
     expect(dailyCost(runs, new Date(2026, 5, 23))).toEqual([{ date: '2026-06-24', cost: 1 }])
   })
 
-  it('skips runs with an invalid timestamp', () => {
-    const runs = [run('not-a-date', 5, 'a'), run('2026-06-24T10:00:00', 1, 'a')]
+  it('skips runs with an invalid or missing timestamp', () => {
+    const runs = [
+      run('not-a-date', 5, 'a'),
+      { timestamp: null, costUsd: 9, projectId: 'a' } as unknown as RunRecord,
+      run('2026-06-24T10:00:00', 1, 'a'),
+    ]
     expect(dailyCost(runs, null)).toEqual([{ date: '2026-06-24', cost: 1 }])
   })
 
