@@ -188,10 +188,14 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	if outFile == nil {
 		return false, nil
 	}
-	// Detached survival applies to interactive (non-one-shot) Claude agents.
-	// One-shot runs must keep the pipe path: they signal completion by
-	// closing stdin to send EOF, which a never-EOF survival FIFO cannot do.
-	if m.survives() && !cfg.OneShot {
+	// Detached survival for interactive Claude agents (this path is only
+	// reached for Claude; codex uses runCodexConversational). A one-shot run
+	// uses a file-backed stdin (natural EOF after its single message);
+	// interactive sessions use a never-EOF FIFO for follow-ups.
+	if m.survives() {
+		if cfg.OneShot {
+			return m.runConvoAttemptSurviveOneShot(ctx, a, cfg, outFile, tailOffset)
+		}
 		return m.runConvoAttemptSurvive(ctx, a, cfg, outFile, tailOffset)
 	}
 	cmd, stdout, stderrBuf, startErr := m.startConvoProcess(ctx, a, cfg)
@@ -369,8 +373,9 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 	}
 }
 
-// writeUserMessage writes a user message to the agent's stdin in stream-json format.
-func (m *Manager) writeUserMessage(a *Agent, text string) error {
+// encodeUserMessage renders a user message as a newline-terminated
+// stream-json line for claude's stdin.
+func encodeUserMessage(text string) ([]byte, error) {
 	msg := map[string]any{
 		"type": "user",
 		"message": map[string]any{
@@ -380,9 +385,17 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
+		return nil, fmt.Errorf("marshal message: %w", err)
 	}
-	data = append(data, '\n')
+	return append(data, '\n'), nil
+}
+
+// writeUserMessage writes a user message to the agent's stdin in stream-json format.
+func (m *Manager) writeUserMessage(a *Agent, text string) error {
+	data, err := encodeUserMessage(text)
+	if err != nil {
+		return err
+	}
 
 	a.stdinMu.Lock()
 	defer a.stdinMu.Unlock()

@@ -361,7 +361,7 @@ func (a *App) initAgentConfig() {
 }
 
 func (a *App) initApprovalServer(emit func(string, any)) {
-	srv, err := agent.NewApprovalServer(emit, a.logger)
+	srv, err := agent.NewApprovalServer(emit, a.logger, a.cfg.Agent.ApprovalPort)
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
 		return

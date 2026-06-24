@@ -91,6 +91,12 @@ type AgentDefaults struct {
 	// true). Set false to revert to the legacy behaviour where agents are
 	// killed on shutdown and recovered via restart-stale.
 	SurviveRestart *bool `yaml:"survive_restart" json:"surviveRestart"`
+	// ApprovalPort pins the localhost port of the PreToolUse approval
+	// server. The hook URL is baked into a permission-gated agent's
+	// --settings at spawn, so a fixed port lets a detached agent's approval
+	// requests still resolve after a restart. 0 (default) binds a random
+	// port (no cross-restart approval survival).
+	ApprovalPort int `yaml:"approval_port" json:"approvalPort"`
 }
 
 // DefaultBashTimeoutSeconds is the per-bash-tool-call timeout used when

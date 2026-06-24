@@ -162,17 +162,15 @@ func (m *Manager) persistDeadSession(r Record) (done bool) {
 // Returns the reattached agent, or nil when the process is gone or a
 // duplicate already exists.
 func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
-	// A record without a FIFO path is not a detached survival agent (e.g. a
-	// leaked one-shot record); never reattach it as a live session.
-	if r.StdinPath == "" {
-		_ = reg.Delete(r.ID)
-		return nil
-	}
 	if !reattachAlive(r) {
 		_ = reg.Delete(r.ID)
 		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive")
 		return nil
 	}
+
+	// A record with no FIFO path is a one-shot survival agent (file-backed
+	// stdin, already consumed): reattach tail-only, no FIFO to reopen.
+	oneShot := r.StdinPath == ""
 
 	a := agentFromRecord(r)
 	var startOffset int64
@@ -198,8 +196,8 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 	m.liveCount++
 	m.mu.Unlock()
 
-	m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "mode", "interactive", "events", len(a.ConvoOutput()))
-	go m.reattachConvo(ctx, a, startOffset, r.ProcStartedAt)
+	m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "mode", "interactive", "oneshot", oneShot, "events", len(a.ConvoOutput()))
+	go m.reattachConvo(ctx, a, startOffset, r.ProcStartedAt, oneShot)
 	m.emit(events.AgentState(a.ID), a)
 	return a
 }
