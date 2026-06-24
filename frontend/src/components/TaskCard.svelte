@@ -7,6 +7,7 @@
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import StatusPicker from './StatusPicker.svelte'
   import Pill from './Pill.svelte'
 
@@ -128,8 +129,8 @@
 
     {#if t.projectId}
       <Pill role="project" title={t.projectId}>
-        <span class="h-2 w-2 shrink-0 rounded-full bg-surface-400 dark:bg-surface-500"></span>
-        {t.projectId}
+        <span class="h-2 w-2 shrink-0 rounded-full" style={projectDotStyle(t.projectId)}></span>
+        {projectShortName(t.projectId)}
       </Pill>
     {/if}
 
@@ -176,18 +177,19 @@
 
     {#if topPR && isReviewTask}
       {#if topPR.viewerHasApproved}
-        <span class="inline-flex items-center gap-1 rounded bg-success-500/15 px-1.5 py-0.5 font-medium text-success-700 dark:text-success-400" title="Approved; waiting for PR to merge">
+        <Pill role="reference" title="Approved; waiting for PR to merge">
           <GitPullRequest size={12} />
-          #{topPR.number} Approved, waiting merge
-        </span>
+          #{topPR.number}
+          <span class="text-success-500" title="Approved">✓</span>
+        </Pill>
       {:else}
-        <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400" title="Review requested">
+        <Pill role="reference" title="Review requested">
           <GitPullRequest size={12} />
-          #{topPR.number} Review needed
-        </span>
+          #{topPR.number} Review
+        </Pill>
       {/if}
     {:else if topPR}
-      <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400" title={topPR.title}>
+      <Pill role="reference" title={topPR.title}>
         <GitPullRequest size={12} />
         #{topPR.number}
         {#if topPR.reviewDecision === 'APPROVED'}
@@ -198,12 +200,12 @@
         {#if topPR.mergeable === 'CONFLICTING'}
           <span class="text-error-500" title="Merge conflicts">⚠</span>
         {/if}
-      </span>
+      </Pill>
     {:else if t.prNumber}
-      <span class="inline-flex items-center gap-1 rounded bg-warning-500/15 px-1.5 py-0.5 font-medium text-warning-700 dark:text-warning-400">
+      <Pill role="reference">
         <GitPullRequest size={12} />
         #{t.prNumber}
-      </span>
+      </Pill>
     {/if}
 
     {#if t.issue}
