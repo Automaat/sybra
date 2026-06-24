@@ -53,6 +53,10 @@ type Manager struct {
 	// non-nil error means persistence failed and the registry record should
 	// be retained for a later retry.
 	sessionSink func(taskID, agentID, sessionID string) error
+
+	// taskExists, when set, reports whether a task still exists. Used to
+	// avoid recreating a zombie codex agent whose chat task was deleted.
+	taskExists func(taskID string) bool
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -101,6 +105,20 @@ func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error 
 	return m.sessionSink
 }
 
+// SetTaskExists installs the callback used to skip recreating a codex agent
+// whose task was deleted. Set once at startup before ReattachAll.
+func (m *Manager) SetTaskExists(fn func(taskID string) bool) {
+	m.mu.Lock()
+	m.taskExists = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) taskExistsFn() func(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskExists
+}
+
 // survives reports whether restart survival is active.
 func (m *Manager) survives() bool {
 	m.mu.RLock()
@@ -139,19 +157,20 @@ func (m *Manager) saveRegistry(a *Agent) {
 	}
 	a.mu.RLock()
 	rec := Record{
-		ID:        a.ID,
-		TaskID:    a.TaskID,
-		Name:      a.Name,
-		Mode:      a.Mode,
-		Provider:  a.Provider,
-		Model:     a.Model,
-		PID:       a.PID,
-		SessionID: a.SessionID,
-		LogPath:   a.LogPath,
-		CWD:       a.sessionCWD,
-		StartedAt: a.StartedAt,
-		StdinPath: a.stdinPath,
-		MaxTurns:  a.MaxTurns,
+		ID:                 a.ID,
+		TaskID:             a.TaskID,
+		Name:               a.Name,
+		Mode:               a.Mode,
+		Provider:           a.Provider,
+		Model:              a.Model,
+		PID:                a.PID,
+		SessionID:          a.SessionID,
+		LogPath:            a.LogPath,
+		CWD:                a.sessionCWD,
+		StartedAt:          a.StartedAt,
+		StdinPath:          a.stdinPath,
+		MaxTurns:           a.MaxTurns,
+		RequirePermissions: a.requirePermissions,
 	}
 	a.mu.RUnlock()
 	rec.ProcStartedAt = processStartString(rec.PID)

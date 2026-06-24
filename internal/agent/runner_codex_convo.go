@@ -98,7 +98,17 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 		m.markAgentDone(a)
 	}()
 
-	outFile, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+	// On recreate (resume), append to the existing log so the rehydrated
+	// chat history is preserved across restarts; a fresh run opens a new
+	// file. Without this, each restart would open a new empty log and the
+	// next restart would rehydrate zero history.
+	var outFile *os.File
+	var fileErr error
+	if existing := a.GetLogPath(); existing != "" {
+		outFile, fileErr = os.OpenFile(existing, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	} else {
+		outFile, fileErr = logging.NewAgentOutputFile(m.logDir, a.ID)
+	}
 	if fileErr != nil {
 		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
 	}

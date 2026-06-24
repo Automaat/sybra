@@ -139,6 +139,45 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("recreated codex agent did not exit after StopAgent")
 	}
+
+	// History preservation: recreate must reuse the existing log (append),
+	// not open a new empty file — otherwise the next restart loses history.
+	if a.GetLogPath() != logPath {
+		t.Fatalf("recreate must reuse the existing log, got %q want %q", a.GetLogPath(), logPath)
+	}
+}
+
+// TestReattachCodexConvo_SkipsDeletedTask verifies a codex record whose task
+// no longer exists is dropped (not recreated as a zombie agent).
+func TestReattachCodexConvo_SkipsDeletedTask(t *testing.T) {
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "gone1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"thread.started","thread_id":"g"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(regDir); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	m.SetTaskExists(func(string) bool { return false }) // task is gone
+
+	if err := m.reg.Save(Record{ID: "gone1", TaskID: "deleted", Mode: "interactive", Provider: "codex", LogPath: logPath, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected no recreate for deleted task, got %d", len(got))
+	}
+	if _, err := m.GetAgent("gone1"); err == nil {
+		t.Fatal("expected no agent registered for deleted task")
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatal("expected record deleted for gone task")
+	}
 }
 
 func TestMakeFIFO_RoundTrip(t *testing.T) {

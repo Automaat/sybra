@@ -236,6 +236,17 @@ func convoResumeState(evs []ConvoEvent) State {
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
 func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
+	// Codex recreate is unconditional (no live process to gate on), so guard
+	// against resurrecting an agent for a task that was deleted while the app
+	// was down — that would leak a zombie agent gcOrphanChats can't reap.
+	if r.TaskID != "" {
+		if exists := m.taskExistsFn(); exists != nil && !exists(r.TaskID) {
+			_ = reg.Delete(r.ID)
+			m.logger.Info("agent.reattach.skip", "id", r.ID, "task", r.TaskID, "reason", "task_gone")
+			return nil
+		}
+	}
+
 	a := agentFromRecord(r)
 	if r.LogPath != "" {
 		rehydrateCodexConvoFromLog(a, r.LogPath)
@@ -259,9 +270,9 @@ func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
 
 	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", "codex", "events", len(a.ConvoOutput()))
 	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
-	// come from the rebuilt agent; permissions default to permissive (the
-	// original chat's permission mode is not persisted).
-	go m.runCodexConversational(ctx, a, RunConfig{Dir: a.sessionCWD}, true)
+	// come from the rebuilt agent; the sandbox/approval choice is restored
+	// from the record so a sandboxed chat stays sandboxed.
+	go m.runCodexConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
 }
@@ -385,22 +396,23 @@ func reattachAlive(r Record) bool {
 
 func agentFromRecord(r Record) *Agent {
 	return &Agent{
-		ID:          r.ID,
-		TaskID:      r.TaskID,
-		Name:        r.Name,
-		Mode:        r.Mode,
-		Provider:    r.Provider,
-		Model:       r.Model,
-		PID:         r.PID,
-		SessionID:   r.SessionID,
-		LogPath:     r.LogPath,
-		sessionCWD:  r.CWD,
-		StartedAt:   r.StartedAt,
-		LastEventAt: time.Now().UTC(),
-		State:       StateRunning,
-		MaxTurns:    r.MaxTurns,
-		stdinPath:   r.StdinPath,
-		detached:    true,
+		ID:                 r.ID,
+		TaskID:             r.TaskID,
+		Name:               r.Name,
+		Mode:               r.Mode,
+		Provider:           r.Provider,
+		Model:              r.Model,
+		PID:                r.PID,
+		SessionID:          r.SessionID,
+		LogPath:            r.LogPath,
+		sessionCWD:         r.CWD,
+		StartedAt:          r.StartedAt,
+		LastEventAt:        time.Now().UTC(),
+		State:              StateRunning,
+		MaxTurns:           r.MaxTurns,
+		stdinPath:          r.StdinPath,
+		requirePermissions: r.RequirePermissions,
+		detached:           true,
 	}
 }
 

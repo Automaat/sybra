@@ -119,6 +119,11 @@ type Agent struct {
 	// cancelling them. Guarded by mu.
 	detached bool
 
+	// requirePermissions mirrors RunConfig.RequirePermissions. Persisted to
+	// the registry so a recreated codex chat keeps its sandbox/approval
+	// choice across a restart instead of silently becoming permissive.
+	requirePermissions bool
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
