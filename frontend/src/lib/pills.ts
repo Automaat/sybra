@@ -7,9 +7,10 @@
  * gets a distinct, *restrained* shape treatment, so the role reads before the
  * colour does and saturated colour is freed up for the one thing that needs it.
  *
- *  - status     filled, status-coloured — the canonical state (see StatusBadge).
- *               Colour is supplied by the status, not the role.
- *  - attention  filled accent — the single "needs you" signal. Colour supplied.
+ *  - status     the canonical state pill (see StatusBadge). The role supplies a
+ *               rounded, padded shape; the caller layers the status colour/fill.
+ *  - attention  the single "needs you" signal — shape from the role, colour
+ *               layered by the caller.
  *  - tag        outlined, monochrome — user labels; the quietest chip.
  *  - reference  monochrome + icon — an upstream PR/issue reference.
  *  - project    dot + plain text, no pill chrome — a passive association.
