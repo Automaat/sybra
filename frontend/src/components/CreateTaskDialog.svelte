@@ -106,7 +106,7 @@
   <div class="flex flex-col px-5 pb-5 md:px-6 md:pb-6">
       <form onsubmit={handleSubmit} class="flex flex-col gap-4">
         <label class="flex flex-col gap-1">
-          <span class="text-sm font-medium">Title</span>
+          <span class="text-sm font-medium">Title <span class="text-error-500" title="Required">*</span></span>
           <input
             type="text"
             bind:value={title}
@@ -118,7 +118,7 @@
 
         {#if projectStore.list.length > 0}
           <div class="flex flex-col gap-1">
-            <span class="text-sm font-medium">Project</span>
+            <span class="text-sm font-medium">Project <span class="font-normal text-surface-400">(optional)</span></span>
             {#if selectedProject}
               <div class="flex items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700">
                 <Folder size={16} class="shrink-0 text-surface-400" />
@@ -181,6 +181,10 @@
             <option value="debug">debug (interactive, per-tool perms)</option>
             <option value="research">research (headless, research-machine)</option>
           </select>
+          <span class="text-xs text-surface-400">
+            Sets how the agent runs. Normal is the default; debug and research
+            force a specific execution mode.
+          </span>
         </label>
 
         {#if taskType === 'normal'}

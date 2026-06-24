@@ -58,10 +58,10 @@ describe('SideRail', () => {
     expect(screen.getByText('S')).toBeDefined()
   })
 
-  it('renders the nav group headers', () => {
+  it('has no group headers — the rail is flat', () => {
     render(SideRail)
     for (const group of ['Work', 'Sessions', 'Build', 'Data']) {
-      expect(screen.getByText(group)).toBeDefined()
+      expect(screen.queryByText(group)).toBeNull()
     }
   })
 
@@ -78,7 +78,7 @@ describe('SideRail', () => {
     expect(screen.queryByText('Work')).toBeNull()
   })
 
-  it('expands to the full grouped nav when More is clicked', async () => {
+  it('expands to the full flat nav when More is clicked', async () => {
     focusModeStore.set(true)
     render(SideRail)
     await fireEvent.click(screen.getByText('More'))

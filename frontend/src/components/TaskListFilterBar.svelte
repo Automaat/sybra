@@ -119,7 +119,7 @@
       <button
         type="button"
         aria-label="Timeline view (advanced)"
-        title="Timeline — advanced view"
+        title="Timeline — Gantt of tasks and agent runs over time, which the list and board can't show"
         class="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors {viewMode === 'timeline'
           ? 'bg-primary-500 text-white dark:bg-primary-600'
           : 'text-surface-400 hover:bg-surface-200 hover:text-surface-600 dark:text-surface-500 dark:hover:bg-surface-700 dark:hover:text-surface-300'}"

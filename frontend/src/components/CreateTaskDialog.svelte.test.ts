@@ -44,4 +44,18 @@ describe('CreateTaskDialog', () => {
     })
     expect(container).toBeDefined()
   })
+
+  it('marks the required title and explains the Type field', () => {
+    const { container } = render(CreateTaskDialog, {
+      props: { open: true, onOpenChange: vi.fn() },
+    })
+    // The required marker sits on the Title field, next to its required input.
+    const titleLabel = Array.from(container.querySelectorAll('label')).find((l) =>
+      l.textContent?.includes('Title'),
+    )
+    expect(titleLabel?.querySelector('span[title="Required"]')).not.toBeNull()
+    expect(titleLabel?.querySelector('input[required]')).not.toBeNull()
+    // One-line Type helper.
+    expect(container.textContent).toContain('Sets how the agent runs')
+  })
 })

@@ -7,8 +7,7 @@
   import { focusModeStore } from '../../lib/focus-mode.svelte.js'
 
   // Focus mode collapses the rail to the core destinations; "More" expands the
-  // full grouped nav so advanced views stay reachable.
-  const PRIMARY_LABELS = ['Board', 'Reviews', 'Chats', 'Agents']
+  // full nav so advanced views stay reachable.
   let moreExpanded = $state(false)
 
   const interactiveAgentCount = $derived(
@@ -31,45 +30,23 @@
     onclick: () => void
   }
 
-  interface NavGroup {
-    label: string
-    items: NavItem[]
-  }
+  // The mobile bottom bar already picks the real primaries — promote them to a
+  // flat top section, tuck everything else into a flat secondary section, and
+  // drop the WORK/SESSIONS/BUILD/DATA group headers. Settings is pinned bottom.
+  const primaryItems: NavItem[] = [
+    { kind: ['task-list', 'task-detail'], label: 'Board', icon: ClipboardList, onclick: () => navStore.reset({ kind: 'task-list' }) },
+    { kind: ['chats', 'chat-detail'], label: 'Chats', icon: MessageCircle, onclick: () => navStore.reset({ kind: 'chats' }) },
+    { kind: ['agents', 'agent-detail'], label: 'Agents', icon: UserCircle, onclick: () => navStore.reset({ kind: 'agents' }) },
+    { kind: ['reviews'], label: 'Reviews', icon: ClipboardCheck, onclick: () => navStore.reset({ kind: 'reviews' }) },
+  ]
 
-  // Grouped so 11 destinations read as ~4 scannable sections instead of a flat
-  // wall. Group labels avoid colliding with any item label. Settings is pinned
-  // to the bottom. Every destination stays one click away.
-  const groups: NavGroup[] = [
-    {
-      label: 'Work',
-      items: [
-        { kind: ['dashboard'], label: 'Dashboard', icon: LayoutGrid, onclick: () => navStore.reset({ kind: 'dashboard' }) },
-        { kind: ['task-list', 'task-detail'], label: 'Board', icon: ClipboardList, onclick: () => navStore.reset({ kind: 'task-list' }) },
-        { kind: ['reviews'], label: 'Reviews', icon: ClipboardCheck, onclick: () => navStore.reset({ kind: 'reviews' }) },
-        { kind: ['logbook'], label: 'Logbook', icon: Archive, onclick: () => navStore.reset({ kind: 'logbook' }) },
-      ],
-    },
-    {
-      label: 'Sessions',
-      items: [
-        { kind: ['chats', 'chat-detail'], label: 'Chats', icon: MessageCircle, onclick: () => navStore.reset({ kind: 'chats' }) },
-        { kind: ['agents', 'agent-detail'], label: 'Agents', icon: UserCircle, onclick: () => navStore.reset({ kind: 'agents' }) },
-      ],
-    },
-    {
-      label: 'Build',
-      items: [
-        { kind: ['project-list', 'project-detail'], label: 'Projects', icon: Folder, onclick: () => navStore.reset({ kind: 'project-list' }) },
-        { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },
-      ],
-    },
-    {
-      label: 'Data',
-      items: [
-        { kind: ['github'], label: 'GitHub', icon: GitBranch, onclick: () => navStore.reset({ kind: 'github' }) },
-        { kind: ['stats'], label: 'Stats', icon: BarChart3, onclick: () => navStore.reset({ kind: 'stats' }) },
-      ],
-    },
+  const secondaryItems: NavItem[] = [
+    { kind: ['dashboard'], label: 'Dashboard', icon: LayoutGrid, onclick: () => navStore.reset({ kind: 'dashboard' }) },
+    { kind: ['logbook'], label: 'Logbook', icon: Archive, onclick: () => navStore.reset({ kind: 'logbook' }) },
+    { kind: ['project-list', 'project-detail'], label: 'Projects', icon: Folder, onclick: () => navStore.reset({ kind: 'project-list' }) },
+    { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },
+    { kind: ['github'], label: 'GitHub', icon: GitBranch, onclick: () => navStore.reset({ kind: 'github' }) },
+    { kind: ['stats'], label: 'Stats', icon: BarChart3, onclick: () => navStore.reset({ kind: 'stats' }) },
   ]
 
   const settingsItem: NavItem = {
@@ -80,9 +57,6 @@
     onclick: () => navStore.reset({ kind: 'settings' }),
   }
 
-  const primaryItems = $derived(
-    groups.flatMap((g) => g.items).filter((i) => PRIMARY_LABELS.includes(i.label)),
-  )
   // Minimal rail only when focus mode is on and the user hasn't expanded "More".
   const minimal = $derived(focusModeStore.enabled && !moreExpanded)
 
@@ -138,14 +112,12 @@
         <span class="leading-tight">More</span>
       </button>
     {:else}
-      {#each groups as group, gi}
-        {#if gi > 0}
-          <div class="mx-2 mb-0.5 mt-1.5 border-t border-surface-200 dark:border-surface-700"></div>
-        {/if}
-        <span class="px-1 pb-0.5 text-center text-[8px] font-semibold uppercase tracking-wider text-surface-400">{group.label}</span>
-        {#each group.items as item}
-          {@render navButton(item)}
-        {/each}
+      {#each primaryItems as item}
+        {@render navButton(item)}
+      {/each}
+      <div class="mx-2 mb-0.5 mt-1.5 border-t border-surface-200 dark:border-surface-700"></div>
+      {#each secondaryItems as item}
+        {@render navButton(item)}
       {/each}
       {#if focusModeStore.enabled}
         <button
