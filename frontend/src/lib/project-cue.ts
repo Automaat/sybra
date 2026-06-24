@@ -12,8 +12,10 @@ export function projectShortName(projectId: string): string {
 
 /**
  * A stable, muted dot colour keyed to the project id. Inline OKLCH (fixed
- * lightness/chroma, hashed hue) so it stays restrained, never collides with the
- * amber action colour, and isn't subject to Tailwind class purging.
+ * lightness/chroma, hashed hue) so it stays restrained — the low chroma keeps
+ * it from competing with the saturated amber action colour even if the hashed
+ * hue lands near amber — and isn't subject to Tailwind class purging. Lightness
+ * is a percentage to match the theme's `oklch(…%)` tokens.
  */
 export function projectDotStyle(projectId: string): string {
   let h = 0
@@ -21,5 +23,5 @@ export function projectDotStyle(projectId: string): string {
     h = (Math.imul(h, 31) + projectId.charCodeAt(i)) >>> 0
   }
   const hue = h % 360
-  return `background-color: oklch(0.68 0.11 ${hue}deg)`
+  return `background-color: oklch(68% 0.11 ${hue}deg)`
 }

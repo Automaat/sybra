@@ -25,6 +25,6 @@ describe('projectDotStyle', () => {
   })
 
   it('produces a restrained OKLCH colour (fixed lightness/chroma)', () => {
-    expect(projectDotStyle('x')).toMatch(/^background-color: oklch\(0\.68 0\.11 \d{1,3}deg\)$/)
+    expect(projectDotStyle('x')).toMatch(/^background-color: oklch\(68% 0\.11 \d{1,3}deg\)$/)
   })
 })
