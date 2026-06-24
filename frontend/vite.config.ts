@@ -22,7 +22,13 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id) {
-            if (id.includes('@xyflow')) return 'vendor-flow'
+            // highlight.js + marked are pulled in eagerly by the markdown
+            // renderer (initial paint path), so a stable vendor chunk improves
+            // long-term caching. @xyflow is intentionally NOT forced here: it
+            // is only reached through the lazily-imported WorkflowDetail route,
+            // and a manual chunk would hoist it back into the initial graph
+            // (eager modulepreload). Letting Rollup split it keeps it inside
+            // the WorkflowDetail async chunk.
             if (id.includes('highlight.js')) return 'vendor-highlight'
             if (id.includes('/marked')) return 'vendor-markdown'
           },
