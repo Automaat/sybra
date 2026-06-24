@@ -41,6 +41,11 @@ type Manager struct {
 	guardrails    Guardrails
 	bashTimeoutMs int
 	gate          provider.HealthGate
+
+	// reg persists live-agent records so subprocesses can be reattached
+	// after an app restart. nil disables survival (legacy behaviour).
+	reg            *registryStore
+	surviveRestart bool
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -56,6 +61,75 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 
 func (m *Manager) SetOnComplete(fn func(ag *Agent)) {
 	m.onComplete = fn
+}
+
+// EnableSurviveRestart turns on restart survival: headless (and, once
+// Phase 3 lands, interactive) subprocesses are detached and recorded in a
+// registry under dir so the next app instance can reattach to them. Call
+// once during startup before ReattachAll.
+func (m *Manager) EnableSurviveRestart(dir string) error {
+	s, err := newRegistryStore(dir)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.reg = s
+	m.surviveRestart = true
+	m.mu.Unlock()
+	return nil
+}
+
+// survives reports whether restart survival is active.
+func (m *Manager) survives() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.surviveRestart && m.reg != nil
+}
+
+// registry returns the registry store (nil when survival is disabled).
+func (m *Manager) registry() *registryStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.reg
+}
+
+// saveRegistry snapshots the agent to disk. No-op when survival is off.
+func (m *Manager) saveRegistry(a *Agent) {
+	reg := m.registry()
+	if reg == nil || a == nil {
+		return
+	}
+	a.mu.RLock()
+	rec := Record{
+		ID:        a.ID,
+		TaskID:    a.TaskID,
+		Name:      a.Name,
+		Mode:      a.Mode,
+		Provider:  a.Provider,
+		Model:     a.Model,
+		PID:       a.PID,
+		SessionID: a.SessionID,
+		LogPath:   a.LogPath,
+		CWD:       a.sessionCWD,
+		StartedAt: a.StartedAt,
+		MaxTurns:  a.MaxTurns,
+	}
+	a.mu.RUnlock()
+	rec.ProcStartedAt = processStartString(rec.PID)
+	if err := reg.Save(rec); err != nil {
+		m.logger.Warn("agent.registry.save", "id", a.ID, "err", err)
+	}
+}
+
+// signalKill terminates an agent's subprocess. Prefers the *exec.Cmd
+// handle (live this lifetime); falls back to the PID for reattached
+// agents that have no handle.
+func (m *Manager) signalKill(a *Agent) {
+	if cmd := a.GetCmd(); cmd != nil && cmd.Process != nil {
+		stopWithSIGINT(cmd, a.done, stopSIGINTGrace)
+		return
+	}
+	signalPID(a.GetPID(), stopSIGINTGrace)
 }
 
 // SetApprovalAddr sets the HTTP address for the tool approval server.

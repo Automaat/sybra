@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,16 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
 )
+
+// errSurviveShutdown is returned by a detached headless attempt when the
+// app's context is cancelled (shutdown) while the subprocess is still
+// alive. The runner returns without finalizing so the agent is left
+// running for the next instance to reattach.
+var errSurviveShutdown = errors.New("agent: detached, leaving process running for reattach")
+
+// headlessTailPoll is how often the detached/reattached tailer polls the
+// log file for new NDJSON lines.
+const headlessTailPoll = 100 * time.Millisecond
 
 // headlessEmitInterval caps per-agent stream event emission rate.
 // Result events always emit immediately (terminal signal). Frontend
@@ -52,6 +63,11 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 		}
 
 		retry, fatalErr := m.runHeadlessAttempt(ctx, a, cfg, &outFile)
+		if errors.Is(fatalErr, errSurviveShutdown) {
+			// Detached subprocess left running across shutdown — do not
+			// finalize; the next app instance reattaches via the registry.
+			return
+		}
 		if fatalErr != nil {
 			m.handleError(a, fatalErr)
 			return
@@ -90,6 +106,10 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	name, args, invokeEnv, command, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
 		return false, err
+	}
+
+	if m.survives() && a.Mode == "headless" {
+		return m.runHeadlessAttemptSurvive(ctx, a, cfg, outFile, name, args, invokeEnv, command)
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -164,6 +184,164 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	return false, nil
 }
 
+// runHeadlessAttemptSurvive spawns a detached headless subprocess whose
+// stdout is the NDJSON log file (not a pipe), so it survives the parent's
+// exit and a terminal Ctrl-C. The manager reads output by tailing that
+// file. Returns errSurviveShutdown if the app shuts down while the child
+// is still alive — the caller then leaves it running for reattach.
+func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, name string, args, invokeEnv []string, command string) (retry bool, err error) {
+	// The log file is the child's stdout, so it must exist before Start.
+	// Opened once and reused across retries (append mode).
+	if *outFile == nil {
+		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+		if fileErr != nil {
+			return false, fmt.Errorf("open agent log: %w", fileErr)
+		}
+		a.SetLogPath(f.Name())
+		*outFile = f
+	}
+	logPath := (*outFile).Name()
+
+	cmd := exec.Command(name, args...) // no Context: a cancelled ctx must not kill a detached child
+	configureDetached(cmd)
+	if a.sessionCWD != "" {
+		cmd.Dir = a.sessionCWD
+	}
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
+		cmd.Env = append(os.Environ(), invokeEnv...)
+		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
+	}
+	a.Command = command
+	cmd.Stdout = *outFile
+
+	stderrPath := logPath + ".stderr"
+	if stderrF, ferr := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); ferr == nil {
+		cmd.Stderr = stderrF
+		defer func() { _ = stderrF.Close() }()
+	}
+
+	if startErr := cmd.Start(); startErr != nil {
+		return false, fmt.Errorf("start %s: %w", name, startErr)
+	}
+	a.SetCmd(cmd)
+	a.setDetached(true)
+	m.saveRegistry(a)
+	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
+
+	procDone := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(procDone)
+	}()
+
+	exited := m.tailHeadlessFile(ctx, a, logPath, true, procDone)
+	if !exited {
+		m.logger.Info("agent.headless.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown")
+		return false, errSurviveShutdown
+	}
+
+	var stderrOut string
+	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
+		stderrOut = string(b)
+	}
+	if stderrOut != "" {
+		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
+	}
+	if waitErr != nil {
+		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
+		a.SetExitErr(waitErr)
+		attemptEvents := a.Output()
+		if shouldRetry(stderrOut, attemptEvents, m.logger) {
+			return true, nil
+		}
+		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
+	}
+	return false, nil
+}
+
+// tailHeadlessFile follows an NDJSON log file written by a detached or
+// reattached subprocess, feeding each complete line through
+// processHeadlessLine. It returns true when the process exited (procDone
+// closed), false when the context was cancelled (app shutdown) while the
+// process was still running — the latter signals the caller to leave the
+// agent running for reattach. When fromStart is false the tailer seeks to
+// the current end of file (reattach: history is rehydrated separately).
+func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, fromStart bool, procDone <-chan struct{}) (exited bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		m.logger.Warn("agent.headless.tail.open", "id", a.ID, "path", path, "err", err)
+		select {
+		case <-procDone:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	defer func() { _ = f.Close() }()
+
+	var offset int64
+	if !fromStart {
+		if fi, statErr := f.Stat(); statErr == nil {
+			offset = fi.Size()
+		}
+	}
+
+	var buf []byte
+	var lastEmit time.Time
+	isCodex := normalizeProvider(a.Provider) == "codex"
+
+	// drain reads all bytes appended since offset, splits complete lines,
+	// and processes them. Returns true if a guardrail asked to stop.
+	drain := func() (stop bool) {
+		if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+			return false
+		}
+		chunk, readErr := io.ReadAll(f)
+		if readErr != nil || len(chunk) == 0 {
+			return false
+		}
+		offset += int64(len(chunk))
+		a.TouchLastEvent()
+		buf = append(buf, chunk...)
+		for {
+			i := bytes.IndexByte(buf, '\n')
+			if i < 0 {
+				break
+			}
+			line := buf[:i]
+			buf = buf[i+1:]
+			if m.processHeadlessLine(ctx, a, line, &lastEmit, isCodex) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for {
+		if drain() {
+			// Guardrail kill: force the detached child to stop, then wait
+			// for it to actually exit before finalizing.
+			m.signalKill(a)
+			select {
+			case <-procDone:
+				drain()
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		select {
+		case <-procDone:
+			drain()
+			return true
+		case <-ctx.Done():
+			return false
+		case <-time.After(headlessTailPoll):
+		}
+	}
+}
+
 // trackingReader wraps an io.Reader and calls touch on every Read, keeping
 // LastEventAt alive during extended thinking where no complete NDJSON lines
 // are emitted for several minutes.
@@ -194,77 +372,100 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		var event StreamEvent
-		var parseErr error
-		if isCodex {
-			var ce CodexEvent
-			ce, parseErr = ParseCodexLine(line)
-			if parseErr == nil {
-				event = codexEventToStreamEvent(ce)
+		if m.processHeadlessLine(ctx, a, line, &lastEmit, isCodex) {
+			// Guardrail asked to stop: cancel the context so the pipe-backed
+			// subprocess is terminated, then unwind. cancel may be nil in
+			// unit tests that drive the streamer directly.
+			if a.cancel != nil {
+				a.cancel()
 			}
-		} else {
-			var ce ClaudeEvent
-			ce, parseErr = ParseClaudeLine(line)
-			if parseErr == nil {
-				event = claudeEventToStreamEvent(ce)
-			}
-		}
-		if parseErr != nil {
-			m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
-			continue
-		}
-		if event.Type == "" {
-			continue
-		}
-
-		event.Timestamp = time.Now().UTC()
-		a.AppendOutput(event)
-		if event.Type == "result" || time.Since(lastEmit) >= headlessEmitInterval {
-			m.emit(events.AgentOutput(a.ID), event)
-			lastEmit = time.Now()
-		}
-
-		if event.Type == "init" && event.SessionID != "" && a.Provider == "codex" {
-			if p := resolveCodexSessionFile(event.SessionID); p != "" {
-				a.SetSessionFilePath(p)
-			}
-		}
-
-		if (event.Type == "system" || event.Type == "init") && len(event.PluginErrors) > 0 {
-			for _, e := range event.PluginErrors {
-				m.logger.Warn("agent.plugin_error", "id", a.ID, "error", e)
-			}
-			a.SetPluginErrors(event.PluginErrors)
-			m.emit(events.AgentPluginErrors(a.ID), PluginErrorsEvent{Errors: event.PluginErrors})
-			m.emit(events.AgentState(a.ID), a)
-		}
-
-		if event.Type == "assistant" {
-			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
-				return
-			}
-		}
-
-		if event.Type == "result" {
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
-			m.mu.RLock()
-			maxCost := m.guardrails.MaxCostUSD
-			m.mu.RUnlock()
-			if maxCost > 0 && costNow > maxCost {
-				m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
-				a.SetEscalationReason("cost")
-				m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-					Reason:  "cost",
-					CostUSD: costNow,
-					Limit:   maxCost,
-				})
-				m.emit(events.AgentState(a.ID), a)
-			}
+			return
 		}
 	}
 	m.reportScannerError(a, scanner.Err())
+}
+
+// processHeadlessLine parses one NDJSON line, appends and emits the event,
+// captures session/plugin metadata, and applies the turn and cost
+// guardrails. Returns true when a guardrail decision says to stop the
+// stream. Shared by the pipe-backed streamer and the file tailer; it never
+// writes the log file (the caller or the child process owns that).
+func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, isCodex bool) (stop bool) {
+	var event StreamEvent
+	var parseErr error
+	if isCodex {
+		var ce CodexEvent
+		ce, parseErr = ParseCodexLine(line)
+		if parseErr == nil {
+			event = codexEventToStreamEvent(ce)
+		}
+	} else {
+		var ce ClaudeEvent
+		ce, parseErr = ParseClaudeLine(line)
+		if parseErr == nil {
+			event = claudeEventToStreamEvent(ce)
+		}
+	}
+	if parseErr != nil {
+		m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
+		return false
+	}
+	if event.Type == "" {
+		return false
+	}
+
+	event.Timestamp = time.Now().UTC()
+	a.AppendOutput(event)
+	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
+		m.emit(events.AgentOutput(a.ID), event)
+		*lastEmit = time.Now()
+	}
+
+	if event.Type == "init" && event.SessionID != "" && a.Provider == "codex" {
+		if p := resolveCodexSessionFile(event.SessionID); p != "" {
+			a.SetSessionFilePath(p)
+		}
+	}
+
+	if (event.Type == "system" || event.Type == "init") && len(event.PluginErrors) > 0 {
+		for _, e := range event.PluginErrors {
+			m.logger.Warn("agent.plugin_error", "id", a.ID, "error", e)
+		}
+		a.SetPluginErrors(event.PluginErrors)
+		m.emit(events.AgentPluginErrors(a.ID), PluginErrorsEvent{Errors: event.PluginErrors})
+		m.emit(events.AgentState(a.ID), a)
+	}
+
+	if event.Type == "assistant" {
+		if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
+			return true
+		}
+	}
+
+	if event.Type == "result" {
+		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
+		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
+		// Persist the captured session ID so a reattach or restart-stale
+		// recovery can pass --resume. No-op when survival is disabled.
+		if event.SessionID != "" {
+			m.saveRegistry(a)
+		}
+		m.mu.RLock()
+		maxCost := m.guardrails.MaxCostUSD
+		m.mu.RUnlock()
+		if maxCost > 0 && costNow > maxCost {
+			m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+			a.SetEscalationReason("cost")
+			m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+				Reason:  "cost",
+				CostUSD: costNow,
+				Limit:   maxCost,
+			})
+			m.emit(events.AgentState(a.ID), a)
+		}
+	}
+	return false
 }
 
 // reportScannerError surfaces bufio.Scanner errors at the end of the NDJSON
@@ -307,7 +508,9 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 	select {
 	case continueRun := <-a.escalationCh:
 		if !continueRun {
-			a.cancel()
+			// Caller terminates the subprocess: streamHeadlessOutput cancels
+			// the context (pipe-backed); tailHeadlessFile signal-kills the
+			// detached child by PID.
 			return false
 		}
 		a.SetEscalationReason("")
