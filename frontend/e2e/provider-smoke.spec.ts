@@ -14,6 +14,8 @@ async function goToSettings(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Settings/ }).click()
   await expect(page.locator('h2', { hasText: 'Settings' })).toBeVisible()
+  // Agent Defaults is its own pane in the settings rail — open it.
+  await page.getByRole('button', { name: 'Defaults' }).click()
   await expect(page.locator('#agent-provider')).toBeVisible()
 }
 

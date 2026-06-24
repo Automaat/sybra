@@ -80,6 +80,8 @@ export function GetTodoistProjects(): Promise<Array<TodoistProject>> { return ca
 export function ProviderHealthEnabled(): Promise<boolean> { return call('IntegrationService', 'ProviderHealthEnabled') }
 export function MergeRenovatePR(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'MergeRenovatePR', arg1, arg2) }
 export function RerunRenovateChecks(arg1: string, arg2: number): Promise<void> { return call('IntegrationService', 'RerunRenovateChecks', arg1, arg2) }
+export function SetProviderAutoFailover(arg1: boolean): Promise<void> { return call('IntegrationService', 'SetProviderAutoFailover', arg1) }
+export function SetProviderEnabled(arg1: string, arg2: boolean): Promise<void> { return call('IntegrationService', 'SetProviderEnabled', arg1, arg2) }
 export function SyncTodoist(): Promise<void> { return call('IntegrationService', 'SyncTodoist') }
 export function TodoistEnabled(): Promise<boolean> { return call('IntegrationService', 'TodoistEnabled') }
 

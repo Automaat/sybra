@@ -77,6 +77,8 @@ export const GetTodoistProjects = pick(IntegrationSvc.GetTodoistProjects, http.G
 export const MergeRenovatePR = pick(IntegrationSvc.MergeRenovatePR, http.MergeRenovatePR)
 export const ProviderHealthEnabled = pick(IntegrationSvc.ProviderHealthEnabled, http.ProviderHealthEnabled)
 export const RerunRenovateChecks = pick(IntegrationSvc.RerunRenovateChecks, http.RerunRenovateChecks)
+export const SetProviderAutoFailover = pick(IntegrationSvc.SetProviderAutoFailover, http.SetProviderAutoFailover)
+export const SetProviderEnabled = pick(IntegrationSvc.SetProviderEnabled, http.SetProviderEnabled)
 export const SyncTodoist = pick(IntegrationSvc.SyncTodoist, http.SyncTodoist)
 export const TodoistEnabled = pick(IntegrationSvc.TodoistEnabled, http.TodoistEnabled)
 
