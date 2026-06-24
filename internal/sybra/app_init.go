@@ -338,6 +338,13 @@ func (a *App) initWorkflowEngine() {
 func (a *App) initAgentConfig() {
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.agents.SetBashTimeoutMs(a.cfg.BashTimeoutMs())
+	if a.cfg.SurviveRestartEnabled() {
+		if err := a.agents.EnableSurviveRestart(config.AgentsDir()); err != nil {
+			a.logger.Error("agent.survive-restart.init", "err", err)
+		} else {
+			a.logger.Info("agent.survive-restart.enabled", "dir", config.AgentsDir())
+		}
+	}
 	a.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
 		MaxTurns:         a.cfg.Agent.MaxTurns,

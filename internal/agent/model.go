@@ -107,6 +107,12 @@ type Agent struct {
 	// workflow step to "failed".
 	stopped bool
 
+	// detached is true when the agent's subprocess was spawned to survive
+	// an app restart (Setsid, output redirected to its log file, no ctx
+	// kill). ShutdownWithGrace leaves detached agents running instead of
+	// cancelling them. Guarded by mu.
+	detached bool
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
@@ -393,6 +399,44 @@ func (a *Agent) GetLogPath() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.LogPath
+}
+
+// GetPID returns the subprocess PID (0 if not yet started).
+func (a *Agent) GetPID() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.PID
+}
+
+// setDetached marks whether the agent's subprocess is detached for
+// restart survival.
+func (a *Agent) setDetached(v bool) {
+	a.mu.Lock()
+	a.detached = v
+	a.mu.Unlock()
+}
+
+// isDetached reports whether the agent's subprocess was spawned to
+// survive an app restart.
+func (a *Agent) isDetached() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.detached
+}
+
+// hasTerminalResult reports whether the output buffer contains a
+// non-error result event — the signal that a headless run completed its
+// work. Used by reattach completion to distinguish a clean finish from a
+// process that vanished mid-run.
+func (a *Agent) hasTerminalResult() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for i := range a.outputBuffer {
+		if a.outputBuffer[i].Type == "result" && a.outputBuffer[i].Subtype != "error" {
+			return true
+		}
+	}
+	return false
 }
 
 // GetLastEventAt returns the most recent event timestamp.

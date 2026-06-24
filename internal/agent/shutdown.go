@@ -65,3 +65,42 @@ func configureGracefulShutdown(cmd *exec.Cmd) {
 	}
 	cmd.WaitDelay = shutdownWaitDelay
 }
+
+// configureDetached puts the subprocess in its own session (Setsid) so it
+// survives both the app's exit and a terminal SIGINT (Ctrl-C of `mise run
+// dev` sends the signal to the whole foreground process group; a new
+// session is immune). Detached agents are spawned with exec.Command (no
+// Context), so a cancelled context never reaches the child — the only
+// kill paths are an explicit StopAgent or signalKill. The output stream
+// is the child's log file (written directly), not a pipe that breaks when
+// the parent dies. Reattachment on the next startup tails that file.
+func configureDetached(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setsid = true
+}
+
+// signalPID sends SIGINT to a detached/reattached process by PID and
+// escalates to SIGKILL after the grace window. Used when there is no
+// *exec.Cmd handle (a reattached agent) or to force a detached child to
+// stop on a guardrail kill.
+func signalPID(pid int, grace time.Duration) {
+	if pid <= 0 {
+		return
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	_ = p.Signal(os.Interrupt)
+	go func() {
+		time.Sleep(grace)
+		if processAlive(pid) {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	}()
+}

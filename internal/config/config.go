@@ -85,6 +85,12 @@ type AgentDefaults struct {
 	// files, regardless of age) are swept on app startup and daily
 	// thereafter. 0 falls back to DefaultLogRetentionDays (14).
 	LogRetentionDays int `yaml:"log_retention_days" json:"logRetentionDays"`
+	// SurviveRestart keeps agent subprocesses running across an app
+	// restart (detached, output streamed to their log files) and reattaches
+	// to them on the next startup. nil means not configured (defaults to
+	// true). Set false to revert to the legacy behaviour where agents are
+	// killed on shutdown and recovered via restart-stale.
+	SurviveRestart *bool `yaml:"survive_restart" json:"surviveRestart"`
 }
 
 // DefaultBashTimeoutSeconds is the per-bash-tool-call timeout used when
@@ -128,6 +134,16 @@ func (c *Config) DefaultLogRetentionDays() int {
 func (c *Config) DefaultRequirePermissions() bool {
 	if c != nil && c.Agent.RequirePermissions != nil {
 		return *c.Agent.RequirePermissions
+	}
+	return true
+}
+
+// SurviveRestartEnabled reports whether agent subprocesses should be
+// detached to survive an app restart and reattached on the next startup.
+// Defaults to true when unset.
+func (c *Config) SurviveRestartEnabled() bool {
+	if c != nil && c.Agent.SurviveRestart != nil {
+		return *c.Agent.SurviveRestart
 	}
 	return true
 }
@@ -642,6 +658,13 @@ func defaultLoopAgentsDir() string {
 
 func WorkflowsDir() string {
 	return filepath.Join(HomeDir(), "workflows")
+}
+
+// AgentsDir is the directory under ~/.sybra that holds the live-agent
+// registry (one YAML file per running agent) used to reattach to
+// subprocesses that survived an app restart.
+func AgentsDir() string {
+	return filepath.Join(HomeDir(), "agents")
 }
 
 func StatsFile() string {

@@ -224,7 +224,14 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	m.mu.RLock()
 	count := len(m.agents)
 	dones := make([]chan struct{}, 0, count)
+	survived := 0
 	for _, a := range m.agents {
+		// Detached agents are meant to outlive the app: do not cancel
+		// them and do not wait on their done channel (it stays open).
+		if a.isDetached() {
+			survived++
+			continue
+		}
 		if a.cancel != nil {
 			a.cancel()
 		}
@@ -234,7 +241,7 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	}
 	m.mu.RUnlock()
 
-	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones))
+	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones), "survived", survived)
 	if len(dones) == 0 || grace <= 0 {
 		return
 	}

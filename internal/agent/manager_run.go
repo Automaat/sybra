@@ -70,6 +70,13 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 	if cfg.Mode == "headless" {
 		a.escalationCh = make(chan bool, 1)
+		// Pre-mark detached so a shutdown racing the runner goroutine
+		// already knows to leave this agent's subprocess running. The
+		// runner re-asserts this after a successful Start. Use the mutexed
+		// setter — detached is guarded by mu and read via isDetached().
+		if m.survives() {
+			a.setDetached(true)
+		}
 	}
 
 	m.mu.Lock()
@@ -113,6 +120,9 @@ func (m *Manager) markAgentDone(a *Agent) {
 	}
 	a.doneOnce.Do(func() {
 		close(a.done)
+		if reg := m.registry(); reg != nil {
+			_ = reg.Delete(a.ID)
+		}
 		m.mu.Lock()
 		if m.liveCount > 0 {
 			m.liveCount--

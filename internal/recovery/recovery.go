@@ -54,6 +54,13 @@ type Recovery struct {
 // worktrees show up as orphans to the subsequent sweep; stale run state
 // next so restart-stale sees a clean slate.
 func (r *Recovery) RunStartupCleanup() {
+	// Reattach to surviving agent subprocesses FIRST so the sweeps below —
+	// which all key off HasRunningAgentForTask — see them as live and do
+	// not remove their worktrees, gc their chat tasks, mark their runs
+	// stale, or restart them.
+	if reattached := r.Agents.ReattachAll(); len(reattached) > 0 {
+		r.Logger.Info("recovery.reattach", "count", len(reattached))
+	}
 	r.Worktrees.RepairAll()
 	r.gcOrphanChats()
 	r.Worktrees.CleanupOrphaned()
