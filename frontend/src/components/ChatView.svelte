@@ -4,6 +4,7 @@
   import MessageBubble from './MessageBubble.svelte'
   import ToolApproval from './ToolApproval.svelte'
   import ChatInput from './ChatInput.svelte'
+  import { formatCost } from '../lib/cost.js'
   import { ArrowDown } from '@lucide/svelte'
 
   interface Props {
@@ -134,7 +135,7 @@
     {/if}
 
     {#if costUsd > 0}
-      <span class="text-xs text-surface-500">${costUsd.toFixed(2)}</span>
+      <span class="text-xs text-surface-500">{formatCost(costUsd)}</span>
     {/if}
 
     <button

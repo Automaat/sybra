@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { renderMarkdown } from '../lib/markdown.js'
+  import { formatCost } from '../lib/cost.js'
   import DiffViewer from './DiffViewer.svelte'
 
   interface Props {
@@ -8,6 +9,14 @@
   }
 
   const { event }: Props = $props()
+
+  // Tool results larger than this are CC-offloaded to a temp file and arrive
+  // with the internal absolute path inline; collapse them rather than leak it.
+  const OVERSIZED_RESULT = 2000
+
+  function isOversized(content: string): boolean {
+    return content.length > OVERSIZED_RESULT
+  }
 
   const isUserInput = $derived(event.type === 'user_input')
   const isAssistant = $derived(event.type === 'assistant')
@@ -86,7 +95,11 @@
         {result.isError
           ? 'border-error-500 bg-error-50 text-error-800 dark:bg-error-950 dark:text-error-200'
           : 'border-success-500 bg-success-50 text-success-800 dark:bg-success-950 dark:text-success-200'}">
-        <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">{truncate(result.content, 1000)}</pre>
+        {#if isOversized(result.content) && !result.isError}
+          <span class="italic text-surface-500 dark:text-surface-400">Output too large — view file</span>
+        {:else}
+          <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">{truncate(result.content, 1000)}</pre>
+        {/if}
       </div>
     {/each}
   {/if}
@@ -97,10 +110,13 @@
       DONE
     </span>
     {#if event.costUsd}
-      <span>${event.costUsd.toFixed(4)}</span>
+      <span>{formatCost(event.costUsd)}</span>
     {/if}
     {#if event.inputTokens || event.outputTokens}
-      <span>{event.inputTokens?.toLocaleString()}↓ {event.outputTokens?.toLocaleString()}↑</span>
+      <span
+        title="input ↓ / output ↑ tokens"
+        aria-label="{(event.inputTokens ?? 0).toLocaleString()} input tokens, {(event.outputTokens ?? 0).toLocaleString()} output tokens"
+      >{event.inputTokens?.toLocaleString()}↓ {event.outputTokens?.toLocaleString()}↑</span>
     {/if}
   </div>
 {/if}
