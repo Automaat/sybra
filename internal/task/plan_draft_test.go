@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// mustListDrafts lists drafts for id, failing the test on an unexpected error
+// so assertions never run against a map produced by a hidden failure.
+func mustListDrafts(t *testing.T, s *PlanDraftStore, id string) map[string]string {
+	t.Helper()
+	got, err := s.List(id)
+	if err != nil {
+		t.Fatalf("List(%s): %v", id, err)
+	}
+	return got
+}
+
 func TestPlanDraftStore_WriteListReadDelete(t *testing.T) {
 	s := NewPlanDraftStore(t.TempDir())
 
@@ -31,7 +42,7 @@ func TestPlanDraftStore_WriteListReadDelete(t *testing.T) {
 	if err := s.Delete("task1", "plan_claude"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	got, _ = s.List("task1")
+	got = mustListDrafts(t, s, "task1")
 	if len(got) != 1 || got["plan_codex"] != "codex body" {
 		t.Fatalf("after Delete List = %v, want only plan_codex", got)
 	}
@@ -44,7 +55,7 @@ func TestPlanDraftStore_NegativeCache(t *testing.T) {
 	s := NewPlanDraftStore(t.TempDir())
 
 	// Prime the index with a full scan that observes zero drafts.
-	if got, _ := s.List("taskA"); len(got) != 0 {
+	if got := mustListDrafts(t, s, "taskA"); len(got) != 0 {
 		t.Fatalf("initial List = %v, want empty", got)
 	}
 	if !s.indexed {
@@ -59,11 +70,11 @@ func TestPlanDraftStore_NegativeCache(t *testing.T) {
 	if s.indexed {
 		t.Fatal("write must invalidate the index")
 	}
-	if got, _ := s.List("taskB"); got["plan_claude"] != "b" {
+	if got := mustListDrafts(t, s, "taskB"); got["plan_claude"] != "b" {
 		t.Fatalf("List(taskB) = %v, want the freshly written draft", got)
 	}
 	// taskA still has no drafts.
-	if got, _ := s.List("taskA"); len(got) != 0 {
+	if got := mustListDrafts(t, s, "taskA"); len(got) != 0 {
 		t.Fatalf("List(taskA) = %v, want empty", got)
 	}
 
@@ -71,7 +82,7 @@ func TestPlanDraftStore_NegativeCache(t *testing.T) {
 	if err := s.Write("taskA", "plan_codex", "a"); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if got, _ := s.List("taskA"); got["plan_codex"] != "a" {
+	if got := mustListDrafts(t, s, "taskA"); got["plan_codex"] != "a" {
 		t.Fatalf("List(taskA) = %v, want the new draft", got)
 	}
 }
@@ -87,7 +98,7 @@ func TestPlanDraftStore_ExternalWriteInvalidates(t *testing.T) {
 	}
 
 	// Prime the negative cache: taskX has no drafts.
-	if got, _ := store.planDrafts.List("taskX"); len(got) != 0 {
+	if got := mustListDrafts(t, store.planDrafts, "taskX"); len(got) != 0 {
 		t.Fatalf("initial List = %v, want empty", got)
 	}
 
@@ -100,7 +111,7 @@ func TestPlanDraftStore_ExternalWriteInvalidates(t *testing.T) {
 	// Watcher notifies the store of the sidecar change.
 	store.InvalidatePath(external)
 
-	got, _ := store.planDrafts.List("taskX")
+	got := mustListDrafts(t, store.planDrafts, "taskX")
 	if got["plan_ext"] != "ext body" {
 		t.Fatalf("List(taskX) = %v, want the externally written draft", got)
 	}

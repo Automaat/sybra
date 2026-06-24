@@ -1501,7 +1501,10 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.InvalidatePath(a.FilePath)
-	tasks, _ = store.List()
+	tasks, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tk := range tasks {
 		if tk.ID == a.ID {
 			t.Fatalf("Alpha should be gone after file removal")

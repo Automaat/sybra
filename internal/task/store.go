@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -240,8 +241,10 @@ func (s *Store) read(id string) (Task, error) {
 	}
 	t, err := Parse(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return Task{}, fmt.Errorf("task %s not found", id)
+		if errors.Is(err, os.ErrNotExist) {
+			// Wrap so callers can detect the missing file via
+			// errors.Is(err, os.ErrNotExist) instead of string matching.
+			return Task{}, fmt.Errorf("task %s not found: %w", id, err)
 		}
 		return Task{}, err
 	}
@@ -519,7 +522,7 @@ func (s *Store) InvalidatePath(path string) {
 func (s *Store) refreshCachedTask(id string) {
 	t, err := s.Get(id)
 	if err != nil {
-		if os.IsNotExist(err) || strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, os.ErrNotExist) {
 			s.deleteCachedTask(id)
 			return
 		}
