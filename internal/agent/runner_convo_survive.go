@@ -147,6 +147,16 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 		return false, errSurviveShutdown
 	}
 
+	// Only inspect exit status / retry once the process has actually exited.
+	// On an intentional stop the tailer can return after drainTimeout with
+	// the wait goroutine still running, so reading waitErr then would race
+	// the write and misread a live process as a clean exit.
+	select {
+	case <-procDone:
+	default:
+		return false, nil
+	}
+
 	var stderrOut string
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
