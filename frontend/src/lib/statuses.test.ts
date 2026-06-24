@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ALL_STATUSES,
+  AWAITS_HUMAN,
   CORE_STATUSES,
   CORE_STATUS_OPTIONS,
+  awaitsHuman,
+  awaitsHumanLabel,
   coreStatus,
+  statusLabel,
   statusOptionsFor,
   BOARD_COLUMNS,
   STATUS_MAP,
@@ -71,5 +76,41 @@ describe('statusOptionsFor', () => {
     const opts = statusOptionsFor('mystery')
     expect(opts).toHaveLength(CORE_STATUS_OPTIONS.length + 1)
     expect(opts.at(-1)).toEqual({ value: 'mystery', label: 'mystery' })
+  })
+})
+
+describe('statusLabel — one canonical vocabulary', () => {
+  it('returns the STATUS_MAP label for every known status', () => {
+    for (const meta of ALL_STATUSES) {
+      expect(statusLabel(meta.value)).toBe(meta.label)
+    }
+  })
+
+  it('passes unknown statuses through verbatim', () => {
+    expect(statusLabel('mystery')).toBe('mystery')
+  })
+
+  it('is the label every picker option uses', () => {
+    for (const opt of CORE_STATUS_OPTIONS) {
+      expect(opt.label).toBe(statusLabel(opt.value))
+    }
+  })
+})
+
+describe('awaitsHumanLabel — canonical, never a divergent name', () => {
+  it('matches the canonical status label for every awaits-human status', () => {
+    for (const status of AWAITS_HUMAN) {
+      expect(awaitsHuman(status)).toBe(true)
+      // The attention pill must reuse the same word the list/detail show —
+      // no invented "Needs Review"/"Needs You" vocabulary.
+      expect(awaitsHumanLabel(status)).toBe(statusLabel(status))
+    }
+  })
+
+  it('is empty for statuses that do not await the user', () => {
+    for (const meta of ALL_STATUSES) {
+      if (AWAITS_HUMAN.has(meta.value)) continue
+      expect(awaitsHumanLabel(meta.value)).toBe('')
+    }
   })
 })

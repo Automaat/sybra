@@ -125,19 +125,25 @@ export function awaitsHuman(status: string): boolean {
   return AWAITS_HUMAN.has(status as TaskStatus)
 }
 
-/** Short pill label for an awaits-human task; empty when not awaiting. */
+/**
+ * Canonical, human-facing label for a status — the single source of truth used
+ * identically on the board pill, list cell, detail dropdown, and move popover.
+ * One state, one word, everywhere. Unknown values pass through verbatim so the
+ * UI never mislabels a legacy/unrecognised status.
+ */
+export function statusLabel(status: string): string {
+  return STATUS_MAP[status]?.label ?? status
+}
+
+/**
+ * Label for an awaits-human task's attention pill; empty when not awaiting.
+ * Returns the *canonical* status label — the attention state is signalled by
+ * colour and placement, never by a divergent name. (Previously this invented
+ * "Needs Review"/"Needs You", which is exactly the vocabulary split this
+ * reconciles.)
+ */
 export function awaitsHumanLabel(status: string): string {
-  switch (status) {
-    case 'plan-review':
-    case 'test-plan-review':
-      return 'Needs Review'
-    case 'blocked':
-      return 'Blocked'
-    case 'human-required':
-      return 'Needs You'
-    default:
-      return ''
-  }
+  return awaitsHuman(status) ? statusLabel(status) : ''
 }
 
 /** O(1) lookup by status value */

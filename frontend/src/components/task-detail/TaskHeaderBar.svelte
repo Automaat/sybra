@@ -246,6 +246,12 @@
     </h1>
   {/if}
   <div class="flex items-center gap-2">
+    <!--
+      This control selects among the core (column) statuses, so it shows the
+      rolled-up value. A granular awaiting sub-state (e.g. plan-review) still
+      reads as its column name ("Planning") here; surfacing that sub-state as a
+      banner under the title is tracked separately (detail-loses-substate).
+    -->
     <select
       bind:this={statusSelectRef}
       data-testid="task-status-select"
