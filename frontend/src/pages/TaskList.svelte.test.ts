@@ -350,6 +350,19 @@ describe('TaskList', () => {
       const checkbox = screen.getByLabelText('Show done') as HTMLInputElement
       expect(checkbox.checked).toBe(false)
     })
+
+    it('ignores Show done on the board even when enabled in list view', async () => {
+      // Enable in list, switch to board: the board must not resurrect done.
+      viewModeStore.set('list')
+      render(TaskList, { props: { onselect: vi.fn() } })
+      await fireEvent.click(screen.getByLabelText('Show done'))
+      viewModeStore.set('board')
+      await vi.waitFor(() => {
+        expect(screen.queryByText(/^Done$/)).toBeNull()
+        expect(screen.queryByLabelText('Show done')).toBeNull()
+        expect(screen.getByText('Done → Logbook')).toBeDefined()
+      })
+    })
   })
 
   describe('view mode switching', () => {

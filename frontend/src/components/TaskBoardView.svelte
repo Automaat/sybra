@@ -55,11 +55,16 @@
     if (changed) expandedEmpty = next
   })
 
-  // A static "agents working now" count per column — the live activity cue the
-  // board otherwise lacks, without an animated pulse keeping a swarm in motion.
+  // Task IDs with at least one running agent — built once per agent-list change
+  // so the per-column count is an O(tasks) membership test, not O(tasks×agents).
+  const runningTaskIds = $derived(
+    new Set((agentStore.list ?? []).filter((a) => a.state === 'running').map((a) => a.taskId)),
+  )
+
+  // A static "tasks with an agent working" count per column — the live activity
+  // cue the board otherwise lacks, without a pulse keeping a swarm in motion.
   function runningCount(tasks: Task[]): number {
-    const list = agentStore.list ?? []
-    return tasks.filter((t) => list.some((a) => a.taskId === t.id && a.state === 'running')).length
+    return tasks.filter((t) => runningTaskIds.has(t.id)).length
   }
 
   async function handleDrop(e: DragEvent, targetStatus: string) {
@@ -114,7 +119,7 @@
           {#if rc > 0}
             <span
               class="inline-flex items-center gap-1 text-xs font-medium text-success-700 dark:text-success-400"
-              title="{rc} agent(s) working in this column"
+              title="{rc} task(s) with an agent working in this column"
             >
               <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
               {rc}

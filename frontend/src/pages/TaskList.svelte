@@ -237,9 +237,14 @@
     'urgent': 0, 'high': 1, 'medium': 2, 'low': 3, '': 4,
   }
 
+  // The board has no Done column (terminal tasks live in the Logbook), so it
+  // ignores "Show done" entirely — a value carried over from list view can't
+  // resurrect done tasks on the board.
+  const effectiveShowDone = $derived(viewMode === 'board' ? false : showDone)
+
   const allFilteredTasks = $derived.by(() => {
     return taskStore.list.filter((t: Task) => {
-      if (!showDone && (t.status === 'done' || t.status === 'cancelled')) return false
+      if (!effectiveShowDone && (t.status === 'done' || t.status === 'cancelled')) return false
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false
@@ -253,7 +258,7 @@
   })
 
   const visibleColumns = $derived(
-    showDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
+    effectiveShowDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
   )
 
   const hasActiveFilters = $derived(

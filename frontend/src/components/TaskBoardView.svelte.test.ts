@@ -53,7 +53,7 @@ describe('TaskBoardView', () => {
       },
     })
     // t2 lives in the In Progress column and has a running agent.
-    expect(screen.getByTitle('1 agent(s) working in this column')).toBeDefined()
+    expect(screen.getByTitle('1 task(s) with an agent working in this column')).toBeDefined()
   })
 
   it('collapses an empty desktop column to a thin rail, expandable on click', async () => {
