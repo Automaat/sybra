@@ -90,6 +90,11 @@ type Agent struct {
 	stdinMu    sync.Mutex
 	approvalCh chan ApprovalResponse
 
+	// stdinPath is the FIFO backing a detached conversational agent's stdin,
+	// reopened on reattach so follow-up messages survive a restart. Empty for
+	// pipe-backed (non-survival) agents. Guarded by mu.
+	stdinPath string
+
 	// pendingPrompts queues follow-up user messages that arrive while a turn
 	// is mid-flight. Drained after each "result" event so the next turn fires
 	// without waiting on the user. Guarded by mu.
@@ -406,6 +411,22 @@ func (a *Agent) GetPID() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.PID
+}
+
+// setStdinPath records the FIFO path backing a detached conversational
+// agent's stdin.
+func (a *Agent) setStdinPath(p string) {
+	a.mu.Lock()
+	a.stdinPath = p
+	a.mu.Unlock()
+}
+
+// GetStdinPath returns the FIFO path backing the agent's stdin ("" for
+// pipe-backed agents).
+func (a *Agent) GetStdinPath() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.stdinPath
 }
 
 // setDetached marks whether the agent's subprocess is detached for

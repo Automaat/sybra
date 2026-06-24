@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -139,18 +140,27 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		}
 	}()
 
+	// tailOffset tracks the survival file tailer's position across retries.
+	var tailOffset int64
+
 	for attempt := range len(headlessRetryBackoffs) + 1 {
 		if attempt > 0 {
 			wait := headlessRetryBackoffs[attempt-1]
 			m.logger.Info("agent.convo.retry", "id", a.ID, "attempt", attempt, "backoff", wait)
 			select {
 			case <-ctx.Done():
+				if a.isDetached() && !a.WasStopped() {
+					return
+				}
 				goto done
 			case <-time.After(wait):
 			}
 		}
 
-		retry, fatalErr := m.runConvoAttempt(ctx, a, cfg, &outFile)
+		retry, fatalErr := m.runConvoAttempt(ctx, a, cfg, &outFile, &tailOffset)
+		if errors.Is(fatalErr, errSurviveShutdown) {
+			return
+		}
 		if fatalErr != nil {
 			m.handleError(a, fatalErr)
 			return
@@ -174,9 +184,15 @@ done:
 	m.markAgentDone(a)
 }
 
-func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
 	if outFile == nil {
 		return false, nil
+	}
+	// Detached survival applies to interactive (non-one-shot) Claude agents.
+	// One-shot runs must keep the pipe path: they signal completion by
+	// closing stdin to send EOF, which a never-EOF survival FIFO cannot do.
+	if m.survives() && !cfg.OneShot {
+		return m.runConvoAttemptSurvive(ctx, a, cfg, outFile, tailOffset)
 	}
 	cmd, stdout, stderrBuf, startErr := m.startConvoProcess(ctx, a, cfg)
 	if startErr != nil {
@@ -241,100 +257,115 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	return false, nil
 }
 
+// convoEmitState carries the throttle state across processConvoLine calls
+// so the live streamer and the file tailer share one emit cadence.
+type convoEmitState struct {
+	lastEmit time.Time
+	pending  *ConvoEvent // latest event buffered for the next emit window
+}
+
+// flush emits any buffered event. Called when the stream ends.
+func (m *Manager) flushConvo(a *Agent, st *convoEmitState) {
+	if st.pending != nil {
+		m.emit(events.AgentConvo(a.ID), *st.pending)
+		st.pending = nil
+	}
+}
+
 func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer, oneShot bool) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-	var lastEmit time.Time
-	var pending *ConvoEvent // buffered event waiting for next emit window
-
+	st := &convoEmitState{}
 	for scanner.Scan() {
 		line := scanner.Bytes()
-
 		if outFile != nil {
 			_, _ = outFile.Write(line)
 			_, _ = outFile.Write([]byte("\n"))
 		}
+		m.processConvoLine(a, line, st, oneShot)
+	}
+	m.flushConvo(a, st)
+}
 
-		parsed, parseErr := ParseClaudeLine(line)
-		if parseErr != nil {
-			m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
-			continue
-		}
-		event := claudeEventToConvoEvent(parsed)
-		if event.Type == "" {
-			continue
-		}
-
-		a.AppendConvo(event)
-
-		// Always emit result/system events immediately. For others, buffer
-		// the latest and emit at most once per convoEmitInterval so the
-		// frontend still gets every meaningful update.
-		switch {
-		case event.Type == "result" || event.Type == "system":
-			pending = nil
-			m.emit(events.AgentConvo(a.ID), event)
-			lastEmit = time.Now()
-		case time.Since(lastEmit) >= convoEmitInterval:
-			if pending != nil {
-				m.emit(events.AgentConvo(a.ID), *pending)
-				pending = nil
-			}
-			m.emit(events.AgentConvo(a.ID), event)
-			lastEmit = time.Now()
-		default:
-			// Buffer the latest event; it will be emitted on the next window.
-			e := event
-			pending = &e
-		}
-
-		switch event.Type {
-		case "system":
-			if event.SessionID != "" {
-				a.SetSessionID(event.SessionID)
-			}
-		case "result":
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-			m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
-			// Drain any prompts queued mid-turn before flipping to paused.
-			// Each queued prompt fires the next turn back-to-back so the
-			// user's chat-window queue executes in order without manual
-			// re-trigger.
-			if next, ok := a.PopPendingPrompt(); ok {
-				if err := m.writeUserMessage(a, next); err != nil {
-					m.logger.Error("agent.convo.flush-queue", "id", a.ID, "err", err)
-					a.SetState(StatePaused)
-				} else {
-					a.SetState(StateRunning)
-					m.logger.Info("agent.convo.queue-flushed", "id", a.ID, "remaining", a.PendingPromptCount())
-				}
-			} else {
-				// After result, agent is idle waiting for next user message.
-				a.SetState(StatePaused)
-			}
-			m.emit(events.AgentState(a.ID), a)
-			// One-shot runs (workflow steps that expect a single turn) close
-			// stdin now so the claude process sees EOF and exits. The scanner
-			// loop unwinds on stdout EOF, cmd.Wait() returns, SetState(Stopped)
-			// fires, and onComplete advances the workflow to the next step.
-			// Without this, interactive agents sit paused forever and never
-			// trigger the evaluator.
-			if oneShot {
-				m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
-				a.stdinMu.Lock()
-				if a.stdinPipe != nil {
-					_ = a.stdinPipe.Close()
-					a.stdinPipe = nil
-				}
-				a.stdinMu.Unlock()
-			}
-		}
+// processConvoLine parses one conversational NDJSON line, appends and
+// throttle-emits the event, and runs the session/result/queue/one-shot
+// state machine. Shared by the pipe-backed streamer and the survival file
+// tailer; it never writes the log file (caller or child owns that).
+func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, oneShot bool) {
+	parsed, parseErr := ParseClaudeLine(line)
+	if parseErr != nil {
+		m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
+		return
+	}
+	event := claudeEventToConvoEvent(parsed)
+	if event.Type == "" {
+		return
 	}
 
-	// Flush any remaining buffered event.
-	if pending != nil {
-		m.emit(events.AgentConvo(a.ID), *pending)
+	a.AppendConvo(event)
+
+	// Always emit result/system events immediately. For others, buffer the
+	// latest and emit at most once per convoEmitInterval so the frontend
+	// still gets every meaningful update.
+	switch {
+	case event.Type == "result" || event.Type == "system":
+		st.pending = nil
+		m.emit(events.AgentConvo(a.ID), event)
+		st.lastEmit = time.Now()
+	case time.Since(st.lastEmit) >= convoEmitInterval:
+		if st.pending != nil {
+			m.emit(events.AgentConvo(a.ID), *st.pending)
+			st.pending = nil
+		}
+		m.emit(events.AgentConvo(a.ID), event)
+		st.lastEmit = time.Now()
+	default:
+		e := event
+		st.pending = &e
+	}
+
+	switch event.Type {
+	case "system":
+		if event.SessionID != "" && a.GetSessionID() != event.SessionID {
+			// Capture the session id as soon as it appears so a restart can
+			// resume the conversation. Only persist a registry record for a
+			// detached (FIFO-backed survival) agent — a one-shot or legacy
+			// interactive agent must not leave a record, or reattach would
+			// mis-recover it as a survivable session and stall the workflow.
+			a.SetSessionID(event.SessionID)
+			if a.isDetached() {
+				m.saveRegistry(a)
+			}
+		}
+	case "result":
+		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
+		m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
+		// Drain any prompts queued mid-turn before flipping to paused. Each
+		// queued prompt fires the next turn back-to-back so the user's
+		// chat-window queue executes in order without manual re-trigger.
+		if next, ok := a.PopPendingPrompt(); ok {
+			if err := m.writeUserMessage(a, next); err != nil {
+				m.logger.Error("agent.convo.flush-queue", "id", a.ID, "err", err)
+				a.SetState(StatePaused)
+			} else {
+				a.SetState(StateRunning)
+				m.logger.Info("agent.convo.queue-flushed", "id", a.ID, "remaining", a.PendingPromptCount())
+			}
+		} else {
+			a.SetState(StatePaused)
+		}
+		m.emit(events.AgentState(a.ID), a)
+		// One-shot runs close stdin so the claude process sees EOF and exits.
+		if oneShot {
+			m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
+			a.stdinMu.Lock()
+			if a.stdinPipe != nil {
+				_ = a.stdinPipe.Close()
+				a.stdinPipe = nil
+			}
+			a.stdinMu.Unlock()
+		}
 	}
 }
 
@@ -359,6 +390,10 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	if a.stdinPipe == nil {
 		return fmt.Errorf("stdin pipe closed")
 	}
+	// Note: a message larger than the pipe buffer (~64KB) written while the
+	// child is not draining stdin blocks here under stdinMu until the child
+	// reads. In practice messages are far smaller and the child consumes
+	// stdin promptly; very large pastes are the only way to stall this.
 	if _, err := a.stdinPipe.Write(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
