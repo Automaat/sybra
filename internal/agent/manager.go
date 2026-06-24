@@ -46,6 +46,11 @@ type Manager struct {
 	// after an app restart. nil disables survival (legacy behaviour).
 	reg            *registryStore
 	surviveRestart bool
+
+	// sessionSink, when set, persists a crashed agent's captured session id
+	// to its task's AgentRun on dead-reattach, so restart-stale recovery can
+	// resume the conversation via --resume instead of cold-restarting.
+	sessionSink func(taskID, agentID, sessionID string)
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -77,6 +82,21 @@ func (m *Manager) EnableSurviveRestart(dir string) error {
 	m.surviveRestart = true
 	m.mu.Unlock()
 	return nil
+}
+
+// SetSessionSink installs the callback used to persist a crashed agent's
+// session id into its task's AgentRun during dead-reattach. Set once at
+// startup before ReattachAll.
+func (m *Manager) SetSessionSink(fn func(taskID, agentID, sessionID string)) {
+	m.mu.Lock()
+	m.sessionSink = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessionSink
 }
 
 // survives reports whether restart survival is active.

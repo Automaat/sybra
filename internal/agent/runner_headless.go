@@ -493,9 +493,20 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		*lastEmit = time.Now()
 	}
 
-	if event.Type == "init" && event.SessionID != "" && a.Provider == "codex" {
-		if p := resolveCodexSessionFile(event.SessionID); p != "" {
-			a.SetSessionFilePath(p)
+	// Capture the session id as soon as it appears (init/system), not only on
+	// the terminal result. Claude/Codex report it at session start; without
+	// this a mid-run crash leaves the registry record with an empty session
+	// and restart-stale cold-restarts instead of resuming. Mirrors the
+	// conversational runner (runner_convo.go) and AddResultStats.
+	if (event.Type == "init" || event.Type == "system") && event.SessionID != "" {
+		if a.GetSessionID() != event.SessionID {
+			a.SetSessionID(event.SessionID)
+			m.saveRegistry(a)
+		}
+		if a.Provider == "codex" {
+			if p := resolveCodexSessionFile(event.SessionID); p != "" {
+				a.SetSessionFilePath(p)
+			}
 		}
 	}
 

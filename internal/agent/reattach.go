@@ -56,7 +56,11 @@ func (m *Manager) ReattachAll() []*Agent {
 		if !reattachAlive(r) {
 			// Process gone. If it finished its work before vanishing,
 			// finalize so the workflow advances instead of re-running it.
-			m.finalizeIfCompleted(r)
+			// Otherwise (a genuine crash), bridge its captured session id to
+			// the task so restart-stale recovery resumes instead of redoing.
+			if !m.finalizeIfCompleted(r) {
+				m.persistDeadSession(r)
+			}
 			_ = reg.Delete(r.ID)
 			m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 			continue
@@ -97,16 +101,17 @@ func (m *Manager) ReattachAll() []*Agent {
 // finalizeIfCompleted recovers a run whose process is gone but whose log
 // shows a terminal result: it rebuilds a transient agent, rehydrates its
 // buffer, and drives the normal completion callback so the workflow
-// advances. A process gone without a terminal result is a genuine crash
-// and is left for restart-stale / resume to handle.
-func (m *Manager) finalizeIfCompleted(r Record) {
+// advances. Returns true if it finalized. A process gone without a terminal
+// result is a genuine crash and is left for restart-stale / resume to
+// handle (see persistDeadSession).
+func (m *Manager) finalizeIfCompleted(r Record) bool {
 	if r.LogPath == "" || r.Mode != "headless" {
-		return
+		return false
 	}
 	a := agentFromRecord(r)
 	rehydrateFromLog(a, r.LogPath)
 	if !a.hasTerminalResult() {
-		return
+		return false
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.recovered-complete", "id", a.ID, "task", a.TaskID)
@@ -114,6 +119,23 @@ func (m *Manager) finalizeIfCompleted(r Record) {
 	if m.onComplete != nil {
 		m.onComplete(a)
 	}
+	return true
+}
+
+// persistDeadSession bridges a crashed headless agent's captured session id
+// from the registry into its task's AgentRun, so restart-stale recovery
+// resumes the conversation via --resume instead of cold-restarting and
+// redoing work. The session id otherwise lives only in the registry record
+// (the completion callback that normally writes it to the AgentRun never
+// ran on a hard crash) and would be lost when the record is deleted. No-op
+// without a sink, a captured session id, or a task.
+func (m *Manager) persistDeadSession(r Record) {
+	sink := m.sessionSinkFn()
+	if sink == nil || r.SessionID == "" || r.TaskID == "" {
+		return
+	}
+	m.logger.Info("agent.reattach.resume-session", "id", r.ID, "task", r.TaskID, "session", r.SessionID)
+	sink(r.TaskID, r.ID, r.SessionID)
 }
 
 // reattachHeadless tails a reattached subprocess's log file from
