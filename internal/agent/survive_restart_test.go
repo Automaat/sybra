@@ -217,6 +217,86 @@ func TestReattachAll_DropsDeadRecords(t *testing.T) {
 	}
 }
 
+// TestTailHeadlessFile_StopVsShutdown verifies the core of the blocking
+// review fix: a cancelled context finalizes (exited=true) when the agent
+// was intentionally stopped, but survives (exited=false) on a plain app
+// shutdown.
+func TestTailHeadlessFile_StopVsShutdown(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	logPath := filepath.Join(t.TempDir(), "tail.ndjson")
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Shutdown (not stopped): ctx cancelled, process still alive -> survive.
+	t.Run("shutdown survives", func(t *testing.T) {
+		a := &Agent{ID: "s", Provider: "claude"}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		procDone := make(chan struct{}) // never closed: process alive
+		exited, _ := m.tailHeadlessFile(ctx, a, logPath, 0, procDone)
+		if exited {
+			t.Fatal("expected survive (exited=false) on plain shutdown")
+		}
+	})
+
+	// Intentional stop: ctx cancelled, WasStopped -> finalize once the
+	// process exits.
+	t.Run("stop finalizes", func(t *testing.T) {
+		a := &Agent{ID: "s2", Provider: "claude"}
+		a.MarkStopped()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		procDone := make(chan struct{})
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			close(procDone) // process exits shortly after the stop signal
+		}()
+		exited, _ := m.tailHeadlessFile(ctx, a, logPath, 0, procDone)
+		if !exited {
+			t.Fatal("expected finalize (exited=true) on intentional stop")
+		}
+	})
+}
+
+// TestReattachAll_RecoversCompletedDuringDowntime verifies a run that
+// finished while the app was down (process gone, log has a terminal result)
+// is finalized via onComplete instead of being dropped and re-run.
+func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "comp1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"result","result":"done","session_id":"sess-9","total_cost_usd":0.2}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	var completedID atomic.Value
+	m.SetOnComplete(func(ag *Agent) { completedID.Store(ag.ID) })
+
+	// PID 0 -> process gone; log shows a terminal result.
+	if err := m.reg.Save(Record{ID: "comp1", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected dead record not reattached as live, got %d", len(got))
+	}
+	if id, _ := completedID.Load().(string); id != "comp1" {
+		t.Fatalf("expected onComplete for comp1 (recovered completion), got %q", id)
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatal("expected record deleted after recovery")
+	}
+}
+
 // TestShutdownWithGrace_LeavesDetachedAgents verifies a detached agent is
 // neither cancelled nor waited on, while a normal agent is cancelled.
 func TestShutdownWithGrace_LeavesDetachedAgents(t *testing.T) {

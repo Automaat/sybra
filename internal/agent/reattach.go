@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -23,9 +25,11 @@ var reattachPIDPoll = time.Second
 
 // ReattachAll rebuilds in-memory agents for subprocesses recorded in the
 // registry that are still alive, and resumes streaming their output by
-// tailing their log files. Records whose process is gone (or whose PID was
-// reused by an unrelated process) are deleted. Returns the agents that
-// were reattached. No-op when survival is disabled.
+// tailing their log files. A record whose process is gone is finalized if
+// its log shows the run completed (so a run that finished while the app was
+// down is not redone), otherwise deleted. Records whose PID was reused by
+// an unrelated process are treated as gone. Returns the reattached agents.
+// No-op when survival is disabled.
 //
 // Call once at startup, before recovery's restart-stale sweep, so
 // HasRunningAgentForTask sees the reattached agents and does not dispatch
@@ -50,18 +54,22 @@ func (m *Manager) ReattachAll() []*Agent {
 			continue
 		}
 		if !reattachAlive(r) {
+			// Process gone. If it finished its work before vanishing,
+			// finalize so the workflow advances instead of re-running it.
+			m.finalizeIfCompleted(r)
 			_ = reg.Delete(r.ID)
 			m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 			continue
 		}
 
 		a := agentFromRecord(r)
+		// Rehydrate the buffer and capture the exact byte offset consumed, so
+		// the tailer resumes from there with no gap (a line appended between
+		// rehydration and the tail's first read is not lost) and no
+		// duplication.
+		var startOffset int64
 		if r.LogPath != "" {
-			if evs, perr := ParseLogFile(r.LogPath, 0, r.Provider); perr == nil {
-				a.outputBuffer = evs
-			} else {
-				m.logger.Warn("agent.reattach.rehydrate", "id", r.ID, "err", perr)
-			}
+			startOffset = rehydrateFromLog(a, r.LogPath)
 		}
 
 		ctx, cancel := context.WithCancel(m.ctx)
@@ -78,22 +86,45 @@ func (m *Manager) ReattachAll() []*Agent {
 		m.liveCount++
 		m.mu.Unlock()
 
-		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.outputBuffer))
-		go m.reattachHeadless(ctx, a)
+		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
+		go m.reattachHeadless(ctx, a, startOffset, r.ProcStartedAt)
 		m.emit(events.AgentState(a.ID), a)
 		out = append(out, a)
 	}
 	return out
 }
 
-// reattachHeadless tails a reattached subprocess's log file until the
-// process exits (or the app shuts down), then finalizes the agent through
-// the same completion path as a freshly run one.
-func (m *Manager) reattachHeadless(ctx context.Context, a *Agent) {
-	procDone := make(chan struct{})
-	go watchPID(ctx, a.GetPID(), procDone)
+// finalizeIfCompleted recovers a run whose process is gone but whose log
+// shows a terminal result: it rebuilds a transient agent, rehydrates its
+// buffer, and drives the normal completion callback so the workflow
+// advances. A process gone without a terminal result is a genuine crash
+// and is left for restart-stale / resume to handle.
+func (m *Manager) finalizeIfCompleted(r Record) {
+	if r.LogPath == "" || r.Mode != "headless" {
+		return
+	}
+	a := agentFromRecord(r)
+	rehydrateFromLog(a, r.LogPath)
+	if !a.hasTerminalResult() {
+		return
+	}
+	a.SetState(StateStopped)
+	m.logger.Info("agent.reattach.recovered-complete", "id", a.ID, "task", a.TaskID)
+	m.recordCompletion(a, true)
+	if m.onComplete != nil {
+		m.onComplete(a)
+	}
+}
 
-	exited := m.tailHeadlessFile(ctx, a, a.GetLogPath(), false, procDone)
+// reattachHeadless tails a reattached subprocess's log file from
+// startOffset until the process exits (or the app shuts down), then
+// finalizes the agent through the same completion path as a freshly run
+// one.
+func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset int64, procStart string) {
+	procDone := make(chan struct{})
+	go watchPID(ctx, a.GetPID(), procStart, procDone)
+
+	exited, _ := m.tailHeadlessFile(ctx, a, a.GetLogPath(), startOffset, procDone)
 	if !exited {
 		// App shutting down while the child is still alive: keep it running
 		// and let the registry drive the next reattach.
@@ -114,10 +145,11 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent) {
 	m.markAgentDone(a)
 }
 
-// watchPID closes done when the process exits. On context cancel (app
-// shutdown) it returns WITHOUT closing done, so the tailer takes its own
-// ctx.Done path and leaves the agent running for the next reattach.
-func watchPID(ctx context.Context, pid int, done chan struct{}) {
+// watchPID closes done when the process exits or is replaced by a PID-reuse
+// (start time no longer matches). On context cancel (app shutdown) it
+// returns WITHOUT closing done, so the tailer takes its own ctx.Done path
+// and leaves the agent running for the next reattach.
+func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}) {
 	if pid <= 0 {
 		close(done)
 		return
@@ -133,8 +165,52 @@ func watchPID(ctx context.Context, pid int, done chan struct{}) {
 				close(done)
 				return
 			}
+			if procStart != "" && processStartString(pid) != procStart {
+				// PID reused by an unrelated process — our agent is gone.
+				close(done)
+				return
+			}
 		}
 	}
+}
+
+// rehydrateFromLog replays an agent's NDJSON log into its output buffer
+// (and cost/session stats) WITHOUT emitting events or running guardrails,
+// and returns the byte offset just past the last complete line — the point
+// from which live tailing should resume.
+func rehydrateFromLog(a *Agent, path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return 0
+	}
+
+	isCodex := normalizeProvider(a.Provider) == "codex"
+	var offset int64
+	start := 0
+	for i := range data {
+		if data[i] != '\n' {
+			continue
+		}
+		line := data[start:i]
+		start = i + 1
+		offset = int64(start)
+		ev, perr := parseHeadlessEvent(line, isCodex)
+		if perr != nil || ev.Type == "" {
+			continue
+		}
+		ev.Timestamp = time.Now().UTC()
+		a.AppendOutput(ev)
+		if ev.Type == "result" {
+			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
+			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
+		}
+	}
+	return offset
 }
 
 // reattachAlive reports whether the recorded process is still the agent we

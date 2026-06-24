@@ -51,18 +51,29 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 		}
 	}()
 
+	// tailOffset tracks how far the detached tailer has consumed the shared
+	// log file, so a retry resumes after the prior attempt's lines instead
+	// of reprocessing them. Unused by the legacy pipe path.
+	var tailOffset int64
+
 	for attempt := range len(headlessRetryBackoffs) + 1 {
 		if attempt > 0 {
 			wait := headlessRetryBackoffs[attempt-1]
 			m.logger.Info("agent.headless.retry", "id", a.ID, "attempt", attempt, "backoff", wait)
 			select {
 			case <-ctx.Done():
+				// App shutdown between retries on a detached agent: the prior
+				// process is already gone, so leave finalize to the next
+				// reattach rather than advancing a workflow mid-shutdown.
+				if a.isDetached() && !a.WasStopped() {
+					return
+				}
 				goto done
 			case <-time.After(wait):
 			}
 		}
 
-		retry, fatalErr := m.runHeadlessAttempt(ctx, a, cfg, &outFile)
+		retry, fatalErr := m.runHeadlessAttempt(ctx, a, cfg, &outFile, &tailOffset)
 		if errors.Is(fatalErr, errSurviveShutdown) {
 			// Detached subprocess left running across shutdown — do not
 			// finalize; the next app instance reattaches via the registry.
@@ -99,7 +110,7 @@ done:
 	m.markAgentDone(a)
 }
 
-func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (retry bool, err error) {
+func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
 	if outFile == nil {
 		return false, nil
 	}
@@ -109,7 +120,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	}
 
 	if m.survives() && a.Mode == "headless" {
-		return m.runHeadlessAttemptSurvive(ctx, a, cfg, outFile, name, args, invokeEnv, command)
+		return m.runHeadlessAttemptSurvive(ctx, a, cfg, outFile, tailOffset, name, args, invokeEnv, command)
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -189,7 +200,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 // exit and a terminal Ctrl-C. The manager reads output by tailing that
 // file. Returns errSurviveShutdown if the app shuts down while the child
 // is still alive — the caller then leaves it running for reattach.
-func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, name string, args, invokeEnv []string, command string) (retry bool, err error) {
+func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64, name string, args, invokeEnv []string, command string) (retry bool, err error) {
 	// The log file is the child's stdout, so it must exist before Start.
 	// Opened once and reused across retries (append mode).
 	if *outFile == nil {
@@ -235,7 +246,15 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 		close(procDone)
 	}()
 
-	exited := m.tailHeadlessFile(ctx, a, logPath, true, procDone)
+	prevLen := len(a.Output())
+	startOffset := int64(0)
+	if tailOffset != nil {
+		startOffset = *tailOffset
+	}
+	exited, endOffset := m.tailHeadlessFile(ctx, a, logPath, startOffset, procDone)
+	if tailOffset != nil {
+		*tailOffset = endOffset
+	}
 	if !exited {
 		m.logger.Info("agent.headless.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown")
 		return false, errSurviveShutdown
@@ -251,7 +270,14 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
-		attemptEvents := a.Output()
+		// Only inspect events from this attempt, mirroring the legacy path —
+		// otherwise a transient 529 from an earlier attempt makes every later
+		// attempt retry regardless of its real failure.
+		all := a.Output()
+		if prevLen > len(all) {
+			prevLen = len(all)
+		}
+		attemptEvents := all[prevLen:]
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
@@ -260,32 +286,35 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	return false, nil
 }
 
+// drainTimeout bounds how long the tailer waits for a process it just
+// asked to stop (guardrail kill or StopAgent) to actually exit before it
+// gives up and finalizes anyway.
+const drainTimeout = stopSIGINTGrace + 2*time.Second
+
 // tailHeadlessFile follows an NDJSON log file written by a detached or
 // reattached subprocess, feeding each complete line through
-// processHeadlessLine. It returns true when the process exited (procDone
-// closed), false when the context was cancelled (app shutdown) while the
-// process was still running — the latter signals the caller to leave the
-// agent running for reattach. When fromStart is false the tailer seeks to
-// the current end of file (reattach: history is rehydrated separately).
-func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, fromStart bool, procDone <-chan struct{}) (exited bool) {
+// processHeadlessLine starting at startOffset. It returns exited=true when
+// the run is over (process exited, or it was intentionally stopped) and
+// the agent should be finalized; exited=false only when the app is
+// shutting down while the process is still alive and was NOT intentionally
+// stopped — the caller then leaves it running for the next reattach. The
+// returned endOffset is the byte position after the last complete line
+// consumed, so a retry or reattach can resume without re-reading or
+// skipping lines.
+func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, startOffset int64, procDone <-chan struct{}) (exited bool, endOffset int64) {
+	offset := startOffset
+
 	f, err := os.Open(path)
 	if err != nil {
 		m.logger.Warn("agent.headless.tail.open", "id", a.ID, "path", path, "err", err)
 		select {
 		case <-procDone:
-			return true
+			return true, offset
 		case <-ctx.Done():
-			return false
+			return a.WasStopped(), offset
 		}
 	}
 	defer func() { _ = f.Close() }()
-
-	var offset int64
-	if !fromStart {
-		if fi, statErr := f.Stat(); statErr == nil {
-			offset = fi.Size()
-		}
-	}
 
 	var buf []byte
 	var lastEmit time.Time
@@ -318,25 +347,45 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, f
 		return false
 	}
 
-	for {
-		if drain() {
-			// Guardrail kill: force the detached child to stop, then wait
-			// for it to actually exit before finalizing.
-			m.signalKill(a)
-			select {
-			case <-procDone:
-				drain()
-				return true
-			case <-ctx.Done():
-				return false
-			}
+	// waitExit drains until the process exits or drainTimeout elapses, then
+	// returns. Used after we have asked the process to stop.
+	waitExit := func() {
+		select {
+		case <-procDone:
+		case <-time.After(drainTimeout):
 		}
+		drain()
+	}
+
+	for {
+		// On app shutdown, leave a detached-but-not-stopped agent running
+		// for the next reattach. An intentional StopAgent (WasStopped) does
+		// not survive — fall through and finalize. Checked before the select
+		// so a simultaneously-ready procDone never wins the shutdown race.
+		if ctx.Err() != nil && !a.WasStopped() {
+			return false, offset
+		}
+
+		if drain() {
+			// Guardrail kill: force the child to stop, wait for it, finalize.
+			m.signalKill(a)
+			waitExit()
+			return true, offset
+		}
+
 		select {
 		case <-procDone:
 			drain()
-			return true
+			return true, offset
 		case <-ctx.Done():
-			return false
+			if a.WasStopped() {
+				// Intentional stop: the child is being terminated; wait for
+				// it, then finalize.
+				waitExit()
+				return true, offset
+			}
+			// App shutdown: leave the detached child running for reattach.
+			return false, offset
 		case <-time.After(headlessTailPoll):
 		}
 	}
@@ -390,6 +439,24 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 // guardrails. Returns true when a guardrail decision says to stop the
 // stream. Shared by the pipe-backed streamer and the file tailer; it never
 // writes the log file (the caller or the child process owns that).
+// parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using
+// the provider-appropriate parser. Shared by the live line handler and the
+// reattach rehydrator.
+func parseHeadlessEvent(line []byte, isCodex bool) (StreamEvent, error) {
+	if isCodex {
+		ce, err := ParseCodexLine(line)
+		if err != nil {
+			return StreamEvent{}, err
+		}
+		return codexEventToStreamEvent(ce), nil
+	}
+	ce, err := ParseClaudeLine(line)
+	if err != nil {
+		return StreamEvent{}, err
+	}
+	return claudeEventToStreamEvent(ce), nil
+}
+
 func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, isCodex bool) (stop bool) {
 	var event StreamEvent
 	var parseErr error
