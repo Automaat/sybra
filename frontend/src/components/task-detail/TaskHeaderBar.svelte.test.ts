@@ -116,10 +116,11 @@ describe('TaskHeaderBar', () => {
     expect(screen.getByText('Run Review')).toBeDefined()
   })
 
-  it('calls remove and ondelete on Delete', async () => {
+  it('calls remove and ondelete on Delete from the overflow menu', async () => {
     const ondelete = vi.fn()
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete } })
-    await fireEvent.click(screen.getByText('Delete'))
+    await fireEvent.click(screen.getByLabelText('More actions'))
+    await fireEvent.click(screen.getByText('Delete task'))
     await waitFor(() => {
       expect(mockRemove).toHaveBeenCalledWith('t1')
       expect(ondelete).toHaveBeenCalled()
@@ -182,13 +183,27 @@ describe('TaskHeaderBar', () => {
     })
   })
 
-  it('Copy ID button is rendered', () => {
+  it('Copy ID / Copy branch live in the overflow menu', async () => {
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete: vi.fn() } })
+    // Utility actions are not in the always-visible action row.
+    expect(screen.queryByText('Copy ID')).toBeNull()
+    await fireEvent.click(screen.getByLabelText('More actions'))
     expect(screen.getByText('Copy ID')).toBeDefined()
+    expect(screen.getByText('Copy branch')).toBeDefined()
   })
 
-  it('Copy branch button is rendered when projectId set', () => {
+  it('closes the overflow menu on Escape', async () => {
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete: vi.fn() } })
-    expect(screen.getByText('Copy branch')).toBeDefined()
+    await fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.getByText('Copy ID')).toBeDefined()
+    await fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('Copy ID')).toBeNull())
+  })
+
+  it('hides Copy branch in the menu when the task has no project', async () => {
+    render(TaskHeaderBar, { props: { task: { ...baseTask, projectId: '' } as never, ondelete: vi.fn() } })
+    await fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.getByText('Copy ID')).toBeDefined()
+    expect(screen.queryByText('Copy branch')).toBeNull()
   })
 })
