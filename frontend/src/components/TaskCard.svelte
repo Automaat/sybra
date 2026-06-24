@@ -8,6 +8,7 @@
   import { awaitsHuman, awaitsHumanLabel } from '../lib/statuses.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import StatusPicker from './StatusPicker.svelte'
+  import Pill from './Pill.svelte'
 
   interface Props {
     task: Task
@@ -126,9 +127,10 @@
     </span>
 
     {#if t.projectId}
-      <span class="rounded bg-primary-100 px-1.5 py-0.5 text-primary-700 dark:bg-primary-800 dark:text-primary-300">
+      <Pill role="project" title={t.projectId}>
+        <span class="h-2 w-2 shrink-0 rounded-full bg-surface-400 dark:bg-surface-500"></span>
         {t.projectId}
-      </span>
+      </Pill>
     {/if}
 
     {#if t.branch}
@@ -153,9 +155,9 @@
     {/if}
 
     {#if needsYou}
-      <span class="inline-flex items-center gap-1 rounded bg-error-200 px-1.5 py-0.5 font-semibold text-error-800 dark:bg-error-700 dark:text-error-200">
+      <Pill role="attention" class="bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200">
         {awaitsHumanLabel(t.status)}
-      </span>
+      </Pill>
     {/if}
 
     {#if agentRunning}
@@ -205,20 +207,15 @@
     {/if}
 
     {#if t.issue}
-      <span
-        class="inline-flex items-center gap-1 rounded bg-secondary-500/15 px-1.5 py-0.5 font-medium text-secondary-700 dark:text-secondary-400"
-        title={t.issue}
-      >
+      <Pill role="reference" title={t.issue}>
         <CircleDot size={12} />
         Issue
-      </span>
+      </Pill>
     {/if}
 
     {#if t.tags?.length}
       {#each t.tags as tag}
-        <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">
-          {tag}
-        </span>
+        <Pill role="tag">{tag}</Pill>
       {/each}
     {/if}
 
