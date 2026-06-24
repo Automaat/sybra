@@ -48,8 +48,12 @@ func (m *Manager) ReattachAll() []*Agent {
 	var out []*Agent
 	for i := range recs {
 		r := recs[i]
-		// Phase 1 reattaches headless agents only. Interactive records are
-		// handled by a later phase; leave them untouched here.
+		if r.Mode == "interactive" {
+			if a := m.reattachInteractive(r, reg); a != nil {
+				out = append(out, a)
+			}
+			continue
+		}
 		if r.Mode != "headless" {
 			continue
 		}
@@ -148,6 +152,48 @@ func (m *Manager) persistDeadSession(r Record) (done bool) {
 	}
 	m.logger.Info("agent.reattach.resume-session", "id", r.ID, "task", r.TaskID, "session_id", r.SessionID)
 	return true
+}
+
+// reattachInteractive rebuilds a live detached conversational agent: it
+// rehydrates the convo buffer from the log, registers the agent, reopens its
+// stdin FIFO, and resumes tailing. A dead record is deleted (interactive
+// recovery is handled by the workflow's recoverStaleInteractive / chat gc).
+// Returns the reattached agent, or nil when the process is gone or a
+// duplicate already exists.
+func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
+	if !reattachAlive(r) {
+		_ = reg.Delete(r.ID)
+		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive")
+		return nil
+	}
+
+	a := agentFromRecord(r)
+	var startOffset int64
+	if r.LogPath != "" {
+		startOffset = rehydrateConvoFromLog(a, r.LogPath)
+	}
+	// Interactive agents sit idle (Paused) between user turns; reattach in
+	// that state. processConvoLine flips to Running when a follow-up fires.
+	a.SetState(StatePaused)
+
+	ctx, cancel := context.WithCancel(m.ctx)
+	a.cancel = cancel
+	a.done = make(chan struct{})
+
+	m.mu.Lock()
+	if _, exists := m.agents[a.ID]; exists {
+		m.mu.Unlock()
+		cancel()
+		return nil
+	}
+	m.agents[a.ID] = a
+	m.liveCount++
+	m.mu.Unlock()
+
+	m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "mode", "interactive", "events", len(a.ConvoOutput()))
+	go m.reattachConvo(ctx, a, startOffset, r.ProcStartedAt)
+	m.emit(events.AgentState(a.ID), a)
+	return a
 }
 
 // reattachHeadless tails a reattached subprocess's log file from
@@ -283,6 +329,7 @@ func agentFromRecord(r Record) *Agent {
 		LastEventAt: time.Now().UTC(),
 		State:       StateRunning,
 		MaxTurns:    r.MaxTurns,
+		stdinPath:   r.StdinPath,
 		detached:    true,
 	}
 }

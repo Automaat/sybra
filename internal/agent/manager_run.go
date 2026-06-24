@@ -70,13 +70,14 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	}
 	if cfg.Mode == "headless" {
 		a.escalationCh = make(chan bool, 1)
-		// Pre-mark detached so a shutdown racing the runner goroutine
-		// already knows to leave this agent's subprocess running. The
-		// runner re-asserts this after a successful Start. Use the mutexed
-		// setter — detached is guarded by mu and read via isDetached().
-		if m.survives() {
-			a.setDetached(true)
-		}
+	}
+	// Pre-mark detached so a shutdown racing the runner goroutine already
+	// knows to leave this agent's subprocess running. The runner re-asserts
+	// it after a successful Start. Detached applies to headless and to
+	// interactive Claude (non-one-shot, FIFO-backed) survival; codex
+	// interactive (spawns per turn) and one-shot stay on the legacy path.
+	if m.survives() && willDetach(cfg, a.Provider) {
+		a.setDetached(true)
 	}
 
 	m.mu.Lock()

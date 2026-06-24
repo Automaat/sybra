@@ -108,6 +108,22 @@ func (m *Manager) survives() bool {
 	return m.surviveRestart && m.reg != nil
 }
 
+// willDetach reports whether a run with this config/provider takes the
+// detached survival path: all headless runs, and interactive Claude runs
+// that are not one-shot. Codex interactive (spawns per turn) and one-shot
+// convo (signals completion via stdin EOF) stay on the legacy pipe path.
+// Single source of truth mirrored by the runner branches.
+func willDetach(cfg RunConfig, prov string) bool {
+	switch cfg.Mode {
+	case "headless":
+		return true
+	case "interactive":
+		return normalizeProvider(prov) != "codex" && !cfg.OneShot
+	default:
+		return false
+	}
+}
+
 // registry returns the registry store (nil when survival is disabled).
 func (m *Manager) registry() *registryStore {
 	m.mu.RLock()
@@ -134,6 +150,7 @@ func (m *Manager) saveRegistry(a *Agent) {
 		LogPath:   a.LogPath,
 		CWD:       a.sessionCWD,
 		StartedAt: a.StartedAt,
+		StdinPath: a.stdinPath,
 		MaxTurns:  a.MaxTurns,
 	}
 	a.mu.RUnlock()

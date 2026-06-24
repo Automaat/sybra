@@ -92,3 +92,9 @@ func (s *registryStore) Delete(id string) error {
 func (s *registryStore) path(id string) string {
 	return filepath.Join(s.dir, id+".yaml")
 }
+
+// fifoPath returns the stdin FIFO path for a detached conversational agent,
+// alongside its registry record under the agents dir.
+func (s *registryStore) fifoPath(id string) string {
+	return filepath.Join(s.dir, id+".stdin")
+}
