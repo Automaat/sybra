@@ -57,12 +57,16 @@
     const left = canScrollLeft ? 'transparent, #000 3rem' : '#000'
     const right = canScrollRight ? '#000 calc(100% - 3rem), transparent' : '#000'
     const grad = `linear-gradient(to right, ${left}, ${right})`
-    return `mask-image: ${grad}; -webkit-mask-image: ${grad}`
+    // no-repeat: a gradient ending in transparent must not tile and leave
+    // transparent seams mid-board.
+    return `mask-image: ${grad}; -webkit-mask-image: ${grad}; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat`
   })
 
   $effect(() => {
-    // Recompute when the visible column set changes (and on resize/mount).
-    if (visibleColumns) updateScroll()
+    // Recompute on mount and whenever layout changes the board's scrollWidth
+    // without a scroll event: the column set, or an empty rail expanding /
+    // auto-collapsing. (Plus viewport resize via the listener.)
+    if (visibleColumns && expandedEmpty && collapsedColumns) updateScroll()
     window.addEventListener('resize', updateScroll)
     return () => window.removeEventListener('resize', updateScroll)
   })
