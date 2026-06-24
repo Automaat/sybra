@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
+  import { renderMarkdown } from '../../lib/markdown.js'
 
   interface Props {
     task: Task
@@ -53,6 +54,19 @@
     </div>
     {#if error}
       <p class="text-xs text-error-500">{error}</p>
+    {/if}
+    {#if task.plan}
+      <div class="markdown-body max-h-72 overflow-y-auto rounded-md border border-tertiary-200 bg-surface-50 p-3 text-sm dark:border-tertiary-800 dark:bg-surface-900">
+        {@html renderMarkdown(task.plan)}
+      </div>
+    {/if}
+    {#if task.planCritique}
+      <details class="rounded-md border border-surface-300 bg-surface-50 dark:border-surface-600 dark:bg-surface-900">
+        <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 dark:text-surface-300">Plan critique</summary>
+        <div class="markdown-body max-h-72 overflow-y-auto border-t border-surface-300 p-3 text-sm dark:border-surface-600">
+          {@html renderMarkdown(task.planCritique)}
+        </div>
+      </details>
     {/if}
     <div class="flex gap-2">
       <button

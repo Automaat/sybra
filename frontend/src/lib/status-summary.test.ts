@@ -4,29 +4,33 @@ import { statusLabel } from './statuses.js'
 
 describe('statusSummary', () => {
   it('surfaces awaiting-human states as attention with an action hint', () => {
-    const s = statusSummary('plan-review')
-    expect(s).toEqual({ label: 'Plan Review', hint: 'awaiting your approval', tone: 'attention' })
+    expect(statusSummary('plan-review')).toEqual({
+      label: 'Plan Review',
+      hint: 'awaiting your approval',
+      tone: 'attention',
+    })
+    expect(statusSummary('human-required')?.tone).toBe('attention')
+    expect(statusSummary('blocked')?.tone).toBe('attention')
+    expect(statusSummary('test-plan-review')?.tone).toBe('attention')
+  })
+
+  it('summarises agent/pipeline states as info', () => {
+    for (const s of ['planning', 'in-progress', 'in-review', 'testing', 'ready-review', 'new']) {
+      expect(statusSummary(s)?.tone).toBe('info')
+      expect(statusSummary(s)?.hint).toBeTruthy()
+    }
   })
 
   it('uses the canonical label, never an invented one', () => {
-    expect(statusSummary('human-required')?.label).toBe(statusLabel('human-required'))
-    expect(statusSummary('blocked')?.label).toBe(statusLabel('blocked'))
+    for (const s of ['plan-review', 'human-required', 'in-progress', 'ready-review']) {
+      expect(statusSummary(s)?.label).toBe(statusLabel(s))
+    }
   })
 
-  it('surfaces a non-attention folded sub-state quietly as info', () => {
-    // ready-review rolls up to the in-review column; new rolls up to todo.
-    expect(statusSummary('ready-review')).toEqual({ label: statusLabel('ready-review'), hint: '', tone: 'info' })
-    expect(statusSummary('new')).toEqual({ label: statusLabel('new'), hint: '', tone: 'info' })
-  })
-
-  it('returns null for a plain core status that matches its column', () => {
-    expect(statusSummary('in-progress')).toBeNull()
+  it('returns null for quiet/terminal/unknown states (no banner)', () => {
     expect(statusSummary('todo')).toBeNull()
-    expect(statusSummary('testing')).toBeNull()
-  })
-
-  it('returns null for terminal states', () => {
     expect(statusSummary('done')).toBeNull()
     expect(statusSummary('cancelled')).toBeNull()
+    expect(statusSummary('mystery')).toBeNull()
   })
 })

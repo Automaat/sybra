@@ -2,6 +2,7 @@
   import { AlertTriangle, Info } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { statusSummary } from '../../lib/status-summary.js'
+  import { timeAgo } from '$lib/dates.js'
 
   interface Props {
     task: Task
@@ -10,6 +11,7 @@
   const { task }: Props = $props()
 
   const summary = $derived(statusSummary(task.status))
+  const freshness = $derived(timeAgo(task.updatedAt))
   // Attention sub-states (or any status_reason) warrant the warm banner; a
   // quiet folded sub-state uses neutral surface styling.
   const tone = $derived(summary?.tone === 'info' && !task.statusReason ? 'info' : 'attention')
@@ -30,7 +32,7 @@
     <div class="flex flex-col gap-0.5">
       {#if summary}
         <span>
-          <span class="font-semibold">{summary.label}</span>{#if summary.hint} — {summary.hint}{/if}
+          <span class="font-semibold">{summary.label}</span>{#if summary.hint} — {summary.hint}{/if}{#if freshness}<span class="opacity-70"> · updated {freshness}</span>{/if}
         </span>
       {/if}
       {#if task.statusReason}

@@ -265,17 +265,6 @@
         <option value={s.value} disabled={hasRunningAgent && AGENT_BLOCKED_STATUSES.has(s.value)}>{s.label}</option>
       {/each}
     </select>
-    <select
-      data-testid="task-type-select"
-      class="rounded border border-surface-300 bg-surface-100 px-2 py-0.5 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
-      value={task.taskType || 'normal'}
-      onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
-      title="Task type — controls execution mode and worktree behavior"
-    >
-      <option value="normal">normal</option>
-      <option value="debug">debug</option>
-      <option value="research">research</option>
-    </select>
     {#if triaging}
       <span class="inline-flex items-center gap-1 rounded-full bg-primary-200 px-2 py-0.5 text-xs font-medium text-primary-800 dark:bg-primary-700 dark:text-primary-200">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>
@@ -348,7 +337,22 @@
 
       {#if menuOpen}
         <button type="button" tabindex="-1" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
-        <div role="menu" class="absolute right-0 z-50 mt-1 w-44 rounded-lg py-1 elevation-popover">
+        <div role="menu" class="absolute right-0 z-50 mt-1 w-48 rounded-lg py-1 elevation-popover">
+          <div class="flex flex-col gap-1 px-3 py-1.5">
+            <span class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task type</span>
+            <select
+              data-testid="task-type-select"
+              class="rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
+              value={task.taskType || 'normal'}
+              onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}
+              title="Task type — controls execution mode and worktree behavior"
+            >
+              <option value="normal">normal</option>
+              <option value="debug">debug</option>
+              <option value="research">research</option>
+            </select>
+          </div>
+          <div class="my-1 border-t border-surface-200 dark:border-surface-700"></div>
           <button
             type="button"
             role="menuitem"

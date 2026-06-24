@@ -126,4 +126,21 @@ describe('AgentLauncher', () => {
     await fireEvent.click(screen.getByText('Stop'))
     expect(mockStop).toHaveBeenCalledWith('a1')
   })
+
+  it('collapses the new-run form for a plan-review task', () => {
+    render(AgentLauncher, {
+      props: { task: { ...baseTask, status: 'plan-review' } as never, onviewagent: vi.fn() },
+    })
+    expect(screen.queryByText('Start agent')).toBeNull()
+  })
+
+  it('still shows a running agent (output + Stop) on a plan-review task', () => {
+    // Regression: the interactive plan flow keeps an agent running while the
+    // task sits in plan-review; its live view + Stop must not be hidden.
+    mockByTask.mockReturnValue({ id: 'a1', state: 'running', mode: 'interactive', taskId: 't1' })
+    render(AgentLauncher, {
+      props: { task: { ...baseTask, status: 'plan-review' } as never, onviewagent: vi.fn() },
+    })
+    expect(screen.getByText('Stop')).toBeDefined()
+  })
 })
