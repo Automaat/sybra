@@ -49,8 +49,8 @@ func TestApplyRewritesTitleAndPreservesOriginal(t *testing.T) {
 	if updated.Status != task.StatusTodo {
 		t.Errorf("status: got %s, want todo", updated.Status)
 	}
-	if updated.StatusReason != "triage" {
-		t.Errorf("status_reason: got %q", updated.StatusReason)
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty (reason reserved for attention states)", updated.StatusReason)
 	}
 	if len(updated.Tags) != 3 {
 		t.Errorf("tags: got %v", updated.Tags)

@@ -72,7 +72,10 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 
 	status := RouteStatus(v.Size, v.Type, projectType)
 	updates["status"] = string(status)
-	updates["status_reason"] = "triage"
+	// No status_reason on successful triage: the field is reserved for
+	// attention-worthy states (monitor/watchdog/blocked), which the UI renders
+	// as a warning. Setting "status" without a reason makes the store clear any
+	// stale reason (e.g. "monitor: awaiting triage").
 
 	updated, err := mgr.UpdateMap(t.ID, updates)
 	if err != nil {
