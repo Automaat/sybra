@@ -81,17 +81,22 @@
         Clear filters
       </button>
     {/if}
-    <button
-      type="button"
-      class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
-      onclick={() => navStore.reset({ kind: 'logbook' })}
-    >
-      Logbook →
-    </button>
-    <label class="flex items-center gap-1.5 text-xs text-surface-500">
-      <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
-      Show done
-    </label>
+    {#if viewMode === 'board'}
+      <!-- The board has no Done column (terminal tasks live in the Logbook), so
+           a "Show done" toggle here does nothing visible. Route there instead. -->
+      <button
+        type="button"
+        class="text-xs text-surface-500 underline hover:text-surface-700 dark:hover:text-surface-300"
+        onclick={() => navStore.reset({ kind: 'logbook' })}
+      >
+        Done → Logbook
+      </button>
+    {:else}
+      <label class="flex items-center gap-1.5 text-xs text-surface-500">
+        <input type="checkbox" bind:checked={showDone} class="accent-primary-500" />
+        Show done
+      </label>
+    {/if}
     <!-- Primary views: List / Board. Timeline is demoted to an advanced option. -->
     <div class="flex rounded-md border border-surface-300 dark:border-surface-700" title="Switch view (⌘B)">
       <button

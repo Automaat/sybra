@@ -5,6 +5,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_COLUMNS, type BoardColumn } from '../lib/statuses.js'
+  import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
@@ -236,9 +237,14 @@
     'urgent': 0, 'high': 1, 'medium': 2, 'low': 3, '': 4,
   }
 
+  // The board has no Done column (terminal tasks live in the Logbook), so it
+  // ignores "Show done" entirely — a value carried over from list view can't
+  // resurrect done tasks on the board.
+  const effectiveShowDone = $derived(viewMode === 'board' ? false : showDone)
+
   const allFilteredTasks = $derived.by(() => {
     return taskStore.list.filter((t: Task) => {
-      if (!showDone && (t.status === 'done' || t.status === 'cancelled')) return false
+      if (!effectiveShowDone && (t.status === 'done' || t.status === 'cancelled')) return false
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false
@@ -252,7 +258,7 @@
   })
 
   const visibleColumns = $derived(
-    showDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
+    effectiveShowDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
   )
 
   const hasActiveFilters = $derived(
@@ -449,10 +455,22 @@
       </div>
     {/if}
 
-    <label class="tap flex items-center gap-3 rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 dark:border-surface-600 dark:bg-surface-700">
-      <input type="checkbox" bind:checked={showDone} class="h-5 w-5 accent-primary-500" />
-      <span class="text-sm font-medium">Show done</span>
-    </label>
+    {#if viewMode === 'board'}
+      <!-- No Done column on the board — route to the Logbook instead of a
+           toggle that would do nothing. -->
+      <button
+        type="button"
+        class="tap flex items-center gap-3 rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 text-left dark:border-surface-600 dark:bg-surface-700"
+        onclick={() => { navStore.reset({ kind: 'logbook' }); filtersOpen = false }}
+      >
+        <span class="text-sm font-medium">Done → Logbook</span>
+      </button>
+    {:else}
+      <label class="tap flex items-center gap-3 rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 dark:border-surface-600 dark:bg-surface-700">
+        <input type="checkbox" bind:checked={showDone} class="h-5 w-5 accent-primary-500" />
+        <span class="text-sm font-medium">Show done</span>
+      </label>
+    {/if}
 
     <div class="sticky bottom-0 -mx-5 -mb-5 flex gap-2 border-t border-surface-200 bg-surface-50/95 px-5 pt-3 pb-safe backdrop-blur dark:border-surface-800 dark:bg-surface-900/95">
       <button

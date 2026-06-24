@@ -90,7 +90,7 @@
       e.dataTransfer!.effectAllowed = 'move'
     }}
     ondragend={() => { dragging = false }}
-    class="flex w-full flex-col items-stretch gap-1.5 text-left"
+    class="flex w-full cursor-grab flex-col items-stretch gap-1.5 text-left active:cursor-grabbing"
   >
   <div class="mb-1.5 flex items-center gap-1.5">
     {#if topPR?.ciStatus === 'SUCCESS'}
@@ -157,14 +157,14 @@
 
     {#if triaging}
       <span class="inline-flex items-center gap-1 rounded bg-primary-200 px-1.5 py-0.5 text-primary-800 dark:bg-primary-700 dark:text-primary-200">
-        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-primary-500"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-primary-500"></span>
         Triaging
       </span>
     {/if}
 
     {#if planning}
       <span class="inline-flex items-center gap-1 rounded bg-tertiary-200 px-1.5 py-0.5 text-tertiary-800 dark:bg-tertiary-700 dark:text-tertiary-200">
-        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-tertiary-500"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-tertiary-500"></span>
         Planning
       </span>
     {/if}
@@ -181,14 +181,14 @@
 
     {#if agentRunning}
       <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
-        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-success-500"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
         Agent
       </span>
     {/if}
 
     {#if evaluating}
       <span class="inline-flex items-center gap-1 rounded bg-warning-200 px-1.5 py-0.5 text-warning-800 dark:bg-warning-700 dark:text-warning-200">
-        <span class="h-1.5 w-1.5 animate-pulse-subtle rounded-full bg-warning-500"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-warning-500"></span>
         Evaluating
       </span>
     {/if}

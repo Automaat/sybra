@@ -8,6 +8,9 @@ vi.mock('../stores/notifications.svelte.js', () => ({
   notificationStore: { pushLocal: vi.fn() },
 }))
 
+const agentMock = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }))
+vi.mock('../stores/agents.svelte.js', () => ({ agentStore: agentMock }))
+
 // Drives the empty-column thin-rail (desktop only); default off keeps the
 // existing populated-column tests on the normal layout.
 const vpMock = vi.hoisted(() => ({ isDesktop: false }))
@@ -33,6 +36,24 @@ describe('TaskBoardView', () => {
   afterEach(() => {
     cleanup()
     vpMock.isDesktop = false
+    agentMock.list = []
+  })
+
+  it('shows a static running-agent count in the column header', () => {
+    agentMock.list = [{ taskId: 't2', state: 'running', name: '' }]
+    render(TaskBoardView, {
+      props: {
+        visibleColumns: columns as never,
+        columnTasks: columnTasks as never,
+        focusedTaskId: null,
+        collapsedColumns: new Set<string>(),
+        onselect: vi.fn(),
+        onmove: vi.fn(),
+        ontogglecolumn: vi.fn(),
+      },
+    })
+    // t2 lives in the In Progress column and has a running agent.
+    expect(screen.getByTitle('1 task(s) with an agent working in this column')).toBeDefined()
   })
 
   it('collapses an empty desktop column to a thin rail, expandable on click', async () => {
