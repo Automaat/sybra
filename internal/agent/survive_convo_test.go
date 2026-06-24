@@ -16,24 +16,21 @@ import (
 
 func TestWillDetach(t *testing.T) {
 	cases := []struct {
-		mode     string
-		provider string
-		oneShot  bool
-		want     bool
+		mode    string
+		oneShot bool
+		want    bool
 	}{
-		{"headless", "claude", false, true},
-		{"headless", "codex", false, true},
-		{"interactive", "claude", false, true},
-		{"interactive", "claude", true, true},  // one-shot survives via prompt arg
-		{"interactive", "codex", false, false}, // codex spawns per turn
-		{"interactive", "codex", true, false},  // codex one-shot also legacy
-		{"interactive", "", false, true},       // empty provider normalizes to claude
-		{"chat", "claude", false, false},       // unknown mode
+		{"headless", false, true},
+		{"headless", true, true},
+		{"interactive", false, true},
+		{"interactive", true, true}, // one-shot survives too
+		{"chat", false, false},      // unknown mode
+		{"", false, false},          // empty mode
 	}
 	for _, c := range cases {
-		got := willDetach(RunConfig{Mode: c.mode, OneShot: c.oneShot}, c.provider)
+		got := willDetach(RunConfig{Mode: c.mode, OneShot: c.oneShot})
 		if got != c.want {
-			t.Errorf("willDetach(mode=%s provider=%s oneShot=%v)=%v, want %v", c.mode, c.provider, c.oneShot, got, c.want)
+			t.Errorf("willDetach(mode=%s oneShot=%v)=%v, want %v", c.mode, c.oneShot, got, c.want)
 		}
 	}
 }
@@ -66,6 +63,81 @@ func TestBuildOneShotConvoArgs(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--output-format stream-json") {
 		t.Fatalf("expected stream-json output: %q", joined)
+	}
+}
+
+func TestRehydrateCodexConvoFromLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex.ndjson")
+	// Minimal codex stream-json: a session init then an agent message.
+	lines := `{"type":"thread.started","thread_id":"cx-1"}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
+	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	a := &Agent{ID: "cx", Provider: "codex"}
+	rehydrateCodexConvoFromLog(a, path)
+	if len(a.ConvoOutput()) == 0 {
+		t.Fatal("expected codex convo events rehydrated")
+	}
+}
+
+// TestReattachCodexConvo_RecreatesIdleAgent verifies a codex interactive
+// record is recreated as an idle, sendable agent on restart (no live process
+// required — codex has none between turns).
+func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "cx9.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lines := `{"type":"thread.started","thread_id":"cx-9"}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(lines), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(regDir); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	// Codex record: PID 0 (no live process between turns).
+	rec := Record{ID: "cx9", TaskID: "t-cx", Mode: "interactive", Provider: "codex", PID: 0, LogPath: logPath, SessionID: "cx-9", StartedAt: time.Now().UTC()}
+	if err := m.reg.Save(rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got := m.ReattachAll()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 recreated codex agent, got %d", len(got))
+	}
+	a, err := m.GetAgent("cx9")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if a.GetState() != StatePaused {
+		t.Fatalf("expected recreated codex agent Paused, got %s", a.GetState())
+	}
+	if len(a.ConvoOutput()) == 0 {
+		t.Fatal("expected rehydrated codex convo buffer")
+	}
+	// The recreated agent is sendable: it has a live prompt channel. (Don't
+	// actually send — that would spawn a real codex process.)
+	a.mu.RLock()
+	hasPromptCh := a.promptCh != nil
+	a.mu.RUnlock()
+	if !hasPromptCh {
+		t.Fatal("recreated codex agent should have a prompt channel")
+	}
+
+	// Stop and wait for the goroutine to exit before TempDir cleanup.
+	if err := m.StopAgent("cx9"); err != nil {
+		t.Fatalf("StopAgent: %v", err)
+	}
+	select {
+	case <-a.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recreated codex agent did not exit after StopAgent")
 	}
 }
 

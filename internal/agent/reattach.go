@@ -55,6 +55,12 @@ func (m *Manager) ReattachAll() []*Agent {
 	for i := range recs {
 		r := recs[i]
 		if r.Mode == "interactive" {
+			if normalizeProvider(r.Provider) == "codex" {
+				if a := m.reattachCodexConvo(r, reg); a != nil {
+					out = append(out, a)
+				}
+				continue
+			}
 			if a := m.reattachInteractive(r, reg); a != nil {
 				out = append(out, a)
 			}
@@ -221,6 +227,43 @@ func convoResumeState(evs []ConvoEvent) State {
 		}
 	}
 	return StatePaused
+}
+
+// reattachCodexConvo recreates a codex conversational agent after a restart.
+// Codex convo has no persistent process between its independent per-turn
+// invocations, so there is nothing to reattach to: rebuild the idle agent,
+// rehydrate its chat from the log, and restart the loop in resume-wait mode
+// (waiting for the next prompt). Liveness is not checked — the agent is
+// recreated regardless. Returns nil only on a duplicate.
+func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
+	a := agentFromRecord(r)
+	if r.LogPath != "" {
+		rehydrateCodexConvoFromLog(a, r.LogPath)
+	}
+	a.SetState(StatePaused)
+
+	ctx, cancel := context.WithCancel(m.ctx)
+	a.cancel = cancel
+	a.done = make(chan struct{})
+	a.promptCh = make(chan string, 1)
+
+	m.mu.Lock()
+	if _, exists := m.agents[a.ID]; exists {
+		m.mu.Unlock()
+		cancel()
+		return nil
+	}
+	m.agents[a.ID] = a
+	m.liveCount++
+	m.mu.Unlock()
+
+	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", "codex", "events", len(a.ConvoOutput()))
+	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
+	// come from the rebuilt agent; permissions default to permissive (the
+	// original chat's permission mode is not persisted).
+	go m.runCodexConversational(ctx, a, RunConfig{Dir: a.sessionCWD}, true)
+	m.emit(events.AgentState(a.ID), a)
+	return a
 }
 
 // reattachHeadless tails a reattached subprocess's log file from

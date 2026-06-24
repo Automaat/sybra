@@ -76,7 +76,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	// it after a successful Start. Detached applies to headless and to
 	// interactive Claude (one-shot via file-arg prompt, sessions via FIFO);
 	// codex interactive (spawns per turn) stays on the legacy path.
-	if m.survives() && willDetach(cfg, a.Provider) {
+	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
 	}
 
@@ -101,7 +101,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	case "interactive":
 		if a.Provider == "codex" {
 			a.promptCh = make(chan string, 1)
-			go m.runCodexConversational(ctx, a, cfg)
+			go m.runCodexConversational(ctx, a, cfg, false)
 		} else {
 			a.approvalCh = make(chan ApprovalResponse, 1)
 			go m.runConversational(ctx, a, cfg)
