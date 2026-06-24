@@ -44,6 +44,11 @@ test.afterAll(async () => {
   await removeFixture()
 })
 
+// The fixture is hidden from the user-facing list; reveal it for the editor tests.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('sybra.showFixtures', 'true'))
+})
+
 test.describe('Workflow editor — list page', () => {
   test('list card shows trigger event and condition count', async ({
     page,

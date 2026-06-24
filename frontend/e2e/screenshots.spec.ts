@@ -369,13 +369,15 @@ for (const theme of ['light', 'dark'] as const) {
     // ─── Workflows ────────────────────────────────────────────────────────────
 
     test('workflows', async ({ page }) => {
+      // Normal user-facing list — the e2e fixture must stay hidden here.
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Workflows/ }).click()
-      await page.getByRole('button', { name: /E2E Editor Fixture/ }).waitFor({ timeout: 10_000 })
+      await page.getByRole('button', { name: /PR Review/ }).waitFor({ timeout: 10_000 })
       await shot(page, theme, 'workflows')
     })
 
     test('workflow-editor', async ({ page }) => {
+      await page.addInitScript(() => localStorage.setItem('sybra.showFixtures', 'true'))
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Workflows/ }).click()
       await page.getByRole('button', { name: /E2E Editor Fixture/ }).waitFor({ timeout: 10_000 })
@@ -385,6 +387,7 @@ for (const theme of ['light', 'dark'] as const) {
     })
 
     test('workflow-editor-trigger-panel', async ({ page }) => {
+      await page.addInitScript(() => localStorage.setItem('sybra.showFixtures', 'true'))
       await page.goto('/')
       await page.locator('[data-part="trigger"]', { hasText: /Workflows/ }).click()
       await page.getByRole('button', { name: /E2E Editor Fixture/ }).waitFor({ timeout: 10_000 })

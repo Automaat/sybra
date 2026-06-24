@@ -31,11 +31,13 @@ describe('WorkflowList', () => {
   beforeEach(() => {
     Object.assign(workflowStore, { list: [], loading: false, error: '' })
     vi.mocked(workflowStore.load).mockClear()
+    localStorage.clear()
   })
 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    localStorage.clear()
   })
 
   it('loads workflows on mount', () => {
@@ -117,5 +119,34 @@ describe('WorkflowList', () => {
     })
     render(WorkflowList, { props: { onselect: vi.fn() } })
     expect(screen.getByText(/1 cond/)).toBeDefined()
+  })
+
+  it('hides e2e fixture workflows from the list by default', () => {
+    Object.assign(workflowStore, {
+      list: [
+        makeWorkflow({ id: 'pr-review', name: 'PR Review' }),
+        makeWorkflow({ id: 'wf-editor-e2e', name: 'E2E Editor Fixture' }),
+      ],
+    })
+    render(WorkflowList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('PR Review')).toBeDefined()
+    expect(screen.queryByText('E2E Editor Fixture')).toBeNull()
+  })
+
+  it('reveals fixtures when the showFixtures flag is set', () => {
+    localStorage.setItem('sybra.showFixtures', 'true')
+    Object.assign(workflowStore, {
+      list: [makeWorkflow({ id: 'wf-editor-e2e', name: 'E2E Editor Fixture' })],
+    })
+    render(WorkflowList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('E2E Editor Fixture')).toBeDefined()
+  })
+
+  it('shows empty state when only fixtures exist', () => {
+    Object.assign(workflowStore, {
+      list: [makeWorkflow({ id: 'wf-editor-e2e', name: 'E2E Editor Fixture' })],
+    })
+    render(WorkflowList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('No workflows found')).toBeDefined()
   })
 })

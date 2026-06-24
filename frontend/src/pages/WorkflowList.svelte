@@ -1,12 +1,19 @@
 <script lang="ts">
   import { LayoutDashboard } from '@lucide/svelte'
   import { workflowStore } from '../stores/workflows.svelte.js'
+  import { isFixtureWorkflow, showFixtures } from '../lib/workflow-fixtures.js'
 
   interface Props {
     onselect: (id: string) => void
   }
 
   const { onselect }: Props = $props()
+
+  // Hide test/e2e fixture workflows from the user-facing list.
+  const reveal = showFixtures()
+  const workflows = $derived(
+    reveal ? workflowStore.list : workflowStore.list.filter((wf) => !isFixtureWorkflow(wf)),
+  )
 
   $effect(() => {
     workflowStore.load()
@@ -15,18 +22,18 @@
 </script>
 
 <div class="flex flex-col gap-3 p-4 md:gap-4 md:p-6">
-  {#if workflowStore.loading && workflowStore.list.length === 0}
+  {#if workflowStore.loading && workflows.length === 0}
     <p class="text-sm opacity-60">Loading workflows...</p>
   {:else if workflowStore.error}
     <p class="text-sm text-error-500">{workflowStore.error}</p>
-  {:else if workflowStore.list.length === 0}
+  {:else if workflows.length === 0}
     <div class="flex flex-col items-center gap-3 py-16 text-center">
       <LayoutDashboard size={48} class="text-surface-400" />
       <p class="text-sm text-surface-500">No workflows found</p>
     </div>
   {:else}
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {#each workflowStore.list as wf (wf.id)}
+      {#each workflows as wf (wf.id)}
         <button
           type="button"
           class="flex flex-col gap-2 rounded-lg border border-surface-300 bg-surface-50 p-4 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
