@@ -122,23 +122,29 @@
     </a>
   {/if}
 
-  <div class="flex flex-wrap items-center gap-1.5 text-xs text-surface-500">
-    <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">
-      {t.agentMode}
+  {#snippet issueGlyph()}
+    <!-- A linked issue alongside a PR: a real tooltip + accessible name (a
+         lucide `title` prop only lands as an inert SVG attribute). -->
+    <span title={t.issue} aria-label="Also linked to an issue" class="inline-flex items-center">
+      <CircleDot size={11} class="opacity-60" aria-hidden="true" />
     </span>
+  {/snippet}
+
+  <div class="flex flex-wrap items-center gap-1.5 text-xs text-surface-500">
+    {#if t.agentMode === 'interactive'}
+      <span
+        class="inline-flex items-center rounded bg-surface-200 px-1.5 py-0.5 text-surface-500 dark:bg-surface-700 dark:text-surface-400"
+        title="Interactive agent"
+      >
+        interactive
+      </span>
+    {/if}
 
     {#if t.projectId}
       <Pill role="project" title={t.projectId}>
         <span class="h-2 w-2 shrink-0 rounded-full" style={projectDotStyle(t.projectId)}></span>
         {projectShortName(t.projectId)}
       </Pill>
-    {/if}
-
-    {#if t.branch}
-      <span class="inline-flex items-center gap-1 rounded bg-surface-200 px-1.5 py-0.5 font-mono dark:bg-surface-700">
-        <svg class="h-3 w-3 shrink-0" viewBox="0 0 16 16" fill="currentColor"><title>Branch</title><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Z"/></svg>
-        {t.branch.replace(/^sybra\//, '')}
-      </span>
     {/if}
 
     {#if triaging}
@@ -181,11 +187,13 @@
           <GitPullRequest size={12} />
           #{topPR.number}
           <span class="text-success-500" title="Approved">✓</span>
+          {#if t.issue}{@render issueGlyph()}{/if}
         </Pill>
       {:else}
         <Pill role="reference" title="Review requested">
           <GitPullRequest size={12} />
           #{topPR.number} Review
+          {#if t.issue}{@render issueGlyph()}{/if}
         </Pill>
       {/if}
     {:else if topPR}
@@ -200,15 +208,15 @@
         {#if topPR.mergeable === 'CONFLICTING'}
           <span class="text-error-500" title="Merge conflicts">⚠</span>
         {/if}
+        {#if t.issue}{@render issueGlyph()}{/if}
       </Pill>
     {:else if t.prNumber}
       <Pill role="reference">
         <GitPullRequest size={12} />
         #{t.prNumber}
+        {#if t.issue}{@render issueGlyph()}{/if}
       </Pill>
-    {/if}
-
-    {#if t.issue}
+    {:else if t.issue}
       <Pill role="reference" title={t.issue}>
         <CircleDot size={12} />
         Issue
@@ -216,12 +224,13 @@
     {/if}
 
     {#if t.tags?.length}
-      {#each t.tags as tag}
-        <Pill role="tag">{tag}</Pill>
-      {/each}
+      <Pill role="tag">{t.tags[0]}</Pill>
+      {#if t.tags.length > 1}
+        <span class="text-surface-400" title={t.tags.join(', ')}>+{t.tags.length - 1}</span>
+      {/if}
     {/if}
 
-    <span class="ml-auto opacity-60">{timeAgo(t.updatedAt)}</span>
+    <span class="ml-auto text-[11px] text-surface-400/80">{timeAgo(t.updatedAt)}</span>
   </div>
   </button>
   {#if t.projectId}

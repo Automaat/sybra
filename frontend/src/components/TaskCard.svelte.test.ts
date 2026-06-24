@@ -79,9 +79,14 @@ describe('TaskCard', () => {
     expect(screen.getByText('Test Task')).toBeDefined()
   })
 
-  it('renders agent mode', () => {
+  it('does not show a pill for the default headless mode', () => {
     render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
-    expect(screen.getByText('headless')).toBeDefined()
+    expect(screen.queryByText('headless')).toBeNull()
+  })
+
+  it('marks the minority interactive mode by exception', () => {
+    render(TaskCard, { props: { task: { ...mockTask, agentMode: 'interactive' }, onclick: () => {} } })
+    expect(screen.getByText('interactive')).toBeDefined()
   })
 
   it('renders tags when present', () => {
@@ -213,6 +218,30 @@ describe('TaskCard', () => {
     expect(screen.getByText('✓')).toBeDefined()
   })
 
+  it('keeps an accessible "issue exists" cue when a PR and an issue coexist', () => {
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, prNumber: 42, issue: 'https://github.com/owner/repo/issues/7' } as Task,
+        onclick: () => {},
+      },
+    })
+    // The PR is the primary reference; the issue must not be silently dropped.
+    expect(screen.getByText(/#42/)).toBeDefined()
+    const cue = screen.getByLabelText('Also linked to an issue')
+    expect(cue).toBeDefined()
+    expect(cue.getAttribute('title')).toBe('https://github.com/owner/repo/issues/7')
+  })
+
+  it('shows a standalone issue reference when there is no PR', () => {
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, issue: 'https://github.com/owner/repo/issues/7' } as Task,
+        onclick: () => {},
+      },
+    })
+    expect(screen.getByText('Issue')).toBeDefined()
+  })
+
   describe('timeAgo', () => {
     beforeEach(() => {
       vi.useFakeTimers()
@@ -226,8 +255,8 @@ describe('TaskCard', () => {
     it('returns empty string for falsy date', () => {
       const taskNullDate = { ...mockTask, updatedAt: '' }
       vi.setSystemTime(new Date('2026-04-01T12:00:00Z'))
-      render(TaskCard, { props: { task: taskNullDate, onclick: () => {} } })
-      const timeSpan = screen.getByText('headless').parentElement?.querySelector('.ml-auto')
+      const { container } = render(TaskCard, { props: { task: taskNullDate, onclick: () => {} } })
+      const timeSpan = container.querySelector('.ml-auto')
       expect(timeSpan?.textContent).toBe('')
     })
 
