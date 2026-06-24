@@ -153,19 +153,19 @@ describe('TaskCard', () => {
     })
   })
 
-  it('shows Needs Review badge for plan-review status', () => {
+  it('shows the canonical Plan Review badge for plan-review status', () => {
     render(TaskCard, { props: { task: { ...mockTask, status: 'plan-review' as Task['status'] }, onclick: () => {} } })
-    expect(screen.getByText('Needs Review')).toBeDefined()
+    expect(screen.getByText('Plan Review')).toBeDefined()
   })
 
-  it('does not show Needs Review badge for other statuses', () => {
+  it('does not show an attention badge for non-awaiting statuses', () => {
     render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
-    expect(screen.queryByText('Needs Review')).toBeNull()
+    expect(screen.queryByText('Plan Review')).toBeNull()
   })
 
-  it('shows Needs You badge for human-required status', () => {
+  it('shows the canonical Human Required badge for human-required status', () => {
     render(TaskCard, { props: { task: { ...mockTask, status: 'human-required' as Task['status'] }, onclick: () => {} } })
-    expect(screen.getByText('Needs You')).toBeDefined()
+    expect(screen.getByText('Human Required')).toBeDefined()
   })
 
   it('shows Blocked badge for blocked status', () => {
