@@ -114,8 +114,8 @@
       </button>
     </div>
     {#if !focusModeStore.enabled}
-      <!-- Advanced: the Timeline (Gantt) is de-emphasized; focus mode (which
-           always forces the list view) hides it entirely. -->
+      <!-- Advanced: the Timeline (Gantt) is de-emphasized and hidden while focus
+           mode is on (focus mode leads with the list view on enable). -->
       <button
         type="button"
         aria-label="Timeline view (advanced)"
