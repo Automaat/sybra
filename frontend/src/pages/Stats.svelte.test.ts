@@ -288,6 +288,41 @@ describe('Stats', () => {
     expect(screen.getByText('failed')).toBeDefined()
   })
 
+  it('renders cost-over-time and cost-by-project charts', () => {
+    const s = makeSummary()
+    mockStatsStore.data = StatsResponse.createFrom({
+      today: s, thisWeek: s, thisMonth: s, allTime: s,
+      byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      recentRuns: [
+        { id: 'r1', taskId: 't1', projectId: 'org/repo', role: 'plan', mode: 'headless', model: 'm', costUsd: 1.5, durationS: 1, reasoningTokens: 0, timestamp: '2026-05-01T10:00:00Z', outcome: 'completed' },
+        { id: 'r2', taskId: 't2', projectId: 'org/other', role: 'plan', mode: 'headless', model: 'm', costUsd: 0.5, durationS: 1, reasoningTokens: 0, timestamp: '2026-05-01T11:00:00Z', outcome: 'completed' },
+      ],
+    })
+    render(Stats, { props: {} })
+    expect(screen.getByText('Cost over time')).toBeDefined()
+    expect(screen.getByText('Cost by project')).toBeDefined()
+    // Bar chart renders both project labels (default period is All Time).
+    expect(screen.getByText('org/repo')).toBeDefined()
+    expect(screen.getByText('org/other')).toBeDefined()
+  })
+
+  it('flags the 50-run sample cap on the charts', () => {
+    const s = makeSummary()
+    const runs = Array.from({ length: 50 }, (_, i) => ({
+      id: `r${i}`, taskId: `t${i}`, projectId: 'org/repo', role: 'plan', mode: 'headless',
+      model: 'm', costUsd: 0.1, durationS: 1, reasoningTokens: 0,
+      timestamp: '2026-05-01T10:00:00Z', outcome: 'completed',
+    }))
+    mockStatsStore.data = StatsResponse.createFrom({
+      today: s, thisWeek: s, thisMonth: s, allTime: s,
+      byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      recentRuns: runs,
+    })
+    render(Stats, { props: {} })
+    // Both chart captions disclose the cap so the numbers aren't read as authoritative.
+    expect(screen.getAllByText(/recent 50 runs/).length).toBeGreaterThanOrEqual(2)
+  })
+
   it('shows dash for missing model in recent runs', () => {
     const s = makeSummary()
     mockStatsStore.data = StatsResponse.createFrom({
