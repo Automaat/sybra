@@ -1,39 +1,40 @@
-import { awaitsHuman, coreStatus, statusLabel } from './statuses.js'
+import { statusLabel } from './statuses.js'
 
-// The detail page must never show *less* state than the board: a board card in
-// the "Planning" column can read "Plan Review" (awaiting you), but the detail
-// status control only shows the rolled-up column status. This derives the
-// actionable sub-state to surface as a banner under the title.
+// The standard "what do I do next?" slot on the detail page. It answers, in one
+// line, what state the task is in and who it's waiting on — so the detail page
+// never shows less state than the board (a plan-review task reads "Planning" in
+// the core-status dropdown, but the banner says "Plan Review — awaiting your
+// approval"). Terminal/quiet states (todo, done, cancelled) return null.
 
 export type StatusTone = 'attention' | 'info'
 
 export interface StatusSummary {
   /** Canonical status label — same vocabulary as board/list. */
   label: string
-  /** What the user should do, when the state implies an action. */
+  /** A one-line "what's happening / what to do" hint. */
   hint: string
   tone: StatusTone
 }
 
-const HINTS: Record<string, string> = {
-  'plan-review': 'awaiting your approval',
-  'test-plan-review': 'awaiting your approval',
-  'human-required': 'needs your input',
-  blocked: 'needs your response',
+// `attention` = waiting on the user; `info` = an agent or the pipeline is
+// working. Statuses absent here (todo, done, cancelled) get no banner.
+const SUMMARY: Record<string, { hint: string; tone: StatusTone }> = {
+  new: { hint: 'not yet triaged', tone: 'info' },
+  planning: { hint: 'an agent is drafting a plan', tone: 'info' },
+  'plan-review': { hint: 'awaiting your approval', tone: 'attention' },
+  'in-progress': { hint: 'an agent is working on this', tone: 'info' },
+  'ready-review': { hint: 'work is done — a review can start', tone: 'info' },
+  'in-review': { hint: 'a review agent is checking the PR', tone: 'info' },
+  testing: { hint: 'running through the test plan', tone: 'info' },
+  'test-plan-review': { hint: 'awaiting your approval', tone: 'attention' },
+  'human-required': { hint: 'needs your input', tone: 'attention' },
+  blocked: { hint: 'needs your response', tone: 'attention' },
 }
 
-/**
- * The sub-state worth surfacing on detail, or null for a plain core status that
- * matches its column (those get a per-state summary separately). Awaiting-human
- * states are `attention`; other granular states folded into a column (new,
- * ready-review) are surfaced quietly as `info` so detail still mirrors the board.
- */
+/** The per-state summary to surface in the detail banner, or null when there's
+ *  nothing useful to say (todo, terminal, or unknown statuses). */
 export function statusSummary(status: string): StatusSummary | null {
-  if (awaitsHuman(status)) {
-    return { label: statusLabel(status), hint: HINTS[status] ?? '', tone: 'attention' }
-  }
-  if (coreStatus(status) !== status) {
-    return { label: statusLabel(status), hint: '', tone: 'info' }
-  }
-  return null
+  const meta = SUMMARY[status]
+  if (!meta) return null
+  return { label: statusLabel(status), hint: meta.hint, tone: meta.tone }
 }

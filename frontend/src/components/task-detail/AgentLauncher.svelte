@@ -120,9 +120,18 @@
       <StreamOutput agentId={runningAgent.id} />
     {/if}
   </div>
-{:else}
+{:else if task.status !== 'plan-review'}
+  <!-- A plan-review task's job is to approve/reject the plan, not launch a new
+       ad-hoc run, so the generic "new run" form is collapsed for it. The live
+       running-agent view above still always shows. -->
   <div class="flex flex-col gap-3">
-    <span class="text-sm font-medium text-surface-500">Run Agent</span>
+    <div class="flex flex-col gap-0.5">
+      <span class="text-sm font-medium text-surface-500">New agent run</span>
+      <span class="text-xs text-surface-400">
+        Starts a fresh agent with the prompt below — not a continuation of an
+        existing session.
+      </span>
+    </div>
     <div class="flex flex-wrap items-center gap-4">
       <label class="flex items-center gap-2">
         <input

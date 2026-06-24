@@ -98,11 +98,16 @@
     <div class="flex flex-col gap-6">
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
+      <!-- Plan approve/reject is the only decision for a plan-review task, so it
+           sits directly under the banner — above the fold, not below it. -->
+      <PlanReviewPanel task={t} {onreviewplan} />
       <TaskMetadataRow task={t} />
       <TaskPullRequestsPanel task={t} />
       <TaskDescriptionEditor task={t} />
-      <PlanReviewPanel task={t} {onreviewplan} />
       <hr class="border-surface-300 dark:border-surface-600" />
+      <!-- AgentLauncher always renders: it also hosts a live running agent's
+           output + Stop. It collapses only its generic "new run" FORM for a
+           plan-review task (whose job is approve/reject). -->
       <AgentLauncher task={t} {onviewagent} />
       <AgentHistoryList task={t} />
     </div>

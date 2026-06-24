@@ -19,14 +19,20 @@ describe('TaskStatusBanner', () => {
     expect(screen.getByText('Ready for Review')).toBeDefined()
   })
 
-  it('renders nothing for a plain core status with no reason', () => {
-    const { container } = render(TaskStatusBanner, { props: { task: task({ status: 'in-progress' }) } })
+  it('summarises an active state for the standard "what next" slot', () => {
+    render(TaskStatusBanner, { props: { task: task({ status: 'in-progress' }) } })
+    expect(screen.getByText('In Progress')).toBeDefined()
+    expect(screen.getByText(/an agent is working on this/)).toBeDefined()
+  })
+
+  it('renders nothing for a quiet status with no reason', () => {
+    const { container } = render(TaskStatusBanner, { props: { task: task({ status: 'todo' }) } })
     expect(container.querySelector('[role="status"]')).toBeNull()
   })
 
   it('shows the status reason when present', () => {
     render(TaskStatusBanner, {
-      props: { task: task({ status: 'in-progress', statusReason: 'Waiting on upstream fix' }) },
+      props: { task: task({ status: 'todo', statusReason: 'Waiting on upstream fix' }) },
     })
     expect(screen.getByText('Waiting on upstream fix')).toBeDefined()
   })
