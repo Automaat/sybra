@@ -42,3 +42,10 @@ vi.mock('@wailsio/runtime', () => ({
   objectNames: {},
   clientId: 'test',
 }))
+
+// jsdom doesn't implement scrollIntoView, but several components call it when
+// focusing/scrolling a card or column into view. Stub it globally so those
+// side effects don't throw "not a function" Unhandled Errors during tests.
+if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = vi.fn()
+}
