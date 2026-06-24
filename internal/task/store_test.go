@@ -1449,3 +1449,65 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 		}
 	}
 }
+
+// TestStoreListInvalidatePathTargetedRefresh verifies that an external edit to
+// one task file patches just that task in the warm list cache while leaving
+// the other cached tasks intact, and that a vanished file is dropped.
+func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := store.Create("Alpha", "a", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.Create("Bravo", "b", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil { // prime cache
+		t.Fatalf("prime: %v", err)
+	}
+
+	// External edit of Alpha's title.
+	edited := "---\nid: " + a.ID + "\ntitle: Alpha Edited\nstatus: todo\nagent_mode: headless\ncreated_at: " +
+		a.CreatedAt.Format("2006-01-02T15:04:05Z07:00") + "\nupdated_at: " +
+		a.UpdatedAt.Format("2006-01-02T15:04:05Z07:00") + "\n---\na\n"
+	if err := os.WriteFile(a.FilePath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.InvalidatePath(a.FilePath)
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Task{}
+	for _, tk := range tasks {
+		byID[tk.ID] = tk
+	}
+	if byID[a.ID].Title != "Alpha Edited" {
+		t.Fatalf("Alpha title = %q, want refreshed", byID[a.ID].Title)
+	}
+	if byID[b.ID].Title != "Bravo" {
+		t.Fatalf("Bravo missing/changed: %q", byID[b.ID].Title)
+	}
+
+	// Vanished file is dropped from the cache.
+	if err := os.Remove(a.FilePath); err != nil {
+		t.Fatal(err)
+	}
+	store.InvalidatePath(a.FilePath)
+	tasks, _ = store.List()
+	for _, tk := range tasks {
+		if tk.ID == a.ID {
+			t.Fatalf("Alpha should be gone after file removal")
+		}
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("want 1 task remaining, got %d", len(tasks))
+	}
+}
