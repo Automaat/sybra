@@ -110,9 +110,9 @@ func (m *Manager) survives() bool {
 
 // willDetach reports whether a run with this config/provider takes the
 // detached survival path: all headless runs, and interactive Claude runs
-// (one-shot included — it uses a file-backed stdin for natural EOF). Codex
-// interactive (spawns per turn) stays on the legacy pipe path. Single
-// source of truth mirrored by the runner branches.
+// (one-shot included — its prompt is passed as an argument, no stdin).
+// Codex interactive (spawns per turn) stays on the legacy pipe path.
+// Single source of truth mirrored by the runner branches.
 func willDetach(cfg RunConfig, prov string) bool {
 	switch cfg.Mode {
 	case "headless":

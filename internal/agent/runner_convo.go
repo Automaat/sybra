@@ -213,8 +213,8 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	}
 	// Detached survival for interactive Claude agents (this path is only
 	// reached for Claude; codex uses runCodexConversational). A one-shot run
-	// uses a file-backed stdin (natural EOF after its single message);
-	// interactive sessions use a never-EOF FIFO for follow-ups.
+	// passes its prompt as an argument (no stdin); interactive sessions use a
+	// never-EOF FIFO for follow-ups.
 	if m.survives() {
 		if cfg.OneShot {
 			return m.runConvoAttemptSurviveOneShot(ctx, a, cfg, outFile, tailOffset)

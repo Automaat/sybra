@@ -418,11 +418,13 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 		return
 	}
 
-	// No cmd.Wait runs for a reattached agent, so GetExitErr is nil. A turn
-	// that vanished without a terminal result is a crash — mark it so the
-	// completion handler stalls instead of advancing on partial work.
-	if !a.hasTerminalConvoResult() {
+	// No cmd.Wait runs for a reattached agent, so GetExitErr is nil. Infer
+	// the outcome from the terminal result: none -> crash (errReattachedGone);
+	// an error result -> a real failure; a success result -> leave nil.
+	if found, isError := a.lastConvoResult(); !found {
 		a.SetExitErr(errReattachedGone)
+	} else if isError {
+		a.SetExitErr(errReattachedResultError)
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())

@@ -19,6 +19,11 @@ import (
 // handler stalls the workflow instead of advancing it on partial work.
 var errReattachedGone = errors.New("agent: reattached process exited without result")
 
+// errReattachedResultError marks a reattached agent that completed with an
+// error result while the app was down — a real failure outcome (distinct
+// from a crash with no result), so the workflow advances as failed.
+var errReattachedResultError = errors.New("agent: reattached run completed with an error result")
+
 // reattachPIDPoll is how often a reattached agent's PID is checked for
 // liveness (there is no *exec.Cmd to Wait on). Var, not const, so tests
 // can shorten it.
@@ -168,8 +173,8 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 		return nil
 	}
 
-	// A record with no FIFO path is a one-shot survival agent (file-backed
-	// stdin, already consumed): reattach tail-only, no FIFO to reopen.
+	// A record with no FIFO path is a one-shot survival agent (prompt passed
+	// as an argument, no stdin): reattach tail-only, no FIFO to reopen.
 	oneShot := r.StdinPath == ""
 
 	a := agentFromRecord(r)

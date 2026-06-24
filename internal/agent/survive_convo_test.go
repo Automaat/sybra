@@ -24,7 +24,7 @@ func TestWillDetach(t *testing.T) {
 		{"headless", "claude", false, true},
 		{"headless", "codex", false, true},
 		{"interactive", "claude", false, true},
-		{"interactive", "claude", true, true},  // one-shot now survives via file stdin
+		{"interactive", "claude", true, true},  // one-shot survives via prompt arg
 		{"interactive", "codex", false, false}, // codex spawns per turn
 		{"interactive", "codex", true, false},  // codex one-shot also legacy
 		{"interactive", "", false, true},       // empty provider normalizes to claude
