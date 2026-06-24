@@ -128,8 +128,8 @@
     <div class="flex flex-col gap-0.5">
       <span class="text-sm font-medium text-surface-500">New agent run</span>
       <span class="text-xs text-surface-400">
-        Starts a fresh agent with the prompt below — separate from resuming the
-        Claude Code session that produced a PR.
+        Starts a fresh agent with the prompt below — not a continuation of an
+        existing session.
       </span>
     </div>
     <div class="flex flex-wrap items-center gap-4">

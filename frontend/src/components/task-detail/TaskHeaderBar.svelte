@@ -339,9 +339,10 @@
         <button type="button" tabindex="-1" class="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onclick={closeMenu}></button>
         <div role="menu" class="absolute right-0 z-50 mt-1 w-48 rounded-lg py-1 elevation-popover">
           <div class="flex flex-col gap-1 px-3 py-1.5">
-            <span class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task type</span>
+            <span id="task-type-label" class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task type</span>
             <select
               data-testid="task-type-select"
+              aria-labelledby="task-type-label"
               class="rounded border border-surface-300 bg-surface-100 px-2 py-1 text-xs font-medium dark:border-surface-600 dark:bg-surface-700"
               value={task.taskType || 'normal'}
               onchange={(e) => updateTaskType((e.target as HTMLSelectElement).value)}

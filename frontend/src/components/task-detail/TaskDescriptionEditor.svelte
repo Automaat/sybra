@@ -98,7 +98,9 @@
   {/if}
 </div>
 
-{#if task.plan}
+<!-- For a plan-review task the plan is shown (and decided on) at the top in
+     PlanReviewPanel, so the lower read-only copy here would duplicate it. -->
+{#if task.plan && task.status !== 'plan-review'}
   <div class="flex flex-col gap-1">
     <button
       type="button"
