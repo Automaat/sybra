@@ -1,11 +1,11 @@
 <script lang="ts">
   import {
+    EventsOn,
     GetProviderHealth,
     ProviderHealthEnabled,
     SetProviderAutoFailover,
     SetProviderEnabled,
-  } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
-  import { EventsOn } from '$lib/api'
+  } from '$lib/api'
   import * as ev from '../../lib/events.js'
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 
@@ -82,8 +82,8 @@
 </script>
 
 {#if enabled}
-  <div class="rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-    <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Providers</h2>
+  <div class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+    <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Providers</h2>
     {#if error}
       <div class="mb-3 text-xs text-error-500">{error}</div>
     {/if}
@@ -101,16 +101,16 @@
               {/if}
             </div>
             {#if p?.detail}
-              <span class="text-xs text-surface-400">{p.detail}</span>
+              <span class="text-xs text-surface-500 dark:text-surface-400">{p.detail}</span>
             {/if}
             {#if p?.lastCheck}
-              <span class="text-xs text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
+              <span class="text-xs text-surface-500 dark:text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
             {/if}
           </div>
           <label class="flex cursor-pointer items-center gap-2 text-sm">
             <input
               type="checkbox"
-              class="h-4 w-4 cursor-pointer rounded border-surface-300"
+              class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
               checked={name === 'claude' ? settings.providers.claude.enabled : settings.providers.codex.enabled}
               onchange={(e) => onProviderEnabledChange(name as 'claude' | 'codex', e)}
             />
@@ -127,7 +127,7 @@
         />
         <span class="text-sm">Auto-failover between providers when one is unhealthy</span>
       </label>
-      <span class="text-xs text-surface-400">
+      <span class="text-xs text-surface-500 dark:text-surface-400">
         Health check interval: {settings.providers.healthCheck.intervalSeconds}s. Edit config.yaml to change.
       </span>
     </div>

@@ -7,15 +7,12 @@ const mockSetEnabled = vi.fn()
 const mockSetAutoFailover = vi.fn()
 const mockEventsOn = vi.fn()
 
-vi.mock('../../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js', () => ({
+vi.mock('$lib/api', () => ({
+  EventsOn: (...args: unknown[]) => mockEventsOn(...args),
   ProviderHealthEnabled: () => mockEnabled(),
   GetProviderHealth: () => mockGetHealth(),
   SetProviderEnabled: (...args: unknown[]) => mockSetEnabled(...args),
   SetProviderAutoFailover: (...args: unknown[]) => mockSetAutoFailover(...args),
-}))
-
-vi.mock('$lib/api', () => ({
-  EventsOn: (...args: unknown[]) => mockEventsOn(...args),
 }))
 
 const ProviderHealthPanel = (await import('./ProviderHealthPanel.svelte')).default

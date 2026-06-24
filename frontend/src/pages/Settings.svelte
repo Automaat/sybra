@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { GetSettings, UpdateSettings, GetVersion, GetCodexModels } from '$lib/api'
+  import { GetSettings, UpdateSettings, GetVersion, GetCodexModels, ProviderHealthEnabled } from '$lib/api'
   import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
@@ -32,6 +32,12 @@
     applyColorScheme(colorScheme)
   })
 
+  const colorSchemes: { value: ColorScheme; label: string }[] = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+  ]
+
   let settings = $state<AppSettings | null>(null)
   let original = $state<string>('')
   let saving = $state(false)
@@ -54,6 +60,10 @@
   ]
   let codexDynamicModels = $state<ModelOption[]>([])
 
+  // Provider health is server-gated; only surface the Providers pane (and its
+  // rail entry) when the backend actually runs health checks.
+  let providerHealthEnabled = $state(false)
+
   $effect(() => {
     load()
   })
@@ -68,6 +78,7 @@
         ]
       }
     }).catch(() => {})
+    ProviderHealthEnabled().then(v => { providerHealthEnabled = v }).catch(() => {})
   })
 
   async function load() {
@@ -139,253 +150,318 @@
     }
   })
 
-  // Anchored section sub-nav so the page isn't one long scroll.
-  const navSections = [
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'agent-defaults', label: 'Agent' },
-    { id: 'provider-health', label: 'Providers' },
-    { id: 'notifications', label: 'Notifications' },
-    { id: 'orchestrator', label: 'Orchestrator' },
-    { id: 'logging', label: 'Logging' },
-    { id: 'todoist', label: 'Todoist' },
-    { id: 'renovate', label: 'Renovate' },
-    { id: 'version', label: 'Version' },
-    { id: 'directories', label: 'Directories' },
-  ]
+  // Left-rail layout: each pane is a single section, grouped for scannability.
+  // The Providers entry only exists when health checks are enabled, so the rail
+  // never offers a link that resolves to nothing.
+  type TabId =
+    | 'appearance' | 'notifications' | 'agent-defaults' | 'provider-health'
+    | 'orchestrator' | 'todoist' | 'renovate' | 'logging' | 'version' | 'directories'
 
-  function scrollToSection(id: string) {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    document.getElementById(id)?.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
-  }
+  type RailItem = { id: TabId; label: string }
+  type RailGroup = { label: string; items: RailItem[] }
+
+  const groups = $derived<RailGroup[]>([
+    { label: 'General', items: [
+      { id: 'appearance', label: 'Appearance' },
+      { id: 'notifications', label: 'Notifications' },
+    ] },
+    { label: 'Agents', items: [
+      { id: 'agent-defaults', label: 'Defaults' },
+      ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers' }] : []),
+    ] },
+    { label: 'Automation', items: [
+      { id: 'orchestrator', label: 'Orchestrator' },
+      { id: 'todoist', label: 'Todoist' },
+      { id: 'renovate', label: 'Renovate' },
+    ] },
+    { label: 'Advanced', items: [
+      { id: 'logging', label: 'Logging' },
+      { id: 'version', label: 'Version' },
+      { id: 'directories', label: 'Directories' },
+    ] },
+  ])
+
+  const tabs = $derived(groups.flatMap(g => g.items))
+
+  let active = $state<TabId>('appearance')
+
+  // If the active pane disappears (only Providers can), fall back to Appearance.
+  $effect(() => {
+    if (!tabs.some(t => t.id === active)) active = 'appearance'
+  })
 </script>
 
-<div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
-  <!-- Sticky save bar + section sub-nav -->
-  <div class="sticky top-0 z-10 -mx-4 flex flex-col gap-2 border-b border-surface-200 bg-surface-100/95 px-4 py-2 backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 md:-mx-6 md:px-6">
-    <div class="flex items-center justify-between gap-3">
-      <p class="min-w-0 text-xs leading-tight text-surface-400">
-        Appearance &amp; provider toggles apply instantly · other settings save together
-      </p>
-      <div class="flex shrink-0 flex-nowrap items-center gap-2">
-        {#if successMsg}
-          <span class="text-sm text-success-500">{successMsg}</span>
-        {/if}
-        {#if error}
-          <span class="text-sm text-error-500">{error}</span>
-        {/if}
-        {#if dirty}
-          <span class="text-xs font-medium text-warning-600 dark:text-warning-400">Unsaved changes</span>
-          <button
-            type="button"
-            class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
-            onclick={reset}
-          >
-            Reset
-          </button>
-        {/if}
+<div class="flex min-h-full flex-col">
+  <!-- Sticky save bar: visible from every pane so cross-pane dirty state is never hidden -->
+  <div class="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-surface-200 bg-surface-50/95 px-4 py-2.5 backdrop-blur dark:border-surface-700 dark:bg-surface-900/95 md:px-6">
+    <p class="hidden min-w-0 truncate text-xs text-surface-500 dark:text-surface-400 sm:block">
+      Appearance &amp; provider changes apply instantly · other settings save together
+    </p>
+    <div class="flex shrink-0 items-center gap-2">
+      {#if successMsg}
+        <span class="text-sm font-medium text-success-600 dark:text-success-400">{successMsg}</span>
+      {/if}
+      {#if error}
+        <span class="max-w-[16rem] truncate text-sm text-error-600 dark:text-error-400">{error}</span>
+      {/if}
+      {#if dirty}
+        <span class="text-xs font-medium text-warning-600 dark:text-warning-400">Unsaved changes</span>
         <button
           type="button"
-          class="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
-          onclick={save}
-          disabled={!dirty || saving}
+          class="rounded-lg px-3 py-1.5 text-sm font-medium text-surface-700 hover:bg-surface-200 dark:text-surface-200 dark:hover:bg-surface-700"
+          onclick={reset}
         >
-          {saving ? 'Saving…' : 'Save'}
+          Reset
         </button>
-      </div>
-    </div>
-    <nav class="flex gap-1 overflow-x-auto" aria-label="Settings sections">
-      {#each navSections as s (s.id)}
-        <button
-          type="button"
-          class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 dark:hover:bg-surface-700 dark:hover:text-surface-200"
-          onclick={() => scrollToSection(s.id)}
-        >
-          {s.label}
-        </button>
-      {/each}
-    </nav>
-  </div>
-
-  <!-- Appearance (localStorage-backed, no save required) -->
-  <div id="appearance" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-    <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Appearance</h2>
-    <div class="flex flex-col gap-1 sm:max-w-xs">
-      <label class="text-sm font-medium" for="color-scheme">Color Scheme</label>
-      <select
-        id="color-scheme"
-        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-        bind:value={colorScheme}
+      {/if}
+      <button
+        type="button"
+        class="rounded-lg bg-primary-500 px-4 py-1.5 text-sm font-semibold text-primary-contrast-500 shadow-sm transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+        onclick={save}
+        disabled={!dirty || saving}
       >
-        <option value="system">System</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      </select>
-      <span class="text-xs text-surface-400">Applied immediately, no save needed</span>
+        {saving ? 'Saving…' : 'Save'}
+      </button>
     </div>
-    <label class="mt-4 flex items-start gap-3">
-      <input
-        type="checkbox"
-        class="mt-0.5 h-4 w-4 accent-primary-500"
-        checked={focusModeStore.enabled}
-        onchange={(e) => setFocusMode((e.target as HTMLInputElement).checked)}
-      />
-      <span class="flex flex-col">
-        <span class="text-sm font-medium">Focus mode</span>
-        <span class="text-xs text-surface-400">Cleaner, minimal surface — collapses the sidebar and leads with the list view. Advanced views stay reachable via “More”.</span>
-      </span>
-    </label>
   </div>
 
-  {#if settings}
-    <!-- Agent Defaults -->
-    <div id="agent-defaults" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Agent Defaults</h2>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-4">
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="agent-provider">Agent Type</label>
-          <select
-            id="agent-provider"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.agent.provider}
-          >
-            <option value="claude">Claude</option>
-            <option value="codex">Codex</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="agent-model">Default Model</label>
-          <select
-            id="agent-model"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.agent.model}
-          >
-            {#each modelOptions as option}
-              <option value={option.value}>{option.label}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="agent-mode">Default Mode</label>
-          <select
-            id="agent-mode"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.agent.mode}
-          >
-            <option value="">— none —</option>
-            <option value="headless">Headless</option>
-            <option value="interactive">Interactive</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="agent-concurrency">Max Concurrent</label>
-          <input
-            id="agent-concurrency"
-            type="number"
-            min="1"
-            max="10"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.agent.maxConcurrent}
-          />
-          <span class="text-xs text-surface-400">1–10</span>
-        </div>
-      </div>
-    </div>
-
-    <section id="provider-health" class="scroll-mt-28">
-      <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
-    </section>
-
-    <!-- Notifications -->
-    <div id="notifications" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Notifications</h2>
-      <label class="flex cursor-pointer items-center gap-3">
-        <input
-          type="checkbox"
-          class="h-4 w-4 cursor-pointer rounded border-surface-300"
-          bind:checked={settings.notification.desktop}
-        />
-        <span class="text-sm">Desktop notifications (macOS)</span>
-      </label>
-    </div>
-
-    <!-- Orchestrator -->
-    <div id="orchestrator" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Orchestrator</h2>
-      <div class="flex flex-col gap-3">
-        <label class="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-4 w-4 cursor-pointer rounded border-surface-300"
-            bind:checked={settings.orchestrator.autoTriage}
-          />
-          <div>
-            <span class="text-sm font-medium">Auto-triage</span>
-            <p class="text-xs text-surface-400">Automatically dispatch triage agents on task creation</p>
-          </div>
-        </label>
-        <label class="flex cursor-pointer items-center gap-3">
-          <input
-            type="checkbox"
-            class="h-4 w-4 cursor-pointer rounded border-surface-300"
-            bind:checked={settings.orchestrator.autoPlan}
-          />
-          <div>
-            <span class="text-sm font-medium">Auto-plan</span>
-            <p class="text-xs text-surface-400">Automatically dispatch planning agents on complex tasks</p>
-          </div>
-        </label>
-      </div>
-    </div>
-
-    <section id="logging" class="scroll-mt-28">
-      <LoggingPanel settings={settings} />
-    </section>
-
-    <section id="todoist" class="scroll-mt-28">
-      <TodoistPanel settings={settings} />
-    </section>
-
-    <section id="renovate" class="scroll-mt-28">
-      <RenovatePanel settings={settings} />
-    </section>
-
-    <!-- Version (read-only) -->
-    <div id="version" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Version</h2>
-      <div class="flex flex-col gap-2">
-        <div class="flex items-center gap-3">
-          <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Server</span>
-          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{serverVersion ?? '…'}</span>
-        </div>
-        <div class="flex items-center gap-3">
-          <span class="w-20 shrink-0 text-xs font-medium text-surface-400">Client</span>
-          <span class="flex-1 font-mono text-xs text-surface-500 dark:text-surface-400">{clientVersion}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Directories (read-only) -->
-    <div id="directories" class="scroll-mt-28 rounded-lg border border-surface-300 bg-surface-50 p-5 dark:border-surface-600 dark:bg-surface-800">
-      <h2 class="mb-4 text-sm font-semibold text-surface-500 uppercase tracking-wide">Directories</h2>
-      <div class="flex flex-col gap-2">
-        {#each dirOrder as key (key)}
-          {#if settings.directories[key]}
-            <div class="flex items-center gap-3">
-              <span class="w-20 shrink-0 text-xs font-medium text-surface-400 capitalize">{key}</span>
-              <input
-                type="text"
-                value={settings.directories[key]}
-                disabled
-                class="flex-1 rounded-lg border border-surface-200 bg-surface-100 px-3 py-1.5 font-mono text-xs text-surface-500 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-400"
-              />
-            </div>
-          {/if}
+  <div class="flex min-h-0 flex-1 flex-col md:flex-row">
+    <!-- One responsive rail: vertical sidebar on md+, horizontal tab strip below -->
+    <nav
+      class="shrink-0 border-b border-surface-200 px-3 py-2 dark:border-surface-700 md:w-52 md:border-b-0 md:border-r md:py-4"
+      aria-label="Settings sections"
+    >
+      <div class="flex gap-1 overflow-x-auto md:flex-col md:gap-0.5 md:overflow-visible">
+        {#each groups as group (group.label)}
+          <p class="hidden px-2.5 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wider text-surface-500 first:pt-0 dark:text-surface-400 md:block">
+            {group.label}
+          </p>
+          {#each group.items as item (item.id)}
+            <button
+              type="button"
+              aria-current={active === item.id ? 'page' : undefined}
+              class="flex shrink-0 items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors
+                {active === item.id
+                  ? 'bg-primary-500/12 font-medium text-primary-700 dark:bg-primary-500/15 dark:text-primary-300'
+                  : 'text-surface-600 hover:bg-surface-200/70 hover:text-surface-900 dark:text-surface-300 dark:hover:bg-surface-800 dark:hover:text-surface-50'}"
+              onclick={() => (active = item.id)}
+            >
+              {item.label}
+            </button>
+          {/each}
         {/each}
       </div>
+    </nav>
+
+    <!-- Content column -->
+    <div class="min-w-0 flex-1">
+      <div class="mx-auto max-w-3xl p-4 md:p-6">
+        <!-- Appearance (localStorage-backed, no save required) -->
+        {#if active === 'appearance'}
+          <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+            <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Appearance</h2>
+            <div class="flex flex-col gap-1.5">
+              <span class="text-sm font-medium" id="color-scheme-label">Color Scheme</span>
+              <div
+                role="group"
+                aria-labelledby="color-scheme-label"
+                class="inline-flex w-fit rounded-lg border border-surface-300 bg-surface-100 p-0.5 dark:border-surface-600 dark:bg-surface-900"
+              >
+                {#each colorSchemes as opt (opt.value)}
+                  <button
+                    type="button"
+                    aria-pressed={colorScheme === opt.value}
+                    class="rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors
+                      {colorScheme === opt.value
+                        ? 'bg-primary-500 text-primary-contrast-500 shadow-sm'
+                        : 'text-surface-600 hover:text-surface-900 dark:text-surface-300 dark:hover:text-surface-50'}"
+                    onclick={() => (colorScheme = opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
+              </div>
+              <span class="text-xs text-surface-500 dark:text-surface-400">Applied immediately, no save needed</span>
+            </div>
+            <label class="mt-5 flex items-start gap-3">
+              <input
+                type="checkbox"
+                class="mt-0.5 h-4 w-4 accent-primary-500"
+                checked={focusModeStore.enabled}
+                onchange={(e) => setFocusMode((e.target as HTMLInputElement).checked)}
+              />
+              <span class="flex flex-col">
+                <span class="text-sm font-medium">Focus mode</span>
+                <span class="text-xs text-surface-500 dark:text-surface-400">Cleaner, minimal surface — collapses the sidebar and leads with the list view. Advanced views stay reachable via “More”.</span>
+              </span>
+            </label>
+          </section>
+        {/if}
+
+        {#if settings}
+          <!-- Notifications -->
+          {#if active === 'notifications'}
+            <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+              <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Notifications</h2>
+              <label class="flex cursor-pointer items-center gap-3">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
+                  bind:checked={settings.notification.desktop}
+                />
+                <span class="text-sm">Desktop notifications (macOS)</span>
+              </label>
+            </section>
+          {/if}
+
+          <!-- Agent Defaults -->
+          {#if active === 'agent-defaults'}
+            <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+              <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Agent Defaults</h2>
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div class="flex flex-col gap-1">
+                  <label class="text-sm font-medium" for="agent-provider">Agent Type</label>
+                  <select
+                    id="agent-provider"
+                    class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+                    bind:value={settings.agent.provider}
+                  >
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </div>
+                <div class="flex flex-col gap-1">
+                  <label class="text-sm font-medium" for="agent-model">Default Model</label>
+                  <select
+                    id="agent-model"
+                    class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+                    bind:value={settings.agent.model}
+                  >
+                    {#each modelOptions as option}
+                      <option value={option.value}>{option.label}</option>
+                    {/each}
+                  </select>
+                </div>
+                <div class="flex flex-col gap-1">
+                  <label class="text-sm font-medium" for="agent-mode">Default Mode</label>
+                  <select
+                    id="agent-mode"
+                    class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+                    bind:value={settings.agent.mode}
+                  >
+                    <option value="">— none —</option>
+                    <option value="headless">Headless</option>
+                    <option value="interactive">Interactive</option>
+                  </select>
+                </div>
+                <div class="flex flex-col gap-1">
+                  <label class="text-sm font-medium" for="agent-concurrency">Max Concurrent</label>
+                  <input
+                    id="agent-concurrency"
+                    type="number"
+                    min="1"
+                    max="10"
+                    class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+                    bind:value={settings.agent.maxConcurrent}
+                  />
+                  <span class="text-xs text-surface-500 dark:text-surface-400">1–10</span>
+                </div>
+              </div>
+            </section>
+          {/if}
+
+          <!-- Providers (server-gated) -->
+          {#if active === 'provider-health'}
+            <ProviderHealthPanel {settings} onsettingschange={syncOriginal} />
+          {/if}
+
+          <!-- Orchestrator -->
+          {#if active === 'orchestrator'}
+            <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+              <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Orchestrator</h2>
+              <div class="flex flex-col gap-3">
+                <label class="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
+                    bind:checked={settings.orchestrator.autoTriage}
+                  />
+                  <div>
+                    <span class="text-sm font-medium">Auto-triage</span>
+                    <p class="text-xs text-surface-500 dark:text-surface-400">Automatically dispatch triage agents on task creation</p>
+                  </div>
+                </label>
+                <label class="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
+                    bind:checked={settings.orchestrator.autoPlan}
+                  />
+                  <div>
+                    <span class="text-sm font-medium">Auto-plan</span>
+                    <p class="text-xs text-surface-500 dark:text-surface-400">Automatically dispatch planning agents on complex tasks</p>
+                  </div>
+                </label>
+              </div>
+            </section>
+          {/if}
+
+          {#if active === 'todoist'}
+            <TodoistPanel settings={settings} />
+          {/if}
+
+          {#if active === 'renovate'}
+            <RenovatePanel settings={settings} />
+          {/if}
+
+          {#if active === 'logging'}
+            <LoggingPanel settings={settings} />
+          {/if}
+
+          <!-- Version (read-only) -->
+          {#if active === 'version'}
+            <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+              <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Version</h2>
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center gap-3">
+                  <span class="w-20 shrink-0 text-xs font-medium text-surface-500 dark:text-surface-400">Server</span>
+                  <span class="flex-1 font-mono text-xs text-surface-600 dark:text-surface-300">{serverVersion ?? '…'}</span>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="w-20 shrink-0 text-xs font-medium text-surface-500 dark:text-surface-400">Client</span>
+                  <span class="flex-1 font-mono text-xs text-surface-600 dark:text-surface-300">{clientVersion}</span>
+                </div>
+              </div>
+            </section>
+          {/if}
+
+          <!-- Directories (read-only) -->
+          {#if active === 'directories'}
+            <section class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
+              <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Directories</h2>
+              <div class="flex flex-col gap-2">
+                {#each dirOrder as key (key)}
+                  {#if settings.directories[key]}
+                    <div class="flex items-center gap-3">
+                      <span class="w-20 shrink-0 text-xs font-medium text-surface-500 capitalize dark:text-surface-400">{key}</span>
+                      <input
+                        type="text"
+                        value={settings.directories[key]}
+                        disabled
+                        class="flex-1 rounded-lg border border-surface-200 bg-surface-100 px-3 py-1.5 font-mono text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-300"
+                      />
+                    </div>
+                  {/if}
+                {/each}
+              </div>
+            </section>
+          {/if}
+        {:else if error}
+          <p class="text-error-600 dark:text-error-400">{error}</p>
+        {:else}
+          <p class="text-surface-500 dark:text-surface-400">Loading…</p>
+        {/if}
+      </div>
     </div>
-  {:else if error}
-    <p class="text-error-500">{error}</p>
-  {:else}
-    <p class="text-surface-400">Loading…</p>
-  {/if}
+  </div>
 </div>

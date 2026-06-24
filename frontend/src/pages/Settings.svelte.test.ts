@@ -16,14 +16,11 @@ vi.mock('$lib/api', () => ({
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
   GetCodexModels: (...args: unknown[]) => mockGetCodexModels(...args),
-  EventsOn: (...args: any[]) => mockEventsOn(...args),
-}))
-
-vi.mock('../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js', () => ({
-  GetProviderHealth: (...args: unknown[]) => mockGetProviderHealth(...args),
   ProviderHealthEnabled: (...args: unknown[]) => mockProviderHealthEnabled(...args),
+  GetProviderHealth: (...args: unknown[]) => mockGetProviderHealth(...args),
   SetProviderAutoFailover: (...args: unknown[]) => mockSetProviderAutoFailover(...args),
   SetProviderEnabled: (...args: unknown[]) => mockSetProviderEnabled(...args),
+  EventsOn: (...args: any[]) => mockEventsOn(...args),
 }))
 
 const Settings = (await import('./Settings.svelte')).default
@@ -46,6 +43,12 @@ const mockSettings = {
     tasks: '/home/.sybra/tasks',
     skills: '/home/.sybra/skills',
   },
+}
+
+// The settings page is a left-rail of tabbed panes; jump to one by clicking its
+// rail entry, then the pane mounts.
+async function goTo(name: string) {
+  await fireEvent.click(screen.getByRole('button', { name }))
 }
 
 describe('Settings', () => {
@@ -93,39 +96,30 @@ describe('Settings', () => {
     })
   })
 
-  it('renders the appearance section', () => {
+  it('renders the appearance section (default pane)', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeDefined()
   })
 
-  it('renders the section sub-nav and clarifies save scope', () => {
+  it('renders the section rail and clarifies save scope', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
     const nav = screen.getByRole('navigation', { name: 'Settings sections' })
     expect(nav).toBeDefined()
-    // Sub-nav exposes the sections as quick links.
+    // Rail exposes the sections as buttons.
     expect(screen.getByRole('button', { name: 'Orchestrator' })).toBeDefined()
     // Save scope is spelled out (immediate vs save-together).
     expect(screen.getByText(/apply instantly/)).toBeDefined()
   })
 
-  it('scrolls to a settings-gated section via its sub-nav link', async () => {
+  it('opens a settings-gated pane from its rail entry', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
-    // jsdom has no native scrollIntoView; stub it and restore so it can't leak.
-    const orig = Element.prototype.scrollIntoView
-    const scrollSpy = vi.fn()
-    Element.prototype.scrollIntoView = scrollSpy as never
-    try {
-      render(Settings)
-      // Logging only renders inside {#if settings}; wait for load so the anchor exists.
-      await vi.waitFor(() => screen.getByText('Logging & Audit'))
-      await fireEvent.click(screen.getByRole('button', { name: 'Logging' }))
-      expect(scrollSpy).toHaveBeenCalled()
-    } finally {
-      if (orig) Element.prototype.scrollIntoView = orig
-      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
-    }
+    render(Settings)
+    // Logging pane only mounts once selected, and only when settings have loaded.
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Logging' }))
+    await goTo('Logging')
+    await vi.waitFor(() => expect(screen.getByText('Logging & Audit')).toBeDefined())
   })
 
   it('keeps another section dirty when a provider toggles (no baseline wipe)', async () => {
@@ -133,77 +127,85 @@ describe('Settings', () => {
     mockProviderHealthEnabled.mockResolvedValue(true)
     mockSetProviderAutoFailover.mockResolvedValue(undefined)
     render(Settings)
-    await vi.waitFor(() => screen.getByRole('heading', { name: 'Notifications' }))
     // Dirty a non-provider section.
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
     await fireEvent.click(screen.getByLabelText('Desktop notifications (macOS)'))
     expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false)
     // Toggle a provider setting — it persists immediately and reconciles ONLY the
     // providers sub-tree, so the pending Notifications edit must survive.
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Providers' }))
+    await goTo('Providers')
     await fireEvent.click(screen.getByLabelText(/Auto-failover between providers/))
     await vi.waitFor(() => expect(mockSetProviderAutoFailover).toHaveBeenCalled())
     expect((screen.getByText('Save') as HTMLButtonElement).disabled).toBe(false)
     expect(screen.getByText('Unsaved changes')).toBeDefined()
   })
 
-  it('every sub-nav link resolves to a rendered section anchor', async () => {
+  it('every rail entry opens a pane with a matching heading', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
-    const navIds = [
-      'appearance', 'agent-defaults', 'provider-health', 'notifications',
-      'orchestrator', 'logging', 'todoist', 'renovate', 'version', 'directories',
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    const cases: [string, string][] = [
+      ['Defaults', 'Agent Defaults'],
+      ['Notifications', 'Notifications'],
+      ['Orchestrator', 'Orchestrator'],
+      ['Todoist', 'Todoist'],
+      ['Renovate', 'Renovate'],
+      ['Logging', 'Logging & Audit'],
+      ['Version', 'Version'],
+      ['Directories', 'Directories'],
     ]
-    const { container } = render(Settings)
-    await vi.waitFor(() => screen.getByRole('heading', { name: 'Directories' }))
-    for (const id of navIds) {
-      expect(container.querySelector(`#${id}`), `missing anchor #${id}`).not.toBeNull()
+    for (const [tab, heading] of cases) {
+      await goTo(tab)
+      await vi.waitFor(() => expect(screen.getByRole('heading', { name: heading })).toBeDefined())
     }
   })
 
-  it('renders Agent Defaults section after load', async () => {
+  it('renders Agent Defaults pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByText('Agent Defaults')).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
+    await vi.waitFor(() => expect(screen.getByText('Agent Defaults')).toBeDefined())
   })
 
-  it('renders Notifications section after load', async () => {
+  it('renders Notifications pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Notifications' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Notifications' })).toBeDefined())
   })
 
-  it('renders Orchestrator section after load', async () => {
+  it('renders Orchestrator pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Orchestrator' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Orchestrator' }))
+    await goTo('Orchestrator')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Orchestrator' })).toBeDefined())
   })
 
-  it('renders Logging & Audit section after load', async () => {
+  it('renders Logging & Audit pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByText('Logging & Audit')).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Logging' }))
+    await goTo('Logging')
+    await vi.waitFor(() => expect(screen.getByText('Logging & Audit')).toBeDefined())
   })
 
-  it('renders Directories section after load', async () => {
+  it('renders Directories pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Directories' }))
+    await goTo('Directories')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined())
   })
 
   it('Save button is disabled when settings not dirty', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByText('Agent Defaults')).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
     const saveBtn = screen.getByText('Save') as HTMLButtonElement
     expect(saveBtn.disabled).toBe(true)
   })
@@ -212,14 +214,11 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     mockUpdateSettings.mockResolvedValue(undefined)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByLabelText('Max Concurrent')).toBeDefined()
-    })
-    // Make settings dirty by changing a field
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
     const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
     await fireEvent.input(concurrencyInput, { target: { value: '5' } })
-    const saveBtn = screen.getByText('Save') as HTMLButtonElement
-    await fireEvent.click(saveBtn)
+    await fireEvent.click(screen.getByText('Save'))
     await vi.waitFor(() => {
       expect(mockUpdateSettings).toHaveBeenCalled()
       expect(screen.getByText('Settings saved')).toBeDefined()
@@ -230,83 +229,93 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     mockUpdateSettings.mockRejectedValue(new Error('save error'))
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByLabelText('Max Concurrent')).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
     const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
     await fireEvent.input(concurrencyInput, { target: { value: '5' } })
-    const saveBtn = screen.getByText('Save') as HTMLButtonElement
-    await fireEvent.click(saveBtn)
+    await fireEvent.click(screen.getByText('Save'))
     await vi.waitFor(() => {
       expect(screen.getByText('Error: save error')).toBeDefined()
     })
   })
 
-  it('renders Todoist section after load', async () => {
+  it('renders Todoist pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Todoist' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
+    await goTo('Todoist')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Todoist' })).toBeDefined())
   })
 
   it('shows Todoist fields when Todoist enabled', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings, todoist: { enabled: true, apiToken: '', projectId: '', pollSeconds: 300 } })
     render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Todoist' }))
+    await goTo('Todoist')
     await vi.waitFor(() => {
       expect(screen.getByLabelText('API Token')).toBeDefined()
       expect(screen.getByLabelText('Project ID')).toBeDefined()
     })
   })
 
-  it('renders Renovate section after load', async () => {
+  it('renders Renovate pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Renovate' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Renovate' }))
+    await goTo('Renovate')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Renovate' })).toBeDefined())
   })
 
-  it('renders Version section after load', async () => {
+  it('renders Version pane when selected', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Version' })).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Version' }))
+    await goTo('Version')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Version' })).toBeDefined())
   })
 
-  it('shows Appearance section with Color Scheme select', () => {
+  it('shows Appearance pane with a Color Scheme control', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeDefined()
-    expect(screen.getByLabelText('Color Scheme')).toBeDefined()
+    expect(screen.getByText('Color Scheme')).toBeDefined()
+    expect(screen.getByRole('group', { name: 'Color Scheme' })).toBeDefined()
   })
 
-  it('shows Providers section when providerHealthEnabled is true', async () => {
+  it('shows Providers pane when providerHealthEnabled is true', async () => {
     mockGetSettings.mockResolvedValue(mockSettings)
     mockProviderHealthEnabled.mockResolvedValue(true)
     mockGetProviderHealth.mockResolvedValue([
       { provider: 'claude', healthy: true, reason: '', detail: '' },
     ])
     render(Settings)
-    await vi.waitFor(() => {
-      expect(screen.getByText('Providers')).toBeDefined()
-    })
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Providers' }))
+    await goTo('Providers')
+    await vi.waitFor(() => expect(screen.getByRole('heading', { name: 'Providers' })).toBeDefined())
+  })
+
+  it('hides the Providers rail entry when provider health is disabled', async () => {
+    mockGetSettings.mockResolvedValue(mockSettings)
+    mockProviderHealthEnabled.mockResolvedValue(false)
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    // Give the async ProviderHealthEnabled() resolve a chance to settle.
+    await Promise.resolve()
+    expect(screen.queryByRole('button', { name: 'Providers' })).toBeNull()
   })
 
   it('renders Color Scheme options (system, light, dark)', () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    expect(screen.getByText('System')).toBeDefined()
-    expect(screen.getByText('Light')).toBeDefined()
-    expect(screen.getByText('Dark')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'System' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Light' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Dark' })).toBeDefined()
   })
 
   it('persists colorScheme to localStorage when changed', async () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    const select = screen.getByLabelText('Color Scheme') as HTMLSelectElement
-    await fireEvent.change(select, { target: { value: 'dark' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
     await vi.waitFor(() => {
       expect(localStorage.getItem('colorScheme')).toBe('dark')
     })
@@ -315,21 +324,31 @@ describe('Settings', () => {
   it('toggles dark class on html when dark selected', async () => {
     mockGetSettings.mockReturnValue(new Promise(() => {}))
     render(Settings)
-    const select = screen.getByLabelText('Color Scheme') as HTMLSelectElement
-    await fireEvent.change(select, { target: { value: 'dark' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
     await vi.waitFor(() => {
       expect(document.documentElement.classList.contains('dark')).toBe(true)
     })
-    await fireEvent.change(select, { target: { value: 'light' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Light' }))
     await vi.waitFor(() => {
       expect(document.documentElement.classList.contains('dark')).toBe(false)
+    })
+  })
+
+  it('marks the active color scheme button as pressed', async () => {
+    mockGetSettings.mockReturnValue(new Promise(() => {}))
+    render(Settings)
+    await fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Dark' }).getAttribute('aria-pressed')).toBe('true')
+      expect(screen.getByRole('button', { name: 'Light' }).getAttribute('aria-pressed')).toBe('false')
     })
   })
 
   it('Reset button appears when settings are dirty', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
     const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
     await fireEvent.input(concurrencyInput, { target: { value: '7' } })
     await vi.waitFor(() => {
@@ -340,7 +359,8 @@ describe('Settings', () => {
   it('Reset button reverts pending changes', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
     const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
     await fireEvent.input(concurrencyInput, { target: { value: '7' } })
     await vi.waitFor(() => screen.getByText('Reset'))
@@ -351,10 +371,10 @@ describe('Settings', () => {
     })
   })
 
-  it('renders Save and Reset only one button initially (Save)', async () => {
+  it('renders Save without Reset initially', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByText('Agent Defaults'))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
     expect(screen.getByText('Save')).toBeDefined()
     expect(screen.queryByText('Reset')).toBeNull()
   })
@@ -363,6 +383,8 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     mockGetVersion.mockResolvedValue({ server: 'v2.7.0', client: 'v2.7.0' })
     render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Version' }))
+    await goTo('Version')
     await vi.waitFor(() => {
       expect(screen.getByText('v2.7.0')).toBeDefined()
     })
@@ -372,6 +394,8 @@ describe('Settings', () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     mockGetVersion.mockRejectedValue(new Error('no version'))
     render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Version' }))
+    await goTo('Version')
     await vi.waitFor(() => {
       expect(screen.getByText('unavailable')).toBeDefined()
     })
@@ -380,6 +404,8 @@ describe('Settings', () => {
   it('renders directories list for known dir keys', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Directories' }))
+    await goTo('Directories')
     await vi.waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Directories' })).toBeDefined()
       expect(screen.getByDisplayValue('/home/.sybra/tasks')).toBeDefined()
@@ -390,7 +416,8 @@ describe('Settings', () => {
   it('toggles desktop notifications checkbox', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByRole('heading', { name: 'Notifications' }))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
     const checkbox = screen.getByLabelText('Desktop notifications (macOS)') as HTMLInputElement
     expect(checkbox.checked).toBe(false)
     await fireEvent.click(checkbox)
@@ -402,7 +429,8 @@ describe('Settings', () => {
   it('toggles autoTriage', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     render(Settings)
-    await vi.waitFor(() => screen.getByText('Auto-triage'))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Orchestrator' }))
+    await goTo('Orchestrator')
     const label = screen.getByText('Auto-triage').closest('label')
     const checkbox = label?.querySelector('input[type="checkbox"]') as HTMLInputElement
     expect(checkbox.checked).toBe(false)
@@ -418,7 +446,8 @@ describe('Settings', () => {
       { slug: 'gpt-5.4', display_name: 'GPT-5.4' },
     ])
     render(Settings)
-    await vi.waitFor(() => screen.getByLabelText('Agent Type'))
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
     const providerSelect = screen.getByLabelText('Agent Type') as HTMLSelectElement
     await fireEvent.change(providerSelect, { target: { value: 'codex' } })
     await vi.waitFor(() => {
@@ -432,7 +461,8 @@ describe('Settings', () => {
       mockGetSettings.mockResolvedValue({ ...mockSettings })
       mockUpdateSettings.mockResolvedValue(undefined)
       render(Settings)
-      await vi.waitFor(() => screen.getByLabelText('Max Concurrent'))
+      await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+      await goTo('Defaults')
       const concurrencyInput = screen.getByLabelText('Max Concurrent') as HTMLInputElement
       await fireEvent.input(concurrencyInput, { target: { value: '5' } })
       await fireEvent.click(screen.getByText('Save'))
