@@ -232,6 +232,7 @@ func detectLostAgents(in DetectInput) []Anomaly {
 	if in.Cfg.LostAgentMinutes <= 0 {
 		return nil
 	}
+	window := time.Duration(in.Cfg.LostAgentMinutes) * time.Minute
 	live := liveTaskIDs(in.LiveAgents)
 	active := tasksWithRecentAgentEvents(in.Events15m)
 	var out []Anomaly
@@ -247,6 +248,13 @@ func detectLostAgents(in DetectInput) []Anomaly {
 			continue
 		}
 		if active[t.ID] || live[t.ID] {
+			continue
+		}
+		// Skip if any running agent run started within the window. A freshly
+		// dispatched agent may not yet appear in the live list or have written
+		// its first audit event (e.g. during app restart recovery), so we wait
+		// at least one full window before declaring it lost.
+		if recentRunningRun(t.AgentRuns, in.Now, window) {
 			continue
 		}
 		ev := map[string]any{
@@ -265,6 +273,17 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		})
 	}
 	return out
+}
+
+// recentRunningRun reports whether any agent run in state "running" started
+// within d of now.
+func recentRunningRun(runs []task.AgentRun, now time.Time, d time.Duration) bool {
+	for i := range runs {
+		if runs[i].State == "running" && now.Sub(runs[i].StartedAt) < d {
+			return true
+		}
+	}
+	return false
 }
 
 func detectFromAudit(in DetectInput) []Anomaly {

@@ -226,6 +226,34 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "lost_agent suppressed when running run started recently",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "running", StartedAt: now.Add(-2 * time.Minute)},
+					}
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "lost_agent fires when running run started outside window",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "running", StartedAt: now.Add(-20 * time.Minute)},
+					}
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindLostAgent},
+		},
+		{
 			name: "failure_spike when failure_rate > threshold",
 			in: DetectInput{
 				Now: now,
