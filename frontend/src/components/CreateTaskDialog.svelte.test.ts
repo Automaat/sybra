@@ -49,12 +49,13 @@ describe('CreateTaskDialog', () => {
     const { container } = render(CreateTaskDialog, {
       props: { open: true, onOpenChange: vi.fn() },
     })
-    // The required marker sits on the Title field, next to its required input.
+    // The required marker sits on the Title field, next to its required input,
+    // with a screen-reader-only "(required)" so it isn't visual-only.
     const titleLabel = Array.from(container.querySelectorAll('label')).find((l) =>
       l.textContent?.includes('Title'),
     )
-    expect(titleLabel?.querySelector('span[title="Required"]')).not.toBeNull()
     expect(titleLabel?.querySelector('input[required]')).not.toBeNull()
+    expect(titleLabel?.querySelector('.sr-only')?.textContent).toContain('required')
     // One-line Type helper.
     expect(container.textContent).toContain('Sets how the agent runs')
   })
