@@ -321,6 +321,112 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 	}
 }
 
+// TestProcessHeadlessLine_CapturesSessionOnInit is the real regression
+// guard for Phase 2: the session id must be captured (and persisted to the
+// registry) on the init/system event, not only on the terminal result —
+// otherwise a mid-run crash leaves no session to resume.
+func TestProcessHeadlessLine_CapturesSessionOnInit(t *testing.T) {
+	regDir := t.TempDir()
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	if err := m.EnableSurviveRestart(regDir); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	a := &Agent{ID: "cap1", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	var lastEmit time.Time
+
+	// Claude reports the session id on the init/system event (no result yet).
+	line := []byte(`{"type":"system","subtype":"init","session_id":"sess-real"}`)
+	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, false); stop {
+		t.Fatal("init event must not stop the stream")
+	}
+
+	if a.GetSessionID() != "sess-real" {
+		t.Fatalf("expected session captured on init, got %q", a.GetSessionID())
+	}
+	list, _ := m.reg.List()
+	if len(list) != 1 || list[0].SessionID != "sess-real" {
+		t.Fatalf("expected registry record carrying session id, got %+v", list)
+	}
+}
+
+// TestReattachAll_BridgesDeadSessionForResume verifies a crashed headless
+// agent (process gone, log has no terminal result) has its captured session
+// id bridged to its AgentRun via the sink, so restart-stale can resume.
+func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "crash1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Assistant output but NO terminal result -> genuine crash mid-run.
+	partial := `{"type":"assistant","message":{"content":[{"type":"text","text":"half"}]}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(partial), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	var gotTask, gotAgent, gotSession atomic.Value
+	m.SetSessionSink(func(taskID, agentID, sessionID string) error {
+		gotTask.Store(taskID)
+		gotAgent.Store(agentID)
+		gotSession.Store(sessionID)
+		return nil
+	})
+
+	// Dead process (PID 0), session captured in the registry record.
+	if err := m.reg.Save(Record{ID: "crash1", TaskID: "t9", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, SessionID: "sess-crash"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected crashed record not reattached as live, got %d", len(got))
+	}
+	if tid, _ := gotTask.Load().(string); tid != "t9" {
+		t.Fatalf("expected sink taskID t9, got %q", tid)
+	}
+	if aid, _ := gotAgent.Load().(string); aid != "crash1" {
+		t.Fatalf("expected sink agentID crash1, got %q", aid)
+	}
+	if sid, _ := gotSession.Load().(string); sid != "sess-crash" {
+		t.Fatalf("expected sink sessionID sess-crash, got %q", sid)
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatal("expected record deleted after bridge")
+	}
+}
+
+// TestReattachAll_RetainsRecordWhenBridgeFails verifies a sink error keeps
+// the registry record (for a later retry) instead of deleting it and losing
+// the session id.
+func TestReattachAll_RetainsRecordWhenBridgeFails(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "crash2.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	m.SetSessionSink(func(_, _, _ string) error { return fmt.Errorf("task store down") })
+
+	if err := m.reg.Save(Record{ID: "crash2", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, SessionID: "s"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	m.ReattachAll()
+
+	list, _ := m.reg.List()
+	if len(list) != 1 {
+		t.Fatalf("expected record retained on bridge failure, got %d", len(list))
+	}
+}
+
 // TestShutdownWithGrace_LeavesDetachedAgents verifies a detached agent is
 // neither cancelled nor waited on, while a normal agent is cancelled.
 func TestShutdownWithGrace_LeavesDetachedAgents(t *testing.T) {

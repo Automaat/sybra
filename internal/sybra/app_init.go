@@ -344,6 +344,13 @@ func (a *App) initAgentConfig() {
 		} else {
 			a.logger.Info("agent.survive-restart.enabled", "dir", config.AgentsDir())
 		}
+		// Bridge a crashed agent's session id into its AgentRun on
+		// dead-reattach so restart-stale recovery resumes via --resume. The
+		// error is returned (not swallowed) so the manager retains the
+		// registry record for retry and logs the failure at Warn.
+		a.agents.SetSessionSink(func(taskID, agentID, sessionID string) error {
+			return a.tasks.UpdateRun(taskID, agentID, map[string]any{"session_id": sessionID})
+		})
 	}
 	a.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
