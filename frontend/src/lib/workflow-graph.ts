@@ -1,5 +1,6 @@
 import type { Node, Edge } from '@xyflow/svelte'
 import { Condition, Definition, Position, Step, Trigger } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
+import { layoutGraph } from './graph-layout.js'
 
 const NODE_SPACING_X = 250
 const NODE_SPACING_Y = 120
@@ -29,6 +30,12 @@ export function definitionToGraph(def: Definition): { nodes: Node[], edges: Edge
   const nodes: Node[] = []
   const edges: Edge[] = []
   const steps = def.steps ?? []
+
+  // Auto-layout unless EVERY node already has a stored position. Gating on "all"
+  // (not "any") means a partially-positioned def — e.g. a hand-edited YAML with
+  // only the trigger placed, or a fresh step added — still gets a clean layered
+  // layout instead of dropping the position-less nodes onto the naive grid.
+  const allPositioned = !!def.trigger?.position && steps.every((s) => s.position)
 
   // Synthesize the trigger node — always present, even when empty.
   const triggerPos = def.trigger?.position
@@ -102,7 +109,7 @@ export function definitionToGraph(def: Definition): { nodes: Node[], edges: Edge
     }
   }
 
-  return { nodes, edges }
+  return { nodes: allPositioned ? nodes : layoutGraph(nodes, edges), edges }
 }
 
 export function graphToDefinition(

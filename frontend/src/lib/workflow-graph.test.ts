@@ -47,10 +47,37 @@ describe('definitionToGraph', () => {
     expect(trigger?.position).toEqual({ x: 100, y: 200 })
   })
 
-  it('uses default trigger position when not set', () => {
+  it('auto-positions the trigger when no positions are set', () => {
     const { nodes } = definitionToGraph(makeDef())
     const trigger = nodes.find(n => n.id === TRIGGER_NODE_ID)
-    expect(trigger?.position).toEqual({ x: 0, y: -150 })
+    expect(typeof trigger?.position.x).toBe('number')
+    expect(typeof trigger?.position.y).toBe('number')
+  })
+
+  it('applies a layered layout when no positions are stored', () => {
+    // Trigger → s1 → s2 with no stored positions should flow top-to-bottom
+    // (increasing y), not a same-row grid.
+    const def = makeDef({
+      steps: [
+        makeStep('s1', 'Step 1', { next: [Transition.createFrom({ goto: 's2', when: null })] }),
+        makeStep('s2', 'Step 2'),
+      ],
+    })
+    const { nodes } = definitionToGraph(def)
+    const trig = nodes.find(n => n.id === TRIGGER_NODE_ID)!
+    const s1 = nodes.find(n => n.id === 's1')!
+    const s2 = nodes.find(n => n.id === 's2')!
+    expect(trig.position.y).toBeLessThan(s1.position.y)
+    expect(s1.position.y).toBeLessThan(s2.position.y)
+  })
+
+  it('keeps stored positions when every node is positioned', () => {
+    const def = makeDef({
+      trigger: Trigger.createFrom({ on: 'manual', conditions: [], position: Position.createFrom({ x: 0, y: 0 }) }),
+      steps: [makeStep('s1', 'Step 1', { position: Position.createFrom({ x: 300, y: 400 }) })],
+    })
+    const { nodes } = definitionToGraph(def)
+    expect(nodes.find(n => n.id === 's1')?.position).toEqual({ x: 300, y: 400 })
   })
 
   it('creates one step node per step', () => {
@@ -96,14 +123,33 @@ describe('definitionToGraph', () => {
     expect(endNode).toBeDefined()
   })
 
-  it('uses step position when set', () => {
+  it('uses step position when every node is positioned', () => {
     const step = makeStep('s1', 'Step 1', {
       position: Position.createFrom({ x: 300, y: 400 }),
     })
-    const def = makeDef({ steps: [step] })
+    const def = makeDef({
+      trigger: Trigger.createFrom({ on: 'manual', conditions: [], position: Position.createFrom({ x: 0, y: 0 }) }),
+      steps: [step],
+    })
     const { nodes } = definitionToGraph(def)
     const stepNode = nodes.find(n => n.id === 's1')
     expect(stepNode?.position).toEqual({ x: 300, y: 400 })
+  })
+
+  it('auto-positions a partially-positioned def (trigger set, step not)', () => {
+    // Only the trigger has a position — the step must still be laid out, not
+    // dropped on the grid where it could overlap.
+    const step = makeStep('s1', 'Step 1')
+    const def = makeDef({
+      trigger: Trigger.createFrom({ on: 'manual', conditions: [], position: Position.createFrom({ x: 0, y: 0 }) }),
+      steps: [step],
+    })
+    const { nodes } = definitionToGraph(def)
+    const trig = nodes.find(n => n.id === TRIGGER_NODE_ID)!
+    const s1 = nodes.find(n => n.id === 's1')!
+    expect(typeof s1.position.x).toBe('number')
+    // Laid out below the trigger, not stacked on it.
+    expect(s1.position.y).toBeGreaterThan(trig.position.y)
   })
 
   it('falls back to computed position when no step position set', () => {

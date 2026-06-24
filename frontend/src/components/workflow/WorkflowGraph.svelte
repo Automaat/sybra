@@ -29,7 +29,7 @@
   } as unknown as NodeTypes
 </script>
 
-<div class="h-full w-full">
+<div class="wf-graph h-full w-full">
   <SvelteFlow
     {nodes}
     {edges}
@@ -47,3 +47,24 @@
     <MiniMap />
   </SvelteFlow>
 </div>
+
+<style>
+  /* Restyle the default white handle stubs into intentional muted connectors.
+     Scoped under .wf-graph so other (future) xyflow graphs are unaffected. */
+  :global(.wf-graph .svelte-flow__handle) {
+    width: 8px;
+    height: 8px;
+    background: #94a3b8; /* slate-400 */
+    border: 2px solid #fff;
+    border-radius: 9999px;
+  }
+  :global(.dark .wf-graph .svelte-flow__handle) {
+    background: #64748b; /* slate-500 */
+    border-color: #1e293b; /* surface-800 */
+  }
+  :global(.wf-graph .svelte-flow__handle.connectingfrom),
+  :global(.wf-graph .svelte-flow__handle.connectionindicator),
+  :global(.wf-graph .svelte-flow__handle:hover) {
+    background: #3b82f6; /* primary — clearly a connector when interacting */
+  }
+</style>
