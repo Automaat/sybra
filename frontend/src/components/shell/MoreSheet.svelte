@@ -2,7 +2,6 @@
   import { ChevronRight } from '@lucide/svelte'
   import MobileSheet from './MobileSheet.svelte'
   import { navStore, type Page } from '../../lib/navigation.svelte.js'
-  import { taskStore } from '../../stores/tasks.svelte.js'
 
   interface Props {
     open: boolean
@@ -11,17 +10,13 @@
 
   const { open, onOpenChange }: Props = $props()
 
-  const reviewCount = $derived(
-    taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length
-  )
-
   type Item = { label: string; page: Page; badge?: number }
 
   const items: Item[] = $derived([
     { label: 'Dashboard', page: { kind: 'dashboard' } },
     { label: 'Projects', page: { kind: 'project-list' } },
+    { label: 'Logbook', page: { kind: 'logbook' } },
     { label: 'GitHub', page: { kind: 'github' } },
-    { label: 'Reviews', page: { kind: 'reviews' }, badge: reviewCount },
     { label: 'Workflows', page: { kind: 'workflows' } },
     { label: 'Stats', page: { kind: 'stats' } },
     { label: 'Settings', page: { kind: 'settings' } },
