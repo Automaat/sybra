@@ -54,6 +54,15 @@ export class AgentDefaults {
      */
     "logRetentionDays": number;
 
+    /**
+     * SurviveRestart keeps agent subprocesses running across an app
+     * restart (detached, output streamed to their log files) and reattaches
+     * to them on the next startup. nil means not configured (defaults to
+     * true). Set false to revert to the legacy behaviour where agents are
+     * killed on shutdown and recovered via restart-stale.
+     */
+    "surviveRestart": boolean | null;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -94,6 +103,9 @@ export class AgentDefaults {
         }
         if (!("logRetentionDays" in $$source)) {
             this["logRetentionDays"] = 0;
+        }
+        if (!("surviveRestart" in $$source)) {
+            this["surviveRestart"] = null;
         }
 
         Object.assign(this, $$source);
