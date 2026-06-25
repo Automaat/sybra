@@ -12,6 +12,26 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('')).toBe('')
     expect(renderMarkdown(null)).toBe('')
   })
+
+  // Regression: a bare ``` fence (and any fence whose language isn't in the
+  // curated highlight.js set) makes marked fall back to the 'plaintext'
+  // grammar. In the `highlight.js/lib/core` build that grammar isn't
+  // registered unless imported, so hljs.highlight() threw "Unknown language:
+  // plaintext", aborting marked.parse() and blanking every view rendering the
+  // markdown — a plan with a bare fence left the task detail stuck on "Loading…".
+  it('does not throw on a bare ``` fence (empty language)', () => {
+    const md = 'before\n\n```\nplain code line\n```\n\nafter'
+    expect(() => renderMarkdown(md)).not.toThrow()
+    expect(renderMarkdown(md)).toContain('plain code line')
+  })
+
+  it('does not throw on an unregistered fence language', () => {
+    expect(() => renderMarkdown('```brainfuck\n+[-]\n```')).not.toThrow()
+  })
+
+  it('still highlights a registered language', () => {
+    expect(renderMarkdown('```go\npackage main\n```')).toContain('language-go')
+  })
 })
 
 describe('renderChecklistMarkdown', () => {
