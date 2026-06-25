@@ -394,6 +394,26 @@ func applyReviewFields(t *Task, u Update) {
 	}
 }
 
+// applyLinkFields applies the repo-location fields (project, branch, adopted
+// worktree dir, PR, issue) that tie a task to its code.
+func applyLinkFields(t *Task, u Update) {
+	if u.ProjectID != nil {
+		t.ProjectID = *u.ProjectID
+	}
+	if u.Branch != nil {
+		t.Branch = *u.Branch
+	}
+	if u.WorktreeDir != nil {
+		t.WorktreeDir = *u.WorktreeDir
+	}
+	if u.PRNumber != nil {
+		t.PRNumber = *u.PRNumber
+	}
+	if u.Issue != nil {
+		t.Issue = *u.Issue
+	}
+}
+
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	t, err := s.read(id)
 	if err != nil {
@@ -449,18 +469,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.Tags != nil {
 		t.Tags = *u.Tags
 	}
-	if u.ProjectID != nil {
-		t.ProjectID = *u.ProjectID
-	}
-	if u.Branch != nil {
-		t.Branch = *u.Branch
-	}
-	if u.PRNumber != nil {
-		t.PRNumber = *u.PRNumber
-	}
-	if u.Issue != nil {
-		t.Issue = *u.Issue
-	}
+	applyLinkFields(&t, u)
 	if u.Reviewed != nil {
 		t.Reviewed = *u.Reviewed
 	}

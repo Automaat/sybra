@@ -11,10 +11,11 @@ description = "Configure git to use project hooks from .githooks/"
 [tasks.dev]
 run = [
   "go install ./cmd/sybra-cli",
+  "sybra-cli install-skills || true",
   "cd frontend && npm run build:desktop",
   "go run .",
 ]
-description = "Install CLI, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
+description = "Install CLI, refresh agent skills, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
 [tasks.build]

@@ -214,6 +214,37 @@ func TestSyncDirMissingSrc(t *testing.T) {
 	}
 }
 
+// TestSyncDirSkipsUserOwnedSymlink locks that the syncer never overwrites a
+// destination skill the user owns as a symlink (e.g. one symlinked from their
+// dotfiles), even when a bundle skill shares its name.
+func TestSyncDirSkipsUserOwnedSymlink(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "shared.md"),
+		[]byte("---\nname: shared\ndescription: from sybra\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := t.TempDir()
+	userSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(userSrc, "SKILL.md"), []byte("USER OWNED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(userSrc, filepath.Join(dst, "shared")); err != nil {
+		t.Fatal(err)
+	}
+
+	newSyncer().SyncDir(src, dst)
+
+	info, err := os.Lstat(filepath.Join(dst, "shared"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("user-owned symlink was replaced (err=%v)", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dst, "shared", "SKILL.md"))
+	if string(got) != "USER OWNED" {
+		t.Errorf("user content overwritten: %q", got)
+	}
+}
+
 func TestRunPrefersEmbeddedWhenNoGoMod(t *testing.T) {
 	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
 	dataDir := filepath.Join(embeddedSrc, "data")
@@ -246,6 +277,39 @@ func TestRunPrefersEmbeddedWhenNoGoMod(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(primaryDst, "rogue")); !os.IsNotExist(err) {
 		t.Errorf("rogue skill leaked into app skills dir")
+	}
+}
+
+// TestRunInstallsToAgentDirs locks that Run mirrors skills into all three
+// per-agent destinations — ~/.claude/skills, ~/.codex/skills, and the
+// cross-agent ~/.agents/skills (read by Orca-launched agents) — when
+// UserHomeDir is set.
+func TestRunInstallsToAgentDirs(t *testing.T) {
+	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
+	dataDir := filepath.Join(embeddedSrc, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := []byte("---\nname: embedded-skill\ndescription: from embed\n---\n\n# embed")
+	if err := os.WriteFile(filepath.Join(dataDir, "embedded-skill.md"), skill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	userHome := t.TempDir()
+	newSyncer().Run(skillsync.Options{
+		// A path without go.mod forces embedded mode (no cwd fallback to the
+		// real repo this test runs in).
+		RepoDir:     filepath.Join(t.TempDir(), "not-a-repo"),
+		SkillsFS:    os.DirFS(embeddedSrc),
+		PrimaryDst:  filepath.Join(t.TempDir(), "app-skills"),
+		UserHomeDir: userHome,
+	})
+
+	for _, dir := range []string{".claude", ".codex", ".agents"} {
+		p := filepath.Join(userHome, dir, "skills", "embedded-skill", "SKILL.md")
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("skill missing in %s/skills: %v", dir, err)
+		}
 	}
 }
 

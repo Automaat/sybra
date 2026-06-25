@@ -23,6 +23,7 @@ type Update struct {
 	Tags           *[]string
 	ProjectID      *string
 	Branch         *string
+	WorktreeDir    *string
 	PRNumber       *int
 	Issue          *string
 	Reviewed       *bool
@@ -63,7 +64,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "body",
-		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
+		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
 		"review_phase", "pr_phase":
 		return applyPlainStringField(u, k, v)
 	case "priority":
@@ -126,6 +127,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.ProjectID = &s
 	case "branch":
 		u.Branch = &s
+	case "worktree_dir":
+		u.WorktreeDir = &s
 	case "issue":
 		u.Issue = &s
 	case "run_role":

@@ -161,9 +161,16 @@ type Task struct {
 	Tags         []string `yaml:"tags" json:"tags"`
 	ProjectID    string   `yaml:"project_id,omitempty" json:"projectId"`
 	Branch       string   `yaml:"branch,omitempty" json:"branch"`
-	PRNumber     int      `yaml:"pr_number,omitempty" json:"prNumber"`
-	Issue        string   `yaml:"issue,omitempty" json:"issue"`
-	StatusReason string   `yaml:"status_reason,omitempty" json:"statusReason"`
+	// WorktreeDir, when non-empty, makes Sybra adopt an externally-created git
+	// worktree at this path instead of creating its own under
+	// ~/.sybra/worktrees. Used for handoff from tools like Orca: every agent
+	// for this task runs in this directory, and Sybra never rebases, force-
+	// pushes, or removes it — the external tool owns its lifecycle. Empty =
+	// Sybra-managed worktree (default).
+	WorktreeDir  string `yaml:"worktree_dir,omitempty" json:"worktreeDir,omitempty"`
+	PRNumber     int    `yaml:"pr_number,omitempty" json:"prNumber"`
+	Issue        string `yaml:"issue,omitempty" json:"issue"`
+	StatusReason string `yaml:"status_reason,omitempty" json:"statusReason"`
 	// BlockedByIssue stores the URL of the GitHub issue that put the task
 	// into status=blocked. Set by the human-review automation when it
 	// concludes the human-required transition was caused by a Sybra bug.
