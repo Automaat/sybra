@@ -201,10 +201,12 @@ steps:
         already has pr_number {{.Task.PRNumber}}).
 
         Steps:
-          1. Determine the push remote:
+          1. Determine the push remote by matching the PR's actual head repository:
              BRANCH="$(git branch --show-current)"
              PUSH_REMOTE="origin"
-             if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE="fork"; fi
+             PR_HEAD="$(gh pr view {{.Task.PRNumber}} --json headRepository --jq '.headRepository.nameWithOwner')"
+             FORK_URL="$(git config --get remote.fork.url 2>/dev/null || true)"
+             if [ -n "$FORK_URL" ] && echo "$FORK_URL" | grep -qF "$PR_HEAD"; then PUSH_REMOTE="fork"; fi
           2. Push: git push "$PUSH_REMOTE" HEAD:"$BRANCH"
              If rejected due to divergence, force-push:
              git push --force-with-lease "$PUSH_REMOTE" HEAD:"$BRANCH"

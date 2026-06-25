@@ -98,14 +98,15 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 			"Fix failing CI on branch `%s` (PR #%d). "+
 				"Check the failing run with `gh run view --log-failed`, "+
 				"fix the code, commit and push. No unrelated changes.\n\n"+
-				"Push to the same remote the PR was opened from — never to `origin` "+
-				"when a `fork` remote exists:\n"+
+				"Push to the remote that hosts the PR's head branch:\n"+
 				"```sh\n"+
 				"PUSH_REMOTE=origin\n"+
-				"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+				"PR_HEAD=\"$(gh pr view %d --json headRepository --jq '.headRepository.nameWithOwner')\"\n"+
+				"FORK_URL=\"$(git config --get remote.fork.url 2>/dev/null || true)\"\n"+
+				"if [ -n \"$FORK_URL\" ] && echo \"$FORK_URL\" | grep -qF \"$PR_HEAD\"; then PUSH_REMOTE=fork; fi\n"+
 				"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 				"```",
-			issue.PR.HeadRefName, issue.PR.Number, issue.PR.HeadRefName,
+			issue.PR.HeadRefName, issue.PR.Number, issue.PR.Number, issue.PR.HeadRefName,
 		)
 		r.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
