@@ -80,7 +80,9 @@ type AgentDefaults struct {
 	// RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess
 	// for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now
 	// capped at 15) for server/unattended sessions. 0 means use
-	// DefaultRetryWatchdog (30).
+	// DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog
+	// entirely (env var omitted), matching the zero-omit semantics at the
+	// RunConfig level.
 	RetryWatchdog int `yaml:"retry_watchdog" json:"retryWatchdog"`
 	// FallbackModel, when set, passes --fallback-model to claude for headless
 	// runs. Paired with RetryWatchdog so the watchdog can retry with a less
@@ -126,8 +128,12 @@ func (c *Config) BashTimeoutMs() int {
 	return DefaultBashTimeoutSeconds * 1000
 }
 
-// RetryWatchdog returns the configured watchdog value or DefaultRetryWatchdog.
+// RetryWatchdog returns the configured watchdog value, DefaultRetryWatchdog
+// when unset (0), or 0 when explicitly disabled (negative value).
 func (c *Config) RetryWatchdog() int {
+	if c != nil && c.Agent.RetryWatchdog < 0 {
+		return 0
+	}
 	if c != nil && c.Agent.RetryWatchdog > 0 {
 		return c.Agent.RetryWatchdog
 	}

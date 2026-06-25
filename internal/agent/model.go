@@ -561,7 +561,8 @@ type RunConfig struct {
 	RetryWatchdog int
 	// FallbackModel, when non-empty, passes --fallback-model to claude.
 	// Paired with RetryWatchdog so the watchdog can retry on a less-loaded
-	// model when the primary is overloaded. Empty means no fallback flag.
+	// model when the primary is overloaded. Empty means inherit the manager's
+	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
 }
 
