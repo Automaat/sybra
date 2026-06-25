@@ -110,10 +110,16 @@ func TestMatchTaskPRs(t *testing.T) {
 			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
 		},
 		{
-			name:  "unresolved threads → comments fix",
-			prs:   []PullRequest{{Number: 42, UnresolvedCount: 2}},
+			name:  "actionable threads → comments fix",
+			prs:   []PullRequest{{Number: 42, UnresolvedCount: 2, ActionableCount: 2}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
 			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
+		},
+		{
+			name:  "unresolved but addressed (agent replied) → no comments fix",
+			prs:   []PullRequest{{Number: 42, UnresolvedCount: 2, ActionableCount: 0}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
 		},
 		{
 			name:  "draft with comments is not fixed",

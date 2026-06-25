@@ -107,9 +107,11 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		if pr.CIStatus == "FAILURE" && !pr.HasPendingChecks {
 			issues = append(issues, PRIssue{Kind: PRIssueCIFailure, TaskID: tm.ID, PR: *pr})
 		}
-		// Reviewers asked for changes or left unresolved threads — dispatch a
-		// fix-review agent. Skip drafts: the author is still iterating.
-		if !pr.IsDraft && (pr.ReviewDecision == "CHANGES_REQUESTED" || pr.UnresolvedCount > 0) {
+		// Reviewers asked for changes or left actionable threads (a reviewer had
+		// the last word) — dispatch a fix-review agent. Threads the agent has
+		// already replied to are unresolved but NOT actionable, so they no longer
+		// re-trigger pr-fix. Skip drafts: the author is still iterating.
+		if !pr.IsDraft && (pr.ReviewDecision == "CHANGES_REQUESTED" || pr.ActionableCount > 0) {
 			issues = append(issues, PRIssue{Kind: PRIssueComments, TaskID: tm.ID, PR: *pr})
 		}
 		if !pr.IsDraft && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {

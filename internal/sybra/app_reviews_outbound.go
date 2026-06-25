@@ -53,6 +53,7 @@ func (r *ReviewHandler) reconcilePRPhases(tasks []task.Task, monitoredPRs []gith
 			Mergeable:        pr.Mergeable,
 			ReviewDecision:   pr.ReviewDecision,
 			UnresolvedCount:  pr.UnresolvedCount,
+			ActionableCount:  pr.ActionableCount,
 		}))
 	}
 }

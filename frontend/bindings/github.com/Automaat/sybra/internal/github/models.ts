@@ -144,6 +144,24 @@ export class PullRequest {
      */
     "mergeable": string;
     "unresolvedCount": number;
+
+    /**
+     * ActionableCount is the subset of unresolved threads where a reviewer
+     * (human or bot) left the last comment — i.e. the ball is in the agent's
+     * court. A thread the fix agent already replied to is unresolved but NOT
+     * actionable, so it stops re-triggering pr-fix. This is the dispatch
+     * trigger; UnresolvedCount stays the raw merge-gate signal.
+     */
+    "actionableCount": number;
+
+    /**
+     * FeedbackSig fingerprints the current reviewer feedback (the review decision
+     * plus the set of unresolved thread IDs). It changes when the reviewer opens
+     * a new thread but not on the agent's own replies (a replied-to thread is
+     * still unresolved, so its ID stays in the set) — so the pr-fix retry budget
+     * resets on new feedback and caps on stale.
+     */
+    "feedbackSig": string;
     "viewerHasApproved": boolean;
 
     /**
@@ -199,6 +217,12 @@ export class PullRequest {
         }
         if (!("unresolvedCount" in $$source)) {
             this["unresolvedCount"] = 0;
+        }
+        if (!("actionableCount" in $$source)) {
+            this["actionableCount"] = 0;
+        }
+        if (!("feedbackSig" in $$source)) {
+            this["feedbackSig"] = "";
         }
         if (!("viewerHasApproved" in $$source)) {
             this["viewerHasApproved"] = false;
@@ -264,6 +288,24 @@ export class RenovatePR {
      */
     "mergeable": string;
     "unresolvedCount": number;
+
+    /**
+     * ActionableCount is the subset of unresolved threads where a reviewer
+     * (human or bot) left the last comment — i.e. the ball is in the agent's
+     * court. A thread the fix agent already replied to is unresolved but NOT
+     * actionable, so it stops re-triggering pr-fix. This is the dispatch
+     * trigger; UnresolvedCount stays the raw merge-gate signal.
+     */
+    "actionableCount": number;
+
+    /**
+     * FeedbackSig fingerprints the current reviewer feedback (the review decision
+     * plus the set of unresolved thread IDs). It changes when the reviewer opens
+     * a new thread but not on the agent's own replies (a replied-to thread is
+     * still unresolved, so its ID stays in the set) — so the pr-fix retry budget
+     * resets on new feedback and caps on stale.
+     */
+    "feedbackSig": string;
     "viewerHasApproved": boolean;
 
     /**
@@ -321,6 +363,12 @@ export class RenovatePR {
         if (!("unresolvedCount" in $$source)) {
             this["unresolvedCount"] = 0;
         }
+        if (!("actionableCount" in $$source)) {
+            this["actionableCount"] = 0;
+        }
+        if (!("feedbackSig" in $$source)) {
+            this["feedbackSig"] = "";
+        }
         if (!("viewerHasApproved" in $$source)) {
             this["viewerHasApproved"] = false;
         }
@@ -345,13 +393,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField19_0 = $$createType2;
+        const $$createField21_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField19_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField21_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }

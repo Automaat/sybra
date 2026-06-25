@@ -2,7 +2,6 @@ package sybra
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -55,6 +54,18 @@ type ReviewHandler struct {
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
 	resolveThread func(threadID string) error
+	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
+	// agent posts as), used to tell the agent's own thread replies from a human
+	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
+	viewerLoginFn func() string
+}
+
+// agentLogin returns the GitHub login the fix agent posts as.
+func (r *ReviewHandler) agentLogin() string {
+	if r.viewerLoginFn != nil {
+		return r.viewerLoginFn()
+	}
+	return github.ViewerLogin()
 }
 
 func newReviewHandler(
@@ -164,15 +175,23 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
 				continue
 			}
-			if !r.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA) {
-				r.maybeEscalateRetryCap(issues[i].TaskID, issues[i].Kind)
-				continue
+			// Only the comments kind carries a feedback fingerprint; conflict,
+			// ci_failure, and ready_to_merge fall back to SHA-only gating.
+			var sig string
+			if issues[i].Kind == github.PRIssueComments {
+				sig = issues[i].PR.FeedbackSig
 			}
-			if issues[i].Kind == github.PRIssueReadyToMerge {
-				r.handleAutoMerge(issues[i])
-				continue
+			switch r.prTracker.Decide(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA, sig) {
+			case github.DispatchHandle:
+				if issues[i].Kind == github.PRIssueReadyToMerge {
+					r.handleAutoMerge(issues[i])
+					continue
+				}
+				r.handlePRIssue(issues[i])
+			case github.DispatchExhausted:
+				r.escalateExhaustedFix(issues[i])
+			case github.DispatchSkip:
 			}
-			r.handlePRIssue(issues[i])
 		}
 	}
 
@@ -352,27 +371,6 @@ func earliestRunStart(runs []task.AgentRun) time.Time {
 		}
 	}
 	return earliest
-}
-
-// maybeEscalateRetryCap flips a task to human-required when its retry budget is
-// exhausted. Removes the task from the tracker so it does not re-trigger.
-func (r *ReviewHandler) maybeEscalateRetryCap(taskID string, kind github.PRIssueKind) {
-	if !r.prTracker.AtCap(taskID, kind) {
-		return
-	}
-	reason := fmt.Sprintf(
-		"pr-monitor: CI fix attempted %d× without going green (likely flaky infra or unfixable) — needs human",
-		github.MaxRetries,
-	)
-	if _, uerr := r.tasks.Update(taskID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-	}); uerr != nil {
-		r.logger.Error("pr-monitor.retry-cap.escalate", "task_id", taskID, "err", uerr)
-		return
-	}
-	r.logger.Info("pr-monitor.retry-cap", "task_id", taskID, "kind", string(kind))
-	r.prTracker.Clear(taskID, kind)
 }
 
 // cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow

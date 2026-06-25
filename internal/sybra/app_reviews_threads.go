@@ -1,6 +1,8 @@
 package sybra
 
 import (
+	"strings"
+
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -61,7 +63,7 @@ func (r *ReviewHandler) resolveAddressedCopilotThreads(tasks []task.Task, prs []
 		if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(taskID) {
 			continue
 		}
-		r.resolveCopilotThreadsForPR(taskID, *pr)
+		r.resolveCopilotThreadsForPR(taskID, *pr, r.agentLogin())
 	}
 }
 
@@ -77,7 +79,14 @@ func blockedOnlyByThreads(pr github.PullRequest) bool {
 		pr.UnresolvedCount > 0
 }
 
-func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest) {
+func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest, agentLogin string) {
+	// ViewerLogin() can fail (returns ""); fall back to the PR author so an
+	// addressed thread is still detected. On own-PRs the author is the agent's
+	// identity, mirroring convertCommonPR's fallback. Without this an empty
+	// agentLogin would match nothing and re-park the pet PR on its threads.
+	if agentLogin == "" {
+		agentLogin = pr.Author
+	}
 	fetch := r.fetchThreads
 	if fetch == nil {
 		fetch = github.FetchReviewThreads
@@ -96,9 +105,19 @@ func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.Pull
 	var resolved int
 	for i := range threads {
 		th := &threads[i]
-		// Resolve only Copilot-authored threads the fix agent has addressed
-		// (outdated). Leave human threads and live Copilot threads alone.
-		if th.IsResolved || !th.IsOutdated || !github.IsCopilotReviewer(th.AuthorLogin) {
+		// Resolve only Copilot-authored threads the fix agent has addressed.
+		// Leave human threads and live Copilot threads (no reply yet) alone.
+		if th.IsResolved || !github.IsCopilotReviewer(th.AuthorLogin) {
+			continue
+		}
+		// Addressed = the anchored code changed (outdated) OR the fix agent itself
+		// posted the last reply. Copilot never resolves its own threads, so
+		// without this an addressed-but-not-outdated thread would block the pet
+		// merge forever. The reply must be the agent's own identity, not just
+		// "not Copilot" — otherwise a human collaborator's reply on a Copilot
+		// thread would be auto-dismissed, discarding live feedback.
+		agentReplied := agentLogin != "" && strings.EqualFold(th.LastAuthorLogin, agentLogin)
+		if !th.IsOutdated && !agentReplied {
 			continue
 		}
 		if err := resolve(th.ID); err != nil {

@@ -34,13 +34,18 @@ func TestComputePRPhase(t *testing.T) {
 			want: PRPhaseChangesRequested,
 		},
 		{
-			name: "unresolved threads → changes-requested",
-			sig:  prSignals{UnresolvedCount: 2},
+			name: "actionable threads → changes-requested",
+			sig:  prSignals{UnresolvedCount: 2, ActionableCount: 2},
 			want: PRPhaseChangesRequested,
 		},
 		{
+			name: "unresolved but addressed (agent replied) → awaiting-approval, not changes",
+			sig:  prSignals{UnresolvedCount: 2, ActionableCount: 0},
+			want: PRPhaseAwaitingApproval,
+		},
+		{
 			name: "draft with comments stays draft (comment-fix is skipped on drafts)",
-			sig:  prSignals{IsDraft: true, UnresolvedCount: 1},
+			sig:  prSignals{IsDraft: true, UnresolvedCount: 1, ActionableCount: 1},
 			want: PRPhaseDraft,
 		},
 		{
