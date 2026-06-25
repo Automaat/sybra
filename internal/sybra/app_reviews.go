@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -58,6 +59,8 @@ type ReviewHandler struct {
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
 	viewerLoginFn func() string
+	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
+	lastRevertScan time.Time
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
@@ -199,6 +202,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
 	}
 
+	r.scanForReverts(tasks)
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.reconcileReviewPhases(tasks, summary)
@@ -236,10 +240,21 @@ func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, 
 			eventType = audit.EventPRClosed
 		}
 		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
-		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR.
+		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
+		// and persist the merge commit for later revert detection.
 		outcome, landData := r.computeLanding(c.TaskID, c.PRNumber, c.State, base)
+		upd := task.Update{}
+		refine := false
 		if outcome != base {
-			if _, err := r.tasks.Update(c.TaskID, task.Update{Outcome: task.Ptr(outcome)}); err != nil {
+			upd.Outcome = task.Ptr(outcome)
+			refine = true
+		}
+		if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
+			upd.MergeCommit = task.Ptr(mc)
+			refine = true
+		}
+		if refine {
+			if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
 				r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
 			}
 		}
@@ -318,6 +333,10 @@ func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA, base 
 	if base != "merged" {
 		return enr // closed (unmerged): size only, no edit detection
 	}
+	// Record the merge commit so the revert scanner can later detect a revert.
+	if mc, err := github.FetchPRMergeCommitContext(ctx, repo, prNumber); err == nil && mc != "" {
+		enr.data["merge_commit"] = mc
+	}
 	head, err := github.FetchPRHeadSHAContext(ctx, repo, prNumber)
 	if err != nil {
 		return enr // couldn't read the merged head; keep base outcome + size
@@ -355,6 +374,111 @@ func lastAgentHeadSHA(runs []task.AgentRun) string {
 		}
 	}
 	return ""
+}
+
+const (
+	// revertScanInterval rate-limits the revert scan so it doesn't run every poll.
+	revertScanInterval = 30 * time.Minute
+	// revertScanMaxAge bounds how far back a merged task is still checked for reverts.
+	revertScanMaxAge = 30 * 24 * time.Hour
+	// revertScanCommits is how many recent default-branch commits to fetch per repo.
+	revertScanCommits = 100
+)
+
+// scanForReverts detects when a landed task's merge commit was later reverted on
+// the default branch, flips the task outcome to "reverted", and emits
+// pr.reverted (the change-failure signal). Rate-limited and bounded: one gh call
+// per repo with eligible tasks, every revertScanInterval, with each call killed
+// after landingEnrichTimeout. Reuses the already-listed tasks (no extra read).
+func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
+	now := time.Now()
+	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
+		return
+	}
+
+	byRepo := map[string][]task.Task{}
+	for i := range tasks {
+		t := tasks[i]
+		// A PR number is enough to detect a revert (by the "Reverts #n" form), so
+		// a task whose merge-commit capture failed at landing is still checked.
+		if t.ProjectID == "" || t.PRNumber == 0 {
+			continue
+		}
+		if t.Outcome != "merged" && t.Outcome != "merged_with_edits" {
+			// Skip closed / already-reverted. A reverted task stays reverted even
+			// if the revert is later re-applied — the change-failure still occurred.
+			continue
+		}
+		if t.ClosedAt != nil && now.Sub(*t.ClosedAt) > revertScanMaxAge {
+			continue
+		}
+		byRepo[t.ProjectID] = append(byRepo[t.ProjectID], t)
+	}
+	if len(byRepo) == 0 {
+		r.lastRevertScan = now // nothing to check; hold off until the next interval
+		return
+	}
+
+	scannedAny := false
+	for repo, cands := range byRepo {
+		ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
+		msgs, err := github.FetchRecentCommitMessages(ctx, repo, revertScanCommits)
+		cancel()
+		if err != nil {
+			r.logger.Warn("pr-monitor.revert-scan", "repo", repo, "err", err)
+			continue
+		}
+		scannedAny = true
+		for j := range cands {
+			t := &cands[j]
+			if !isReverted(t.MergeCommit, t.ProjectID, t.PRNumber, msgs) {
+				continue
+			}
+			if _, err := r.tasks.Update(t.ID, task.Update{Outcome: task.Ptr("reverted")}); err != nil {
+				r.logger.Warn("pr-monitor.revert-update", "task_id", t.ID, "err", err)
+				continue
+			}
+			r.logAudit(audit.EventPRReverted, t.ID, "", map[string]any{"pr": t.PRNumber, "merge_commit": t.MergeCommit})
+			r.logger.Info("pr-monitor.reverted", "task_id", t.ID, "pr", t.PRNumber, "merge_commit", t.MergeCommit)
+		}
+	}
+	// Only start the rate-limit clock once at least one repo was actually scanned,
+	// so a transient gh outage retries on the next poll instead of waiting 30m.
+	if scannedAny {
+		r.lastRevertScan = now
+	}
+}
+
+// isReverted reports whether any default-branch commit message reverts the task.
+// It matches two GitHub revert forms so it works regardless of squash config:
+//   - the git footer "This reverts commit <full-sha>" (default COMMIT_MESSAGES)
+//   - the auto-generated body "Reverts #<n>" / "Reverts owner/repo#<n>" (which
+//     is what survives when the squash commit message is PR_BODY, as this repo's)
+//
+// Both anchor on the original PR's full SHA or number, so a passing mention of
+// the PR isn't a false positive.
+func isReverted(mergeCommit, repo string, prNumber int, commitMessages []string) bool {
+	var needles []string
+	if mergeCommit != "" {
+		needles = append(needles, "This reverts commit "+mergeCommit)
+	}
+	if prNumber > 0 {
+		needles = append(needles, fmt.Sprintf("Reverts #%d", prNumber))
+		if repo != "" {
+			needles = append(needles, fmt.Sprintf("Reverts %s#%d", repo, prNumber))
+		}
+	}
+	if len(needles) == 0 {
+		return false
+	}
+	for _, m := range commitMessages {
+		for _, n := range needles {
+			if strings.Contains(m, n) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // earliestRunStart returns the start time of the first agent run, or the zero

@@ -214,10 +214,14 @@ type Task struct {
 	Priority  Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
 	DueDate   *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
 	ClosedAt  *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
-	// Outcome records how a task's own PR concluded: "merged" or "closed".
-	// Stamped by the PR monitor when the task auto-advances to done. Empty for
-	// tasks that never produced a PR. Feeds the evaluation scorecard.
+	// Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
+	// "closed", or "reverted". Stamped by the PR monitor when the task auto-advances
+	// to done (and updated to "reverted" by the revert scanner). Empty for tasks
+	// that never produced a PR. Feeds the evaluation scorecard.
 	Outcome string `yaml:"outcome,omitempty" json:"outcome,omitempty"`
+	// MergeCommit is the default-branch commit a merged PR produced, recorded at
+	// landing so the revert scanner can detect a later revert of it.
+	MergeCommit string `yaml:"merge_commit,omitempty" json:"mergeCommit,omitempty"`
 	// MaxTurns overrides the global agent turn limit for this task.
 	// Zero means "use global default".
 	MaxTurns int `yaml:"max_turns,omitempty" json:"maxTurns,omitempty"`

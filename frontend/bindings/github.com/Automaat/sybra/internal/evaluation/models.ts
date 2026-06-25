@@ -188,6 +188,16 @@ export class Scorecard {
     "ciFirstPassRate": number;
 
     /**
+     * merged landings later reverted on the default branch
+     */
+    "reverted": number;
+
+    /**
+     * reverted / merged landings (DORA)
+     */
+    "changeFailureRate": number;
+
+    /**
      * Efficiency: window spend and effort per landed PR.
      */
     "totalCostUsd": number;
@@ -252,6 +262,12 @@ export class Scorecard {
         }
         if (!("ciFirstPassRate" in $$source)) {
             this["ciFirstPassRate"] = 0;
+        }
+        if (!("reverted" in $$source)) {
+            this["reverted"] = 0;
+        }
+        if (!("changeFailureRate" in $$source)) {
+            this["changeFailureRate"] = 0;
         }
         if (!("totalCostUsd" in $$source)) {
             this["totalCostUsd"] = 0;

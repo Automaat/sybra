@@ -142,6 +142,47 @@ func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {
 	}
 }
 
+func TestCompute_ChangeFailureRate(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "B", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "C", Timestamp: in, Data: map[string]any{"outcome": "merged_with_edits"}},
+		{Type: audit.EventPRReverted, TaskID: "A", Timestamp: in}, // one of 3 merged landings reverted
+	}
+	got := Compute(nil, events, since, base)
+	if got.Reverted != 1 {
+		t.Errorf("Reverted = %d, want 1", got.Reverted)
+	}
+	// 1 revert / 3 merged landings (merged + merged_with_edits).
+	if got.ChangeFailureRate < 0.33 || got.ChangeFailureRate > 0.34 {
+		t.Errorf("ChangeFailureRate = %v, want ~0.333", got.ChangeFailureRate)
+	}
+}
+
+func TestCompute_RevertOfOutOfWindowMergeNotCounted(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	events := []audit.Event{
+		// One in-window merged landing.
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		// Reverts in-window, but for tasks that did NOT land in-window → must not
+		// count, so the rate can't exceed 100%.
+		{Type: audit.EventPRReverted, TaskID: "OLD1", Timestamp: in},
+		{Type: audit.EventPRReverted, TaskID: "OLD2", Timestamp: in},
+	}
+	got := Compute(nil, events, since, base)
+	if got.Reverted != 0 {
+		t.Errorf("Reverted = %d, want 0 (reverts for out-of-window landings excluded)", got.Reverted)
+	}
+	if got.ChangeFailureRate != 0 {
+		t.Errorf("ChangeFailureRate = %v, want 0 (no in-cohort reverts)", got.ChangeFailureRate)
+	}
+}
+
 func TestComputeEmpty(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	got := Compute(nil, nil, now.AddDate(0, 0, -7), now)
