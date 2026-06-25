@@ -68,7 +68,7 @@ A changelog entry only matters if it touches how Sybra invokes or manages `codex
 | Stream parsing | `internal/agent/stream.go` (`ParseCodexLine` → `CodexEvent`) parses the NDJSON; `internal/agent/runner_headless_stream.go` (`codexEventToStreamEvent`) maps Codex events (`thread.started`, `turn.started`, `turn.completed`, `item.started`/`item.completed`, `error`) into Sybra's StreamEvent shape |
 | Sessions | Codex has **no `--resume`**; sessions persist as `~/.codex/sessions/rollout-<sessionID>.jsonl` (resolved by `resolveCodexSessionFile` in `discovery.go`). Watch for any new resume/continue flag. |
 | Skills | `discoverCodexSkills()` + `rewriteSkillInvocations()` (Codex has no native skills; Sybra rewrites `/skill` → `$` prompt injection) |
-| Model list | `internal/sybra/svc_info.go` runs `codex debug models` (dynamic); `normalizeModel` maps aliases (sonnet/opus → gpt-5.4, haiku → gpt-5.4-mini) |
+| Model list | `internal/sybra/svc_info.go` runs `codex debug models` (dynamic); `normalizeModel` maps aliases (sonnet/opus → gpt-5.5, haiku → gpt-5.4-mini) |
 | Config | `--ignore-user-config` means Sybra-passed flags/env are the only config surface — note any new `codex exec` flag that replaces a config-file-only setting |
 | Server / unattended | root `CLAUDE.md` "Server Deployment" — Codex config + hooks live in `/data/sybra/codex` (`codex_hooks = true`) |
 
