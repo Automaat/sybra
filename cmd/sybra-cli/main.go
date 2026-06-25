@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/skills"
+	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -69,6 +73,8 @@ func run(args []string) int {
 		return cmdGet(store, rest, jsonOut)
 	case "create":
 		return cmdCreate(store, rest, jsonOut)
+	case "handoff":
+		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, rest, jsonOut)
 	case "delete":
@@ -87,6 +93,8 @@ func run(args []string) int {
 		return cmdMonitor(cfg, store, rest, jsonOut)
 	case "selfmonitor":
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
+	case "install-skills":
+		return cmdInstallSkills(cfg, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -272,6 +280,272 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	fmt.Printf("Created task %s: %s\n", t.ID, t.Title)
 	return 0
+}
+
+// cmdHandoff creates a task pre-tagged `handoff` that bypasses Sybra's
+// triage/planning phases and starts implementing immediately in an existing
+// (externally created) git worktree. Intended for handing off a researched,
+// already-planned task from a tool like Orca: the human did the thinking, Sybra
+// runs the implementation autonomously in the same worktree.
+func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
+	title := fs.String("title", "", "task title (required)")
+	body := fs.String("body", "", "task body / research context markdown")
+	plan := fs.String("plan", "", "approved plan markdown")
+	planFile := fs.String("plan-file", "", "path to a file holding the approved plan (wins over --plan)")
+	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
+	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
+	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
+	stage := fs.String("stage", "implement", "stage to hand off at: implement|review|pr")
+	pr := fs.Int("pr", 0, "PR number (required for --stage pr)")
+	extraTags := fs.String("tags", "", "extra comma-separated tags")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if *title == "" {
+		return fatal(jsonOut, "title is required")
+	}
+	stageTags, ok := handoffStageTags(*stage)
+	if !ok {
+		return fatal(jsonOut, "invalid --stage %q (valid: implement, review, pr)", *stage)
+	}
+
+	dir, dErr := resolveWorktreeDir(*wtDir)
+	if dErr != nil {
+		return fatal(jsonOut, "%v", dErr)
+	}
+
+	// --plan-file wins over --plan so callers can stream a large plan from disk.
+	planContent := *plan
+	if *planFile != "" {
+		data, rErr := os.ReadFile(*planFile)
+		if rErr != nil {
+			return fatal(jsonOut, "read plan file: %v", rErr)
+		}
+		planContent = string(data)
+	}
+
+	// A handoff task must carry a registered project so its agents run against
+	// the right repo. Derive owner/repo from the worktree's origin when omitted.
+	projectID := *proj
+	if projectID == "" {
+		derived, e := deriveProjectID(dir)
+		if e != nil {
+			return fatal(jsonOut, "derive project from %q: %v (pass --project owner/repo)", dir, e)
+		}
+		projectID = derived
+	}
+	projRec, gErr := ps.Get(projectID)
+	if gErr != nil {
+		return fatal(jsonOut, "project %q not registered: %v (run: sybra-cli project create --url <github-url>)", projectID, gErr)
+	}
+
+	updates := map[string]any{
+		"project_id": projectID,
+		"tags":       append(stageTags, parseExtraTags(*extraTags, stageTags)...),
+	}
+	if planContent != "" {
+		updates["plan"] = planContent
+	}
+	switch *stage {
+	case "pr":
+		// Existing PR: Sybra reviews it via the pr-review lane. No worktree
+		// adoption — pr-review checks out the PR head itself.
+		if *pr <= 0 {
+			return fatal(jsonOut, "--stage pr requires --pr <number>")
+		}
+		updates["pr_number"] = float64(*pr)
+	default:
+		// implement/review adopt the worktree, so it must be on a dedicated
+		// feature branch (enforced again at adoption).
+		if e := assertFeatureBranch(dir, projRec); e != nil {
+			return fatal(jsonOut, "%v", e)
+		}
+		updates["worktree_dir"] = dir
+		if *pr > 0 {
+			updates["pr_number"] = float64(*pr)
+		}
+	}
+
+	t, err := s.Create(*title, *body, *mode)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	t, err = s.UpdateMap(t.ID, updates)
+	if err != nil {
+		return fatal(jsonOut, "update after create: %v", err)
+	}
+
+	if jsonOut {
+		return printJSON(t)
+	}
+	printHandoffResult(t, *stage, projectID, dir)
+	return 0
+}
+
+// handoffStageTags maps a handoff stage to the tags that route the task into
+// the right Sybra lane on creation, or (nil,false) for an unknown stage.
+//   - implement: simple-task-handoff → in-progress → implement → review → PR
+//   - review:    simple-task-handoff-review → ready-review → review → PR
+//   - pr:        pr-review lane for an existing PR
+func handoffStageTags(stage string) ([]string, bool) {
+	switch stage {
+	case "implement":
+		return []string{"handoff"}, true
+	case "review":
+		return []string{"handoff", "handoff-review"}, true
+	case "pr":
+		return []string{"review"}, true
+	default:
+		return nil, false
+	}
+}
+
+// resolveWorktreeDir resolves the handoff worktree (default: cwd) to an
+// absolute path and verifies it is an existing directory.
+func resolveWorktreeDir(wtDir string) (string, error) {
+	dir := wtDir
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve working dir: %w", err)
+		}
+		dir = cwd
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree dir: %w", err)
+	}
+	if info, statErr := os.Stat(abs); statErr != nil || !info.IsDir() {
+		return "", fmt.Errorf("worktree dir %q is not a directory", abs)
+	}
+	return abs, nil
+}
+
+// assertFeatureBranch fails when the worktree is in detached HEAD (no branch to
+// push) or on the repo's default branch (would push agent commits to origin's
+// default branch with no PR).
+func assertFeatureBranch(dir string, proj project.Project) error {
+	branch, err := project.CurrentBranch(dir)
+	if err != nil {
+		return fmt.Errorf("resolve worktree branch: %w", err)
+	}
+	if branch == "" {
+		return fmt.Errorf("worktree %q is in detached HEAD — check out a feature branch before handoff", dir)
+	}
+	if def, dErr := project.DefaultBranch(proj.ClonePath); dErr == nil && branch == def {
+		return fmt.Errorf("worktree %q is on the default branch %q — create a feature branch before handoff", dir, def)
+	}
+	return nil
+}
+
+// parseExtraTags splits a comma-separated tag list, trimming blanks and any tag
+// already present in exclude (the stage tags).
+func parseExtraTags(extra string, exclude []string) []string {
+	var out []string
+	for raw := range strings.SplitSeq(extra, ",") {
+		tg := strings.TrimSpace(raw)
+		if tg == "" || slices.Contains(exclude, tg) {
+			continue
+		}
+		out = append(out, tg)
+	}
+	return out
+}
+
+func printHandoffResult(t task.Task, stage, projectID, dir string) {
+	fmt.Printf("Handed off task %s: %s\n", t.ID, t.Title)
+	fmt.Printf("  project:  %s\n", projectID)
+	switch stage {
+	case "review":
+		fmt.Printf("  worktree: %s\n", dir)
+		fmt.Println("  Sybra will skip to review and open the PR from this worktree.")
+	case "pr":
+		fmt.Printf("  pr:       #%d\n", t.PRNumber)
+		fmt.Println("  Sybra will review the existing PR.")
+	default:
+		fmt.Printf("  worktree: %s\n", dir)
+		fmt.Println("  Sybra will skip planning and start implementing in this worktree.")
+	}
+}
+
+// deriveProjectID reads the origin remote of a git worktree and converts it to
+// a Sybra project id (owner/repo).
+func deriveProjectID(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url origin: %w", err)
+	}
+	owner, repo, err := project.ParseGitHubURL(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", err
+	}
+	return owner + "/" + repo, nil
+}
+
+// cmdInstallSkills mirrors Sybra's bundled skills into the per-agent skill
+// directories (~/.claude/skills, ~/.codex/skills, ~/.agents/skills) plus the
+// app's skills dir, so the skills are available in interactive Claude Code and
+// Codex sessions in any repo. Reuses the same skillsync.Syncer the app runs at
+// startup, so behaviour (frontmatter validation, orphan pruning) is identical.
+func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fatal(jsonOut, "resolve home dir: %v", err)
+	}
+
+	// Resolve the skill source. Prefer a configured RepoDir; otherwise fall
+	// back to cwd ONLY when it is genuinely the sybra source repo (matching the
+	// app's launched-from-repo behaviour, which provides the richer dir-based
+	// skills). When cwd is some other repo, point at a path without a go.mod so
+	// the syncer uses the embedded bundle instead of installing the wrong
+	// repo's skills.
+	repoDir := cfg.RepoDir
+	if repoDir == "" {
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil && isSybraRepo(cwd) {
+			repoDir = cwd
+		} else {
+			repoDir = config.HomeDir()
+		}
+	}
+
+	var logger *slog.Logger
+	if !jsonOut {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+	(&skillsync.Syncer{Logger: logger}).Run(skillsync.Options{
+		RepoDir:      repoDir,
+		SkillsFS:     skills.FS,
+		PrimaryDst:   cfg.SkillsDir,
+		SybraHomeDir: config.HomeDir(),
+		UserHomeDir:  home,
+	})
+
+	dsts := []string{
+		cfg.SkillsDir,
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"status": "ok", "destinations": dsts})
+	}
+	fmt.Println("Installed Sybra skills to:")
+	for _, d := range dsts {
+		fmt.Printf("  %s\n", d)
+	}
+	return 0
+}
+
+// isSybraRepo reports whether dir is the sybra source checkout, by matching the
+// module path in its go.mod. Used to gate the cwd fallback in install-skills so
+// it never installs an unrelated repo's skills.
+func isSybraRepo(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "module github.com/Automaat/sybra")
 }
 
 // findActiveDuplicate looks for an existing non-terminal task that matches
@@ -953,6 +1227,13 @@ Commands:
   get      <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
+  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE] [--pr N] [--mode MODE] [--tags t1,t2]
+           Hand a task to Sybra at any stage, reusing the given git worktree
+           (default: cwd). Project is derived from the worktree's origin remote
+           when --project is omitted. STAGE (default implement):
+             implement  have a plan → Sybra implements, reviews, opens the PR
+             review     implemented locally → Sybra reviews + opens the PR
+             pr         existing PR (--pr N) → Sybra reviews the PR
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N]
   delete   <id>
 
@@ -969,6 +1250,10 @@ Commands:
 
   triage classify <id>         Classify a single task via claude -p and apply the verdict.
   triage classify --all        Classify every task with status=new.
+
+  install-skills               Install/refresh Sybra's bundled skills into
+                               ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
+                               (and the app skills dir) for Claude Code + Codex.
 
 Global flags:
   --json   Output as JSON`)

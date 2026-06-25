@@ -8,6 +8,12 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: review
+    # Handoff tasks arrive with a finished plan from an external tool (e.g.
+    # Orca) and are driven by simple-task-handoff straight to implementation.
+    # Excluding them here keeps triage/planning from also firing on create.
+    - field: task.tags
+      operator: not_contains
+      value: handoff
 steps:
   - id: triage
     name: Triage

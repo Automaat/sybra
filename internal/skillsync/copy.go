@@ -49,6 +49,15 @@ func copyDirTree(src, dst string) error {
 	})
 }
 
+// userOwnedSkill reports whether a destination skill dir is a symlink — a
+// skill the user manages themselves (e.g. symlinked from their dotfiles). The
+// syncer owns only the real directories it creates and must never overwrite a
+// user-owned symlink, so every write path skips these.
+func userOwnedSkill(skillDir string) bool {
+	info, err := os.Lstat(skillDir)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
 // copySkillDir validates and recursively copies a directory-style skill
 // (src/<name>/SKILL.md + siblings) to dst/<name>/. Returns true if the copy
 // succeeded. Missing/malformed SKILL.md and traversal/IO errors are logged
@@ -64,6 +73,10 @@ func (s *Syncer) copySkillDir(src, dst, cleanSrc, cleanDst, name, logPrefix stri
 		return false
 	}
 	dstSkillDir := filepath.Join(filepath.Clean(dst), name)
+	if userOwnedSkill(dstSkillDir) {
+		s.info(logPrefix+".skip.user_owned", "name", name)
+		return false
+	}
 	if !strings.HasPrefix(srcSkillDir+string(filepath.Separator), cleanSrc) ||
 		!strings.HasPrefix(dstSkillDir+string(filepath.Separator), cleanDst) {
 		s.warn(logPrefix+".skip.traversal", "name", name)

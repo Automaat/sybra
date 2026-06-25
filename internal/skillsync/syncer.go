@@ -1,7 +1,7 @@
 // Package skillsync mirrors Claude Code skill files from a source
 // (repository checkout or embedded fs.FS) into one or more destinations
-// (the app's skills dir, ~/.claude/skills, ~/.codex/skills). Validates
-// YAML frontmatter on each .md file and prunes orphan skill subdirs
+// (the app's skills dir, ~/.claude/skills, ~/.codex/skills, ~/.agents/skills).
+// Validates YAML frontmatter on each .md file and prunes orphan skill subdirs
 // from the destination.
 package skillsync
 
@@ -110,20 +110,25 @@ func (s *Syncer) Run(opts Options) {
 	s.info("skills.sync.done")
 }
 
-// destinations returns PrimaryDst plus ~/.claude/skills and ~/.codex/skills
-// when UserHomeDir is set, deduplicating against PrimaryDst (some test
-// setups point PrimaryDst at the user's claude dir).
+// destinations returns PrimaryDst plus the per-agent skill directories
+// (~/.claude/skills, ~/.codex/skills, ~/.agents/skills) when UserHomeDir is
+// set, deduplicating against PrimaryDst (some test setups point PrimaryDst at
+// the user's claude dir). ~/.agents/skills is the cross-agent location read by
+// Orca-launched agents and newer Codex builds.
 func (s *Syncer) destinations(primary, userHome string) []string {
 	dsts := []string{primary}
 	if userHome == "" {
 		return dsts
 	}
-	claudeDst := filepath.Join(userHome, ".claude", "skills")
-	codexDst := filepath.Join(userHome, ".codex", "skills")
-	if filepath.Clean(primary) != filepath.Clean(claudeDst) {
-		dsts = append(dsts, claudeDst)
+	for _, agentDir := range []string{
+		filepath.Join(userHome, ".claude", "skills"),
+		filepath.Join(userHome, ".codex", "skills"),
+		filepath.Join(userHome, ".agents", "skills"),
+	} {
+		if filepath.Clean(primary) != filepath.Clean(agentDir) {
+			dsts = append(dsts, agentDir)
+		}
 	}
-	dsts = append(dsts, codexDst)
 	return dsts
 }
 
@@ -194,6 +199,10 @@ func (s *Syncer) syncDir(src, dst string, prune bool) map[string]struct{} {
 			s.warn("sync.skill.skip.traversal", "name", e.Name())
 			continue
 		}
+		if userOwnedSkill(skillDir) {
+			s.info("sync.skill.skip.user_owned", "skill", name)
+			continue
+		}
 		dstPath := filepath.Join(skillDir, "SKILL.md")
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -249,6 +258,10 @@ func (s *Syncer) syncFS(fsys fs.FS, srcDir, dst string, prune bool) map[string]s
 		skillDir := filepath.Join(filepath.Clean(dst), name)
 		if !strings.HasPrefix(skillDir+string(filepath.Separator), cleanDst) {
 			s.warn("sync.skill.skip.traversal", "name", e.Name())
+			continue
+		}
+		if userOwnedSkill(skillDir) {
+			s.info("sync.skill.skip.user_owned", "skill", name)
 			continue
 		}
 		dstPath := filepath.Join(skillDir, "SKILL.md")

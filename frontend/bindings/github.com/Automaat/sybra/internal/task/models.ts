@@ -164,6 +164,16 @@ export class Task {
     "tags": string[];
     "projectId": string;
     "branch": string;
+
+    /**
+     * WorktreeDir, when non-empty, makes Sybra adopt an externally-created git
+     * worktree at this path instead of creating its own under
+     * ~/.sybra/worktrees. Used for handoff from tools like Orca: every agent
+     * for this task runs in this directory, and Sybra never rebases, force-
+     * pushes, or removes it — the external tool owns its lifecycle. Empty =
+     * Sybra-managed worktree (default).
+     */
+    "worktreeDir"?: string;
     "prNumber": number;
     "issue": string;
     "statusReason": string;
@@ -318,9 +328,9 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField25_0 = $$createType2;
-        const $$createField26_0 = $$createType4;
-        const $$createField33_0 = $$createType5;
+        const $$createField26_0 = $$createType2;
+        const $$createField27_0 = $$createType4;
+        const $$createField34_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -329,13 +339,13 @@ export class Task {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField25_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField26_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField26_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField27_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField33_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField34_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

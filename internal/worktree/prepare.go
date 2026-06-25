@@ -20,6 +20,15 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		}
 	}
 
+	// Adopt an externally-created worktree (e.g. one Orca already checked out)
+	// instead of creating a Sybra-managed one. Runs every agent in that
+	// directory as-is — no fetch/add/rebase/push-create/cleanup. This both
+	// honours the user's existing checkout and sidesteps git's "branch already
+	// checked out" refusal that a second worktree on the same branch would hit.
+	if t.WorktreeDir != "" {
+		return m.adoptWorktree(t, onPhase)
+	}
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
@@ -118,6 +127,65 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
 		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
 	}
+	return wtPath, nil
+}
+
+// adoptWorktree wires Sybra to run a task inside a pre-existing, externally
+// managed git worktree (t.WorktreeDir). It validates the directory, records the
+// checked-out branch on the task, installs the project's commit/push gates, and
+// drops the identity beacon — but performs no git mutations (no fetch, add,
+// rebase, or push) and never schedules cleanup. The owning tool (e.g. Orca)
+// keeps responsibility for the directory's lifecycle. Project setup commands
+// are intentionally skipped: the adopted worktree is assumed already
+// provisioned by the owning tool.
+//
+// Adoption is refused when the worktree is in detached HEAD or sits on the
+// repo's default branch — the implementation agent commits to and pushes the
+// checked-out branch, so either case would push agent work to a shared branch
+// (or origin's default) with no PR/review. The caller must hand off from a
+// dedicated feature branch.
+func (m *Manager) adoptWorktree(t task.Task, onPhase func(string)) (string, error) {
+	wtPath := t.WorktreeDir
+	callPhase(onPhase, "Adopting worktree…")
+	info, err := os.Stat(wtPath)
+	if err != nil {
+		return "", fmt.Errorf("adopt worktree %q: %w", wtPath, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("adopt worktree %q: not a directory", wtPath)
+	}
+	if !project.WorktreeHealthy(wtPath) {
+		return "", fmt.Errorf("adopt worktree %q: not a healthy git worktree", wtPath)
+	}
+
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("adopt worktree: get project %q: %w", t.ProjectID, err)
+	}
+
+	branch, err := project.CurrentBranch(wtPath)
+	if err != nil {
+		return "", fmt.Errorf("adopt worktree %q: resolve branch: %w", wtPath, err)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("adopt worktree %q: detached HEAD — check out a feature branch before handoff", wtPath)
+	}
+	// Refuse the default branch: pushing the agent's commits there bypasses PR
+	// review entirely. A failure to determine the default branch must not
+	// silently disable this guard, but it also shouldn't abort an otherwise
+	// valid adoption — log and proceed with the empty/detached guard intact.
+	if def, derr := project.DefaultBranch(proj.ClonePath); derr != nil {
+		m.logger.Warn("worktree.adopt-default-branch-check", "task_id", t.ID, "err", derr)
+	} else if branch == def {
+		return "", fmt.Errorf("adopt worktree %q: checked out on default branch %q — create a feature branch before handoff", wtPath, def)
+	}
+
+	m.ensureBranch(t, branch)
+	m.installChecks(wtPath, proj)
+	if err := writeContextFile(t, wtPath, branch); err != nil {
+		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
+	}
+	m.logger.Info("worktree.adopted", "task_id", t.ID, "path", wtPath, "branch", branch)
 	return wtPath, nil
 }
 

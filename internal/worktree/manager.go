@@ -78,8 +78,13 @@ func New(cfg Config) *Manager {
 // Dir returns the base worktrees directory.
 func (m *Manager) Dir() string { return m.dir }
 
-// PathFor returns the worktree path for a task.
+// PathFor returns the worktree path for a task. A task with an explicit
+// WorktreeDir (an externally-adopted worktree, e.g. created by Orca) resolves
+// to that path; otherwise the path is derived under the worktrees directory.
 func (m *Manager) PathFor(t task.Task) string {
+	if t.WorktreeDir != "" {
+		return t.WorktreeDir
+	}
 	return filepath.Join(m.dir, t.DirName())
 }
 

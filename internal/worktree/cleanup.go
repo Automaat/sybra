@@ -15,6 +15,12 @@ func (m *Manager) Remove(taskID string) {
 	if err != nil || t.ProjectID == "" {
 		return
 	}
+	// Never touch an externally-adopted worktree: the tool that created it
+	// (e.g. Orca) owns its lifecycle. Removing it would delete the user's
+	// checkout out from under them.
+	if t.WorktreeDir != "" {
+		return
+	}
 	wtPath := filepath.Join(m.dir, t.DirName())
 	if _, err := os.Stat(wtPath); err != nil {
 		return
