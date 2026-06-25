@@ -161,15 +161,15 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 
 	if h.workflowEngine != nil {
-		// Stall when (a) the kernel killed the process via signal (OS/container
-		// SIGTERM, SIGKILL escalation), or (b) Sybra's own StopAgent set the
-		// `stopped` flag — even if the child exited cleanly. The latter is
-		// load-bearing: PR #722's SIGINT-first path lets default Go binaries
-		// (e.g. fake-claude in tests, claude/codex in prod) terminate via the
-		// runtime's signal handler with ExitStatus=2 (NOT WaitStatus.Signaled),
-		// so isSignalKill alone misses Sybra-initiated stops and the workflow
-		// advances on incomplete work — the failure mode reported in #641 plus
-		// the flake in TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow.
+		// Stall when (a) the process was killed by signal (ws.Signaled or the
+		// conventional 128+N exit codes claude/codex use after catching the
+		// signal), or (b) Sybra's own StopAgent set the `stopped` flag — even
+		// if the child exited cleanly. The latter is load-bearing: PR #722's
+		// SIGINT-first path lets default Go binaries (e.g. fake-claude in
+		// tests) terminate via the runtime's signal handler with ExitStatus=2
+		// (NOT WaitStatus.Signaled), so isSignalKill alone misses
+		// Sybra-initiated stops — the failure mode reported in #641 plus the
+		// flake in TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow.
 		if isSignalKill(exitErr) || ag.WasStopped() {
 			h.logger.Warn("agent.completion.stall",
 				"task_id", ag.TaskID, "agent_id", ag.ID,
@@ -287,6 +287,13 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 // Signal kills cover both infrastructure interruptions (SIGTERM from container/OS
 // shutdown) and Sybra's own StopAgent (cancel ctx → process killed). Neither
 // completes the agent's work, so the workflow should not advance.
+//
+// Two paths are detected:
+//   - ws.Signaled() == true: the kernel delivered the signal directly (rare for
+//     claude/codex, which install their own signal handlers).
+//   - Exit codes 130/143/137 (128+SIGINT/SIGTERM/SIGKILL): claude/codex catch the
+//     signal, clean up, then exit with this conventional code. Go reports these as
+//     Exited()==true/Signaled()==false, so ws.Signaled() misses them.
 func isSignalKill(err error) bool {
 	if err == nil {
 		return false
@@ -295,8 +302,19 @@ func isSignalKill(err error) bool {
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	ws, ok := exitErr.Sys().(syscall.WaitStatus)
-	return ok && ws.Signaled()
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return true
+	}
+	// claude/codex install signal handlers and convert SIGINT/SIGTERM/SIGKILL
+	// into conventional 128+signal exit codes (Exited()==true, Signaled()==false),
+	// so ws.Signaled() misses an externally-interrupted run. Treat those codes as
+	// kills so the workflow stalls (ClearAgentStep) and restart-stale retries,
+	// instead of advancing on incomplete work and escalating to human-required.
+	switch exitErr.ExitCode() {
+	case 130, 143, 137: // 128+SIGINT, 128+SIGTERM, 128+SIGKILL
+		return true
+	}
+	return false
 }
 
 // OnWorkflowComplete is the callback installed via
