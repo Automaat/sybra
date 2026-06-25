@@ -16,6 +16,18 @@ steps:
     name: Triage Review
     type: triage_review
     next:
+      - goto: set_in_progress
+
+  # Clear any prior human-required before launching the review agent.
+  # The inline triageReview path can set human-required for small PRs; the
+  # pr-review workflow may later classify the same PR as risky and want to
+  # run a review agent — which must not start while status is human-required.
+  - id: set_in_progress
+    name: Set In Progress
+    type: set_status
+    config:
+      status: in-progress
+    next:
       - goto: pick_review_method
 
   - id: pick_review_method

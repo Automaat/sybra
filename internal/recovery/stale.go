@@ -64,6 +64,17 @@ func (r *Recovery) RestartStaleInProgress() {
 		if r.WorkflowEngine != nil && t.Workflow != nil &&
 			(t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed) {
 			wfID := t.Workflow.WorkflowID
+			// Review tasks are driven by the pr-review workflow, not the
+			// plan/implement pipeline. If simple-task-plan (or any non-review
+			// workflow) ended up attached to a review-tagged task due to the
+			// create-before-tag race, do NOT restart it — that would loop
+			// triage indefinitely. Skip so the task can be triaged manually
+			// or picked up by the correct workflow on the next create.
+			if slices.Contains(t.Tags, "review") && wfID == "simple-task-plan" {
+				r.Logger.Info("restart-stale.skip",
+					"task_id", t.ID, "reason", "review_task_on_plan_workflow", "workflow", wfID)
+				continue
+			}
 			taskID := t.ID
 			r.Logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
 			r.WG.Go(func() {

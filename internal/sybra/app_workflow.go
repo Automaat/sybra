@@ -284,8 +284,17 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", err
 	}
 
-	// Record agent run on task (was missing for system roles).
-	if addErr := a.tasks.AddRun(taskID, task.AgentRun{
+	// Flip human-required → in-progress when a system-role agent starts.
+	// A competing inline path (e.g. review.triage.small) may have set
+	// human-required before the pr-review workflow fires; leaving the task
+	// there while an agent runs creates an inconsistent observable state.
+	// We only flip human-required: other statuses (todo, planning, …) have
+	// their own semantics and should not be pre-empted by agent start.
+	var nextStatus *task.Status
+	if t.Status == task.StatusHumanRequired {
+		nextStatus = task.Ptr(task.StatusInProgress)
+	}
+	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Role:      role,
 		Mode:      mode,
@@ -293,7 +302,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 		Prompt:    cfg.Prompt,
-	}); addErr != nil {
+	}, nextStatus); addErr != nil {
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 

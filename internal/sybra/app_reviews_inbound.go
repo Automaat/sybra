@@ -21,21 +21,20 @@ func (r *ReviewHandler) createReviewTaskWithTriage(pr github.PullRequest, projec
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
-	t, err := r.tasks.Create(title, body, "headless")
-	if err != nil {
-		r.logger.Error("review.create-task", "pr", pr.Number, "err", err)
-		return
-	}
-
+	// Use CreateFull so the review tag, projectID, and PRNumber are visible to
+	// file-watchers from the very first write. A two-step Create + Update leaves
+	// a window where the initial file has no "review" tag, which lets
+	// simple-task-plan claim the task.created workflow slot before pr-review
+	// can match — causing triage loops and incorrect status transitions.
 	tags := []string{"review"}
-	t, err = r.tasks.Update(t.ID, task.Update{
+	t, err := r.tasks.CreateFull(title, body, "headless", task.Update{
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
 		Status:    task.Ptr(task.StatusTodo),
 	})
 	if err != nil {
-		r.logger.Error("review.update-task", "task_id", t.ID, "err", err)
+		r.logger.Error("review.create-task", "pr", pr.Number, "err", err)
 		return
 	}
 	r.logger.Info("review.task-created", "task_id", t.ID, "pr", pr.Number, "project", projectID)
