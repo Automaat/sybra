@@ -159,7 +159,7 @@ export interface BoardColumn {
   includes: TaskStatus[]
   /**
    * Column kind. 'status' (default) groups tasks by status; 'review' is the
-   * tag-based PR Reviews lane that collects inbound review tasks across every
+   * tag-based To Review lane that collects inbound review tasks across every
    * phase, independent of their status. `status` is a sentinel for review
    * lanes — never a real task status.
    */
