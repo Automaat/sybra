@@ -65,9 +65,17 @@ html, body {
  * dark's near-black page (~10:1). Lift it one step in light only so secondary
  * text is as legible as it is in dark. Scoped to :not(.dark) and to the literal
  * `text-surface-400` class, so `dark:text-surface-400` and dark mode are
- * untouched. */
-html:not(.dark) .text-surface-400 {
-  color: var(--color-surface-500);
+ * untouched.
+ *
+ * Lives in the `utilities` layer (not unlayered) and wraps the mode guard in
+ * `:where()` so its specificity stays at one class: it beats the base
+ * `text-surface-400` utility by source order, but `hover:`/`focus:` text-colour
+ * variants (which add a pseudo-class) still win, keeping hover transitions on
+ * elements like `text-surface-400 hover:text-surface-600`. */
+@layer utilities {
+  :where(html:not(.dark)) .text-surface-400 {
+    color: var(--color-surface-500);
+  }
 }
 
 [data-active] {
