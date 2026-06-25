@@ -41,7 +41,7 @@ This is the **Codex** variant. For Anthropic's **Claude Code**, use `claude-feat
    ```bash
    codex --version    # e.g. "codex-cli 0.142.2"
    ```
-   New range = **(floor) → installed**. Override the floor with `--from <version>` if passed. Codex versions move fast (0.x.y) — expect a wide numeric range per month.
+   New range = **(version after the floor) → installed** — exclude the last covered release so it isn't re-processed. Override the floor with `--from <version>` if passed. Codex versions move fast (0.x.y) — expect a wide numeric range per month.
 
 ## Phase 2 — Read the changelog for the new range only
 
@@ -65,8 +65,8 @@ A changelog entry only matters if it touches how Sybra invokes or manages `codex
 | :-- | :-- |
 | Headless `codex exec` flags | `internal/agent/runner_headless_invocation.go` (the `a.Provider == "codex"` branch: `exec --json --skip-git-repo-check --ignore-user-config --ignore-rules`, `-C <cwd>`, `--model`) |
 | Sandbox / approvals | `codexSandboxArgs(...)` in the same file; `--dangerously-bypass-approvals-and-sandbox` (headless) vs `--sandbox workspace-write` (interactive) in `manager_run.go` |
-| Stream parsing | `internal/agent/stream.go` — Codex event mapping (`thread.started`, `turn.started`, `turn.completed`, `item.started`/`item.completed`, `error`) into Sybra's StreamEvent shape |
-| Sessions | Codex has **no `--resume`**; sessions persist as `~/.codex/sessions/<id>.jsonl` (resolver in `discovery.go`). Watch for any new resume/continue flag. |
+| Stream parsing | `internal/agent/stream.go` (`ParseCodexLine` → `CodexEvent`) parses the NDJSON; `internal/agent/runner_headless_stream.go` (`codexEventToStreamEvent`) maps Codex events (`thread.started`, `turn.started`, `turn.completed`, `item.started`/`item.completed`, `error`) into Sybra's StreamEvent shape |
+| Sessions | Codex has **no `--resume`**; sessions persist as `~/.codex/sessions/rollout-<sessionID>.jsonl` (resolved by `resolveCodexSessionFile` in `discovery.go`). Watch for any new resume/continue flag. |
 | Skills | `discoverCodexSkills()` + `rewriteSkillInvocations()` (Codex has no native skills; Sybra rewrites `/skill` → `$` prompt injection) |
 | Model list | `internal/sybra/svc_info.go` runs `codex debug models` (dynamic); `normalizeModel` maps aliases (sonnet/opus → gpt-5.4, haiku → gpt-5.4-mini) |
 | Config | `--ignore-user-config` means Sybra-passed flags/env are the only config surface — note any new `codex exec` flag that replaces a config-file-only setting |
