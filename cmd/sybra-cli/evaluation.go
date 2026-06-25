@@ -17,7 +17,7 @@ import (
 
 func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: evaluation <scan|judge> [args] [--json]")
+		return fatal(jsonOut, "usage: evaluation <scan|judge|golden> [args] [--json]")
 	}
 	switch args[0] {
 	case "scan":
@@ -32,8 +32,8 @@ func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonO
 }
 
 // cmdEvaluationGolden scores a golden-set run's results against expectations and,
-// when a baseline is given, reports regressions. Exits non-zero on any
-// regression so it can gate prompt/skill/model changes in CI.
+// when a baseline is given, reports regressions. Exits non-zero on any failing
+// case or regression so it can gate prompt/skill/model changes in CI.
 func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("golden", flag.ContinueOnError)
 	setPath := fs.String("set", "", "path to the golden-set JSON (required)")
@@ -55,9 +55,6 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	}
 	if err := evaluation.ValidateGoldenSet(cases); err != nil {
 		return fatal(jsonOut, "invalid golden set: %v", err)
-	}
-	if len(cases) == 0 {
-		return fatal(jsonOut, "golden set is empty")
 	}
 	results, err := evaluation.LoadCaseResults(*resultsPath)
 	if err != nil {

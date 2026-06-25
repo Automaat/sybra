@@ -57,9 +57,12 @@ type GoldenDelta struct {
 	Removed     []string `json:"removed,omitempty"`     // in baseline, absent from this run
 }
 
-// ValidateGoldenSet rejects a set with duplicate case IDs, which would double-
-// count the denominator and let one result score two cases.
+// ValidateGoldenSet rejects an empty set or one with empty/duplicate case IDs,
+// which would make the score meaningless or let one result score two cases.
 func ValidateGoldenSet(cases []GoldenCase) error {
+	if len(cases) == 0 {
+		return fmt.Errorf("golden set is empty")
+	}
 	seen := make(map[string]bool, len(cases))
 	for i := range cases {
 		id := cases[i].ID
@@ -93,12 +96,22 @@ func ScoreCase(c GoldenCase, r CaseResult) CaseOutcome {
 // fails explicitly, so a runner that silently skips a case can't inflate the score.
 func ScoreSet(cases []GoldenCase, results []CaseResult) GoldenReport {
 	byID := make(map[string]CaseResult, len(results))
+	dup := make(map[string]bool)
 	for _, r := range results {
+		if _, seen := byID[r.CaseID]; seen {
+			dup[r.CaseID] = true
+		}
 		byID[r.CaseID] = r
 	}
 	rep := GoldenReport{Total: len(cases)}
 	for i := range cases {
 		c := cases[i]
+		// Duplicate results for one case mask a runner bug; fail it explicitly
+		// rather than silently letting the last result win.
+		if dup[c.ID] {
+			rep.Cases = append(rep.Cases, CaseOutcome{CaseID: c.ID, Passed: false, Failures: []string{"duplicate results for case"}})
+			continue
+		}
 		r, ok := byID[c.ID]
 		if !ok {
 			rep.Cases = append(rep.Cases, CaseOutcome{CaseID: c.ID, Passed: false, Failures: []string{"no result for case"}})

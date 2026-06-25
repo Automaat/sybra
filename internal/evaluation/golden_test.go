@@ -56,6 +56,22 @@ func TestScoreSet_MissingResultFails(t *testing.T) {
 	}
 }
 
+func TestScoreSet_DuplicateResultsFail(t *testing.T) {
+	cases := []GoldenCase{{ID: "a", Expect: Expectation{TestsPass: true}}}
+	// Two results for the same case — a runner bug; the case must fail explicitly.
+	results := []CaseResult{
+		{CaseID: "a", TestsPass: true},
+		{CaseID: "a", TestsPass: true},
+	}
+	rep := ScoreSet(cases, results)
+	if rep.Passed != 0 {
+		t.Fatalf("Passed = %d, want 0 (duplicate results fail the case)", rep.Passed)
+	}
+	if len(rep.Cases) != 1 || rep.Cases[0].Passed {
+		t.Fatalf("case should fail: %+v", rep.Cases)
+	}
+}
+
 func TestDiffBaseline(t *testing.T) {
 	prev := GoldenReport{Total: 3, Passed: 2, Score: 2.0 / 3.0, Cases: []CaseOutcome{
 		{CaseID: "a", Passed: true},
@@ -94,6 +110,9 @@ func TestValidateGoldenSet(t *testing.T) {
 	}
 	if err := ValidateGoldenSet([]GoldenCase{{ID: ""}}); err == nil {
 		t.Error("empty id should error")
+	}
+	if err := ValidateGoldenSet(nil); err == nil {
+		t.Error("empty set should error")
 	}
 }
 
