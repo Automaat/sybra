@@ -87,7 +87,7 @@ func (s *Store) Put(taskID string, a Artifact) (Meta, error) {
 	if err != nil {
 		return Meta{}, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Meta{}, fmt.Errorf("artifact: mkdir: %w", err)
 	}
 
@@ -132,7 +132,7 @@ func (s *Store) Append(taskID string, kind Kind, event any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("artifact: mkdir: %w", err)
 	}
 
@@ -164,7 +164,7 @@ func (s *Store) Append(taskID string, kind Kind, event any) error {
 		}
 	}
 
-	f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("artifact: open stream: %w", err)
 	}
@@ -246,6 +246,10 @@ func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 		return nil, Meta{}, err
 	}
 
+	mu := s.lockFor(taskID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -271,6 +275,9 @@ func (s *Store) Delete(taskID string) error {
 	if err != nil {
 		return err
 	}
+	mu := s.lockFor(taskID)
+	mu.Lock()
+	defer mu.Unlock()
 	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("artifact: delete: %w", err)
 	}

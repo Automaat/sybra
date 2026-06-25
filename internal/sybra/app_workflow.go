@@ -37,8 +37,13 @@ func (a *artifactRecorderAdapter) RecordTrace(taskID string, ev any) error {
 }
 
 func (a *artifactRecorderAdapter) PutPlanSnapshot(taskID, role, stepID, sourcePath, content string) error {
+	name := ""
+	if stepID != "" {
+		name = "plan-" + stepID + ".md"
+	}
 	_, err := a.store.Put(taskID, artifact.Artifact{
 		Kind:         artifact.KindPlan,
+		Name:         name,
 		ProducerRole: role,
 		StepID:       stepID,
 		SourcePath:   sourcePath,
