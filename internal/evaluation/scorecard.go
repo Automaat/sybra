@@ -74,6 +74,7 @@ type Report struct {
 	Overall     Scorecard   `json:"overall"`
 	ByProvider  []Breakdown `json:"byProvider,omitempty"`
 	ByRole      []Breakdown `json:"byRole,omitempty"`
+	Weaknesses  []Weakness  `json:"weaknesses,omitempty"`
 	Notes       []string    `json:"notes,omitempty"`
 }
 

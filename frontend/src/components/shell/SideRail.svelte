@@ -47,6 +47,7 @@
     { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },
     { kind: ['github'], label: 'GitHub', icon: GitBranch, onclick: () => navStore.reset({ kind: 'github' }) },
     { kind: ['stats'], label: 'Stats', icon: BarChart3, onclick: () => navStore.reset({ kind: 'stats' }) },
+    { kind: ['evaluation'], label: 'Evaluation', icon: ClipboardCheck, onclick: () => navStore.reset({ kind: 'evaluation' }) },
   ]
 
   const settingsItem: NavItem = {

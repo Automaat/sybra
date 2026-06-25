@@ -13,6 +13,7 @@ export type Page =
   | { kind: 'agent-detail'; agentId: string }
   | { kind: 'github' }
   | { kind: 'stats' }
+  | { kind: 'evaluation' }
   | { kind: 'reviews' }
   | { kind: 'settings' }
   | { kind: 'workflows' }
@@ -73,6 +74,7 @@ class NavStore {
       case 'agent-detail': return 'Agent Detail'
       case 'github': return 'GitHub'
       case 'stats': return 'Stats'
+      case 'evaluation': return 'Evaluation'
       case 'reviews': return 'Reviews'
       case 'settings': return 'Settings'
       case 'workflows': return 'Workflows'

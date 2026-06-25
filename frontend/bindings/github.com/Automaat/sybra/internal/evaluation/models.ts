@@ -70,6 +70,7 @@ export class Report {
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
+    "weaknesses"?: Weakness[];
     "notes"?: string[];
 
     /** Creates a new Report instance. */
@@ -97,7 +98,8 @@ export class Report {
         const $$createField3_0 = $$createType0;
         const $$createField4_0 = $$createType2;
         const $$createField5_0 = $$createType2;
-        const $$createField6_0 = $$createType3;
+        const $$createField6_0 = $$createType4;
+        const $$createField7_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -108,8 +110,11 @@ export class Report {
         if ("byRole" in $$parsedSource) {
             $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
         }
+        if ("weaknesses" in $$parsedSource) {
+            $$parsedSource["weaknesses"] = $$createField6_0($$parsedSource["weaknesses"]);
+        }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField6_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField7_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -265,8 +270,50 @@ export class Scorecard {
     }
 }
 
+/**
+ * Weakness is one systematic shortfall the scorecard surfaces, paired with a
+ * concrete suggested action — the deterministic half of the improvement loop.
+ */
+export class Weakness {
+    /**
+     * "warn" | "info"
+     */
+    "severity": string;
+    "metric": string;
+    "detail": string;
+    "suggestion": string;
+
+    /** Creates a new Weakness instance. */
+    constructor($$source: Partial<Weakness> = {}) {
+        if (!("severity" in $$source)) {
+            this["severity"] = "";
+        }
+        if (!("metric" in $$source)) {
+            this["metric"] = "";
+        }
+        if (!("detail" in $$source)) {
+            this["detail"] = "";
+        }
+        if (!("suggestion" in $$source)) {
+            this["suggestion"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Weakness instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Weakness {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Weakness($$parsedSource as Partial<Weakness>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = Scorecard.createFrom;
 const $$createType1 = Breakdown.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = $Create.Array($Create.Any);
+const $$createType3 = Weakness.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $Create.Array($Create.Any);

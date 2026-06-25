@@ -4,5 +4,6 @@
 export {
     Breakdown,
     Report,
-    Scorecard
+    Scorecard,
+    Weakness
 } from "./models.js";

@@ -18,6 +18,7 @@
   const loadProjectDetail = lazyComponent(() => import('../pages/ProjectDetail.svelte'))
   const loadGitHub = lazyComponent(() => import('../pages/GitHub.svelte'))
   const loadStats = lazyComponent(() => import('../pages/Stats.svelte'))
+  const loadEvaluation = lazyComponent(() => import('../pages/Evaluation.svelte'))
   const loadReviews = lazyComponent(() => import('../pages/Reviews.svelte'))
   const loadSettings = lazyComponent(() => import('../pages/Settings.svelte'))
   const loadChatList = lazyComponent(() => import('../pages/ChatList.svelte'))
@@ -137,6 +138,10 @@
   {:else if navStore.page.kind === 'stats'}
     {#await loadStats() then Stats}
       <Stats />
+    {/await}
+  {:else if navStore.page.kind === 'evaluation'}
+    {#await loadEvaluation() then Evaluation}
+      <Evaluation />
     {/await}
   {:else if navStore.page.kind === 'workflows'}
     {#await loadWorkflowList() then WorkflowList}
