@@ -682,6 +682,7 @@ func TestNormalizeModel(t *testing.T) {
 		{prov: "claude", model: "FABLE[1M]", want: "FABLE"},
 		{prov: "claude", model: "claude-fable-5[1m]", want: "claude-fable-5"},
 		{prov: "claude", model: "sonnet[1m]", want: "sonnet"},
+		{prov: "claude", model: "fable[1m] ", want: "fable"},      // trailing whitespace stripped first
 		{prov: "claude", model: "foo[1m]bar", want: "foo[1m]bar"}, // only trailing stripped
 		// Codex path — no [1m] stripping
 		{prov: "codex", model: "fable", want: "gpt-5.5"},

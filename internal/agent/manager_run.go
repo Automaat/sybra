@@ -337,7 +337,7 @@ func normalizeModel(prov, model string) string {
 var oneMSuffixRe = regexp.MustCompile(`(?i)\[1m\]$`)
 
 func stripContextSuffix(model string) string {
-	return strings.TrimSpace(oneMSuffixRe.ReplaceAllString(model, ""))
+	return oneMSuffixRe.ReplaceAllString(strings.TrimSpace(model), "")
 }
 
 // safeArgRe matches only characters safe to embed in a shell command
