@@ -31,7 +31,6 @@ func (r *ReviewHandler) createReviewTaskWithTriage(pr github.PullRequest, projec
 		Tags:      &tags,
 		ProjectID: task.Ptr(projectID),
 		PRNumber:  task.Ptr(pr.Number),
-		Status:    task.Ptr(task.StatusTodo),
 	})
 	if err != nil {
 		r.logger.Error("review.create-task", "pr", pr.Number, "err", err)

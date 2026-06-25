@@ -290,8 +290,12 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// there while an agent runs creates an inconsistent observable state.
 	// We only flip human-required: other statuses (todo, planning, …) have
 	// their own semantics and should not be pre-empted by agent start.
+	//
+	// Re-read current status rather than relying on the snapshot taken at the
+	// top of this function: another goroutine (e.g. triage) may have flipped
+	// the task to human-required after that read.
 	var nextStatus *task.Status
-	if t.Status == task.StatusHumanRequired {
+	if cur, rerr := a.tasks.Get(taskID); rerr == nil && cur.Status == task.StatusHumanRequired {
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
