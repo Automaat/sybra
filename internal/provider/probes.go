@@ -130,7 +130,6 @@ func copilotTokenEnvVar() string {
 	return ""
 }
 
-
 // probeCodexVersion runs `codex --version` and returns the dotted version string
 // (e.g. "0.142.2"), or "" if it cannot be determined.
 func probeCodexVersion(ctx context.Context) string {

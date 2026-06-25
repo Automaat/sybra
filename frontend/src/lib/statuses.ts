@@ -178,7 +178,7 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 ]
 
 /**
- * The PR Reviews lane: a tag-based column (not status-based) that collects
+ * The To Review lane: a tag-based column (not status-based) that collects
  * every inbound review task (tag `review`) regardless of status, coloured per
  * phase. `status: 'reviews'` is a sentinel used only as the column key — it is
  * never a real task status, so it stays out of BOARD_COLUMNS / CORE_STATUSES.
@@ -192,7 +192,7 @@ export const REVIEW_LANE: BoardColumn = {
 }
 
 /**
- * Board column order including the PR Reviews lane (inserted before Human
+ * Board column order including the To Review lane (inserted before Human
  * Required). The board renders these; BOARD_COLUMNS stays the pure status set
  * that drives CORE_STATUSES, the status picker, and per-project boards.
  */
