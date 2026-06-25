@@ -55,7 +55,10 @@ func copyDirTree(src, dst string) error {
 // user-owned symlink, so every write path skips these.
 func userOwnedSkill(skillDir string) bool {
 	info, err := os.Lstat(skillDir)
-	return err == nil && info.Mode()&os.ModeSymlink != 0
+	if err != nil || info == nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
 }
 
 // copySkillDir validates and recursively copies a directory-style skill
