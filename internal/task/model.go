@@ -175,11 +175,17 @@ type Task struct {
 	// needs-approval → approved (plus `manual` for small PRs punted to the
 	// human). Computed by the PR poller; drives the board's PR Reviews lane.
 	// Empty for non-review tasks.
-	ReviewPhase string     `yaml:"review_phase,omitempty" json:"reviewPhase,omitempty"`
-	TodoistID   string     `yaml:"todoist_id,omitempty" json:"todoistId"`
-	Priority    Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
-	DueDate     *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
-	ClosedAt    *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
+	ReviewPhase string `yaml:"review_phase,omitempty" json:"reviewPhase,omitempty"`
+	// PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
+	// not tag `review`) sits in its lifecycle: draft → building → fixing →
+	// changes-requested → awaiting-approval → approved. Computed by the PR poller;
+	// drives the phase glyph on the board's In Review cards. Empty for tasks
+	// without an own PR (and for inbound review tasks, which use ReviewPhase).
+	PRPhase   string     `yaml:"pr_phase,omitempty" json:"prPhase,omitempty"`
+	TodoistID string     `yaml:"todoist_id,omitempty" json:"todoistId"`
+	Priority  Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
+	DueDate   *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
+	ClosedAt  *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
 	// MaxTurns overrides the global agent turn limit for this task.
 	// Zero means "use global default".
 	MaxTurns int `yaml:"max_turns,omitempty" json:"maxTurns,omitempty"`

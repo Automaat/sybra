@@ -6,6 +6,7 @@
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
   import { isReviewTask, reviewPhaseRank } from '../lib/review-phase.js'
+  import { prPhaseRank, prPhaseNeedsYou } from '../lib/pr-phase.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
@@ -71,7 +72,13 @@
     if (col.kind === 'review') return reviewLaneTasks()
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
     // Review tasks live in the PR Reviews lane, never their status column.
-    return filteredByStatuses(statuses).filter((t) => !isReviewTask(t))
+    const tasks = filteredByStatuses(statuses).filter((t) => !isReviewTask(t))
+    // In Review: float the user's pending PR actions (merge / ping / mark-ready)
+    // to the top, mirroring the PR Reviews lane.
+    if (col.status === 'in-review') {
+      return [...tasks].sort((a, b) => prPhaseRank(a) - prPhaseRank(b))
+    }
+    return tasks
   }
 
   // The PR Reviews lane: every active inbound review task, sorted so the
@@ -286,7 +293,7 @@
   // Tasks awaiting the user across all columns (same set as the per-card red
   // attention border) — surfaced as a persistent board-toolbar counter so an
   // awaiting task is never missed when its column scrolls off-screen.
-  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status)).length)
+  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status) || prPhaseNeedsYou(t)).length)
 
   const hasActiveFilters = $derived(
     Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)

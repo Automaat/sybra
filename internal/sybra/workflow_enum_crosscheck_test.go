@@ -38,6 +38,7 @@ func TestWorkflowFieldAllowedValues_MatchEnumSources(t *testing.T) {
 	prKinds := map[string]bool{
 		string(github.PRIssueConflict):     true,
 		string(github.PRIssueCIFailure):    true,
+		string(github.PRIssueComments):     true,
 		string(github.PRIssueReadyToMerge): true,
 	}
 
@@ -121,6 +122,12 @@ func TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers(t *testing.T) {
 			wantStr:  "conflict",
 			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
 			needle:   "value: conflict,ci_failure",
+		},
+		{
+			kind:     github.PRIssueComments,
+			wantStr:  "comments",
+			yamlFile: "../../internal/workflow/builtin/pr-fix.yaml",
+			needle:   "value: conflict,ci_failure,comments",
 		},
 	}
 	for _, tc := range cases {

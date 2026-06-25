@@ -189,6 +189,15 @@ export class Task {
      * Empty for non-review tasks.
      */
     "reviewPhase"?: string;
+
+    /**
+     * PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
+     * not tag `review`) sits in its lifecycle: draft → building → fixing →
+     * changes-requested → awaiting-approval → approved. Computed by the PR poller;
+     * drives the phase glyph on the board's In Review cards. Empty for tasks
+     * without an own PR (and for inbound review tasks, which use ReviewPhase).
+     */
+    "prPhase"?: string;
     "todoistId": string;
     "priority"?: Priority;
     "dueDate"?: time$0.Time | null;
@@ -309,9 +318,9 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField24_0 = $$createType2;
-        const $$createField25_0 = $$createType4;
-        const $$createField32_0 = $$createType5;
+        const $$createField25_0 = $$createType2;
+        const $$createField26_0 = $$createType4;
+        const $$createField33_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -320,13 +329,13 @@ export class Task {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField24_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField25_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField25_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField26_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField32_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField33_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

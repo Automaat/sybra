@@ -192,6 +192,23 @@ func TestValidateFields_RejectsInvalidStatus(t *testing.T) {
 // TestValidateFields_InOperatorChecksEachCSVEntry locks the csv-aware
 // validation for the `in`/`not_in` operators: a single bad entry in a list
 // of otherwise valid values must still fail.
+// The pr-fix workflow triggers on conflict,ci_failure,comments — every kind in
+// that CSV must be a recognised pr.issue_kind or DispatchEvent silently never
+// fires the comment-fix path.
+func TestValidateFields_AcceptsPRFixTriggerKinds(t *testing.T) {
+	d := Definition{
+		ID: "pr-fix-kinds",
+		Trigger: Trigger{
+			Conditions: []Condition{
+				{Field: "pr.issue_kind", Operator: "in", Value: "conflict,ci_failure,comments"},
+			},
+		},
+	}
+	if err := d.ValidateFields(); err != nil {
+		t.Errorf("ValidateFields rejected a valid kind set: %v", err)
+	}
+}
+
 func TestValidateFields_InOperatorChecksEachCSVEntry(t *testing.T) {
 	d := Definition{
 		ID: "mixed-csv",
