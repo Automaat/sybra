@@ -109,6 +109,20 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 		t.Fatalf("adopted path = %q, want %q", got, ext)
 	}
 
+	// Assert the adoption side effects so the test fails if adoption is ever
+	// replaced by a plain early return: the identity beacon is written into the
+	// adopted dir and the task records the adopted worktree's branch.
+	if _, err := os.Stat(filepath.Join(ext, contextFileName)); err != nil {
+		t.Errorf("context beacon not written: %v", err)
+	}
+	reloaded, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if reloaded.Branch != extBranch {
+		t.Errorf("task branch = %q, want %q", reloaded.Branch, extBranch)
+	}
+
 	// No managed worktree was created — proves no `git worktree add` ran.
 	entries, err := os.ReadDir(h.wtDir)
 	if err != nil {
