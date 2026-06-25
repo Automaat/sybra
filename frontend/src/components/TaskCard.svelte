@@ -218,7 +218,7 @@
       >
         <PhaseIcon size={12} class="shrink-0" />
         {#if topPR}<span class="shrink-0">#{topPR.number}</span>{:else if t.prNumber}<span class="shrink-0">#{t.prNumber}</span>{/if}
-        <span class="truncate">{ph.label}</span>
+        <span class="min-w-0 truncate">{ph.label}</span>
         {#if t.issue}{@render issueGlyph()}{/if}
       </span>
     {:else if ownPRPhase}
@@ -230,7 +230,7 @@
       >
         <PhaseIcon size={12} class="shrink-0" />
         {#if topPR}<span class="shrink-0">#{topPR.number}</span>{:else if t.prNumber}<span class="shrink-0">#{t.prNumber}</span>{/if}
-        <span class="truncate">{ph.label}</span>
+        <span class="min-w-0 truncate">{ph.label}</span>
         {#if t.issue}{@render issueGlyph()}{/if}
       </span>
     {:else if topPR}
