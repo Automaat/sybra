@@ -79,7 +79,7 @@
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Failure rate</span>
         <p class="mt-1 text-2xl font-bold {goodScale(1 - o.failureRate)}">{pct(o.failureRate)}</p>
-        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentRuns} runs</p>
+        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentRuns} runs · {o.reverted} reverted ({pct(o.changeFailureRate)})</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Cost / landed</span>

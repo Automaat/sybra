@@ -337,6 +337,54 @@ func FetchPRHeadSHAContext(ctx context.Context, repo string, number int) (string
 	return raw.HeadRefOid, nil
 }
 
+// FetchPRMergeCommitContext returns the default-branch commit SHA a merged PR
+// produced (empty if not merged). Context-bounded for the poll path.
+func FetchPRMergeCommitContext(ctx context.Context, repo string, number int) (string, error) {
+	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "mergeCommit")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %d mergeCommit: %s: %w", number, sanitizeGHOutput(out), err)
+	}
+	var raw struct {
+		MergeCommit struct {
+			OID string `json:"oid"`
+		} `json:"mergeCommit"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return "", fmt.Errorf("parse merge commit: %w", err)
+	}
+	return raw.MergeCommit.OID, nil
+}
+
+// FetchRecentCommitMessages returns the messages of the most recent commits on
+// the repo's default branch (up to limit, capped at 100). Used by revert
+// detection to spot a "This reverts commit <sha>" referencing a landed merge
+// commit. Context-bounded.
+func FetchRecentCommitMessages(ctx context.Context, repo string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	out, err := ghRunCtx(ctx, "api",
+		fmt.Sprintf("repos/%s/commits?per_page=%d", repo, limit),
+		"--jq", ".[].commit.message")
+	if err != nil {
+		return nil, fmt.Errorf("gh api commits %s: %s: %w", repo, sanitizeGHOutput(out), err)
+	}
+	return parseCommitMessages(out), nil
+}
+
+// parseCommitMessages splits the newline-delimited messages from the --jq
+// extraction, dropping blanks.
+func parseCommitMessages(out []byte) []string {
+	lines := strings.Split(string(out), "\n")
+	msgs := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if s := strings.TrimSpace(l); s != "" {
+			msgs = append(msgs, s)
+		}
+	}
+	return msgs
+}
+
 // FetchPRDiff returns the unified diff for a PR. Used by the evaluation
 // LLM-as-judge to score the landed change.
 func FetchPRDiff(repo string, number int) (string, error) {
