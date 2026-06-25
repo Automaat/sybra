@@ -198,9 +198,12 @@ func buildCodexCommand(model string, requirePerms, headless bool) string {
 
 // buildCopilotCommand builds the display command string for a Copilot agent.
 // Headless Copilot always runs --allow-all-tools (required for non-interactive
-// mode) and --no-ask-user so it never blocks waiting on a human.
+// mode) and --no-ask-user so it never blocks waiting on a human. The prompt
+// (and its `-p` flag) are omitted here — like buildClaudeCommand /
+// buildCodexCommand, this is a display-only string showing the flags, not a
+// runnable line.
 func buildCopilotCommand(model string) string {
-	parts := []string{"copilot", "-p", "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	parts := []string{"copilot", "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
