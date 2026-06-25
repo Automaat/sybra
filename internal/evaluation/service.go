@@ -126,12 +126,18 @@ func (s *Service) tickAndLog(ctx context.Context) {
 // Scan computes a fresh report over the configured window without side effects.
 func (s *Service) Scan(_ context.Context) (Report, error) {
 	now := s.now()
-	since := now.AddDate(0, 0, -s.windowDays())
+	wd := s.windowDays()
+	since := now.AddDate(0, 0, -wd)
 
 	var evts []audit.Event
 	if s.audit != nil {
+		// Read signal events (human-required/CI-fix/rework) from an extra window
+		// back so an in-window landing whose escalation predates the window is not
+		// misclassified as autonomous. Landings themselves are still bounded to
+		// [since, now] inside Compute.
+		signalsSince := now.AddDate(0, 0, -2*wd)
 		var err error
-		evts, err = s.audit.Read(audit.Query{Since: since, Until: now})
+		evts, err = s.audit.Read(audit.Query{Since: signalsSince, Until: now})
 		if err != nil {
 			return Report{}, err
 		}
@@ -149,13 +155,18 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	}, nil
 }
 
-// GetEvaluationReport returns the most recent report, computing one on demand
-// when no tick has run yet. Bound over HTTP/Wails for the dashboard.
+// reportCacheTTL bounds how stale an on-demand report may be. When the ticker
+// is disabled, nothing refreshes s.last, so GetEvaluationReport recomputes once
+// the cached report ages past this; when enabled, the ticker keeps it fresher.
+const reportCacheTTL = 5 * time.Minute
+
+// GetEvaluationReport returns the most recent report, recomputing on demand when
+// none exists or the cached one is stale. Bound over HTTP/Wails for the dashboard.
 func (s *Service) GetEvaluationReport() Report {
 	s.mu.RLock()
 	last := s.last
 	s.mu.RUnlock()
-	if last != nil {
+	if last != nil && s.now().Sub(last.GeneratedAt) < reportCacheTTL {
 		return *last
 	}
 	rep, err := s.Scan(context.Background())

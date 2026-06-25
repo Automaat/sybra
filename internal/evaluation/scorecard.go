@@ -15,10 +15,11 @@ import (
 
 // Scorecard holds the aggregate metrics over one time window.
 //
-// Landing-derived metrics read task.landed audit events; reliability reads
-// agent.completed/failed; efficiency reads stats run records. Metrics that
-// require signals not yet captured (merge-without-edit, change-failure rate,
-// review density) are deferred — see Report.Notes.
+// Landing-derived metrics read task.landed audit events; reliability and
+// efficiency read stats run records (the run Outcome carries the accurate
+// success/failure outcome). Metrics that require signals not yet captured
+// (merge-without-edit, change-failure rate, review density) are deferred —
+// see Report.Notes.
 type Scorecard struct {
 	WindowDays float64 `json:"windowDays"`
 
@@ -37,7 +38,7 @@ type Scorecard struct {
 	HumanTouchedLandings int     `json:"humanTouchedLandings"`
 	AutonomyRate         float64 `json:"autonomyRate"` // autonomous / landed
 
-	// Reliability (from agent.completed / agent.failed).
+	// Reliability (from stats run outcomes).
 	AgentRuns       int     `json:"agentRuns"`
 	AgentFailures   int     `json:"agentFailures"`
 	FailureRate     float64 `json:"failureRate"`
@@ -84,8 +85,8 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 	win := func(t time.Time) bool { return !t.Before(since) && !t.After(until) }
 
 	lg := scanLandings(events, win)
-	sigs := scanTaskSignals(events, win)
-	runs, fails := scanReliability(events, win)
+	sigs := scanTaskSignals(events) // not window-bound: capture full task history
+	runs, fails := scanReliability(records, win)
 	cost, turns, tools := scanEfficiency(records, win)
 
 	sc.TasksLanded, sc.Merged, sc.Closed = lg.count, lg.merged, lg.closed
@@ -146,7 +147,11 @@ func scanLandings(events []audit.Event, win func(time.Time) bool) landingAgg {
 	return lg
 }
 
-func scanTaskSignals(events []audit.Event, win func(time.Time) bool) map[string]*taskSignals {
+// scanTaskSignals is intentionally not window-bound: a task that lands inside
+// the window may have been escalated to human-required or had its CI fixed
+// before the window opened. Callers pass a wider event range so those signals
+// are not lost (which would over-report autonomy and CI-first-pass).
+func scanTaskSignals(events []audit.Event) map[string]*taskSignals {
 	sigs := map[string]*taskSignals{}
 	sig := func(id string) *taskSignals {
 		s := sigs[id]
@@ -158,7 +163,7 @@ func scanTaskSignals(events []audit.Event, win func(time.Time) bool) map[string]
 	}
 	for i := range events {
 		e := events[i]
-		if e.TaskID == "" || !win(e.Timestamp) {
+		if e.TaskID == "" {
 			continue
 		}
 		switch e.Type {
@@ -177,17 +182,17 @@ func scanTaskSignals(events []audit.Event, win func(time.Time) bool) map[string]
 	return sigs
 }
 
-func scanReliability(events []audit.Event, win func(time.Time) bool) (runs, failures int) {
-	for i := range events {
-		e := events[i]
-		if !win(e.Timestamp) {
+// scanReliability derives runs and failures from stats run records, not audit
+// events: the failure outcome is recorded on every run record (set from the
+// process exit), whereas a distinct agent.failed audit event is never emitted.
+func scanReliability(records []stats.RunRecord, win func(time.Time) bool) (runs, failures int) {
+	for i := range records {
+		r := records[i]
+		if !win(r.Timestamp) {
 			continue
 		}
-		switch e.Type {
-		case audit.EventAgentCompleted:
-			runs++
-		case audit.EventAgentFailed:
-			runs++
+		runs++
+		if r.Outcome == "failed" {
 			failures++
 		}
 	}

@@ -741,8 +741,9 @@ func SelfMonitorLedgerPath() string {
 	return filepath.Join(SelfMonitorDir(), "ledger.jsonl")
 }
 
-// EvaluationReportPath is where the evaluation service persists its most recent
-// scorecard report as JSON. The CLI `sybra-cli evaluation scan` reads from here.
+// EvaluationReportPath is where the background evaluation service persists its
+// most recent scorecard as JSON for the dashboard and inspection. The CLI
+// `sybra-cli evaluation scan` recomputes a fresh report rather than reading it.
 func EvaluationReportPath() string {
 	return filepath.Join(HomeDir(), "evaluation-report.json")
 }

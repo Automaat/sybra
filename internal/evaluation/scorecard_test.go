@@ -21,27 +21,30 @@ func TestCompute(t *testing.T) {
 			Data: map[string]any{"from": from, "to": to}}
 	}
 
+	preWindow := since.Add(-1 * time.Hour) // before the landing window, within signal range
 	events := []audit.Event{
 		// Task A: merged, clean (no human, no ci-fix, no rework).
 		ld("A", in, map[string]any{"outcome": "merged", "created_to_land_h": 10.0, "work_to_land_h": 4.0}),
-		// Task B: closed, human-touched, ci-fixed, with a repeated transition (rework).
+		// Task B: closed, with a repeated transition (rework) in-window, plus a
+		// human-required escalation and CI fix that happened BEFORE the landing
+		// window — these must still count (straddle), proving signals are not
+		// window-bound.
 		ld("B", in, map[string]any{"outcome": "closed", "created_to_land_h": 20.0, "work_to_land_h": 8.0}),
-		sc("B", "in-review", "human-required", in),
+		sc("B", "in-review", "human-required", preWindow),
 		sc("B", "in-progress", "in-review", in),
 		sc("B", "in-progress", "in-review", in), // repeat → rework
-		{Type: audit.EventPRCIFailureDetected, TaskID: "B", Timestamp: in},
-		// Reliability: 3 completed + 1 failed → failure rate 0.25.
-		{Type: audit.EventAgentCompleted, TaskID: "A", Timestamp: in},
-		{Type: audit.EventAgentCompleted, TaskID: "B", Timestamp: in},
-		{Type: audit.EventAgentCompleted, TaskID: "B", Timestamp: in},
-		{Type: audit.EventAgentFailed, TaskID: "B", Timestamp: in},
+		{Type: audit.EventPRCIFailureDetected, TaskID: "B", Timestamp: preWindow},
 		// Out of window → ignored entirely.
 		ld("C", out, map[string]any{"outcome": "merged", "created_to_land_h": 999.0}),
 	}
+	// Reliability + efficiency come from stats run records: 4 in-window runs,
+	// 1 failed → failure rate 0.25. C is out of window → ignored.
 	records := []stats.RunRecord{
-		{TaskID: "A", CostUSD: 1.0, TurnCount: 5, ToolCalls: 10, Timestamp: in},
-		{TaskID: "B", CostUSD: 3.0, TurnCount: 15, ToolCalls: 30, Timestamp: in},
-		{TaskID: "C", CostUSD: 99.0, TurnCount: 99, ToolCalls: 99, Timestamp: out}, // ignored
+		{TaskID: "A", CostUSD: 1.0, TurnCount: 5, ToolCalls: 10, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", CostUSD: 3.0, TurnCount: 15, ToolCalls: 30, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", CostUSD: 0, TurnCount: 0, ToolCalls: 0, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", CostUSD: 0, TurnCount: 0, ToolCalls: 0, Outcome: "failed", Timestamp: in},
+		{TaskID: "C", CostUSD: 99.0, TurnCount: 99, ToolCalls: 99, Outcome: "failed", Timestamp: out}, // ignored
 	}
 
 	got := Compute(records, events, since, base)
