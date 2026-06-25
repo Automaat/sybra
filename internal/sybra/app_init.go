@@ -338,6 +338,8 @@ func (a *App) initWorkflowEngine() {
 func (a *App) initAgentConfig() {
 	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
 	a.agents.SetBashTimeoutMs(a.cfg.BashTimeoutMs())
+	a.agents.SetRetryWatchdog(a.cfg.RetryWatchdog())
+	a.agents.SetFallbackModel(a.cfg.Agent.FallbackModel)
 	if a.cfg.SurviveRestartEnabled() {
 		if err := a.agents.EnableSurviveRestart(config.AgentsDir()); err != nil {
 			a.logger.Error("agent.survive-restart.init", "err", err)

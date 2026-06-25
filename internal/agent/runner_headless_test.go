@@ -887,6 +887,125 @@ func TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox(t *testing.T) {
 	}
 }
 
+// TestBuildHeadlessInvocation_RetryWatchdog verifies that CLAUDE_CODE_RETRY_WATCHDOG
+// is injected via env (not a CLI flag) when cfg.RetryWatchdog > 0, and is absent
+// when zero. Codex invocations must not receive the env var.
+func TestBuildHeadlessInvocation_RetryWatchdog(t *testing.T) {
+	t.Run("env_set_for_claude", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, env, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			RetryWatchdog: 30,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		for _, arg := range args {
+			if strings.Contains(arg, "RETRY_WATCHDOG") || strings.Contains(arg, "retry_watchdog") {
+				t.Fatalf("RETRY_WATCHDOG must not appear as a CLI arg; got %v", args)
+			}
+		}
+		want := "CLAUDE_CODE_RETRY_WATCHDOG=30"
+		if !slices.Contains(env, want) {
+			t.Errorf("env missing %q; got %v", want, env)
+		}
+	})
+
+	t.Run("env_absent_when_zero", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, _, env, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			RetryWatchdog: 0,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "CLAUDE_CODE_RETRY_WATCHDOG=") {
+				t.Fatalf("RETRY_WATCHDOG env must be absent when RetryWatchdog == 0; got %q", e)
+			}
+		}
+	})
+
+	t.Run("not_set_for_codex", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, _, env, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			RetryWatchdog: 30,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "CLAUDE_CODE_RETRY_WATCHDOG=") {
+				t.Fatalf("RETRY_WATCHDOG env must not be set for codex; got %q", e)
+			}
+		}
+	})
+}
+
+// TestBuildHeadlessInvocation_FallbackModel verifies that --fallback-model is
+// added to args when cfg.FallbackModel is set, and absent when empty. Codex
+// invocations must not receive the flag.
+func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
+	t.Run("flag_set_for_claude", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			FallbackModel: "haiku",
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--fallback-model")
+		if idx < 0 {
+			t.Fatalf("args missing --fallback-model; got %v", args)
+		}
+		if idx+1 >= len(args) || args[idx+1] != "haiku" {
+			t.Errorf("--fallback-model value wrong; args=%v", args)
+		}
+	})
+
+	t.Run("flag_absent_when_empty", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			FallbackModel: "",
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--fallback-model") {
+			t.Fatalf("--fallback-model must be absent when FallbackModel is empty; got %v", args)
+		}
+	})
+
+	t.Run("invalid_fallback_model_rejected", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, _, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			FallbackModel: "bad model; rm -rf /",
+		})
+		if err == nil {
+			t.Fatal("expected error for invalid fallback model, got nil")
+		}
+	})
+
+	t.Run("not_set_for_codex", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "hi",
+			FallbackModel: "haiku",
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+		}
+		if slices.Contains(args, "--fallback-model") {
+			t.Fatalf("--fallback-model must not appear in codex args; got %v", args)
+		}
+	})
+}
+
 // TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless
 // codex always bypasses approvals even when RequirePermissions=true. Interactive
 // mode with RequirePermissions=true must use --sandbox workspace-write.

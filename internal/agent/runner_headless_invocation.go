@@ -25,6 +25,10 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 		err = fmt.Errorf("invalid model %q: must match %s", a.Model, safeArgRe)
 		return
 	}
+	if cfg.FallbackModel != "" && !safeArgRe.MatchString(cfg.FallbackModel) {
+		err = fmt.Errorf("invalid fallback model %q: must match %s", cfg.FallbackModel, safeArgRe)
+		return
+	}
 
 	if a.Provider == "codex" {
 		name = "codex"
@@ -57,6 +61,9 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
+	if cfg.FallbackModel != "" {
+		args = append(args, "--fallback-model", cfg.FallbackModel)
+	}
 	if cfg.BashTimeoutMs > 0 {
 		// Claude has no `--bashTimeoutMs` CLI flag — the supported channel is
 		// the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars. Set both
@@ -70,6 +77,12 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 	}
 	if cfg.ForkSubagent {
 		env = append(env, "CLAUDE_CODE_FORK_SUBAGENT=1")
+	}
+	if cfg.RetryWatchdog > 0 {
+		// CLAUDE_CODE_RETRY_WATCHDOG replaces CLAUDE_CODE_MAX_RETRIES (now
+		// capped at 15) for unattended/server headless runs. Delivered via env
+		// because claude has no equivalent CLI flag.
+		env = append(env, "CLAUDE_CODE_RETRY_WATCHDOG="+strconv.Itoa(cfg.RetryWatchdog))
 	}
 	command = "claude " + strings.Join(args, " ")
 	return

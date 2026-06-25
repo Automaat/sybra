@@ -554,6 +554,15 @@ type RunConfig struct {
 	// subprocess environment (claude provider only). Enables parallel subagent
 	// spawning from a single prompt at the cost of higher token usage.
 	ForkSubagent bool
+	// RetryWatchdog, when > 0, sets CLAUDE_CODE_RETRY_WATCHDOG to this value
+	// in the claude subprocess environment. Replaces CLAUDE_CODE_MAX_RETRIES
+	// (now capped at 15) for headless/unattended server runs. Zero means "use
+	// the manager's default".
+	RetryWatchdog int
+	// FallbackModel, when non-empty, passes --fallback-model to claude.
+	// Paired with RetryWatchdog so the watchdog can retry on a less-loaded
+	// model when the primary is overloaded. Empty means no fallback flag.
+	FallbackModel string
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.
