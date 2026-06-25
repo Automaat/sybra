@@ -322,6 +322,17 @@ func (m *Manager) PrepareForReview(t task.Task) (string, error) {
 // PrepareForFix creates a worktree checking out the PR's head branch
 // so the agent can rebase and push.
 func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
+	// Adopt an externally-created worktree (e.g. an Orca handoff) as-is instead
+	// of re-creating it. Without this guard PrepareForFix runs
+	// `git worktree add` at the adopted path, which fails ("already exists" /
+	// "branch already checked out") and — after wtFailureLimit retries — strands
+	// the task in human-required. The fix agent rebases/pushes from this
+	// worktree itself, so no Sybra-managed checkout is needed. Mirrors
+	// PrepareForTask.
+	if t.WorktreeDir != "" {
+		return m.adoptWorktree(t, nil)
+	}
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
