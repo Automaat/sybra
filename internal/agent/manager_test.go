@@ -442,6 +442,63 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 }
 
+func TestClaimTaskDispatch(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("first claim should succeed")
+	}
+	if m.ClaimTaskDispatch("t1") {
+		t.Error("second claim while held must fail (serializes dispatch)")
+	}
+	if !m.ClaimTaskDispatch("t2") {
+		t.Error("claim for a different task must succeed")
+	}
+
+	// A held claim makes the task look busy even though no agent is registered
+	// yet — this is what blocks a concurrent recovery dispatch during the
+	// worktree-prep window.
+	if !m.HasRunningAgentForTask("t1") {
+		t.Error("claimed task should report a running agent")
+	}
+
+	m.ReleaseTaskDispatch("t1")
+	if m.HasRunningAgentForTask("t1") {
+		t.Error("released claim with no agent should report not running")
+	}
+	if !m.ClaimTaskDispatch("t1") {
+		t.Error("claim after release should succeed")
+	}
+
+	// Releasing an unheld claim is a no-op (must not panic).
+	m.ReleaseTaskDispatch("never-claimed")
+}
+
+func TestHasOtherRunningAgentForTask(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
+	m.mu.Lock()
+	m.agents["a1"] = running
+	m.mu.Unlock()
+
+	// Excluding the only running agent → false. This is the case that prevents
+	// verify_commits from deadlocking on the agent whose own completion is
+	// being processed (its done channel closes only after onComplete).
+	if m.HasOtherRunningAgentForTask("t1", "a1") {
+		t.Error("excluding the only running agent must yield false")
+	}
+	// A different except-id leaves a1 visible → true.
+	if !m.HasOtherRunningAgentForTask("t1", "other") {
+		t.Error("a1 not excluded should yield true")
+	}
+	// An in-flight dispatch counts even when the only registered agent is excluded.
+	m.ClaimTaskDispatch("t1")
+	if !m.HasOtherRunningAgentForTask("t1", "a1") {
+		t.Error("a held dispatch claim should count as another running agent")
+	}
+}
+
 func TestBuildCommand(t *testing.T) {
 	// Reset server-side env override so tests see the default sandbox logic.
 	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")

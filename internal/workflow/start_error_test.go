@@ -59,6 +59,40 @@ func TestClassifyAgentStartError(t *testing.T) {
 	}
 }
 
+func TestClassifyAgentStartError_DispatchInFlightSuppressed(t *testing.T) {
+	// A dispatch-in-flight outcome is benign: the holder of the claim produces
+	// the agent. It must yield an empty reason (no status_reason written) and
+	// be non-permanent so the resume loop leaves the task alone.
+	reason, permanent := ClassifyAgentStartError(ErrDispatchInFlight)
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+	if permanent {
+		t.Error("dispatch-in-flight must not be permanent")
+	}
+	// Also when wrapped.
+	wrapped := fmt.Errorf("start agent: %w", ErrDispatchInFlight)
+	if r, p := ClassifyAgentStartError(wrapped); r != "" || p {
+		t.Errorf("wrapped: got reason=%q permanent=%v, want empty/false", r, p)
+	}
+}
+
+func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	engine.surfaceStartFailure("t1", "in-progress", ErrDispatchInFlight)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "in-progress" {
+		t.Errorf("dispatch-in-flight flipped status: got %q, want in-progress", got.Status)
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("dispatch-in-flight wrote reason %q, want empty", reason)
+	}
+}
+
 func TestSurfaceStartFailure_TransientKeepsStatus(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

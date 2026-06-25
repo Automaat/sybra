@@ -11,6 +11,13 @@ import (
 // Longer messages clutter the UI and rarely add value beyond the lead error.
 const startReasonMaxLen = 200
 
+// ErrDispatchInFlight is returned by an agent-start path when another dispatch
+// for the same task is already in flight (the per-task dispatch claim is held).
+// It is a benign, transient outcome — the in-flight dispatch will produce the
+// task's agent — so it must never flip the task to human-required or write a
+// scary status_reason. ClassifyAgentStartError maps it to an empty reason.
+var ErrDispatchInFlight = errors.New("agent dispatch already in flight for task")
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
@@ -25,6 +32,10 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		return "", false
 	}
 	switch {
+	case errors.Is(err, ErrDispatchInFlight):
+		// Transient and self-healing: another dispatcher holds the claim and
+		// will start the agent. Suppress the reason entirely.
+		return "", false
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"

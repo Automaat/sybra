@@ -76,6 +76,66 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_VerifyCommitsRouting pins the verify_commits
+// transition table: human-required and done end the run, everything else hands
+// off to review. (The sibling-still-running case is handled in Go by parking
+// the workflow in ExecWaiting, not by a transition — see execVerifyCommits.)
+func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin definition not found")
+	}
+	step := impl.StepByID("verify_commits")
+	if step == nil {
+		t.Fatal("verify_commits step not found in simple-task-implement")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "human-required ends the run",
+			fields: map[string]string{"task.status": "human-required"},
+			want:   "",
+		},
+		{
+			name:   "done ends the run",
+			fields: map[string]string{"task.status": "done"},
+			want:   "",
+		},
+		{
+			name:   "clean in-progress hands off to review",
+			fields: map[string]string{"task.status": "in-progress"},
+			want:   "set_ready_review",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuiltinSimpleTask_TriageNoplanRouting locks the noplan escape hatch in
 // the triage step's transition table: a noplan tag routes straight to
 // implement (winning over a planning status), terminal statuses still win over

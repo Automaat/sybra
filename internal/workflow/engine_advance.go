@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -338,6 +339,14 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// Sync steps: execute, record result, resolve next, loop.
 		output, execErr := e.execSyncStep(taskID, step, wfExec, ctx, t)
 		if execErr != nil {
+			// The step parked the workflow in ExecWaiting (it persisted the new
+			// CurrentStep/State itself). Stop without recording/advancing/
+			// completing: completing here would fire the status-change cascade.
+			// ResumeStalled re-drives the re-armed run_agent step once idle.
+			if errors.Is(execErr, errStepParked) {
+				var parkedNoCompletion *CompletionInfo
+				return parkedNoCompletion, nil
+			}
 			return nil, execErr
 		}
 

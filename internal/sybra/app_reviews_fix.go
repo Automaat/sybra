@@ -41,6 +41,16 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
+	// Defense in depth: never merge a PR that lives outside the task's own
+	// project. A mis-linked PR number (e.g. a branch-name collision) must not
+	// be able to squash-merge an unrelated repo. proj.ID and PR.Repository are
+	// both owner/repo.
+	if issue.PR.Repository != proj.ID {
+		r.logger.Warn("auto-merge.repo-mismatch",
+			"task_id", t.ID, "task_project", proj.ID, "pr_repo", issue.PR.Repository, "pr", issue.PR.Number)
+		return
+	}
+
 	// Hold the merge until Copilot has reviewed and its threads are resolved.
 	// Without this, a green PR merges on the first poll after CI passes — before
 	// Copilot's (asynchronous) review lands — and its feedback is skipped.

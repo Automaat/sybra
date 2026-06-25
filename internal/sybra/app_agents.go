@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -115,7 +116,42 @@ func newAgentOrchestrator(
 	}
 }
 
+// sandboxEnv resolves the extra environment variables a task's configured
+// sandbox injects into its agent subprocess, starting the sandbox on demand.
+// Returns nil when no sandbox applies or startup fails (a failed start is
+// logged, not fatal — the agent runs without the sandbox env).
+func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string {
+	if o.sandboxes == nil || t.ProjectID == "" {
+		return nil
+	}
+	proj, pErr := o.projects.Get(t.ProjectID)
+	if pErr != nil || proj.Sandbox == nil {
+		return nil
+	}
+	inst := o.sandboxes.Get(taskID)
+	if inst == nil {
+		newInst, startErr := o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
+		if startErr != nil {
+			o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
+			return nil
+		}
+		inst = newInst
+	}
+	return inst.EnvVars()
+}
+
 func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
+	// Serialize dispatch per task. Held across the whole start — including the
+	// multi-second worktree prep below, during which the agent is not yet
+	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
+	// a manual start) cannot observe "no running agent" and launch a duplicate
+	// on the same worktree. workflow.ErrDispatchInFlight is benign: the holder
+	// will produce the task's agent.
+	if !o.agents.ClaimTaskDispatch(taskID) {
+		return nil, workflow.ErrDispatchInFlight
+	}
+	defer o.agents.ReleaseTaskDispatch(taskID)
+
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return nil, err
@@ -149,23 +185,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	}
 	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart)
 
-	var extraEnv []string
-	if o.sandboxes != nil && t.ProjectID != "" {
-		if proj, pErr := o.projects.Get(t.ProjectID); pErr == nil && proj.Sandbox != nil {
-			inst := o.sandboxes.Get(taskID)
-			if inst == nil {
-				newInst, startErr := o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
-				if startErr != nil {
-					o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
-				} else {
-					inst = newInst
-				}
-			}
-			if inst != nil {
-				extraEnv = inst.EnvVars()
-			}
-		}
-	}
+	extraEnv := o.sandboxEnv(taskID, dir, t)
 
 	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
@@ -319,6 +339,13 @@ func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
 // StartPRFixAgent starts a headless agent to address review comments on
 // the task's PR. Named "pr-fix:" so handleAgentComplete routes it correctly.
 func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
+	// Same per-task dispatch serialization as StartAgent — a pr-fix dispatch
+	// must not race a concurrent implementation/recovery dispatch.
+	if !o.agents.ClaimTaskDispatch(taskID) {
+		return workflow.ErrDispatchInFlight
+	}
+	defer o.agents.ReleaseTaskDispatch(taskID)
+
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return err

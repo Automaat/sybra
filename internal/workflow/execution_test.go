@@ -5,6 +5,41 @@ import (
 	"time"
 )
 
+func TestLastAgentID(t *testing.T) {
+	t.Run("empty history", func(t *testing.T) {
+		e := &Execution{}
+		if got := e.LastAgentID(); got != "" {
+			t.Errorf("LastAgentID = %q, want empty", got)
+		}
+	})
+	t.Run("most recent agent step wins, non-agent steps skipped", func(t *testing.T) {
+		e := &Execution{}
+		e.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "agent-old"})
+		e.RecordStep(StepRecord{StepID: "implement2", Status: "failed", AgentID: "agent-new"})
+		e.RecordStep(StepRecord{StepID: "verify", Status: "completed"}) // no AgentID
+		if got := e.LastAgentID(); got != "agent-new" {
+			t.Errorf("LastAgentID = %q, want agent-new", got)
+		}
+	})
+}
+
+func TestLastAgentStepID(t *testing.T) {
+	t.Run("empty history", func(t *testing.T) {
+		e := &Execution{}
+		if got := e.LastAgentStepID(); got != "" {
+			t.Errorf("LastAgentStepID = %q, want empty", got)
+		}
+	})
+	t.Run("returns step id of most recent agent step", func(t *testing.T) {
+		e := &Execution{}
+		e.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "agent-1"})
+		e.RecordStep(StepRecord{StepID: "verify", Status: "completed"}) // no AgentID
+		if got := e.LastAgentStepID(); got != "implement" {
+			t.Errorf("LastAgentStepID = %q, want implement", got)
+		}
+	})
+}
+
 func TestSetVar_InitializesNilMap(t *testing.T) {
 	e := &Execution{}
 

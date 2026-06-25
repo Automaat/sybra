@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -116,6 +117,16 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
 	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
 	if err != nil {
+		// Another dispatcher already holds the per-task dispatch claim (e.g. the
+		// recovery loop won the race for this task). That agent will run and its
+		// completion drives the workflow forward — so wait rather than failing
+		// the step (which would otherwise route into verify_commits /
+		// human-required on a task that has live work in flight).
+		if errors.Is(err, ErrDispatchInFlight) {
+			wfExec.State = ExecWaiting
+			e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", step.ID)
+			return e.tasks.SetWorkflow(taskID, wfExec)
+		}
 		return fmt.Errorf("start agent: %w", err)
 	}
 

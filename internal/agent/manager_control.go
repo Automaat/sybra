@@ -192,6 +192,13 @@ func (m *Manager) ListAgents() []*Agent {
 func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	// An in-flight dispatch counts as "running": the agent is mid-start and
+	// not yet in the map, but a second dispatcher must not treat the task as
+	// idle. Lets recovery / ResumeStalled / pr-fix pollers skip during the
+	// worktree-prep window instead of racing the dispatch.
+	if _, held := m.dispatchClaims[taskID]; held {
+		return true
+	}
 	for _, a := range m.agents {
 		if a.TaskID != taskID {
 			continue
@@ -206,6 +213,35 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 			}
 		} else if a.GetState() == StateRunning {
 			// interactive: no goroutine, rely on state
+			return true
+		}
+	}
+	return false
+}
+
+// HasOtherRunningAgentForTask is HasRunningAgentForTask excluding the agent
+// with exceptAgentID. verify_commits uses it to detect a sibling agent still
+// working the task without false-positiving on the agent whose own completion
+// is currently being processed — that agent's `done` channel is closed only
+// after onComplete returns (see runner_headless), so it would otherwise still
+// read as running.
+func (m *Manager) HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, held := m.dispatchClaims[taskID]; held {
+		return true
+	}
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.ID == exceptAgentID {
+			continue
+		}
+		if a.done != nil {
+			select {
+			case <-a.done:
+			default:
+				return true
+			}
+		} else if a.GetState() == StateRunning {
 			return true
 		}
 	}

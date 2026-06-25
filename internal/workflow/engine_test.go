@@ -258,6 +258,13 @@ func (m *mockAgents) HasRunningAgent(taskID string) bool {
 	return ok
 }
 
+func (m *mockAgents) HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.running[taskID]
+	return ok && id != exceptAgentID
+}
+
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2639,6 +2646,172 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	}
 
 	return dir
+}
+
+// TestExecRunAgent_DispatchInFlightWaits asserts a run_agent step whose
+// StartAgent loses the per-task dispatch claim parks the workflow in
+// ExecWaiting (the claim holder's agent will drive it) rather than failing the
+// step and routing toward human-required.
+func TestExecRunAgent_DispatchInFlightWaits(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrDispatchInFlight)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatalf("StartWorkflow returned error, want nil (dispatch-in-flight is benign): %v", err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow == nil || ti.Workflow.State != ExecWaiting {
+		t.Fatalf("workflow state = %v, want ExecWaiting", ti.Workflow)
+	}
+	if ti.Status == "human-required" {
+		t.Errorf("dispatch-in-flight must not flip task to human-required")
+	}
+	if agents.CallCount() != 0 {
+		t.Errorf("no agent should have been recorded as started, got %d calls", agents.CallCount())
+	}
+}
+
+// TestExecRunAgent_RealSpawnErrorPropagates is the contrast to the test above:
+// a genuine (non-dispatch-in-flight) spawn error must still surface.
+func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(errors.New("worktree boom"))
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
+		t.Fatal("StartWorkflow should propagate a real spawn error")
+	}
+}
+
+// TestExecVerifyCommits_ParksWhileSiblingRunning asserts the step re-arms the
+// implement run_agent step and parks the workflow in ExecWaiting (returning
+// errStepParked) when another agent is still working the task — instead of
+// flipping a task with live work to human-required OR completing the workflow
+// (whose status-change cascade would re-dispatch over the sibling).
+func TestExecVerifyCommits_ParksWhileSiblingRunning(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}})
+	agents := newMockAgents()
+	agents.mu.Lock()
+	agents.running["t1"] = "sibling" // a different agent than the completer
+	agents.mu.Unlock()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
+
+	wfExec := &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wfExec.State)
+	}
+	if wfExec.CurrentStep != "implement" {
+		t.Errorf("CurrentStep = %q, want implement (re-armed run_agent step)", wfExec.CurrentStep)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress (no human-required flip)", ti.Status)
+	}
+}
+
+// TestExecVerifyCommits_ExcludesCompletingAgent guards against the self-deadlock
+// the deferral could otherwise cause: the agent whose completion triggered the
+// step still reads as running (its done channel closes after onComplete), so it
+// must be excluded. With no genuine sibling, the normal no-commits verdict fires.
+func TestExecVerifyCommits_ExcludesCompletingAgent(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	agents.mu.Lock()
+	agents.running["t1"] = "completer" // the same agent whose completion drives this step
+	agents.mu.Unlock()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
+
+	wfExec := &Execution{}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+	if errors.Is(err, errStepParked) {
+		t.Fatal("must not park when only the completing agent appears running")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "human-required") {
+		t.Errorf("Output = %q, want the human-required verdict", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required (genuine crash, no sibling)", ti.Status)
+	}
+}
+
+// TestExecuteSteps_VerifyCommitsParkDoesNotComplete is the regression test for
+// the Copilot finding: a deferred verify_commits must NOT complete the workflow,
+// because OnWorkflowComplete cascades on the (still in-progress) status and would
+// re-dispatch simple-task-implement — whose execRunAgent StopAgentsForTask would
+// kill the still-running sibling. executeSteps must return a nil completion
+// (parked, ExecWaiting), never a CompletionInfo.
+func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin not found")
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}})
+	agents := newMockAgents()
+	agents.mu.Lock()
+	agents.running["t1"] = "sibling"
+	agents.mu.Unlock()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
+
+	wf := &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}
+	wf.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
+
+	verifyStep := impl.StepByID("verify_commits")
+	if verifyStep == nil {
+		t.Fatal("verify_commits step not found in simple-task-implement")
+	}
+	comp, err := engine.executeSteps("t1", impl, verifyStep, wf)
+	if err != nil {
+		t.Fatalf("executeSteps: %v", err)
+	}
+	if comp != nil {
+		t.Errorf("executeSteps returned a completion (workflow finished → cascade would re-dispatch over the sibling); want nil (parked)")
+	}
+	if wf.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wf.State)
+	}
+	if wf.CurrentStep != "implement" {
+		t.Errorf("CurrentStep = %q, want implement (re-armed for ResumeStalled)", wf.CurrentStep)
+	}
 }
 
 func TestExecVerifyCommits_NoGetterSkips(t *testing.T) {

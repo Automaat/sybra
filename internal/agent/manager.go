@@ -59,17 +59,56 @@ type Manager struct {
 	// taskExists, when set, reports whether a task still exists. Used to
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
+
+	// dispatchClaims serializes agent dispatch per task. A claim is held for
+	// the full duration of a StartAgent call — across the (multi-second)
+	// worktree-preparation window during which the agent is not yet registered
+	// in `agents`. Without it, two independent dispatchers (the workflow
+	// cascade and the recovery loop) can both observe "no running agent" and
+	// each start an agent on the same worktree. This is a pure in-flight lock:
+	// it intentionally does NOT inspect running agents, so a step transition
+	// dispatching its next agent inside the prior agent's onComplete (whose
+	// `done` channel is not yet closed) is never blocked.
+	dispatchClaims map[string]struct{}
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
 	return &Manager{
-		agents:      make(map[string]*Agent),
-		ctx:         ctx,
-		emit:        emit,
-		logger:      logger,
-		logDir:      logDir,
-		defaultProv: "claude",
+		agents:         make(map[string]*Agent),
+		dispatchClaims: make(map[string]struct{}),
+		ctx:            ctx,
+		emit:           emit,
+		logger:         logger,
+		logDir:         logDir,
+		defaultProv:    "claude",
 	}
+}
+
+// ClaimTaskDispatch reserves the right to dispatch an agent for taskID,
+// returning false when a dispatch is already in flight for the same task. The
+// caller MUST NOT start an agent on a false return, and MUST ReleaseTaskDispatch
+// once dispatch finishes (success or failure) on a true return. This closes the
+// window between dispatch start and agent registration where a concurrent
+// dispatcher would otherwise see no running agent and start a duplicate.
+func (m *Manager) ClaimTaskDispatch(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, held := m.dispatchClaims[taskID]; held {
+		return false
+	}
+	if m.dispatchClaims == nil {
+		m.dispatchClaims = make(map[string]struct{})
+	}
+	m.dispatchClaims[taskID] = struct{}{}
+	return true
+}
+
+// ReleaseTaskDispatch releases a claim acquired by ClaimTaskDispatch. Safe to
+// call for a task with no outstanding claim.
+func (m *Manager) ReleaseTaskDispatch(taskID string) {
+	m.mu.Lock()
+	delete(m.dispatchClaims, taskID)
+	m.mu.Unlock()
 }
 
 func (m *Manager) SetOnComplete(fn func(ag *Agent)) {

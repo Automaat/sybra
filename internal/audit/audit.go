@@ -24,6 +24,7 @@ const (
 	EventPRMerged                 = "pr_monitor.merged"
 	EventPRClosed                 = "pr_monitor.closed"
 	EventPRAutoMerged             = "pr_monitor.auto_merged"
+	EventPROrphanAdopted          = "pr_monitor.orphan_adopted"
 	EventPRCopilotThreadsResolved = "pr_monitor.copilot_threads_resolved"
 	EventReviewStarted            = "review.agent_started"
 	EventFixReviewStarted         = "fix_review.agent_started"
