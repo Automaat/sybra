@@ -126,8 +126,7 @@ export class Report {
  * Landing-derived metrics read task.landed audit events; reliability and
  * efficiency read stats run records (the run Outcome carries the accurate
  * success/failure outcome). Metrics that require signals not yet captured
- * (merge-without-edit, change-failure rate, review density) are deferred —
- * see Report.Notes.
+ * (change-failure rate, review density) are deferred — see Report.Notes.
  */
 export class Scorecard {
     "windowDays": number;
