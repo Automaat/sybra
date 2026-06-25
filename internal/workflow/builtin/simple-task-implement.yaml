@@ -49,15 +49,6 @@ steps:
     name: Verify Commits
     type: verify_commits
     next:
-      # A sibling agent is still working this task (verify_commits set
-      # verify_deferred): end this run without a verdict instead of flipping to
-      # human-required on a task with live work in flight. Recovery re-drives
-      # the workflow once the worktree is quiescent.
-      - when:
-          field: vars.verify_deferred
-          operator: equals
-          value: "true"
-        goto: ""
       - when:
           field: task.status
           operator: equals

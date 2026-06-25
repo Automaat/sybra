@@ -2691,13 +2691,16 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestExecVerifyCommits_DefersWhileSiblingRunning asserts the step ends the run
-// without a verdict (verify_deferred) when another agent is still working the
-// task, rather than flipping a task with live work to human-required.
-func TestExecVerifyCommits_DefersWhileSiblingRunning(t *testing.T) {
+// TestExecVerifyCommits_ParksWhileSiblingRunning asserts the step re-arms the
+// implement run_agent step and parks the workflow in ExecWaiting (returning
+// errStepParked) when another agent is still working the task — instead of
+// flipping a task with live work to human-required OR completing the workflow
+// (whose status-change cascade would re-dispatch over the sibling).
+func TestExecVerifyCommits_ParksWhileSiblingRunning(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}})
 	agents := newMockAgents()
 	agents.mu.Lock()
 	agents.running["t1"] = "sibling" // a different agent than the completer
@@ -2705,18 +2708,18 @@ func TestExecVerifyCommits_DefersWhileSiblingRunning(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
 
-	wfExec := &Execution{}
+	wfExec := &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}
 	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
 	}
-	if !strings.Contains(out.Output, "deferred") {
-		t.Errorf("Output = %q, want deferred", out.Output)
+	if wfExec.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wfExec.State)
 	}
-	if wfExec.Variables["verify_deferred"] != "true" {
-		t.Errorf("verify_deferred = %q, want true", wfExec.Variables["verify_deferred"])
+	if wfExec.CurrentStep != "implement" {
+		t.Errorf("CurrentStep = %q, want implement (re-armed run_agent step)", wfExec.CurrentStep)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress (no human-required flip)", ti.Status)
@@ -2742,17 +2745,68 @@ func TestExecVerifyCommits_ExcludesCompletingAgent(t *testing.T) {
 	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+	if errors.Is(err, errStepParked) {
+		t.Fatal("must not park when only the completing agent appears running")
+	}
 	if err != nil {
 		t.Fatal(err)
-	}
-	if wfExec.Variables["verify_deferred"] == "true" {
-		t.Error("must not defer when only the completing agent appears running")
 	}
 	if !strings.Contains(out.Output, "human-required") {
 		t.Errorf("Output = %q, want the human-required verdict", out.Output)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required (genuine crash, no sibling)", ti.Status)
+	}
+}
+
+// TestExecuteSteps_VerifyCommitsParkDoesNotComplete is the regression test for
+// the Copilot finding: a deferred verify_commits must NOT complete the workflow,
+// because OnWorkflowComplete cascades on the (still in-progress) status and would
+// re-dispatch simple-task-implement — whose execRunAgent StopAgentsForTask would
+// kill the still-running sibling. executeSteps must return a nil completion
+// (parked, ExecWaiting), never a CompletionInfo.
+func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin not found")
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}})
+	agents := newMockAgents()
+	agents.mu.Lock()
+	agents.running["t1"] = "sibling"
+	agents.mu.Unlock()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
+
+	wf := &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}
+	wf.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
+
+	comp, err := engine.executeSteps("t1", impl, impl.StepByID("verify_commits"), wf)
+	if err != nil {
+		t.Fatalf("executeSteps: %v", err)
+	}
+	if comp != nil {
+		t.Errorf("executeSteps returned a completion (workflow finished → cascade would re-dispatch over the sibling); want nil (parked)")
+	}
+	if wf.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wf.State)
+	}
+	if wf.CurrentStep != "implement" {
+		t.Errorf("CurrentStep = %q, want implement (re-armed for ResumeStalled)", wf.CurrentStep)
 	}
 }
 

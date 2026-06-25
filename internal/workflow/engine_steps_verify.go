@@ -11,6 +11,13 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 )
 
+// errStepParked is a sentinel returned by a synchronous step that has parked
+// its own workflow in ExecWaiting (persisting the new CurrentStep/State itself).
+// executeSteps treats it as "stop, do not record/advance/complete" — completing
+// would fire the status-change cascade. Used by verify_commits to wait out a
+// still-running sibling agent without re-dispatching over it.
+var errStepParked = errors.New("workflow step parked in ExecWaiting")
+
 // execEnsurePRClosesIssue verifies the task's PR closes its linked
 // GitHub issue. When the closing reference is missing, it appends
 // `Closes <issue-url>` to the PR body via the PRLinker and re-verifies.
@@ -183,19 +190,29 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
 
-	// Defense in depth against the duplicate-dispatch class of bug: if a
-	// sibling agent (other than the one whose completion triggered this step)
-	// is still working the task, the branch may have no commits simply because
-	// that agent has not pushed yet. Flipping to human-required now would
-	// strand a task with live work in flight. End this run without a verdict
-	// via the verify_deferred transition; recovery re-drives the workflow once
-	// the worktree is quiescent, and the dispatch claim guarantees no duplicate.
+	// Defense in depth against the duplicate-dispatch class of bug: if a sibling
+	// agent (other than the one whose completion triggered this step) is still
+	// working the task, the branch may have no commits simply because that agent
+	// has not pushed yet. Both flipping to human-required (strands live work) and
+	// completing the workflow (its status-change cascade would re-dispatch the
+	// implement workflow and StopAgentsForTask the sibling) are wrong. Instead
+	// re-arm the implementation run_agent step and park the workflow in
+	// ExecWaiting WITHOUT completing it — ResumeStalled re-drives verification
+	// once the worktree is quiescent, and the dispatch claim guarantees no
+	// duplicate. Excludes the just-completed agent (its done channel closes only
+	// after onComplete) so this never fires on the triggering agent itself.
 	if e.agents != nil {
 		if exceptID := wfExec.LastAgentID(); e.agents.HasOtherRunningAgentForTask(taskID, exceptID) {
-			wfExec.SetVar("verify_deferred", "true")
-			e.logger.Warn("workflow.verify-commits.deferred",
-				"task_id", taskID, "except_agent", exceptID)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "deferred: another agent still running for task"}, nil
+			if rearm := wfExec.LastAgentStepID(); rearm != "" {
+				wfExec.CurrentStep = rearm
+				wfExec.State = ExecWaiting
+				if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+					return StepOutput{}, err
+				}
+				e.logger.Warn("workflow.verify-commits.parked",
+					"task_id", taskID, "rearm_step", rearm, "except_agent", exceptID)
+				return StepOutput{}, errStepParked
+			}
 		}
 	}
 

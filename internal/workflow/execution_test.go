@@ -23,6 +23,23 @@ func TestLastAgentID(t *testing.T) {
 	})
 }
 
+func TestLastAgentStepID(t *testing.T) {
+	t.Run("empty history", func(t *testing.T) {
+		e := &Execution{}
+		if got := e.LastAgentStepID(); got != "" {
+			t.Errorf("LastAgentStepID = %q, want empty", got)
+		}
+	})
+	t.Run("returns step id of most recent agent step", func(t *testing.T) {
+		e := &Execution{}
+		e.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "agent-1"})
+		e.RecordStep(StepRecord{StepID: "verify", Status: "completed"}) // no AgentID
+		if got := e.LastAgentStepID(); got != "implement" {
+			t.Errorf("LastAgentStepID = %q, want implement", got)
+		}
+	})
+}
+
 func TestSetVar_InitializesNilMap(t *testing.T) {
 	e := &Execution{}
 

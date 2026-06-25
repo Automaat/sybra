@@ -159,6 +159,20 @@ func (e *Execution) LastAgentID() string {
 	return ""
 }
 
+// LastAgentStepID returns the step ID of the most recent step that ran an agent
+// (always a run_agent step, the only kind that records an AgentID), or "" if
+// none. verify_commits uses it to re-arm that step when parking the workflow to
+// wait out a sibling agent, so ResumeStalled — which only resumes run_agent
+// steps — re-drives it.
+func (e *Execution) LastAgentStepID() string {
+	for i := range slices.Backward(e.StepHistory) {
+		if e.StepHistory[i].AgentID != "" {
+			return e.StepHistory[i].StepID
+		}
+	}
+	return ""
+}
+
 // StepRecord captures the result of executing one step.
 type StepRecord struct {
 	StepID    string    `yaml:"step_id" json:"stepId"`

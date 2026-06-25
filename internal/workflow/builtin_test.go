@@ -77,10 +77,9 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 }
 
 // TestBuiltinSimpleTaskImplement_VerifyCommitsRouting pins the verify_commits
-// transition table — in particular the verify_deferred escape that ends the run
-// without a verdict when a sibling agent is still working. `vars.*` fields skip
-// enum validation, so a typo in the field/operator/value would silently route a
-// deferred (possibly no-commits) task to set_ready_review; this test guards it.
+// transition table: human-required and done end the run, everything else hands
+// off to review. (The sibling-still-running case is handled in Go by parking
+// the workflow in ExecWaiting, not by a transition — see execVerifyCommits.)
 func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
 	t.Parallel()
 
@@ -108,11 +107,6 @@ func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
 		fields map[string]string
 		want   string
 	}{
-		{
-			name:   "deferred ends the run (no verdict)",
-			fields: map[string]string{"vars.verify_deferred": "true", "task.status": "in-progress"},
-			want:   "",
-		},
 		{
 			name:   "human-required ends the run",
 			fields: map[string]string{"task.status": "human-required"},
