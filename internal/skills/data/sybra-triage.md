@@ -26,11 +26,11 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
    This makes a single `claude -p` call that:
    - Rewrites the title into a clean imperative conventional-commit form (always, even if the input already looked fine)
    - Preserves the original title in the body
-   - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type)
+   - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type), plus `noplan` when the task is small and trivially mechanical (dep bumps, CI fixes, typo/docs) so it skips planning
    - Picks size (small|medium|large), type (bug|feature|refactor|review|chore|docs), and mode (headless|interactive)
    - Auto-matches a registered project if a github.com URL is in the title or body
    - Applies routing rules (work non-reviews → planning; medium/large features → planning; everything else → todo)
-   - The plan workflow honors two escape-hatch tags on a task — `noplan` skips planning entirely (triage → implement), `nocritic` keeps planning but skips the plan critique. The classifier does not assign these itself, but it **preserves** them when already set, so a human/orchestrator can tag a trivial/well-specified task before triage and the opt-out survives.
+   - The plan workflow honors two escape-hatch tags on a task — `noplan` skips planning entirely (triage → implement, and for work tasks also skips the human plan-review gate), `nocritic` keeps planning but skips the plan critique. The classifier now **assigns `noplan` itself** for trivially mechanical small tasks, bounded by a deterministic floor (emitted only when size is `small` and type is not `feature`; otherwise stripped in `ValidateVerdict`). It also **preserves** either tag when already set, so a human/orchestrator can still force the opt-out on any task before triage and it survives unchanged.
    - Forces `interactive` mode for `work` projects unless it's a PR review
    - Writes a `triage.classified` audit event
 

@@ -83,6 +83,43 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	}
 }
 
+func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("bump dep on work repo", "https://github.com/myco/work-repo/pull/9", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "myco/work-repo", Owner: "myco", Repo: "work-repo", Type: project.ProjectTypeWork},
+	}
+	// Headline case: the classifier itself emits noplan for a trivially
+	// mechanical work-typed task. Run the full emit→validate→apply path (the
+	// task has no pre-existing escape-hatch tag, so this is emission, not the
+	// human-set preservation path). ValidateVerdict's floor must keep noplan
+	// (small + chore qualifies); Apply must persist it so the workflow skips
+	// planning even though RouteStatus still parks the task at status=planning.
+	v := Verdict{
+		Title: "chore(deps): bump dependency",
+		Tags:  []string{"infra", "small", "chore", "noplan"},
+		Size:  "small",
+		Type:  "chore",
+		Mode:  "headless",
+	}
+	if err := ValidateVerdict(&v); err != nil {
+		t.Fatalf("ValidateVerdict: %v", err)
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, "noplan") {
+		t.Errorf("classifier-emitted noplan tag not persisted; got %v", updated.Tags)
+	}
+	if updated.Status != task.StatusPlanning {
+		t.Errorf("status: got %s, want planning (workflow skips via noplan tag, not status)", updated.Status)
+	}
+}
+
 func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("add auth middleware", "some body", task.AgentModeHeadless)

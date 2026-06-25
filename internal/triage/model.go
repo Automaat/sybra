@@ -30,11 +30,14 @@ var (
 	// this set and the size/type sets are rejected.
 	domainTags = []string{"backend", "frontend", "infra", "docs", "ci", "auth", "db", "test"}
 
-	// escapeHatchTags are workflow-routing opt-outs, not part of the
-	// classifier's assignable vocabulary. They are accepted by NormalizeTags
+	// escapeHatchTags are workflow-routing opt-outs accepted by NormalizeTags
 	// (so they aren't stripped) and preserved through triage (see Apply) so a
-	// human/orchestrator can set them on a task without triage dropping them.
-	// `noplan` skips the plan pipeline; `nocritic` skips the plan critique.
+	// manually-set opt-out is never dropped. `noplan` skips the plan pipeline
+	// (and, for work tasks, the human plan-review gate) and is also
+	// classifier-emittable — the triage prompt instructs the model to assign it
+	// for trivially mechanical small tasks, bounded by the deterministic floor
+	// in ValidateVerdict (small + non-feature). `nocritic` skips the plan
+	// critique and remains human/orchestrator-set only.
 	escapeHatchTags = []string{"noplan", "nocritic"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
@@ -113,5 +116,17 @@ func ValidateVerdict(v *Verdict) error {
 	// the caller can log them but the verdict is still usable.
 	norm, _ := NormalizeTags(v.Tags)
 	v.Tags = norm
+
+	// Deterministic floor on classifier-emitted noplan. The prompt tells the
+	// model to add noplan only for small, non-feature work, but the model is
+	// the one category it's told to avoid — so a code-level guard, not trust,
+	// decides. noplan skips planning AND (for work tasks) the human plan-review
+	// gate, so an over-eager verdict on a large/feature task would route it
+	// straight to one-shot implementation unreviewed. Strip it unless the size
+	// and type actually qualify. Human/orchestrator-set noplan is unaffected:
+	// it lives on the task, not the verdict, and is preserved in Apply.
+	if v.Size != "small" || v.Type == "feature" {
+		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "noplan" })
+	}
 	return nil
 }
