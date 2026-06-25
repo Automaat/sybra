@@ -2795,7 +2795,11 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	wf := &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}
 	wf.RecordStep(StepRecord{StepID: "implement", Status: "failed", AgentID: "completer"})
 
-	comp, err := engine.executeSteps("t1", impl, impl.StepByID("verify_commits"), wf)
+	verifyStep := impl.StepByID("verify_commits")
+	if verifyStep == nil {
+		t.Fatal("verify_commits step not found in simple-task-implement")
+	}
+	comp, err := engine.executeSteps("t1", impl, verifyStep, wf)
 	if err != nil {
 		t.Fatalf("executeSteps: %v", err)
 	}
