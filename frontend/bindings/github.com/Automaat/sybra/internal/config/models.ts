@@ -44,7 +44,9 @@ export class AgentDefaults {
      * RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess
      * for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now
      * capped at 15) for server/unattended sessions. 0 means use
-     * DefaultRetryWatchdog (30).
+     * DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog
+     * entirely (env var omitted), matching the zero-omit semantics at the
+     * RunConfig level.
      */
     "retryWatchdog": number;
 
