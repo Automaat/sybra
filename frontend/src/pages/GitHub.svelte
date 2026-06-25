@@ -77,7 +77,7 @@
 
   const tabs: { id: Tab; label: string; count: () => number }[] = [
     { id: 'my-prs', label: 'My PRs', count: () => reviewStore.createdByMe.length },
-    { id: 'reviews', label: 'PR Reviews', count: () => reviewStore.reviewRequested.length },
+    { id: 'reviews', label: 'To Review', count: () => reviewStore.reviewRequested.length },
     { id: 'renovate', label: 'Renovate', count: () => renovateStore.count },
     { id: 'issues', label: 'Issues', count: () => issueStore.count },
   ]
