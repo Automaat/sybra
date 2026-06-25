@@ -83,6 +83,12 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	if slices.Contains(hot, "agent.bash_timeout_seconds") {
 		s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
 	}
+	if slices.Contains(hot, "agent.retry_watchdog") {
+		s.agents.SetRetryWatchdog(next.RetryWatchdog())
+	}
+	if slices.Contains(hot, "agent.fallback_model") {
+		s.agents.SetFallbackModel(next.Agent.FallbackModel)
+	}
 
 	if s.logger != nil {
 		for _, k := range restart {

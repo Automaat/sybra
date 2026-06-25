@@ -364,3 +364,24 @@ func TestDefaultLogRetentionDays(t *testing.T) {
 		})
 	}
 }
+
+func TestRetryWatchdog(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{"nil config → default 30", nil, DefaultRetryWatchdog},
+		{"unset → default 30", &Config{}, DefaultRetryWatchdog},
+		{"explicit 45 → 45", &Config{Agent: AgentDefaults{RetryWatchdog: 45}}, 45},
+		{"negative disables (returns 0)", &Config{Agent: AgentDefaults{RetryWatchdog: -1}}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.RetryWatchdog(); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

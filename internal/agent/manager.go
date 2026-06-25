@@ -40,6 +40,8 @@ type Manager struct {
 	approvalAddr  string // localhost:port for the HTTP tool approval server
 	guardrails    Guardrails
 	bashTimeoutMs int
+	retryWatchdog int
+	fallbackModel string
 	gate          provider.HealthGate
 
 	// reg persists live-agent records so subprocesses can be reattached
@@ -249,6 +251,23 @@ func (m *Manager) DefaultProvider() string {
 func (m *Manager) SetBashTimeoutMs(ms int) {
 	m.mu.Lock()
 	m.bashTimeoutMs = ms
+	m.mu.Unlock()
+}
+
+// SetRetryWatchdog sets the default CLAUDE_CODE_RETRY_WATCHDOG value injected
+// into headless claude subprocess environments. Zero resets to "not set"
+// (no env var exported).
+func (m *Manager) SetRetryWatchdog(n int) {
+	m.mu.Lock()
+	m.retryWatchdog = n
+	m.mu.Unlock()
+}
+
+// SetFallbackModel sets the default --fallback-model passed to headless claude
+// runs. Empty string clears the fallback (no flag added).
+func (m *Manager) SetFallbackModel(model string) {
+	m.mu.Lock()
+	m.fallbackModel = model
 	m.mu.Unlock()
 }
 

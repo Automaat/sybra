@@ -37,11 +37,17 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, gateErr
 	}
 
+	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
-		m.mu.RLock()
 		cfg.BashTimeoutMs = m.bashTimeoutMs
-		m.mu.RUnlock()
 	}
+	if cfg.RetryWatchdog == 0 {
+		cfg.RetryWatchdog = m.retryWatchdog
+	}
+	if cfg.FallbackModel == "" {
+		cfg.FallbackModel = m.fallbackModel
+	}
+	m.mu.RUnlock()
 
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(m.ctx)

@@ -77,6 +77,17 @@ type AgentDefaults struct {
 	// vars (claude has no equivalent CLI flag). 0 means use
 	// DefaultBashTimeoutSeconds (300).
 	BashTimeoutSeconds int `yaml:"bash_timeout_seconds" json:"bashTimeoutSeconds"`
+	// RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess
+	// for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now
+	// capped at 15) for server/unattended sessions. 0 means use
+	// DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog
+	// entirely (env var omitted), matching the zero-omit semantics at the
+	// RunConfig level.
+	RetryWatchdog int `yaml:"retry_watchdog" json:"retryWatchdog"`
+	// FallbackModel, when set, passes --fallback-model to claude for headless
+	// runs. Paired with RetryWatchdog so the watchdog can retry with a less
+	// loaded model when the primary is overloaded.
+	FallbackModel string `yaml:"fallback_model" json:"fallbackModel"`
 	// MaxLogEvents caps how many NDJSON events are returned when replaying
 	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
 	MaxLogEvents int `yaml:"max_log_events" json:"maxLogEvents"`
@@ -103,6 +114,11 @@ type AgentDefaults struct {
 // BashTimeoutSeconds is not set in config.
 const DefaultBashTimeoutSeconds = 300
 
+// DefaultRetryWatchdog is the CLAUDE_CODE_RETRY_WATCHDOG value used when
+// RetryWatchdog is not set in config. Exceeds the old CLAUDE_CODE_MAX_RETRIES
+// cap of 15, appropriate for unattended server runs.
+const DefaultRetryWatchdog = 30
+
 // BashTimeoutMs returns the bash tool timeout in milliseconds, exported into
 // the claude subprocess as BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS.
 func (c *Config) BashTimeoutMs() int {
@@ -110,6 +126,18 @@ func (c *Config) BashTimeoutMs() int {
 		return c.Agent.BashTimeoutSeconds * 1000
 	}
 	return DefaultBashTimeoutSeconds * 1000
+}
+
+// RetryWatchdog returns the configured watchdog value, DefaultRetryWatchdog
+// when unset (0), or 0 when explicitly disabled (negative value).
+func (c *Config) RetryWatchdog() int {
+	if c != nil && c.Agent.RetryWatchdog < 0 {
+		return 0
+	}
+	if c != nil && c.Agent.RetryWatchdog > 0 {
+		return c.Agent.RetryWatchdog
+	}
+	return DefaultRetryWatchdog
 }
 
 // DefaultMaxLogEvents returns the configured cap or 500 if unset.

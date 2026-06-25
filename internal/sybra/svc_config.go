@@ -90,6 +90,9 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
 		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
 	}
+	if settings.Agent.FallbackModel != "" && !modelNameRe.MatchString(settings.Agent.FallbackModel) {
+		return validationError(fmt.Sprintf("invalid fallback model: %q", settings.Agent.FallbackModel))
+	}
 	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
 	if !validModes[settings.Agent.Mode] {
 		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
@@ -146,6 +149,8 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.agents.SetMaxConcurrent(next.Agent.MaxConcurrent)
 	s.agents.SetDefaultProvider(next.Agent.Provider)
 	s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
+	s.agents.SetRetryWatchdog(next.RetryWatchdog())
+	s.agents.SetFallbackModel(next.Agent.FallbackModel)
 	s.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD: next.Agent.MaxCostUSD,
 		MaxTurns:   next.Agent.MaxTurns,
