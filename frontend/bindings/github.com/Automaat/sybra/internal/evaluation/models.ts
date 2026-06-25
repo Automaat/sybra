@@ -126,8 +126,7 @@ export class Report {
  * Landing-derived metrics read task.landed audit events; reliability and
  * efficiency read stats run records (the run Outcome carries the accurate
  * success/failure outcome). Metrics that require signals not yet captured
- * (merge-without-edit, change-failure rate, review density) are deferred —
- * see Report.Notes.
+ * (change-failure rate, review density) are deferred — see Report.Notes.
  */
 export class Scorecard {
     "windowDays": number;
@@ -136,11 +135,20 @@ export class Scorecard {
      * Throughput & outcomes (from task.landed events).
      */
     "tasksLanded": number;
+
+    /**
+     * clean merges (no human edits)
+     */
     "merged": number;
+
+    /**
+     * merged after a human edited the PR
+     */
+    "mergedWithEdits": number;
     "closed": number;
 
     /**
-     * merged / landed
+     * clean merged / landed
      */
     "mergeRate": number;
 
@@ -202,6 +210,9 @@ export class Scorecard {
         }
         if (!("merged" in $$source)) {
             this["merged"] = 0;
+        }
+        if (!("mergedWithEdits" in $$source)) {
+            this["mergedWithEdits"] = 0;
         }
         if (!("closed" in $$source)) {
             this["closed"] = 0;

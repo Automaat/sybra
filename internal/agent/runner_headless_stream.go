@@ -82,10 +82,9 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.Content = e.Message.Text
 		}
 	case "tool_use":
-		// Codex only emits a tool_use event for command_execution (Bash); file
-		// edits, MCP, and web search arrive as assistant text (ToolCalls=0). So
-		// ToolCalls undercounts non-Bash Codex tools — a follow-up should map the
-		// full Codex item taxonomy before comparing tool efficiency cross-provider.
+		// Codex tool item types (command_execution, file_change, collab_tool_call,
+		// web_search) are mapped to tool_use in parseCodexItemLineTyped and counted
+		// here once per item.started.
 		if e.Message != nil && len(e.Message.ToolUses) > 0 {
 			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
 			ev.Content = cmd

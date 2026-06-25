@@ -65,7 +65,7 @@
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Tasks landed</span>
         <p class="mt-1 text-2xl font-bold">{o.tasksLanded}</p>
-        <p class="mt-0.5 text-xs text-surface-400">{o.merged} merged · {o.closed} closed</p>
+        <p class="mt-0.5 text-xs text-surface-400">{o.merged} merged · {o.mergedWithEdits} edited · {o.closed} closed</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Autonomy</span>

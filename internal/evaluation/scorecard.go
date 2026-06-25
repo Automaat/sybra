@@ -18,20 +18,20 @@ import (
 // Landing-derived metrics read task.landed audit events; reliability and
 // efficiency read stats run records (the run Outcome carries the accurate
 // success/failure outcome). Metrics that require signals not yet captured
-// (merge-without-edit, change-failure rate, review density) are deferred —
-// see Report.Notes.
+// (change-failure rate, review density) are deferred — see Report.Notes.
 type Scorecard struct {
 	WindowDays float64 `json:"windowDays"`
 
 	// Throughput & outcomes (from task.landed events).
-	TasksLanded   int     `json:"tasksLanded"`
-	Merged        int     `json:"merged"`
-	Closed        int     `json:"closed"`
-	MergeRate     float64 `json:"mergeRate"`     // merged / landed
-	LeadTimeP50H  float64 `json:"leadTimeP50H"`  // created_to_land_h
-	LeadTimeP90H  float64 `json:"leadTimeP90H"`  //
-	CycleTimeP50H float64 `json:"cycleTimeP50H"` // work_to_land_h (first agent run → land)
-	CycleTimeP90H float64 `json:"cycleTimeP90H"` //
+	TasksLanded     int     `json:"tasksLanded"`
+	Merged          int     `json:"merged"`          // clean merges (no human edits)
+	MergedWithEdits int     `json:"mergedWithEdits"` // merged after a human edited the PR
+	Closed          int     `json:"closed"`
+	MergeRate       float64 `json:"mergeRate"`     // clean merged / landed
+	LeadTimeP50H    float64 `json:"leadTimeP50H"`  // created_to_land_h
+	LeadTimeP90H    float64 `json:"leadTimeP90H"`  //
+	CycleTimeP50H   float64 `json:"cycleTimeP50H"` // work_to_land_h (first agent run → land)
+	CycleTimeP90H   float64 `json:"cycleTimeP90H"` //
 
 	// Autonomy: did landed work reach done without a human in the loop?
 	AutonomousLandings   int     `json:"autonomousLandings"`
@@ -81,10 +81,9 @@ type Report struct {
 // deferredNotes documents metrics that need signals not yet captured, so the
 // report never silently presents a partial picture as complete.
 var deferredNotes = []string{
-	"merge-without-edit rate and human-edit distance pending #1082",
-	"change-failure rate and MTTR pending revert detection (#1082)",
-	"review-finding density pending review-count capture (#1082)",
-	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed (#1082)",
+	"change-failure rate and MTTR pending revert detection (#1097)",
+	"review-finding density pending review-count capture",
+	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed",
 }
 
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
@@ -108,9 +107,10 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 	cost, turns, tools := scanEfficiency(records, win)
 
 	sc.TasksLanded, sc.Merged, sc.Closed = lg.count, lg.merged, lg.closed
+	sc.MergedWithEdits = lg.mergedWithEdits
 	sc.AgentRuns, sc.AgentFailures = runs, fails
 	sc.TotalCostUSD = cost
-	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, sigs)
+	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
 	sc.AutonomousLandings, sc.HumanTouchedLandings = autonomous, humanTouched
 	sc.ReworkTasks = countRework(sigs, lg.tasks)
 
@@ -134,13 +134,14 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 
 // landingAgg holds the outcome counts and timing samples from task.landed events.
 type landingAgg struct {
-	count, merged, closed int
-	leadTimes, cycleTimes []float64
-	tasks                 map[string]bool
+	count, merged, mergedWithEdits, closed int
+	leadTimes, cycleTimes                  []float64
+	tasks                                  map[string]bool
+	edited                                 map[string]bool // landed but a human edited the PR
 }
 
 func scanLandings(events []audit.Event, win func(time.Time) bool) landingAgg {
-	lg := landingAgg{tasks: map[string]bool{}}
+	lg := landingAgg{tasks: map[string]bool{}, edited: map[string]bool{}}
 	for i := range events {
 		e := events[i]
 		if e.Type != audit.EventTaskLanded || !win(e.Timestamp) {
@@ -150,9 +151,15 @@ func scanLandings(events []audit.Event, win func(time.Time) bool) landingAgg {
 		if e.TaskID != "" {
 			lg.tasks[e.TaskID] = true
 		}
-		if strVal(e.Data, "outcome") == "closed" {
+		switch strVal(e.Data, "outcome") {
+		case "closed":
 			lg.closed++
-		} else {
+		case "merged_with_edits":
+			lg.mergedWithEdits++
+			if e.TaskID != "" {
+				lg.edited[e.TaskID] = true // a human edited the PR → not autonomous
+			}
+		default:
 			lg.merged++
 		}
 		if v, ok := floatVal(e.Data, "created_to_land_h"); ok {
@@ -233,10 +240,12 @@ func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost f
 // classifyLanded splits landed tasks into autonomous vs human-touched and counts
 // those that landed without a CI fix. A task with no recorded signals counts as
 // autonomous and CI-clean.
-func classifyLanded(landed map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, ciClean int) {
+func classifyLanded(landed, edited map[string]bool, sigs map[string]*taskSignals) (autonomous, humanTouched, ciClean int) {
 	for id := range landed {
 		s := sigs[id]
-		if s == nil || !s.humanTouched {
+		// A task is human-touched if it went human-required / spawned a human
+		// review (sigs) OR a human edited its PR before merge (merged_with_edits).
+		if (s == nil || !s.humanTouched) && !edited[id] {
 			autonomous++
 		} else {
 			humanTouched++
