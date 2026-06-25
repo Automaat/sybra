@@ -13,9 +13,14 @@ import (
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
 // through AdvanceStep via the existing agentSteps mapping.
-func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) error {
+//
+// Returns a non-nil *CompletionInfo when every child terminates at spawn time
+// and the parent's `next` ends the workflow synchronously — threaded up to the
+// marker-releasing caller (via executeSteps) rather than fired here, so the
+// completion's cascade isn't rejected as re-entrant.
+func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) (*CompletionInfo, error) {
 	if len(step.Parallel) < 2 {
-		return fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
+		return nil, fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
 	}
 
 	// Resume-safe: a re-entry into the same parallel parent (e.g. after a
@@ -48,7 +53,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	// completes mid-loop finds the parent record on AdvanceStep.
 	wfExec.State = ExecWaiting
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return err
+		return nil, err
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
@@ -80,7 +85,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		return e.finalizeParallelParent(taskID, def, step, wfExec)
 	}
 
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	return nil, e.tasks.SetWorkflow(taskID, wfExec)
 }
 
 // spawnParallelChild spawns one child agent of a parallel block. Mirrors
@@ -218,7 +223,12 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		return e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
-	return e.finalizeParallelParent(taskID, def, parent, wfExec)
+	// Reached via AdvanceStep (agent-completion goroutine): the dispatching/
+	// starting markers are not held, only the inflight mutex (which the
+	// completion callback never re-acquires), so firing inline is safe.
+	comp, err := e.finalizeParallelParent(taskID, def, parent, wfExec)
+	e.fireComplete(comp)
+	return err
 }
 
 // finalizeParallelParent collapses a parallel block whose children have all
@@ -226,10 +236,17 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 // the parent's Next. Called from advanceParallelChild on the last
 // completion, and from execParallel when every child failed at spawn time
 // (no agent ever ran → no completion callback will fire).
-func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *Step, wfExec *Execution) error {
+//
+// Returns a non-nil *CompletionInfo when advancing the parent ends the
+// workflow synchronously. It is NOT fired here: advanceParallelChild fires it
+// inline (inflight-only), while execParallel threads it up to its
+// marker-releasing caller — see those call sites.
+func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *Step, wfExec *Execution) (comp *CompletionInfo, err error) {
 	rec := wfExec.ParallelInflight[parent.ID]
 	if rec == nil {
-		return nil
+		// Stale/duplicate finalize — the record was already collapsed by a
+		// prior call. Benign no-op: neither a completion nor an error.
+		return
 	}
 
 	parentStatus := "completed"
@@ -256,15 +273,15 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	t.Workflow = wfExec
-	nextStep, err := e.resolveNext(taskID, def, parent, wfExec, t)
+	nextStep, comp, err := e.resolveNext(taskID, def, parent, wfExec, t)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if nextStep == nil {
-		return nil
+		return comp, nil
 	}
 	e.logger.Info("workflow.parallel.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID, "status", parentStatus)
 	return e.executeSteps(taskID, def, nextStep, wfExec)

@@ -25,10 +25,26 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 // (restart + UI button, two loop-agent ticks, etc) never both spawn agents
 // for the same task. Second caller gets ErrWorkflowAlreadyActive.
 func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[string]string) error {
+	// startWorkflowLocked holds the `starting` marker; it is released by the
+	// time this returns, so firing the completion here cannot re-enter against
+	// it. This is what lets a synchronous mechanical workflow (e.g.
+	// simple-task-handoff) cascade into its successor.
+	comp, err := e.startWorkflowLocked(taskID, workflowID, vars)
+	e.fireComplete(comp)
+	return err
+}
+
+// startWorkflowLocked is the marker-holding body shared by StartWorkflowWithVars
+// and DispatchEvent. It returns a non-nil *CompletionInfo when the workflow
+// finished synchronously within this call; the caller must hand it to
+// fireComplete only AFTER releasing its own per-task marker (starting via this
+// function's defer, plus dispatching for DispatchEvent) so the completion's
+// cascade dispatch is not rejected as re-entrant.
+func (e *Engine) startWorkflowLocked(taskID, workflowID string, vars map[string]string) (*CompletionInfo, error) {
 	e.mu.Lock()
 	if _, busy := e.starting[taskID]; busy {
 		e.mu.Unlock()
-		return fmt.Errorf("%w: start in progress", ErrWorkflowAlreadyActive)
+		return nil, fmt.Errorf("%w: start in progress", ErrWorkflowAlreadyActive)
 	}
 	e.starting[taskID] = struct{}{}
 	e.mu.Unlock()
@@ -48,18 +64,18 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 		t.Workflow != nil &&
 		t.Workflow.State != ExecCompleted &&
 		t.Workflow.State != ExecFailed {
-		return fmt.Errorf("%w: %s (state=%s)",
+		return nil, fmt.Errorf("%w: %s (state=%s)",
 			ErrWorkflowAlreadyActive, t.Workflow.WorkflowID, t.Workflow.State)
 	}
 
 	def, err := e.store.Get(workflowID)
 	if err != nil {
-		return fmt.Errorf("get workflow %s: %w", workflowID, err)
+		return nil, fmt.Errorf("get workflow %s: %w", workflowID, err)
 	}
 
 	first := def.FirstStep()
 	if first == nil {
-		return fmt.Errorf("workflow %s has no steps", workflowID)
+		return nil, fmt.Errorf("workflow %s has no steps", workflowID)
 	}
 
 	variables := make(map[string]string, len(vars))
@@ -74,7 +90,7 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 	}
 
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return fmt.Errorf("set workflow on task: %w", err)
+		return nil, fmt.Errorf("set workflow on task: %w", err)
 	}
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", first.ID)
@@ -146,6 +162,12 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	}
 	e.dispatching[taskID] = struct{}{}
 	e.mu.Unlock()
+	// If the matched workflow finishes synchronously (a mechanical workflow with
+	// no async step), its completion must be fired only after `dispatching` is
+	// cleared, or its cascade dispatch re-enters and is dropped. Register the
+	// fire defer *before* the marker-delete defer so LIFO runs it afterwards.
+	var completion *CompletionInfo
+	defer func() { e.fireComplete(completion) }()
 	defer func() {
 		e.mu.Lock()
 		delete(e.dispatching, taskID)
@@ -166,9 +188,11 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	if def == nil {
 		return "", nil
 	}
-	if err := e.StartWorkflowWithVars(taskID, def.ID, vars); err != nil {
-		return "", fmt.Errorf("start %s: %w", def.ID, err)
+	comp, sErr := e.startWorkflowLocked(taskID, def.ID, vars)
+	if sErr != nil {
+		return "", fmt.Errorf("start %s: %w", def.ID, sErr)
 	}
+	completion = comp
 	return def.ID, nil
 }
 
