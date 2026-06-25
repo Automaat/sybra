@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
@@ -56,6 +57,7 @@ type App struct {
 	configWatcher                 *confighot.Watcher
 	notifier                      *notification.Emitter
 	audit                         *audit.Logger
+	artifacts                     *artifact.Store
 	stats                         *stats.Store
 	tasksDir                      string
 	skillsDir                     string
@@ -240,6 +242,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
+	a.initArtifacts()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)

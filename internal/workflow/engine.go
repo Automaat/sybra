@@ -87,6 +87,16 @@ type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
 }
 
+// ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
+// events). Engine operates with a nil recorder — all recorder calls are
+// guarded by nil checks so engine unit tests compile and pass unchanged.
+type ArtifactRecorder interface {
+	// RecordTrace appends a structured event to the task's trace.jsonl stream.
+	RecordTrace(taskID string, ev any) error
+	// PutPlanSnapshot stores a raw markdown plan as an artifact for the task.
+	PutPlanSnapshot(taskID, role, stepID, sourcePath, content string) error
+}
+
 // CompletionInfo is passed to the OnComplete callback when a workflow finishes.
 type CompletionInfo struct {
 	TaskID     string
@@ -108,6 +118,7 @@ type Engine struct {
 	prLinker        PRLinker
 	prReviewers     PRReviewRequester
 	worktrees       WorktreeGetter
+	recorder        ArtifactRecorder
 	onComplete      func(CompletionInfo)
 	logger          *slog.Logger
 	ctx             context.Context
@@ -157,6 +168,12 @@ func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetArtifactRecorder wires an ArtifactRecorder that captures per-task
+// workflow artifacts (plan snapshots, trace events). Leaving it unset
+// disables artifact recording — all calls are nil-guarded so engine unit
+// tests remain unchanged.
+func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
 
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.

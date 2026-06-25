@@ -441,6 +441,7 @@ func (c *Config) Directories() map[string]string {
 		"logs":        c.Logging.Dir,
 		"audit":       c.AuditDir(),
 		"loop_agents": c.LoopAgentsDir,
+		"artifacts":   ArtifactsDir(),
 	}
 }
 
@@ -732,6 +733,13 @@ func AgentsDir() string {
 
 func StatsFile() string {
 	return filepath.Join(HomeDir(), "stats.json")
+}
+
+// ArtifactsDir is the directory under ~/.sybra that holds per-task harness
+// artifacts (plan snapshots, trace events, generic intermediate outputs).
+// Layout: <dir>/<task-id>/<name> + <name>.meta.json.
+func ArtifactsDir() string {
+	return filepath.Join(HomeDir(), "artifacts")
 }
 
 // SelfMonitorDir is the directory under ~/.sybra that holds the

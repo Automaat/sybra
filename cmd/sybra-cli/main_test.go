@@ -591,3 +591,119 @@ func TestProjectDeleteNoID(t *testing.T) {
 		t.Error("expected non-zero exit for missing id")
 	}
 }
+
+func TestArtifactListEmpty(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "artifact", "list", "task-xyz")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	var metas []any
+	mustUnmarshal(t, out, &metas)
+	if len(metas) != 0 {
+		t.Errorf("expected empty list, got %d", len(metas))
+	}
+}
+
+func TestArtifactListAndGet(t *testing.T) {
+	dir := setupStore(t)
+	// Write a plan artifact directly into the store dir so the CLI can read it.
+	taskDir := filepath.Join(dir, "artifacts", "task-cli1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blob := []byte("# Plan content")
+	if err := os.WriteFile(filepath.Join(taskDir, "plan.md"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"name":"plan.md","kind":"plan","taskId":"task-cli1","createdAt":"2026-01-01T00:00:00Z","size":14}`
+	if err := os.WriteFile(filepath.Join(taskDir, "plan.md.meta.json"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "artifact", "list", "task-cli1")
+	if code != 0 {
+		t.Fatalf("list exit %d: %s", code, out)
+	}
+	var metas []map[string]any
+	mustUnmarshal(t, out, &metas)
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(metas))
+	}
+	if metas[0]["name"] != "plan.md" {
+		t.Errorf("name = %v, want plan.md", metas[0]["name"])
+	}
+
+	// artifact get writes bytes to stdout, no --json flag
+	code2, got := runCLI(t, "artifact", "get", "task-cli1", "plan.md")
+	if code2 != 0 {
+		t.Fatalf("get exit %d", code2)
+	}
+	if got != string(blob) {
+		t.Errorf("get output = %q, want %q", got, blob)
+	}
+}
+
+func TestArtifactGetMissing(t *testing.T) {
+	setupStore(t)
+	// Capture stderr too via a second pipe since get writes errors there.
+	oldErr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	code, _ := runCLI(t, "artifact", "get", "task-none", "plan.md")
+
+	_ = w.Close()
+	os.Stderr = oldErr
+	buf := make([]byte, 1024)
+	_, _ = r.Read(buf)
+
+	if code == 0 {
+		t.Error("expected non-zero exit for missing artifact")
+	}
+}
+
+func TestArtifactReindex(t *testing.T) {
+	dir := setupStore(t)
+	taskDir := filepath.Join(dir, "artifacts", "task-ri1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "plan.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"name":"plan.md","kind":"plan","taskId":"task-ri1","createdAt":"2026-01-01T00:00:00Z","size":1}`
+	if err := os.WriteFile(filepath.Join(taskDir, "plan.md.meta.json"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the index to confirm reindex repairs it.
+	if err := os.WriteFile(filepath.Join(taskDir, "index.json"), []byte("!!!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCLI(t, "--json", "artifact", "reindex", "task-ri1")
+	if code != 0 {
+		t.Fatalf("reindex exit %d: %s", code, out)
+	}
+	var result map[string]string
+	mustUnmarshal(t, out, &result)
+	if result["status"] != "ok" {
+		t.Errorf("status = %q, want ok", result["status"])
+	}
+}
+
+func TestArtifactInvalidTaskID(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "artifact", "list", "../escape")
+	if code == 0 {
+		t.Error("expected non-zero exit for hostile task ID")
+	}
+}
+
+func TestArtifactNoSubcommand(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "artifact")
+	if code == 0 {
+		t.Error("expected non-zero exit when subcommand missing")
+	}
+}
