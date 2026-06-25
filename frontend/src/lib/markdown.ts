@@ -6,9 +6,13 @@ import { markedHighlight } from 'marked-highlight'
 // ~915 kB / 304 kB-gzip chunk loaded eagerly (markdown rendering is on the
 // initial paint path). Registering only the languages we actually render in
 // agent output / task bodies / plans cuts that chunk by ~80%. Unregistered
-// languages fall back to 'plaintext' via the guard in highlight() below, so
-// the only cost is no syntax colour on an exotic language — never a crash.
+// (and empty / bare-```-fence) languages fall back to 'plaintext' in
+// highlight() below — so 'plaintext' MUST be registered too, otherwise the
+// fallback target is itself unknown and hljs.highlight() throws, aborting
+// marked.parse() and blanking every view that renders that markdown (a bare
+// ``` fence in a plan made the whole task detail page hang on "Loading…").
 import hljs from 'highlight.js/lib/core'
+import plaintext from 'highlight.js/lib/languages/plaintext'
 import bash from 'highlight.js/lib/languages/bash'
 import shell from 'highlight.js/lib/languages/shell'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -27,7 +31,7 @@ import css from 'highlight.js/lib/languages/css'
 import 'highlight.js/styles/github-dark.css'
 
 for (const [name, lang] of Object.entries({
-  bash, shell, javascript, typescript, json, yaml, go, python,
+  plaintext, bash, shell, javascript, typescript, json, yaml, go, python,
   rust, markdown, diff, dockerfile, sql, xml, css,
 })) {
   hljs.registerLanguage(name, lang)
@@ -52,6 +56,12 @@ marked.use(
     langPrefix: 'hljs language-',
     highlight(code: string, lang: string) {
       const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+      // Defensive: a throw here aborts the whole marked.parse() and blanks any
+      // view rendering the markdown. If even the resolved grammar is somehow
+      // unregistered, return HTML-escaped code instead of letting hljs throw.
+      if (!hljs.getLanguage(language)) {
+        return code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
       return hljs.highlight(code, { language }).value
     },
   }),
