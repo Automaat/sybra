@@ -112,17 +112,29 @@ These flags prevent:
 - `AGENTS.md` files in the working tree from being injected as system prompt
 - User hooks from firing (`sessionStart`, `userPromptSubmit`, `stop`)
 
-With app-server, the daemon is started once with the user's global config
-already loaded. `ThreadStartParams` does allow per-thread `sandbox`, `model`,
-and `approvalPolicy` overrides, but there is **no per-thread equivalent of
-`--ignore-user-config` or `--ignore-rules`**. The spike confirmed that hooks
-from the user's `hooks.json` fire on every turn (3 hooks, ~150 ms overhead
-per turn).
+`codex app-server` exposes process-level `-c/--config` overrides that can
+point the daemon at a custom config file. However, the spike identified two
+gaps that have no per-thread equivalent in `ThreadStartParams`:
 
-For Sybra's multi-task orchestration this is a concrete problem:
+1. **Repo rules / instruction sources** — `AGENTS.md` files in the working
+   tree are loaded as system-prompt injections. The spike observed
+   `instructionSources` in the server's `initialize` response; there is no
+   per-thread flag to suppress them.
+2. **Hook and MCP isolation** — user hooks (`sessionStart`, `userPromptSubmit`,
+   `stop`) fire on every turn (3 hooks, ~150 ms overhead observed), and user
+   MCP servers are started at daemon boot and shared across all threads.
+
+`ThreadStartParams` allows per-thread `sandbox`, `model`, and `approvalPolicy`
+overrides, but none of these cover hook suppression or instruction-source
+exclusion. A `-c/--config` daemon restart with a stripped config would
+suppress hooks globally, but Sybra needs this isolation per-task without
+restarting the shared daemon.
+
+For Sybra's multi-task orchestration these two gaps are concrete problems:
 - User's `stop` hook might report telemetry or send notifications Sybra doesn't want
 - User's `userPromptSubmit` hook might transform prompts in unexpected ways
 - User's MCP servers (chrome-devtools, etc.) are started even for isolated agents
+- `AGENTS.md` from one project's worktree could bleed into another thread's context
 
 ---
 
@@ -149,10 +161,11 @@ manageable at current agent volumes.
 
 Switch to app-server for **conversational mode** when codex ships:
 
-1. A `config` override in `ThreadStartParams` that suppresses hook loading
-   (e.g. `config: { hooks: { enabled: false } }`), or a
-   per-thread `--ignore-rules` equivalent.
-2. Confirmed equivalence between `sandbox: "workspace-write"` and
+1. A per-thread mechanism to suppress hook loading (e.g. `hooks: { enabled: false }`
+   in `ThreadStartParams`) — the spike confirmed hooks fire unconditionally today.
+2. A per-thread mechanism to exclude repo instruction sources / `AGENTS.md` injection
+   (a `--ignore-rules` equivalent scoped to the thread, not the daemon).
+3. Confirmed equivalence between `sandbox: "workspace-write"` and
    `codex exec --sandbox workspace-write --ignore-user-config`.
 
 At that point, conversational mode benefits most: streaming text deltas

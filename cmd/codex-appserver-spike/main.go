@@ -65,7 +65,6 @@ type turnStartParams struct {
 
 var (
 	reqID     atomic.Int64
-	threadID  string
 	startedAt time.Time
 )
 
@@ -92,43 +91,7 @@ func main() {
 	must(cmd.Start(), "start codex")
 	startedAt = time.Now()
 
-	// Receive goroutine: print and collect every server message.
-	var logs []eventLog
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 0, 4*1024*1024), 4*1024*1024)
-		for sc.Scan() {
-			line := sc.Bytes()
-			var msg rpcMessage
-			if err := json.Unmarshal(line, &msg); err != nil {
-				fmt.Printf("[raw] %s\n", line)
-				continue
-			}
-			printMessage(msg)
-			if msg.Method != "" {
-				logs = append(logs, eventLog{method: msg.Method, params: msg.Params})
-			}
-			if msg.ID != nil && msg.Method == "" && msg.Error == nil {
-				// Response to one of our requests — extract threadId from thread/start.
-				if threadID == "" {
-					var res struct {
-						Thread struct {
-							ID string `json:"id"`
-						} `json:"thread"`
-					}
-					if json.Unmarshal(msg.Result, &res) == nil && res.Thread.ID != "" {
-						threadID = res.Thread.ID
-					}
-				}
-			}
-			// Detect turn completion.
-			if msg.Method == "turn/completed" {
-				time.AfterFunc(500*time.Millisecond, cancel)
-			}
-		}
-	}()
+	threadIDCh, logsPtr, done := startReader(stdout, cancel)
 
 	// ── 1. initialize ─────────────────────────────────────────────────────────
 	send(stdin, rpcRequest{
@@ -151,9 +114,10 @@ func main() {
 	})
 
 	// Wait until we have a threadId (or 3 s timeout).
-	deadline := time.Now().Add(3 * time.Second)
-	for threadID == "" && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	var threadID string
+	select {
+	case threadID = <-threadIDCh:
+	case <-time.After(3 * time.Second):
 	}
 	if threadID == "" {
 		fmt.Println("[spike] no threadId received — aborting")
@@ -175,7 +139,6 @@ func main() {
 
 	<-done
 	elapsed := time.Since(startedAt)
-
 	_ = cmd.Wait()
 
 	// ── Summary ───────────────────────────────────────────────────────────────
@@ -183,7 +146,53 @@ func main() {
 	fmt.Println("=== spike summary ===")
 	fmt.Printf("elapsed: %s\n", elapsed.Round(time.Millisecond))
 	fmt.Println()
-	printEventCounts(logs)
+	printEventCounts(*logsPtr)
+}
+
+// startReader spawns the server-message reader goroutine. It returns a channel
+// that delivers the first thread ID seen in a response, a pointer to the
+// collected event log (safe to read after done is closed), and a done channel
+// that is closed when stdout is exhausted.
+//
+// threadIDCh is buffered so the send never blocks if main has already timed out.
+func startReader(stdout io.Reader, cancel context.CancelFunc) (threadIDCh <-chan string, logs *[]eventLog, done <-chan struct{}) {
+	ch := make(chan string, 1)
+	var collected []eventLog
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 0, 4*1024*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			var msg rpcMessage
+			if err := json.Unmarshal(line, &msg); err != nil {
+				fmt.Printf("[raw] %s\n", line)
+				continue
+			}
+			printMessage(msg)
+			if msg.Method != "" {
+				collected = append(collected, eventLog{method: msg.Method, params: msg.Params})
+			}
+			if msg.ID != nil && msg.Method == "" && msg.Error == nil {
+				var res struct {
+					Thread struct {
+						ID string `json:"id"`
+					} `json:"thread"`
+				}
+				if json.Unmarshal(msg.Result, &res) == nil && res.Thread.ID != "" {
+					select {
+					case ch <- res.Thread.ID:
+					default:
+					}
+				}
+			}
+			if msg.Method == "turn/completed" {
+				time.AfterFunc(500*time.Millisecond, cancel)
+			}
+		}
+	}()
+	return ch, &collected, doneCh
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
