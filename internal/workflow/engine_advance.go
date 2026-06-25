@@ -44,7 +44,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	// step's record + transitions are emitted only after every child has
 	// terminated, so we never go through the single-step record path here.
 	if ctx.ParallelParent != nil {
-		return e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
+		comp, pErr := e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
+		// Release inflight before the completion callback so its cascade
+		// dispatch never runs under the held lock (matches the paths below).
+		release()
+		e.fireComplete(comp)
+		return pErr
 	}
 
 	// Record step completion.
