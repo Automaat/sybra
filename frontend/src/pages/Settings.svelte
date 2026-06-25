@@ -373,11 +373,11 @@
                     id="agent-concurrency"
                     type="number"
                     min="1"
-                    max="10"
+                    max="100"
                     class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
                     bind:value={settings.agent.maxConcurrent}
                   />
-                  <span class="text-xs text-surface-500 dark:text-surface-400">1–10</span>
+                  <span class="text-xs text-surface-500 dark:text-surface-400">1–100</span>
                 </div>
               </div>
             </section>

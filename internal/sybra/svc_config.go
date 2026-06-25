@@ -94,8 +94,8 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if !validModes[settings.Agent.Mode] {
 		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
 	}
-	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 10 {
-		return validationError("maxConcurrent must be 1–10")
+	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
+		return validationError("maxConcurrent must be 1–100")
 	}
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[settings.Logging.Level] {
