@@ -356,8 +356,15 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 		}
 		updates["pr_number"] = float64(*pr)
 	default:
-		// implement/review adopt the worktree, so it must be on a dedicated
-		// feature branch (enforced again at adoption).
+		// implement/review adopt the worktree. Guard that the chosen project
+		// matches the worktree's origin — a mismatched --project (or stale
+		// ProjectID) would make agents run and push against the wrong repo.
+		// Best-effort: only enforced when origin is a parseable GitHub remote.
+		if wtProj, e := deriveProjectID(dir); e == nil && !strings.EqualFold(wtProj, projectID) {
+			return fatal(jsonOut, "worktree origin is %q but --project is %q — refusing to push agent work to a different repo", wtProj, projectID)
+		}
+		// The worktree must be on a dedicated feature branch (enforced again at
+		// adoption).
 		if e := assertFeatureBranch(dir, projRec); e != nil {
 			return fatal(jsonOut, "%v", e)
 		}
@@ -433,7 +440,14 @@ func assertFeatureBranch(dir string, proj project.Project) error {
 	if branch == "" {
 		return fmt.Errorf("worktree %q is in detached HEAD — check out a feature branch before handoff", dir)
 	}
-	if def, dErr := project.DefaultBranch(proj.ClonePath); dErr == nil && branch == def {
+	// Fail closed: if the default branch can't be determined we can't prove the
+	// worktree isn't on it, so refuse rather than risk pushing agent commits to
+	// the default branch with no PR.
+	def, dErr := project.DefaultBranch(proj.ClonePath)
+	if dErr != nil {
+		return fmt.Errorf("cannot determine default branch for %q: %w", proj.ID, dErr)
+	}
+	if branch == def {
 		return fmt.Errorf("worktree %q is on the default branch %q — create a feature branch before handoff", dir, def)
 	}
 	return nil

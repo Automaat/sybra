@@ -65,9 +65,9 @@ Stages:
    thought through; one that says "update the auth code" has not. Write the
    former.
 
-3. **Pick a conventional-commit title** (`type(scope): summary`, ≤50 chars), e.g.
-   `feat(auth): add jwt refresh middleware`. Sybra derives the branch prefix from
-   it.
+3. **Pick a clear title** (`type(scope): summary`, ≤50 chars), e.g.
+   `feat(auth): add jwt refresh middleware`. The implement/review handoff keeps
+   the worktree's existing branch — the title only names the task.
 
 4. **Run the handoff** from the worktree root:
    ```bash

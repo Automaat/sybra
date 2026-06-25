@@ -17,7 +17,7 @@ func (m *Manager) Remove(taskID string) {
 	}
 	// Never touch an externally-adopted worktree: the tool that created it
 	// (e.g. Orca) owns its lifecycle. Removing it would delete the user's
-	// checkout out from under them.
+	// checkout from under them.
 	if t.WorktreeDir != "" {
 		return
 	}

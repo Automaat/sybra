@@ -132,12 +132,13 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 
 // adoptWorktree wires Sybra to run a task inside a pre-existing, externally
 // managed git worktree (t.WorktreeDir). It validates the directory, records the
-// checked-out branch on the task, installs the project's commit/push gates, and
-// drops the identity beacon — but performs no git mutations (no fetch, add,
-// rebase, or push) and never schedules cleanup. The owning tool (e.g. Orca)
-// keeps responsibility for the directory's lifecycle. Project setup commands
-// are intentionally skipped: the adopted worktree is assumed already
-// provisioned by the owning tool.
+// checked-out branch on the task, installs the project's commit/push hooks, and
+// drops the identity beacon. It deliberately performs no history-changing git
+// operations (no fetch, add, rebase, or push) and never schedules cleanup — the
+// only worktree mutations are the hook/push-gate install (via installChecks)
+// and the beacon file. The owning tool (e.g. Orca) keeps responsibility for the
+// directory's lifecycle. Project setup commands are intentionally skipped: the
+// adopted worktree is assumed already provisioned by the owning tool.
 //
 // Adoption is refused when the worktree is in detached HEAD or sits on the
 // repo's default branch — the implementation agent commits to and pushes the
@@ -171,12 +172,14 @@ func (m *Manager) adoptWorktree(t task.Task, onPhase func(string)) (string, erro
 		return "", fmt.Errorf("adopt worktree %q: detached HEAD — check out a feature branch before handoff", wtPath)
 	}
 	// Refuse the default branch: pushing the agent's commits there bypasses PR
-	// review entirely. A failure to determine the default branch must not
-	// silently disable this guard, but it also shouldn't abort an otherwise
-	// valid adoption — log and proceed with the empty/detached guard intact.
-	if def, derr := project.DefaultBranch(proj.ClonePath); derr != nil {
-		m.logger.Warn("worktree.adopt-default-branch-check", "task_id", t.ID, "err", derr)
-	} else if branch == def {
+	// review entirely. Fail closed — if the default branch cannot be
+	// determined, abort rather than risk adopting a worktree that turns out to
+	// be on it.
+	def, derr := project.DefaultBranch(proj.ClonePath)
+	if derr != nil {
+		return "", fmt.Errorf("adopt worktree %q: cannot determine default branch to guard against: %w", wtPath, derr)
+	}
+	if branch == def {
 		return "", fmt.Errorf("adopt worktree %q: checked out on default branch %q — create a feature branch before handoff", wtPath, def)
 	}
 
