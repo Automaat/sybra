@@ -2,6 +2,7 @@ package triage
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -51,6 +52,37 @@ func TestValidateVerdict(t *testing.T) {
 			err := ValidateVerdict(&v)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateVerdictNoplanFloor(t *testing.T) {
+	tests := []struct {
+		name      string
+		size      string
+		typ       string
+		wantNopla bool
+	}{
+		{"small chore keeps", "small", "chore", true},
+		{"small bug keeps", "small", "bug", true},
+		{"small refactor keeps", "small", "refactor", true},
+		{"small feature strips", "small", "feature", false},
+		{"medium chore strips", "medium", "chore", false},
+		{"large bug strips", "large", "bug", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := Verdict{
+				Title: "t", Size: tc.size, Type: tc.typ, Mode: "headless",
+				Tags: []string{"backend", tc.size, tc.typ, "noplan"},
+			}
+			if err := ValidateVerdict(&v); err != nil {
+				t.Fatalf("ValidateVerdict: %v", err)
+			}
+			gotNoplan := slices.Contains(v.Tags, "noplan")
+			if gotNoplan != tc.wantNopla {
+				t.Errorf("noplan present = %v, want %v (tags %v)", gotNoplan, tc.wantNopla, v.Tags)
 			}
 		})
 	}

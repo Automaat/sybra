@@ -1,6 +1,20 @@
 package triage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/Automaat/sybra/internal/task"
+)
+
+func TestBuildPromptInstructsNoplan(t *testing.T) {
+	p := buildPrompt(task.Task{Title: "fix CI on renovate PR", Body: ""}, nil)
+	for _, want := range []string{"noplan", "Decision guide for noplan"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q; classifier won't be told to emit noplan", want)
+		}
+	}
+}
 
 func TestParseVerdict(t *testing.T) {
 	raw := []byte(`{"result":"Here is the verdict:\n{\"title\":\"feat(api): add auth\",\"original_title\":\"i want auth\",\"description\":\"\",\"tags\":[\"backend\",\"medium\",\"feature\"],\"size\":\"medium\",\"type\":\"feature\",\"mode\":\"headless\",\"project_id\":\"\"}"}`)

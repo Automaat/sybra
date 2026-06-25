@@ -64,7 +64,7 @@ Rules:
 - title: ALWAYS rewrite into a clean, human-readable, imperative conventional-commit-style title (e.g. "feat(auth): add JWT middleware", "fix(api): handle nil pointer on empty body"). Even if the input title already looks fine, produce your best version. Max 80 chars.
 - original_title: copy the input title verbatim so the user can recover it later.
 - description: ONLY set if the input body is empty/just-a-URL. 2-3 sentences describing what the task is about and what "done" looks like. Otherwise leave empty string.
-- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs. 2-5 tags total.
+- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs. 2-5 of these tags total. Additionally add the routing tag "noplan" when the task qualifies (see the noplan guide below) — it is the only tag outside the lists above you may emit.
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
 - mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
@@ -78,6 +78,16 @@ Decision guide for size:
 - small: <50 LOC, single file, trivial
 - medium: multiple files, clear scope, design mostly known
 - large: cross-cutting, new subsystem, or unclear scope
+
+Decision guide for noplan (skip the planning phase — go straight to implementation):
+- Add "noplan" ONLY when the task is small AND trivially mechanical: the fix is
+  obvious and needs no design decisions or up-front scoping.
+- Good fits: dependency/version bumps, lockfile regeneration, CI/lint/config
+  tweaks, fixing a red CI check on a Renovate PR, typo/comment/docstring fixes,
+  a small mechanical rename.
+- Do NOT add "noplan" when the approach is non-obvious, scope is unclear, type is
+  feature, or the change touches a public API, data model, auth, or concurrency.
+- When in doubt, omit it — planning is the safe default.
 
 Output schema (single JSON object):
 {"title":"...","original_title":"...","description":"","tags":["..."],"size":"small","type":"feature","mode":"headless","project_id":""}
