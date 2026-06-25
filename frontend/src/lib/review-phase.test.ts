@@ -64,7 +64,7 @@ describe('reviewPhaseRank', () => {
 })
 
 describe('BOARD_LANES', () => {
-  it('inserts the PR Reviews lane immediately before Human Required', () => {
+  it('inserts the To Review lane immediately before Human Required', () => {
     const idx = BOARD_LANES.indexOf(REVIEW_LANE)
     expect(idx).toBeGreaterThan(0)
     expect(BOARD_LANES[idx + 1].status).toBe('human-required')

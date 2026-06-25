@@ -190,7 +190,7 @@
         {#if col.kind === 'review'}
           {#if tasks.length === 0}
             <p class="px-3 pb-3 text-xs text-surface-500 dark:text-surface-400">
-              No PRs to review.
+              Nothing to review.
             </p>
           {/if}
         {:else}

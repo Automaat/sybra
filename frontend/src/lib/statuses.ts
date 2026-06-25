@@ -59,9 +59,9 @@ export const ALL_STATUSES: StatusMeta[] = [
   },
   {
     value: 'ready-review',
-    label: 'Ready for Review',
-    badgeClasses: 'bg-warning-100 text-warning-700 dark:bg-warning-800 dark:text-warning-300',
-    pillClasses: 'bg-warning-100 text-warning-700 dark:bg-warning-800 dark:text-warning-300',
+    label: 'Agentic Review',
+    badgeClasses: 'bg-success-100 text-success-700 dark:bg-success-800 dark:text-success-300',
+    pillClasses: 'bg-success-100 text-success-700 dark:bg-success-800 dark:text-success-300',
   },
   {
     value: 'in-review',
@@ -159,7 +159,7 @@ export interface BoardColumn {
   includes: TaskStatus[]
   /**
    * Column kind. 'status' (default) groups tasks by status; 'review' is the
-   * tag-based PR Reviews lane that collects inbound review tasks across every
+   * tag-based To Review lane that collects inbound review tasks across every
    * phase, independent of their status. `status` is a sentinel for review
    * lanes — never a real task status.
    */
@@ -171,13 +171,14 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'todo', label: 'Todo', border: 'border-t-surface-400 dark:border-t-surface-500', includes: ['new', 'todo'] },
   { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400', includes: ['planning', 'plan-review'] },
   { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400', includes: [] },
-  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review', 'ready-review'] },
+  { status: 'ready-review', label: 'Agentic Review', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
+  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review'] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]
 
 /**
- * The PR Reviews lane: a tag-based column (not status-based) that collects
+ * The To Review lane: a tag-based column (not status-based) that collects
  * every inbound review task (tag `review`) regardless of status, coloured per
  * phase. `status: 'reviews'` is a sentinel used only as the column key — it is
  * never a real task status, so it stays out of BOARD_COLUMNS / CORE_STATUSES.
@@ -185,13 +186,13 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 export const REVIEW_LANE: BoardColumn = {
   status: 'reviews' as TaskStatus,
   kind: 'review',
-  label: 'PR Reviews',
+  label: 'To Review',
   border: 'border-t-secondary-500 dark:border-t-secondary-400',
   includes: [],
 }
 
 /**
- * Board column order including the PR Reviews lane (inserted before Human
+ * Board column order including the To Review lane (inserted before Human
  * Required). The board renders these; BOARD_COLUMNS stays the pure status set
  * that drives CORE_STATUSES, the status picker, and per-project boards.
  */
@@ -202,9 +203,9 @@ export const BOARD_LANES: BoardColumn[] = BOARD_COLUMNS.flatMap((c) =>
 /**
  * Core user-facing status set: the active board columns plus the terminal
  * states (`done`, `cancelled`). Granular states (new, plan-review,
- * ready-review, test-plan-review, blocked) are internal/derived — set by
- * automations, not picked by hand. Users choose from this small set so a
- * task's status always lines up with a board column.
+ * test-plan-review, blocked) are internal/derived — set by automations, not
+ * picked by hand. Users choose from this small set so a task's status always
+ * lines up with a board column.
  */
 export const CORE_STATUSES: TaskStatus[] = [
   ...BOARD_COLUMNS.map((c) => c.status),

@@ -14,9 +14,9 @@ describe('TaskStatusBanner', () => {
     expect(screen.getByText(/awaiting your approval/)).toBeDefined()
   })
 
-  it('surfaces a quiet folded sub-state (ready-review) the dropdown would hide', () => {
+  it('surfaces the ready-review state with its canonical label', () => {
     render(TaskStatusBanner, { props: { task: task({ status: 'ready-review' }) } })
-    expect(screen.getByText('Ready for Review')).toBeDefined()
+    expect(screen.getByText('Agentic Review')).toBeDefined()
   })
 
   it('summarises an active state for the standard "what next" slot', () => {
