@@ -57,7 +57,6 @@
     { value: '', label: 'Default (gpt-5.5)' },
     { value: 'gpt-5.4', label: 'GPT-5.4' },
     { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ]
   let codexDynamicModels = $state<ModelOption[]>([])
 

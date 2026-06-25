@@ -74,7 +74,7 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		if v := probeCodexVersion(cctx); v != "" && !codexVersionAtLeast(v, minCodexVersion) {
 			warning := fmt.Sprintf("codex %s is older than %s; the default model gpt-5.5 requires %s+ — upgrade codex or pin an older model", v, minCodexVersion, minCodexVersion)
 			if st.Detail != "" {
-				st.Detail += " — " + warning // keep the login auth detail
+				st.Detail += " — " + warning
 			} else {
 				st.Detail = warning
 			}
@@ -129,6 +129,7 @@ func copilotTokenEnvVar() string {
 	}
 	return ""
 }
+
 
 // probeCodexVersion runs `codex --version` and returns the dotted version string
 // (e.g. "0.142.2"), or "" if it cannot be determined.

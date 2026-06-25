@@ -328,8 +328,7 @@ func isSignalKill(err error) bool {
 	// claude/codex install signal handlers and convert SIGINT/SIGTERM/SIGKILL
 	// into conventional 128+signal exit codes (Exited()==true, Signaled()==false),
 	// so ws.Signaled() misses an externally-interrupted run. Treat those codes as
-	// kills so the workflow stalls (ClearAgentStep) and restart-stale retries,
-	// instead of advancing on incomplete work and escalating to human-required.
+	// kills so the workflow stalls instead of advancing on incomplete work.
 	switch exitErr.ExitCode() {
 	case 130, 143, 137: // 128+SIGINT, 128+SIGTERM, 128+SIGKILL
 		return true
