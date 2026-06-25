@@ -34,6 +34,9 @@ func TestCompute(t *testing.T) {
 		sc("B", "in-progress", "in-review", in),
 		sc("B", "in-progress", "in-review", in), // repeat → rework
 		{Type: audit.EventPRCIFailureDetected, TaskID: "B", Timestamp: preWindow},
+		// Task D bounces but never lands → rework must NOT count it.
+		sc("D", "in-progress", "in-review", in),
+		sc("D", "in-progress", "in-review", in),
 		// Out of window → ignored entirely.
 		ld("C", out, map[string]any{"outcome": "merged", "created_to_land_h": 999.0}),
 	}
@@ -80,6 +83,33 @@ func TestCompute(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
+	}
+}
+
+func TestBreakdownBy(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	out := base.AddDate(0, 0, -30)
+	records := []stats.RunRecord{
+		{Provider: "claude", CostUSD: 1.0, TurnCount: 3, ToolCalls: 6, Outcome: "completed", Timestamp: in},
+		{Provider: "claude", CostUSD: 2.0, TurnCount: 1, ToolCalls: 2, Outcome: "failed", Timestamp: in},
+		{Provider: "codex", CostUSD: 5.0, TurnCount: 4, ToolCalls: 8, Outcome: "completed", Timestamp: in},
+		{Provider: "claude", CostUSD: 9.0, Outcome: "failed", Timestamp: out}, // out of window
+		{Provider: "", CostUSD: 1.0, Outcome: "completed", Timestamp: in},     // empty key skipped
+	}
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string { return r.Provider })
+	if len(got) != 2 {
+		t.Fatalf("got %d groups, want 2 (claude, codex): %+v", len(got), got)
+	}
+	// Sorted by key: claude first.
+	cl := got[0]
+	if cl.Key != "claude" || cl.Runs != 2 || cl.Failures != 1 || cl.FailureRate != 0.5 || cl.TotalCostUSD != 3.0 || cl.Turns != 4 || cl.Tools != 8 {
+		t.Errorf("claude breakdown = %+v", cl)
+	}
+	cx := got[1]
+	if cx.Key != "codex" || cx.Runs != 1 || cx.Failures != 0 || cx.TotalCostUSD != 5.0 {
+		t.Errorf("codex breakdown = %+v", cx)
 	}
 }
 

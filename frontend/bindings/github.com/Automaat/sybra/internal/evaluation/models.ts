@@ -10,6 +10,57 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as time$0 from "../../../../../time/models.js";
 
 /**
+ * Breakdown is the per-dimension (provider, role) slice of the effort and
+ * reliability metrics derivable from stats run records. Landing-derived metrics
+ * (autonomy, throughput) are not broken down because task.landed events don't
+ * carry provider/role/project yet — see Report.Notes.
+ */
+export class Breakdown {
+    "key": string;
+    "runs": number;
+    "failures": number;
+    "failureRate": number;
+    "totalCostUsd": number;
+    "turns": number;
+    "tools": number;
+
+    /** Creates a new Breakdown instance. */
+    constructor($$source: Partial<Breakdown> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("runs" in $$source)) {
+            this["runs"] = 0;
+        }
+        if (!("failures" in $$source)) {
+            this["failures"] = 0;
+        }
+        if (!("failureRate" in $$source)) {
+            this["failureRate"] = 0;
+        }
+        if (!("totalCostUsd" in $$source)) {
+            this["totalCostUsd"] = 0;
+        }
+        if (!("turns" in $$source)) {
+            this["turns"] = 0;
+        }
+        if (!("tools" in $$source)) {
+            this["tools"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Breakdown instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Breakdown {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Breakdown($$parsedSource as Partial<Breakdown>);
+    }
+}
+
+/**
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
@@ -17,6 +68,8 @@ export class Report {
     "since": time$0.Time;
     "until": time$0.Time;
     "overall": Scorecard;
+    "byProvider"?: Breakdown[];
+    "byRole"?: Breakdown[];
     "notes"?: string[];
 
     /** Creates a new Report instance. */
@@ -42,13 +95,21 @@ export class Report {
      */
     static createFrom($$source: any = {}): Report {
         const $$createField3_0 = $$createType0;
-        const $$createField4_0 = $$createType1;
+        const $$createField4_0 = $$createType2;
+        const $$createField5_0 = $$createType2;
+        const $$createField6_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
         }
+        if ("byProvider" in $$parsedSource) {
+            $$parsedSource["byProvider"] = $$createField4_0($$parsedSource["byProvider"]);
+        }
+        if ("byRole" in $$parsedSource) {
+            $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
+        }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField4_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField6_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -206,4 +267,6 @@ export class Scorecard {
 
 // Private type creation functions
 const $$createType0 = Scorecard.createFrom;
-const $$createType1 = $Create.Array($Create.Any);
+const $$createType1 = Breakdown.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $Create.Array($Create.Any);

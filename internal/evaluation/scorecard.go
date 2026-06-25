@@ -52,13 +52,29 @@ type Scorecard struct {
 	ReworkTasks    int     `json:"reworkTasks"` // tasks with a repeated status transition
 }
 
+// Breakdown is the per-dimension (provider, role) slice of the effort and
+// reliability metrics derivable from stats run records. Landing-derived metrics
+// (autonomy, throughput) are not broken down because task.landed events don't
+// carry provider/role/project yet — see Report.Notes.
+type Breakdown struct {
+	Key          string  `json:"key"`
+	Runs         int     `json:"runs"`
+	Failures     int     `json:"failures"`
+	FailureRate  float64 `json:"failureRate"`
+	TotalCostUSD float64 `json:"totalCostUsd"`
+	Turns        int     `json:"turns"`
+	Tools        int     `json:"tools"`
+}
+
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt time.Time `json:"generatedAt"`
-	Since       time.Time `json:"since"`
-	Until       time.Time `json:"until"`
-	Overall     Scorecard `json:"overall"`
-	Notes       []string  `json:"notes,omitempty"`
+	GeneratedAt time.Time   `json:"generatedAt"`
+	Since       time.Time   `json:"since"`
+	Until       time.Time   `json:"until"`
+	Overall     Scorecard   `json:"overall"`
+	ByProvider  []Breakdown `json:"byProvider,omitempty"`
+	ByRole      []Breakdown `json:"byRole,omitempty"`
+	Notes       []string    `json:"notes,omitempty"`
 }
 
 // deferredNotes documents metrics that need signals not yet captured, so the
@@ -67,6 +83,7 @@ var deferredNotes = []string{
 	"merge-without-edit rate and human-edit distance pending #1082",
 	"change-failure rate and MTTR pending revert detection (#1082)",
 	"review-finding density pending review-count capture (#1082)",
+	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed (#1082)",
 }
 
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
@@ -94,7 +111,7 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 	sc.TotalCostUSD = cost
 	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, sigs)
 	sc.AutonomousLandings, sc.HumanTouchedLandings = autonomous, humanTouched
-	sc.ReworkTasks = countRework(sigs)
+	sc.ReworkTasks = countRework(sigs, lg.tasks)
 
 	if n := float64(sc.TasksLanded); n > 0 {
 		sc.MergeRate = float64(sc.Merged) / n
@@ -230,9 +247,17 @@ func classifyLanded(landed map[string]bool, sigs map[string]*taskSignals) (auton
 	return autonomous, humanTouched, ciClean
 }
 
-func countRework(sigs map[string]*taskSignals) int {
+// countRework counts how many landed tasks bounced (a status transition seen
+// 2+ times). Scoped to landed tasks so signals from tasks that never landed (or
+// landed outside the window) — visible because the signal read is wider than the
+// landing window — don't inflate the count.
+func countRework(sigs map[string]*taskSignals, landed map[string]bool) int {
 	n := 0
-	for _, s := range sigs {
+	for id := range landed {
+		s := sigs[id]
+		if s == nil {
+			continue
+		}
 		for _, c := range s.transitions {
 			if c >= 2 {
 				n++
@@ -241,6 +266,48 @@ func countRework(sigs map[string]*taskSignals) int {
 		}
 	}
 	return n
+}
+
+// BreakdownBy groups in-window run records by key and computes effort and
+// reliability per group, sorted by key. Records with an empty key are skipped.
+func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(stats.RunRecord) string) []Breakdown {
+	type acc struct {
+		runs, fails, turns, tools int
+		cost                      float64
+	}
+	groups := map[string]*acc{}
+	for i := range records {
+		r := records[i]
+		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
+			continue
+		}
+		k := key(r)
+		if k == "" {
+			continue
+		}
+		a := groups[k]
+		if a == nil {
+			a = &acc{}
+			groups[k] = a
+		}
+		a.runs++
+		if r.Outcome == "failed" {
+			a.fails++
+		}
+		a.cost += r.CostUSD
+		a.turns += r.TurnCount
+		a.tools += r.ToolCalls
+	}
+	out := make([]Breakdown, 0, len(groups))
+	for k, a := range groups {
+		b := Breakdown{Key: k, Runs: a.runs, Failures: a.fails, TotalCostUSD: a.cost, Turns: a.turns, Tools: a.tools}
+		if a.runs > 0 {
+			b.FailureRate = float64(a.fails) / float64(a.runs)
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }
 
 // percentile returns the p-th percentile (0–100) using nearest-rank. Empty → 0.

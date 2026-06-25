@@ -151,6 +151,8 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		Since:       since,
 		Until:       now,
 		Overall:     Compute(recs, evts, since, now),
+		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
+		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
 		Notes:       deferredNotes,
 	}, nil
 }
