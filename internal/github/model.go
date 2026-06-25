@@ -18,6 +18,7 @@ type PullRequest struct {
 	Mergeable         string   `json:"mergeable"`        // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 	UnresolvedCount   int      `json:"unresolvedCount"`
 	ViewerHasApproved bool     `json:"viewerHasApproved"`
+	CopilotReviewed   bool     `json:"copilotReviewed"` // GitHub Copilot has submitted a review
 	CreatedAt         string   `json:"createdAt"`
 	UpdatedAt         string   `json:"updatedAt"`
 }

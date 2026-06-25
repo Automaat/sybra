@@ -368,6 +368,67 @@ func TestIsBot(t *testing.T) {
 	}
 }
 
+func TestIsCopilotReviewer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		login string
+		want  bool
+	}{
+		{"Copilot", true},
+		{"copilot-pull-request-reviewer", true},
+		{"copilot-pull-request-reviewer[bot]", true},
+		{"github-copilot[bot]", true},
+		{"dev", false},
+		{"renovate[bot]", false},
+		{"copilotuser", false},          // human login containing the word
+		{"copilot-metrics[bot]", false}, // unrelated 3rd-party app
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.login, func(t *testing.T) {
+			t.Parallel()
+			if got := IsCopilotReviewer(tt.login); got != tt.want {
+				t.Errorf("IsCopilotReviewer(%q) = %v, want %v", tt.login, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseGQLResponse_copilotReviewed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		reviews string
+		want    bool
+	}{
+		{"copilot reviewed", `{"state": "COMMENTED", "author": {"login": "copilot-pull-request-reviewer[bot]"}}`, true},
+		{"only human reviewed", `{"state": "APPROVED", "author": {"login": "dev"}}`, false},
+		{"no reviews", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := `{"data":{"search":{"nodes":[{
+				"number": 7,
+				"repository": {"name": "r", "nameWithOwner": "o/r"},
+				"author": {"login": "dev", "type": "User"},
+				"latestReviews": {"nodes": [` + tt.reviews + `]}
+			}]}}}`
+			var resp gqlResponse
+			if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			prs := convertPRs(resp.Data.Search.Nodes, "")
+			if len(prs) != 1 {
+				t.Fatalf("got %d PRs, want 1", len(prs))
+			}
+			if prs[0].CopilotReviewed != tt.want {
+				t.Errorf("CopilotReviewed = %v, want %v", prs[0].CopilotReviewed, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseGQLResponse(t *testing.T) {
 	t.Parallel()
 	raw := `{

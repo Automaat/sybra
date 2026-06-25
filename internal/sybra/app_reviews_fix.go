@@ -3,6 +3,7 @@ package sybra
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -13,6 +14,21 @@ import (
 )
 
 const wtFailureLimit = 5
+
+// readyForCopilotAutoMerge reports whether a pet PR satisfies the auto-merge
+// policy: mechanically mergeable, CI green (or no checks), GitHub Copilot has
+// submitted a review, no unresolved review threads, and no outstanding change
+// request. Human approval is intentionally NOT required — pet PRs never get one;
+// Copilot's review is the gate. A repo without Copilot enabled stays parked in
+// In Review until a human merges it.
+func readyForCopilotAutoMerge(pr github.PullRequest) bool {
+	return !pr.IsDraft &&
+		pr.Mergeable == "MERGEABLE" &&
+		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
+		pr.CopilotReviewed &&
+		pr.UnresolvedCount == 0 &&
+		pr.ReviewDecision != "CHANGES_REQUESTED"
+}
 
 func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
@@ -25,7 +41,23 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		return
 	}
 
-	if err := github.MergePR(issue.PR.Repository, issue.PR.Number); err != nil {
+	// Hold the merge until Copilot has reviewed and its threads are resolved.
+	// Without this, a green PR merges on the first poll after CI passes — before
+	// Copilot's (asynchronous) review lands — and its feedback is skipped.
+	//
+	// Renovate dependency-bump PRs (surfaced via the "Fix CI" flow) are bot-
+	// authored and never receive a Copilot review, so the Copilot gate would
+	// strand them. The ReadyToMerge issue already implies green + mergeable +
+	// !draft, so preserve their prior green auto-merge.
+	if !slices.Contains(t.Tags, "renovate-fix") && !readyForCopilotAutoMerge(issue.PR) {
+		return
+	}
+
+	merge := r.mergePR
+	if merge == nil {
+		merge = github.MergePR
+	}
+	if err := merge(issue.PR.Repository, issue.PR.Number); err != nil {
 		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", err)
 		return
 	}
