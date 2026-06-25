@@ -2,6 +2,7 @@
   import { Trash2, X } from '@lucide/svelte'
   import { Condition, Step, StepConfig, Transition } from '../../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
   import ConditionRow from './ConditionRow.svelte'
+  import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
 
   interface Props {
     step: Step | null
@@ -194,9 +195,9 @@
           value={step.config?.model ?? 'sonnet'}
           onchange={(e) => updateField('config.model', e.currentTarget.value)}
         >
-          <option value="sonnet">sonnet</option>
-          <option value="opus">opus</option>
-          <option value="haiku">haiku</option>
+          {#each CLAUDE_MODEL_OPTIONS as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
         </select>
       </label>
 

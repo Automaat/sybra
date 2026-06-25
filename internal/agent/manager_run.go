@@ -153,7 +153,8 @@ func (m *Manager) markAgentDone(a *Agent) {
 
 func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	prov := m.providerForRun(cfg.Provider)
-	if cfg.Model != "" && !safeArgRe.MatchString(cfg.Model) {
+	model := normalizeModel(prov, cfg.Model)
+	if model != "" && !safeArgRe.MatchString(model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
 	}
 	for _, tool := range cfg.AllowedTools {
@@ -161,7 +162,6 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 			return "", fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)
 		}
 	}
-	model := normalizeModel(prov, cfg.Model)
 	switch prov {
 	case "codex":
 		return buildCodexCommand(model, cfg.RequirePermissions, cfg.Mode == "headless"), nil
@@ -299,8 +299,10 @@ const copilotDefaultModel = "gpt-5.4"
 func normalizeModel(prov, model string) string {
 	switch normalizeProvider(prov) {
 	case "codex":
+		// Codex models come from `codex debug models` and never carry a [1m]
+		// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
 		switch strings.TrimSpace(model) {
-		case "", "sonnet", "opus":
+		case "", "sonnet", "opus", "fable":
 			return "gpt-5.5"
 		case "haiku":
 			return "gpt-5.4-mini"
@@ -313,17 +315,29 @@ func normalizeModel(prov, model string) string {
 		// (claude-sonnet-4.6, gpt-5.3-codex, gemini-3-pro-preview, …) selected
 		// in the model picker pass through untouched.
 		switch strings.TrimSpace(model) {
-		case "", "sonnet", "opus", "haiku":
+		case "", "sonnet", "opus", "haiku", "fable":
 			return copilotDefaultModel
 		default:
 			return model
 		}
 	default:
+		// [1m] is a Claude-Code-only context marker. Fable 5 ships a 1M context
+		// window by default, so CC 2.1.173 strips the redundant suffix; Sybra
+		// exposes no 1M variants, so the marker is always redundant here.
+		// Stripping before safeArgRe keeps the validator strict — it intentionally
+		// rejects '[' and ']'. Scoped to the Claude path; Codex strings untouched.
+		model = stripContextSuffix(model)
 		if strings.TrimSpace(model) == "" {
 			return "sonnet"
 		}
 		return model
 	}
+}
+
+var oneMSuffixRe = regexp.MustCompile(`(?i)\[1m\]$`)
+
+func stripContextSuffix(model string) string {
+	return oneMSuffixRe.ReplaceAllString(strings.TrimSpace(model), "")
 }
 
 // safeArgRe matches only characters safe to embed in a shell command

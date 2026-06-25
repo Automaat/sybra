@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { GetSettings, UpdateSettings, GetVersion, GetCodexModels, GetCopilotModels, ProviderHealthEnabled } from '$lib/api'
+  import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
   import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
@@ -156,12 +157,7 @@
     if (settings.agent.provider === 'copilot') {
       return copilotDynamicModels.length > 0 ? copilotDynamicModels : copilotFallbackModels
     }
-    return [
-      { value: '', label: 'Default (Sonnet)' },
-      { value: 'opus', label: 'Opus' },
-      { value: 'sonnet', label: 'Sonnet' },
-      { value: 'haiku', label: 'Haiku' },
-    ]
+    return [{ value: '', label: 'Default (Sonnet)' }, ...CLAUDE_MODEL_OPTIONS]
   })
 
   // Keep provider/model pair valid in-memory: when provider flips and the
