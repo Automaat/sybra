@@ -178,7 +178,7 @@ subprocess model provides the strongest isolation and `--resume` works well.
 
 ### Supersedes #704
 
-\#704 proposed `codex remote-control`, which is now daemon + server-token
+#704 proposed `codex remote-control`, which is now daemon + server-token
 oriented at remote machines — wrong fit for Sybra's local subprocess model.
 This spike evaluates the correct structured-protocol alternative (`app-server`).
 Close #704 as superseded by this ADR.

@@ -105,12 +105,15 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 
 	// ── 2. thread/start ───────────────────────────────────────────────────────
-	cwd, _ := os.Getwd()
+	var wd *string
+	if cwd, err := os.Getwd(); err == nil {
+		wd = &cwd
+	}
 	send(stdin, rpcRequest{
 		JSONRPC: "2.0",
 		ID:      nextID(),
 		Method:  "thread/start",
-		Params:  threadStartParams{WorkingDirectory: &cwd},
+		Params:  threadStartParams{WorkingDirectory: wd},
 	})
 
 	// Wait until we have a threadId (or 3 s timeout).
@@ -191,6 +194,9 @@ func startReader(stdout io.Reader, cancel context.CancelFunc) (threadIDCh <-chan
 				time.AfterFunc(500*time.Millisecond, cancel)
 			}
 		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "[spike] scanner error: %v\n", err)
+		}
 	}()
 	return ch, &collected, doneCh
 }
@@ -202,9 +208,11 @@ func nextID() int {
 }
 
 func send(w io.Writer, req rpcRequest) {
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	must(err, "marshal request")
 	fmt.Printf("[→] %s %s\n", req.Method, string(b))
-	_, _ = fmt.Fprintf(w, "%s\n", b)
+	_, err = fmt.Fprintf(w, "%s\n", b)
+	must(err, "write request")
 }
 
 func printMessage(msg rpcMessage) {
