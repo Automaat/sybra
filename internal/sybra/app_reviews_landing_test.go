@@ -33,9 +33,9 @@ func TestClassifyLandingOutcome(t *testing.T) {
 }
 
 // TestRecordLanding_EmitsTaskLanded verifies the landing helper records a
-// structured task.landed event with the outcome, PR number, and lead time the
-// evaluation scorecard reads. A task without a ProjectID skips the network PR
-// stats fetch, keeping the test hermetic.
+// structured task.landed event with the outcome, PR number, and queue-inclusive
+// timing the evaluation scorecard reads. A freshly-created task has no agent
+// runs, so work_to_land_h is absent; the helper makes no network calls.
 func TestRecordLanding_EmitsTaskLanded(t *testing.T) {
 	auditDir := t.TempDir()
 	al, err := audit.NewLogger(auditDir)
@@ -81,10 +81,10 @@ func TestRecordLanding_EmitsTaskLanded(t *testing.T) {
 	if got, _ := e.Data["pr"].(float64); got != 42 {
 		t.Errorf("pr = %v, want 42", e.Data["pr"])
 	}
-	if _, ok := e.Data["lead_time_h"]; !ok {
-		t.Errorf("missing lead_time_h in %v", e.Data)
+	if _, ok := e.Data["created_to_land_h"]; !ok {
+		t.Errorf("missing created_to_land_h in %v", e.Data)
 	}
-	if _, ok := e.Data["additions"]; ok {
-		t.Errorf("unexpected PR stats for project-less task: %v", e.Data)
+	if _, ok := e.Data["work_to_land_h"]; ok {
+		t.Errorf("unexpected work_to_land_h for task with no agent runs: %v", e.Data)
 	}
 }

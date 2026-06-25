@@ -219,10 +219,11 @@ func classifyLandingOutcome(state string) string {
 	return "merged"
 }
 
-// recordLanding emits a task.landed audit event capturing the terminal outcome,
-// PR size, and lead time — the ground-truth signal the evaluation scorecard
-// reads. Best-effort: a missing task or a stats-fetch failure still records the
-// outcome and PR number.
+// recordLanding emits a task.landed audit event capturing the terminal outcome
+// and timing — the ground-truth signal the evaluation scorecard reads. Kept
+// fully local (no network) so it never stalls the PR poll loop. Two timings are
+// recorded distinctly: created_to_land_h is queue-inclusive (task filed → land),
+// work_to_land_h starts from the first agent run (closer to DORA cycle time).
 func (r *ReviewHandler) recordLanding(taskID string, prNumber int, state string) {
 	data := map[string]any{
 		"pr":      prNumber,
@@ -231,17 +232,29 @@ func (r *ReviewHandler) recordLanding(taskID string, prNumber int, state string)
 	}
 	if t, err := r.tasks.Get(taskID); err == nil {
 		if !t.CreatedAt.IsZero() {
-			data["lead_time_h"] = time.Since(t.CreatedAt).Hours()
+			data["created_to_land_h"] = time.Since(t.CreatedAt).Hours()
 		}
-		if t.ProjectID != "" && prNumber > 0 {
-			if s, err := github.FetchPRStats(t.ProjectID, prNumber); err == nil {
-				data["additions"] = s.Additions
-				data["deletions"] = s.Deletions
-				data["changed_files"] = s.ChangedFiles
-			}
+		if started := earliestRunStart(t.AgentRuns); !started.IsZero() {
+			data["work_to_land_h"] = time.Since(started).Hours()
 		}
 	}
 	r.logAudit(audit.EventTaskLanded, taskID, "", data)
+}
+
+// earliestRunStart returns the start time of the first agent run, or the zero
+// time when there are no runs with a start timestamp.
+func earliestRunStart(runs []task.AgentRun) time.Time {
+	var earliest time.Time
+	for i := range runs {
+		s := runs[i].StartedAt
+		if s.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || s.Before(earliest) {
+			earliest = s
+		}
+	}
+	return earliest
 }
 
 // cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow
