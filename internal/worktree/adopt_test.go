@@ -74,6 +74,51 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	}
 }
 
+// TestPrepareForFix_AdoptsExternalWorktree is the regression for the
+// circuit-breaker strand: a handoff/adopted worktree sent through the PR-fix
+// flow must be reused as-is, not re-created with `git worktree add` (which
+// fails "already exists" and, after wtFailureLimit retries, flips the task to
+// human-required). The adoption guard short-circuits before any PR-branch
+// fetch, so the PR number is irrelevant here.
+func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	ext := filepath.Join(t.TempDir(), "orca-worktree")
+	const extBranch = "orca/fix-x"
+	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Create("adopt fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id":   h.proj.ID,
+		"worktree_dir": ext,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	got, err := h.m.PrepareForFix(tk, 1)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	if got != ext {
+		t.Fatalf("adopted path = %q, want %q", got, ext)
+	}
+
+	// No managed worktree was created — proves no `git worktree add` ran.
+	entries, err := os.ReadDir(h.wtDir)
+	if err != nil {
+		t.Fatalf("read worktrees dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("managed worktrees dir not empty: %v", entries)
+	}
+}
+
 // TestPrepareForTask_AdoptRejectsMissingDir verifies adoption fails cleanly
 // when the declared worktree directory does not exist.
 func TestPrepareForTask_AdoptRejectsMissingDir(t *testing.T) {
