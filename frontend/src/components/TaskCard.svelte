@@ -4,7 +4,7 @@
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
-import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
+  import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
   import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, type ReviewPhaseIcon } from '../lib/review-phase.js'
   import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
