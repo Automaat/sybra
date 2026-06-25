@@ -266,6 +266,42 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 	return raw.HeadRefOid, nil
 }
 
+// PRCompare summarizes the difference between two commits (base...head).
+type PRCompare struct {
+	Commits   int `json:"total_commits"`
+	Additions int `json:"-"`
+	Deletions int `json:"-"`
+}
+
+// FetchPRCompare returns how far head is ahead of base (commits + line churn).
+// Used at landing to measure human edits made after the agent's last push.
+func FetchPRCompare(repo, base, head string) (PRCompare, error) {
+	return fetchPRCompareWith(defaultExecer, repo, base, head)
+}
+
+func fetchPRCompareWith(e execer, repo, base, head string) (PRCompare, error) {
+	out, err := e.run("api", fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head))
+	if err != nil {
+		return PRCompare{}, fmt.Errorf("gh api compare %s...%s: %s: %w", base, head, strings.TrimSpace(string(out)), err)
+	}
+	var raw struct {
+		TotalCommits int `json:"total_commits"`
+		Files        []struct {
+			Additions int `json:"additions"`
+			Deletions int `json:"deletions"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return PRCompare{}, fmt.Errorf("parse compare: %w", err)
+	}
+	c := PRCompare{Commits: raw.TotalCommits}
+	for _, f := range raw.Files {
+		c.Additions += f.Additions
+		c.Deletions += f.Deletions
+	}
+	return c, nil
+}
+
 // FetchPRDiff returns the unified diff for a PR. Used by the evaluation
 // LLM-as-judge to score the landed change.
 func FetchPRDiff(repo string, number int) (string, error) {

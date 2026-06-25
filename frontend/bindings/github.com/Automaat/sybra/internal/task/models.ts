@@ -36,6 +36,13 @@ export class AgentRun {
     "logFile": string;
     "sessionId"?: string;
 
+    /**
+     * HeadSHA is the worktree HEAD commit at this run's completion — what the
+     * agent left on the branch. Compared against the merged PR head to detect
+     * human edits after the agent (merged_with_edits) and measure edit distance.
+     */
+    "headSha"?: string;
+
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
         if (!("agentId" in $$source)) {
