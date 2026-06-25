@@ -266,7 +266,7 @@ func normalizeModel(prov, model string) string {
 	case "codex":
 		switch strings.TrimSpace(model) {
 		case "", "sonnet", "opus":
-			return "gpt-5.4"
+			return "gpt-5.5"
 		case "haiku":
 			return "gpt-5.4-mini"
 		default:

@@ -521,7 +521,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex default model mapping",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.5",
 		},
 		{
 			name:    "codex maps haiku to mini",
@@ -531,7 +531,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "codex with RequirePermissions uses workspace-write sandbox",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.5",
 		},
 	}
 
@@ -566,12 +566,12 @@ func TestCodexSandboxDisabledViaEnv(t *testing.T) {
 		{
 			name:    "codex default with sandbox disabled",
 			cfg:     RunConfig{Provider: "codex"},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.5",
 		},
 		{
 			name:    "codex RequirePermissions honored as danger-full-access when sandbox disabled",
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
-			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.4",
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox danger-full-access --model gpt-5.5",
 		},
 	}
 

@@ -24,6 +24,7 @@ var pricingTable = map[string]modelPrice{
 	"gpt-5-codex":  {in: 1.25, out: 10.00, cacheRead: 0.125},
 	"gpt-5-mini":   {in: 0.25, out: 2.00, cacheRead: 0.025},
 	"gpt-5-nano":   {in: 0.05, out: 0.40, cacheRead: 0.005},
+	"gpt-5.5":      {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex default (0.142.2+)
 	"gpt-5.4":      {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex alias
 	"gpt-5.4-mini": {in: 0.25, out: 2.00, cacheRead: 0.025},  // codex alias
 

@@ -12,8 +12,8 @@ export const providerMatrix: ProviderSpec[] = [
   },
   {
     provider: 'codex',
-    modelLabel: 'Default (gpt-5.4)',
-    expectedOptions: ['Default (gpt-5.4)', 'GPT-5.4', 'GPT-5.4 Mini', 'GPT-5.3 Codex'],
+    modelLabel: 'Default (gpt-5.5)',
+    expectedOptions: ['Default (gpt-5.5)', 'GPT-5.4', 'GPT-5.4 Mini', 'GPT-5.3 Codex'],
   },
 ]
 
