@@ -105,6 +105,24 @@ func TestUpdateTodoistToken_ClearsToken(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_ValidationRejectsBadFallbackModel(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	settings := svc.GetSettings()
+	settings.Agent.FallbackModel = "bad model; rm -rf /"
+
+	if err := svc.UpdateSettings(settings); err == nil {
+		t.Error("expected validation error for invalid fallback model, got nil")
+	}
+
+	// Valid model string must be accepted.
+	settings.Agent.FallbackModel = "claude-sonnet-4-6"
+	if err := svc.UpdateSettings(settings); err != nil {
+		t.Errorf("UpdateSettings with valid fallback model: %v", err)
+	}
+}
+
 func TestUpdateSettings_ValidationRejectsEnabledWithNoToken(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	svc.cfg.Todoist.APIToken = ""
