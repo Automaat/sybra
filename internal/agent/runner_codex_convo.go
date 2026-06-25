@@ -291,6 +291,7 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
+	args = append(args, codexReasoningArgs(a.ReasoningEffort)...)
 	if a.sessionCWD != "" {
 		args = append(args, "-C", a.sessionCWD)
 	}

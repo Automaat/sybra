@@ -429,6 +429,7 @@ func agentFromRecord(r Record) *Agent {
 		MaxTurns:           r.MaxTurns,
 		stdinPath:          r.StdinPath,
 		requirePermissions: r.RequirePermissions,
+		ReasoningEffort:    r.ReasoningEffort,
 		detached:           true,
 	}
 }

@@ -616,6 +616,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	issue := fs.String("issue", "", "GitHub issue URL")
 	statusReason := fs.String("status-reason", "", "reason for status change")
 	maxTurnsFlag := fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)")
+	reasoningEffort := fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' clears the override)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -673,6 +674,16 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	// -1 is the sentinel "not provided"; 0 clears override, >0 sets limit.
 	if *maxTurnsFlag >= 0 {
 		updates["max_turns"] = float64(*maxTurnsFlag)
+	}
+	if *reasoningEffort != "" {
+		v := *reasoningEffort
+		if v == "default" || v == "none" {
+			v = ""
+		}
+		if _, err := task.ValidateReasoningEffort(v); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		updates["reasoning_effort"] = v
 	}
 
 	if len(updates) == 0 {
@@ -1250,7 +1261,7 @@ Commands:
              implement  have a plan → Sybra implements, reviews, opens the PR
              review     implemented locally → Sybra reviews + opens the PR
              pr         existing PR (--pr N) → Sybra reviews the PR
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 
   project list

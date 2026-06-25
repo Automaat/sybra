@@ -212,6 +212,7 @@ func (m *Manager) saveRegistry(a *Agent) {
 		StdinPath:          a.stdinPath,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
+		ReasoningEffort:    a.ReasoningEffort,
 	}
 	a.mu.RUnlock()
 	rec.ProcStartedAt = processStartString(rec.PID)

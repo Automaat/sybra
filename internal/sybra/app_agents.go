@@ -202,6 +202,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 		ExtraEnv:           extraEnv,
 		MaxTurns:           t.MaxTurns,
 		ForkSubagent:       t.ForkSubagent,
+		ReasoningEffort:    t.ReasoningEffort,
 	})
 	if err != nil {
 		// Gate block leaves no running agent. Flip the task back to todo so

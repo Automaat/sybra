@@ -245,6 +245,14 @@ export class Task {
      * higher token cost for reduced wall-clock time on multi-part prompts.
      */
     "forkSubagent"?: boolean;
+
+    /**
+     * ReasoningEffort sets the Codex model reasoning level for this task's agents
+     * via -c model_reasoning_effort=<v>. Empty = model default. Codex-only;
+     * ignored for claude agents. Distinct from the claude-only extended-thinking
+     * knob — different CLI surface and vocabulary (xhigh vs max).
+     */
+    "reasoningEffort"?: string;
     "agentRuns": AgentRun[];
     "workflow": workflow$0.Execution | null;
     "createdAt": time$0.Time;

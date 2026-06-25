@@ -648,6 +648,11 @@ func TestBuildCommand(t *testing.T) {
 			cfg:     RunConfig{Provider: "codex", Model: "gpt-5.4[1m]"},
 			wantErr: true,
 		},
+		{
+			name:    "codex with reasoning effort high",
+			cfg:     RunConfig{Provider: "codex", ReasoningEffort: "high"},
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.5 -c model_reasoning_effort=high",
+		},
 	}
 
 	for _, tt := range tests {

@@ -826,6 +826,54 @@ func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
 	})
 }
 
+func TestBuildHeadlessInvocation_CodexReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	t.Run("flag_present_when_set", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex", ReasoningEffort: "high"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		found := false
+		for i := range len(args) - 1 {
+			if args[i] == "-c" && args[i+1] == "model_reasoning_effort=high" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected -c model_reasoning_effort=high in args; got %v", args)
+		}
+	})
+
+	t.Run("flag_absent_when_empty", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex", ReasoningEffort: ""}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		for _, arg := range args {
+			if strings.Contains(arg, "model_reasoning_effort=") {
+				t.Errorf("model_reasoning_effort must be absent when empty; got %v", args)
+			}
+		}
+	})
+
+	t.Run("not_present_for_claude", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude", ReasoningEffort: "high"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		for _, arg := range args {
+			if strings.Contains(arg, "model_reasoning_effort=") {
+				t.Errorf("model_reasoning_effort must not appear for claude provider; got %v", args)
+			}
+		}
+	})
+}
+
 // TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox verifies that headless
 // codex invocations always use --dangerously-bypass-approvals-and-sandbox,
 // even when RequirePermissions=true. In headless mode there is no UI to serve

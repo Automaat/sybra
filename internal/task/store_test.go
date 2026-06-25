@@ -1514,3 +1514,48 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 		t.Fatalf("want 1 task remaining, got %d", len(tasks))
 	}
 }
+
+func TestReasoningEffortRoundTrip(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tk, err := store.Create("effort test", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set reasoning effort via UpdateMap.
+	updated, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": "high"})
+	if err != nil {
+		t.Fatalf("UpdateMap: %v", err)
+	}
+	if updated.ReasoningEffort != "high" {
+		t.Errorf("after update: ReasoningEffort = %q, want %q", updated.ReasoningEffort, "high")
+	}
+
+	// Re-read from disk to verify persistence.
+	got, err := store.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReasoningEffort != "high" {
+		t.Errorf("after re-read: ReasoningEffort = %q, want %q", got.ReasoningEffort, "high")
+	}
+
+	// Clear via "default" sentinel (empty string).
+	cleared, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": ""})
+	if err != nil {
+		t.Fatalf("UpdateMap clear: %v", err)
+	}
+	if cleared.ReasoningEffort != "" {
+		t.Errorf("after clear: ReasoningEffort = %q, want empty", cleared.ReasoningEffort)
+	}
+
+	// Invalid value must error.
+	if _, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": "ultra"}); err == nil {
+		t.Error("expected error for invalid reasoning_effort, got nil")
+	}
+}

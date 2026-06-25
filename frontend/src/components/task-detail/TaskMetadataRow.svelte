@@ -163,6 +163,28 @@
   {/if}
 
   <div class="flex flex-col gap-1">
+    <span class="font-medium text-surface-500">Reasoning Effort <span class="font-normal text-surface-400 text-xs">(Codex only)</span></span>
+    <select
+      class="w-fit rounded bg-transparent px-1 py-0.5 text-sm text-surface-600 dark:text-surface-300"
+      value={task.reasoningEffort ?? ''}
+      onchange={async (e) => {
+        try {
+          await taskStore.update(task.id, { reasoning_effort: e.currentTarget.value })
+        } catch (e) {
+          error = String(e)
+        }
+      }}
+      title="Codex model_reasoning_effort. Empty = model default. Ignored for claude agents."
+    >
+      <option value="">default</option>
+      <option value="low">low</option>
+      <option value="medium">medium</option>
+      <option value="high">high</option>
+      <option value="xhigh">xhigh</option>
+    </select>
+  </div>
+
+  <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Max Turns</span>
     <TaskMaxTurnsEditor {task} onerror={handleError} />
   </div>

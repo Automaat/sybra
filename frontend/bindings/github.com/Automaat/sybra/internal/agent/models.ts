@@ -41,6 +41,7 @@ export class Agent {
     "project"?: string;
     "provider"?: string;
     "model"?: string;
+    "reasoningEffort"?: string;
     "prompt"?: string;
     "turnCount"?: number;
 

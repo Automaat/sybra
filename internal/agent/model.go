@@ -31,32 +31,33 @@ const (
 )
 
 type Agent struct {
-	ID                       string  `json:"id"`
-	TaskID                   string  `json:"taskId"`
-	Mode                     string  `json:"mode"`
-	State                    State   `json:"state"`
-	SessionID                string  `json:"sessionId"`
-	CostUSD                  float64 `json:"costUsd"`
-	InputTokens              int     `json:"inputTokens,omitempty"`
-	OutputTokens             int     `json:"outputTokens,omitempty"`
-	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
-	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
-	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	ID                       string    `json:"id"`
+	TaskID                   string    `json:"taskId"`
+	Mode                     string    `json:"mode"`
+	State                    State     `json:"state"`
+	SessionID                string    `json:"sessionId"`
+	CostUSD                  float64   `json:"costUsd"`
+	InputTokens              int       `json:"inputTokens,omitempty"`
+	OutputTokens             int       `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
 	// no USD cost, so this is the usage signal surfaced for copilot agents;
 	// always 0 for claude/codex.
-	PremiumRequests int       `json:"premiumRequests,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	LastEventAt     time.Time `json:"lastEventAt"`
-	LogPath         string    `json:"logPath,omitempty"`
-	External        bool      `json:"external"`
-	PID             int       `json:"pid,omitempty"`
-	Command         string    `json:"command,omitempty"`
-	Name            string    `json:"name,omitempty"`
-	Project         string    `json:"project,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
+	PremiumRequests          int       `json:"premiumRequests,omitempty"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -622,6 +623,10 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
+	// ReasoningEffort sets codex's model_reasoning_effort (low/medium/high/xhigh)
+	// for this run. Empty = model default. Codex-only. NOT the same as Effort
+	// (claude --effort) — different provider, CLI surface, and value set.
+	ReasoningEffort string
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.
