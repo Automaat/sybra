@@ -59,10 +59,10 @@ func TestValidateVerdict(t *testing.T) {
 
 func TestValidateVerdictNoplanFloor(t *testing.T) {
 	tests := []struct {
-		name      string
-		size      string
-		typ       string
-		wantNopla bool
+		name       string
+		size       string
+		typ        string
+		wantNoplan bool
 	}{
 		{"small chore keeps", "small", "chore", true},
 		{"small bug keeps", "small", "bug", true},
@@ -81,8 +81,8 @@ func TestValidateVerdictNoplanFloor(t *testing.T) {
 				t.Fatalf("ValidateVerdict: %v", err)
 			}
 			gotNoplan := slices.Contains(v.Tags, "noplan")
-			if gotNoplan != tc.wantNopla {
-				t.Errorf("noplan present = %v, want %v (tags %v)", gotNoplan, tc.wantNopla, v.Tags)
+			if gotNoplan != tc.wantNoplan {
+				t.Errorf("noplan present = %v, want %v (tags %v)", gotNoplan, tc.wantNoplan, v.Tags)
 			}
 		})
 	}
