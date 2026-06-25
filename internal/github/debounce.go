@@ -57,7 +57,7 @@ func issueKey(taskID string, kind PRIssueKind) string {
 // Decide is the signature-aware dispatch gate. When sig differs from the last
 // one recorded for this issue, the feedback genuinely changed since the last
 // attempt, so the retry budget resets (new feedback deserves a fresh response).
-// When sig is unchanged it caps at MaxFixRetries and returns DispatchExhausted —
+// When sig is unchanged it caps at MaxRetries and returns DispatchExhausted —
 // the caller escalates to a human instead of looping forever. A "" sig disables
 // signature gating (legacy SHA-only behavior), used for issue kinds without a
 // feedback fingerprint (conflict, ci_failure, ready_to_merge).
@@ -154,17 +154,18 @@ func (t *IssueTracker) Cleanup() {
 	defer t.mu.Unlock()
 	cutoff := t.now().Add(-2 * t.cooldown)
 	for k, v := range t.handled {
-		if v.Before(cutoff) {
-			if t.retries[k] >= maxRetries {
-				// At cap: keep retries/lastSHA so the caller can escalate;
-				// only drop the time-based handled entry (no more cooldown).
-				delete(t.handled, k)
-				continue
-			}
-			delete(t.handled, k)
-			delete(t.retries, k)
-			delete(t.lastSHA, k)
-			delete(t.sigs, k)
+		if !v.Before(cutoff) {
+			continue
 		}
+		if t.retries[k] >= maxRetries {
+			// At cap: keep retries/lastSHA so the caller can escalate;
+			// only drop the time-based handled entry (no more cooldown).
+			delete(t.handled, k)
+			continue
+		}
+		delete(t.handled, k)
+		delete(t.retries, k)
+		delete(t.lastSHA, k)
+		delete(t.sigs, k)
 	}
 }

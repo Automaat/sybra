@@ -19,6 +19,8 @@ function makePR(overrides: Record<string, unknown> = {}) {
     reviewDecision: '',
     mergeable: '',
     unresolvedCount: 0,
+    actionableCount: 0,
+    feedbackSig: '',
     viewerHasApproved: false,
     copilotReviewed: false,
     createdAt: '2026-04-01T00:00:00Z',

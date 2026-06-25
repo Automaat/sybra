@@ -129,7 +129,7 @@ const prQuery = `query($q: String!) {
           nodes {
             id
             isResolved
-            comments(last: 1) { nodes { id author { login } } }
+            comments(last: 1) { nodes { author { login } } }
           }
         }
         latestReviews(first: 20) {
@@ -214,7 +214,6 @@ type gqlPR struct {
 			IsResolved bool   `json:"isResolved"`
 			Comments   struct {
 				Nodes []struct {
-					ID     string `json:"id"`
 					Author struct {
 						Login string `json:"login"`
 					} `json:"author"`
@@ -299,21 +298,21 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 			continue
 		}
 		unresolved++
-		var lastAuthor, lastID string
+		var lastAuthor string
 		if len(th.Comments.Nodes) > 0 {
-			lc := th.Comments.Nodes[len(th.Comments.Nodes)-1]
-			lastAuthor = lc.Author.Login
-			lastID = lc.ID
+			lastAuthor = th.Comments.Nodes[len(th.Comments.Nodes)-1].Author.Login
 		}
 		// Actionable = a reviewer had the last word. Once the agent replies the
 		// thread drops out of the actionable set (so pr-fix stops re-firing) but
 		// stays unresolved (so the merge gate still holds until it's resolved).
 		if lastAuthor != "" && !strings.EqualFold(lastAuthor, agentLogin) {
 			actionable++
-			sigTokens = append(sigTokens, "A:"+th.ID+":"+lastID)
-		} else {
-			sigTokens = append(sigTokens, "D:"+th.ID)
 		}
+		// The signature keys on the unresolved-thread set + review decision only,
+		// not on who commented last or comment ids. So the agent's own replies
+		// never change it — the retry budget caps honestly at MaxRetries —
+		// while a new reviewer thread does change it (a fresh budget).
+		sigTokens = append(sigTokens, th.ID)
 	}
 	feedbackSig := reviewFeedbackSig(n.ReviewDecision, sigTokens)
 

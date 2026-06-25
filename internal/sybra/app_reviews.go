@@ -54,6 +54,18 @@ type ReviewHandler struct {
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
 	resolveThread func(threadID string) error
+	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
+	// agent posts as), used to tell the agent's own thread replies from a human
+	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
+	viewerLoginFn func() string
+}
+
+// agentLogin returns the GitHub login the fix agent posts as.
+func (r *ReviewHandler) agentLogin() string {
+	if r.viewerLoginFn != nil {
+		return r.viewerLoginFn()
+	}
+	return github.ViewerLogin()
 }
 
 func newReviewHandler(

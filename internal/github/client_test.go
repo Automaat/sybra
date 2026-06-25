@@ -288,7 +288,7 @@ func TestConvertPRs_unresolvedThreads(t *testing.T) {
 				n.IsResolved = resolved
 				// Each unresolved thread's last comment is a reviewer's, so it is
 				// also actionable (the ball is in the agent's court).
-				n.Comments.Nodes = []commentNode{{ID: "c", Author: authorLogin("reviewer")}}
+				n.Comments.Nodes = []commentNode{{Author: authorLogin("reviewer")}}
 				node.ReviewThreads.Nodes = append(node.ReviewThreads.Nodes, n)
 			}
 
@@ -314,7 +314,6 @@ type threadNode = struct {
 	IsResolved bool   `json:"isResolved"`
 	Comments   struct {
 		Nodes []struct {
-			ID     string `json:"id"`
 			Author struct {
 				Login string `json:"login"`
 			} `json:"author"`
@@ -323,7 +322,6 @@ type threadNode = struct {
 }
 
 type commentNode = struct {
-	ID     string `json:"id"`
 	Author struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -337,50 +335,54 @@ func authorLogin(login string) struct {
 	}{Login: login}
 }
 
-// TestConvertPRs_actionableAndSig locks the edge-trigger: a thread the agent
-// has replied to is unresolved but not actionable, and the feedback signature
-// is stable across the agent's own replies yet changes on new reviewer comments.
+// TestConvertPRs_actionableAndSig locks two properties: (1) a thread the agent
+// replied to is unresolved but NOT actionable (so pr-fix stops firing), and
+// (2) the feedback signature is stable across the agent's own replies but
+// changes when the reviewer opens a new thread (so the retry budget caps on
+// stale feedback yet resets on genuinely new feedback).
 func TestConvertPRs_actionableAndSig(t *testing.T) {
 	t.Parallel()
-	mk := func(lastAuthor, lastID string) gqlPR {
+	// mk builds a PR whose unresolved threads each have the given last-comment
+	// author. Thread IDs are positional ("T0", "T1", ...).
+	mk := func(lastAuthors ...string) PullRequest {
 		var n gqlPR
 		n.Number = 1
 		n.Author.Login = "me"
 		n.Author.Type = "User"
 		n.Repository.NameWithOwner = "o/r"
-		var th threadNode
-		th.ID = "T1"
-		th.Comments.Nodes = []commentNode{{ID: lastID, Author: authorLogin(lastAuthor)}}
-		n.ReviewThreads.Nodes = append(n.ReviewThreads.Nodes, th)
-		return n
+		for i, la := range lastAuthors {
+			var th threadNode
+			th.ID = "T" + string(rune('0'+i))
+			th.Comments.Nodes = []commentNode{{Author: authorLogin(la)}}
+			n.ReviewThreads.Nodes = append(n.ReviewThreads.Nodes, th)
+		}
+		return convertPRs([]gqlPR{n}, "me")[0]
 	}
+
+	const copilot = "copilot-pull-request-reviewer[bot]"
 
 	// Reviewer had the last word → actionable, non-empty signature.
-	rev := convertPRs([]gqlPR{mk("copilot-pull-request-reviewer[bot]", "c1")}, "me")[0]
-	if rev.ActionableCount != 1 || rev.UnresolvedCount != 1 {
-		t.Fatalf("reviewer-last: actionable=%d unresolved=%d, want 1/1", rev.ActionableCount, rev.UnresolvedCount)
-	}
-	if rev.FeedbackSig == "" {
-		t.Fatal("reviewer-last: want non-empty FeedbackSig")
+	rev := mk(copilot)
+	if rev.ActionableCount != 1 || rev.UnresolvedCount != 1 || rev.FeedbackSig == "" {
+		t.Fatalf("reviewer-last: actionable=%d unresolved=%d sig=%q, want 1/1/non-empty",
+			rev.ActionableCount, rev.UnresolvedCount, rev.FeedbackSig)
 	}
 
-	// Agent (viewer "me") replied last → unresolved but NOT actionable.
-	addr := convertPRs([]gqlPR{mk("me", "c2")}, "me")[0]
+	// Agent (viewer "me") replied last → unresolved but NOT actionable, and the
+	// signature is unchanged (same thread set) — the agent's reply must not reset
+	// the retry budget.
+	addr := mk("me")
 	if addr.ActionableCount != 0 || addr.UnresolvedCount != 1 {
 		t.Fatalf("agent-last: actionable=%d unresolved=%d, want 0/1", addr.ActionableCount, addr.UnresolvedCount)
 	}
-
-	// The addressed signature must not change with the agent's own comment id —
-	// otherwise each reply would reset the retry budget and re-loop.
-	addr2 := convertPRs([]gqlPR{mk("me", "c2-different-id")}, "me")[0]
-	if addr.FeedbackSig != addr2.FeedbackSig {
-		t.Error("addressed signature changed with the agent's own comment id")
+	if addr.FeedbackSig != rev.FeedbackSig {
+		t.Error("signature changed when the agent replied (same thread set) — would reset the budget")
 	}
 
-	// A new reviewer comment id DOES change the signature (budget should reset).
-	rev2 := convertPRs([]gqlPR{mk("copilot-pull-request-reviewer[bot]", "c9")}, "me")[0]
-	if rev.FeedbackSig == rev2.FeedbackSig {
-		t.Error("new reviewer comment did not change the signature")
+	// A new reviewer thread changes the thread set → new signature → fresh budget.
+	rev2 := mk(copilot, copilot)
+	if rev2.FeedbackSig == rev.FeedbackSig {
+		t.Error("new reviewer thread did not change the signature")
 	}
 }
 
