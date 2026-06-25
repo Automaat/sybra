@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -267,6 +268,9 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 }
 
 // PRCompare summarizes the difference between two commits (base...head).
+// Commits is how many commits head is ahead of base; Additions/Deletions sum the
+// line churn. Note: GitHub caps the compare files list at 300, so on very large
+// edits the line counts undercount (Commits stays accurate).
 type PRCompare struct {
 	Commits   int `json:"total_commits"`
 	Additions int `json:"-"`
@@ -275,15 +279,16 @@ type PRCompare struct {
 
 // FetchPRCompare returns how far head is ahead of base (commits + line churn).
 // Used at landing to measure human edits made after the agent's last push.
-func FetchPRCompare(repo, base, head string) (PRCompare, error) {
-	return fetchPRCompareWith(defaultExecer, repo, base, head)
-}
-
-func fetchPRCompareWith(e execer, repo, base, head string) (PRCompare, error) {
-	out, err := e.run("api", fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head))
+// Context-bounded so it can't stall the poll loop.
+func FetchPRCompare(ctx context.Context, repo, base, head string) (PRCompare, error) {
+	out, err := ghRunCtx(ctx, "api", fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head))
 	if err != nil {
 		return PRCompare{}, fmt.Errorf("gh api compare %s...%s: %s: %w", base, head, strings.TrimSpace(string(out)), err)
 	}
+	return parsePRCompare(out)
+}
+
+func parsePRCompare(out []byte) (PRCompare, error) {
 	var raw struct {
 		TotalCommits int `json:"total_commits"`
 		Files        []struct {
@@ -300,6 +305,34 @@ func fetchPRCompareWith(e execer, repo, base, head string) (PRCompare, error) {
 		c.Deletions += f.Deletions
 	}
 	return c, nil
+}
+
+// FetchPRStatsContext is a context-bounded FetchPRStats for the poll path.
+func FetchPRStatsContext(ctx context.Context, repo string, number int) (PRStats, error) {
+	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "additions,deletions,changedFiles")
+	if err != nil {
+		return PRStats{}, fmt.Errorf("gh pr view %d stats: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var s PRStats
+	if err := json.Unmarshal(out, &s); err != nil {
+		return PRStats{}, fmt.Errorf("parse pr stats: %w", err)
+	}
+	return s, nil
+}
+
+// FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA for the poll path.
+func FetchPRHeadSHAContext(ctx context.Context, repo string, number int) (string, error) {
+	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "headRefOid")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var raw struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return "", fmt.Errorf("parse pr head: %w", err)
+	}
+	return raw.HeadRefOid, nil
 }
 
 // FetchPRDiff returns the unified diff for a PR. Used by the evaluation

@@ -1,14 +1,10 @@
 package github
 
-import (
-	"fmt"
-	"testing"
-)
+import "testing"
 
-func TestFetchPRCompare(t *testing.T) {
+func TestParsePRCompare(t *testing.T) {
 	resp := `{"total_commits":2,"files":[{"additions":10,"deletions":3},{"additions":5,"deletions":1}]}`
-	fe := &fakeExecer{output: []byte(resp)}
-	got, err := fetchPRCompareWith(fe, "o/r", "base", "head")
+	got, err := parsePRCompare([]byte(resp))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -20,9 +16,18 @@ func TestFetchPRCompare(t *testing.T) {
 	}
 }
 
-func TestFetchPRCompare_Error(t *testing.T) {
-	fe := &fakeExecer{output: []byte("not found"), err: fmt.Errorf("exit 1")}
-	if _, err := fetchPRCompareWith(fe, "o/r", "base", "head"); err == nil {
-		t.Fatal("want error")
+func TestParsePRCompare_NoEdits(t *testing.T) {
+	got, err := parsePRCompare([]byte(`{"total_commits":0,"files":[]}`))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got.Commits != 0 || got.Additions != 0 {
+		t.Errorf("want zero churn, got %+v", got)
+	}
+}
+
+func TestParsePRCompare_BadJSON(t *testing.T) {
+	if _, err := parsePRCompare([]byte("not json")); err == nil {
+		t.Fatal("want parse error")
 	}
 }

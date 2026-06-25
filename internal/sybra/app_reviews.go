@@ -200,10 +200,12 @@ func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, 
 			r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
 			continue
 		}
-		outcome, landData := r.computeLanding(c.TaskID, c.PRNumber, c.State)
+		// Flip to done immediately with the base outcome — the status transition
+		// must never wait on GitHub enrichment.
+		base := classifyLandingOutcome(c.State)
 		if _, err := r.tasks.Update(c.TaskID, task.Update{
 			Status:  task.Ptr(task.StatusDone),
-			Outcome: task.Ptr(outcome),
+			Outcome: task.Ptr(base),
 		}); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
 			continue
@@ -213,6 +215,13 @@ func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, 
 			eventType = audit.EventPRClosed
 		}
 		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
+		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR.
+		outcome, landData := r.computeLanding(c.TaskID, c.PRNumber, c.State, base)
+		if outcome != base {
+			if _, err := r.tasks.Update(c.TaskID, task.Update{Outcome: task.Ptr(outcome)}); err != nil {
+				r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
+			}
+		}
 		r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
 		r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
 	}
@@ -233,10 +242,11 @@ func classifyLandingOutcome(state string) string {
 const landingEnrichTimeout = 20 * time.Second
 
 // computeLanding builds the refined outcome and the task.landed data for a closed
-// PR. Local timing (created/work → land) is always recorded; for a merge it adds
-// PR size and human-edit signals via GitHub, time-bounded so the poll can't hang.
-func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state string) (outcome string, data map[string]any) {
-	outcome = classifyLandingOutcome(state)
+// PR, starting from the base outcome already recorded. Local timing (created/work
+// → land) and the agent's last pushed SHA are always added; for a merge it adds
+// PR size and human-edit signals via GitHub, bounded so the poll can't hang.
+func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state, base string) (outcome string, data map[string]any) {
+	outcome = base
 	data = map[string]any{"pr": prNumber, "state": state}
 	t, err := r.tasks.Get(taskID)
 	if err != nil {
@@ -249,11 +259,14 @@ func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state string
 	if started := earliestRunStart(t.AgentRuns); !started.IsZero() {
 		data["work_to_land_h"] = time.Since(started).Hours()
 	}
+	agentSHA := lastAgentHeadSHA(t.AgentRuns)
+	if agentSHA != "" {
+		data["agent_head_sha"] = agentSHA
+	}
 	if state != "CLOSED" && t.ProjectID != "" && prNumber > 0 {
-		if enr, ok := r.enrichLanding(t.ProjectID, prNumber, lastAgentHeadSHA(t.AgentRuns)); ok {
-			outcome = enr.outcome
-			maps.Copy(data, enr.data)
-		}
+		enr := r.enrichLanding(t.ProjectID, prNumber, agentSHA)
+		outcome = enr.outcome
+		maps.Copy(data, enr.data)
 	}
 	data["outcome"] = outcome
 	return outcome, data
@@ -264,42 +277,40 @@ type landingEnrich struct {
 	data    map[string]any
 }
 
-// enrichLanding fetches PR size and detects human edits after the agent's last
-// push (merged_with_edits + edit distance). Runs in a goroutine bounded by
-// landingEnrichTimeout; the goroutine only touches its local result, so a
-// timed-out call leaves no shared state to race on.
-func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA string) (landingEnrich, bool) {
-	resCh := make(chan landingEnrich, 1)
-	go func() {
-		enr := landingEnrich{outcome: "merged", data: map[string]any{}}
-		if s, err := github.FetchPRStats(repo, prNumber); err == nil {
-			enr.data["additions"] = s.Additions
-			enr.data["deletions"] = s.Deletions
-			enr.data["changed_files"] = s.ChangedFiles
-		}
-		if head, err := github.FetchPRHeadSHA(repo, prNumber); err == nil {
-			enr.outcome = landingOutcome("MERGED", agentSHA, head)
-			if enr.outcome == "merged_with_edits" {
-				if cmp, err := github.FetchPRCompare(repo, agentSHA, head); err == nil {
-					enr.data["human_edit_lines"] = cmp.Additions + cmp.Deletions
-					enr.data["human_edit_commits"] = cmp.Commits
-				}
-			}
-		}
-		resCh <- enr
-	}()
-	select {
-	case enr := <-resCh:
-		return enr, true
-	case <-time.After(landingEnrichTimeout):
-		r.logger.Warn("pr-monitor.landing-enrich-timeout", "repo", repo, "pr", prNumber)
-		return landingEnrich{}, false
+// enrichLanding fetches PR size and detects human edits made after the agent's
+// last push. All gh calls run under a single context deadline so a stalled call
+// is killed (releasing the global gh gate) rather than blocking the poll. A
+// merge is only classified merged_with_edits when the compare confirms the head
+// is genuinely ahead of the agent's SHA — guarding against unpushed-local
+// divergence or a moved base.
+func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA string) landingEnrich {
+	ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
+	defer cancel()
+
+	enr := landingEnrich{outcome: "merged", data: map[string]any{}}
+	if s, err := github.FetchPRStatsContext(ctx, repo, prNumber); err == nil {
+		enr.data["additions"] = s.Additions
+		enr.data["deletions"] = s.Deletions
+		enr.data["changed_files"] = s.ChangedFiles
 	}
+	head, err := github.FetchPRHeadSHAContext(ctx, repo, prNumber)
+	if err != nil {
+		return enr // couldn't read the merged head; keep base outcome + size
+	}
+	if landingOutcome("MERGED", agentSHA, head) != "merged_with_edits" {
+		return enr
+	}
+	if cmp, err := github.FetchPRCompare(ctx, repo, agentSHA, head); err == nil && cmp.Commits > 0 {
+		enr.outcome = "merged_with_edits"
+		enr.data["human_edit_lines"] = cmp.Additions + cmp.Deletions
+		enr.data["human_edit_commits"] = cmp.Commits
+	}
+	return enr
 }
 
-// landingOutcome refines the outcome once the agent's last pushed SHA and the
-// merged PR head are known: a merge whose head moved past the agent's last push
-// means a human changed it afterward (merged_with_edits).
+// landingOutcome is the cheap pre-check: a merge whose head moved past the
+// agent's last push *may* have human edits (confirmed by enrichLanding's
+// compare). CLOSED is terminal; an unknown/missing SHA stays "merged".
 func landingOutcome(state, agentSHA, mergedHeadSHA string) string {
 	if state == "CLOSED" {
 		return "closed"

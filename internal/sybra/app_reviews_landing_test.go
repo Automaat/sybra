@@ -86,7 +86,7 @@ func TestComputeLanding_LocalOnly(t *testing.T) {
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		tasks:         tasks,
 	}
-	outcome, data := r.computeLanding(created.ID, 42, "MERGED")
+	outcome, data := r.computeLanding(created.ID, 42, "MERGED", "merged")
 
 	if outcome != "merged" {
 		t.Errorf("outcome = %q, want merged", outcome)
@@ -99,6 +99,9 @@ func TestComputeLanding_LocalOnly(t *testing.T) {
 	}
 	if _, ok := data["work_to_land_h"]; ok {
 		t.Errorf("unexpected work_to_land_h for task with no agent runs: %v", data)
+	}
+	if _, ok := data["agent_head_sha"]; ok {
+		t.Errorf("unexpected agent_head_sha for task with no captured SHA: %v", data)
 	}
 	if _, ok := data["additions"]; ok {
 		t.Errorf("unexpected PR-size enrichment for project-less task: %v", data)
