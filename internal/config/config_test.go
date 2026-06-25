@@ -342,6 +342,9 @@ func TestPathsUnderHomeDir(t *testing.T) {
 	if got := defaultTasksDir(); got != filepath.Join(dir, "tasks") {
 		t.Errorf("defaultTasksDir() = %q, want under %q", got, dir)
 	}
+	if got := ArtifactsDir(); got != filepath.Join(dir, "artifacts") {
+		t.Errorf("ArtifactsDir() = %q, want under %q", got, dir)
+	}
 }
 
 func TestDefaultLogRetentionDays(t *testing.T) {

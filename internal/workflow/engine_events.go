@@ -172,6 +172,18 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		e.importSidecarIfConfigured(taskID, spawnedStep, t)
 	}
 
+	if e.recorder != nil {
+		ev := map[string]any{
+			"step":     spawnedStep,
+			"status":   status,
+			"agentId":  c.AgentID,
+			"provider": c.Provider,
+		}
+		if recErr := e.recorder.RecordTrace(taskID, ev); recErr != nil {
+			e.logger.Warn("artifact.record.failed", "kind", "trace", "task_id", taskID, "step", spawnedStep, "err", recErr)
+		}
+	}
+
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID:   spawnedStep,
 		Status:   status,

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -23,7 +24,33 @@ var (
 	_ workflow.PRLinker          = (*prLinkerAdapter)(nil)
 	_ workflow.PRReviewRequester = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter    = (*worktreeGetterAdapter)(nil)
+	_ workflow.ArtifactRecorder  = (*artifactRecorderAdapter)(nil)
 )
+
+// artifactRecorderAdapter bridges artifact.Store → workflow.ArtifactRecorder.
+type artifactRecorderAdapter struct {
+	store *artifact.Store
+}
+
+func (a *artifactRecorderAdapter) RecordTrace(taskID string, ev any) error {
+	return a.store.Append(taskID, artifact.KindTrace, ev)
+}
+
+func (a *artifactRecorderAdapter) PutPlanSnapshot(taskID, role, stepID, sourcePath, content string) error {
+	name := ""
+	if stepID != "" {
+		name = "plan-" + stepID + ".md"
+	}
+	_, err := a.store.Put(taskID, artifact.Artifact{
+		Kind:         artifact.KindPlan,
+		Name:         name,
+		ProducerRole: role,
+		StepID:       stepID,
+		SourcePath:   sourcePath,
+		Content:      []byte(content),
+	})
+	return err
+}
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
 type taskAdapter struct {
