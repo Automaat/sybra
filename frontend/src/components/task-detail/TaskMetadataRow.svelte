@@ -1,10 +1,12 @@
 <script lang="ts">
   import { CircleDot, Copy } from '@lucide/svelte'
+  import { onMount } from 'svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { openLink } from '$lib/browser.svelte.js'
   import { formatDateTime } from '../../lib/dates.js'
+  import { fallbackReasoningEffortOptions, loadReasoningEffortOptions } from '../../lib/codex-reasoning.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
   import TaskDueDateEditor from './TaskDueDateEditor.svelte'
@@ -22,6 +24,13 @@
 
   let tagEditor = $state<TaskTagEditor | null>(null)
   let dueDateEditor = $state<TaskDueDateEditor | null>(null)
+  let reasoningEffortOptions = $state(fallbackReasoningEffortOptions)
+
+  onMount(() => {
+    loadReasoningEffortOptions().then((options) => {
+      reasoningEffortOptions = options
+    })
+  })
 
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
@@ -178,10 +187,9 @@
       title="Codex model_reasoning_effort. Empty = model default. Ignored for claude agents."
     >
       <option value="">default</option>
-      <option value="low">low</option>
-      <option value="medium">medium</option>
-      <option value="high">high</option>
-      <option value="xhigh">xhigh</option>
+      {#each reasoningEffortOptions as option}
+        <option value={option.value}>{option.label}</option>
+      {/each}
     </select>
   </div>
 
