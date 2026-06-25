@@ -52,8 +52,10 @@ tasks that emitted a `task.landed` event — i.e. tasks that landed recently.
 - If `overall.tasksLanded` is small (say < 5), treat autonomy / lead-time /
   cost-per-landed as **low-confidence** and say so. They fill in as more tasks
   land; don't over-read a 0% or a single-task ratio.
-- `failureRate`, `totalCostUsd`, and the `byProvider`/`byRole` breakdowns come
-  from the full run history and are trustworthy even early.
+- `failureRate`, `totalCostUsd`, and the `byProvider`/`byRole` breakdowns are
+  computed from all runs **within the configured window** (`window_days`), not
+  just landed tasks — so they're trustworthy even when few tasks have landed,
+  but they reflect the window, not all-time.
 
 ## Step 3: Interpret the scorecard against the north star
 
