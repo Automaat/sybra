@@ -72,6 +72,47 @@ func TestParseCodexLoginStatus(t *testing.T) {
 	}
 }
 
+func TestCodexVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		name string
+		have string
+		want bool
+	}{
+		{"equal", "0.142.2", true},
+		{"newer_patch", "0.142.3", true},
+		{"newer_minor", "0.143.0", true},
+		{"newer_major", "1.0.0", true},
+		{"older_patch", "0.142.1", false},
+		{"older_minor", "0.141.9", false},
+		{"shorter_equal_prefix", "0.142", false},
+		{"longer_equal_prefix", "0.142.2.1", true},
+		{"suffix_tolerated", "0.142.2-beta", true},
+		{"unparseable_fails_open", "", true},
+		{"garbage_fails_open", "vNext", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexVersionAtLeast(tc.have, minCodexVersion); got != tc.want {
+				t.Errorf("codexVersionAtLeast(%q, %q): got %v want %v", tc.have, minCodexVersion, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexVersionRegexExtracts(t *testing.T) {
+	cases := map[string]string{
+		"codex-cli 0.142.2": "0.142.2",
+		"0.142.2\n":         "0.142.2",
+		"codex 1.0":         "1.0",
+		"no version here":   "",
+	}
+	for in, want := range cases {
+		if got := codexVersionRe.FindString(in); got != want {
+			t.Errorf("FindString(%q): got %q want %q", in, got, want)
+		}
+	}
+}
+
 func TestClassifyClaudeError(t *testing.T) {
 	cases := []struct {
 		name string
