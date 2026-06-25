@@ -371,6 +371,14 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		}
 		ev.Timestamp = time.Now().UTC()
 		a.AppendOutput(ev)
+		// Restore per-run effort the same way the live stream loop accumulates
+		// it (processHeadlessLine + checkTurnsGuardrail). Without this a run
+		// that crosses an app restart — or completes while the app is down and
+		// is finalized on reattach — records zero turns/tool calls.
+		a.AddToolCalls(ev.ToolCalls)
+		if ev.Type == "assistant" {
+			a.IncTurnCount()
+		}
 		if ev.Type == "result" {
 			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
 			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)

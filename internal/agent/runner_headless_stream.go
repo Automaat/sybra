@@ -17,6 +17,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)
 			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
+			ev.ToolCalls = len(e.Message.ToolUses)
 		}
 	case "user":
 		if e.Message != nil {
@@ -81,9 +82,14 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.Content = e.Message.Text
 		}
 	case "tool_use":
+		// Codex only emits a tool_use event for command_execution (Bash); file
+		// edits, MCP, and web search arrive as assistant text (ToolCalls=0). So
+		// ToolCalls undercounts non-Bash Codex tools — a follow-up should map the
+		// full Codex item taxonomy before comparing tool efficiency cross-provider.
 		if e.Message != nil && len(e.Message.ToolUses) > 0 {
 			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
 			ev.Content = cmd
+			ev.ToolCalls = len(e.Message.ToolUses)
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {

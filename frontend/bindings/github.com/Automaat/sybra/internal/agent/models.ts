@@ -38,6 +38,13 @@ export class Agent {
     "turnCount"?: number;
 
     /**
+     * ToolCalls counts tool_use blocks observed across the run. Persisted to
+     * stats.RunRecord at completion so efficiency (tools per turn, tools per
+     * landed PR) can be measured. Tracked in-memory during the run.
+     */
+    "toolCalls"?: number;
+
+    /**
      * MaxTurns is the per-agent turn limit override; zero means use global guardrail.
      */
     "maxTurns"?: number;
@@ -95,10 +102,10 @@ export class Agent {
      * Creates a new Agent instance from a string or object.
      */
     static createFrom($$source: any = {}): Agent {
-        const $$createField24_0 = $$createType0;
+        const $$createField25_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField24_0($$parsedSource["pluginErrors"]);
+            $$parsedSource["pluginErrors"] = $$createField25_0($$parsedSource["pluginErrors"]);
         }
         return new Agent($$parsedSource as Partial<Agent>);
     }
@@ -235,6 +242,13 @@ export class StreamEvent {
      * PluginErrors carries plugin load failures surfaced by the init event.
      */
     "plugin_errors"?: string[];
+
+    /**
+     * ToolCalls is the number of tool_use blocks in this event: all tool uses
+     * in a Claude assistant turn, or a single Codex tool_use. The runner
+     * accumulates these into Agent.ToolCalls.
+     */
+    "tool_calls"?: number;
 
     /** Creates a new StreamEvent instance. */
     constructor($$source: Partial<StreamEvent> = {}) {

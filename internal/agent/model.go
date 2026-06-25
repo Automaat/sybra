@@ -55,6 +55,10 @@ type Agent struct {
 	Prompt                   string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
+	// ToolCalls counts tool_use blocks observed across the run. Persisted to
+	// stats.RunRecord at completion so efficiency (tools per turn, tools per
+	// landed PR) can be measured. Tracked in-memory during the run.
+	ToolCalls int `json:"toolCalls,omitempty"`
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// PluginErrors holds plugin load failures from the most recent init event.
@@ -321,6 +325,30 @@ func (a *Agent) IncTurnCount() int {
 	n := a.TurnCount
 	a.mu.Unlock()
 	return n
+}
+
+// GetTurnCount returns the current turn count.
+func (a *Agent) GetTurnCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.TurnCount
+}
+
+// AddToolCalls increments the tool-call counter by n. No-op for n <= 0.
+func (a *Agent) AddToolCalls(n int) {
+	if n <= 0 {
+		return
+	}
+	a.mu.Lock()
+	a.ToolCalls += n
+	a.mu.Unlock()
+}
+
+// GetToolCalls returns the number of tool_use blocks observed so far.
+func (a *Agent) GetToolCalls() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ToolCalls
 }
 
 // SetEscalationReason updates the escalation reason string.
@@ -593,6 +621,10 @@ type StreamEvent struct {
 	PlanSteps []PlanStep `json:"plan_steps,omitempty"`
 	// PluginErrors carries plugin load failures surfaced by the init event.
 	PluginErrors []string `json:"plugin_errors,omitempty"`
+	// ToolCalls is the number of tool_use blocks in this event: all tool uses
+	// in a Claude assistant turn, or a single Codex tool_use. The runner
+	// accumulates these into Agent.ToolCalls.
+	ToolCalls int `json:"tool_calls,omitempty"`
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool

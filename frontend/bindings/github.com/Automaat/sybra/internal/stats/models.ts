@@ -64,6 +64,14 @@ export class RunRecord {
     "cacheCreationInputTokens"?: number;
     "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
+
+    /**
+     * TurnCount and ToolCalls capture per-run effort so the evaluation
+     * scorecard can measure convergence (turns per landed PR) and tool
+     * efficiency. Zero for runs recorded before these were tracked.
+     */
+    "turnCount"?: number;
+    "toolCalls"?: number;
     "outcome": string;
     "timestamp": time$0.Time;
 

@@ -39,6 +39,14 @@ const (
 	EventHumanReviewVerdict       = "human_review.verdict"
 	EventHumanReviewIssue         = "human_review.issue_filed"
 	EventHumanReviewSkipped       = "human_review.skipped"
+
+	// EventTaskLanded records a task's terminal outcome (merged/closed) with
+	// queue-inclusive and work-based timing for the evaluation scorecard.
+	// Emitted once when a task auto-advances to done on its PR closing.
+	EventTaskLanded = "task.landed"
+	// EventPRReverted records that a previously-merged PR was reverted on the
+	// default branch — a change-failure signal. Reserved for revert detection.
+	EventPRReverted = "pr.reverted"
 )
 
 type Event struct {
