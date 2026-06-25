@@ -186,11 +186,14 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 		v.Dimensions[d.Key] = ds
 		sum += float64(ds.Score)
 	}
-	// Recompute Overall only when out of range or omitted (<=0). A valid in-range
+	// Recompute Overall only when out of range, or when it is the zero default
+	// while the mean is non-zero (i.e. the model omitted it). A valid in-range
 	// Overall is preserved even when it deviates from the mean — the prompt lets a
-	// blocker dimension pull Overall below the average, and that must survive.
-	if v.Overall <= 0 || v.Overall > 10 {
-		v.Overall = sum / float64(len(Rubric))
+	// blocker dimension pull Overall below the average, and a genuine 0 (every
+	// dimension scored 0) must survive too.
+	mean := sum / float64(len(Rubric))
+	if v.Overall < 0 || v.Overall > 10 || (v.Overall == 0 && mean != 0) {
+		v.Overall = mean
 	}
 	return v, nil
 }

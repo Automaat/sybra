@@ -114,6 +114,30 @@ func TestParseQualityVerdict_PreservesBlockerOverall(t *testing.T) {
 	}
 }
 
+func TestParseQualityVerdict_OverallZero(t *testing.T) {
+	allZero := `{"dimensions":{"correctness":{"score":0},"code_quality":{"score":0},` +
+		`"scope_discipline":{"score":0},"test_coverage":{"score":0},"review_worthiness":{"score":0}},` +
+		`"overall":0,"summary":"all bad"}`
+	v, err := parseQualityVerdict(mustEnvelope(t, allZero))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if v.Overall != 0 {
+		t.Errorf("genuine overall=0 (mean 0) = %v, want 0 preserved", v.Overall)
+	}
+
+	// overall omitted (zero default) but dimensions are high → recompute to mean.
+	omitted := `{"dimensions":{"correctness":{"score":8},"code_quality":{"score":8},` +
+		`"scope_discipline":{"score":8},"test_coverage":{"score":8},"review_worthiness":{"score":8}}}`
+	v2, err := parseQualityVerdict(mustEnvelope(t, omitted))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if v2.Overall != 8 {
+		t.Errorf("omitted overall = %v, want 8 (recomputed mean)", v2.Overall)
+	}
+}
+
 func TestParseQualityVerdict_Errors(t *testing.T) {
 	cases := map[string][]byte{
 		"bad envelope":       []byte("not json"),
