@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -328,12 +329,33 @@ func prClosedEligible(t *task.Task) bool {
 	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
 }
 
+// orphanStrandReasons are the status_reason fragments the implement / verify /
+// evaluate workflow steps write when they park a task without linking a PR.
+// Adoption is gated to these (FAIL CLOSED): a task parked for any other reason
+// — notably a deliberate watchdog stop ("watchdog: …") or a dwell escalation —
+// must never be auto-resurrected, even if a PR happens to match its branch.
+// Keep in sync with internal/workflow/engine_steps_verify.go (no-commits
+// verdicts) and engine_steps_link.go (evaluate).
+var orphanStrandReasons = []string{
+	"no commits",               // verify_commits: empty branch / agent crashed before commit
+	"commits pushed but no PR", // evaluate: commits exist but the PR was never linked
+}
+
+func hasOrphanStrandReason(reason string) bool {
+	for _, frag := range orphanStrandReasons {
+		if strings.Contains(reason, frag) {
+			return true
+		}
+	}
+	return false
+}
+
 // orphanPRAdoptionEligible reports whether a task is a candidate for orphan-PR
-// adoption: parked in human-required with a branch but no linked PR. That is
-// the signature of a workflow that exited (e.g. a premature verify_commits
-// verdict, or any crash) before a late-finishing agent opened the PR — the PR
-// exists on GitHub but the task never recorded its number, so the monitor is
-// blind to it. Chat tasks and inbound review tasks are never own-PR tasks.
+// adoption: parked in human-required with a branch but no linked PR, *and* with
+// a status_reason that marks it as stranded by the implement/verify/evaluate
+// path before a late-finishing agent opened the PR. The reason gate is what
+// keeps adoption from resurrecting a task a human or the watchdog deliberately
+// stopped. Chat tasks and inbound review tasks are never own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
 	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
 		return false
@@ -341,17 +363,21 @@ func orphanPRAdoptionEligible(t *task.Task) bool {
 	return t.Status == task.StatusHumanRequired &&
 		t.PRNumber == 0 &&
 		t.Branch != "" &&
-		t.ProjectID != ""
+		t.ProjectID != "" &&
+		hasOrphanStrandReason(t.StatusReason)
 }
 
 // adoptOrphanPRs re-links tasks stranded in human-required without a PR number
-// to a matching open PR discovered by head branch, then flips them to in-review
-// so the monitor's normal pr-fix/auto-merge path resumes. Re-activation is
-// non-destructive: a pet PR still passes through the full auto-merge gate
-// (Copilot review + green CI), and a work PR is merged by a human. A branch
-// matching more than one open PR is left untouched (ambiguous). Matched entries
-// of `tasks` are mutated in place so the caller's matcher assembly observes the
-// new state in the same poll.
+// to a matching open PR discovered by head branch *within the task's own
+// project*, then flips them to in-review so the monitor's normal pr-fix/
+// auto-merge path resumes. Re-activation is non-destructive: a pet PR still
+// passes through the full auto-merge gate (Copilot review + green CI), and a
+// work PR is merged by a human. The repo guard (prs[j].Repository ==
+// t.ProjectID) is essential: monitoredPRs spans every repo the user authors PRs
+// in, so a same-named branch in another repo must not be linked. A branch
+// matching more than one open PR in the project is left untouched (ambiguous).
+// Matched entries of `tasks` are mutated in place so the caller's matcher
+// assembly observes the new state in the same poll.
 func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullRequest) {
 	for i := range tasks {
 		t := &tasks[i]
@@ -361,7 +387,7 @@ func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullReque
 		var match *github.PullRequest
 		ambiguous := false
 		for j := range prs {
-			if prs[j].HeadRefName != t.Branch {
+			if prs[j].HeadRefName != t.Branch || prs[j].Repository != t.ProjectID {
 				continue
 			}
 			if match != nil {

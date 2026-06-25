@@ -332,17 +332,35 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		Branch:       task.Ptr("feat/stranded"),
 		ProjectID:    task.Ptr("o/r"),
 	})
-	// Ambiguous: two open PRs share the branch → must NOT adopt.
+	// Ambiguous: two open PRs in the project share the branch → must NOT adopt.
 	ambiguous := mk("ambiguous", task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		Branch:    task.Ptr("feat/ambig"),
-		ProjectID: task.Ptr("o/r"),
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("no commits pushed to branch"),
+		Branch:       task.Ptr("feat/ambig"),
+		ProjectID:    task.Ptr("o/r"),
 	})
 	// No matching PR → must NOT adopt.
 	noMatch := mk("no-match", task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		Branch:    task.Ptr("feat/orphaned-forever"),
-		ProjectID: task.Ptr("o/r"),
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("no commits pushed to branch"),
+		Branch:       task.Ptr("feat/orphaned-forever"),
+		ProjectID:    task.Ptr("o/r"),
+	})
+	// Same branch name but the only matching PR is in a DIFFERENT repo → the
+	// repo guard must reject it (monitoredPRs spans every repo the user owns).
+	wrongRepo := mk("wrong-repo", task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("no commits pushed to branch"),
+		Branch:       task.Ptr("feat/cross"),
+		ProjectID:    task.Ptr("o/r"),
+	})
+	// Deliberately stopped by the watchdog (not a link-failure strand) → the
+	// reason gate must keep adoption from resurrecting it.
+	watchdog := mk("watchdog", task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("watchdog: runaway loop"),
+		Branch:       task.Ptr("feat/wd"),
+		ProjectID:    task.Ptr("o/r"),
 	})
 	// Already in-review with a PR → not eligible, must be left untouched.
 	healthy := mk("healthy", task.Update{
@@ -365,6 +383,8 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		{Number: 1051, HeadRefName: "feat/stranded", Repository: "o/r"},
 		{Number: 7, HeadRefName: "feat/ambig", Repository: "o/r"},
 		{Number: 8, HeadRefName: "feat/ambig", Repository: "o/r"},
+		{Number: 9, HeadRefName: "feat/cross", Repository: "o/other-repo"}, // wrong repo
+		{Number: 10, HeadRefName: "feat/wd", Repository: "o/r"},            // watchdog task's branch
 		{Number: 42, HeadRefName: "feat/healthy", Repository: "o/r"},
 	}
 
@@ -409,6 +429,20 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		}
 	})
 
+	t.Run("cross-repo branch collision rejected", func(t *testing.T) {
+		got, _ := tasks.Get(wrongRepo)
+		if got.Status != task.StatusHumanRequired || got.PRNumber != 0 {
+			t.Errorf("cross-repo PR adopted: status=%q pr=%d, want human-required/0", got.Status, got.PRNumber)
+		}
+	})
+
+	t.Run("watchdog-stopped task not resurrected", func(t *testing.T) {
+		got, _ := tasks.Get(watchdog)
+		if got.Status != task.StatusHumanRequired || got.PRNumber != 0 {
+			t.Errorf("watchdog-stopped task adopted: status=%q pr=%d, want human-required/0", got.Status, got.PRNumber)
+		}
+	})
+
 	t.Run("ineligible task untouched", func(t *testing.T) {
 		got, _ := tasks.Get(healthy)
 		if got.Status != task.StatusInReview || got.PRNumber != 42 {
@@ -418,18 +452,22 @@ func TestAdoptOrphanPRs(t *testing.T) {
 }
 
 func TestOrphanPRAdoptionEligible(t *testing.T) {
+	const orphanReason = "no commits pushed to branch"
 	cases := []struct {
 		name string
 		t    task.Task
 		want bool
 	}{
-		{"stranded orphan", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r"}, true},
-		{"has pr number", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
-		{"no branch", task.Task{Status: task.StatusHumanRequired, ProjectID: "o/r"}, false},
-		{"no project", task.Task{Status: task.StatusHumanRequired, Branch: "b"}, false},
-		{"not human-required", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r"}, false},
-		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
-		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
+		{"stranded orphan (no-commits)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, true},
+		{"evaluate orphan (no PR)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "commits pushed but no PR created"}, true},
+		{"has pr number", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", PRNumber: 5, StatusReason: orphanReason}, false},
+		{"no branch", task.Task{Status: task.StatusHumanRequired, ProjectID: "o/r", StatusReason: orphanReason}, false},
+		{"no project", task.Task{Status: task.StatusHumanRequired, Branch: "b", StatusReason: orphanReason}, false},
+		{"not human-required", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, false},
+		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
+		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
+		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
+		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, TaskType: task.TaskTypeChat}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
