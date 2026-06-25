@@ -136,11 +136,20 @@ export class Scorecard {
      * Throughput & outcomes (from task.landed events).
      */
     "tasksLanded": number;
+
+    /**
+     * clean merges (no human edits)
+     */
     "merged": number;
+
+    /**
+     * merged after a human edited the PR
+     */
+    "mergedWithEdits": number;
     "closed": number;
 
     /**
-     * merged / landed
+     * clean merged / landed
      */
     "mergeRate": number;
 
@@ -202,6 +211,9 @@ export class Scorecard {
         }
         if (!("merged" in $$source)) {
             this["merged"] = 0;
+        }
+        if (!("mergedWithEdits" in $$source)) {
+            this["mergedWithEdits"] = 0;
         }
         if (!("closed" in $$source)) {
             this["closed"] = 0;

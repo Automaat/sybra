@@ -132,8 +132,8 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 		return printJSON(report)
 	}
 	o := report.Overall
-	fmt.Printf("evaluation (%dd window): landed=%d merged=%d closed=%d\n",
-		int(o.WindowDays), o.TasksLanded, o.Merged, o.Closed)
+	fmt.Printf("evaluation (%dd window): landed=%d merged=%d merged_with_edits=%d closed=%d\n",
+		int(o.WindowDays), o.TasksLanded, o.Merged, o.MergedWithEdits, o.Closed)
 	fmt.Printf("  autonomy=%.0f%%  ci-first-pass=%.0f%%  failure=%.0f%%  rework_tasks=%d\n",
 		o.AutonomyRate*100, o.CIFirstPassRate*100, o.FailureRate*100, o.ReworkTasks)
 	fmt.Printf("  lead p50/p90=%.1f/%.1fh  cycle p50/p90=%.1f/%.1fh\n",

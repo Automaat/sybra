@@ -509,6 +509,25 @@ func parseCodexItemLineTyped(eventType string, item *codexItem, rawCopy json.Raw
 			},
 		}, nil
 
+	case "file_change", "collab_tool_call", "web_search":
+		// Non-Bash Codex tool actions. Count each once on item.started (mirrors
+		// command_execution) so the tool-call metric isn't Bash-only; skip the
+		// completed half to avoid double-counting.
+		if eventType != "item.started" {
+			return CodexEvent{Raw: rawCopy}, nil
+		}
+		return CodexEvent{
+			Type: "tool_use",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "assistant",
+				ToolUses: []ToolUseBlock{{
+					ID:   item.ID,
+					Name: codexToolName(item.Type),
+				}},
+			},
+		}, nil
+
 	default:
 		return CodexEvent{
 			Type: "assistant",
@@ -518,6 +537,20 @@ func parseCodexItemLineTyped(eventType string, item *codexItem, rawCopy json.Raw
 				Text: item.Text,
 			},
 		}, nil
+	}
+}
+
+// codexToolName maps a Codex item type to a display name for its tool use.
+func codexToolName(itemType string) string {
+	switch itemType {
+	case "file_change":
+		return "Edit"
+	case "collab_tool_call":
+		return "MCP"
+	case "web_search":
+		return "WebSearch"
+	default:
+		return itemType
 	}
 }
 

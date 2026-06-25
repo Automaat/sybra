@@ -113,6 +113,35 @@ func TestBreakdownBy(t *testing.T) {
 	}
 }
 
+func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	ld := func(tid, outcome string) audit.Event {
+		return audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: in, Data: map[string]any{"outcome": outcome}}
+	}
+	events := []audit.Event{
+		ld("A", "merged"),            // clean → autonomous
+		ld("E", "merged_with_edits"), // human edited → not autonomous
+	}
+	got := Compute(nil, events, since, base)
+	if got.TasksLanded != 2 {
+		t.Fatalf("TasksLanded = %d, want 2", got.TasksLanded)
+	}
+	if got.Merged != 1 || got.MergedWithEdits != 1 {
+		t.Errorf("Merged/MergedWithEdits = %d/%d, want 1/1", got.Merged, got.MergedWithEdits)
+	}
+	if got.AutonomousLandings != 1 {
+		t.Errorf("AutonomousLandings = %d, want 1 (only the clean merge)", got.AutonomousLandings)
+	}
+	if got.HumanTouchedLandings != 1 {
+		t.Errorf("HumanTouchedLandings = %d, want 1 (the edited merge)", got.HumanTouchedLandings)
+	}
+	if got.AutonomyRate != 0.5 {
+		t.Errorf("AutonomyRate = %v, want 0.5", got.AutonomyRate)
+	}
+}
+
 func TestComputeEmpty(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	got := Compute(nil, nil, now.AddDate(0, 0, -7), now)

@@ -57,3 +57,30 @@ func TestCodexEventToStreamEvent_ToolCalls(t *testing.T) {
 		t.Errorf("ToolCalls = %d, want 1", got)
 	}
 }
+
+func TestParseCodexItemLineTyped_NonBashTools(t *testing.T) {
+	// Real Codex item types beyond command_execution must count as tool calls.
+	for _, tt := range []struct{ itemType, wantName string }{
+		{"file_change", "Edit"},
+		{"collab_tool_call", "MCP"},
+		{"web_search", "WebSearch"},
+	} {
+		t.Run(tt.itemType, func(t *testing.T) {
+			ev, err := parseCodexItemLineTyped("item.started", &codexItem{Type: tt.itemType, ID: "x"}, nil)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if ev.Type != "tool_use" || len(ev.Message.ToolUses) != 1 || ev.Message.ToolUses[0].Name != tt.wantName {
+				t.Fatalf("started: got type=%q name=%v, want tool_use/%s", ev.Type, ev.Message, tt.wantName)
+			}
+			if got := codexEventToStreamEvent(ev).ToolCalls; got != 1 {
+				t.Errorf("ToolCalls = %d, want 1", got)
+			}
+			// Completed half must not double-count.
+			done, _ := parseCodexItemLineTyped("item.completed", &codexItem{Type: tt.itemType, ID: "x"}, nil)
+			if codexEventToStreamEvent(done).ToolCalls != 0 {
+				t.Errorf("completed counted a tool call (double count)")
+			}
+		})
+	}
+}
