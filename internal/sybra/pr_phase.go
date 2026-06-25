@@ -34,7 +34,8 @@ type prSignals struct {
 	HasPendingChecks bool   // a check is still in-progress/queued
 	Mergeable        string // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 	ReviewDecision   string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
-	UnresolvedCount  int    // unresolved review threads
+	UnresolvedCount  int    // unresolved review threads (raw — drives merge gate)
+	ActionableCount  int    // unresolved threads a reviewer last touched (drives fix dispatch)
 }
 
 // computePRPhase maps live PR signals to the desired phase. Pure and
@@ -58,9 +59,11 @@ func computePRPhase(s prSignals) string {
 	// hide the "mark ready" action.
 	case s.IsDraft:
 		return PRPhaseDraft
-	// Reviewers asked for changes (or left unresolved threads): a fix-review
-	// agent is dispatched to address them.
-	case s.ReviewDecision == "CHANGES_REQUESTED" || s.UnresolvedCount > 0:
+	// Reviewers asked for changes (or left actionable threads — a reviewer had
+	// the last word): a fix-review agent is dispatched to address them. Threads
+	// the agent already replied to are unresolved but not actionable, so they
+	// surface as awaiting-approval (waiting on the reviewer), not changes.
+	case s.ReviewDecision == "CHANGES_REQUESTED" || s.ActionableCount > 0:
 		return PRPhaseChangesRequested
 	// CI is still running — wait it out.
 	case s.CIStatus == "PENDING" || s.HasPendingChecks:

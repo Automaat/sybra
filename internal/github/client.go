@@ -2,9 +2,12 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,7 +126,11 @@ const prQuery = `query($q: String!) {
           }
         }
         reviewThreads(first: 100) {
-          nodes { isResolved }
+          nodes {
+            id
+            isResolved
+            comments(last: 1) { nodes { id author { login } } }
+          }
         }
         latestReviews(first: 20) {
           nodes { state author { login } }
@@ -203,7 +210,16 @@ type gqlPR struct {
 	} `json:"commits"`
 	ReviewThreads struct {
 		Nodes []struct {
-			IsResolved bool `json:"isResolved"`
+			ID         string `json:"id"`
+			IsResolved bool   `json:"isResolved"`
+			Comments   struct {
+				Nodes []struct {
+					ID     string `json:"id"`
+					Author struct {
+						Login string `json:"login"`
+					} `json:"author"`
+				} `json:"nodes"`
+			} `json:"comments"`
 		} `json:"nodes"`
 	} `json:"reviewThreads"`
 	LatestReviews struct {
@@ -269,12 +285,37 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		}
 	}
 
-	var unresolved int
-	for _, t := range n.ReviewThreads.Nodes {
-		if !t.IsResolved {
-			unresolved++
+	// The fix agent acts as the authenticated user (viewer). On own-PRs that
+	// equals the PR author; fall back to it when the viewer lookup failed.
+	agentLogin := viewer
+	if agentLogin == "" {
+		agentLogin = n.Author.Login
+	}
+	var unresolved, actionable int
+	var sigTokens []string
+	for i := range n.ReviewThreads.Nodes {
+		th := &n.ReviewThreads.Nodes[i]
+		if th.IsResolved {
+			continue
+		}
+		unresolved++
+		var lastAuthor, lastID string
+		if len(th.Comments.Nodes) > 0 {
+			lc := th.Comments.Nodes[len(th.Comments.Nodes)-1]
+			lastAuthor = lc.Author.Login
+			lastID = lc.ID
+		}
+		// Actionable = a reviewer had the last word. Once the agent replies the
+		// thread drops out of the actionable set (so pr-fix stops re-firing) but
+		// stays unresolved (so the merge gate still holds until it's resolved).
+		if lastAuthor != "" && !strings.EqualFold(lastAuthor, agentLogin) {
+			actionable++
+			sigTokens = append(sigTokens, "A:"+th.ID+":"+lastID)
+		} else {
+			sigTokens = append(sigTokens, "D:"+th.ID)
 		}
 	}
+	feedbackSig := reviewFeedbackSig(n.ReviewDecision, sigTokens)
 
 	var viewerApproved bool
 	var copilotReviewed bool
@@ -303,11 +344,34 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		HasPendingChecks:  hasPendingChecks,
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
+		ActionableCount:   actionable,
+		FeedbackSig:       feedbackSig,
 		ViewerHasApproved: viewerApproved,
 		CopilotReviewed:   copilotReviewed,
 		CreatedAt:         n.CreatedAt,
 		UpdatedAt:         n.UpdatedAt,
 	}
+}
+
+// reviewFeedbackSig fingerprints a PR's reviewer feedback so the pr-fix retry
+// budget can tell genuinely-new feedback (reset the budget) from stale,
+// already-addressed feedback (let the budget cap and escalate). Tokens are
+// sorted so order is irrelevant; an "addressed" thread collapses to its stable
+// "D:<id>" token regardless of how many times the agent replies, so the agent's
+// own replies never reset the budget. Returns "" when there is no feedback at
+// all (no unresolved threads and no change request).
+func reviewFeedbackSig(reviewDecision string, tokens []string) string {
+	if reviewDecision != "CHANGES_REQUESTED" && len(tokens) == 0 {
+		return ""
+	}
+	sort.Strings(tokens)
+	h := sha256.New()
+	h.Write([]byte(reviewDecision))
+	for _, tok := range tokens {
+		h.Write([]byte{'\n'})
+		h.Write([]byte(tok))
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 func convertPRs(nodes []gqlPR, viewer string) []PullRequest {

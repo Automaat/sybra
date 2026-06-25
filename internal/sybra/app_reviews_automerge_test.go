@@ -249,13 +249,17 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 
-	// T1: addressed Copilot thread -> resolve. T2: live Copilot thread -> skip.
-	// T3: human thread (even outdated) -> skip. T4: already resolved -> skip.
+	// T1: addressed Copilot thread (outdated) -> resolve. T2: live Copilot thread
+	// -> skip. T3: human thread (even outdated) -> skip. T4: already resolved ->
+	// skip. T5: Copilot thread the agent replied to (not outdated) -> resolve.
+	// T6: Copilot thread, no reply yet (Copilot still last) -> skip.
 	threads := []github.ReviewThread{
 		{ID: "T1", AuthorLogin: "copilot-pull-request-reviewer[bot]", IsOutdated: true},
 		{ID: "T2", AuthorLogin: "Copilot", IsOutdated: false},
 		{ID: "T3", AuthorLogin: "dev", IsOutdated: true},
 		{ID: "T4", AuthorLogin: "Copilot", IsOutdated: true, IsResolved: true},
+		{ID: "T5", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "dev"},
+		{ID: "T6", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "Copilot"},
 	}
 	var resolvedIDs []string
 	agents := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
@@ -282,7 +286,7 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 	}}
 	r.resolveAddressedCopilotThreads(all, prs)
 
-	if len(resolvedIDs) != 1 || resolvedIDs[0] != "T1" {
-		t.Fatalf("resolvedIDs = %v, want [T1]", resolvedIDs)
+	if len(resolvedIDs) != 2 || resolvedIDs[0] != "T1" || resolvedIDs[1] != "T5" {
+		t.Fatalf("resolvedIDs = %v, want [T1 T5]", resolvedIDs)
 	}
 }

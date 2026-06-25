@@ -2,25 +2,36 @@ package github
 
 // PullRequest represents a GitHub pull request for display.
 type PullRequest struct {
-	Number            int      `json:"number"`
-	Title             string   `json:"title"`
-	URL               string   `json:"url"`
-	Repository        string   `json:"repository"`
-	RepoName          string   `json:"repoName"`
-	Author            string   `json:"author"`
-	IsDraft           bool     `json:"isDraft"`
-	Labels            []string `json:"labels"`
-	HeadRefName       string   `json:"headRefName"`
-	HeadSHA           string   `json:"headSha"`
-	CIStatus          string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
-	HasPendingChecks  bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
-	ReviewDecision    string   `json:"reviewDecision"`   // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
-	Mergeable         string   `json:"mergeable"`        // MERGEABLE, CONFLICTING, UNKNOWN, or ""
-	UnresolvedCount   int      `json:"unresolvedCount"`
-	ViewerHasApproved bool     `json:"viewerHasApproved"`
-	CopilotReviewed   bool     `json:"copilotReviewed"` // GitHub Copilot has submitted a review
-	CreatedAt         string   `json:"createdAt"`
-	UpdatedAt         string   `json:"updatedAt"`
+	Number           int      `json:"number"`
+	Title            string   `json:"title"`
+	URL              string   `json:"url"`
+	Repository       string   `json:"repository"`
+	RepoName         string   `json:"repoName"`
+	Author           string   `json:"author"`
+	IsDraft          bool     `json:"isDraft"`
+	Labels           []string `json:"labels"`
+	HeadRefName      string   `json:"headRefName"`
+	HeadSHA          string   `json:"headSha"`
+	CIStatus         string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
+	HasPendingChecks bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
+	ReviewDecision   string   `json:"reviewDecision"`   // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
+	Mergeable        string   `json:"mergeable"`        // MERGEABLE, CONFLICTING, UNKNOWN, or ""
+	UnresolvedCount  int      `json:"unresolvedCount"`
+	// ActionableCount is the subset of unresolved threads where a reviewer
+	// (human or bot) left the last comment — i.e. the ball is in the agent's
+	// court. A thread the fix agent already replied to is unresolved but NOT
+	// actionable, so it stops re-triggering pr-fix. This is the dispatch
+	// trigger; UnresolvedCount stays the raw merge-gate signal.
+	ActionableCount int `json:"actionableCount"`
+	// FeedbackSig fingerprints the current reviewer feedback (review decision +
+	// unresolved threads keyed by their latest reviewer comment). It changes
+	// only on genuinely new reviewer activity, not on the agent's own replies —
+	// so the pr-fix retry budget resets on new feedback and caps on stale.
+	FeedbackSig       string `json:"feedbackSig"`
+	ViewerHasApproved bool   `json:"viewerHasApproved"`
+	CopilotReviewed   bool   `json:"copilotReviewed"` // GitHub Copilot has submitted a review
+	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
 }
 
 // ReviewSummary contains PRs grouped by relationship to the user.

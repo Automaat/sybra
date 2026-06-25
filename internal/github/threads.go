@@ -10,10 +10,11 @@ import (
 // decide whether a Copilot-authored thread has been addressed and can be
 // auto-resolved.
 type ReviewThread struct {
-	ID          string
-	AuthorLogin string // login of the thread's first comment author
-	IsResolved  bool
-	IsOutdated  bool // the anchored code changed since the comment — i.e. addressed
+	ID              string
+	AuthorLogin     string // login of the thread's first comment author
+	LastAuthorLogin string // login of the thread's most recent comment author
+	IsResolved      bool
+	IsOutdated      bool // the anchored code changed since the comment — i.e. addressed
 }
 
 const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
@@ -24,7 +25,8 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           id
           isResolved
           isOutdated
-          comments(first: 1) { nodes { author { login } } }
+          first: comments(first: 1) { nodes { author { login } } }
+          last: comments(last: 1) { nodes { author { login } } }
         }
       }
     }
@@ -40,13 +42,20 @@ type gqlReviewThreadsResponse struct {
 						ID         string `json:"id"`
 						IsResolved bool   `json:"isResolved"`
 						IsOutdated bool   `json:"isOutdated"`
-						Comments   struct {
+						First      struct {
 							Nodes []struct {
 								Author struct {
 									Login string `json:"login"`
 								} `json:"author"`
 							} `json:"nodes"`
-						} `json:"comments"`
+						} `json:"first"`
+						Last struct {
+							Nodes []struct {
+								Author struct {
+									Login string `json:"login"`
+								} `json:"author"`
+							} `json:"nodes"`
+						} `json:"last"`
 					} `json:"nodes"`
 				} `json:"reviewThreads"`
 			} `json:"pullRequest"`
@@ -92,15 +101,19 @@ func fetchReviewThreadsWith(e execer, repo string, number int) ([]ReviewThread, 
 	nodes := gqlResp.Data.Repository.PullRequest.ReviewThreads.Nodes
 	threads := make([]ReviewThread, 0, len(nodes))
 	for i := range nodes {
-		var login string
-		if len(nodes[i].Comments.Nodes) > 0 {
-			login = nodes[i].Comments.Nodes[0].Author.Login
+		var firstLogin, lastLogin string
+		if len(nodes[i].First.Nodes) > 0 {
+			firstLogin = nodes[i].First.Nodes[0].Author.Login
+		}
+		if len(nodes[i].Last.Nodes) > 0 {
+			lastLogin = nodes[i].Last.Nodes[0].Author.Login
 		}
 		threads = append(threads, ReviewThread{
-			ID:          nodes[i].ID,
-			AuthorLogin: login,
-			IsResolved:  nodes[i].IsResolved,
-			IsOutdated:  nodes[i].IsOutdated,
+			ID:              nodes[i].ID,
+			AuthorLogin:     firstLogin,
+			LastAuthorLogin: lastLogin,
+			IsResolved:      nodes[i].IsResolved,
+			IsOutdated:      nodes[i].IsOutdated,
 		})
 	}
 	return threads, nil

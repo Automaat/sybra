@@ -2,9 +2,51 @@ package github
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 )
+
+// TestIssueTracker_DecideSignature locks the loop fix: a fix agent that keeps
+// pushing new commits against the SAME unchanged feedback signature exhausts the
+// budget (so the monitor escalates instead of looping), while genuinely new
+// reviewer feedback resets it.
+func TestIssueTracker_DecideSignature(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	tr := NewIssueTracker(30 * time.Minute)
+	tr.now = func() time.Time { return now }
+
+	if got := tr.Decide("t1", PRIssueComments, "sha1", "sigA"); got != DispatchHandle {
+		t.Fatalf("first dispatch = %v, want Handle", got)
+	}
+	tr.MarkHandled("t1", PRIssueComments, "sha1")
+
+	if got := tr.Decide("t1", PRIssueComments, "sha1", "sigA"); got != DispatchSkip {
+		t.Fatalf("same sha/sig within cooldown = %v, want Skip", got)
+	}
+
+	// A new commit each round (defeating the old SHA-only cap) must NOT keep the
+	// loop alive: the unchanged sig caps the budget.
+	for i := 1; i < MaxRetries; i++ {
+		now = now.Add(31 * time.Minute)
+		sha := "sha" + strconv.Itoa(i+1)
+		if got := tr.Decide("t1", PRIssueComments, sha, "sigA"); got != DispatchHandle {
+			t.Fatalf("round %d = %v, want Handle", i, got)
+		}
+		tr.MarkHandled("t1", PRIssueComments, sha)
+	}
+
+	now = now.Add(31 * time.Minute)
+	if got := tr.Decide("t1", PRIssueComments, "sha-new", "sigA"); got != DispatchExhausted {
+		t.Fatalf("budget spent on unchanged sig = %v, want Exhausted", got)
+	}
+
+	// Genuinely new feedback (different sig) resets the budget.
+	if got := tr.Decide("t1", PRIssueComments, "sha-new", "sigB"); got != DispatchHandle {
+		t.Fatalf("new feedback = %v, want Handle", got)
+	}
+}
 
 func TestIssueTracker(t *testing.T) {
 	t.Parallel()

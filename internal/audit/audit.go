@@ -21,6 +21,7 @@ const (
 	EventPRCIFailureDetected      = "pr_monitor.ci_failure_detected"
 	EventPRCommentsDetected       = "pr_monitor.comments_detected"
 	EventPRFixAgentStarted        = "pr_monitor.fix_agent_started"
+	EventPRFixExhausted           = "pr_monitor.fix_exhausted"
 	EventPRMerged                 = "pr_monitor.merged"
 	EventPRClosed                 = "pr_monitor.closed"
 	EventPRAutoMerged             = "pr_monitor.auto_merged"

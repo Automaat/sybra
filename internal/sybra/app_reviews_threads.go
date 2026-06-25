@@ -96,9 +96,17 @@ func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.Pull
 	var resolved int
 	for i := range threads {
 		th := &threads[i]
-		// Resolve only Copilot-authored threads the fix agent has addressed
-		// (outdated). Leave human threads and live Copilot threads alone.
-		if th.IsResolved || !th.IsOutdated || !github.IsCopilotReviewer(th.AuthorLogin) {
+		// Resolve only Copilot-authored threads the fix agent has addressed.
+		// Leave human threads and live Copilot threads (no reply yet) alone.
+		if th.IsResolved || !github.IsCopilotReviewer(th.AuthorLogin) {
+			continue
+		}
+		// Addressed = the anchored code changed (outdated) OR the agent posted a
+		// reply (the last comment is no longer Copilot's). Copilot never resolves
+		// its own threads, so without this an addressed-but-not-outdated thread
+		// would block the pet merge forever.
+		agentReplied := th.LastAuthorLogin != "" && !github.IsCopilotReviewer(th.LastAuthorLogin)
+		if !th.IsOutdated && !agentReplied {
 			continue
 		}
 		if err := resolve(th.ID); err != nil {

@@ -284,19 +284,103 @@ func TestConvertPRs_unresolvedThreads(t *testing.T) {
 			node.Repository.NameWithOwner = "org/repo"
 
 			for _, resolved := range tt.threads {
-				node.ReviewThreads.Nodes = append(node.ReviewThreads.Nodes, struct {
-					IsResolved bool `json:"isResolved"`
-				}{IsResolved: resolved})
+				var n threadNode
+				n.IsResolved = resolved
+				// Each unresolved thread's last comment is a reviewer's, so it is
+				// also actionable (the ball is in the agent's court).
+				n.Comments.Nodes = []commentNode{{ID: "c", Author: authorLogin("reviewer")}}
+				node.ReviewThreads.Nodes = append(node.ReviewThreads.Nodes, n)
 			}
 
-			prs := convertPRs([]gqlPR{node}, "")
+			prs := convertPRs([]gqlPR{node}, "user")
 			if len(prs) != 1 {
 				t.Fatalf("got %d PRs, want 1", len(prs))
 			}
 			if prs[0].UnresolvedCount != tt.expected {
 				t.Errorf("UnresolvedCount = %d, want %d", prs[0].UnresolvedCount, tt.expected)
 			}
+			if prs[0].ActionableCount != tt.expected {
+				t.Errorf("ActionableCount = %d, want %d", prs[0].ActionableCount, tt.expected)
+			}
 		})
+	}
+}
+
+// threadNode / commentNode mirror the anonymous gqlPR.ReviewThreads node shape
+// so tests can build review-thread fixtures without spelling out the nested
+// anonymous structs at every call site.
+type threadNode = struct {
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+	Comments   struct {
+		Nodes []struct {
+			ID     string `json:"id"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"comments"`
+}
+
+type commentNode = struct {
+	ID     string `json:"id"`
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+func authorLogin(login string) struct {
+	Login string `json:"login"`
+} {
+	return struct {
+		Login string `json:"login"`
+	}{Login: login}
+}
+
+// TestConvertPRs_actionableAndSig locks the edge-trigger: a thread the agent
+// has replied to is unresolved but not actionable, and the feedback signature
+// is stable across the agent's own replies yet changes on new reviewer comments.
+func TestConvertPRs_actionableAndSig(t *testing.T) {
+	t.Parallel()
+	mk := func(lastAuthor, lastID string) gqlPR {
+		var n gqlPR
+		n.Number = 1
+		n.Author.Login = "me"
+		n.Author.Type = "User"
+		n.Repository.NameWithOwner = "o/r"
+		var th threadNode
+		th.ID = "T1"
+		th.Comments.Nodes = []commentNode{{ID: lastID, Author: authorLogin(lastAuthor)}}
+		n.ReviewThreads.Nodes = append(n.ReviewThreads.Nodes, th)
+		return n
+	}
+
+	// Reviewer had the last word → actionable, non-empty signature.
+	rev := convertPRs([]gqlPR{mk("copilot-pull-request-reviewer[bot]", "c1")}, "me")[0]
+	if rev.ActionableCount != 1 || rev.UnresolvedCount != 1 {
+		t.Fatalf("reviewer-last: actionable=%d unresolved=%d, want 1/1", rev.ActionableCount, rev.UnresolvedCount)
+	}
+	if rev.FeedbackSig == "" {
+		t.Fatal("reviewer-last: want non-empty FeedbackSig")
+	}
+
+	// Agent (viewer "me") replied last → unresolved but NOT actionable.
+	addr := convertPRs([]gqlPR{mk("me", "c2")}, "me")[0]
+	if addr.ActionableCount != 0 || addr.UnresolvedCount != 1 {
+		t.Fatalf("agent-last: actionable=%d unresolved=%d, want 0/1", addr.ActionableCount, addr.UnresolvedCount)
+	}
+
+	// The addressed signature must not change with the agent's own comment id —
+	// otherwise each reply would reset the retry budget and re-loop.
+	addr2 := convertPRs([]gqlPR{mk("me", "c2-different-id")}, "me")[0]
+	if addr.FeedbackSig != addr2.FeedbackSig {
+		t.Error("addressed signature changed with the agent's own comment id")
+	}
+
+	// A new reviewer comment id DOES change the signature (budget should reset).
+	rev2 := convertPRs([]gqlPR{mk("copilot-pull-request-reviewer[bot]", "c9")}, "me")[0]
+	if rev.FeedbackSig == rev2.FeedbackSig {
+		t.Error("new reviewer comment did not change the signature")
 	}
 }
 

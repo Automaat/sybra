@@ -79,6 +79,51 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 	r.logger.Info("auto-merge.merged", "task_id", t.ID, "pr", issue.PR.Number)
 }
 
+// escalateExhaustedFix parks a task whose pr-fix retry budget is spent. Trying
+// the same fix MaxRetries times without clearing the issue means the agent
+// can't resolve it on its own — flaky/unfixable CI, an unrebasable conflict, or
+// review feedback that needs a human call — so stop looping and surface it.
+// Mirrors the worktree circuit-breaker: own-PR tasks normally stay in In
+// Review, but a hard, repeated failure escalates to human-required.
+//
+// Applies to every fixable kind (conflict, ci_failure, comments) — the durable
+// retry cap keeps a capped entry across Cleanup, so a kind that did not escalate
+// here would sit capped forever, never retried and never surfaced. Only the
+// comments kind carries a feedback signature, so genuinely new reviewer feedback
+// resets its budget (in Decide) before it ever reaches here. ready_to_merge
+// never escalates — a green PR that simply hasn't merged is not a failure.
+//
+// Idempotent: a task already in human-required is left untouched. The tracker
+// entry is cleared so a human un-parking the task starts from a fresh budget.
+func (r *ReviewHandler) escalateExhaustedFix(issue github.PRIssue) {
+	if issue.Kind == github.PRIssueReadyToMerge {
+		return
+	}
+	t, err := r.tasks.Get(issue.TaskID)
+	if err != nil || t.Status == task.StatusHumanRequired {
+		return
+	}
+	reason := fmt.Sprintf(
+		"pr-monitor: auto-fix exhausted after %d attempts (%s) — needs a human",
+		github.MaxRetries, issue.Kind,
+	)
+	if _, err := r.tasks.Update(issue.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
+		return
+	}
+	r.prTracker.Clear(issue.TaskID, issue.Kind)
+	r.logAudit(audit.EventPRFixExhausted, issue.TaskID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository,
+		"kind": string(issue.Kind), "attempts": github.MaxRetries,
+	})
+	r.logger.Warn("pr-monitor.fix-exhausted",
+		"task_id", issue.TaskID, "pr", issue.PR.Number,
+		"kind", string(issue.Kind), "attempts", github.MaxRetries)
+}
+
 func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
