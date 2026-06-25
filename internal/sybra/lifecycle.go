@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -46,6 +47,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
+	lm.startEvaluationService(ctx, emit)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.registerMetricsObservers()
 }
@@ -278,6 +280,26 @@ func (lm *LifecycleManager) startSelfMonitorService(ctx context.Context, emit fu
 		ProviderGate: a.providerHealth,
 	})
 	a.selfMonitorSvc = svc
+	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// startEvaluationService constructs the read-only scorecard service and launches
+// its ticker. The service is built even when disabled so GetEvaluationReport can
+// still compute on demand for the dashboard; Run() no-ops when not enabled.
+func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit func(string, any)) {
+	a := lm.app
+	deps := evaluation.Deps{
+		Cfg:        a.cfg.Evaluation,
+		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
+		Emit:       emit,
+		Logger:     a.logger,
+		ReportPath: config.EvaluationReportPath(),
+	}
+	if a.stats != nil {
+		deps.Stats = a.stats
+	}
+	svc := evaluation.NewService(deps)
+	a.evaluationSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
 }
 

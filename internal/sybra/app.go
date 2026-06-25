@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
@@ -69,6 +70,7 @@ type App struct {
 	sandboxes                     *sandbox.Manager
 	monitorSvc                    *monitor.Service
 	selfMonitorSvc                *selfmonitor.Service
+	evaluationSvc                 *evaluation.Service
 	agentOrch                     *AgentOrchestrator
 	reviewer                      *ReviewHandler
 	workflowEngine                *workflow.Engine
@@ -296,6 +298,15 @@ func (a *App) GetMonitorReport() MonitorReportBinding {
 	}
 	r, ok := a.monitorSvc.LastReport()
 	return MonitorReportBinding{Enabled: true, Ready: ok, Report: r}
+}
+
+// GetEvaluationReport returns the latest fleet scorecard, computing one on
+// demand when the background ticker hasn't run (or is disabled).
+func (a *App) GetEvaluationReport() evaluation.Report {
+	if a.evaluationSvc == nil {
+		return evaluation.Report{}
+	}
+	return a.evaluationSvc.GetEvaluationReport()
 }
 
 func (a *App) Shutdown(_ context.Context) {

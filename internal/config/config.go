@@ -22,6 +22,7 @@ type Config struct {
 	HumanReview   HumanReviewConfig  `yaml:"human_review" json:"humanReview"`
 	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
 	SelfMonitor   SelfMonitorConfig  `yaml:"self_monitor" json:"selfMonitor"`
+	Evaluation    EvaluationConfig   `yaml:"evaluation" json:"evaluation"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
@@ -321,6 +322,16 @@ type MonitorConfig struct {
 	IssueRepo            string             `yaml:"issue_repo" json:"issueRepo"`
 }
 
+// EvaluationConfig controls the in-process evaluation service, which periodically
+// computes a fleet scorecard (autonomy, throughput, reliability, efficiency) from
+// stats + audit data. Read-only: it never dispatches agents or files issues, so
+// it needs no project-type routing — each machine scores its own local data.
+type EvaluationConfig struct {
+	Enabled       bool    `yaml:"enabled" json:"enabled"`
+	IntervalHours float64 `yaml:"interval_hours" json:"intervalHours"`
+	WindowDays    int     `yaml:"window_days" json:"windowDays"`
+}
+
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
 // and their background health-check loop. A missing block defaults to "both
 // providers enabled, health check on, auto-failover on, 300s interval".
@@ -509,8 +520,21 @@ func Load() (*Config, error) {
 	applyProvidersDefaults(cfg)
 	applyMonitorDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
+	applyEvaluationDefaults(cfg)
 
 	return cfg, nil
+}
+
+// applyEvaluationDefaults fills zero values for the Evaluation block so older
+// configs behave deterministically. Enabled stays false until operators opt in.
+func applyEvaluationDefaults(cfg *Config) {
+	e := &cfg.Evaluation
+	if e.IntervalHours < 1 {
+		e.IntervalHours = 24
+	}
+	if e.WindowDays <= 0 {
+		e.WindowDays = 30
+	}
 }
 
 // applySelfMonitorDefaults fills zero values for the SelfMonitor block so
@@ -715,6 +739,12 @@ func SelfMonitorDir() string {
 // SelfMonitorLedgerPath is the append-only ledger file selfmonitor.Open uses.
 func SelfMonitorLedgerPath() string {
 	return filepath.Join(SelfMonitorDir(), "ledger.jsonl")
+}
+
+// EvaluationReportPath is where the evaluation service persists its most recent
+// scorecard report as JSON. The CLI `sybra-cli evaluation scan` reads from here.
+func EvaluationReportPath() string {
+	return filepath.Join(HomeDir(), "evaluation-report.json")
 }
 
 // SelfMonitorLastReportPath is where the service writes the most recent

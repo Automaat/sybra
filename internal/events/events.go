@@ -33,6 +33,11 @@ const (
 	// (see internal/selfmonitor/report.go).
 	SelfMonitorReport = "selfmonitor:report"
 
+	// EvaluationReport fires at the end of every evaluation.Service tick with
+	// the fleet scorecard (autonomy, throughput, reliability, efficiency).
+	// Payload is an evaluation.Report (see internal/evaluation/scorecard.go).
+	EvaluationReport = "evaluation:report"
+
 	// Loop agent events — emitted whenever the scheduler reconciles or
 	// records a new run on a loop agent. Carries no payload; consumers
 	// re-list LoopAgents on receipt.

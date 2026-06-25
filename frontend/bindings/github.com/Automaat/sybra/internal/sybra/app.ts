@@ -16,6 +16,9 @@ import * as agent$0 from "../agent/models.js";
 import * as bgop$0 from "../bgop/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as evaluation$0 from "../evaluation/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as notification$0 from "../notification/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -33,6 +36,16 @@ export function Context(): $CancellablePromise<context$0.Context> {
 }
 
 /**
+ * GetEvaluationReport returns the latest fleet scorecard, computing one on
+ * demand when the background ticker hasn't run (or is disabled).
+ */
+export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> {
+    return $Call.ByID(1201647697).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * GetMonitorReport returns the most recent finished report from the
  * in-process monitor service. Ready is false until the first tick completes;
  * the frontend should show an empty state in that window. Enabled mirrors
@@ -40,7 +53,7 @@ export function Context(): $CancellablePromise<context$0.Context> {
  */
 export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBinding> {
     return $Call.ByID(936556103).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
@@ -49,7 +62,7 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
  */
 export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
     return $Call.ByID(729571497).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -58,7 +71,7 @@ export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
  */
 export function ListNotifications(): $CancellablePromise<notification$0.Notification[]> {
     return $Call.ByID(706012029).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -87,7 +100,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -98,7 +111,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -126,17 +139,18 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = $models.MonitorReportBinding.createFrom;
-const $$createType1 = bgop$0.Operation.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = notification$0.Notification.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = agent$0.Agent.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = application$0.Service.createFrom;
-const $$createType8 = $Create.Array($$createType7);
+const $$createType0 = evaluation$0.Report.createFrom;
+const $$createType1 = $models.MonitorReportBinding.createFrom;
+const $$createType2 = bgop$0.Operation.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = notification$0.Notification.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = agent$0.Agent.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = application$0.Service.createFrom;
+const $$createType9 = $Create.Array($$createType8);
