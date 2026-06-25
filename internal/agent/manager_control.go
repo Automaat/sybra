@@ -25,12 +25,12 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return m.SendMessage(agentID, text)
 	}
 
-	// Codex conversational agents: deliver via promptCh.
+	// Per-turn conversational agents (codex/copilot): deliver via promptCh.
 	a.mu.RLock()
 	hasCh := a.promptCh != nil
 	a.mu.RUnlock()
 	if hasCh {
-		return m.sendCodexPrompt(agentID, text)
+		return m.sendConvoPrompt(agentID, text)
 	}
 
 	return fmt.Errorf("agent %s has no active transport (no stdin pipe or prompt channel)", agentID)

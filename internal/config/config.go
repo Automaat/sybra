@@ -332,13 +332,14 @@ type EvaluationConfig struct {
 	WindowDays    int     `yaml:"window_days" json:"windowDays"`
 }
 
-// ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
-// and their background health-check loop. A missing block defaults to "both
-// providers enabled, health check on, auto-failover on, 300s interval".
+// ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
+// copilot) and their background health-check loop. A missing block defaults to
+// "all providers enabled, health check on, auto-failover on, 300s interval".
 type ProvidersConfig struct {
 	HealthCheck  ProviderHealthCheckConfig `yaml:"health_check" json:"healthCheck"`
 	Claude       ProviderEntryConfig       `yaml:"claude" json:"claude"`
 	Codex        ProviderEntryConfig       `yaml:"codex" json:"codex"`
+	Copilot      ProviderEntryConfig       `yaml:"copilot" json:"copilot"`
 	AutoFailover bool                      `yaml:"auto_failover" json:"autoFailover"`
 }
 
@@ -405,6 +406,7 @@ func DefaultConfig() *Config {
 			},
 			Claude:       ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
 			Codex:        ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Copilot:      ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
 			AutoFailover: true,
 		},
 		TasksDir: defaultTasksDir(),
@@ -659,6 +661,9 @@ func applyProvidersDefaults(cfg *Config) {
 	}
 	if cfg.Providers.Codex.RateLimitCooldownSeconds <= 0 {
 		cfg.Providers.Codex.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.Copilot.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Copilot.RateLimitCooldownSeconds = 900
 	}
 }
 

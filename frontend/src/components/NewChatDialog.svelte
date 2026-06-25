@@ -140,7 +140,7 @@
 
         <div class="flex flex-col gap-1">
           <span class="text-sm font-medium">Provider</span>
-          <div class="grid grid-cols-2 gap-2 md:flex md:gap-4">
+          <div class="grid grid-cols-3 gap-2 md:flex md:gap-4">
             <label class="tap flex cursor-pointer items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2.5 dark:border-surface-600 dark:bg-surface-700 has-[:checked]:border-primary-500 has-[:checked]:bg-primary-50 dark:has-[:checked]:bg-primary-900/30">
               <input
                 type="radio"
@@ -160,6 +160,16 @@
                 class="border-surface-300 dark:border-surface-600"
               />
               <span class="text-sm">Codex</span>
+            </label>
+            <label class="tap flex cursor-pointer items-center gap-2 rounded-lg border border-surface-300 bg-surface-100 px-3 py-2.5 dark:border-surface-600 dark:bg-surface-700 has-[:checked]:border-primary-500 has-[:checked]:bg-primary-50 dark:has-[:checked]:bg-primary-900/30">
+              <input
+                type="radio"
+                name="chat-provider"
+                value="copilot"
+                bind:group={provider}
+                class="border-surface-300 dark:border-surface-600"
+              />
+              <span class="text-sm">Copilot</span>
             </label>
           </div>
         </div>

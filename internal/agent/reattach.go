@@ -55,8 +55,10 @@ func (m *Manager) ReattachAll() []*Agent {
 	for i := range recs {
 		r := recs[i]
 		if r.Mode == "interactive" {
-			if normalizeProvider(r.Provider) == "codex" {
-				if a := m.reattachCodexConvo(r, reg); a != nil {
+			// codex and copilot are per-turn conversational agents recreated
+			// on restart; claude interactive reattaches to its live process.
+			if p := normalizeProvider(r.Provider); p == "codex" || p == "copilot" {
+				if a := m.reattachPerTurnConvo(r, reg); a != nil {
 					out = append(out, a)
 				}
 				continue
@@ -229,14 +231,15 @@ func convoResumeState(evs []ConvoEvent) State {
 	return StatePaused
 }
 
-// reattachCodexConvo recreates a codex conversational agent after a restart.
+// reattachPerTurnConvo recreates a per-turn (codex/copilot) conversational
+// agent after a restart.
 // Codex convo has no persistent process between its independent per-turn
 // invocations, so there is nothing to reattach to: rebuild the idle agent,
 // rehydrate its chat from the log, and restart the loop in resume-wait mode
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
-func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
-	// Codex recreate is unconditional (no live process to gate on), so guard
+func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
+	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
 	// was down — that would leak a zombie agent gcOrphanChats can't reap.
 	if r.TaskID != "" {
@@ -249,7 +252,7 @@ func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
 
 	a := agentFromRecord(r)
 	if r.LogPath != "" {
-		rehydrateCodexConvoFromLog(a, r.LogPath)
+		rehydratePerTurnConvoFromLog(a, r.LogPath)
 	}
 	a.SetState(StatePaused)
 
@@ -268,11 +271,11 @@ func (m *Manager) reattachCodexConvo(r Record, reg *registryStore) *Agent {
 	m.liveCount++
 	m.mu.Unlock()
 
-	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", "codex", "events", len(a.ConvoOutput()))
+	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", a.Provider, "events", len(a.ConvoOutput()))
 	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
 	// come from the rebuilt agent; the sandbox/approval choice is restored
 	// from the record so a sandboxed chat stays sandboxed.
-	go m.runCodexConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
+	go m.runPerTurnConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
 }
@@ -355,7 +358,7 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		return 0
 	}
 
-	isCodex := normalizeProvider(a.Provider) == "codex"
+	provider := normalizeProvider(a.Provider)
 	var offset int64
 	start := 0
 	for i := range data {
@@ -365,7 +368,7 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		line := data[start:i]
 		start = i + 1
 		offset = int64(start)
-		ev, perr := parseHeadlessEvent(line, isCodex)
+		ev, perr := parseHeadlessEvent(line, provider)
 		if perr != nil || ev.Type == "" {
 			continue
 		}
@@ -378,10 +381,16 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		a.AddToolCalls(ev.ToolCalls)
 		if ev.Type == "assistant" {
 			a.IncTurnCount()
+			// Copilot reports output tokens per assistant message (claude/codex
+			// carry 0 here and total on the result event instead).
+			if ev.OutputTokens > 0 {
+				a.AddOutputTokens(ev.OutputTokens)
+			}
 		}
 		if ev.Type == "result" {
 			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
 			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
+			a.AddPremiumRequests(ev.PremiumRequests)
 		}
 	}
 	return offset

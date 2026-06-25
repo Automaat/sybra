@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -80,6 +81,53 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		}
 	}
 	return st, perr
+}
+
+// copilotTokenEnvVars are the env vars Copilot checks for a headless auth
+// token, in precedence order (see `copilot login --help`).
+var copilotTokenEnvVars = []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}
+
+// ProbeCopilot checks GitHub Copilot CLI liveness and reports its auth method.
+//
+// Copilot exposes no non-interactive auth-status subcommand (unlike `claude
+// auth status` / `codex login status`), and on desktop the OAuth token lives in
+// the system credential store, which is not cheaply inspectable. So the probe
+// confirms the binary runs (`copilot --version`) and surfaces the auth method:
+// when a token env var is present it is authoritative; otherwise auth goes
+// through the credential store and cannot be verified here without spending a
+// premium request. A genuinely logged-out CLI is caught at run time via the
+// passive stderr signal (isLoggedOutStderr) which flips the provider unhealthy.
+func ProbeCopilot(ctx context.Context) (Status, error) {
+	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "copilot", "--version")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if isLoggedOutStderr(stderr.String()) {
+			return Status{Provider: "copilot", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+		}
+		return Status{Provider: "copilot", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+	}
+	st := Status{Provider: "copilot", Healthy: true, Reason: "ok", LastCheck: time.Now()}
+	if env := copilotTokenEnvVar(); env != "" {
+		st.Detail = "token: " + env
+	} else {
+		st.Detail = "auth via credential store (not verified)"
+	}
+	return st, nil
+}
+
+// copilotTokenEnvVar returns the name of the first set, non-empty Copilot auth
+// token env var, or "" if none is set.
+func copilotTokenEnvVar() string {
+	for _, name := range copilotTokenEnvVars {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // probeCodexVersion runs `codex --version` and returns the dotted version string
@@ -205,7 +253,11 @@ func parseCodexLoginStatus(raw []byte) (Status, error) {
 func isLoggedOutStderr(s string) bool {
 	lower := strings.ToLower(s)
 	return strings.Contains(lower, "not logged in") ||
+		strings.Contains(lower, "not authenticated") ||
 		strings.Contains(lower, "please run claude auth login") ||
 		strings.Contains(lower, "please run: codex login") ||
-		strings.Contains(lower, "please run codex login")
+		strings.Contains(lower, "please run codex login") ||
+		strings.Contains(lower, "please run: copilot login") ||
+		strings.Contains(lower, "run `copilot login`") ||
+		strings.Contains(lower, "run 'copilot login'")
 }

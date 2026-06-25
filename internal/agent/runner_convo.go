@@ -212,7 +212,7 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 		return false, nil
 	}
 	// Detached survival for interactive Claude agents (this path is only
-	// reached for Claude; codex uses runCodexConversational). A one-shot run
+	// reached for Claude; codex/copilot use runPerTurnConversational). A one-shot run
 	// passes its prompt as an argument (no stdin); interactive sessions use a
 	// never-EOF FIFO for follow-ups.
 	if m.survives() {

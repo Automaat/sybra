@@ -54,6 +54,8 @@ func (s *IntegrationService) SetProviderEnabled(name string, enabled bool) error
 		s.cfg.Providers.Claude.Enabled = enabled
 	case "codex":
 		s.cfg.Providers.Codex.Enabled = enabled
+	case "copilot":
+		s.cfg.Providers.Copilot.Enabled = enabled
 	default:
 		return fmt.Errorf("unknown provider %q", name)
 	}

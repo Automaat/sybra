@@ -112,6 +112,40 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 	return ev
 }
 
+// copilotEventToStreamEvent converts a parsed CopilotEvent into a StreamEvent
+// for the headless runner. Mirrors codexEventToStreamEvent: assistant text,
+// tool_use command, tool_result content. Copilot reports output tokens
+// per-message (carried on assistant events) and premium-request usage on the
+// result event; it provides no USD cost or input/cache token breakdown.
+func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Content = e.Message.Text
+		}
+		ev.OutputTokens = e.OutputTokens
+	case "tool_use":
+		if e.Message != nil && len(e.Message.ToolUses) > 0 {
+			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
+			ev.Content = cmd
+		}
+	case "tool_result":
+		if e.Message != nil && len(e.Message.ToolResults) > 0 {
+			ev.Content = e.Message.ToolResults[0].Content
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Content = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.PremiumRequests = e.Result.PremiumRequests
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
+		}
+	}
+	return ev
+}
+
 // formatHeadlessAssistant produces the flat content string for headless assistant
 // events: joined text parts followed by "[name] cmd/desc" tool use lines.
 func formatHeadlessAssistant(msg *ClaudeMessage) string {

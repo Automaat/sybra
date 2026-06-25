@@ -20,6 +20,7 @@ function buildSettings() {
     providers: {
       claude: { enabled: true },
       codex: { enabled: false },
+      copilot: { enabled: true },
       autoFailover: false,
       healthCheck: { intervalSeconds: 30 },
     },

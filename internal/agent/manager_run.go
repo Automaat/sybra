@@ -106,9 +106,13 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	case "headless":
 		go m.runHeadless(ctx, a, cfg)
 	case "interactive":
-		if a.Provider == "codex" {
+		// codex and copilot use the per-turn conversational runner (each turn
+		// spawns a fresh process); claude uses the persistent approval-hook
+		// runner. Copilot's permission model is CLI-flag based (no HTTP
+		// approval hook), so the per-turn shape fits it like codex.
+		if a.Provider == "codex" || a.Provider == "copilot" {
 			a.promptCh = make(chan string, 1)
-			go m.runCodexConversational(ctx, a, cfg, false)
+			go m.runPerTurnConversational(ctx, a, cfg, false)
 		} else {
 			a.approvalCh = make(chan ApprovalResponse, 1)
 			go m.runConversational(ctx, a, cfg)
@@ -161,6 +165,8 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	switch prov {
 	case "codex":
 		return buildCodexCommand(model, cfg.RequirePermissions, cfg.Mode == "headless"), nil
+	case "copilot":
+		return buildCopilotCommand(model), nil
 	default:
 		return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions), nil
 	}
@@ -184,6 +190,20 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 func buildCodexCommand(model string, requirePerms, headless bool) string {
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	parts = append(parts, codexSandboxArgs(requirePerms, headless)...)
+	if model != "" {
+		parts = append(parts, "--model", model)
+	}
+	return strings.Join(parts, " ")
+}
+
+// buildCopilotCommand builds the display command string for a Copilot agent.
+// Headless Copilot always runs --allow-all-tools (required for non-interactive
+// mode) and --no-ask-user so it never blocks waiting on a human. The prompt
+// (and its `-p` flag) are omitted here — like buildClaudeCommand /
+// buildCodexCommand, this is a display-only string showing the flags, not a
+// runnable line.
+func buildCopilotCommand(model string) string {
+	parts := []string{"copilot", "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
@@ -262,10 +282,19 @@ func normalizeProvider(name string) string {
 		return "claude"
 	case "codex":
 		return "codex"
+	case "copilot":
+		return "copilot"
 	default:
 		return "claude"
 	}
 }
+
+// copilotDefaultModel is the model Copilot agents use when none is specified.
+// Per the integration decision the default is the latest GPT model available
+// in the installed Copilot binary's registry. If a user's Copilot plan lacks
+// this slug, `copilot --model` errors at exec time — pin a newer slug or
+// "auto" here when that happens.
+const copilotDefaultModel = "gpt-5.4"
 
 func normalizeModel(prov, model string) string {
 	switch normalizeProvider(prov) {
@@ -275,6 +304,17 @@ func normalizeModel(prov, model string) string {
 			return "gpt-5.5"
 		case "haiku":
 			return "gpt-5.4-mini"
+		default:
+			return model
+		}
+	case "copilot":
+		// The provider-agnostic short aliases (and the empty default the chat
+		// path passes) map to the latest GPT. Full Copilot slugs
+		// (claude-sonnet-4.6, gpt-5.3-codex, gemini-3-pro-preview, …) selected
+		// in the model picker pass through untouched.
+		switch strings.TrimSpace(model) {
+		case "", "sonnet", "opus", "haiku":
+			return copilotDefaultModel
 		default:
 			return model
 		}

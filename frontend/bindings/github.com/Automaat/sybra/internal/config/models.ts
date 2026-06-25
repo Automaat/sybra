@@ -277,14 +277,15 @@ export class ProviderHealthCheckConfig {
 }
 
 /**
- * ProvidersConfig groups per-machine routing for CLI providers (claude, codex)
- * and their background health-check loop. A missing block defaults to "both
- * providers enabled, health check on, auto-failover on, 300s interval".
+ * ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
+ * copilot) and their background health-check loop. A missing block defaults to
+ * "all providers enabled, health check on, auto-failover on, 300s interval".
  */
 export class ProvidersConfig {
     "healthCheck": ProviderHealthCheckConfig;
     "claude": ProviderEntryConfig;
     "codex": ProviderEntryConfig;
+    "copilot": ProviderEntryConfig;
     "autoFailover": boolean;
 
     /** Creates a new ProvidersConfig instance. */
@@ -297,6 +298,9 @@ export class ProvidersConfig {
         }
         if (!("codex" in $$source)) {
             this["codex"] = (new ProviderEntryConfig());
+        }
+        if (!("copilot" in $$source)) {
+            this["copilot"] = (new ProviderEntryConfig());
         }
         if (!("autoFailover" in $$source)) {
             this["autoFailover"] = false;
@@ -312,6 +316,7 @@ export class ProvidersConfig {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType1;
         const $$createField2_0 = $$createType1;
+        const $$createField3_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -321,6 +326,9 @@ export class ProvidersConfig {
         }
         if ("codex" in $$parsedSource) {
             $$parsedSource["codex"] = $$createField2_0($$parsedSource["codex"]);
+        }
+        if ("copilot" in $$parsedSource) {
+            $$parsedSource["copilot"] = $$createField3_0($$parsedSource["copilot"]);
         }
         return new ProvidersConfig($$parsedSource as Partial<ProvidersConfig>);
     }

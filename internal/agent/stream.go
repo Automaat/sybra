@@ -35,6 +35,10 @@ type ClaudeResult struct {
 	// Codex: mapped from the "code" field. Claude: reserved for future extraction.
 	ErrorType   string
 	ErrorStatus int
+	// PremiumRequests is Copilot's billing unit (AI credits), mapped from the
+	// result event's `usage.premiumRequests`. Copilot reports no USD cost.
+	// Always 0 for claude/codex.
+	PremiumRequests int
 }
 
 // ClaudeEvent is the shared envelope for all Claude stream-json events.
@@ -56,6 +60,21 @@ type CodexEvent struct {
 	Raw       json.RawMessage
 	Message   *ClaudeMessage // reuses ClaudeMessage for shared content structure
 	Result    *ClaudeResult
+}
+
+// CopilotEvent is the shared envelope for all GitHub Copilot CLI stream-json
+// events (`copilot --output-format json`). Reuses ClaudeMessage/ClaudeResult
+// for the shared content/result structure.
+type CopilotEvent struct {
+	Type      string
+	Subtype   string
+	SessionID string
+	// OutputTokens carries the per-message output-token count Copilot reports
+	// on each assistant.message (it does not total them on the result event).
+	OutputTokens int
+	Raw          json.RawMessage
+	Message      *ClaudeMessage
+	Result       *ClaudeResult
 }
 
 type claudeEnvelope struct {
@@ -128,6 +147,209 @@ type codexUsage struct {
 	// fallback for any legacy/test fixture using the shorter name.
 	ReasoningOutputTokens int `json:"reasoning_output_tokens"`
 	ReasoningTokens       int `json:"reasoning_tokens"`
+}
+
+// copilotEnvelope is the shared wrapper for every `copilot --output-format
+// json` line. Most events nest their payload under `data`; the terminal
+// `result` event carries its fields at the top level. `ephemeral:true` marks
+// streaming/status lines (token deltas, MCP/skill load notices) that the
+// headless model drops.
+type copilotEnvelope struct {
+	Type      string        `json:"type"`
+	Ephemeral bool          `json:"ephemeral"`
+	SessionID string        `json:"sessionId"` // result event only
+	ExitCode  int           `json:"exitCode"`  // result event only
+	Data      *copilotData  `json:"data"`
+	Usage     *copilotUsage `json:"usage"` // result event only
+}
+
+type copilotData struct {
+	Model        string               `json:"model"`
+	Content      string               `json:"content"`
+	OutputTokens int                  `json:"outputTokens"`
+	ToolRequests []copilotToolRequest `json:"toolRequests"`
+	ToolName     string               `json:"toolName"`
+	ToolCallID   string               `json:"toolCallId"`
+	Arguments    *copilotToolArgs     `json:"arguments"`
+	Success      *bool                `json:"success"`
+	Result       *copilotToolResult   `json:"result"`
+}
+
+type copilotToolRequest struct {
+	ToolCallID string           `json:"toolCallId"`
+	Name       string           `json:"name"`
+	Arguments  *copilotToolArgs `json:"arguments"`
+}
+
+type copilotToolArgs struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+type copilotToolResult struct {
+	// Content is RawMessage, not string: Copilot emits a string today, but a
+	// structured (array/object) content would otherwise fail to unmarshal and
+	// drop the entire tool.execution_complete event (losing the success/error
+	// signal), not just the body. copilotResultContent renders it defensively.
+	Content json.RawMessage `json:"content"`
+}
+
+type copilotUsage struct {
+	PremiumRequests int `json:"premiumRequests"`
+}
+
+// ParseCopilotLine parses one line of GitHub Copilot CLI stream-json output.
+// Ephemeral and structural lines collapse to a zero-Type CopilotEvent that
+// callers skip. The returned Raw is an independent copy safe to keep after the
+// scanner buffer is reused.
+func ParseCopilotLine(line []byte) (CopilotEvent, error) {
+	var raw copilotEnvelope
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return CopilotEvent{}, fmt.Errorf("unmarshal: %w", err)
+	}
+
+	rawCopy := copyRaw(line)
+	// Drop streaming deltas and session/MCP/skill status noise outright.
+	if raw.Ephemeral {
+		return CopilotEvent{Raw: rawCopy}, nil
+	}
+
+	switch raw.Type {
+	case "assistant.message":
+		// Non-ephemeral, final assistant turn message: joined text plus any
+		// tool requests. Tool execution itself arrives as separate tool.* events.
+		msg := &ClaudeMessage{Role: "assistant"}
+		var outTokens int
+		if raw.Data != nil {
+			msg.Text = raw.Data.Content
+			outTokens = raw.Data.OutputTokens
+			for _, tr := range raw.Data.ToolRequests {
+				msg.ToolUses = append(msg.ToolUses, ToolUseBlock{
+					ID:    tr.ToolCallID,
+					Name:  copilotToolDisplayName(tr.Name),
+					Input: copilotToolInput(tr.Arguments),
+				})
+			}
+		}
+		return CopilotEvent{Type: "assistant", OutputTokens: outTokens, Raw: rawCopy, Message: msg}, nil
+
+	case "tool.execution_start":
+		if raw.Data == nil {
+			return CopilotEvent{Raw: rawCopy}, nil
+		}
+		return CopilotEvent{
+			Type: "tool_use",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "assistant",
+				ToolUses: []ToolUseBlock{{
+					ID:    raw.Data.ToolCallID,
+					Name:  copilotToolDisplayName(raw.Data.ToolName),
+					Input: copilotToolInput(raw.Data.Arguments),
+				}},
+			},
+		}, nil
+
+	case "tool.execution_complete":
+		if raw.Data == nil {
+			return CopilotEvent{Raw: rawCopy}, nil
+		}
+		isErr := raw.Data.Success != nil && !*raw.Data.Success
+		content := ""
+		if raw.Data.Result != nil {
+			content = copilotResultContent(raw.Data.Result.Content)
+		}
+		return CopilotEvent{
+			Type: "tool_result",
+			Raw:  rawCopy,
+			Message: &ClaudeMessage{
+				Role: "user",
+				ToolResults: []ToolResultBlock{{
+					ToolUseID: raw.Data.ToolCallID,
+					Content:   content,
+					IsError:   isErr,
+				}},
+			},
+		}, nil
+
+	case "result":
+		r := &ClaudeResult{SessionID: raw.SessionID}
+		if raw.Usage != nil {
+			r.PremiumRequests = raw.Usage.PremiumRequests
+		}
+		// A non-zero exit code means the run failed. Mark the result as an error
+		// (mirroring codex's error mapping) so reattach/restart completion does
+		// not treat a crashed copilot run as a clean success, and so the error
+		// classifier sees a populated sample.
+		subtype := ""
+		if raw.ExitCode != 0 {
+			subtype = "error"
+			r.Subtype = "error"
+			r.ErrorStatus = raw.ExitCode
+			r.ErrorType = "nonzero_exit"
+		}
+		return CopilotEvent{Type: "result", Subtype: subtype, SessionID: raw.SessionID, Raw: rawCopy, Result: r}, nil
+
+	default:
+		// user.message, assistant.turn_start/turn_end, assistant.reasoning,
+		// function, and any unknown non-ephemeral type carry no displayable
+		// content for the headless model — skip them.
+		return CopilotEvent{Raw: rawCopy}, nil
+	}
+}
+
+// copilotToolInput builds the ToolUseBlock.Input map from a Copilot tool's
+// arguments. Copilot's shell tool carries command/description; other tools
+// carry different keys not yet modeled, so this captures what is known.
+func copilotToolInput(args *copilotToolArgs) map[string]any {
+	input := map[string]any{}
+	if args != nil {
+		if args.Command != "" {
+			input["command"] = args.Command
+		}
+		if args.Description != "" {
+			input["description"] = args.Description
+		}
+	}
+	return input
+}
+
+// copilotResultContent renders a Copilot tool result's `content` defensively.
+// Copilot emits a plain string today; tolerate an array of {text} blocks or any
+// other shape so a structured result never drops the whole event.
+func copilotResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	switch raw[0] {
+	case '"':
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+	case '[':
+		var parts []claudeTextBlock
+		if json.Unmarshal(raw, &parts) == nil {
+			texts := make([]string, 0, len(parts))
+			for _, p := range parts {
+				if p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
+			return strings.Join(texts, "\n")
+		}
+	}
+	return string(raw)
+}
+
+// copilotToolDisplayName normalizes a Copilot tool name for display. Copilot's
+// shell tool is "bash"; surface it as "Bash" so it renders the same as the
+// Codex command-execution tool. Other names pass through unchanged.
+func copilotToolDisplayName(name string) string {
+	if strings.EqualFold(name, "bash") || strings.EqualFold(name, "shell") {
+		return "Bash"
+	}
+	return name
 }
 
 // ParseClaudeLine parses one line of Claude stream-json output.

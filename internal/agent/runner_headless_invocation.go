@@ -11,7 +11,7 @@ import (
 // merge into cmd.Env (Bash tool timeout for claude is delivered this way —
 // claude has no CLI flag for it).
 func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []string, command string, err error) {
-	if a.Provider != "claude" && a.Provider != "codex" {
+	if a.Provider != "claude" && a.Provider != "codex" && a.Provider != "copilot" {
 		err = fmt.Errorf("unsupported provider: %s", a.Provider)
 		return
 	}
@@ -45,6 +45,24 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 		prompt := rewriteSkillInvocations(cfg.Prompt, discoverCodexSkills())
 		args = append(args, prompt)
 		command = "codex " + strings.Join(args, " ")
+		return
+	}
+
+	if a.Provider == "copilot" {
+		name = "copilot"
+		// --allow-all-tools is required for non-interactive mode; --no-ask-user
+		// stops the agent blocking on questions (no TTY/UI to answer them).
+		args = []string{"-p", cfg.Prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+		if a.Model != "" {
+			args = append(args, "--model", a.Model)
+		}
+		// Copilot only reports its session id on the terminal result event, so
+		// a resume id is available only for an intentional stop/restart. Use
+		// --session-id (unambiguous required-value flag) over --resume[=value].
+		if sid := a.GetSessionID(); sid != "" {
+			args = append(args, "--session-id", sid)
+		}
+		command = "copilot " + strings.Join(args, " ")
 		return
 	}
 

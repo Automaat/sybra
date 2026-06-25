@@ -14,14 +14,7 @@ import (
 // the next scheduling attempt can fail over to a peer.
 func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) {
 	sample := buildErrorSample(stderrOut, attemptEvents)
-	var sig provider.Signal
-	var reason string
-	var retryAfter time.Duration
-	if a.Provider == "codex" {
-		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
-	} else {
-		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
-	}
+	sig, reason, retryAfter := classifyProviderError(a.Provider, sample)
 	if sig == provider.SignalNone {
 		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
 			m.logger.Info("agent.provider.signal.unknown",
@@ -53,14 +46,7 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 // ConvoEvent stream used by conversational runners.
 func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) {
 	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
-	var sig provider.Signal
-	var reason string
-	var retryAfter time.Duration
-	if a.Provider == "codex" {
-		sig, reason, retryAfter = provider.ClassifyCodexError(sample)
-	} else {
-		sig, reason, retryAfter = provider.ClassifyClaudeError(sample)
-	}
+	sig, reason, retryAfter := classifyProviderError(a.Provider, sample)
 	if sig == provider.SignalNone {
 		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
 			m.logger.Info("agent.provider.signal.unknown",
@@ -71,6 +57,20 @@ func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, at
 		return
 	}
 	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+}
+
+// classifyProviderError routes an error sample to the provider-appropriate
+// classifier. Without a copilot branch a logged-out / quota-exhausted copilot
+// would never be flagged, leaving the health gate routing failover work to it.
+func classifyProviderError(prov string, sample provider.ErrorSample) (provider.Signal, string, time.Duration) {
+	switch normalizeProvider(prov) {
+	case "codex":
+		return provider.ClassifyCodexError(sample)
+	case "copilot":
+		return provider.ClassifyCopilotError(sample)
+	default:
+		return provider.ClassifyClaudeError(sample)
+	}
 }
 
 func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {

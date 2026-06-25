@@ -26,15 +26,31 @@ export function GetCodexModels(): $CancellablePromise<$models.CodexModel[]> {
 }
 
 /**
+ * GetCopilotModels returns the curated Copilot model catalog. Copilot CLI has
+ * no machine-readable `models` subcommand (unlike `codex debug models`), so the
+ * list is a fixed selection of the latest model from each vendor available in
+ * the binary's registry. The first entry is the default (latest GPT). "auto"
+ * lets Copilot pick a model itself — a safe fallback when a specific slug is
+ * unavailable on the user's plan.
+ */
+export function GetCopilotModels(): $CancellablePromise<$models.CopilotModel[]> {
+    return $Call.ByID(1155897229).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * GetVersion returns version information for the running server binary.
  */
 export function GetVersion(): $CancellablePromise<$models.VersionInfo> {
     return $Call.ByID(2557760771).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType4($result);
     });
 }
 
 // Private type creation functions
 const $$createType0 = $models.CodexModel.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $models.VersionInfo.createFrom;
+const $$createType2 = $models.CopilotModel.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $models.VersionInfo.createFrom;
