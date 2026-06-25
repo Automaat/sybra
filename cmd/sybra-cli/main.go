@@ -94,7 +94,7 @@ func run(args []string) int {
 	case "selfmonitor":
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
 	case "evaluation":
-		return cmdEvaluation(cfg, rest, jsonOut)
+		return cmdEvaluation(cfg, store, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	default:

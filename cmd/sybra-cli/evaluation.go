@@ -2,20 +2,26 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdEvaluation(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: evaluation <scan> [--json]")
+		return fatal(jsonOut, "usage: evaluation <scan|judge> [args] [--json]")
 	}
 	switch args[0] {
 	case "scan":
 		return cmdEvaluationScan(cfg, jsonOut)
+	case "judge":
+		return cmdEvaluationJudge(store, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown evaluation subcommand: %s", args[0])
 	}
@@ -48,4 +54,72 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	fmt.Printf("  cost=$%.2f ($%.2f/landed)  turns/landed=%.1f  tools/landed=%.1f\n",
 		o.TotalCostUSD, o.CostPerLanded, o.TurnsPerLanded, o.ToolsPerLanded)
 	return 0
+}
+
+func cmdEvaluationJudge(store *task.Manager, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("judge", flag.ContinueOnError)
+	model := fs.String("model", "", "judge model (default claude-sonnet-4-6)")
+	seed := fs.Int64("seed", 0, "rubric shuffle seed (0 = stable order)")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	rest := fs.Args()
+	if len(rest) < 1 {
+		return fatal(jsonOut, "usage: evaluation judge <task-id> [--model M] [--seed N]")
+	}
+	t, err := store.Get(rest[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		return fatal(jsonOut, "task %s has no PR/project to judge", t.ID)
+	}
+	diff, err := github.FetchPRDiff(t.ProjectID, t.PRNumber)
+	if err != nil {
+		return fatal(jsonOut, "fetch diff: %v", err)
+	}
+	judge := &evaluation.ClaudeQualityJudge{Model: *model, DimSeed: *seed}
+	v, err := judge.Judge(context.Background(), evaluation.JudgeRequest{
+		TaskID:     t.ID,
+		Title:      t.Title,
+		Body:       t.Body,
+		Diff:       diff,
+		Trajectory: trajectorySummary(t),
+	})
+	if err != nil {
+		return fatal(jsonOut, "judge: %v", err)
+	}
+	if jsonOut {
+		return printJSON(v)
+	}
+	fmt.Printf("quality verdict for %s (PR #%d): overall %.1f/10\n", t.ID, t.PRNumber, v.Overall)
+	for _, d := range evaluation.Rubric {
+		s := v.Dimensions[d.Key]
+		fmt.Printf("  %-18s %2d/10  %s\n", d.Key, s.Score, s.Rationale)
+	}
+	if v.Summary != "" {
+		fmt.Printf("  summary: %s\n", v.Summary)
+	}
+	if t.Outcome != "" {
+		fmt.Printf("  outcome=%s  judge-agrees=%v\n", t.Outcome, evaluation.AgreesWithOutcome(v, t.Outcome, 6.0))
+	}
+	return 0
+}
+
+// trajectorySummary renders the task's agent-run history into a one-line summary
+// the judge can use to assess how the agent reached the result (agent-as-judge).
+func trajectorySummary(t task.Task) string {
+	if len(t.AgentRuns) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(t.AgentRuns))
+	for i := range t.AgentRuns {
+		r := t.AgentRuns[i]
+		role := r.Role
+		if role == "" {
+			role = "implementation"
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s $%.2f)", role, r.State, r.CostUSD))
+	}
+	return fmt.Sprintf("%d agent runs: %s", len(t.AgentRuns), strings.Join(parts, " → "))
 }

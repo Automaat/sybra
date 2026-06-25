@@ -266,6 +266,20 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 	return raw.HeadRefOid, nil
 }
 
+// FetchPRDiff returns the unified diff for a PR. Used by the evaluation
+// LLM-as-judge to score the landed change.
+func FetchPRDiff(repo string, number int) (string, error) {
+	return fetchPRDiffWith(defaultExecer, repo, number)
+}
+
+func fetchPRDiffWith(e execer, repo string, number int) (string, error) {
+	out, err := e.run("pr", "diff", strconv.Itoa(number), "--repo", repo)
+	if err != nil {
+		return "", fmt.Errorf("gh pr diff %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	return string(out), nil
+}
+
 // FetchPRBranch returns the head branch name for a PR.
 func FetchPRBranch(repo string, number int) (string, error) {
 	return fetchPRBranchWith(defaultExecer, repo, number)
