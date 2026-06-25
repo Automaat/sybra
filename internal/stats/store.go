@@ -51,6 +51,15 @@ func (s *Store) Len() int {
 	return len(s.runs)
 }
 
+// All returns a copy of every recorded run. Used by the evaluation service to
+// compute scorecards over an arbitrary time window (Query only exposes fixed
+// windows and the last 50 runs).
+func (s *Store) All() []RunRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.runs)
+}
+
 func (s *Store) Query() StatsResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()

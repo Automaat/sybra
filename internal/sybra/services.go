@@ -94,6 +94,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 	return map[string]httpapi.Service{
 		"App": httpapi.NewService(a,
 			"GetMonitorReport",
+			"GetEvaluationReport",
 			"StartAgent",
 			"StartChat",
 			"StopChat",

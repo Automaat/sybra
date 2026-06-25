@@ -93,6 +93,8 @@ func run(args []string) int {
 		return cmdMonitor(cfg, store, rest, jsonOut)
 	case "selfmonitor":
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
+	case "evaluation":
+		return cmdEvaluation(cfg, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	default:
@@ -1260,6 +1262,7 @@ Commands:
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
+  evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
   health   [--severity warning|critical] [--category CATEGORY]
 
   triage classify <id>         Classify a single task via claude -p and apply the verdict.
