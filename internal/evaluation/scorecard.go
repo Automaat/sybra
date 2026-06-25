@@ -86,6 +86,7 @@ var deferredNotes = []string{
 	"MTTR (time to restore after a revert) pending revert-to-fix timing",
 	"review-finding density pending review-count capture",
 	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed",
+	"revert detection scans the latest 100 default-branch commits per repo; a revert beyond that on a very busy repo can be missed",
 }
 
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
@@ -111,7 +112,7 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 	sc.TasksLanded, sc.Merged, sc.Closed = lg.count, lg.merged, lg.closed
 	sc.MergedWithEdits = lg.mergedWithEdits
 	sc.AgentRuns, sc.AgentFailures = runs, fails
-	sc.Reverted = countReverts(events, win)
+	sc.Reverted = countReverts(events, win, lg.tasks)
 	sc.TotalCostUSD = cost
 	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
 	sc.AutonomousLandings, sc.HumanTouchedLandings = autonomous, humanTouched
@@ -216,12 +217,15 @@ func scanTaskSignals(events []audit.Event) map[string]*taskSignals {
 // scanReliability derives runs and failures from stats run records, not audit
 // events: the failure outcome is recorded on every run record (set from the
 // process exit), whereas a distinct agent.failed audit event is never emitted.
-// countReverts counts pr.reverted events in the window — landed PRs a revert
-// later undid on the default branch (the change-failure signal).
-func countReverts(events []audit.Event, win func(time.Time) bool) int {
+// countReverts counts pr.reverted events in the window — but only for tasks that
+// also landed in the window, so the change-failure numerator and denominator
+// share a cohort (a revert of a PR that merged before the window doesn't push
+// the rate above 100%).
+func countReverts(events []audit.Event, win func(time.Time) bool, landed map[string]bool) int {
 	n := 0
 	for i := range events {
-		if events[i].Type == audit.EventPRReverted && win(events[i].Timestamp) {
+		e := events[i]
+		if e.Type == audit.EventPRReverted && win(e.Timestamp) && landed[e.TaskID] {
 			n++
 		}
 	}

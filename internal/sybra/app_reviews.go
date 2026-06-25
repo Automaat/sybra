@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -394,23 +395,31 @@ func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
 	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
 		return
 	}
-	r.lastRevertScan = now
 
 	byRepo := map[string][]task.Task{}
 	for i := range tasks {
 		t := tasks[i]
-		if t.ProjectID == "" || t.MergeCommit == "" {
+		// A PR number is enough to detect a revert (by the "Reverts #n" form), so
+		// a task whose merge-commit capture failed at landing is still checked.
+		if t.ProjectID == "" || t.PRNumber == 0 {
 			continue
 		}
 		if t.Outcome != "merged" && t.Outcome != "merged_with_edits" {
-			continue // skip closed / already-reverted
+			// Skip closed / already-reverted. A reverted task stays reverted even
+			// if the revert is later re-applied — the change-failure still occurred.
+			continue
 		}
 		if t.ClosedAt != nil && now.Sub(*t.ClosedAt) > revertScanMaxAge {
 			continue
 		}
 		byRepo[t.ProjectID] = append(byRepo[t.ProjectID], t)
 	}
+	if len(byRepo) == 0 {
+		r.lastRevertScan = now // nothing to check; hold off until the next interval
+		return
+	}
 
+	scannedAny := false
 	for repo, cands := range byRepo {
 		ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
 		msgs, err := github.FetchRecentCommitMessages(ctx, repo, revertScanCommits)
@@ -419,9 +428,10 @@ func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
 			r.logger.Warn("pr-monitor.revert-scan", "repo", repo, "err", err)
 			continue
 		}
+		scannedAny = true
 		for j := range cands {
 			t := &cands[j]
-			if !isReverted(t.MergeCommit, msgs) {
+			if !isReverted(t.MergeCommit, t.ProjectID, t.PRNumber, msgs) {
 				continue
 			}
 			if _, err := r.tasks.Update(t.ID, task.Update{Outcome: task.Ptr("reverted")}); err != nil {
@@ -432,19 +442,40 @@ func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
 			r.logger.Info("pr-monitor.reverted", "task_id", t.ID, "pr", t.PRNumber, "merge_commit", t.MergeCommit)
 		}
 	}
+	// Only start the rate-limit clock once at least one repo was actually scanned,
+	// so a transient gh outage retries on the next poll instead of waiting 30m.
+	if scannedAny {
+		r.lastRevertScan = now
+	}
 }
 
-// isReverted reports whether any commit message reverts mergeCommit. Git's
-// revert template writes "This reverts commit <full-sha>." — match the full SHA
-// to avoid false positives.
-func isReverted(mergeCommit string, commitMessages []string) bool {
-	if mergeCommit == "" {
+// isReverted reports whether any default-branch commit message reverts the task.
+// It matches two GitHub revert forms so it works regardless of squash config:
+//   - the git footer "This reverts commit <full-sha>" (default COMMIT_MESSAGES)
+//   - the auto-generated body "Reverts #<n>" / "Reverts owner/repo#<n>" (which
+//     is what survives when the squash commit message is PR_BODY, as this repo's)
+//
+// Both anchor on the original PR's full SHA or number, so a passing mention of
+// the PR isn't a false positive.
+func isReverted(mergeCommit, repo string, prNumber int, commitMessages []string) bool {
+	var needles []string
+	if mergeCommit != "" {
+		needles = append(needles, "This reverts commit "+mergeCommit)
+	}
+	if prNumber > 0 {
+		needles = append(needles, fmt.Sprintf("Reverts #%d", prNumber))
+		if repo != "" {
+			needles = append(needles, fmt.Sprintf("Reverts %s#%d", repo, prNumber))
+		}
+	}
+	if len(needles) == 0 {
 		return false
 	}
-	needle := "This reverts commit " + mergeCommit
 	for _, m := range commitMessages {
-		if strings.Contains(m, needle) {
-			return true
+		for _, n := range needles {
+			if strings.Contains(m, n) {
+				return true
+			}
 		}
 	}
 	return false
