@@ -303,6 +303,10 @@ func (a *agentAdapter) HasRunningAgent(taskID string) bool {
 	return a.agents.HasRunningAgentForTask(taskID)
 }
 
+func (a *agentAdapter) HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool {
+	return a.agents.HasOtherRunningAgentForTask(taskID, exceptAgentID)
+}
+
 func (a *agentAdapter) FindRunningAgentForRole(taskID, role string) (string, bool) {
 	r := agent.Role(role)
 	ag := a.agents.FindRunningAgentForTask(taskID, r)

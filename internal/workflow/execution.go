@@ -146,6 +146,19 @@ func (e *Execution) LastAgentStepFailed() bool {
 	return false
 }
 
+// LastAgentID returns the agent ID of the most recent step that ran an agent,
+// or "" if none. verify_commits uses it to identify the just-completed agent
+// (whose own completion triggered the step) so it can be excluded when checking
+// for a sibling agent still working the task.
+func (e *Execution) LastAgentID() string {
+	for i := range slices.Backward(e.StepHistory) {
+		if e.StepHistory[i].AgentID != "" {
+			return e.StepHistory[i].AgentID
+		}
+	}
+	return ""
+}
+
 // StepRecord captures the result of executing one step.
 type StepRecord struct {
 	StepID    string    `yaml:"step_id" json:"stepId"`

@@ -304,6 +304,142 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 // re-spawning agents long after the underlying CI failure was resolved.
 // The fix: cancel any in-flight pr-fix workflow whose pr_issue_kind is no
 // longer present in the current MatchTaskPRs output.
+func TestAdoptOrphanPRs(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	mk := func(title string, u task.Update) string {
+		t.Helper()
+		created, cErr := tasks.Create(title, "", string(task.AgentModeHeadless))
+		if cErr != nil {
+			t.Fatalf("create %s: %v", title, cErr)
+		}
+		if _, uErr := tasks.Update(created.ID, u); uErr != nil {
+			t.Fatalf("update %s: %v", title, uErr)
+		}
+		return created.ID
+	}
+
+	// Stranded by a premature verify_commits verdict: human-required, branch
+	// set, no PR number — the exact 94af6462 failure shape.
+	orphan := mk("stranded", task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("implementation agent failed before committing — no commits on branch"),
+		Branch:       task.Ptr("feat/stranded"),
+		ProjectID:    task.Ptr("o/r"),
+	})
+	// Ambiguous: two open PRs share the branch → must NOT adopt.
+	ambiguous := mk("ambiguous", task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		Branch:    task.Ptr("feat/ambig"),
+		ProjectID: task.Ptr("o/r"),
+	})
+	// No matching PR → must NOT adopt.
+	noMatch := mk("no-match", task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		Branch:    task.Ptr("feat/orphaned-forever"),
+		ProjectID: task.Ptr("o/r"),
+	})
+	// Already in-review with a PR → not eligible, must be left untouched.
+	healthy := mk("healthy", task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		Branch:    task.Ptr("feat/healthy"),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(42),
+	})
+
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{
+		{Number: 1051, HeadRefName: "feat/stranded", Repository: "o/r"},
+		{Number: 7, HeadRefName: "feat/ambig", Repository: "o/r"},
+		{Number: 8, HeadRefName: "feat/ambig", Repository: "o/r"},
+		{Number: 42, HeadRefName: "feat/healthy", Repository: "o/r"},
+	}
+
+	r.adoptOrphanPRs(all, prs)
+
+	t.Run("orphan adopted and re-activated", func(t *testing.T) {
+		got, _ := tasks.Get(orphan)
+		if got.Status != task.StatusInReview {
+			t.Errorf("status = %q, want in-review", got.Status)
+		}
+		if got.PRNumber != 1051 {
+			t.Errorf("PRNumber = %d, want 1051", got.PRNumber)
+		}
+		if got.StatusReason != "" {
+			t.Errorf("StatusReason = %q, want cleared", got.StatusReason)
+		}
+	})
+
+	t.Run("in-place slice mutation visible to same poll", func(t *testing.T) {
+		for i := range all {
+			if all[i].ID == orphan {
+				if all[i].Status != task.StatusInReview || all[i].PRNumber != 1051 {
+					t.Errorf("slice entry not updated in place: status=%q pr=%d", all[i].Status, all[i].PRNumber)
+				}
+				return
+			}
+		}
+		t.Fatal("orphan not found in slice")
+	})
+
+	t.Run("ambiguous branch left untouched", func(t *testing.T) {
+		got, _ := tasks.Get(ambiguous)
+		if got.Status != task.StatusHumanRequired || got.PRNumber != 0 {
+			t.Errorf("ambiguous adopted: status=%q pr=%d, want human-required/0", got.Status, got.PRNumber)
+		}
+	})
+
+	t.Run("no matching PR left untouched", func(t *testing.T) {
+		got, _ := tasks.Get(noMatch)
+		if got.Status != task.StatusHumanRequired {
+			t.Errorf("no-match adopted: status=%q, want human-required", got.Status)
+		}
+	})
+
+	t.Run("ineligible task untouched", func(t *testing.T) {
+		got, _ := tasks.Get(healthy)
+		if got.Status != task.StatusInReview || got.PRNumber != 42 {
+			t.Errorf("healthy task mutated: status=%q pr=%d", got.Status, got.PRNumber)
+		}
+	})
+}
+
+func TestOrphanPRAdoptionEligible(t *testing.T) {
+	cases := []struct {
+		name string
+		t    task.Task
+		want bool
+	}{
+		{"stranded orphan", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r"}, true},
+		{"has pr number", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
+		{"no branch", task.Task{Status: task.StatusHumanRequired, ProjectID: "o/r"}, false},
+		{"no project", task.Task{Status: task.StatusHumanRequired, Branch: "b"}, false},
+		{"not human-required", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r"}, false},
+		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
+		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := orphanPRAdoptionEligible(&tc.t); got != tc.want {
+				t.Errorf("orphanPRAdoptionEligible = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))

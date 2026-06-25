@@ -23,6 +23,11 @@ type AgentCompletion struct {
 type AgentLauncher interface {
 	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
+	// HasOtherRunningAgentForTask reports whether an agent other than
+	// exceptAgentID is still running for the task. verify_commits uses it to
+	// avoid a premature verdict while a sibling agent is mid-flight, excluding
+	// the agent whose completion is currently being processed.
+	HasOtherRunningAgentForTask(taskID, exceptAgentID string) bool
 	FindRunningAgentForRole(taskID, role string) (agentID string, found bool)
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error

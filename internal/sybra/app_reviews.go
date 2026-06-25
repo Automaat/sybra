@@ -111,6 +111,15 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		return prPollSlow
 	}
 
+	monitoredPRs := r.monitoredPRs(summary)
+
+	// Recover PRs orphaned by a workflow that exited before linking — e.g. a
+	// task stranded in human-required while a late-finishing agent opened the
+	// PR (PRNumber never recorded). Re-link by branch and re-activate so the
+	// normal pr-fix/auto-merge path resumes. Runs before matcher assembly so an
+	// adopted task is monitored in this same poll.
+	r.adoptOrphanPRs(tasks, monitoredPRs)
+
 	var (
 		matchers       []github.TaskMatcher
 		closedMatchers []github.TaskMatcher
@@ -131,8 +140,6 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			closedMatchers = append(closedMatchers, m)
 		}
 	}
-
-	monitoredPRs := r.monitoredPRs(summary)
 
 	if len(matchers) > 0 {
 		issues := github.MatchTaskPRs(monitoredPRs, matchers)
@@ -319,6 +326,69 @@ func prClosedEligible(t *task.Task) bool {
 		return false
 	}
 	return t.Status == task.StatusHumanRequired && t.PRNumber != 0
+}
+
+// orphanPRAdoptionEligible reports whether a task is a candidate for orphan-PR
+// adoption: parked in human-required with a branch but no linked PR. That is
+// the signature of a workflow that exited (e.g. a premature verify_commits
+// verdict, or any crash) before a late-finishing agent opened the PR — the PR
+// exists on GitHub but the task never recorded its number, so the monitor is
+// blind to it. Chat tasks and inbound review tasks are never own-PR tasks.
+func orphanPRAdoptionEligible(t *task.Task) bool {
+	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+		return false
+	}
+	return t.Status == task.StatusHumanRequired &&
+		t.PRNumber == 0 &&
+		t.Branch != "" &&
+		t.ProjectID != ""
+}
+
+// adoptOrphanPRs re-links tasks stranded in human-required without a PR number
+// to a matching open PR discovered by head branch, then flips them to in-review
+// so the monitor's normal pr-fix/auto-merge path resumes. Re-activation is
+// non-destructive: a pet PR still passes through the full auto-merge gate
+// (Copilot review + green CI), and a work PR is merged by a human. A branch
+// matching more than one open PR is left untouched (ambiguous). Matched entries
+// of `tasks` are mutated in place so the caller's matcher assembly observes the
+// new state in the same poll.
+func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullRequest) {
+	for i := range tasks {
+		t := &tasks[i]
+		if !orphanPRAdoptionEligible(t) {
+			continue
+		}
+		var match *github.PullRequest
+		ambiguous := false
+		for j := range prs {
+			if prs[j].HeadRefName != t.Branch {
+				continue
+			}
+			if match != nil {
+				ambiguous = true
+				break
+			}
+			match = &prs[j]
+		}
+		if ambiguous || match == nil {
+			continue
+		}
+		updated, err := r.tasks.Update(t.ID, task.Update{
+			PRNumber:     task.Ptr(match.Number),
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(""),
+		})
+		if err != nil {
+			r.logger.Error("pr-monitor.orphan-adopt", "task_id", t.ID, "pr", match.Number, "err", err)
+			continue
+		}
+		tasks[i] = updated
+		r.logAudit(audit.EventPROrphanAdopted, t.ID, "", map[string]any{
+			"pr": match.Number, "repo": match.Repository, "branch": t.Branch,
+		})
+		r.logger.Info("pr-monitor.orphan-adopted",
+			"task_id", t.ID, "pr", match.Number, "branch", t.Branch)
+	}
 }
 
 func prNeedsAttention(prs []github.PullRequest) bool {

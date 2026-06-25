@@ -183,6 +183,22 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
 
+	// Defense in depth against the duplicate-dispatch class of bug: if a
+	// sibling agent (other than the one whose completion triggered this step)
+	// is still working the task, the branch may have no commits simply because
+	// that agent has not pushed yet. Flipping to human-required now would
+	// strand a task with live work in flight. End this run without a verdict
+	// via the verify_deferred transition; recovery re-drives the workflow once
+	// the worktree is quiescent, and the dispatch claim guarantees no duplicate.
+	if e.agents != nil {
+		if exceptID := wfExec.LastAgentID(); e.agents.HasOtherRunningAgentForTask(taskID, exceptID) {
+			wfExec.SetVar("verify_deferred", "true")
+			e.logger.Warn("workflow.verify-commits.deferred",
+				"task_id", taskID, "except_agent", exceptID)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "deferred: another agent still running for task"}, nil
+		}
+	}
+
 	output, err := e.gitLogAheadOfBase(wtPath)
 	if err != nil && !errors.Is(e.ctx.Err(), context.Canceled) && !errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 		verifyCommitsRetrySleep(verifyCommitsRetryBackoff)
