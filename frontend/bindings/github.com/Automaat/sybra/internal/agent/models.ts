@@ -109,10 +109,10 @@ export class Agent {
      * Creates a new Agent instance from a string or object.
      */
     static createFrom($$source: any = {}): Agent {
-        const $$createField25_0 = $$createType0;
+        const $$createField26_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField25_0($$parsedSource["pluginErrors"]);
+            $$parsedSource["pluginErrors"] = $$createField26_0($$parsedSource["pluginErrors"]);
         }
         return new Agent($$parsedSource as Partial<Agent>);
     }
