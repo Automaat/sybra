@@ -13,9 +13,14 @@ import (
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
 // through AdvanceStep via the existing agentSteps mapping.
-func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) error {
+//
+// Returns a non-nil *CompletionInfo when every child terminates at spawn time
+// and the parent's `next` ends the workflow synchronously — threaded up to the
+// marker-releasing caller (via executeSteps) rather than fired here, so the
+// completion's cascade isn't rejected as re-entrant.
+func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) (*CompletionInfo, error) {
 	if len(step.Parallel) < 2 {
-		return fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
+		return nil, fmt.Errorf("parallel step %q has fewer than 2 children", step.ID)
 	}
 
 	// Resume-safe: a re-entry into the same parallel parent (e.g. after a
@@ -48,7 +53,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	// completes mid-loop finds the parent record on AdvanceStep.
 	wfExec.State = ExecWaiting
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return err
+		return nil, err
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
@@ -80,7 +85,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		return e.finalizeParallelParent(taskID, def, step, wfExec)
 	}
 
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	return nil, e.tasks.SetWorkflow(taskID, wfExec)
 }
 
 // spawnParallelChild spawns one child agent of a parallel block. Mirrors
@@ -157,13 +162,18 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 // The parent step's StepRecord + Next-evaluation only fire after every
 // child has terminated. Aggregate parent status: completed iff every
 // child completed; failed otherwise.
-func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, child *Step, wfExec *Execution, output StepOutput) error {
+//
+// Returns a non-nil *CompletionInfo when the final child completion ends the
+// workflow synchronously. It is NOT fired here: AdvanceStep releases the
+// inflight mutex first and then fires it, so the cascade never runs under the
+// held lock.
+func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, child *Step, wfExec *Execution, output StepOutput) (comp *CompletionInfo, err error) {
 	rec := wfExec.ParallelInflight[parent.ID]
 	if rec == nil {
 		// Parent record was cleared (e.g. another late callback after the
-		// parent already advanced). Treat as a stale callback.
+		// parent already advanced). Stale callback: no completion, no error.
 		e.logger.Debug("workflow.parallel.stale", "task_id", taskID, "parent", parent.ID, "child", child.ID)
-		return nil
+		return
 	}
 	status := rec.Children[child.ID]
 	if status == nil {
@@ -180,14 +190,14 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		e.logger.Info("workflow.parallel.retry",
 			"task_id", taskID, "parent", parent.ID, "child", child.ID,
 			"attempt", status.Retries, "max", child.Config.MaxRetries)
-		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-			return err
+		if sErr := e.tasks.SetWorkflow(taskID, wfExec); sErr != nil {
+			return nil, sErr
 		}
 		// Re-spawn just this child. Reuse the parent's template context
 		// rendered fresh from the latest task state.
 		t, gErr := e.tasks.GetTask(taskID)
 		if gErr != nil {
-			return gErr
+			return nil, gErr
 		}
 		dir := wfExec.Variables[WorkflowVarDir]
 		ctx := TemplateContext{
@@ -201,7 +211,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 			status.Output = "respawn failed: " + spawnErr.Error()
 			e.logger.Error("workflow.parallel.respawn", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", spawnErr)
 		}
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
 	// Terminal status — update slot.
@@ -215,9 +225,11 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		e.logger.Debug("workflow.parallel.child-done",
 			"task_id", taskID, "parent", parent.ID, "child", child.ID,
 			"status", status.Status)
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
+	// Last child done: collapse the parent and return any synchronous
+	// completion up to AdvanceStep, which fires it after releasing inflight.
 	return e.finalizeParallelParent(taskID, def, parent, wfExec)
 }
 
@@ -226,10 +238,17 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 // the parent's Next. Called from advanceParallelChild on the last
 // completion, and from execParallel when every child failed at spawn time
 // (no agent ever ran → no completion callback will fire).
-func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *Step, wfExec *Execution) error {
+//
+// Returns a non-nil *CompletionInfo when advancing the parent ends the
+// workflow synchronously. It is NOT fired here: advanceParallelChild fires it
+// inline (inflight-only), while execParallel threads it up to its
+// marker-releasing caller — see those call sites.
+func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *Step, wfExec *Execution) (comp *CompletionInfo, err error) {
 	rec := wfExec.ParallelInflight[parent.ID]
 	if rec == nil {
-		return nil
+		// Stale/duplicate finalize — the record was already collapsed by a
+		// prior call. Benign no-op: neither a completion nor an error.
+		return
 	}
 
 	parentStatus := "completed"
@@ -256,15 +275,15 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	t.Workflow = wfExec
-	nextStep, err := e.resolveNext(taskID, def, parent, wfExec, t)
+	nextStep, comp, err := e.resolveNext(taskID, def, parent, wfExec, t)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if nextStep == nil {
-		return nil
+		return comp, nil
 	}
 	e.logger.Info("workflow.parallel.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID, "status", parentStatus)
 	return e.executeSteps(taskID, def, nextStep, wfExec)

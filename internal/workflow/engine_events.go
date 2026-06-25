@@ -328,10 +328,15 @@ func (e *Engine) ResumeStalled() {
 		}
 
 		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
-		rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
+		comp, rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
 		e.mu.Lock()
 		delete(e.dispatching, t.ID)
 		e.mu.Unlock()
+		// ResumeStalled only resumes async run_agent steps, so comp is normally
+		// nil (fireComplete no-ops). Kept defensive + after the dispatching
+		// marker is cleared, so the day a sync step becomes resumable its
+		// completion cascades correctly instead of being silently dropped.
+		e.fireComplete(comp)
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 		if rErr != nil {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)

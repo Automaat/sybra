@@ -117,6 +117,7 @@ type Engine struct {
 	starting        map[string]struct{}    // taskID → StartWorkflowWithVars in progress
 	humanAction     map[string]struct{}    // taskID → HandleHumanAction in progress
 	agentSteps      map[string]agentEntry  // agentID → {taskID, stepID}
+	cascadeDepth    map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
 	resumeError     *logging.ErrorThrottle
 }
 
@@ -133,6 +134,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		starting:        make(map[string]struct{}),
 		humanAction:     make(map[string]struct{}),
 		agentSteps:      make(map[string]agentEntry),
+		cascadeDepth:    make(map[string]int),
 		resumeError:     logging.NewErrorThrottle(),
 	}
 }

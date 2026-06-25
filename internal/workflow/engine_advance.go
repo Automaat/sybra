@@ -44,7 +44,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	// step's record + transitions are emitted only after every child has
 	// terminated, so we never go through the single-step record path here.
 	if ctx.ParallelParent != nil {
-		return e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
+		comp, pErr := e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
+		// Release inflight before the completion callback so its cascade
+		// dispatch never runs under the held lock (matches the paths below).
+		release()
+		e.fireComplete(comp)
+		return pErr
 	}
 
 	// Record step completion.
@@ -72,7 +77,9 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 				return err
 			}
 			release()
-			return e.executeSteps(taskID, &def, currentStep, wfExec)
+			comp, sErr := e.executeSteps(taskID, &def, currentStep, wfExec)
+			e.fireComplete(comp)
+			return sErr
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 			"attempts", retries)
@@ -93,17 +100,23 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 	t.Workflow = wfExec
 
-	nextStep, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
+	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
 	if err != nil {
 		return err
 	}
 	if nextStep == nil {
+		// Release the inflight lock before the completion callback so its
+		// cascade dispatch doesn't re-enter AdvanceStep against a held lock.
+		release()
+		e.fireComplete(comp)
 		return nil // workflow completed
 	}
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
-	return e.executeSteps(taskID, &def, nextStep, wfExec)
+	comp, sErr := e.executeSteps(taskID, &def, nextStep, wfExec)
+	e.fireComplete(comp)
+	return sErr
 }
 
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
@@ -263,12 +276,18 @@ func (e *CycleError) Error() string {
 // executeSteps iterates through synchronous steps until it hits an async step
 // (run_agent, wait_human) or the workflow ends. This avoids recursive calls
 // between executeStep/AdvanceStep that caused inflight guard deadlocks.
-func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
+// executeSteps drives synchronous steps until the workflow either reaches an
+// async step (run_agent/parallel/wait_human — returns nil completion) or ends
+// (returns a non-nil *CompletionInfo). The completion is returned rather than
+// fired here so marker-holding callers (StartWorkflowWithVars, DispatchEvent,
+// ResumeStalled) can fireComplete it only after their per-task marker is
+// released; non-marker callers fireComplete it immediately.
+func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec *Execution) (*CompletionInfo, error) {
 	visited := make(map[string]int) // stepID → first-seen iteration index
 	for i := range maxSyncSteps {
 		t, err := e.tasks.GetTask(taskID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Snapshot the execution for the template context so that clearing
@@ -289,7 +308,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		if wfExec.Recovered {
 			wfExec.Recovered = false
 			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-				return err
+				return nil, err
 			}
 		}
 
@@ -297,29 +316,29 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// will call AdvanceStep later.
 		switch step.Type {
 		case StepRunAgent:
-			return e.execRunAgent(taskID, step, wfExec, ctx)
+			return nil, e.execRunAgent(taskID, step, wfExec, ctx)
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
-			return e.execWaitHuman(taskID, step, wfExec)
+			return nil, e.execWaitHuman(taskID, step, wfExec)
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview:
 			// handled below as sync steps
 		default:
-			return fmt.Errorf("unknown step type %q", step.Type)
+			return nil, fmt.Errorf("unknown step type %q", step.Type)
 		}
 
 		// Detect cycles: a sync step revisited without an async break means
 		// the workflow loops forever. Return a CycleError instead of hitting
 		// the generic maxSyncSteps limit.
 		if firstAt, seen := visited[step.ID]; seen {
-			return &CycleError{StepID: step.ID, At: i, FirstAt: firstAt}
+			return nil, &CycleError{StepID: step.ID, At: i, FirstAt: firstAt}
 		}
 		visited[step.ID] = i
 
 		// Sync steps: execute, record result, resolve next, loop.
 		output, execErr := e.execSyncStep(taskID, step, wfExec, ctx, t)
 		if execErr != nil {
-			return execErr
+			return nil, execErr
 		}
 
 		now := time.Now().UTC()
@@ -337,22 +356,22 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// Re-read task for latest state (set_status changes task).
 		t, err = e.tasks.GetTask(taskID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		t.Workflow = wfExec
 
-		nextStep, nErr := e.resolveNext(taskID, def, step, wfExec, t)
+		nextStep, comp, nErr := e.resolveNext(taskID, def, step, wfExec, t)
 		if nErr != nil {
-			return nErr
+			return nil, nErr
 		}
 		if nextStep == nil {
-			return nil // workflow completed
+			return comp, nil // workflow completed; caller fires onComplete after marker release
 		}
 
 		e.logger.Info("workflow.advance", "task_id", taskID, "from", step.ID, "to", nextStep.ID)
 		step = nextStep
 	}
-	return fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
+	return nil, fmt.Errorf("workflow exceeded max sync step depth (%d)", maxSyncSteps)
 }
 
 // execSyncStep dispatches to a synchronous step handler and returns its output.
@@ -385,8 +404,15 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 }
 
-// resolveNext evaluates transitions and returns the next step, or nil if workflow ends.
-func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, error) {
+// resolveNext evaluates transitions and returns the next step, or nil if the
+// workflow ends. When the workflow ends it returns a non-nil *CompletionInfo;
+// the caller must hand it to fireComplete *after* releasing any per-task start
+// marker (see fireComplete). resolveNext deliberately does NOT invoke
+// e.onComplete itself: it runs inside DispatchEvent/StartWorkflowWithVars while
+// the dispatching/starting marker is held, so a cascade dispatched here would
+// be rejected as re-entrant (the bug that left synchronous mechanical workflows
+// — e.g. simple-task-handoff — never starting their successor).
+func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
 	fields := taskFields(t)
 	for k, v := range wfExec.Variables {
 		fields["vars."+k] = v
@@ -400,7 +426,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", current.ID, "err", tErr)
 		wfExec.State = ExecFailed
 		_ = e.tasks.SetWorkflow(taskID, wfExec)
-		return nil, tErr
+		return nil, nil, tErr
 	}
 
 	if nextID == "" {
@@ -409,28 +435,71 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		wfExec.CompletedAt = &now
 		wfExec.CurrentStep = ""
 		e.logger.Info("workflow.completed", "task_id", taskID, "workflow", def.ID)
-		err := e.tasks.SetWorkflow(taskID, wfExec)
-		if err == nil && e.onComplete != nil {
-			e.onComplete(CompletionInfo{
-				TaskID:     taskID,
-				WorkflowID: def.ID,
-				Variables:  wfExec.Variables,
-			})
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return nil, nil, err
 		}
-		return nil, err
+		return nil, &CompletionInfo{
+			TaskID:     taskID,
+			WorkflowID: def.ID,
+			Variables:  wfExec.Variables,
+		}, nil
 	}
 
 	nextStep := def.StepByID(nextID)
 	if nextStep == nil {
-		return nil, fmt.Errorf("next step %s not found in workflow %s", nextID, def.ID)
+		return nil, nil, fmt.Errorf("next step %s not found in workflow %s", nextID, def.ID)
 	}
 
 	wfExec.CurrentStep = nextStep.ID
 	wfExec.State = ExecRunning
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return nextStep, nil
+	return nextStep, nil, nil
+}
+
+// maxCascadeDepth bounds how many workflows may chain synchronously off a
+// single task before the engine refuses to cascade further. The completion
+// callback runs the next workflow's DispatchEvent inline, so an all-mechanical
+// loop (e.g. two set_status workflows that ping-pong a task between two
+// non-terminal statuses) would otherwise recurse on the stack until it
+// overflows. Production builtins never approach this — every successor reaches
+// an async run_agent/wait_human step that breaks the chain — so the bound only
+// fires on a misconfigured definition set, which it converts into a logged
+// error instead of a crash.
+const maxCascadeDepth = 64
+
+// fireComplete invokes the workflow-completion callback for a synchronously
+// finished workflow. Callers MUST invoke it only after releasing any per-task
+// start marker (the dispatching/starting maps), so the callback's cascade
+// DispatchEvent isn't rejected as re-entrant against the workflow that just
+// finished. A nil completion (workflow did not finish in this call) is a no-op.
+func (e *Engine) fireComplete(c *CompletionInfo) {
+	if c == nil || e.onComplete == nil {
+		return
+	}
+
+	e.mu.Lock()
+	e.cascadeDepth[c.TaskID]++
+	depth := e.cascadeDepth[c.TaskID]
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		if e.cascadeDepth[c.TaskID] <= 1 {
+			delete(e.cascadeDepth, c.TaskID)
+		} else {
+			e.cascadeDepth[c.TaskID]--
+		}
+		e.mu.Unlock()
+	}()
+
+	if depth > maxCascadeDepth {
+		e.logger.Error("workflow.cascade.depth-exceeded",
+			"task_id", c.TaskID, "workflow", c.WorkflowID, "depth", depth)
+		return
+	}
+
+	e.onComplete(*c)
 }
 
 func taskFields(t TaskInfo) map[string]string {
