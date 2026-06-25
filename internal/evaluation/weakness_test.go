@@ -38,6 +38,15 @@ func TestWeaknesses_FlagsShortfalls(t *testing.T) {
 	if hasMetric(ws, "provider:claude") {
 		t.Errorf("claude is not an outlier; should not be flagged")
 	}
+	// Ranked: all warn-severity weaknesses precede any info-severity ones.
+	seenInfo := false
+	for _, w := range ws {
+		if w.Severity == "info" {
+			seenInfo = true
+		} else if w.Severity == "warn" && seenInfo {
+			t.Errorf("unranked: warn %q appears after an info weakness", w.Metric)
+		}
+	}
 }
 
 func TestWeaknesses_HealthyAndLowData(t *testing.T) {

@@ -1,6 +1,9 @@
 package evaluation
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Weakness is one systematic shortfall the scorecard surfaces, paired with a
 // concrete suggested action — the deterministic half of the improvement loop.
@@ -66,7 +69,24 @@ func Weaknesses(r Report) []Weakness {
 
 	out = append(out, outlierWeaknesses(r.ByProvider, o.FailureRate, "provider")...)
 	out = append(out, outlierWeaknesses(r.ByRole, o.FailureRate, "role")...)
+
+	// Rank by severity (warn before info), stable within a severity so the
+	// detection order is preserved for equal-severity entries.
+	sort.SliceStable(out, func(i, j int) bool {
+		return severityRank(out[i].Severity) < severityRank(out[j].Severity)
+	})
 	return out
+}
+
+func severityRank(sev string) int {
+	switch sev {
+	case "warn":
+		return 0
+	case "info":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // outlierWeaknesses flags any breakdown group whose failure rate exceeds the
