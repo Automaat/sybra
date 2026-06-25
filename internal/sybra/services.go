@@ -124,6 +124,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		"InfoService": httpapi.NewService(a.infoSvc,
 			"GetVersion",
 			"GetCodexModels",
+			"GetCopilotModels",
 		),
 		"TaskService": httpapi.NewService(a.taskSvc,
 			"ListTasks",

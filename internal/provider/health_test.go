@@ -162,6 +162,29 @@ func TestClassifyCodexError(t *testing.T) {
 	}
 }
 
+func TestClassifyCopilotError(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ErrorSample
+		want Signal
+	}{
+		{"auth_401", ErrorSample{ErrorStatus: 401}, SignalAuthFailure},
+		{"rate_429", ErrorSample{ErrorStatus: 429}, SignalRateLimit},
+		{"stderr_not_authenticated", ErrorSample{Stderr: "Error: not authenticated"}, SignalAuthFailure},
+		{"stderr_copilot_login", ErrorSample{Stderr: "Please run: copilot login"}, SignalAuthFailure},
+		{"stderr_premium_requests", ErrorSample{Stderr: "You have exceeded your premium request allowance"}, SignalRateLimit},
+		{"unrelated", ErrorSample{Stderr: "panic goroutine"}, SignalNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _ := ClassifyCopilotError(tc.in)
+			if got != tc.want {
+				t.Errorf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // fakeEmitter records emitted events for assertions.
 type fakeEmitter struct {
 	mu     sync.Mutex
@@ -266,6 +289,55 @@ func TestFailover_PicksHealthyPeer(t *testing.T) {
 	c.setStatus("codex", Status{Provider: "codex", Healthy: true, Reason: "ok"}, true)
 	if got := c.Failover("claude"); got != "" {
 		t.Errorf("auto-failover off → no peer, got %q", got)
+	}
+}
+
+func TestFailover_PriorityChainCopilotLast(t *testing.T) {
+	fe := &fakeEmitter{}
+	c := New(Config{
+		Interval:       time.Minute,
+		ClaudeEnabled:  true,
+		CodexEnabled:   true,
+		CopilotEnabled: true,
+		AutoFailover:   true,
+	}, fe.emit, nil)
+	healthy := func(p string) { c.setStatus(p, Status{Provider: p, Healthy: true, Reason: "ok"}, true) }
+	down := func(p string) { c.setStatus(p, Status{Provider: p, Healthy: false, Reason: "logged_out"}, true) }
+	healthy("claude")
+	healthy("codex")
+	healthy("copilot")
+
+	// Copilot is never preferred while a higher-priority peer is healthy.
+	if got := c.Failover("codex"); got != "claude" {
+		t.Errorf("codex down, claude healthy → want claude, got %q", got)
+	}
+	if got := c.Failover("copilot"); got != "claude" {
+		t.Errorf("copilot down → want claude (highest), got %q", got)
+	}
+
+	// claude down → codex (next in priority), still not copilot.
+	down("claude")
+	if got := c.Failover("claude"); got != "codex" {
+		t.Errorf("claude down → want codex, got %q", got)
+	}
+
+	// claude + codex down → copilot is the only healthy peer left.
+	down("codex")
+	if got := c.Failover("claude"); got != "copilot" {
+		t.Errorf("claude+codex down → want copilot, got %q", got)
+	}
+
+	// copilot can itself fail over to a recovered higher-priority peer.
+	healthy("claude")
+	if got := c.Failover("copilot"); got != "claude" {
+		t.Errorf("copilot down, claude back → want claude, got %q", got)
+	}
+
+	// Disabled peers are skipped even when healthy.
+	c.SetProviderEnabled("claude", false)
+	down("codex")
+	if got := c.Failover("codex"); got != "copilot" {
+		t.Errorf("claude disabled, codex down → want copilot, got %q", got)
 	}
 }
 

@@ -21,13 +21,20 @@ type Status struct {
 
 // Config controls the Checker's probe schedule and failover policy.
 type Config struct {
-	Interval         time.Duration
-	ClaudeEnabled    bool
-	CodexEnabled     bool
-	AutoFailover     bool
-	ClaudeRLCooldown time.Duration
-	CodexRLCooldown  time.Duration
+	Interval          time.Duration
+	ClaudeEnabled     bool
+	CodexEnabled      bool
+	CopilotEnabled    bool
+	AutoFailover      bool
+	ClaudeRLCooldown  time.Duration
+	CodexRLCooldown   time.Duration
+	CopilotRLCooldown time.Duration
 }
+
+// failoverPriority is the order auto-failover prefers healthy peers in.
+// Copilot is last: it is never chosen over claude/codex, but can be a
+// fallback target when both are unhealthy, and can itself fail over to them.
+var failoverPriority = []string{"claude", "codex", "copilot"}
 
 // HealthGate is the small surface the agent Manager depends on. Kept minimal
 // so tests can supply a fake without spinning up a Checker.
@@ -64,9 +71,10 @@ type Checker struct {
 	emit   func(event string, data any)
 	logger *slog.Logger
 
-	probeClaude func(ctx context.Context) (Status, error)
-	probeCodex  func(ctx context.Context) (Status, error)
-	now         func() time.Time
+	probeClaude  func(ctx context.Context) (Status, error)
+	probeCodex   func(ctx context.Context) (Status, error)
+	probeCopilot func(ctx context.Context) (Status, error)
+	now          func() time.Time
 }
 
 // New constructs a Checker. Zero-value config fields are filled with defaults.
@@ -80,6 +88,9 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	if cfg.CodexRLCooldown <= 0 {
 		cfg.CodexRLCooldown = 15 * time.Minute
 	}
+	if cfg.CopilotRLCooldown <= 0 {
+		cfg.CopilotRLCooldown = 15 * time.Minute
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -87,17 +98,19 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		emit = func(string, any) {}
 	}
 	c := &Checker{
-		cfg:         cfg,
-		statuses:    make(map[string]*Status),
-		emit:        emit,
-		logger:      logger,
-		probeClaude: ProbeClaude,
-		probeCodex:  ProbeCodex,
-		now:         time.Now,
+		cfg:          cfg,
+		statuses:     make(map[string]*Status),
+		emit:         emit,
+		logger:       logger,
+		probeClaude:  ProbeClaude,
+		probeCodex:   ProbeCodex,
+		probeCopilot: ProbeCopilot,
+		now:          time.Now,
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
 	c.statuses["claude"] = &Status{Provider: "claude", Healthy: cfg.ClaudeEnabled, Reason: initialReason(cfg.ClaudeEnabled)}
 	c.statuses["codex"] = &Status{Provider: "codex", Healthy: cfg.CodexEnabled, Reason: initialReason(cfg.CodexEnabled)}
+	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: cfg.CopilotEnabled, Reason: initialReason(cfg.CopilotEnabled)}
 	return c
 }
 
@@ -126,13 +139,14 @@ func (c *Checker) Run(ctx context.Context) {
 
 func (c *Checker) checkAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	var claudeStatus, codexStatus Status
-	var claudeErr, codexErr error
-	var doClaude, doCodex bool
+	var claudeStatus, codexStatus, copilotStatus Status
+	var claudeErr, codexErr, copilotErr error
+	var doClaude, doCodex, doCopilot bool
 
 	c.mu.RLock()
 	doClaude = c.cfg.ClaudeEnabled
 	doCodex = c.cfg.CodexEnabled
+	doCopilot = c.cfg.CopilotEnabled
 	c.mu.RUnlock()
 
 	if doClaude {
@@ -145,6 +159,11 @@ func (c *Checker) checkAll(ctx context.Context) {
 			codexStatus, codexErr = c.probeCodex(ctx)
 		})
 	}
+	if doCopilot {
+		wg.Go(func() {
+			copilotStatus, copilotErr = c.probeCopilot(ctx)
+		})
+	}
 	wg.Wait()
 
 	if doClaude {
@@ -152,6 +171,9 @@ func (c *Checker) checkAll(ctx context.Context) {
 	}
 	if doCodex {
 		c.applyProbeResult("codex", codexStatus, codexErr)
+	}
+	if doCopilot {
+		c.applyProbeResult("copilot", copilotStatus, copilotErr)
 	}
 	c.clearExpiredRateLimits()
 }
@@ -302,36 +324,38 @@ func (c *Checker) Reason(provider string) string {
 	return ""
 }
 
-// Failover picks a healthy peer when auto-failover is enabled. Returns empty
-// string if auto-failover is disabled or no peer is healthy.
+// Failover picks a healthy peer when auto-failover is enabled, walking
+// failoverPriority in order (claude > codex > copilot). Returns empty string
+// if auto-failover is disabled or no enabled peer is currently healthy.
 func (c *Checker) Failover(unhealthy string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.cfg.AutoFailover {
 		return ""
 	}
-	peer := otherProvider(unhealthy)
-	if peer == "" {
-		return ""
-	}
-	// Peer must be enabled and currently healthy.
-	if (peer == "claude" && !c.cfg.ClaudeEnabled) || (peer == "codex" && !c.cfg.CodexEnabled) {
-		return ""
-	}
-	if s, ok := c.statuses[peer]; ok && s.Healthy {
-		return peer
+	for _, peer := range failoverPriority {
+		if peer == unhealthy || !c.providerEnabledLocked(peer) {
+			continue
+		}
+		if s, ok := c.statuses[peer]; ok && s.Healthy {
+			return peer
+		}
 	}
 	return ""
 }
 
-func otherProvider(p string) string {
-	switch p {
+// providerEnabledLocked reports whether a provider participates in probing and
+// failover. Caller must hold c.mu.
+func (c *Checker) providerEnabledLocked(provider string) bool {
+	switch provider {
 	case "claude":
-		return "codex"
+		return c.cfg.ClaudeEnabled
 	case "codex":
-		return "claude"
+		return c.cfg.CodexEnabled
+	case "copilot":
+		return c.cfg.CopilotEnabled
 	default:
-		return ""
+		return false
 	}
 }
 
@@ -362,6 +386,8 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 			cooldown = c.cfg.ClaudeRLCooldown
 		case "codex":
 			cooldown = c.cfg.CodexRLCooldown
+		case "copilot":
+			cooldown = c.cfg.CopilotRLCooldown
 		default:
 			cooldown = 15 * time.Minute
 		}
@@ -407,6 +433,8 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 		c.cfg.ClaudeEnabled = v
 	case "codex":
 		c.cfg.CodexEnabled = v
+	case "copilot":
+		c.cfg.CopilotEnabled = v
 	default:
 		c.mu.Unlock()
 		return

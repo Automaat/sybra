@@ -75,7 +75,7 @@ func TestRehydrateCodexConvoFromLog(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	a := &Agent{ID: "cx", Provider: "codex"}
-	rehydrateCodexConvoFromLog(a, path)
+	rehydratePerTurnConvoFromLog(a, path)
 	if len(a.ConvoOutput()) == 0 {
 		t.Fatal("expected codex convo events rehydrated")
 	}

@@ -336,7 +336,7 @@ func TestProcessHeadlessLine_CapturesSessionOnInit(t *testing.T) {
 
 	// Claude reports the session id on the init/system event (no result yet).
 	line := []byte(`{"type":"system","subtype":"init","session_id":"sess-real"}`)
-	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, false); stop {
+	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, "claude"); stop {
 		t.Fatal("init event must not stop the stream")
 	}
 

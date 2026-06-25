@@ -31,28 +31,32 @@ const (
 )
 
 type Agent struct {
-	ID                       string    `json:"id"`
-	TaskID                   string    `json:"taskId"`
-	Mode                     string    `json:"mode"`
-	State                    State     `json:"state"`
-	SessionID                string    `json:"sessionId"`
-	CostUSD                  float64   `json:"costUsd"`
-	InputTokens              int       `json:"inputTokens,omitempty"`
-	OutputTokens             int       `json:"outputTokens,omitempty"`
-	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
-	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
-	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
-	StartedAt                time.Time `json:"startedAt"`
-	LastEventAt              time.Time `json:"lastEventAt"`
-	LogPath                  string    `json:"logPath,omitempty"`
-	External                 bool      `json:"external"`
-	PID                      int       `json:"pid,omitempty"`
-	Command                  string    `json:"command,omitempty"`
-	Name                     string    `json:"name,omitempty"`
-	Project                  string    `json:"project,omitempty"`
-	Provider                 string    `json:"provider,omitempty"`
-	Model                    string    `json:"model,omitempty"`
-	Prompt                   string    `json:"prompt,omitempty"`
+	ID                       string  `json:"id"`
+	TaskID                   string  `json:"taskId"`
+	Mode                     string  `json:"mode"`
+	State                    State   `json:"state"`
+	SessionID                string  `json:"sessionId"`
+	CostUSD                  float64 `json:"costUsd"`
+	InputTokens              int     `json:"inputTokens,omitempty"`
+	OutputTokens             int     `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	// PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
+	// no USD cost, so this is the usage signal surfaced for copilot agents;
+	// always 0 for claude/codex.
+	PremiumRequests int       `json:"premiumRequests,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	LastEventAt     time.Time `json:"lastEventAt"`
+	LogPath         string    `json:"logPath,omitempty"`
+	External        bool      `json:"external"`
+	PID             int       `json:"pid,omitempty"`
+	Command         string    `json:"command,omitempty"`
+	Name            string    `json:"name,omitempty"`
+	Project         string    `json:"project,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Prompt          string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -289,6 +293,32 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.CacheCreationInputTokens += cacheCreate
 	a.CacheReadInputTokens += cacheRead
 	a.mu.Unlock()
+}
+
+// AddPremiumRequests merges Copilot premium-request usage into the totals.
+// Copilot reports usage in premium requests (AI credits) rather than USD;
+// claude/codex never call this (their result events carry no such field).
+func (a *Agent) AddPremiumRequests(n int) {
+	a.mu.Lock()
+	a.PremiumRequests += n
+	a.mu.Unlock()
+}
+
+// AddOutputTokens merges per-message output tokens into the totals. Copilot
+// reports output tokens on each assistant.message rather than once on the
+// terminal result, so the headless runner accumulates them here as they
+// stream. No-op-equivalent for claude/codex, whose assistant events carry 0.
+func (a *Agent) AddOutputTokens(n int) {
+	a.mu.Lock()
+	a.OutputTokens += n
+	a.mu.Unlock()
+}
+
+// GetPremiumRequests returns the cumulative Copilot premium-request count.
+func (a *Agent) GetPremiumRequests() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.PremiumRequests
 }
 
 // EnqueuePrompt appends a follow-up prompt to the pending queue.
@@ -544,7 +574,7 @@ type RunConfig struct {
 	Prompt             string
 	AllowedTools       []string
 	Dir                string
-	Provider           string // "claude" or "codex"
+	Provider           string // "claude", "codex", or "copilot"
 	Model              string // "opus", "sonnet", or full model ID
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
@@ -601,17 +631,20 @@ type PlanStep struct {
 }
 
 type StreamEvent struct {
-	Type                     string    `json:"type"`
-	Content                  string    `json:"content,omitempty"`
-	SessionID                string    `json:"session_id,omitempty"`
-	CostUSD                  float64   `json:"cost_usd,omitempty"`
-	InputTokens              int       `json:"input_tokens,omitempty"`
-	OutputTokens             int       `json:"output_tokens,omitempty"`
-	CacheCreationInputTokens int       `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int       `json:"cache_read_input_tokens,omitempty"`
-	ReasoningTokens          int       `json:"reasoning_tokens,omitempty"`
-	Subtype                  string    `json:"subtype,omitempty"`
-	Timestamp                time.Time `json:"timestamp"`
+	Type                     string  `json:"type"`
+	Content                  string  `json:"content,omitempty"`
+	SessionID                string  `json:"session_id,omitempty"`
+	CostUSD                  float64 `json:"cost_usd,omitempty"`
+	InputTokens              int     `json:"input_tokens,omitempty"`
+	OutputTokens             int     `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens,omitempty"`
+	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
+	// PremiumRequests is Copilot's per-result billing-unit count (result event)
+	// or 0 for claude/codex.
+	PremiumRequests int       `json:"premium_requests,omitempty"`
+	Subtype         string    `json:"subtype,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"error_type,omitempty"`
@@ -642,6 +675,7 @@ type ConvoEvent struct {
 	CacheCreationInputTokens int               `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int               `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int               `json:"reasoningTokens,omitempty"`
+	PremiumRequests          int               `json:"premiumRequests,omitempty"`
 	IsPartial                bool              `json:"isPartial,omitempty"`
 	Timestamp                time.Time         `json:"timestamp"`
 	Raw                      json.RawMessage   `json:"raw,omitempty"`

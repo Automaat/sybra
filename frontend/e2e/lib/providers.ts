@@ -1,5 +1,5 @@
 export type ProviderSpec = {
-  provider: 'claude' | 'codex'
+  provider: 'claude' | 'codex' | 'copilot'
   modelLabel: string
   expectedOptions: string[]
 }
@@ -14,6 +14,22 @@ export const providerMatrix: ProviderSpec[] = [
     provider: 'codex',
     modelLabel: 'Default (gpt-5.5)',
     expectedOptions: ['Default (gpt-5.5)', 'GPT-5.4', 'GPT-5.4 Mini', 'GPT-5.3 Codex'],
+  },
+  {
+    provider: 'copilot',
+    modelLabel: 'Default (GPT-5.4)',
+    // Must match GetCopilotModels() / copilotFallbackModels exactly (9 entries).
+    expectedOptions: [
+      'Default (GPT-5.4)',
+      'GPT-5.4',
+      'GPT-5.4 Mini',
+      'GPT-5.3 Codex',
+      'Claude Opus 4.6',
+      'Claude Sonnet 4.6',
+      'Claude Haiku 4.5',
+      'Gemini 3 Pro',
+      'Auto',
+    ],
   },
 ]
 

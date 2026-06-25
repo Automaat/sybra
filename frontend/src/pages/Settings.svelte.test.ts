@@ -5,6 +5,7 @@ const mockGetSettings = vi.fn()
 const mockUpdateSettings = vi.fn()
 const mockGetVersion = vi.fn()
 const mockGetCodexModels = vi.fn()
+const mockGetCopilotModels = vi.fn()
 const mockProviderHealthEnabled = vi.fn()
 const mockGetProviderHealth = vi.fn()
 const mockSetProviderAutoFailover = vi.fn()
@@ -16,6 +17,7 @@ vi.mock('$lib/api', () => ({
   UpdateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
   GetCodexModels: (...args: unknown[]) => mockGetCodexModels(...args),
+  GetCopilotModels: (...args: unknown[]) => mockGetCopilotModels(...args),
   ProviderHealthEnabled: (...args: unknown[]) => mockProviderHealthEnabled(...args),
   GetProviderHealth: (...args: unknown[]) => mockGetProviderHealth(...args),
   SetProviderAutoFailover: (...args: unknown[]) => mockSetProviderAutoFailover(...args),
@@ -36,6 +38,7 @@ const mockSettings = {
   providers: {
     claude: { enabled: true },
     codex: { enabled: false },
+    copilot: { enabled: true },
     autoFailover: false,
     healthCheck: { intervalSeconds: 30 },
   },
@@ -57,6 +60,7 @@ describe('Settings', () => {
     mockUpdateSettings.mockReset()
     mockGetVersion.mockResolvedValue({ server: 'v1.0.0', client: 'v1.0.0' })
     mockGetCodexModels.mockResolvedValue([])
+    mockGetCopilotModels.mockResolvedValue([])
     mockProviderHealthEnabled.mockResolvedValue(false)
     mockGetProviderHealth.mockResolvedValue([])
     mockEventsOn.mockReturnValue(vi.fn())

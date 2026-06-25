@@ -66,6 +66,7 @@ export const UpdateTodoistToken = pick(ConfigSvc.UpdateTodoistToken, http.Update
 
 // InfoService
 export const GetCodexModels = pick(InfoSvc.GetCodexModels, http.GetCodexModels)
+export const GetCopilotModels = pick(InfoSvc.GetCopilotModels, http.GetCopilotModels)
 export const GetVersion = pick(InfoSvc.GetVersion, http.GetVersion)
 
 // IntegrationService

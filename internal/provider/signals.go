@@ -78,6 +78,34 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	return SignalNone, "", 0
 }
 
+// ClassifyCopilotError mirrors the other classifiers for GitHub Copilot CLI
+// runs. Copilot has no documented machine error taxonomy, so this leans on
+// substring matching of the phrases Copilot prints for auth and quota failures
+// (kept in sync with isLoggedOutStderr). Without a copilot-specific classifier
+// a logged-out/quota-exhausted copilot would return SignalNone and the health
+// gate would keep routing failover work to a dead provider.
+func ClassifyCopilotError(s ErrorSample) (Signal, string, time.Duration) {
+	if s.ErrorStatus == 401 || strings.EqualFold(s.ErrorType, "unauthorized") {
+		return SignalAuthFailure, "logged_out", 0
+	}
+	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+	}
+	stderr := strings.ToLower(s.Stderr)
+	content := strings.ToLower(s.Content)
+	authNeedles := []string{"not logged in", "not authenticated", "please run: copilot login", "run `copilot login`", "run 'copilot login'", "unauthorized"}
+	if containsAny(stderr, authNeedles...) || containsAny(content, authNeedles...) {
+		return SignalAuthFailure, "logged_out", 0
+	}
+	// Copilot meters usage in "premium requests"; an exhausted allowance is the
+	// copilot analogue of a rate limit.
+	quotaNeedles := []string{"rate_limit", "rate limit", "quota", "premium request", "usage limit", "monthly limit"}
+	if containsAny(stderr, quotaNeedles...) || containsAny(content, quotaNeedles...) {
+		return SignalRateLimit, "rate_limited", 0
+	}
+	return SignalNone, "", 0
+}
+
 func reasonFromType(errType, fallback string) string {
 	if strings.TrimSpace(errType) == "" {
 		return fallback

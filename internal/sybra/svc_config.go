@@ -83,7 +83,7 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	validProviders := map[string]bool{"": true, "claude": true, "codex": true}
+	validProviders := map[string]bool{"": true, "claude": true, "codex": true, "copilot": true}
 	if !validProviders[settings.Agent.Provider] {
 		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
 	}

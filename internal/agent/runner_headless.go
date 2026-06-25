@@ -328,7 +328,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 
 	var buf []byte
 	var lastEmit time.Time
-	isCodex := normalizeProvider(a.Provider) == "codex"
+	provider := normalizeProvider(a.Provider)
 
 	// end is the byte position after the last complete line consumed: total
 	// bytes read minus any trailing partial line still buffered. Resuming a
@@ -355,7 +355,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 			}
 			line := buf[:i]
 			buf = buf[i+1:]
-			if m.processHeadlessLine(ctx, a, line, &lastEmit, isCodex) {
+			if m.processHeadlessLine(ctx, a, line, &lastEmit, provider) {
 				return true
 			}
 		}
@@ -427,7 +427,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	scanner := bufio.NewScanner(tracked)
 	scanner.Buffer(make([]byte, 0, headlessScannerBuffer), headlessScannerBuffer)
 	var lastEmit time.Time
-	isCodex := normalizeProvider(a.Provider) == "codex"
+	provider := normalizeProvider(a.Provider)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -436,7 +436,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		if m.processHeadlessLine(ctx, a, line, &lastEmit, isCodex) {
+		if m.processHeadlessLine(ctx, a, line, &lastEmit, provider) {
 			// Guardrail asked to stop: cancel the context so the pipe-backed
 			// subprocess is terminated, then unwind. cancel may be nil in
 			// unit tests that drive the streamer directly.
@@ -449,22 +449,30 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	m.reportScannerError(a, scanner.Err())
 }
 
-// parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using
-// the provider-appropriate parser. Shared by the live line handler and the
-// reattach rehydrator.
-func parseHeadlessEvent(line []byte, isCodex bool) (StreamEvent, error) {
-	if isCodex {
+// parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using the
+// provider-appropriate parser. Shared by the live line handler and the
+// reattach rehydrator. `provider` is the normalized provider name.
+func parseHeadlessEvent(line []byte, provider string) (StreamEvent, error) {
+	switch provider {
+	case "codex":
 		ce, err := ParseCodexLine(line)
 		if err != nil {
 			return StreamEvent{}, err
 		}
 		return codexEventToStreamEvent(ce), nil
+	case "copilot":
+		ce, err := ParseCopilotLine(line)
+		if err != nil {
+			return StreamEvent{}, err
+		}
+		return copilotEventToStreamEvent(ce), nil
+	default:
+		ce, err := ParseClaudeLine(line)
+		if err != nil {
+			return StreamEvent{}, err
+		}
+		return claudeEventToStreamEvent(ce), nil
 	}
-	ce, err := ParseClaudeLine(line)
-	if err != nil {
-		return StreamEvent{}, err
-	}
-	return claudeEventToStreamEvent(ce), nil
 }
 
 // processHeadlessLine parses one NDJSON line, appends and emits the event,
@@ -472,22 +480,8 @@ func parseHeadlessEvent(line []byte, isCodex bool) (StreamEvent, error) {
 // guardrails. Returns true when a guardrail decision says to stop the
 // stream. Shared by the pipe-backed streamer and the file tailer; it never
 // writes the log file (the caller or the child process owns that).
-func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, isCodex bool) (stop bool) {
-	var event StreamEvent
-	var parseErr error
-	if isCodex {
-		var ce CodexEvent
-		ce, parseErr = ParseCodexLine(line)
-		if parseErr == nil {
-			event = codexEventToStreamEvent(ce)
-		}
-	} else {
-		var ce ClaudeEvent
-		ce, parseErr = ParseClaudeLine(line)
-		if parseErr == nil {
-			event = claudeEventToStreamEvent(ce)
-		}
-	}
+func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, provider string) (stop bool) {
+	event, parseErr := parseHeadlessEvent(line, provider)
 	if parseErr != nil {
 		m.logger.Warn("agent.headless.parse", "id", a.ID, "err", parseErr, "line", string(line))
 		return false
@@ -514,7 +508,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 			a.SetSessionID(event.SessionID)
 			m.saveRegistry(a)
 		}
-		if isCodex {
+		if provider == "codex" {
 			if p := resolveCodexSessionFile(event.SessionID); p != "" {
 				a.SetSessionFilePath(p)
 			}
@@ -531,6 +525,13 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 
 	if event.Type == "assistant" {
+		// Copilot reports output tokens per assistant.message (claude/codex
+		// carry 0 here and total on the result event instead). Accumulate them
+		// as they stream so the stats reflect a copilot run that has no
+		// token totals on its terminal result.
+		if event.OutputTokens > 0 {
+			a.AddOutputTokens(event.OutputTokens)
+		}
 		if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
 			return true
 		}
@@ -539,6 +540,10 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if event.Type == "result" {
 		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
+		// Copilot's billing unit: premium requests (no USD on the result event).
+		if event.PremiumRequests > 0 {
+			a.AddPremiumRequests(event.PremiumRequests)
+		}
 		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.

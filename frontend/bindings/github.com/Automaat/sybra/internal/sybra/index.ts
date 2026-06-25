@@ -35,6 +35,7 @@ export {
 export {
     AppSettings,
     CodexModel,
+    CopilotModel,
     LoggingSettings,
     LoopAgentRun,
     MonitorReportBinding,

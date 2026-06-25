@@ -136,6 +136,34 @@ export class CodexModel {
 }
 
 /**
+ * CopilotModel is a single Copilot model option (slug + display name).
+ */
+export class CopilotModel {
+    "slug": string;
+    "display_name": string;
+
+    /** Creates a new CopilotModel instance. */
+    constructor($$source: Partial<CopilotModel> = {}) {
+        if (!("slug" in $$source)) {
+            this["slug"] = "";
+        }
+        if (!("display_name" in $$source)) {
+            this["display_name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CopilotModel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CopilotModel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CopilotModel($$parsedSource as Partial<CopilotModel>);
+    }
+}
+
+/**
  * LoggingSettings holds the editable subset of LoggingConfig (Dir is read-only).
  */
 export class LoggingSettings {

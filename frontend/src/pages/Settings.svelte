@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { GetSettings, UpdateSettings, GetVersion, GetCodexModels, ProviderHealthEnabled } from '$lib/api'
+  import { GetSettings, UpdateSettings, GetVersion, GetCodexModels, GetCopilotModels, ProviderHealthEnabled } from '$lib/api'
   import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
@@ -61,6 +61,21 @@
   ]
   let codexDynamicModels = $state<ModelOption[]>([])
 
+  // Copilot has no machine-readable model list command; the backend returns a
+  // curated catalog (latest of each vendor). Fallback mirrors it for offline.
+  const copilotFallbackModels: ModelOption[] = [
+    { value: '', label: 'Default (GPT-5.4)' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'claude-opus-4.6', label: 'Claude Opus 4.6' },
+    { value: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+    { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro' },
+    { value: 'auto', label: 'Auto' },
+  ]
+  let copilotDynamicModels = $state<ModelOption[]>([])
+
   // Provider health is server-gated; only surface the Providers pane (and its
   // rail entry) when the backend actually runs health checks.
   let providerHealthEnabled = $state(false)
@@ -77,6 +92,11 @@
           { value: '', label: codexFallbackModels[0].label },
           ...models.map(m => ({ value: m.slug, label: m.display_name })),
         ]
+      }
+    }).catch(() => {})
+    GetCopilotModels().then(models => {
+      if (models && models.length > 0) {
+        copilotDynamicModels = models.map(m => ({ value: m.slug, label: m.display_name }))
       }
     }).catch(() => {})
     ProviderHealthEnabled().then(v => { providerHealthEnabled = v }).catch(() => {})
@@ -132,6 +152,9 @@
     if (!settings) return []
     if (settings.agent.provider === 'codex') {
       return codexDynamicModels.length > 0 ? codexDynamicModels : codexFallbackModels
+    }
+    if (settings.agent.provider === 'copilot') {
+      return copilotDynamicModels.length > 0 ? copilotDynamicModels : copilotFallbackModels
     }
     return [
       { value: '', label: 'Default (Sonnet)' },
@@ -341,6 +364,7 @@
                   >
                     <option value="claude">Claude</option>
                     <option value="codex">Codex</option>
+                    <option value="copilot">Copilot</option>
                   </select>
                 </div>
                 <div class="flex flex-col gap-1">

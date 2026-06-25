@@ -66,30 +66,81 @@ func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 	return ev
 }
 
-// runCodexConversational runs Codex in interactive conversational mode.
-// Each turn spawns a fresh `codex exec --json` process. After turn.completed
-// the agent transitions to StatePaused and waits for the next prompt on
-// promptCh. OneShot skips the wait and exits after the first turn.
+// copilotEventToConvoEvent converts a parsed CopilotEvent into a ConvoEvent
+// for conversational mode. Mirrors codexEventToConvoEvent: "tool_result" maps
+// to type "user" (Claude stream-json convention) and tool result content is
+// truncated to 2000 chars. Copilot reports premium-request usage and
+// per-message output tokens rather than USD cost.
+func copilotEventToConvoEvent(e CopilotEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+		}
+		// Deliberately omit ToolUses here: Copilot emits a separate
+		// tool.execution_start event (mapped to a tool_use ConvoEvent) for the
+		// same tool call, so copying the assistant.message toolRequests too
+		// would render every tool twice in the timeline.
+		ev.OutputTokens = e.OutputTokens
+	case "tool_use":
+		if e.Message != nil {
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "tool_result":
+		ev.Type = "user"
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				if len(results[i].Content) > 2000 {
+					results[i].Content = results[i].Content[:2000] + "..."
+				}
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.PremiumRequests = e.Result.PremiumRequests
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
+		}
+	}
+	return ev
+}
+
+// runPerTurnConversational runs a per-turn provider (codex/copilot) in
+// interactive conversational mode. Each turn spawns a fresh process
+// (`codex exec --json` or `copilot -p --output-format json`). After the turn's
+// terminal result the agent transitions to StatePaused and waits for the next
+// prompt on promptCh. OneShot skips the wait and exits after the first turn.
 //
 // resumeWait starts the loop already idle (skip the first turn, wait for the
-// next prompt) — used when reattaching a recreated codex agent after a
-// restart.
+// next prompt) — used when reattaching a recreated agent after a restart.
 //
-// Restart survival: codex convo has no persistent process between turns, so
+// Restart survival: per-turn convo has no persistent process between turns, so
 // it "survives" by recreate-on-restart. When survival is on, the agent is
 // recorded; on a shutdown (ctx cancel that is NOT an intentional stop) the
 // goroutine returns WITHOUT finalizing, leaving the record for the next
 // startup to recreate. A normal completion / user-close finalizes and
 // deletes the record.
-func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunConfig, resumeWait bool) {
+func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg RunConfig, resumeWait bool) {
 	survived := false
 	defer func() {
 		if survived {
-			m.logger.Info("agent.codex.convo.detach", "id", a.ID, "reason", "shutdown")
+			m.logger.Info("agent.convo.detach", "id", a.ID, "provider", a.Provider, "reason", "shutdown")
 			return
 		}
 		a.SetState(StateStopped)
-		m.logger.Info("agent.codex.convo.done", "id", a.ID, "cost", a.GetCostUSD())
+		m.logger.Info("agent.convo.done", "id", a.ID, "provider", a.Provider, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
 		m.recordCompletion(a, a.GetExitErr() == nil)
 		if m.onComplete != nil {
@@ -137,7 +188,7 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 	prompt := cfg.Prompt
 	for {
 		if !resumeWait {
-			if !m.runCodexTurn(ctx, a, cfg, prompt, logWriter) {
+			if !m.runConvoTurn(ctx, a, cfg, prompt, logWriter) {
 				if shutdownSurvive() {
 					survived = true
 				}
@@ -174,11 +225,12 @@ func (m *Manager) runCodexConversational(ctx context.Context, a *Agent, cfg RunC
 	}
 }
 
-// runCodexTurn runs one `codex exec --json` process and streams output as
-// ConvoEvents. Returns true when turn.completed was observed.
-func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
-	args := buildCodexConvoArgs(a, cfg, prompt)
-	cmd := exec.CommandContext(ctx, "codex", args...)
+// runConvoTurn runs one per-turn provider process (`codex exec --json` or
+// `copilot -p --output-format json`) and streams output as ConvoEvents.
+// Returns true when the turn's terminal result was observed.
+func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
+	bin, args := buildPerTurnConvoArgs(a, cfg, prompt)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
@@ -189,26 +241,26 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		m.logger.Error("agent.codex.convo.stdout-pipe", "id", a.ID, "err", err)
+		m.logger.Error("agent.convo.stdout-pipe", "id", a.ID, "provider", a.Provider, "err", err)
 		return false
 	}
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
-		m.logger.Error("agent.codex.convo.start", "id", a.ID, "err", err)
+		m.logger.Error("agent.convo.start", "id", a.ID, "provider", a.Provider, "err", err)
 		return false
 	}
 	a.SetCmd(cmd)
-	m.logger.Info("agent.codex.convo.turn", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
+	m.logger.Info("agent.convo.turn", "id", a.ID, "provider", a.Provider, "pid", cmd.Process.Pid, "dir", cmd.Dir)
 
 	prevLen := len(a.ConvoOutput())
-	gotResult := m.streamCodexConvoOutput(a, stdout, logWriter)
+	gotResult := m.streamPerTurnConvoOutput(a, stdout, logWriter)
 
 	waitErr := cmd.Wait()
 	stderrOut := stderrBuf.String()
 	if waitErr != nil {
-		m.logger.Error("agent.codex.convo.exit", "id", a.ID, "err", waitErr)
+		m.logger.Error("agent.convo.exit", "id", a.ID, "provider", a.Provider, "err", waitErr)
 		a.SetExitErr(waitErr)
 		all := a.ConvoOutput()
 		if prevLen > len(all) {
@@ -217,9 +269,18 @@ func (m *Manager) runCodexTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 		m.reportProviderHealthSignalConvo(a, stderrOut, all[prevLen:])
 	}
 	if stderrOut != "" {
-		m.logger.Error("agent.codex.convo.stderr", "id", a.ID, "stderr", stderrOut)
+		m.logger.Error("agent.convo.stderr", "id", a.ID, "provider", a.Provider, "stderr", stderrOut)
 	}
 	return gotResult
+}
+
+// buildPerTurnConvoArgs returns the binary name and argv for one per-turn
+// conversational turn, dispatching on the agent's provider.
+func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string) {
+	if normalizeProvider(a.Provider) == "copilot" {
+		return "copilot", buildCopilotConvoArgs(a, prompt)
+	}
+	return "codex", buildCodexConvoArgs(a, cfg, prompt)
 }
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
@@ -237,7 +298,23 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	return args
 }
 
-func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer) (gotResult bool) {
+// buildCopilotConvoArgs builds the argv for one Copilot conversational turn.
+// Each turn is a non-interactive `copilot -p` run; --no-ask-user keeps it from
+// blocking (the user drives clarifications via follow-up prompts). After the
+// first turn captures a session id (result event), subsequent turns pass
+// --session-id to resume the same conversation.
+func buildCopilotConvoArgs(a *Agent, prompt string) []string {
+	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
+	if sid := a.GetSessionID(); sid != "" {
+		args = append(args, "--session-id", sid)
+	}
+	return args
+}
+
+func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer) (gotResult bool) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var lastEmit time.Time
@@ -250,13 +327,12 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		// ParseCodexLine copies the scanner buffer internally so no manual copy needed.
-		parsed, parseErr := ParseCodexLine(line)
+		// parseConvoEvent copies the scanner buffer internally so no manual copy needed.
+		event, parseErr := parseConvoEvent(a.Provider, line)
 		if parseErr != nil {
-			m.logger.Warn("agent.codex.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
+			m.logger.Warn("agent.convo.parse", "id", a.ID, "provider", a.Provider, "err", parseErr, "line", string(line))
 			continue
 		}
-		event := codexEventToConvoEvent(parsed)
 		if event.Type == "" {
 			continue
 		}
@@ -289,10 +365,25 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 					a.SetSessionFilePath(p)
 				}
 			}
+		case "assistant":
+			// Copilot reports output tokens per assistant message; accumulate
+			// (no-op for codex, which carries 0 here and totals on result).
+			if event.OutputTokens > 0 {
+				a.AddOutputTokens(event.OutputTokens)
+			}
 		case "result":
+			// Copilot reports its session id only on the terminal result event
+			// (codex reports it on a system event handled above). Capture it so
+			// the next turn resumes via --session-id.
+			if event.SessionID != "" {
+				a.SetSessionID(event.SessionID)
+			}
 			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-			m.logger.Info("agent.codex.convo.result", "id", a.ID, "cost", costNow)
+			if event.PremiumRequests > 0 {
+				a.AddPremiumRequests(event.PremiumRequests)
+			}
+			m.logger.Info("agent.convo.result", "id", a.ID, "provider", a.Provider, "cost", costNow)
 			gotResult = true
 		}
 	}
@@ -303,10 +394,29 @@ func (m *Manager) streamCodexConvoOutput(a *Agent, stdout io.Reader, outFile io.
 	return gotResult
 }
 
-// rehydrateCodexConvoFromLog replays a codex conversational agent's log into
-// its convo buffer (and session id) without emitting events, so a recreated
-// agent shows its prior chat history after a restart.
-func rehydrateCodexConvoFromLog(a *Agent, path string) {
+// parseConvoEvent parses one per-turn NDJSON line into a ConvoEvent using the
+// provider-appropriate parser. Only codex/copilot use the per-turn path
+// (claude conversational is handled in runner_convo.go), so the default is codex.
+func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
+	if normalizeProvider(provider) == "copilot" {
+		ce, err := ParseCopilotLine(line)
+		if err != nil {
+			return ConvoEvent{}, err
+		}
+		return copilotEventToConvoEvent(ce), nil
+	}
+	ce, err := ParseCodexLine(line)
+	if err != nil {
+		return ConvoEvent{}, err
+	}
+	return codexEventToConvoEvent(ce), nil
+}
+
+// rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
+// conversational agent's log into its convo buffer (and session id) without
+// emitting events, so a recreated agent shows its prior chat history after a
+// restart.
+func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -319,11 +429,10 @@ func rehydrateCodexConvoFromLog(a *Agent, path string) {
 		if len(line) == 0 {
 			continue
 		}
-		parsed, perr := ParseCodexLine(line)
+		ev, perr := parseConvoEvent(a.Provider, line)
 		if perr != nil {
 			continue
 		}
-		ev := codexEventToConvoEvent(parsed)
 		if ev.Type == "" {
 			continue
 		}
@@ -334,8 +443,9 @@ func rehydrateCodexConvoFromLog(a *Agent, path string) {
 	}
 }
 
-// sendCodexPrompt delivers a follow-up prompt to a Codex conversational agent.
-func (m *Manager) sendCodexPrompt(agentID, text string) error {
+// sendConvoPrompt delivers a follow-up prompt to a per-turn (codex/copilot)
+// conversational agent via its prompt channel.
+func (m *Manager) sendConvoPrompt(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
 	if err != nil {
 		return err
@@ -361,6 +471,6 @@ func (m *Manager) sendCodexPrompt(agentID, text string) error {
 
 	a.SetState(StateRunning)
 	m.emit(events.AgentState(a.ID), a)
-	m.logger.Info("agent.codex.convo.message_sent", "id", a.ID)
+	m.logger.Info("agent.convo.message_sent", "id", a.ID, "provider", a.Provider)
 	return nil
 }

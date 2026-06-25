@@ -24,6 +24,13 @@ export class Agent {
     "cacheCreationInputTokens"?: number;
     "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
+
+    /**
+     * PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
+     * no USD cost, so this is the usage signal surfaced for copilot agents;
+     * always 0 for claude/codex.
+     */
+    "premiumRequests"?: number;
     "startedAt": time$0.Time;
     "lastEventAt": time$0.Time;
     "logPath"?: string;
@@ -128,6 +135,7 @@ export class ConvoEvent {
     "cacheCreationInputTokens"?: number;
     "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
+    "premiumRequests"?: number;
     "isPartial"?: boolean;
     "timestamp": time$0.Time;
     "raw"?: json$0.RawMessage;
@@ -222,6 +230,12 @@ export class StreamEvent {
     "cache_creation_input_tokens"?: number;
     "cache_read_input_tokens"?: number;
     "reasoning_tokens"?: number;
+
+    /**
+     * PremiumRequests is Copilot's per-result billing-unit count (result event)
+     * or 0 for claude/codex.
+     */
+    "premium_requests"?: number;
     "subtype"?: string;
     "timestamp": time$0.Time;
 
@@ -266,14 +280,14 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField13_0 = $$createType6;
-        const $$createField14_0 = $$createType0;
+        const $$createField14_0 = $$createType6;
+        const $$createField15_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
-            $$parsedSource["plan_steps"] = $$createField13_0($$parsedSource["plan_steps"]);
+            $$parsedSource["plan_steps"] = $$createField14_0($$parsedSource["plan_steps"]);
         }
         if ("plugin_errors" in $$parsedSource) {
-            $$parsedSource["plugin_errors"] = $$createField14_0($$parsedSource["plugin_errors"]);
+            $$parsedSource["plugin_errors"] = $$createField15_0($$parsedSource["plugin_errors"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }

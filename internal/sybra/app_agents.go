@@ -255,8 +255,8 @@ func buildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 // the requested provider. Rolls back on any failure so no orphans leak.
 func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
 	prov := strings.ToLower(strings.TrimSpace(providerName))
-	if prov != "claude" && prov != "codex" {
-		return nil, fmt.Errorf("invalid provider %q: must be claude or codex", providerName)
+	if prov != "claude" && prov != "codex" && prov != "copilot" {
+		return nil, fmt.Errorf("invalid provider %q: must be claude, codex, or copilot", providerName)
 	}
 	if strings.TrimSpace(projectID) == "" {
 		return nil, errors.New("project_id is required")

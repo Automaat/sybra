@@ -269,12 +269,14 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		return
 	}
 	pc := provider.New(provider.Config{
-		Interval:         time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
-		ClaudeEnabled:    a.cfg.Providers.Claude.Enabled,
-		CodexEnabled:     a.cfg.Providers.Codex.Enabled,
-		AutoFailover:     a.cfg.Providers.AutoFailover,
-		ClaudeRLCooldown: time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
-		CodexRLCooldown:  time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+		Interval:          time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
+		ClaudeEnabled:     a.cfg.Providers.Claude.Enabled,
+		CodexEnabled:      a.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:    a.cfg.Providers.Copilot.Enabled,
+		AutoFailover:      a.cfg.Providers.AutoFailover,
+		ClaudeRLCooldown:  time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
+		CodexRLCooldown:   time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+		CopilotRLCooldown: time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
 	}, emit, a.logger)
 	a.providerHealth = pc
 	a.agents.SetHealthGate(pc)
