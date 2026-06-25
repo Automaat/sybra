@@ -215,7 +215,7 @@ type mockAgents struct {
 	roles             map[string]string // taskID+"/"+role -> agentID
 	counter           int
 	failSpawn         error // when non-nil, StartAgent returns this error and records nothing
-	providerUnhealthy bool  // when true, ProviderHealthy reports false (rate-limited)
+	providerRateLimit bool  // when true, ProviderRateLimited reports true
 }
 
 func newMockAgents() *mockAgents {
@@ -266,16 +266,16 @@ func (m *mockAgents) HasOtherRunningAgentForTask(taskID, exceptAgentID string) b
 	return ok && id != exceptAgentID
 }
 
-func (m *mockAgents) ProviderHealthy(string) bool {
+func (m *mockAgents) ProviderRateLimited(string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return !m.providerUnhealthy
+	return m.providerRateLimit
 }
 
-func (m *mockAgents) SetProviderUnhealthy(v bool) {
+func (m *mockAgents) SetProviderRateLimited(v bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.providerUnhealthy = v
+	m.providerRateLimit = v
 }
 
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
@@ -1027,11 +1027,11 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 }
 
-func TestResumeStalled_SkipsProviderUnhealthy(t *testing.T) {
+func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	agents.SetProviderUnhealthy(true) // provider rate-limited
+	agents.SetProviderRateLimited(true)
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
@@ -1052,11 +1052,11 @@ func TestResumeStalled_SkipsProviderUnhealthy(t *testing.T) {
 		t.Fatalf("expected 0 agent starts while provider rate-limited, got %d", agents.CallCount())
 	}
 
-	// Once the provider recovers, the next sweep resumes the step.
-	agents.SetProviderUnhealthy(false)
+	// Once the cooldown clears, the next sweep resumes the step.
+	agents.SetProviderRateLimited(false)
 	engine.ResumeStalled()
 	if agents.CallCount() != 1 {
-		t.Fatalf("expected 1 agent start after provider recovered, got %d", agents.CallCount())
+		t.Fatalf("expected 1 agent start after rate limit cleared, got %d", agents.CallCount())
 	}
 }
 

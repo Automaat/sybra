@@ -24,6 +24,7 @@ type providerRateLimitCall struct {
 }
 
 func (s *stubProviderGate) IsHealthy(_ string) bool       { return true }
+func (s *stubProviderGate) RateLimited(_ string) bool     { return false }
 func (s *stubProviderGate) Failover(_ string) string      { return "" }
 func (s *stubProviderGate) Reason(_ string) string        { return "" }
 func (s *stubProviderGate) ReportAuthFailure(_, _ string) {}

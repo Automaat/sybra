@@ -259,12 +259,13 @@ func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Unlock()
 }
 
-// ProviderHealthy reports whether the named provider can currently be used
-// (not rate-limited / logged out). A nil health gate (checks disabled, tests)
-// always reports healthy. An empty name resolves to the default provider.
-// Recovery loops consult this to avoid re-dispatching a run that would just
-// hit the same provider limit again.
-func (m *Manager) ProviderHealthy(name string) bool {
+// ProviderRateLimited reports whether the named provider is currently in a
+// rate-limit cooldown — distinct from logged-out / auth failure. A nil health
+// gate (checks disabled, tests) reports false. An empty name resolves to the
+// default provider. Recovery loops consult this to wait out a transient rate
+// limit; auth failures deliberately do NOT count here so they keep taking the
+// human-required path (a human must log in) instead of waiting indefinitely.
+func (m *Manager) ProviderRateLimited(name string) bool {
 	m.mu.RLock()
 	g := m.gate
 	if name == "" {
@@ -272,9 +273,9 @@ func (m *Manager) ProviderHealthy(name string) bool {
 	}
 	m.mu.RUnlock()
 	if g == nil {
-		return true
+		return false
 	}
-	return g.IsHealthy(name)
+	return g.RateLimited(name)
 }
 
 // ReportProviderSignal forwards a runner-side passive signal (rate-limit or

@@ -331,6 +331,6 @@ func (a *agentAdapter) DefaultProvider() string {
 	return a.agents.DefaultProvider()
 }
 
-func (a *agentAdapter) ProviderHealthy(provider string) bool {
-	return a.agents.ProviderHealthy(provider)
+func (a *agentAdapter) ProviderRateLimited(provider string) bool {
+	return a.agents.ProviderRateLimited(provider)
 }

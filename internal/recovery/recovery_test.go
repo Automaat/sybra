@@ -18,18 +18,22 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// fakeGate is a provider.HealthGate stub: every provider reports `healthy`.
-type fakeGate struct{ healthy bool }
-
-func (f fakeGate) IsHealthy(string) bool { return f.healthy }
-func (f fakeGate) Failover(string) string {
-	return ""
+// fakeGate is a provider.HealthGate stub. IsHealthy/RateLimited return the
+// configured flags so tests can simulate a rate-limited (or auth-failed)
+// provider.
+type fakeGate struct {
+	healthy     bool
+	rateLimited bool
 }
+
+func (f fakeGate) IsHealthy(string) bool   { return f.healthy }
+func (f fakeGate) RateLimited(string) bool { return f.rateLimited }
+func (f fakeGate) Failover(string) string  { return "" }
 func (f fakeGate) Reason(string) string {
-	if f.healthy {
-		return ""
+	if f.rateLimited {
+		return "rate_limited"
 	}
-	return "rate_limited"
+	return ""
 }
 func (f fakeGate) ReportAuthFailure(string, string)              {}
 func (f fakeGate) ReportRateLimit(string, time.Duration, string) {}
@@ -148,7 +152,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
 	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
-	agents.SetHealthGate(fakeGate{healthy: false}) // provider rate-limited
+	agents.SetHealthGate(fakeGate{rateLimited: true}) // provider rate-limited
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,

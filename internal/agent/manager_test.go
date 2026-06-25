@@ -442,30 +442,31 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 }
 
-type stubGate struct{ healthy bool }
+type stubGate struct{ rateLimited bool }
 
-func (s stubGate) IsHealthy(string) bool                         { return s.healthy }
+func (s stubGate) IsHealthy(string) bool                         { return !s.rateLimited }
+func (s stubGate) RateLimited(string) bool                       { return s.rateLimited }
 func (s stubGate) Failover(string) string                        { return "" }
 func (s stubGate) Reason(string) string                          { return "" }
 func (s stubGate) ReportAuthFailure(string, string)              {}
 func (s stubGate) ReportRateLimit(string, time.Duration, string) {}
 
-func TestProviderHealthy(t *testing.T) {
+func TestProviderRateLimited(t *testing.T) {
 	m, _ := newTestManager(t)
 
-	// No gate configured → always healthy.
-	if !m.ProviderHealthy("claude") {
-		t.Error("nil gate should report healthy")
+	// No gate configured → never rate-limited.
+	if m.ProviderRateLimited("claude") {
+		t.Error("nil gate should report not rate-limited")
 	}
 
-	m.SetHealthGate(stubGate{healthy: false})
-	if m.ProviderHealthy("claude") {
-		t.Error("unhealthy gate should report false")
+	m.SetHealthGate(stubGate{rateLimited: true})
+	if !m.ProviderRateLimited("claude") {
+		t.Error("rate-limited gate should report true")
 	}
 
-	m.SetHealthGate(stubGate{healthy: true})
-	if !m.ProviderHealthy("claude") {
-		t.Error("healthy gate should report true")
+	m.SetHealthGate(stubGate{rateLimited: false})
+	if m.ProviderRateLimited("claude") {
+		t.Error("healthy gate should report false")
 	}
 }
 

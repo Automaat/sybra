@@ -33,6 +33,11 @@ type Config struct {
 // so tests can supply a fake without spinning up a Checker.
 type HealthGate interface {
 	IsHealthy(provider string) bool
+	// RateLimited reports whether the provider is specifically in a rate-limit
+	// cooldown window (as opposed to logged out / auth-failed). Lets callers
+	// wait-and-retry a transient throttle without also waiting on auth failures
+	// that need human login.
+	RateLimited(provider string) bool
 	Failover(unhealthy string) string
 	Reason(provider string) string
 	ReportAuthFailure(provider, reason string)
@@ -290,6 +295,21 @@ func (c *Checker) IsHealthy(provider string) bool {
 		return true
 	}
 	return s.Healthy
+}
+
+// RateLimited reports whether the provider is currently inside a rate-limit
+// cooldown window. Only ReportRateLimit sets RateLimitedUntil, so an auth
+// failure (logged out) returns false here even though IsHealthy is false —
+// that's the distinction recovery uses to wait-and-retry rate limits while
+// letting auth failures take the human-required path.
+func (c *Checker) RateLimited(provider string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	s, ok := c.statuses[provider]
+	if !ok {
+		return false
+	}
+	return !s.RateLimitedUntil.IsZero() && c.now().Before(s.RateLimitedUntil)
 }
 
 // Reason returns the current reason string for a provider, or empty if unknown.

@@ -21,6 +21,7 @@ type fakeGate struct {
 }
 
 func (f *fakeGate) IsHealthy(p string) bool       { return f.healthy[p] }
+func (f *fakeGate) RateLimited(p string) bool     { return !f.healthy[p] }
 func (f *fakeGate) Failover(p string) string      { return f.failover[p] }
 func (f *fakeGate) Reason(p string) string        { return f.reasons[p] }
 func (f *fakeGate) ReportAuthFailure(p, _ string) { f.reportedAuth = append(f.reportedAuth, p) }

@@ -32,11 +32,11 @@ type AgentLauncher interface {
 	StopAgentsForTask(taskID string, role string)
 	SendPrompt(agentID, message string) error
 	DefaultProvider() string
-	// ProviderHealthy reports whether the named provider can currently be used
-	// (not rate-limited / logged out). ResumeStalled consults it so it doesn't
-	// re-dispatch a step whose provider would just reject the run again. Empty
-	// name = default provider.
-	ProviderHealthy(provider string) bool
+	// ProviderRateLimited reports whether the named provider is in a rate-limit
+	// cooldown (distinct from logged out / auth failure). ResumeStalled consults
+	// it to wait out a transient throttle without also stalling auth failures,
+	// which must take the human-required path. Empty name = default provider.
+	ProviderRateLimited(provider string) bool
 }
 
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared
