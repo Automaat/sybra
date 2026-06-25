@@ -34,6 +34,10 @@ type Record struct {
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).
 	RequirePermissions bool `yaml:"require_permissions,omitempty"`
+	// ReasoningEffort preserves the codex model_reasoning_effort across restarts.
+	// Codex convo respawns a fresh process per turn — without this the effort
+	// would revert to model default after a restart.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
 }
 
 // registryStore persists Records as one YAML file per agent under dir.

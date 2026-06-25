@@ -1,8 +1,10 @@
 <script lang="ts">
   import MobileSheet from './shell/MobileSheet.svelte'
   import { Folder, X } from '@lucide/svelte'
+  import { onMount } from 'svelte'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
+  import { fallbackReasoningEffortOptions, loadReasoningEffortOptions } from '../lib/codex-reasoning.js'
 
   interface Props {
     open: boolean
@@ -16,12 +18,20 @@
   let body = $state('')
   let headless = $state(false)
   let forkSubagent = $state(false)
+  let reasoningEffort = $state('')
   let taskType = $state('normal')
   let selectedProject = $state('')
   let projectSearch = $state('')
   let projectDropdownOpen = $state(false)
   let submitting = $state(false)
   let error = $state('')
+  let reasoningEffortOptions = $state(fallbackReasoningEffortOptions)
+
+  onMount(() => {
+    loadReasoningEffortOptions().then((options) => {
+      reasoningEffortOptions = options
+    })
+  })
 
   const filteredProjects = $derived(
     projectStore.list.filter((p) => {
@@ -52,6 +62,7 @@
     body = ''
     headless = false
     forkSubagent = false
+    reasoningEffort = ''
     taskType = 'normal'
     selectedProject = ''
     projectSearch = ''
@@ -80,6 +91,7 @@
       if (taskType !== 'normal') updates.task_type = taskType
       if (selectedProject) updates.project_id = selectedProject
       if (forkSubagent && effectiveMode === 'headless') updates.fork_subagent = true
+      if (reasoningEffort) updates.reasoning_effort = reasoningEffort
       if (Object.keys(updates).length > 0) {
         t = await taskStore.update(t.id, updates)
       }
@@ -208,6 +220,18 @@
               <span class="text-xs text-surface-400">(parallel, higher token cost)</span>
             </label>
           {/if}
+          <label class="flex flex-col gap-1">
+            <span class="text-sm font-medium">Reasoning effort <span class="font-normal text-surface-400">(Codex only)</span></span>
+            <select
+              bind:value={reasoningEffort}
+              class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
+            >
+              <option value="">model default</option>
+              {#each reasoningEffortOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
+            </select>
+          </label>
         {/if}
 
         <label class="flex flex-col gap-1">

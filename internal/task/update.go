@@ -12,34 +12,35 @@ import (
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
 type Update struct {
-	Title          *string
-	Slug           *string
-	Status         *Status
-	StatusReason   *string
-	BlockedByIssue *string
-	AgentMode      *string
-	TaskType       *TaskType
-	Body           *string
-	Tags           *[]string
-	ProjectID      *string
-	Branch         *string
-	WorktreeDir    *string
-	PRNumber       *int
-	Issue          *string
-	Reviewed       *bool
-	RunRole        *string
-	ReviewPhase    *string
-	PRPhase        *string
-	TodoistID      *string
-	Priority       *Priority
-	DueDate        **time.Time
-	Workflow       **workflow.Execution
-	Plan           *string
-	PlanCritique   *string
-	CodeReview     *string
-	MaxTurns       *int
-	ForkSubagent   *bool
-	Outcome        *string
+	Title           *string
+	Slug            *string
+	Status          *Status
+	StatusReason    *string
+	BlockedByIssue  *string
+	AgentMode       *string
+	TaskType        *TaskType
+	Body            *string
+	Tags            *[]string
+	ProjectID       *string
+	Branch          *string
+	WorktreeDir     *string
+	PRNumber        *int
+	Issue           *string
+	Reviewed        *bool
+	RunRole         *string
+	ReviewPhase     *string
+	PRPhase         *string
+	TodoistID       *string
+	Priority        *Priority
+	DueDate         **time.Time
+	Workflow        **workflow.Execution
+	Plan            *string
+	PlanCritique    *string
+	CodeReview      *string
+	MaxTurns        *int
+	ForkSubagent    *bool
+	ReasoningEffort *string
+	Outcome         *string
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -88,6 +89,16 @@ func applyMapField(u *Update, k string, v any) error {
 			return fmt.Errorf("field %q: want bool, got %T", k, v)
 		}
 		u.ForkSubagent = &b
+	case "reasoning_effort":
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", k, v)
+		}
+		eff, err := ValidateReasoningEffort(s)
+		if err != nil {
+			return err
+		}
+		u.ReasoningEffort = &eff
 	case "due_date":
 		return applyDueDateField(u, v)
 	case "reviewed":

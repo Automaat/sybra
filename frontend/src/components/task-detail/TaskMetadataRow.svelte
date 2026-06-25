@@ -1,10 +1,12 @@
 <script lang="ts">
   import { CircleDot, Copy } from '@lucide/svelte'
+  import { onMount } from 'svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { openLink } from '$lib/browser.svelte.js'
   import { formatDateTime } from '../../lib/dates.js'
+  import { fallbackReasoningEffortOptions, loadReasoningEffortOptions } from '../../lib/codex-reasoning.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
   import TaskDueDateEditor from './TaskDueDateEditor.svelte'
@@ -22,6 +24,13 @@
 
   let tagEditor = $state<TaskTagEditor | null>(null)
   let dueDateEditor = $state<TaskDueDateEditor | null>(null)
+  let reasoningEffortOptions = $state(fallbackReasoningEffortOptions)
+
+  onMount(() => {
+    loadReasoningEffortOptions().then((options) => {
+      reasoningEffortOptions = options
+    })
+  })
 
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
@@ -161,6 +170,28 @@
     </button>
   </div>
   {/if}
+
+  <div class="flex flex-col gap-1">
+    <span class="font-medium text-surface-500">Reasoning Effort <span class="font-normal text-surface-400 text-xs">(Codex only)</span></span>
+    <select
+      aria-label="Reasoning Effort"
+      class="w-fit rounded bg-transparent px-1 py-0.5 text-sm text-surface-600 dark:text-surface-300"
+      value={task.reasoningEffort ?? ''}
+      onchange={async (e) => {
+        try {
+          await taskStore.update(task.id, { reasoning_effort: e.currentTarget.value })
+        } catch (e) {
+          error = String(e)
+        }
+      }}
+      title="Codex model_reasoning_effort. Empty = model default. Ignored for claude agents."
+    >
+      <option value="">default</option>
+      {#each reasoningEffortOptions as option}
+        <option value={option.value}>{option.label}</option>
+      {/each}
+    </select>
+  </div>
 
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Max Turns</span>

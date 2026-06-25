@@ -551,6 +551,9 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.ForkSubagent != nil {
 		t.ForkSubagent = *u.ForkSubagent
 	}
+	if u.ReasoningEffort != nil {
+		t.ReasoningEffort = *u.ReasoningEffort
+	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}

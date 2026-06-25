@@ -56,6 +56,7 @@ type Agent struct {
 	Project         string    `json:"project,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
 	Model           string    `json:"model,omitempty"`
+	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
 	Prompt          string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
@@ -622,6 +623,10 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
+	// ReasoningEffort sets codex's model_reasoning_effort (low/medium/high/xhigh)
+	// for this run. Empty = model default. Codex-only. NOT the same as Effort
+	// (claude --effort) — different provider, CLI surface, and value set.
+	ReasoningEffort string
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.

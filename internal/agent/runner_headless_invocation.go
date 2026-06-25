@@ -39,6 +39,7 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 		if a.Model != "" {
 			args = append(args, "--model", a.Model)
 		}
+		args = append(args, codexReasoningArgs(a.ReasoningEffort)...)
 		if a.sessionCWD != "" {
 			args = append(args, "-C", a.sessionCWD)
 		}

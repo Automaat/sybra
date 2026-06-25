@@ -118,6 +118,53 @@ func TestAllAgentModes(t *testing.T) {
 	}
 }
 
+func TestValidateReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_ok", func(t *testing.T) {
+		t.Parallel()
+		got, err := ValidateReasoningEffort("")
+		if err != nil {
+			t.Fatalf("ValidateReasoningEffort(%q): %v", "", err)
+		}
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	valid := []string{"low", "medium", "high", "xhigh"}
+	for _, v := range valid {
+		t.Run(v+"_ok", func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateReasoningEffort(v)
+			if err != nil {
+				t.Fatalf("ValidateReasoningEffort(%q): %v", v, err)
+			}
+			if got != v {
+				t.Errorf("got %q, want %q", got, v)
+			}
+		})
+	}
+
+	invalid := []string{"max", "ultra", "XHIGH", "extreme", "bogus", " high"}
+	for _, v := range invalid {
+		t.Run("invalid_"+v, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateReasoningEffort(v); err == nil {
+				t.Fatalf("expected error for %q, got nil", v)
+			}
+		})
+	}
+}
+
+func TestAllReasoningEfforts(t *testing.T) {
+	t.Parallel()
+	efforts := AllReasoningEfforts()
+	if len(efforts) != 4 {
+		t.Errorf("got %d efforts, want 4", len(efforts))
+	}
+}
+
 func TestTask_DirName_WithSlug(t *testing.T) {
 	t.Parallel()
 	task := Task{ID: "a1b2c3d4", Slug: "my-task"}

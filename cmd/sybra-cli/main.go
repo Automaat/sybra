@@ -616,6 +616,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	issue := fs.String("issue", "", "GitHub issue URL")
 	statusReason := fs.String("status-reason", "", "reason for status change")
 	maxTurnsFlag := fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)")
+	reasoningEffort := fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -633,14 +634,14 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	if *body != "" {
 		updates["body"] = *body
 	}
-	if err := applyFileOrStringUpdate(fs, updates, "plan", "plan", *plan, *planFile); err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if err := applyFileOrStringUpdate(fs, updates, "plan-critique", "plan_critique", *planCritique, *planCritiqueFile); err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if err := applyFileOrStringUpdate(fs, updates, "code-review", "code_review", *codeReview, *codeReviewFile); err != nil {
-		return fatal(jsonOut, "%v", err)
+	for _, fu := range []struct{ flag, key, str, file string }{
+		{"plan", "plan", *plan, *planFile},
+		{"plan-critique", "plan_critique", *planCritique, *planCritiqueFile},
+		{"code-review", "code_review", *codeReview, *codeReviewFile},
+	} {
+		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
 	}
 	if *mode != "" {
 		updates["agent_mode"] = *mode
@@ -652,11 +653,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		updates["task_type"] = *ttype
 	}
 	if *tags != "" {
-		tagList := strings.Split(*tags, ",")
-		for i := range tagList {
-			tagList[i] = strings.TrimSpace(tagList[i])
-		}
-		updates["tags"] = tagList
+		updates["tags"] = parseTags(*tags)
 	}
 	if *proj != "" {
 		updates["project_id"] = *proj
@@ -673,6 +670,13 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	// -1 is the sentinel "not provided"; 0 clears override, >0 sets limit.
 	if *maxTurnsFlag >= 0 {
 		updates["max_turns"] = float64(*maxTurnsFlag)
+	}
+	if *reasoningEffort != "" {
+		v, err := normalizeReasoningEffort(*reasoningEffort)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		updates["reasoning_effort"] = v
 	}
 
 	if len(updates) == 0 {
@@ -729,6 +733,22 @@ func applyFileOrStringUpdate(fs *flag.FlagSet, updates map[string]any, flagName,
 		})
 	}
 	return nil
+}
+
+func parseTags(s string) []string {
+	parts := strings.Split(s, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// normalizeReasoningEffort converts "default"/"none" to "" (use model default) then validates.
+func normalizeReasoningEffort(s string) (string, error) {
+	if s == "default" || s == "none" {
+		s = ""
+	}
+	return task.ValidateReasoningEffort(s)
 }
 
 func filterStatus(tasks []task.Task, status string) []task.Task {
@@ -1250,7 +1270,7 @@ Commands:
              implement  have a plan → Sybra implements, reviews, opens the PR
              review     implemented locally → Sybra reviews + opens the PR
              pr         existing PR (--pr N) → Sybra reviews the PR
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 
   project list

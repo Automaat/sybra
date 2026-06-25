@@ -15,8 +15,9 @@ type VersionInfo struct {
 
 // CodexModel is a single entry from `codex debug models`.
 type CodexModel struct {
-	Slug        string `json:"slug"`
-	DisplayName string `json:"display_name"`
+	Slug                     string   `json:"slug"`
+	DisplayName              string   `json:"display_name"`
+	SupportedReasoningLevels []string `json:"supported_reasoning_levels,omitempty"`
 }
 
 // CopilotModel is a single Copilot model option (slug + display name).

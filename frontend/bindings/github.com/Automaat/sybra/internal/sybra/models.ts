@@ -113,6 +113,7 @@ export class AppSettings {
 export class CodexModel {
     "slug": string;
     "display_name": string;
+    "supported_reasoning_levels"?: string[];
 
     /** Creates a new CodexModel instance. */
     constructor($$source: Partial<CodexModel> = {}) {
@@ -130,7 +131,11 @@ export class CodexModel {
      * Creates a new CodexModel instance from a string or object.
      */
     static createFrom($$source: any = {}): CodexModel {
+        const $$createField2_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("supported_reasoning_levels" in $$parsedSource) {
+            $$parsedSource["supported_reasoning_levels"] = $$createField2_0($$parsedSource["supported_reasoning_levels"]);
+        }
         return new CodexModel($$parsedSource as Partial<CodexModel>);
     }
 }
@@ -271,7 +276,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType9;
+        const $$createField2_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -314,4 +319,5 @@ const $$createType5 = config$0.TodoistConfig.createFrom;
 const $$createType6 = config$0.RenovateConfig.createFrom;
 const $$createType7 = config$0.ProvidersConfig.createFrom;
 const $$createType8 = $Create.Map($Create.Any, $Create.Any);
-const $$createType9 = monitor$0.Report.createFrom;
+const $$createType9 = $Create.Array($Create.Any);
+const $$createType10 = monitor$0.Report.createFrom;

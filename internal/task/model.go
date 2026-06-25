@@ -132,6 +132,23 @@ func ValidateAgentMode(s string) (string, error) {
 	return s, nil
 }
 
+// AllReasoningEfforts returns every valid codex reasoning effort level.
+func AllReasoningEfforts() []string { return []string{"low", "medium", "high", "xhigh"} }
+
+var validReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
+
+// ValidateReasoningEffort accepts the empty string (model default) or one of the
+// codex-advertised levels. Static allowlist — offline-safe, no codex probe.
+func ValidateReasoningEffort(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	if !validReasoningEfforts[s] {
+		return "", fmt.Errorf("invalid reasoning_effort %q (valid: low, medium, high, xhigh, or empty)", s)
+	}
+	return s, nil
+}
+
 type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
@@ -210,11 +227,16 @@ type Task struct {
 	// ForkSubagent enables CLAUDE_CODE_FORK_SUBAGENT=1 for this task's headless
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.
-	ForkSubagent bool                `yaml:"fork_subagent,omitempty" json:"forkSubagent,omitempty"`
-	AgentRuns    []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
-	Workflow     *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
-	CreatedAt    time.Time           `yaml:"created_at" json:"createdAt"`
-	UpdatedAt    time.Time           `yaml:"updated_at" json:"updatedAt"`
+	ForkSubagent bool `yaml:"fork_subagent,omitempty" json:"forkSubagent,omitempty"`
+	// ReasoningEffort sets the Codex model reasoning level for this task's agents
+	// via -c model_reasoning_effort=<v>. Empty = model default. Codex-only;
+	// ignored for claude agents. Distinct from the claude-only extended-thinking
+	// knob — different CLI surface and vocabulary (xhigh vs max).
+	ReasoningEffort string              `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	AgentRuns       []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
+	Workflow        *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
+	CreatedAt       time.Time           `yaml:"created_at" json:"createdAt"`
+	UpdatedAt       time.Time           `yaml:"updated_at" json:"updatedAt"`
 
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`

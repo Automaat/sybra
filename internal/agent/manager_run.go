@@ -60,6 +60,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		Mode:               cfg.Mode,
 		Provider:           resolvedProvider,
 		Model:              normalizeModel(resolvedProvider, cfg.Model),
+		ReasoningEffort:    cfg.ReasoningEffort,
 		Prompt:             cfg.Prompt,
 		State:              StateRunning,
 		StartedAt:          now,
@@ -164,7 +165,7 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	}
 	switch prov {
 	case "codex":
-		return buildCodexCommand(model, cfg.RequirePermissions, cfg.Mode == "headless"), nil
+		return buildCodexCommand(model, cfg.ReasoningEffort, cfg.RequirePermissions, cfg.Mode == "headless"), nil
 	case "copilot":
 		return buildCopilotCommand(model), nil
 	default:
@@ -187,12 +188,13 @@ func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) 
 }
 
 // buildCodexCommand builds the display command string for a Codex agent.
-func buildCodexCommand(model string, requirePerms, headless bool) string {
+func buildCodexCommand(model, effort string, requirePerms, headless bool) string {
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	parts = append(parts, codexSandboxArgs(requirePerms, headless)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
+	parts = append(parts, codexReasoningArgs(effort)...)
 	return strings.Join(parts, " ")
 }
 
@@ -208,6 +210,24 @@ func buildCopilotCommand(model string) string {
 		parts = append(parts, "--model", model)
 	}
 	return strings.Join(parts, " ")
+}
+
+// codexReasoningArgs returns the codex config override for model reasoning
+// effort, or nil when effort is empty (model default). Centralizing the
+// empty-value no-op here keeps all three codex builders from each re-deriving
+// it — a bare -c model_reasoning_effort= (empty value) is NOT the same as
+// omitting the flag.
+func codexReasoningArgs(effort string) []string {
+	if effort == "" {
+		return nil
+	}
+	// Allowlist guards against tampered task YAML bypassing API-layer validation.
+	switch effort {
+	case "low", "medium", "high", "xhigh":
+	default:
+		return nil
+	}
+	return []string{"-c", "model_reasoning_effort=" + effort}
 }
 
 // codexSandboxArgs returns the sandbox/permission flags for `codex exec`.
