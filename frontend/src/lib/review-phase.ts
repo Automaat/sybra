@@ -77,7 +77,9 @@ export function isReviewTask(t: { tags?: string[] }): boolean {
 /** A task's review phase, defaulting unknown/empty values to `reviewing`. */
 export function reviewPhaseOf(t: { reviewPhase?: string }): ReviewPhase {
   const p = t.reviewPhase
-  return p && p in REVIEW_PHASE_META ? (p as ReviewPhase) : 'reviewing'
+  // Own-property check: `in` would also match inherited keys like `toString`,
+  // letting corrupt data slip through and crash reviewPhaseMeta().
+  return p && Object.hasOwn(REVIEW_PHASE_META, p) ? (p as ReviewPhase) : 'reviewing'
 }
 
 export function reviewPhaseMeta(t: { reviewPhase?: string }): ReviewPhaseMeta {

@@ -29,6 +29,12 @@ describe('reviewPhaseOf', () => {
     expect(reviewPhaseOf({ reviewPhase: '' })).toBe('reviewing')
     expect(reviewPhaseOf({ reviewPhase: 'bogus' })).toBe('reviewing')
   })
+
+  it('does not treat inherited Object keys as valid phases', () => {
+    for (const proto of ['toString', 'constructor', 'hasOwnProperty', '__proto__']) {
+      expect(reviewPhaseOf({ reviewPhase: proto })).toBe('reviewing')
+    }
+  })
 })
 
 describe('reviewPhaseMeta', () => {

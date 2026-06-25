@@ -90,6 +90,8 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 	}
 
 	// No agent, no draft, no submitted review: the human owns it (typically a
-	// small PR punted by triage). Leave status/reason as triage set them.
+	// small PR punted by triage). Assert human-required for the needs-you
+	// signal, but emit no reason so applyReviewPhase keeps whatever reason
+	// triage already set (e.g. "PR too small for agent review").
 	return reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired}
 }
