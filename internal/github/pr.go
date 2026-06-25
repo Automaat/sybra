@@ -235,6 +235,37 @@ func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
 	return paths, nil
 }
 
+// FetchPRHeadSHA returns the head commit SHA of a PR. Used to detect a fresh
+// push by the PR author after a review was submitted.
+func FetchPRHeadSHA(repo string, number int) (string, error) {
+	return fetchPRHeadSHAWith(defaultExecer, repo, number)
+}
+
+func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := prHeadSHACache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
+	out, err := e.run("pr", "view", strconv.Itoa(number),
+		"--repo", repo, "--json", "headRefOid")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var raw struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return "", fmt.Errorf("parse pr head: %w", err)
+	}
+	if runtimeCacheEnabled(e) {
+		prHeadSHACache.Set(key, raw.HeadRefOid, 30*time.Second)
+	}
+	return raw.HeadRefOid, nil
+}
+
 // FetchPRBranch returns the head branch name for a PR.
 func FetchPRBranch(repo string, number int) (string, error) {
 	return fetchPRBranchWith(defaultExecer, repo, number)

@@ -309,9 +309,11 @@ func invalidatePRCaches(repo string, number int) {
 	prStateCache.Delete(key)
 	prFilesCache.Delete(key)
 	prBranchCache.Delete(key)
+	prHeadSHACache.Delete(key)
 	prContextCache.Delete(key)
 	prClosingIssuesCache.Delete(key)
 	pendingReviewCache.Delete(key)
+	myReviewStateCache.Delete(key)
 }
 
 var (
@@ -326,9 +328,11 @@ var (
 	prStateCache         = newTTLCache[PRState]()
 	prFilesCache         = newTTLCache[[]string]()
 	prBranchCache        = newTTLCache[string]()
+	prHeadSHACache       = newTTLCache[string]()
 	prContextCache       = newTTLCache[PRContext]()
 	prClosingIssuesCache = newTTLCache[prClosingIssuesResult]()
 	pendingReviewCache   = newTTLCache[bool]()
+	myReviewStateCache   = newTTLCache[MyReviewState]()
 	issueCache           = newTTLCache[Issue]()
 )
 

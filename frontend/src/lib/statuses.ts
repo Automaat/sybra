@@ -157,6 +157,13 @@ export interface BoardColumn {
   border: string
   /** Extra statuses folded into this column */
   includes: TaskStatus[]
+  /**
+   * Column kind. 'status' (default) groups tasks by status; 'review' is the
+   * tag-based PR Reviews lane that collects inbound review tasks across every
+   * phase, independent of their status. `status` is a sentinel for review
+   * lanes — never a real task status.
+   */
+  kind?: 'status' | 'review'
 }
 
 /** Kanban board columns — active work only; terminal tasks live in Logbook */
@@ -168,6 +175,29 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]
+
+/**
+ * The PR Reviews lane: a tag-based column (not status-based) that collects
+ * every inbound review task (tag `review`) regardless of status, coloured per
+ * phase. `status: 'reviews'` is a sentinel used only as the column key — it is
+ * never a real task status, so it stays out of BOARD_COLUMNS / CORE_STATUSES.
+ */
+export const REVIEW_LANE: BoardColumn = {
+  status: 'reviews' as TaskStatus,
+  kind: 'review',
+  label: 'PR Reviews',
+  border: 'border-t-secondary-500 dark:border-t-secondary-400',
+  includes: [],
+}
+
+/**
+ * Board column order including the PR Reviews lane (inserted before Human
+ * Required). The board renders these; BOARD_COLUMNS stays the pure status set
+ * that drives CORE_STATUSES, the status picker, and per-project boards.
+ */
+export const BOARD_LANES: BoardColumn[] = BOARD_COLUMNS.flatMap((c) =>
+  c.status === 'human-required' ? [REVIEW_LANE, c] : [c],
+)
 
 /**
  * Core user-facing status set: the active board columns plus the terminal

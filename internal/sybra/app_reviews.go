@@ -176,7 +176,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	}
 
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
-	r.detectPublishedReviews(tasks)
+	r.reconcileReviewPhases(tasks, summary)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 
 	if prNeedsAttention(monitoredPRs) {

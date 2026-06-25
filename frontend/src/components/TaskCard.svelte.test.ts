@@ -204,30 +204,30 @@ describe('TaskCard', () => {
     expect(container.querySelector('.border-l-error-500')).toBeNull()
   })
 
-  it('shows review-needed badge for review-requested PR tasks', () => {
+  it('shows the drafted phase badge for a review task with a pending draft', () => {
     reviewStore.reviewRequested = [makePR()]
     render(TaskCard, {
       props: {
-        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42 } as Task,
+        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42, reviewPhase: 'drafted' } as Task,
         onclick: () => {},
       },
     })
 
-    expect(screen.getByTitle('Review requested')).toBeDefined()
+    expect(screen.getByText('Post review')).toBeDefined()
     expect(screen.getByText(/#42/)).toBeDefined()
   })
 
-  it('shows approved waiting-merge badge for approved review tasks', () => {
+  it('shows the approved phase badge for an approved review task', () => {
     reviewStore.reviewedByMe = [makePR({ viewerHasApproved: true })]
     render(TaskCard, {
       props: {
-        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42 } as Task,
+        task: { ...mockTask, tags: ['review'], projectId: 'owner/repo', prNumber: 42, reviewPhase: 'approved' } as Task,
         onclick: () => {},
       },
     })
 
-    expect(screen.getByTitle('Approved; waiting for PR to merge')).toBeDefined()
-    expect(screen.getByText('✓')).toBeDefined()
+    expect(screen.getByText('Approved')).toBeDefined()
+    expect(screen.getByText(/#42/)).toBeDefined()
   })
 
   it('keeps an accessible "issue exists" cue when a PR and an issue coexist', () => {

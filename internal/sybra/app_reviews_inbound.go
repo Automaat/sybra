@@ -3,6 +3,7 @@ package sybra
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -208,32 +209,135 @@ func (r *ReviewHandler) hasReviewTask(tasks []task.Task, projectID string, prNum
 	return false
 }
 
-func (r *ReviewHandler) detectPublishedReviews(tasks []task.Task) {
-	for i := range tasks {
-		if tasks[i].Status != task.StatusHumanRequired {
-			continue
-		}
-		if !slices.Contains(tasks[i].Tags, "review") {
-			continue
-		}
-		if tasks[i].PRNumber == 0 || tasks[i].ProjectID == "" {
-			continue
-		}
+// reviewPRKey identifies a PR within a repo for summary lookups.
+func reviewPRKey(projectID string, prNumber int) string {
+	return projectID + "#" + strconv.Itoa(prNumber)
+}
 
-		pending, err := github.HasPendingReview(tasks[i].ProjectID, tasks[i].PRNumber)
-		if err != nil {
-			r.logger.Warn("review.poll-pending", "task_id", tasks[i].ID, "err", err)
+// reconcileReviewPhases recomputes the lifecycle phase of every inbound
+// PR-review task (tag `review`) from live GitHub signals and persists any
+// delta. It supersedes the old human-required→in-review "published" detector,
+// folding that transition into the phase machine.
+func (r *ReviewHandler) reconcileReviewPhases(tasks []task.Task, summary github.ReviewSummary) {
+	requested := indexPRsByKey(summary.ReviewRequested)
+	approved := indexPRsByKey(summary.ReviewedByMe) // reviewed-by:@me is approvals-only
+
+	for i := range tasks {
+		t := &tasks[i]
+		if !slices.Contains(t.Tags, "review") || task.IsTerminalStatus(t.Status) {
 			continue
 		}
-		if !pending {
-			if _, err := r.tasks.Update(tasks[i].ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
-				r.logger.Error("review.published-update", "task_id", tasks[i].ID, "err", err)
-				continue
-			}
-			r.logAudit(audit.EventReviewPublished, tasks[i].ID, "", map[string]any{"pr": tasks[i].PRNumber})
-			r.logger.Info("review.published", "task_id", tasks[i].ID, "pr", tasks[i].PRNumber)
+		if t.PRNumber == 0 || t.ProjectID == "" {
+			continue
+		}
+		r.reconcileReviewTask(t, requested, approved)
+	}
+}
+
+// reconcileReviewTask computes and applies the phase for a single review task.
+func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
+	// An agent owning the PR short-circuits: surface "reviewing" without the
+	// extra GitHub round-trips.
+	if r.agents.HasRunningAgentForTask(t.ID) {
+		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{AgentRunning: true}))
+		return
+	}
+
+	key := reviewPRKey(t.ProjectID, t.PRNumber)
+	reqPR, inReq := requested[key]
+	apPR, inApproved := approved[key]
+
+	myState, err := github.FetchMyReviewState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err)
+		return
+	}
+
+	submitted := myState.Submitted || inApproved
+	headSHA := ""
+	switch {
+	case inReq:
+		headSHA = reqPR.HeadSHA
+	case inApproved:
+		headSHA = apPR.HeadSHA
+	case submitted:
+		// A submitted (non-approval) review that wasn't re-requested leaves the
+		// PR in neither summary leg; fetch the head so a silent push past the
+		// reviewed commit still flips us to needs-approval.
+		if sha, herr := github.FetchPRHeadSHA(t.ProjectID, t.PRNumber); herr != nil {
+			r.logger.Warn("review.head-sha", "task_id", t.ID, "err", herr)
+		} else {
+			headSHA = sha
 		}
 	}
+
+	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
+		HasDraft:       myState.Pending,
+		ViewerApproved: myState.Approved || inApproved,
+		Submitted:      submitted,
+		ReRequested:    inReq,
+		HeadSHA:        headSHA,
+		ReviewedSHA:    myState.ReviewedSHA,
+	}))
+}
+
+// applyReviewPhase persists only the fields that changed. Status is set only
+// when the result names one and it differs (so an unchanged status never
+// clears a triage-authored reason); the reason follows a status or phase change.
+func (r *ReviewHandler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
+	statusChanged := res.Status != "" && res.Status != t.Status
+	phaseChanged := res.Phase != t.ReviewPhase
+	if !statusChanged && !phaseChanged {
+		return
+	}
+
+	u := task.Update{}
+	if phaseChanged {
+		u.ReviewPhase = task.Ptr(res.Phase)
+	}
+	if statusChanged {
+		u.Status = task.Ptr(res.Status)
+	}
+	if res.Reason != "" && (statusChanged || phaseChanged) {
+		u.StatusReason = task.Ptr(res.Reason)
+	}
+
+	prev := t.ReviewPhase
+	if _, err := r.tasks.Update(t.ID, u); err != nil {
+		r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
+		return
+	}
+	if !phaseChanged {
+		return
+	}
+	r.logger.Info("review.phase", "task_id", t.ID, "pr", t.PRNumber, "from", prev, "to", res.Phase)
+	if reviewPhasePublished(prev, res.Phase) {
+		r.logAudit(audit.EventReviewPublished, t.ID, "", map[string]any{"pr": t.PRNumber})
+	}
+}
+
+// reviewPhasePublished reports whether a transition represents the human
+// publishing their review — moving from a pre-submit phase into a submitted
+// one. Drives the EventReviewPublished audit log.
+func reviewPhasePublished(prev, next string) bool {
+	if next != ReviewPhaseAwaitingAuthor && next != ReviewPhaseNeedsApproval {
+		return false
+	}
+	switch prev {
+	case ReviewPhaseDrafted, ReviewPhaseManual, ReviewPhaseReviewing, "":
+		return true
+	default:
+		return false
+	}
+}
+
+// indexPRsByKey maps PRs by "owner/repo#number" for O(1) summary lookups.
+func indexPRsByKey(prs []github.PullRequest) map[string]github.PullRequest {
+	m := make(map[string]github.PullRequest, len(prs))
+	for i := range prs {
+		m[reviewPRKey(prs[i].Repository, prs[i].Number)] = prs[i]
+	}
+	return m
 }
 
 func reviewClosedPREligible(t *task.Task) bool {
