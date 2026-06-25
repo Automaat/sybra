@@ -330,3 +330,7 @@ func (a *agentAdapter) SendPrompt(agentID, message string) error {
 func (a *agentAdapter) DefaultProvider() string {
 	return a.agents.DefaultProvider()
 }
+
+func (a *agentAdapter) ProviderHealthy(provider string) bool {
+	return a.agents.ProviderHealthy(provider)
+}

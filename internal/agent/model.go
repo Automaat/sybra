@@ -663,6 +663,16 @@ func (a *Agent) SetError(kind, msg string) {
 	a.mu.Unlock()
 }
 
+// GetErrorKind returns the classified error kind recorded on the agent
+// ("rate_limit", "auth", or ""). The runner sets it when a failed run is
+// classified against the provider health gate, letting the completion handler
+// tell a transient provider limit apart from a real crash.
+func (a *Agent) GetErrorKind() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ErrorKind
+}
+
 // ErrorEvent is the payload emitted on agent:error:{id}.
 type ErrorEvent struct {
 	Kind string `json:"kind"`

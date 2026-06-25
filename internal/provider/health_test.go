@@ -126,6 +126,8 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"credit", ErrorSample{ErrorType: "credit_balance_too_low"}, SignalRateLimit},
 		{"stderr_not_logged", ErrorSample{Stderr: "Error: Not logged in"}, SignalAuthFailure},
 		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit},
+		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit},
+		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit},
 		{"overloaded_ignored", ErrorSample{ErrorStatus: 529, ErrorType: "overloaded_error"}, SignalNone},
 		{"unrelated", ErrorSample{Stderr: "random crash"}, SignalNone},
 	}

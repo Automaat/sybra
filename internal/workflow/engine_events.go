@@ -269,6 +269,14 @@ func (e *Engine) ResumeStalled() {
 		if e.agents.HasRunningAgent(t.ID) {
 			continue
 		}
+		// Don't re-dispatch while the step's provider is rate-limited / logged
+		// out — it would just reject the run again. The gate clears once the
+		// limit window elapses; a later sweep then resumes the step.
+		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider()); !e.agents.ProviderHealthy(prov) {
+			e.logger.Debug("workflow.resume-stalled.skip",
+				"task_id", t.ID, "reason", "provider_unhealthy", "provider", prov)
+			continue
+		}
 		// Skip tasks whose step is currently being dispatched. Interactive
 		// spawns (worktree creation, rebase, agent process start) take
 		// several seconds during which no agent is yet registered — without

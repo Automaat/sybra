@@ -37,6 +37,16 @@ func (r *Recovery) RestartStaleInProgress() {
 		if r.Agents.HasRunningAgentForTask(t.ID) {
 			continue
 		}
+		// Don't re-dispatch while the last run's provider is rate-limited /
+		// logged out — it would just hit the same limit again and churn the
+		// worktree. The gate clears once the limit window elapses; the next
+		// sweep then re-dispatches. (A rate-limited run is stalled in-progress
+		// by the completion handler, not flipped to human-required.)
+		if lr := lastAgentRun(&t); lr != nil && !r.Agents.ProviderHealthy(lr.Provider) {
+			r.Logger.Info("restart-stale.skip",
+				"task_id", t.ID, "reason", "provider_unhealthy", "provider", lr.Provider)
+			continue
+		}
 		if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
 			// recoverCompletedHeadlessRun handled this task (last headless run
 			// completed but workflow step was never recorded). Skip the generic

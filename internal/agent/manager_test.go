@@ -442,6 +442,33 @@ func TestHasRunningAgentForTask(t *testing.T) {
 	}
 }
 
+type stubGate struct{ healthy bool }
+
+func (s stubGate) IsHealthy(string) bool                         { return s.healthy }
+func (s stubGate) Failover(string) string                        { return "" }
+func (s stubGate) Reason(string) string                          { return "" }
+func (s stubGate) ReportAuthFailure(string, string)              {}
+func (s stubGate) ReportRateLimit(string, time.Duration, string) {}
+
+func TestProviderHealthy(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// No gate configured → always healthy.
+	if !m.ProviderHealthy("claude") {
+		t.Error("nil gate should report healthy")
+	}
+
+	m.SetHealthGate(stubGate{healthy: false})
+	if m.ProviderHealthy("claude") {
+		t.Error("unhealthy gate should report false")
+	}
+
+	m.SetHealthGate(stubGate{healthy: true})
+	if !m.ProviderHealthy("claude") {
+		t.Error("healthy gate should report true")
+	}
+}
+
 func TestClaimTaskDispatch(t *testing.T) {
 	m, _ := newTestManager(t)
 

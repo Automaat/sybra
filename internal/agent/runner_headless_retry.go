@@ -31,16 +31,37 @@ func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attempt
 		}
 		return
 	}
+	// Record the classification on the agent so the completion handler can tell
+	// a transient provider limit apart from a real crash and retry instead of
+	// stranding the task in human-required.
+	a.SetError(signalErrorKind(sig), reason)
 	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+}
+
+// signalErrorKind maps a provider health signal to the short error-kind tag
+// recorded on the agent (consumed by the completion handler).
+func signalErrorKind(sig provider.Signal) string {
+	switch sig {
+	case provider.SignalRateLimit:
+		return "rate_limit"
+	case provider.SignalAuthFailure:
+		return "auth"
+	default:
+		return ""
+	}
 }
 
 func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.ErrorSample {
 	sample := provider.ErrorSample{Stderr: stderrOut}
 	for i := range slices.Backward(attemptEvents) {
 		e := &attemptEvents[i]
-		if e.Type != "result" || e.Subtype != "error" {
+		if e.Type != "result" {
 			continue
 		}
+		// Capture the terminal result regardless of subtype. A provider usage
+		// cap (e.g. a five-hour session limit) is reported on a subtype:"success"
+		// result with the limit text in Content — not a structured error
+		// envelope — so a subtype=="error" filter would miss it.
 		sample.ErrorType = e.ErrorType
 		sample.ErrorStatus = e.ErrorStatus
 		sample.Content = e.Content
@@ -70,6 +91,7 @@ func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, at
 		}
 		return
 	}
+	a.SetError(signalErrorKind(sig), reason)
 	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
 }
 
@@ -77,9 +99,10 @@ func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provide
 	sample := provider.ErrorSample{Stderr: stderrOut}
 	for i := range slices.Backward(attemptEvents) {
 		e := &attemptEvents[i]
-		if e.Type != "result" || e.Subtype != "error" {
+		if e.Type != "result" {
 			continue
 		}
+		// Capture the terminal result regardless of subtype (see buildErrorSample).
 		sample.ErrorType = e.ErrorType
 		sample.ErrorStatus = e.ErrorStatus
 		sample.Content = e.Text
