@@ -155,10 +155,11 @@ export class PullRequest {
     "actionableCount": number;
 
     /**
-     * FeedbackSig fingerprints the current reviewer feedback (review decision +
-     * unresolved threads keyed by their latest reviewer comment). It changes
-     * only on genuinely new reviewer activity, not on the agent's own replies —
-     * so the pr-fix retry budget resets on new feedback and caps on stale.
+     * FeedbackSig fingerprints the current reviewer feedback (the review decision
+     * plus the set of unresolved thread IDs). It changes when the reviewer opens
+     * a new thread but not on the agent's own replies (a replied-to thread is
+     * still unresolved, so its ID stays in the set) — so the pr-fix retry budget
+     * resets on new feedback and caps on stale.
      */
     "feedbackSig": string;
     "viewerHasApproved": boolean;
@@ -298,10 +299,11 @@ export class RenovatePR {
     "actionableCount": number;
 
     /**
-     * FeedbackSig fingerprints the current reviewer feedback (review decision +
-     * unresolved threads keyed by their latest reviewer comment). It changes
-     * only on genuinely new reviewer activity, not on the agent's own replies —
-     * so the pr-fix retry budget resets on new feedback and caps on stale.
+     * FeedbackSig fingerprints the current reviewer feedback (the review decision
+     * plus the set of unresolved thread IDs). It changes when the reviewer opens
+     * a new thread but not on the agent's own replies (a replied-to thread is
+     * still unresolved, so its ID stays in the set) — so the pr-fix retry budget
+     * resets on new feedback and caps on stale.
      */
     "feedbackSig": string;
     "viewerHasApproved": boolean;

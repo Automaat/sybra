@@ -23,10 +23,11 @@ type PullRequest struct {
 	// actionable, so it stops re-triggering pr-fix. This is the dispatch
 	// trigger; UnresolvedCount stays the raw merge-gate signal.
 	ActionableCount int `json:"actionableCount"`
-	// FeedbackSig fingerprints the current reviewer feedback (review decision +
-	// unresolved threads keyed by their latest reviewer comment). It changes
-	// only on genuinely new reviewer activity, not on the agent's own replies —
-	// so the pr-fix retry budget resets on new feedback and caps on stale.
+	// FeedbackSig fingerprints the current reviewer feedback (the review decision
+	// plus the set of unresolved thread IDs). It changes when the reviewer opens
+	// a new thread but not on the agent's own replies (a replied-to thread is
+	// still unresolved, so its ID stays in the set) — so the pr-fix retry budget
+	// resets on new feedback and caps on stale.
 	FeedbackSig       string `json:"feedbackSig"`
 	ViewerHasApproved bool   `json:"viewerHasApproved"`
 	CopilotReviewed   bool   `json:"copilotReviewed"` // GitHub Copilot has submitted a review

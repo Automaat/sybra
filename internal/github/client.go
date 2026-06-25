@@ -354,11 +354,13 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 
 // reviewFeedbackSig fingerprints a PR's reviewer feedback so the pr-fix retry
 // budget can tell genuinely-new feedback (reset the budget) from stale,
-// already-addressed feedback (let the budget cap and escalate). Tokens are
-// sorted so order is irrelevant; an "addressed" thread collapses to its stable
-// "D:<id>" token regardless of how many times the agent replies, so the agent's
-// own replies never reset the budget. Returns "" when there is no feedback at
-// all (no unresolved threads and no change request).
+// already-addressed feedback (let the budget cap and escalate). The tokens are
+// the unresolved-thread IDs; sorted and hashed with the review decision. Keying
+// on the thread set (not comment ids or who replied last) means the agent's own
+// replies never change the signature — a thread it replied to is still
+// unresolved, so its ID stays in the set — while a new reviewer thread does.
+// Returns "" when there is no feedback at all (no unresolved threads and no
+// change request).
 func reviewFeedbackSig(reviewDecision string, tokens []string) string {
 	if reviewDecision != "CHANGES_REQUESTED" && len(tokens) == 0 {
 		return ""

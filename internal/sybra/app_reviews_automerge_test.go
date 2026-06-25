@@ -319,6 +319,30 @@ func TestResolveCopilotThreads_humanReplyNotDismissed(t *testing.T) {
 	}
 }
 
+// TestResolveCopilotThreads_emptyAgentLoginFallsBackToAuthor locks the fix for
+// the empty-viewer edge: when ViewerLogin() fails (agentLogin ""), the PR author
+// stands in for the agent's identity, so an addressed thread is still resolved
+// rather than re-parking the pet PR.
+func TestResolveCopilotThreads_emptyAgentLoginFallsBackToAuthor(t *testing.T) {
+	threads := []github.ReviewThread{
+		// Copilot thread the agent (== PR author "me") replied to → addressed.
+		{ID: "A1", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "me"},
+	}
+	var resolvedIDs []string
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		fetchThreads:  func(string, int) ([]github.ReviewThread, error) { return threads, nil },
+		resolveThread: func(id string) error { resolvedIDs = append(resolvedIDs, id); return nil },
+	}
+	pr := github.PullRequest{Number: 7, Repository: "o/r", Author: "me"}
+
+	r.resolveCopilotThreadsForPR("task1", pr, "")
+
+	if len(resolvedIDs) != 1 || resolvedIDs[0] != "A1" {
+		t.Fatalf("resolvedIDs = %v, want [A1] (empty agentLogin must fall back to PR author)", resolvedIDs)
+	}
+}
+
 // TestEscalateExhaustedFix locks the scope of escalation: every fixable kind
 // (conflict, ci_failure, comments) parks a task to human-required once its
 // durable retry budget is spent — leaving a capped kind un-escalated would

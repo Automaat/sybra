@@ -80,6 +80,13 @@ func blockedOnlyByThreads(pr github.PullRequest) bool {
 }
 
 func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest, agentLogin string) {
+	// ViewerLogin() can fail (returns ""); fall back to the PR author so an
+	// addressed thread is still detected. On own-PRs the author is the agent's
+	// identity, mirroring convertCommonPR's fallback. Without this an empty
+	// agentLogin would match nothing and re-park the pet PR on its threads.
+	if agentLogin == "" {
+		agentLogin = pr.Author
+	}
 	fetch := r.fetchThreads
 	if fetch == nil {
 		fetch = github.FetchReviewThreads
