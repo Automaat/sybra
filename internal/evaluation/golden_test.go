@@ -76,6 +76,27 @@ func TestDiffBaseline(t *testing.T) {
 	}
 }
 
+func TestDiffBaseline_Removed(t *testing.T) {
+	prev := GoldenReport{Cases: []CaseOutcome{{CaseID: "a", Passed: true}, {CaseID: "b", Passed: true}}}
+	cur := GoldenReport{Cases: []CaseOutcome{{CaseID: "a", Passed: true}}}
+	d := DiffBaseline(prev, cur)
+	if len(d.Removed) != 1 || d.Removed[0] != "b" {
+		t.Errorf("Removed = %v, want [b]", d.Removed)
+	}
+}
+
+func TestValidateGoldenSet(t *testing.T) {
+	if err := ValidateGoldenSet([]GoldenCase{{ID: "a"}, {ID: "b"}}); err != nil {
+		t.Errorf("valid set errored: %v", err)
+	}
+	if err := ValidateGoldenSet([]GoldenCase{{ID: "a"}, {ID: "a"}}); err == nil {
+		t.Error("duplicate id should error")
+	}
+	if err := ValidateGoldenSet([]GoldenCase{{ID: ""}}); err == nil {
+		t.Error("empty id should error")
+	}
+}
+
 func TestLoadGoldenSet_Example(t *testing.T) {
 	cases, err := LoadGoldenSet(filepath.Join("testdata", "goldenset.example.json"))
 	if err != nil {

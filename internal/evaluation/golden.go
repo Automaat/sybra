@@ -54,6 +54,24 @@ type GoldenDelta struct {
 	ScoreDelta  float64  `json:"scoreDelta"`
 	Regressions []string `json:"regressions,omitempty"` // passed in baseline, fail now
 	Fixed       []string `json:"fixed,omitempty"`       // failed in baseline, pass now
+	Removed     []string `json:"removed,omitempty"`     // in baseline, absent from this run
+}
+
+// ValidateGoldenSet rejects a set with duplicate case IDs, which would double-
+// count the denominator and let one result score two cases.
+func ValidateGoldenSet(cases []GoldenCase) error {
+	seen := make(map[string]bool, len(cases))
+	for i := range cases {
+		id := cases[i].ID
+		if id == "" {
+			return fmt.Errorf("golden case %d has an empty id", i)
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate golden case id %q", id)
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 // ScoreCase checks one observed result against its case's expectations.
@@ -106,13 +124,21 @@ func DiffBaseline(prev, cur GoldenReport) GoldenDelta {
 		prevPass[c.CaseID] = c.Passed
 	}
 	d := GoldenDelta{ScoreDelta: cur.Score - prev.Score}
+	curIDs := make(map[string]bool, len(cur.Cases))
 	for _, c := range cur.Cases {
+		curIDs[c.CaseID] = true
 		was, existed := prevPass[c.CaseID]
 		switch {
 		case existed && was && !c.Passed:
 			d.Regressions = append(d.Regressions, c.CaseID)
 		case existed && !was && c.Passed:
 			d.Fixed = append(d.Fixed, c.CaseID)
+		}
+	}
+	// Cases dropped from the set since the baseline — coverage loss worth surfacing.
+	for _, c := range prev.Cases {
+		if !curIDs[c.CaseID] {
+			d.Removed = append(d.Removed, c.CaseID)
 		}
 	}
 	return d

@@ -46,9 +46,18 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	if *setPath == "" || *resultsPath == "" {
 		return fatal(jsonOut, "usage: evaluation golden --set <set.json> --results <results.json> [--baseline <b.json>] [--update-baseline]")
 	}
+	if *updateBaseline && *baselinePath == "" {
+		return fatal(jsonOut, "--update-baseline requires --baseline")
+	}
 	cases, err := evaluation.LoadGoldenSet(*setPath)
 	if err != nil {
 		return fatal(jsonOut, "load set: %v", err)
+	}
+	if err := evaluation.ValidateGoldenSet(cases); err != nil {
+		return fatal(jsonOut, "invalid golden set: %v", err)
+	}
+	if len(cases) == 0 {
+		return fatal(jsonOut, "golden set is empty")
 	}
 	results, err := evaluation.LoadCaseResults(*resultsPath)
 	if err != nil {
@@ -64,10 +73,18 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 		} else if !os.IsNotExist(err) {
 			return fatal(jsonOut, "load baseline: %v", err)
 		}
-		if *updateBaseline {
-			if err := evaluation.SaveGoldenReport(*baselinePath, rep); err != nil {
-				return fatal(jsonOut, "write baseline: %v", err)
-			}
+	}
+
+	// Gate: any failing case is a hard floor (protects even with no baseline),
+	// and any regression vs the baseline. A clean run is required to bless a new
+	// baseline, so --update-baseline can never record a failing/regressed report.
+	clean := rep.Passed == rep.Total && (delta == nil || len(delta.Regressions) == 0)
+	if *updateBaseline {
+		if !clean {
+			return fatal(jsonOut, "refusing to update baseline from a failing/regressed run")
+		}
+		if err := evaluation.SaveGoldenReport(*baselinePath, rep); err != nil {
+			return fatal(jsonOut, "write baseline: %v", err)
 		}
 	}
 
@@ -88,11 +105,14 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 			if len(delta.Regressions) > 0 {
 				fmt.Printf("  REGRESSIONS=%s", strings.Join(delta.Regressions, ","))
 			}
+			if len(delta.Removed) > 0 {
+				fmt.Printf("  removed=%s", strings.Join(delta.Removed, ","))
+			}
 			fmt.Println()
 		}
 	}
-	if delta != nil && len(delta.Regressions) > 0 {
-		return 1 // gate: a change regressed the golden set
+	if !clean {
+		return 1 // gate: failing cases or a regression
 	}
 	return 0
 }
