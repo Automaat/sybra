@@ -618,6 +618,36 @@ func TestBuildCommand(t *testing.T) {
 			cfg:     RunConfig{Provider: "codex", RequirePermissions: true},
 			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write --model gpt-5.5",
 		},
+		{
+			name:    "fable alias",
+			cfg:     RunConfig{Model: "fable"},
+			wantCmd: "claude --dangerously-skip-permissions --model fable",
+		},
+		{
+			name:    "fable with 1m suffix stripped",
+			cfg:     RunConfig{Model: "fable[1m]"},
+			wantCmd: "claude --dangerously-skip-permissions --model fable",
+		},
+		{
+			name:    "claude-fable-5 with 1m suffix stripped",
+			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
+			wantCmd: "claude --dangerously-skip-permissions --model claude-fable-5",
+		},
+		{
+			name:    "sonnet with 1m suffix stripped",
+			cfg:     RunConfig{Model: "sonnet[1m]"},
+			wantCmd: "claude --dangerously-skip-permissions --model sonnet",
+		},
+		{
+			name:    "codex fable maps to gpt-5.5",
+			cfg:     RunConfig{Provider: "codex", Model: "fable"},
+			wantCmd: "codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.5",
+		},
+		{
+			name:    "codex 1m suffix not stripped — rejected by safeArgRe",
+			cfg:     RunConfig{Provider: "codex", Model: "gpt-5.4[1m]"},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -634,6 +664,36 @@ func TestBuildCommand(t *testing.T) {
 			}
 			if got != tt.wantCmd {
 				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
+			}
+		})
+	}
+}
+
+func TestNormalizeModel(t *testing.T) {
+	tests := []struct {
+		prov  string
+		model string
+		want  string
+	}{
+		// Claude path
+		{prov: "claude", model: "", want: "sonnet"},
+		{prov: "claude", model: "fable", want: "fable"},
+		{prov: "claude", model: "fable[1m]", want: "fable"},
+		{prov: "claude", model: "FABLE[1M]", want: "FABLE"},
+		{prov: "claude", model: "claude-fable-5[1m]", want: "claude-fable-5"},
+		{prov: "claude", model: "sonnet[1m]", want: "sonnet"},
+		{prov: "claude", model: "foo[1m]bar", want: "foo[1m]bar"}, // only trailing stripped
+		// Codex path — no [1m] stripping
+		{prov: "codex", model: "fable", want: "gpt-5.5"},
+		{prov: "codex", model: "haiku", want: "gpt-5.4-mini"},
+		{prov: "codex", model: "gpt-5.4[1m]", want: "gpt-5.4[1m]"}, // unchanged on codex path
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prov+"/"+tt.model, func(t *testing.T) {
+			got := normalizeModel(tt.prov, tt.model)
+			if got != tt.want {
+				t.Errorf("normalizeModel(%q, %q) = %q, want %q", tt.prov, tt.model, got, tt.want)
 			}
 		})
 	}

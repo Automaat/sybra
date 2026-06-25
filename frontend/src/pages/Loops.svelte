@@ -3,6 +3,7 @@
   import { loopStore } from '../stores/loops.svelte.js'
   import { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
   import { EventsOn } from '$lib/api'
+  import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
   import { LoopAgentUpdated } from '../lib/events.js'
   import { timeAgo } from '$lib/dates.js'
 
@@ -285,9 +286,9 @@
             bind:value={formModel}
           >
             <option value="">default</option>
-            <option value="sonnet">sonnet</option>
-            <option value="opus">opus</option>
-            <option value="haiku">haiku</option>
+            {#each CLAUDE_MODEL_OPTIONS as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
           </select>
         </label>
 

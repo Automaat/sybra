@@ -8,7 +8,7 @@ export const providerMatrix: ProviderSpec[] = [
   {
     provider: 'claude',
     modelLabel: 'Default (Sonnet)',
-    expectedOptions: ['Default (Sonnet)', 'Opus', 'Sonnet', 'Haiku'],
+    expectedOptions: ['Default (Sonnet)', 'Opus 4.8', 'Sonnet', 'Haiku', 'Fable 5'],
   },
   {
     provider: 'codex',

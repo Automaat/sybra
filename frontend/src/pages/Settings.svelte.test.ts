@@ -445,6 +445,15 @@ describe('Settings', () => {
     })
   })
 
+  it('renders Fable 5 and Opus 4.8 model options for claude provider', async () => {
+    mockGetSettings.mockResolvedValue({ ...mockSettings })
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
+    expect(screen.getByText('Fable 5')).toBeDefined()
+    expect(screen.getByText('Opus 4.8')).toBeDefined()
+  })
+
   it('switches model options when provider changes to codex', async () => {
     mockGetSettings.mockResolvedValue({ ...mockSettings })
     mockGetCodexModels.mockResolvedValue([
