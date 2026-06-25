@@ -166,23 +166,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	}
 
 	if len(closedMatchers) > 0 {
-		closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, github.FetchPRState)
-		for _, c := range closedPRs {
-			if r.agents.HasRunningAgentForTask(c.TaskID) {
-				r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
-				continue
-			}
-			if _, err := r.tasks.Update(c.TaskID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
-				r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
-				continue
-			}
-			eventType := audit.EventPRMerged
-			if c.State == "CLOSED" {
-				eventType = audit.EventPRClosed
-			}
-			r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
-			r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State)
-		}
+		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
 	}
 
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
@@ -195,6 +179,69 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		return prPollFast
 	}
 	return prPollSlow
+}
+
+// advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
+// stamping the terminal outcome and emitting the audit + task.landed events the
+// evaluation scorecard reads. Skips tasks with a still-running agent.
+func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
+	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, github.FetchPRState)
+	for _, c := range closedPRs {
+		if r.agents.HasRunningAgentForTask(c.TaskID) {
+			r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+			continue
+		}
+		outcome := classifyLandingOutcome(c.State)
+		if _, err := r.tasks.Update(c.TaskID, task.Update{
+			Status:  task.Ptr(task.StatusDone),
+			Outcome: task.Ptr(outcome),
+		}); err != nil {
+			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
+			continue
+		}
+		eventType := audit.EventPRMerged
+		if c.State == "CLOSED" {
+			eventType = audit.EventPRClosed
+		}
+		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
+		r.recordLanding(c.TaskID, c.PRNumber, c.State)
+		r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
+	}
+}
+
+// classifyLandingOutcome maps a terminal PR state to a task outcome label.
+// Explicit "CLOSED" (closed unmerged) → "closed"; everything else
+// ("MERGED" and the eligible default) → "merged".
+func classifyLandingOutcome(state string) string {
+	if state == "CLOSED" {
+		return "closed"
+	}
+	return "merged"
+}
+
+// recordLanding emits a task.landed audit event capturing the terminal outcome,
+// PR size, and lead time — the ground-truth signal the evaluation scorecard
+// reads. Best-effort: a missing task or a stats-fetch failure still records the
+// outcome and PR number.
+func (r *ReviewHandler) recordLanding(taskID string, prNumber int, state string) {
+	data := map[string]any{
+		"pr":      prNumber,
+		"state":   state,
+		"outcome": classifyLandingOutcome(state),
+	}
+	if t, err := r.tasks.Get(taskID); err == nil {
+		if !t.CreatedAt.IsZero() {
+			data["lead_time_h"] = time.Since(t.CreatedAt).Hours()
+		}
+		if t.ProjectID != "" && prNumber > 0 {
+			if s, err := github.FetchPRStats(t.ProjectID, prNumber); err == nil {
+				data["additions"] = s.Additions
+				data["deletions"] = s.Deletions
+				data["changed_files"] = s.ChangedFiles
+			}
+		}
+	}
+	r.logAudit(audit.EventTaskLanded, taskID, "", data)
 }
 
 // cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow

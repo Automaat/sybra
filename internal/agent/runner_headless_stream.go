@@ -17,6 +17,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)
 			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
+			ev.ToolCalls = len(e.Message.ToolUses)
 		}
 	case "user":
 		if e.Message != nil {
@@ -84,6 +85,7 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 		if e.Message != nil && len(e.Message.ToolUses) > 0 {
 			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
 			ev.Content = cmd
+			ev.ToolCalls = len(e.Message.ToolUses)
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {

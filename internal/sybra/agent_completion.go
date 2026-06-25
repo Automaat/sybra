@@ -278,6 +278,8 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		CacheCreationInputTokens: cacheCreate,
 		CacheReadInputTokens:     cacheRead,
 		ReasoningTokens:          reasoning,
+		TurnCount:                ag.GetTurnCount(),
+		ToolCalls:                ag.GetToolCalls(),
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})

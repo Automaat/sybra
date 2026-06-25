@@ -39,6 +39,7 @@ type Update struct {
 	CodeReview     *string
 	MaxTurns       *int
 	ForkSubagent   *bool
+	Outcome        *string
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -65,7 +66,7 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
-		"review_phase", "pr_phase":
+		"review_phase", "pr_phase", "outcome":
 		return applyPlainStringField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
@@ -145,6 +146,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.ReviewPhase = &s
 	case "pr_phase":
 		u.PRPhase = &s
+	case "outcome":
+		u.Outcome = &s
 	}
 	return nil
 }

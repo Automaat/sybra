@@ -498,6 +498,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 
 	event.Timestamp = time.Now().UTC()
 	a.AppendOutput(event)
+	a.AddToolCalls(event.ToolCalls)
 	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
