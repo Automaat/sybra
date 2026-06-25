@@ -39,9 +39,14 @@ func TestComputePRPhase(t *testing.T) {
 			want: PRPhaseChangesRequested,
 		},
 		{
-			name: "comments outrank draft so the fix dispatches",
+			name: "draft with comments stays draft (comment-fix is skipped on drafts)",
 			sig:  prSignals{IsDraft: true, UnresolvedCount: 1},
-			want: PRPhaseChangesRequested,
+			want: PRPhaseDraft,
+		},
+		{
+			name: "draft with CI failure still shows fixing (CI-fix runs on drafts)",
+			sig:  prSignals{IsDraft: true, CIStatus: "FAILURE"},
+			want: PRPhaseFixing,
 		},
 		{
 			name: "clean draft → draft",

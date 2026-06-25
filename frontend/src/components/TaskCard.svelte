@@ -74,8 +74,8 @@
   }
 
   // Task is waiting on the user (not an agent) — drives the red tile accent.
-  // Own-PR phases (draft / awaiting-approval / approved) count too, so the card
-  // flags "your move" while staying in the In Review column.
+  // The strict own-PR phases (draft / approved) count too, so the card flags
+  // "your move" while staying in the In Review column.
   const needsYou = $derived(awaitsHuman(t.status) || prPhaseNeedsYou(t))
 
   // A granular sub-state folded into this column that ISN'T an attention state

@@ -23,9 +23,9 @@ export interface PRPhaseMeta {
   classes: string
 }
 
-// Needs-you phases (draft, awaiting-approval, approved) drive the red tile
-// accent via prPhaseNeedsYou — the colour here is the phase hue, distinct from
-// that attention signal.
+// Needs-you phases (draft, approved) drive the red tile accent via
+// prPhaseNeedsYou — the colour here is the phase hue, distinct from that
+// attention signal. `awaiting-approval` is a waiting state, not needs-you.
 export const PR_PHASE_META: Record<PRPhase, PRPhaseMeta> = {
   draft: {
     label: 'Draft — mark ready',
@@ -102,7 +102,11 @@ export function prPhaseRank(t: { prPhase?: string }): number {
   return idx === -1 ? PR_PHASE_ORDER.length : idx
 }
 
-/** True when an own-PR task's phase awaits the user (mark ready / ping / merge). */
+/**
+ * True when an own-PR task's phase strictly awaits the user — `draft` (mark
+ * ready) or `approved` (merge). `awaiting-approval` is excluded on purpose: the
+ * PR is waiting on reviewers, not on a concrete user action.
+ */
 export function prPhaseNeedsYou(t: { tags?: string[]; prPhase?: string }): boolean {
   return isOwnPRTask(t) && PR_PHASE_NEEDS_YOU.has(prPhaseOf(t))
 }
