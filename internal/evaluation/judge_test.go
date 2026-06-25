@@ -99,12 +99,28 @@ func TestParseQualityVerdict(t *testing.T) {
 	}
 }
 
+func TestParseQualityVerdict_PreservesBlockerOverall(t *testing.T) {
+	// A blocker (correctness=2) legitimately pulls overall to 2.5, far below the
+	// mean of [2,8,8,8,8]=6.8. The parser must NOT overwrite it with the mean.
+	inner := `{"dimensions":{"correctness":{"score":2},"code_quality":{"score":8},` +
+		`"scope_discipline":{"score":8},"test_coverage":{"score":8},"review_worthiness":{"score":8}},` +
+		`"overall":2.5,"summary":"correctness blocker"}`
+	v, err := parseQualityVerdict(mustEnvelope(t, inner))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if v.Overall != 2.5 {
+		t.Errorf("overall = %v, want 2.5 (blocker-driven, preserved)", v.Overall)
+	}
+}
+
 func TestParseQualityVerdict_Errors(t *testing.T) {
 	cases := map[string][]byte{
-		"bad envelope":  []byte("not json"),
-		"empty result":  mustEnvelope(t, ""),
-		"no json":       mustEnvelope(t, "just prose, no object"),
-		"no dimensions": mustEnvelope(t, `{"overall":5}`),
+		"bad envelope":       []byte("not json"),
+		"empty result":       mustEnvelope(t, ""),
+		"no json":            mustEnvelope(t, "just prose, no object"),
+		"no dimensions":      mustEnvelope(t, `{"overall":5}`),
+		"partial dimensions": mustEnvelope(t, `{"dimensions":{"correctness":{"score":9}},"overall":9}`),
 	}
 	for name, raw := range cases {
 		if _, err := parseQualityVerdict(raw); err == nil {

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
@@ -60,6 +61,7 @@ func cmdEvaluationJudge(store *task.Manager, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("judge", flag.ContinueOnError)
 	model := fs.String("model", "", "judge model (default claude-sonnet-4-6)")
 	seed := fs.Int64("seed", 0, "rubric shuffle seed (0 = stable order)")
+	timeout := fs.Duration("timeout", 3*time.Minute, "max time to wait for the judge")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -78,8 +80,10 @@ func cmdEvaluationJudge(store *task.Manager, args []string, jsonOut bool) int {
 	if err != nil {
 		return fatal(jsonOut, "fetch diff: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
 	judge := &evaluation.ClaudeQualityJudge{Model: *model, DimSeed: *seed}
-	v, err := judge.Judge(context.Background(), evaluation.JudgeRequest{
+	v, err := judge.Judge(ctx, evaluation.JudgeRequest{
 		TaskID:     t.ID,
 		Title:      t.Title,
 		Body:       t.Body,

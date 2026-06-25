@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // defaultJudgeModel is a capable model for nuanced code-quality judgment.
@@ -172,20 +173,24 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
 		return QualityVerdict{}, fmt.Errorf("unmarshal verdict: %w", err)
 	}
-	if len(v.Dimensions) == 0 {
-		return QualityVerdict{}, fmt.Errorf("verdict has no dimension scores")
-	}
+	// Require every rubric dimension: a partial verdict would skew Overall and
+	// the outcome calibration. Clamp scores and sum over the rubric keys (not
+	// len(v.Dimensions)) so extra/unknown keys can't distort the mean.
 	var sum float64
-	for k, d := range v.Dimensions {
-		d.Score = clampScore(d.Score)
-		v.Dimensions[k] = d
-		sum += float64(d.Score)
+	for _, d := range Rubric {
+		ds, ok := v.Dimensions[d.Key]
+		if !ok {
+			return QualityVerdict{}, fmt.Errorf("verdict missing dimension %q", d.Key)
+		}
+		ds.Score = clampScore(ds.Score)
+		v.Dimensions[d.Key] = ds
+		sum += float64(ds.Score)
 	}
-	mean := sum / float64(len(v.Dimensions))
-	// Trust the model's overall only if it's in range and close to the mean;
-	// otherwise recompute, so a bogus overall can't misrepresent the scores.
-	if v.Overall < 0 || v.Overall > 10 || absf(v.Overall-mean) > 2 {
-		v.Overall = mean
+	// Recompute Overall only when out of range or omitted (<=0). A valid in-range
+	// Overall is preserved even when it deviates from the mean — the prompt lets a
+	// blocker dimension pull Overall below the average, and that must survive.
+	if v.Overall <= 0 || v.Overall > 10 {
+		v.Overall = sum / float64(len(Rubric))
 	}
 	return v, nil
 }
@@ -270,16 +275,13 @@ func clampScore(s int) int {
 	return s
 }
 
-func absf(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Back up to a rune boundary so the cut never splits a multibyte character.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "\n…(truncated)"
 }
