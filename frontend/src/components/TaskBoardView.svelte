@@ -132,16 +132,16 @@
         ondragleave={() => { dragOverStatus = null }}
         ondrop={(e) => handleDrop(e, col.status)}
         title="{col.label} (empty) — click to expand"
-        class="hidden shrink-0 flex-col items-center gap-2 rounded-lg border-t-4 bg-surface-100 py-3 transition-colors hover:bg-surface-200 dark:bg-surface-900 dark:hover:bg-surface-800 md:flex md:w-10 {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+        class="hidden shrink-0 flex-col items-center gap-2 rounded-lg border-t-4 bg-surface-200 py-3 transition-colors hover:bg-surface-300 dark:bg-surface-900 dark:hover:bg-surface-800 md:flex md:w-10 {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
       >
-        <span class="rounded-full bg-surface-200 px-1.5 py-0.5 text-[10px] font-medium text-surface-400 dark:bg-surface-700">0</span>
-        <span role="heading" aria-level="2" class="text-xs font-medium text-surface-400 [writing-mode:vertical-rl]">{col.label}</span>
+        <span class="rounded-full bg-surface-300 px-1.5 py-0.5 text-[10px] font-medium text-surface-600 dark:bg-surface-700 dark:text-surface-400">0</span>
+        <span role="heading" aria-level="2" class="text-xs font-medium text-surface-600 dark:text-surface-400 [writing-mode:vertical-rl]">{col.label}</span>
       </button>
     {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       data-col-status={col.status}
-      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-100 transition-shadow dark:bg-surface-900 md:min-w-[200px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-200 transition-shadow dark:bg-surface-900 md:min-w-[200px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
       ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
       ondragleave={() => { dragOverStatus = null }}
       ondrop={(e) => handleDrop(e, col.status)}
@@ -149,7 +149,7 @@
       <button
         type="button"
         onclick={() => ontogglecolumn(col.status)}
-        class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-200 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
+        class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-300 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
       >
         <span class="flex items-center gap-2">
           <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
@@ -165,7 +165,7 @@
               {rc}
             </span>
           {/if}
-          <span class="rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
+          <span class="rounded-full bg-surface-300 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
             {tasks.length}
           </span>
         </span>

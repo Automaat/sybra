@@ -112,7 +112,7 @@
   <div
     bind:this={container}
     onscroll={onScroll}
-    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-300 bg-surface-100 p-3 font-mono text-xs text-surface-900 dark:border-surface-700 dark:bg-surface-950 dark:text-surface-50"
+    class="flex max-h-[60dvh] md:max-h-[600px] flex-col gap-1 overflow-y-auto rounded-lg border border-surface-300 bg-surface-200 p-3 font-mono text-xs text-surface-900 dark:border-surface-700 dark:bg-surface-950 dark:text-surface-50"
   >
     {#if events.length === 0}
       <p class="py-8 text-center text-surface-500">Waiting for output...</p>

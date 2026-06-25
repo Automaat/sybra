@@ -22,7 +22,7 @@
     role="status"
     class="flex items-start gap-2 rounded-md border px-3 py-2 text-sm {tone === 'attention'
       ? 'border-warning-300 bg-warning-50 text-warning-800 dark:border-warning-700 dark:bg-warning-900/40 dark:text-warning-200'
-      : 'border-surface-300 bg-surface-100 text-surface-700 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300'}"
+      : 'border-surface-300 bg-surface-200 text-surface-700 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-300'}"
   >
     {#if tone === 'attention'}
       <AlertTriangle size={16} class="mt-0.5 shrink-0" />
