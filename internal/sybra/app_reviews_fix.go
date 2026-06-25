@@ -98,9 +98,12 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 			"Fix failing CI on branch `%s` (PR #%d). "+
 				"Check the failing run with `gh run view --log-failed`, "+
 				"fix the code, commit and push. No unrelated changes.\n\n"+
-				"Push directly to origin so the fix lands on the existing PR:\n"+
+				"Push to the same remote the PR was opened from — never to `origin` "+
+				"when a `fork` remote exists:\n"+
 				"```sh\n"+
-				"git push origin HEAD:%s\n"+
+				"PUSH_REMOTE=origin\n"+
+				"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+				"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 				"```",
 			issue.PR.HeadRefName, issue.PR.Number, issue.PR.HeadRefName,
 		)

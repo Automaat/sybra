@@ -172,7 +172,8 @@ steps:
       - goto: maybe_create_pr
 
   # Guard: when the task already has a PR number (pr-fix tasks or retries),
-  # skip the create_pr agent entirely and link directly. Prevents duplicate PRs.
+  # skip the create_pr agent entirely. Prevents duplicate PRs.
+  # The push_existing_pr step handles pushing review-fix commits to the branch.
   - id: maybe_create_pr
     name: Maybe Create PR
     type: condition
@@ -180,8 +181,41 @@ steps:
       - when:
           field: task.pr_number
           operator: exists
-        goto: link_pr_and_review
+        goto: push_existing_pr
       - goto: create_pr
+
+  # Push review-fix commits to the existing PR branch.
+  # Reached only when the task already has a pr_number (pr-fix retries or
+  # tasks that skipped create_pr). create_pr handles push for new PRs.
+  - id: push_existing_pr
+    name: Push to Existing PR
+    type: run_agent
+    config:
+      role: push-branch
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Push any unpushed commits on the current branch to the existing PR (task
+        already has pr_number {{.Task.PRNumber}}).
+
+        Steps:
+          1. Determine the push remote:
+             BRANCH="$(git branch --show-current)"
+             PUSH_REMOTE="origin"
+             if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE="fork"; fi
+          2. Push: git push "$PUSH_REMOTE" HEAD:"$BRANCH"
+             If rejected due to divergence, force-push:
+             git push --force-with-lease "$PUSH_REMOTE" HEAD:"$BRANCH"
+          3. Verify the remote PR head matches local HEAD:
+             LOCAL_SHA="$(git rev-parse HEAD)"
+             PR_SHA="$(gh pr view {{.Task.PRNumber}} --json headRefOid --jq .headRefOid)"
+             test "$LOCAL_SHA" = "$PR_SHA"
+
+        No new commits — only push what is already committed locally.
+    next:
+      - goto: link_pr_and_review
 
   # Create the GitHub PR after review fixes are committed locally.
   # Check for an existing PR first to stay idempotent on retries.
