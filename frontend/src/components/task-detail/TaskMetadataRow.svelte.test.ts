@@ -17,8 +17,8 @@ vi.mock('../../stores/notifications.svelte.js', () => ({
   },
 }))
 
-vi.mock('$lib/api', () => ({
-  BrowserOpenURL: (...args: unknown[]) => mockOpenURL(...args),
+vi.mock('$lib/browser.svelte.js', () => ({
+  openLink: (...args: unknown[]) => mockOpenURL(...args),
 }))
 
 const TaskMetadataRow = (await import('./TaskMetadataRow.svelte')).default
@@ -113,6 +113,6 @@ describe('TaskMetadataRow', () => {
   it('opens issue url on click', async () => {
     render(TaskMetadataRow, { props: { task: baseTask as never } })
     await fireEvent.click(screen.getByText('https://example/i/1'))
-    expect(mockOpenURL).toHaveBeenCalledWith('https://example/i/1')
+    expect(mockOpenURL).toHaveBeenCalledWith('https://example/i/1', expect.anything())
   })
 })

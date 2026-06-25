@@ -3,7 +3,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
-  import { BrowserOpenURL } from '$lib/api'
+  import { openLink } from '$lib/browser.svelte.js'
   import { formatDateTime } from '../../lib/dates.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
@@ -116,7 +116,7 @@
       <button
         type="button"
         class="flex w-fit items-center gap-1.5 text-sm text-secondary-600 hover:underline dark:text-secondary-400"
-        onclick={() => BrowserOpenURL(task.issue)}
+        onclick={(e) => openLink(task.issue, e)}
       >
         <CircleDot size={16} class="shrink-0" />
         {task.issue}

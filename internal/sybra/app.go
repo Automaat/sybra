@@ -83,6 +83,7 @@ type App struct {
 	logLevel                      *slog.LevelVar
 	emit                          func(string, any)
 	emitFactory                   func(context.Context) func(string, any)
+	openBrowser                   func(string)
 	restartStaleErr               *logging.ErrorThrottle
 	recovery                      *recovery.Recovery
 	agentCompletion               *AgentCompletionHandler
@@ -106,6 +107,7 @@ type App struct {
 	reviewSvc    *ReviewService
 	workflowSvc  *WorkflowService
 	infoSvc      *InfoService
+	browserSvc   *BrowserService
 }
 
 // Option configures App behaviour at construction time.
@@ -123,6 +125,13 @@ func WithEmit(fn func(string, any)) Option {
 	return func(a *App) {
 		a.emitFactory = func(context.Context) func(string, any) { return fn }
 	}
+}
+
+// WithBrowserOpener injects the closure that opens a URL in an in-app webview
+// window. Supplied by the desktop entrypoint (darwin); left unset on the
+// headless server, where BrowserService.Open reports the feature unavailable.
+func WithBrowserOpener(fn func(string)) Option {
+	return func(a *App) { a.openBrowser = fn }
 }
 
 // WithSkillsFS sets an embedded FS used as a fallback source for skill files
@@ -159,6 +168,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.reviewSvc = &ReviewService{}
 	a.workflowSvc = &WorkflowService{}
 	a.infoSvc = &InfoService{}
+	a.browserSvc = &BrowserService{}
 	for _, o := range opts {
 		o(a)
 	}

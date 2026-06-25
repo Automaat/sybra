@@ -2,7 +2,8 @@
   import { GitPullRequest, RotateCcw } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { reviewStore } from '../../stores/reviews.svelte.js'
-  import { BrowserOpenURL, ResumeInClaudeCode } from '$lib/api'
+  import { ResumeInClaudeCode } from '$lib/api'
+  import { openLink } from '$lib/browser.svelte.js'
 
   interface Props {
     task: Task
@@ -41,7 +42,7 @@
       <button
         type="button"
         class="flex w-full items-start justify-between gap-3 rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
-        onclick={() => BrowserOpenURL(pr.url)}
+        onclick={(e) => openLink(pr.url, e)}
       >
         <div class="flex items-center gap-2">
           {#if pr.ciStatus}
@@ -83,7 +84,7 @@
     <button
       type="button"
       class="flex w-fit items-center gap-1.5 text-sm text-warning-700 hover:underline dark:text-warning-400"
-      onclick={() => BrowserOpenURL(`https://github.com/${task.projectId}/pull/${task.prNumber}`)}
+      onclick={(e) => openLink(`https://github.com/${task.projectId}/pull/${task.prNumber}`, e)}
     >
       <GitPullRequest size={16} class="shrink-0" />
       {task.projectId}#{task.prNumber}

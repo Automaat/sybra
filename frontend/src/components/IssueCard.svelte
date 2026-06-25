@@ -1,7 +1,7 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
   import type { Issue } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
-  import { BrowserOpenURL } from '$lib/api'
+  import { openLink } from '$lib/browser.svelte.js'
 
   interface Props {
     issue: Issue
@@ -16,8 +16,8 @@
   role="link"
   tabindex="0"
   class="w-full cursor-pointer rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
-  onclick={() => BrowserOpenURL(issue.url)}
-  onkeydown={(e) => { if (e.key === 'Enter') BrowserOpenURL(issue.url) }}
+  onclick={(e) => openLink(issue.url, e)}
+  onkeydown={(e) => { if (e.key === 'Enter') openLink(issue.url, e) }}
 >
   <div class="flex items-start justify-between gap-2">
     <h3 class="text-sm font-semibold leading-tight">{issue.title}</h3>

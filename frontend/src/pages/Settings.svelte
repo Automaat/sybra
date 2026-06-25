@@ -8,6 +8,7 @@
   import RenovatePanel from '../components/settings/RenovatePanel.svelte'
   import { focusModeStore } from '../lib/focus-mode.svelte.js'
   import { viewModeStore } from '../lib/view-mode.svelte.js'
+  import { inAppBrowserStore } from '../lib/browser.svelte.js'
 
   function setFocusMode(on: boolean) {
     focusModeStore.set(on)
@@ -293,6 +294,18 @@
               <span class="flex flex-col">
                 <span class="text-sm font-medium">Focus mode</span>
                 <span class="text-xs text-surface-500 dark:text-surface-400">Cleaner, minimal surface — collapses the sidebar and leads with the list view. Advanced views stay reachable via “More”.</span>
+              </span>
+            </label>
+            <label class="mt-5 flex items-start gap-3">
+              <input
+                type="checkbox"
+                class="mt-0.5 h-4 w-4 accent-primary-500"
+                checked={inAppBrowserStore.enabled}
+                onchange={(e) => inAppBrowserStore.set((e.target as HTMLInputElement).checked)}
+              />
+              <span class="flex flex-col">
+                <span class="text-sm font-medium">Open links in-app</span>
+                <span class="text-xs text-surface-500 dark:text-surface-400">Open GitHub issue &amp; PR links in a Sybra browser window — log in once, stay in one app. Hold ⌘/Ctrl when clicking to use the system browser instead.</span>
               </span>
             </label>
           </section>
