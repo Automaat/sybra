@@ -149,7 +149,7 @@
   {#snippet issueGlyph()}
     <!-- A linked issue alongside a PR: a real tooltip + accessible name (a
          lucide `title` prop only lands as an inert SVG attribute). -->
-    <span title={t.issue} aria-label="Also linked to an issue" class="inline-flex items-center">
+    <span title={t.issue} aria-label="Also linked to an issue" class="inline-flex shrink-0 items-center">
       <CircleDot size={11} class="opacity-60" aria-hidden="true" />
     </span>
   {/snippet}
@@ -213,24 +213,24 @@
       {@const ph = reviewPhaseMeta(t)}
       {@const PhaseIcon = PHASE_ICONS[ph.icon]}
       <span
-        class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
+        class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
         title={t.statusReason || ph.label}
       >
         <PhaseIcon size={12} class="shrink-0" />
-        {#if topPR}#{topPR.number}{:else if t.prNumber}#{t.prNumber}{/if}
-        <span>{ph.label}</span>
+        {#if topPR}<span class="shrink-0">#{topPR.number}</span>{:else if t.prNumber}<span class="shrink-0">#{t.prNumber}</span>{/if}
+        <span class="truncate">{ph.label}</span>
         {#if t.issue}{@render issueGlyph()}{/if}
       </span>
     {:else if ownPRPhase}
       {@const ph = prPhaseMeta(t)}
       {@const PhaseIcon = PR_PHASE_ICONS[ph.icon]}
       <span
-        class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
+        class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
         title={t.statusReason || ph.label}
       >
         <PhaseIcon size={12} class="shrink-0" />
-        {#if topPR}#{topPR.number}{:else if t.prNumber}#{t.prNumber}{/if}
-        <span>{ph.label}</span>
+        {#if topPR}<span class="shrink-0">#{topPR.number}</span>{:else if t.prNumber}<span class="shrink-0">#{t.prNumber}</span>{/if}
+        <span class="truncate">{ph.label}</span>
         {#if t.issue}{@render issueGlyph()}{/if}
       </span>
     {:else if topPR}
