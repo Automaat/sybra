@@ -165,6 +165,7 @@
   <div class="flex flex-col gap-1">
     <span class="font-medium text-surface-500">Reasoning Effort <span class="font-normal text-surface-400 text-xs">(Codex only)</span></span>
     <select
+      aria-label="Reasoning Effort"
       class="w-fit rounded bg-transparent px-1 py-0.5 text-sm text-surface-600 dark:text-surface-300"
       value={task.reasoningEffort ?? ''}
       onchange={async (e) => {

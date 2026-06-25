@@ -221,6 +221,12 @@ func codexReasoningArgs(effort string) []string {
 	if effort == "" {
 		return nil
 	}
+	// Allowlist guards against tampered task YAML bypassing API-layer validation.
+	switch effort {
+	case "low", "medium", "high", "xhigh":
+	default:
+		return nil
+	}
 	return []string{"-c", "model_reasoning_effort=" + effort}
 }
 

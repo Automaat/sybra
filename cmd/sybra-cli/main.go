@@ -616,7 +616,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	issue := fs.String("issue", "", "GitHub issue URL")
 	statusReason := fs.String("status-reason", "", "reason for status change")
 	maxTurnsFlag := fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)")
-	reasoningEffort := fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' clears the override)")
+	reasoningEffort := fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
