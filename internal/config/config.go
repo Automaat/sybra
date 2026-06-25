@@ -342,7 +342,7 @@ func DefaultConfig() *Config {
 		},
 		Agent: AgentDefaults{
 			Provider:      "claude",
-			MaxConcurrent: 3,
+			MaxConcurrent: 100,
 			MaxCostUSD:    5.0,
 			MaxTurns:      150,
 		},

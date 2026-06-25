@@ -48,10 +48,23 @@ func TestMonitorScanEmptyBoard(t *testing.T) {
 	}
 }
 
+// writeConfig writes a config.yaml into the test's SYBRA_HOME so a scan picks
+// up explicit overrides instead of falling back to packaged defaults.
+func writeConfig(t *testing.T, home, yaml string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
 func TestMonitorScanDetectsUntriagedAndOverDispatch(t *testing.T) {
 	dir := setupStore(t)
 
-	// Plant 4 in-progress tasks (over the default DispatchLimit of 3) plus
+	// Pin the dispatch limit so this test is independent of the default
+	// agent concurrency (which is far above the 4 planted tasks).
+	writeConfig(t, dir, "monitor:\n  dispatch_limit: 3\n")
+
+	// Plant 4 in-progress tasks (over the pinned DispatchLimit of 3) plus
 	// an untriaged todo task. Tags are empty on one; a second has a full
 	// triage so only the first triggers untriaged. The in-progress tasks
 	// get the "medium" tag + headless mode so they do not also trip
