@@ -226,6 +226,12 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
 			return
 		}
+		// pr-fix / existing-PR tasks are driven by pr.event, not task.created.
+		// Skipping here prevents simple-task-plan from claiming the workflow
+		// slot before the DispatchEvent("pr.event") call in FixRenovateCI.
+		if t.RunRole != "" || t.PRNumber > 0 {
+			return
+		}
 		if t.Workflow != nil &&
 			t.Workflow.State != "" &&
 			t.Workflow.State != workflow.ExecCompleted &&

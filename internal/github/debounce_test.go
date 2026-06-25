@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -133,6 +134,32 @@ func TestIssueTracker(t *testing.T) {
 		}
 		if tracker.Retries("t3", PRIssueConflict) != 0 {
 			t.Fatal("expected retries cleaned up")
+		}
+	})
+
+	t.Run("cleanup preserves retries at cap across long gaps", func(t *testing.T) {
+		// Simulate maxRetries attempts, each on a new SHA and after cooldown.
+		now = time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+		sha := "cap-sha-0"
+		for i := range maxRetries {
+			tracker.MarkHandled("t8", PRIssueCIFailure, sha)
+			sha = fmt.Sprintf("cap-sha-%d", i+1)
+			now = now.Add(31 * time.Minute)
+		}
+		// Cleanup runs after 2x cooldown — but retry counter must survive.
+		now = now.Add(61 * time.Minute)
+		tracker.Cleanup()
+
+		// AtCap must still be true so the caller can escalate.
+		if !tracker.AtCap("t8", PRIssueCIFailure) {
+			t.Fatal("expected AtCap=true after cleanup with capped entry")
+		}
+		if tracker.Retries("t8", PRIssueCIFailure) != maxRetries {
+			t.Fatalf("expected retries=%d after cleanup, got %d", maxRetries, tracker.Retries("t8", PRIssueCIFailure))
+		}
+		// ShouldHandle must still be false.
+		if tracker.ShouldHandle("t8", PRIssueCIFailure, sha) {
+			t.Fatal("expected ShouldHandle=false: still at cap after cleanup")
 		}
 	})
 }

@@ -85,12 +85,12 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 
 func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	mgr := newTestManager(t)
-	created, err := mgr.Create("bump dep on work repo", "https://github.com/myco/work-repo/pull/9", task.AgentModeHeadless)
+	created, err := mgr.Create("bump dep on work repo", "https://github.com/example-org/example-repo/pull/9", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	projects := []project.Project{
-		{ID: "myco/work-repo", Owner: "myco", Repo: "work-repo", Type: project.ProjectTypeWork},
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
 	}
 	// Headline case: the classifier itself emits noplan for a trivially
 	// mechanical work-typed task. Run the full emit→validate→apply path (the
@@ -144,12 +144,12 @@ func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 
 func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	mgr := newTestManager(t)
-	created, err := mgr.Create("refactor ingestion", "https://github.com/myco/work-repo/issues/1", task.AgentModeHeadless)
+	created, err := mgr.Create("refactor ingestion", "https://github.com/example-org/example-repo/issues/1", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	projects := []project.Project{
-		{ID: "myco/work-repo", Owner: "myco", Repo: "work-repo", Type: project.ProjectTypeWork},
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
 	}
 	v := Verdict{
 		Title: "refactor(ingestion): split pipeline stages",
@@ -168,8 +168,66 @@ func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)
 	}
-	if updated.ProjectID != "myco/work-repo" {
+	if updated.ProjectID != "example-org/example-repo" {
 		t.Errorf("project_id: got %q", updated.ProjectID)
+	}
+}
+
+func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
+	mgr := newTestManager(t)
+	// Create a work-project task that would normally go to planning.
+	created, err := mgr.Create("Fix CI: bump lodash", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Pre-set RunRole as FixRenovateCI would via CreateFull.
+	created.RunRole = "pr-fix"
+	created.PRNumber = 42
+
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "chore(deps): fix CI on bump lodash",
+		Size:  "large",
+		Type:  "feature",
+		Mode:  "headless",
+		Tags:  []string{"backend", "large", "feature"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// pr-fix floor must override both work-project → planning and large-feature → planning.
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
+	}
+}
+
+func TestApplyPRNumberNeverPlanning(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("Fix some CI", "https://github.com/example-org/example-repo/pull/7", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.PRNumber = 7
+
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "feat(ci): fix broken pipeline",
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+		Tags:  []string{"ci", "medium", "feature"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
 	}
 }
 

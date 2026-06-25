@@ -71,6 +71,12 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	}
 
 	status := RouteStatus(v.Size, v.Type, projectType)
+	// pr-fix tasks (system-created to fix an existing PR) must never enter the
+	// planning phase — they go straight to implementation. Override any route
+	// that would park them in planning.
+	if t.RunRole == "pr-fix" || t.PRNumber > 0 {
+		status = task.StatusTodo
+	}
 	updates["status"] = string(status)
 	// No status_reason on successful triage: the field is reserved for
 	// attention-worthy states (monitor/watchdog/blocked), which the UI renders

@@ -41,12 +41,21 @@ var triageReviewShortStatRe = regexp.MustCompile(
 	`(\d+)\s+files?\s+changed(?:,\s+(\d+)\s+insertions?\(\+\))?(?:,\s+(\d+)\s+deletions?\(-\))?`,
 )
 
-// triageVerdict applies the heuristic and returns "simple" or "staff" with a
-// short rationale. Pure function — easy to unit-test without git.
+// triageVerdict applies the heuristic and returns "skip", "simple", or "staff"
+// with a short rationale. Pure function — easy to unit-test without git.
+//
+// "skip"   — trivial diff (zero net lines changed): no review needed.
+// "simple" — small, low-risk diff: lightweight /pr-review is sufficient.
+// "staff"  — large or risky diff: full /staff-code-review required.
 func triageVerdict(files []string, insertions, deletions int) (verdict, reason string) {
 	total := insertions + deletions
 	if len(files) == 0 {
 		return "staff", "no files reported"
+	}
+	// Zero net lines (e.g. rename-only, mode-change): no substantive diff to
+	// review. Skip the review cycle entirely.
+	if total == 0 {
+		return "skip", fmt.Sprintf("0 lines changed across %d file(s)", len(files))
 	}
 	if total > triageReviewLineLimit {
 		return "staff", fmt.Sprintf("%d lines > %d", total, triageReviewLineLimit)
@@ -60,11 +69,15 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 		}
 		ext := strings.ToLower(filepathExt(f))
 		if !triageReviewSimpleExts[ext] {
+			// Unsupported extension on a small, non-risky diff: downgrade to
+			// simple instead of forcing staff. The extension is unfamiliar but
+			// the diff is tiny — a lightweight review is still better than
+			// nothing, and staff is reserved for genuinely large/risky changes.
 			label := ext
 			if label == "" {
 				label = "(no extension)"
 			}
-			return "staff", "unsupported extension: " + label + " (" + f + ")"
+			return "simple", "small diff with unsupported extension: " + label + " (" + f + ")"
 		}
 	}
 	return "simple", fmt.Sprintf("%d lines, %d files, low risk", total, len(files))

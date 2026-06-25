@@ -299,6 +299,62 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	return t, nil
 }
 
+// CreateFull persists a new task with optional initial field overrides applied
+// atomically in the first write. Use this instead of Create+Update when the
+// caller needs fields like RunRole, PRNumber, Tags, or ProjectID present before
+// any file-watcher can read the task — avoiding the race where watcher picks up
+// the bare task before the caller's Update applies.
+func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) {
+	if mode == "" {
+		mode = AgentModeInteractive
+	}
+	if _, err := ValidateAgentMode(mode); err != nil {
+		return Task{}, err
+	}
+	now := time.Now().UTC()
+	id := uuid.NewString()[:8]
+	t := Task{
+		ID:        id,
+		Slug:      Slugify(title),
+		Title:     title,
+		Status:    StatusTodo,
+		TaskType:  TaskTypeNormal,
+		AgentMode: mode,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Body:      body,
+	}
+	// Apply initial field overrides before the first disk write so that any
+	// watcher reading the file sees the complete task from the start.
+	if init.ProjectID != nil {
+		t.ProjectID = *init.ProjectID
+	}
+	if init.PRNumber != nil {
+		t.PRNumber = *init.PRNumber
+	}
+	if init.Tags != nil {
+		t.Tags = *init.Tags
+	}
+	if init.RunRole != nil {
+		t.RunRole = *init.RunRole
+	}
+	if init.Body != nil {
+		t.Body = *init.Body
+	}
+
+	data, err := Marshal(t)
+	if err != nil {
+		return Task{}, err
+	}
+	filename := fmt.Sprintf("%s.md", t.ID)
+	t.FilePath = filepath.Join(s.dir, filename)
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+		return Task{}, fmt.Errorf("write task file: %w", err)
+	}
+	s.storeTaskCache(t)
+	return t, nil
+}
+
 // CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
 // hidden from the task list UI and never restart on app reboot. The slug is
 // "chat-<8char>" so the worktree DirName is distinctive.

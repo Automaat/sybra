@@ -369,8 +369,13 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 	if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)
 	}
-	if err := project.EnforceForkOnlyPush(wtPath); err != nil {
-		m.logger.Warn("fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+	// pr-fix tasks must push to the existing PR's head branch on origin — not
+	// via a fork remote. Skip fork-only-push so git push origin HEAD:<branch>
+	// goes straight to the upstream and the fix lands on the tracked PR.
+	if t.RunRole != "pr-fix" {
+		if err := project.EnforceForkOnlyPush(wtPath); err != nil {
+			m.logger.Warn("fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+		}
 	}
 	return wtPath, nil
 }

@@ -170,6 +170,19 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 	return t, nil
 }
 
+// CreateFull persists a new task with initial field overrides applied atomically
+// before the first emit, ensuring file-watchers see a complete task from the start.
+func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error) {
+	t, err := m.store.CreateFull(title, body, mode, init)
+	if err != nil {
+		return t, err
+	}
+	metrics.TaskCreated()
+	m.recordFiredStatus(t.ID, string(t.Status))
+	m.emitter.Emit(events.TaskCreated, t.FilePath)
+	return t, nil
+}
+
 // CreateChat persists a synthetic chat task and emits task:created.
 func (m *Manager) CreateChat(projectID string) (Task, error) {
 	t, err := m.store.CreateChat(projectID)

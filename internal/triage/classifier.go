@@ -106,6 +106,20 @@ Output schema (single JSON object):
 		b.WriteString("\n")
 	}
 
+	// Expose system metadata so the classifier can recognise pr-fix tasks and
+	// emit "noplan" without depending solely on title/body heuristics.
+	if t.RunRole != "" || t.PRNumber > 0 {
+		b.WriteString("System metadata (do not include in output):\n")
+		if t.RunRole != "" {
+			b.WriteString("- run_role: " + t.RunRole + "\n")
+		}
+		if t.PRNumber > 0 {
+			fmt.Fprintf(&b, "- pr_number: %d\n", t.PRNumber)
+		}
+		b.WriteString("IMPORTANT: when run_role=pr-fix or pr_number>0 this is a system task " +
+			"fixing an existing PR. Always emit \"noplan\" in tags.\n\n")
+	}
+
 	b.WriteString("Task to classify:\n")
 	b.WriteString("TITLE: ")
 	b.WriteString(t.Title)

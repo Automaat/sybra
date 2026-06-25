@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -163,6 +164,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 				continue
 			}
 			if !r.prTracker.ShouldHandle(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA) {
+				r.maybeEscalateRetryCap(issues[i].TaskID, issues[i].Kind)
 				continue
 			}
 			if issues[i].Kind == github.PRIssueReadyToMerge {
@@ -263,6 +265,27 @@ func earliestRunStart(runs []task.AgentRun) time.Time {
 		}
 	}
 	return earliest
+}
+
+// maybeEscalateRetryCap flips a task to human-required when its retry budget is
+// exhausted. Removes the task from the tracker so it does not re-trigger.
+func (r *ReviewHandler) maybeEscalateRetryCap(taskID string, kind github.PRIssueKind) {
+	if !r.prTracker.AtCap(taskID, kind) {
+		return
+	}
+	reason := fmt.Sprintf(
+		"pr-monitor: CI fix attempted %d× without going green (likely flaky infra or unfixable) — needs human",
+		github.MaxRetries,
+	)
+	if _, uerr := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); uerr != nil {
+		r.logger.Error("pr-monitor.retry-cap.escalate", "task_id", taskID, "err", uerr)
+		return
+	}
+	r.logger.Info("pr-monitor.retry-cap", "task_id", taskID, "kind", string(kind))
+	r.prTracker.Clear(taskID, kind)
 }
 
 // cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow
