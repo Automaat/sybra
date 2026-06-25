@@ -88,18 +88,32 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
-			name:       "unknown_extension_is_staff",
+			name:       "unknown_extension_small_diff_is_simple",
 			files:      []string{"schema.sql"},
 			insertions: 5,
 			deletions:  0,
-			want:       "staff",
+			want:       "simple",
 		},
 		{
-			name:       "binary_or_no_extension_is_staff",
+			name:       "binary_or_no_extension_small_diff_is_simple",
 			files:      []string{"bin/runner"},
 			insertions: 1,
 			deletions:  0,
-			want:       "staff",
+			want:       "simple",
+		},
+		{
+			name:       "zero_lines_changed_is_skip",
+			files:      []string{"README.md"},
+			insertions: 0,
+			deletions:  0,
+			want:       "skip",
+		},
+		{
+			name:       "zero_lines_multiple_files_is_skip",
+			files:      []string{"a.go", "b.go"},
+			insertions: 0,
+			deletions:  0,
+			want:       "skip",
 		},
 		{
 			name:       "no_files_is_staff",
@@ -408,6 +422,14 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 				"task.tags": "backend",
 			},
 			want: "code_review_staff",
+		},
+		{
+			name: "skip_verdict_routes_to_maybe_create_pr",
+			fields: map[string]string{
+				"task.tags":                      "backend",
+				"vars.step.triage_review.output": "skip",
+			},
+			want: "maybe_create_pr",
 		},
 	}
 

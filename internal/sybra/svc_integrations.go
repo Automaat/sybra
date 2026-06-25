@@ -103,22 +103,16 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 	}
 
 	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
-	t, err := s.tasks.Create("Fix CI: "+title, prURL, "headless")
-	if err != nil {
-		return fmt.Errorf("create task: %w", err)
-	}
-
 	tags := []string{"renovate-fix"}
-	if _, err := s.tasks.Update(t.ID, task.Update{
+	t, err := s.tasks.CreateFull("Fix CI: "+title, prURL, "headless", task.Update{
 		ProjectID: task.Ptr(repo),
 		PRNumber:  task.Ptr(number),
 		Tags:      &tags,
 		RunRole:   task.Ptr("pr-fix"),
-	}); err != nil {
-		return fmt.Errorf("update task: %w", err)
+	})
+	if err != nil {
+		return fmt.Errorf("create task: %w", err)
 	}
-
-	t, _ = s.tasks.Get(t.ID)
 
 	dir := ""
 	if t.ProjectID != "" {

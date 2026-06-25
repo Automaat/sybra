@@ -94,4 +94,25 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	// no-op (and must not panic).
 	app.maybeStartWorkflowForExternalTask(filepath.Join(app.tasksDir, "ext-todo.plan.md"))
 	app.wg.Wait()
+
+	// pr-fix task (RunRole set): must NOT trigger task.created workflow — these
+	// are driven by pr.event. Without this guard, simple-task-plan would claim
+	// the workflow slot and prevent the pr-fix workflow from starting.
+	prfixPath := write("ext-prfix", task.StatusTodo)
+	if _, err := app.tasks.UpdateMap("ext-prfix", map[string]any{
+		"run_role":  "pr-fix",
+		"pr_number": 42,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.tasks.OnExternalUpdate(prfixPath)
+	app.maybeStartWorkflowForExternalTask(prfixPath)
+	app.wg.Wait()
+	pk, err := app.tasks.Get("ext-prfix")
+	if err != nil {
+		t.Fatalf("get ext-prfix: %v", err)
+	}
+	if pk.Workflow != nil {
+		t.Errorf("pr-fix task: expected no task.created workflow, got %+v", pk.Workflow)
+	}
 }

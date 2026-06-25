@@ -14,6 +14,12 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: handoff
+    # renovate-fix tasks are driven by pr.event (pr-fix workflow) and must
+    # never enter the plan/implement/review pipeline — that would open a
+    # duplicate PR and burn ~$7 + ~70 min on a trivial CI fix.
+    - field: task.tags
+      operator: not_contains
+      value: renovate-fix
 steps:
   - id: triage
     name: Triage

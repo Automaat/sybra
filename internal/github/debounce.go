@@ -7,6 +7,10 @@ import (
 
 const maxRetries = 3
 
+// MaxRetries is the exported retry cap for callers that need to reference it
+// in escalation messages or tests.
+const MaxRetries = maxRetries
+
 // IssueTracker prevents re-dispatching agents for the same PR issue
 // within a cooldown period and caps total retries.
 type IssueTracker struct {
@@ -93,13 +97,29 @@ func (t *IssueTracker) Retries(taskID string, kind PRIssueKind) int {
 	return t.retries[issueKey(taskID, kind)]
 }
 
-// Cleanup removes entries older than 2x cooldown.
+// AtCap reports whether the task+issue has exhausted its retry budget.
+func (t *IssueTracker) AtCap(taskID string, kind PRIssueKind) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.retries[issueKey(taskID, kind)] >= maxRetries
+}
+
+// Cleanup removes entries older than 2x cooldown. Entries that have hit the
+// retry cap are kept so the escalation path in the caller survives long gaps
+// between flaky CI runs — without this, Cleanup would reset the counter and
+// the cap would never fire.
 func (t *IssueTracker) Cleanup() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cutoff := t.now().Add(-2 * t.cooldown)
 	for k, v := range t.handled {
 		if v.Before(cutoff) {
+			if t.retries[k] >= maxRetries {
+				// At cap: keep retries/lastSHA so the caller can escalate;
+				// only drop the time-based handled entry (no more cooldown).
+				delete(t.handled, k)
+				continue
+			}
 			delete(t.handled, k)
 			delete(t.retries, k)
 			delete(t.lastSHA, k)

@@ -93,6 +93,10 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
+	// pr-fix / existing-PR tasks are driven by pr.event, not task.created.
+	if t.RunRole != "" || t.PRNumber > 0 {
+		return
+	}
 	info := taskToInfo(t)
 	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
 		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)

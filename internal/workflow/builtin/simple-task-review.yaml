@@ -10,7 +10,7 @@ trigger:
       value: ready-review
 steps:
   # Skip review when tagged noreview or already reviewed in a prior run.
-  # On skip, jump straight to create_pr so the PR is still opened.
+  # On skip, jump straight to maybe_create_pr so the PR is still opened.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -24,13 +24,13 @@ steps:
           field: task.reviewed
           operator: equals
           value: "true"
-        goto: create_pr
+        goto: maybe_create_pr
       - when:
           field: task.tags
           operator: not_contains
           value: noreview
         goto: triage_review
-      - goto: create_pr
+      - goto: maybe_create_pr
 
   # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
   # "simple" or "staff" so pick_review_method below can pick between the
@@ -45,6 +45,7 @@ steps:
 
   # Routes to the simple or staff review based on:
   #   - task.tags contains force-staff-review → always staff (escape hatch)
+  #   - vars.step.triage_review.output equals skip → trivial diff, skip review
   #   - vars.step.triage_review.output equals simple → /pr-review
   #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
   - id: pick_review_method
@@ -56,6 +57,11 @@ steps:
           operator: contains
           value: force-staff-review
         goto: code_review_staff
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: skip
+        goto: maybe_create_pr
       - when:
           field: vars.step.triage_review.output
           operator: equals
@@ -163,6 +169,18 @@ steps:
         creation). Sign commits with `git commit -s -S`.
         Use conventional commit format: `fix(review): address review comments`.
     next:
+      - goto: maybe_create_pr
+
+  # Guard: when the task already has a PR number (pr-fix tasks or retries),
+  # skip the create_pr agent entirely and link directly. Prevents duplicate PRs.
+  - id: maybe_create_pr
+    name: Maybe Create PR
+    type: condition
+    next:
+      - when:
+          field: task.pr_number
+          operator: exists
+        goto: link_pr_and_review
       - goto: create_pr
 
   # Create the GitHub PR after review fixes are committed locally.

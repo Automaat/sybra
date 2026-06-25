@@ -173,6 +173,64 @@ func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	}
 }
 
+func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
+	mgr := newTestManager(t)
+	// Create a work-project task that would normally go to planning.
+	created, err := mgr.Create("Fix CI: bump lodash", "https://github.com/myco/work-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Pre-set RunRole as FixRenovateCI would via CreateFull.
+	created.RunRole = "pr-fix"
+	created.PRNumber = 42
+
+	projects := []project.Project{
+		{ID: "myco/work-repo", Owner: "myco", Repo: "work-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "chore(deps): fix CI on bump lodash",
+		Size:  "large",
+		Type:  "feature",
+		Mode:  "headless",
+		Tags:  []string{"backend", "large", "feature"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// pr-fix floor must override both work-project → planning and large-feature → planning.
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
+	}
+}
+
+func TestApplyPRNumberNeverPlanning(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("Fix some CI", "https://github.com/myco/work-repo/pull/7", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.PRNumber = 7
+
+	projects := []project.Project{
+		{ID: "myco/work-repo", Owner: "myco", Repo: "work-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "feat(ci): fix broken pipeline",
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+		Tags:  []string{"ci", "medium", "feature"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
+	}
+}
+
 func TestApplyEmptyBodyFillsDescription(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("https://example.com/thing", "", task.AgentModeHeadless)
