@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -19,6 +20,16 @@ type ghExecer struct{}
 func (ghExecer) run(args ...string) ([]byte, error) {
 	return ghGate.execute(func() ([]byte, error) {
 		cmd := exec.Command("gh", args...)
+		return cmd.CombinedOutput()
+	})
+}
+
+// ghRunCtx runs gh under a context so a stalled call is killed when the context
+// expires — releasing the global request gate instead of holding it for the
+// kernel TCP timeout. Used by latency-sensitive callers (the PR poll loop).
+func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
+	return ghGate.execute(func() ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "gh", args...)
 		return cmd.CombinedOutput()
 	})
 }

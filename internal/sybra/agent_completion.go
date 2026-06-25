@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -141,6 +142,11 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 			runUpdates["verdict"] = v.Decision
 		}
 	}
+	// Capture the worktree HEAD while it still exists (cleanup below is async) so
+	// landing can later detect human edits after the agent (merged_with_edits).
+	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
+		runUpdates["head_sha"] = sha
+	}
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
@@ -242,6 +248,24 @@ func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
 		return
 	}
 	h.logger.Info("fix-review.pushed", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch)
+}
+
+// captureHeadSHA returns the worktree HEAD commit for the task, or "" when the
+// task has no live worktree or git fails. Best-effort; called before the async
+// worktree cleanup so the directory still exists.
+func (h *AgentCompletionHandler) captureHeadSHA(taskID string) string {
+	if h.worktrees == nil || h.tasks == nil {
+		return ""
+	}
+	t, err := h.tasks.Get(taskID)
+	if err != nil || !h.worktrees.Exists(t) {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // recordRunStats persists a stats.RunRecord for the completed agent.

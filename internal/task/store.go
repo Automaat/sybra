@@ -812,6 +812,9 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["session_id"].(string); ok && v != "" {
 			t.AgentRuns[i].SessionID = v
 		}
+		if v, ok := updates["head_sha"].(string); ok && v != "" {
+			t.AgentRuns[i].HeadSHA = v
+		}
 		break
 	}
 	d, err := Marshal(t)

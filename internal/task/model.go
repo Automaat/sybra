@@ -148,6 +148,10 @@ type AgentRun struct {
 	Verdict   string `yaml:"verdict,omitempty" json:"verdict,omitempty"`
 	LogFile   string `yaml:"log_file,omitempty" json:"logFile"`
 	SessionID string `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
+	// HeadSHA is the worktree HEAD commit at this run's completion — what the
+	// agent left on the branch. Compared against the merged PR head to detect
+	// human edits after the agent (merged_with_edits) and measure edit distance.
+	HeadSHA string `yaml:"head_sha,omitempty" json:"headSha,omitempty"`
 }
 
 type Task struct {

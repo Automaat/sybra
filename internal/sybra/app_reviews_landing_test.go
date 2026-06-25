@@ -4,9 +4,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -32,17 +30,48 @@ func TestClassifyLandingOutcome(t *testing.T) {
 	}
 }
 
-// TestRecordLanding_EmitsTaskLanded verifies the landing helper records a
-// structured task.landed event with the outcome, PR number, and queue-inclusive
-// timing the evaluation scorecard reads. A freshly-created task has no agent
-// runs, so work_to_land_h is absent; the helper makes no network calls.
-func TestRecordLanding_EmitsTaskLanded(t *testing.T) {
-	auditDir := t.TempDir()
-	al, err := audit.NewLogger(auditDir)
-	if err != nil {
-		t.Fatalf("audit.NewLogger: %v", err)
+func TestLandingOutcome(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                       string
+		state, agentSHA, mergedSHA string
+		want                       string
+	}{
+		{"closed", "CLOSED", "abc", "def", "closed"},
+		{"merged clean (same head)", "MERGED", "abc", "abc", "merged"},
+		{"merged with edits (head moved)", "MERGED", "abc", "def", "merged_with_edits"},
+		{"merged, no agent sha", "MERGED", "", "def", "merged"},
+		{"merged, no head sha", "MERGED", "abc", "", "merged"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := landingOutcome(tt.state, tt.agentSHA, tt.mergedSHA); got != tt.want {
+				t.Errorf("landingOutcome(%q,%q,%q) = %q, want %q", tt.state, tt.agentSHA, tt.mergedSHA, got, tt.want)
+			}
+		})
+	}
+}
 
+func TestLastAgentHeadSHA(t *testing.T) {
+	t.Parallel()
+	runs := []task.AgentRun{
+		{AgentID: "a", HeadSHA: "sha-impl"},
+		{AgentID: "b", HeadSHA: ""}, // e.g. an eval run with no push
+		{AgentID: "c", HeadSHA: "sha-prfix"},
+	}
+	if got := lastAgentHeadSHA(runs); got != "sha-prfix" {
+		t.Errorf("lastAgentHeadSHA = %q, want sha-prfix", got)
+	}
+	if got := lastAgentHeadSHA([]task.AgentRun{{AgentID: "x"}}); got != "" {
+		t.Errorf("lastAgentHeadSHA with no SHAs = %q, want empty", got)
+	}
+}
+
+// TestComputeLanding_LocalOnly verifies the local path: a task with no project
+// produces a merged outcome with queue-inclusive timing and no network
+// enrichment (no PR size, no work_to_land_h since there are no agent runs).
+func TestComputeLanding_LocalOnly(t *testing.T) {
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
@@ -54,37 +83,27 @@ func TestRecordLanding_EmitsTaskLanded(t *testing.T) {
 	}
 
 	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: al},
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		tasks:         tasks,
 	}
-	r.recordLanding(created.ID, 42, "MERGED")
+	outcome, data := r.computeLanding(created.ID, 42, "MERGED", "merged")
 
-	events, err := audit.Read(auditDir, audit.Query{
-		Since: time.Now().Add(-time.Hour),
-		Until: time.Now().Add(time.Hour),
-		Type:  audit.EventTaskLanded,
-	})
-	if err != nil {
-		t.Fatalf("audit.Read: %v", err)
+	if outcome != "merged" {
+		t.Errorf("outcome = %q, want merged", outcome)
 	}
-	if len(events) != 1 {
-		t.Fatalf("got %d task.landed events, want 1", len(events))
+	if data["outcome"] != "merged" || data["pr"] != 42 {
+		t.Errorf("data outcome/pr = %v/%v", data["outcome"], data["pr"])
 	}
-	e := events[0]
-	if e.TaskID != created.ID {
-		t.Errorf("TaskID = %q, want %q", e.TaskID, created.ID)
+	if _, ok := data["created_to_land_h"]; !ok {
+		t.Errorf("missing created_to_land_h in %v", data)
 	}
-	if got := e.Data["outcome"]; got != "merged" {
-		t.Errorf("outcome = %v, want merged", got)
+	if _, ok := data["work_to_land_h"]; ok {
+		t.Errorf("unexpected work_to_land_h for task with no agent runs: %v", data)
 	}
-	// JSON round-trip decodes numbers as float64.
-	if got, _ := e.Data["pr"].(float64); got != 42 {
-		t.Errorf("pr = %v, want 42", e.Data["pr"])
+	if _, ok := data["agent_head_sha"]; ok {
+		t.Errorf("unexpected agent_head_sha for task with no captured SHA: %v", data)
 	}
-	if _, ok := e.Data["created_to_land_h"]; !ok {
-		t.Errorf("missing created_to_land_h in %v", e.Data)
-	}
-	if _, ok := e.Data["work_to_land_h"]; ok {
-		t.Errorf("unexpected work_to_land_h for task with no agent runs: %v", e.Data)
+	if _, ok := data["additions"]; ok {
+		t.Errorf("unexpected PR-size enrichment for project-less task: %v", data)
 	}
 }
