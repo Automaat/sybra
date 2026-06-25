@@ -1,10 +1,9 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
-  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, Copy, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
-  import { notificationStore } from '../stores/notifications.svelte.js'
   import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
   import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, type ReviewPhaseIcon } from '../lib/review-phase.js'
   import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
@@ -23,23 +22,7 @@
   const { task: t, onclick, focused = false, onstatuschange }: Props = $props()
 
   let dragging = $state(false)
-  let copiedBranch = $state(false)
   let moveMenuOpen = $state(false)
-
-  const taskBranchName = $derived(
-    'sybra/' + (t.slug ? t.slug + '-' + t.id : t.id)
-  )
-
-  async function copyBranch(e: MouseEvent) {
-    e.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(taskBranchName)
-      copiedBranch = true
-      setTimeout(() => { copiedBranch = false }, 1500)
-    } catch {
-      notificationStore.pushLocal('error', 'Copy failed', 'Could not copy branch name to clipboard')
-    }
-  }
 
   const triaging = $derived(
     (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('triage:') && a.state === 'running')
@@ -270,19 +253,6 @@
     <span class="ml-auto text-[11px] text-surface-400/80">{timeAgo(t.updatedAt)}</span>
   </div>
   </button>
-  {#if t.projectId}
-    <div class="mt-1.5 flex items-center opacity-0 transition-opacity group-hover:opacity-100">
-      <button
-        type="button"
-        onclick={copyBranch}
-        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-surface-400 transition-colors hover:bg-surface-200 hover:text-surface-600 dark:hover:bg-surface-600 dark:hover:text-surface-300"
-        title="Copy branch name (⇧⌘.)"
-      >
-        <Copy size={10} />
-        {copiedBranch ? 'Copied!' : taskBranchName.replace(/^sybra\//, '')}
-      </button>
-    </div>
-  {/if}
   {#if focused}
     <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-surface-400">
       <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">Enter</kbd><span>open</span>

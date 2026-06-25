@@ -4,13 +4,6 @@ import TaskCard from './TaskCard.svelte'
 import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import { PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
-vi.mock('../stores/notifications.svelte.js', () => ({
-  notificationStore: {
-    pushLocal: vi.fn(),
-  },
-}))
-
-const { notificationStore } = await import('../stores/notifications.svelte.js')
 const { reviewStore } = await import('../stores/reviews.svelte.js')
 
 const mockTask = {
@@ -118,44 +111,6 @@ describe('TaskCard', () => {
     await fireEvent.click(screen.getByLabelText('Move task'))
     await fireEvent.click(screen.getByText('In Progress'))
     expect(onstatuschange).toHaveBeenCalledWith('in-progress')
-  })
-
-  describe('copyBranch error handling', () => {
-    beforeEach(() => {
-      Object.defineProperty(navigator, 'clipboard', {
-        value: { writeText: vi.fn() },
-        configurable: true,
-        writable: true,
-      })
-      vi.mocked(notificationStore.pushLocal).mockClear()
-    })
-
-    afterEach(() => {
-      vi.restoreAllMocks()
-    })
-
-    it('shows notification when clipboard write fails', async () => {
-      vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error('Permission denied'))
-      const taskWithProject = { ...mockTask, projectId: 'owner/repo' }
-      render(TaskCard, { props: { task: taskWithProject, onclick: () => {} } })
-
-      const copyBtn = screen.getByTitle('Copy branch name (⇧⌘.)')
-      await fireEvent.click(copyBtn)
-
-      expect(notificationStore.pushLocal).toHaveBeenCalledWith('error', 'Copy failed', 'Could not copy branch name to clipboard')
-    })
-
-    it('copies branch name on success', async () => {
-      vi.mocked(navigator.clipboard.writeText).mockResolvedValueOnce(undefined)
-      const taskWithProject = { ...mockTask, projectId: 'owner/repo' }
-      render(TaskCard, { props: { task: taskWithProject, onclick: () => {} } })
-
-      const copyBtn = screen.getByTitle('Copy branch name (⇧⌘.)')
-      await fireEvent.click(copyBtn)
-
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining(mockTask.id))
-      expect(notificationStore.pushLocal).not.toHaveBeenCalled()
-    })
   })
 
   it('shows the canonical Plan Review badge for plan-review status', () => {
