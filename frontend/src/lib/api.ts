@@ -6,6 +6,7 @@
 
 import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
 import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
+import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
 import * as ConfigSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/configservice.js'
 import * as IntegrationSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
 import * as LoopSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/loopagentservice.js'
@@ -170,3 +171,11 @@ const _dBrowserOpenURL = (url: string): void => {
 
 export const EventsOn = pick(_dEventsOn, http.EventsOn)
 export const BrowserOpenURL = pick(_dBrowserOpenURL, http.BrowserOpenURL)
+// Desktop opens the URL in an in-app webview window; the web build has no native
+// window, so it falls back to a new browser tab (http.BrowserOpenURL).
+const _dOpenInAppBrowser = (url: string): void => {
+  // A non-http(s) or malformed URL rejects in Go; fall back to the system
+  // browser (the prior behavior) so the click isn't silently swallowed.
+  void BrowserSvc.Open(url).catch(() => _dBrowserOpenURL(url))
+}
+export const OpenInAppBrowser = pick(_dOpenInAppBrowser, http.BrowserOpenURL)

@@ -11,7 +11,11 @@ vi.mock('../../stores/reviews.svelte.js', () => ({
 }))
 
 vi.mock('$lib/api', () => ({
-  BrowserOpenURL: (...args: unknown[]) => mockOpenURL(...args),
+  ResumeInClaudeCode: vi.fn(),
+}))
+
+vi.mock('$lib/browser.svelte.js', () => ({
+  openLink: (...args: unknown[]) => mockOpenURL(...args),
 }))
 
 const TaskPullRequestsPanel = (await import('./TaskPullRequestsPanel.svelte')).default
@@ -53,7 +57,7 @@ describe('TaskPullRequestsPanel', () => {
   it('opens fallback PR url on click', async () => {
     render(TaskPullRequestsPanel, { props: { task: baseTask as never } })
     await fireEvent.click(screen.getByText('foo/bar#42'))
-    expect(mockOpenURL).toHaveBeenCalledWith('https://github.com/foo/bar/pull/42')
+    expect(mockOpenURL).toHaveBeenCalledWith('https://github.com/foo/bar/pull/42', expect.anything())
   })
 
   it('renders linked PRs when reviewStore returns them', () => {
@@ -121,6 +125,6 @@ describe('TaskPullRequestsPanel', () => {
     ])
     render(TaskPullRequestsPanel, { props: { task: baseTask as never } })
     await fireEvent.click(screen.getByText('A'))
-    expect(mockOpenURL).toHaveBeenCalledWith('https://example/1')
+    expect(mockOpenURL).toHaveBeenCalledWith('https://example/1', expect.anything())
   })
 })

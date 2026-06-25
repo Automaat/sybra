@@ -3,6 +3,7 @@
 
 import * as AgentService from "./agentservice.js";
 import * as App from "./app.js";
+import * as BrowserService from "./browserservice.js";
 import * as ConfigService from "./configservice.js";
 import * as InfoService from "./infoservice.js";
 import * as IntegrationService from "./integrationservice.js";
@@ -17,6 +18,7 @@ import * as WorkflowService from "./workflowservice.js";
 export {
     AgentService,
     App,
+    BrowserService,
     ConfigService,
     InfoService,
     IntegrationService,

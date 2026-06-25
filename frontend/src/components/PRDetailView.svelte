@@ -1,7 +1,7 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
   import type { CheckRunInfo, PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
-  import { BrowserOpenURL } from '$lib/api'
+  import { openLink } from '$lib/browser.svelte.js'
 
   interface Props {
     pr: PullRequest
@@ -120,7 +120,7 @@
     <button
       type="button"
       class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
-      onclick={() => BrowserOpenURL(pr.url)}
+      onclick={(e) => openLink(pr.url, e)}
     >
       Open in Browser
     </button>

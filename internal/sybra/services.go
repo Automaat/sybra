@@ -67,6 +67,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.statsSvc.projects = a.projects
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore
+	a.browserSvc.open = a.openBrowser
 
 	// Subscribe handlers to manager callbacks last — by this point every
 	// dependency the handler reads is wired up, so the closures can't

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
-const mockBrowserOpenURL = vi.fn()
+const mockOpenLink = vi.fn()
 
-vi.mock('$lib/api', () => ({
-  BrowserOpenURL: (...args: unknown[]) => mockBrowserOpenURL(...args),
+vi.mock('$lib/browser.svelte.js', () => ({
+  openLink: (...args: unknown[]) => mockOpenLink(...args),
 }))
 
 const IssueCard = (await import('./IssueCard.svelte')).default
@@ -29,7 +29,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 
 describe('IssueCard', () => {
   beforeEach(() => {
-    mockBrowserOpenURL.mockClear()
+    mockOpenLink.mockClear()
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-04-01T12:00:00Z'))
   })
@@ -66,27 +66,27 @@ describe('IssueCard', () => {
     expect(screen.queryByText('bug')).toBeNull()
   })
 
-  it('calls BrowserOpenURL with issue URL on click', async () => {
+  it('routes the issue URL through openLink on click', async () => {
     const issue = makeIssue({ url: 'https://github.com/org/repo/issues/42' })
     render(IssueCard, { props: { issue } })
     const card = document.querySelector('[role="link"]')
     await fireEvent.click(card!)
-    expect(mockBrowserOpenURL).toHaveBeenCalledWith('https://github.com/org/repo/issues/42')
+    expect(mockOpenLink).toHaveBeenCalledWith('https://github.com/org/repo/issues/42', expect.anything())
   })
 
-  it('calls BrowserOpenURL on Enter keydown', async () => {
+  it('routes the issue URL through openLink on Enter keydown', async () => {
     const issue = makeIssue({ url: 'https://github.com/org/repo/issues/42' })
     render(IssueCard, { props: { issue } })
     const card = document.querySelector('[role="link"]')
     await fireEvent.keyDown(card!, { key: 'Enter' })
-    expect(mockBrowserOpenURL).toHaveBeenCalledWith('https://github.com/org/repo/issues/42')
+    expect(mockOpenLink).toHaveBeenCalledWith('https://github.com/org/repo/issues/42', expect.anything())
   })
 
-  it('does not call BrowserOpenURL on other key press', async () => {
+  it('does not call openLink on other key press', async () => {
     render(IssueCard, { props: { issue: makeIssue() } })
     const card = document.querySelector('[role="link"]')
     await fireEvent.keyDown(card!, { key: 'Space' })
-    expect(mockBrowserOpenURL).not.toHaveBeenCalled()
+    expect(mockOpenLink).not.toHaveBeenCalled()
   })
 
   describe('timeAgo', () => {
