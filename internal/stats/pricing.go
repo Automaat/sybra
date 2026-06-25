@@ -20,13 +20,14 @@ var pricingTable = map[string]modelPrice{
 	// OpenAI / Codex CLI defaults.
 	// gpt-5 / gpt-5-mini are the underlying models behind `gpt-5.4` (codex
 	// alias) and `gpt-5.4-mini`. Cached input is billed at 10% of standard.
-	"gpt-5":        {in: 1.25, out: 10.00, cacheRead: 0.125},
-	"gpt-5-codex":  {in: 1.25, out: 10.00, cacheRead: 0.125},
-	"gpt-5-mini":   {in: 0.25, out: 2.00, cacheRead: 0.025},
-	"gpt-5-nano":   {in: 0.05, out: 0.40, cacheRead: 0.005},
-	"gpt-5.5":      {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex default (0.142.2+)
-	"gpt-5.4":      {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex alias
-	"gpt-5.4-mini": {in: 0.25, out: 2.00, cacheRead: 0.025},  // codex alias
+	"gpt-5":         {in: 1.25, out: 10.00, cacheRead: 0.125},
+	"gpt-5-codex":   {in: 1.25, out: 10.00, cacheRead: 0.125},
+	"gpt-5-mini":    {in: 0.25, out: 2.00, cacheRead: 0.025},
+	"gpt-5-nano":    {in: 0.05, out: 0.40, cacheRead: 0.005},
+	"gpt-5.5":       {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex default (0.142.2+)
+	"gpt-5.4":       {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex alias
+	"gpt-5.4-mini":  {in: 0.25, out: 2.00, cacheRead: 0.025},  // codex alias
+	"gpt-5.3-codex": {in: 1.25, out: 10.00, cacheRead: 0.125}, // selectable codex option; gpt-5-codex pricing
 
 	// Legacy OpenAI (kept for back-compat with old run records).
 	"o4-mini":      {in: 1.10, out: 4.40, cacheRead: 0.275},
