@@ -145,6 +145,11 @@ export class PullRequest {
     "mergeable": string;
     "unresolvedCount": number;
     "viewerHasApproved": boolean;
+
+    /**
+     * GitHub Copilot has submitted a review
+     */
+    "copilotReviewed": boolean;
     "createdAt": string;
     "updatedAt": string;
 
@@ -197,6 +202,9 @@ export class PullRequest {
         }
         if (!("viewerHasApproved" in $$source)) {
             this["viewerHasApproved"] = false;
+        }
+        if (!("copilotReviewed" in $$source)) {
+            this["copilotReviewed"] = false;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = "";
@@ -257,6 +265,11 @@ export class RenovatePR {
     "mergeable": string;
     "unresolvedCount": number;
     "viewerHasApproved": boolean;
+
+    /**
+     * GitHub Copilot has submitted a review
+     */
+    "copilotReviewed": boolean;
     "createdAt": string;
     "updatedAt": string;
     "checkRuns": CheckRunInfo[];
@@ -311,6 +324,9 @@ export class RenovatePR {
         if (!("viewerHasApproved" in $$source)) {
             this["viewerHasApproved"] = false;
         }
+        if (!("copilotReviewed" in $$source)) {
+            this["copilotReviewed"] = false;
+        }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = "";
         }
@@ -329,13 +345,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField18_0 = $$createType2;
+        const $$createField19_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField18_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField19_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }

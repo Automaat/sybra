@@ -45,6 +45,13 @@ type ReviewHandler struct {
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
+	// mergePR performs the actual squash-merge; overridable in tests.
+	// nil falls back to github.MergePR.
+	mergePR func(repo string, number int) error
+	// fetchThreads / resolveThread back the Copilot-thread auto-resolver;
+	// overridable in tests. nil falls back to the github package functions.
+	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
+	resolveThread func(threadID string) error
 }
 
 func newReviewHandler(
@@ -67,6 +74,9 @@ func newReviewHandler(
 		worktrees:     worktrees,
 		renovatePRsFn: renovatePRsFn,
 		wtFailures:    make(map[string]int),
+		mergePR:       github.MergePR,
+		fetchThreads:  github.FetchReviewThreads,
+		resolveThread: github.ResolveReviewThread,
 	}
 }
 
@@ -175,6 +185,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		}
 	}
 
+	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.reconcileReviewPhases(tasks, summary)
 	r.reconcilePRPhases(tasks, monitoredPRs)

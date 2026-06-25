@@ -266,12 +266,13 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 	}
 
 	var viewerApproved bool
-	if viewer != "" {
-		for _, r := range n.LatestReviews.Nodes {
-			if strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
-				viewerApproved = true
-				break
-			}
+	var copilotReviewed bool
+	for _, r := range n.LatestReviews.Nodes {
+		if viewer != "" && strings.EqualFold(r.Author.Login, viewer) && r.State == "APPROVED" {
+			viewerApproved = true
+		}
+		if IsCopilotReviewer(r.Author.Login) {
+			copilotReviewed = true
 		}
 	}
 
@@ -292,6 +293,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		ReviewDecision:    n.ReviewDecision,
 		UnresolvedCount:   unresolved,
 		ViewerHasApproved: viewerApproved,
+		CopilotReviewed:   copilotReviewed,
 		CreatedAt:         n.CreatedAt,
 		UpdatedAt:         n.UpdatedAt,
 	}
@@ -311,6 +313,24 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
+}
+
+// IsCopilotReviewer reports whether a review-author login belongs to GitHub
+// Copilot's automated code reviewer. Copilot surfaces under a few first-party
+// logins (Copilot, copilot-pull-request-reviewer[bot], github-copilot[bot]);
+// match those exactly — not a substring or prefix — so a human or third-party
+// login containing or starting with the word can't satisfy the merge gate.
+func IsCopilotReviewer(login string) bool {
+	switch strings.ToLower(login) {
+	case "copilot",
+		"copilot[bot]",
+		"copilot-pull-request-reviewer",
+		"copilot-pull-request-reviewer[bot]",
+		"github-copilot[bot]":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseGitHubResourceURL extracts owner/repo and number from a GitHub URL

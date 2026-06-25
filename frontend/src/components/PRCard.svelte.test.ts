@@ -20,6 +20,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     mergeable: '',
     unresolvedCount: 0,
     viewerHasApproved: false,
+    copilotReviewed: false,
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
     ...overrides,
