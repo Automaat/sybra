@@ -1,12 +1,20 @@
 <script lang="ts">
   import { evaluationStore } from '../stores/evaluation.svelte.js'
 
+  const report = $derived(evaluationStore.data)
+  // A zero-value Report (service disabled / no data yet) still has a non-null
+  // overall, which would render as a measured "0% / failing" fleet. Treat it as
+  // no-data unless there's at least one run or landing in the window.
+  const hasData = $derived(
+    !!report && !!report.overall && (report.overall.agentRuns > 0 || report.overall.tasksLanded > 0),
+  )
+  const o = $derived(hasData && report ? report.overall : null)
+
   $effect(() => {
     evaluationStore.load()
+    evaluationStore.listen()
+    return () => evaluationStore.stopListening()
   })
-
-  const report = $derived(evaluationStore.data)
-  const o = $derived(report?.overall ?? null)
 
   function pct(x: number | undefined): string {
     return x === undefined ? '—' : `${(x * 100).toFixed(0)}%`
@@ -33,16 +41,17 @@
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
   <div class="flex items-center justify-between">
     <p class="text-xs text-surface-400">
-      {#if report}
-        Fleet scorecard · last {o?.windowDays ?? 0} days
+      {#if o}
+        Fleet scorecard · last {o.windowDays} days
       {/if}
     </p>
     <button
       type="button"
-      class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
+      class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 disabled:opacity-50 dark:bg-surface-700 dark:hover:bg-surface-600"
+      disabled={evaluationStore.loading}
       onclick={() => evaluationStore.load()}
     >
-      Refresh
+      {evaluationStore.loading ? 'Loading…' : 'Refresh'}
     </button>
   </div>
 
