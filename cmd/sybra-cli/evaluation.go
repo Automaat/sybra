@@ -54,6 +54,12 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 		o.LeadTimeP50H, o.LeadTimeP90H, o.CycleTimeP50H, o.CycleTimeP90H)
 	fmt.Printf("  cost=$%.2f ($%.2f/landed)  turns/landed=%.1f  tools/landed=%.1f\n",
 		o.TotalCostUSD, o.CostPerLanded, o.TurnsPerLanded, o.ToolsPerLanded)
+	if len(report.Weaknesses) > 0 {
+		fmt.Println("weaknesses:")
+		for _, w := range report.Weaknesses {
+			fmt.Printf("  [%s] %s: %s\n    → %s\n", w.Severity, w.Metric, w.Detail, w.Suggestion)
+		}
+	}
 	return 0
 }
 

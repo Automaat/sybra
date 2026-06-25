@@ -9,6 +9,7 @@ import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/interna
 import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
+import type { Report as EvaluationReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
@@ -53,6 +54,7 @@ export function ResumeInClaudeCode(_arg1: string): Promise<void> { return Promis
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
+export function GetEvaluationReport(): Promise<EvaluationReportData> { return call('App', 'GetEvaluationReport') }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<Notification>> { return call('App', 'ListNotifications') }
 export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }

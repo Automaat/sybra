@@ -19,6 +19,7 @@
     { label: 'GitHub', page: { kind: 'github' } },
     { label: 'Workflows', page: { kind: 'workflows' } },
     { label: 'Stats', page: { kind: 'stats' } },
+    { label: 'Evaluation', page: { kind: 'evaluation' } },
     { label: 'Settings', page: { kind: 'settings' } },
   ])
 

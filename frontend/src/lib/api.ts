@@ -51,6 +51,7 @@ export const ResumeInClaudeCode = pick(AgentSvc.ResumeInClaudeCode, http.ResumeI
 
 // App
 export const GetMonitorReport = pick(AppSvc.GetMonitorReport, http.GetMonitorReport)
+export const GetEvaluationReport = pick(AppSvc.GetEvaluationReport, http.GetEvaluationReport)
 export const ListBackgroundOps = pick(AppSvc.ListBackgroundOps, http.ListBackgroundOps)
 export const ListNotifications = pick(AppSvc.ListNotifications, http.ListNotifications)
 export const RegisterSpotlightHotkey = pick(AppSvc.RegisterSpotlightHotkey, http.RegisterSpotlightHotkey)

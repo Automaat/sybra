@@ -146,7 +146,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	if s.stats != nil {
 		recs = s.stats.All()
 	}
-	return Report{
+	rep := Report{
 		GeneratedAt: now,
 		Since:       since,
 		Until:       now,
@@ -154,7 +154,9 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
 		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
 		Notes:       deferredNotes,
-	}, nil
+	}
+	rep.Weaknesses = Weaknesses(rep)
+	return rep, nil
 }
 
 // reportCacheTTL bounds how stale an on-demand report may be. When the ticker
