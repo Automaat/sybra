@@ -380,8 +380,9 @@ func TestIsCopilotReviewer(t *testing.T) {
 		{"github-copilot[bot]", true},
 		{"dev", false},
 		{"renovate[bot]", false},
-		{"copilotuser", false},          // human login containing the word
-		{"copilot-metrics[bot]", false}, // unrelated 3rd-party app
+		{"copilotuser", false},                        // human login containing the word
+		{"copilot-metrics[bot]", false},               // unrelated 3rd-party app
+		{"copilot-pull-request-reviewer-evil", false}, // prefix must not pass
 		{"", false},
 	}
 	for _, tt := range tests {

@@ -318,14 +318,19 @@ func isBot(typeName, login string) bool {
 // IsCopilotReviewer reports whether a review-author login belongs to GitHub
 // Copilot's automated code reviewer. Copilot surfaces under a few first-party
 // logins (Copilot, copilot-pull-request-reviewer[bot], github-copilot[bot]);
-// match those exactly rather than a bare "copilot" substring so a human or
-// third-party login containing the word can't satisfy the merge gate.
+// match those exactly — not a substring or prefix — so a human or third-party
+// login containing or starting with the word can't satisfy the merge gate.
 func IsCopilotReviewer(login string) bool {
-	l := strings.ToLower(login)
-	return l == "copilot" ||
-		l == "copilot[bot]" ||
-		strings.HasPrefix(l, "copilot-pull-request-reviewer") ||
-		l == "github-copilot[bot]"
+	switch strings.ToLower(login) {
+	case "copilot",
+		"copilot[bot]",
+		"copilot-pull-request-reviewer",
+		"copilot-pull-request-reviewer[bot]",
+		"github-copilot[bot]":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseGitHubResourceURL extracts owner/repo and number from a GitHub URL

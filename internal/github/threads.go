@@ -57,8 +57,12 @@ type gqlReviewThreadsResponse struct {
 	} `json:"errors"`
 }
 
-// FetchReviewThreads returns every review thread on a PR with its author and
-// resolution state.
+// FetchReviewThreads returns a PR's review threads — up to the first 100, which
+// covers any realistic PR — with each thread's author and resolution state. The
+// query is not paginated (matching the rest of this package); on the rare PR
+// with more than 100 threads the overflow is ignored, so an addressed Copilot
+// thread beyond the first 100 would not be auto-resolved and that PR would need
+// a manual merge.
 func FetchReviewThreads(repo string, number int) ([]ReviewThread, error) {
 	return fetchReviewThreadsWith(defaultExecer, repo, number)
 }
