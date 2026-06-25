@@ -208,13 +208,14 @@ type sentPrompt struct {
 }
 
 type mockAgents struct {
-	mu        sync.Mutex
-	calls     []startCall
-	prompts   []sentPrompt
-	running   map[string]string // taskID -> agentID
-	roles     map[string]string // taskID+"/"+role -> agentID
-	counter   int
-	failSpawn error // when non-nil, StartAgent returns this error and records nothing
+	mu                sync.Mutex
+	calls             []startCall
+	prompts           []sentPrompt
+	running           map[string]string // taskID -> agentID
+	roles             map[string]string // taskID+"/"+role -> agentID
+	counter           int
+	failSpawn         error // when non-nil, StartAgent returns this error and records nothing
+	providerRateLimit bool  // when true, ProviderRateLimited reports true
 }
 
 func newMockAgents() *mockAgents {
@@ -263,6 +264,18 @@ func (m *mockAgents) HasOtherRunningAgentForTask(taskID, exceptAgentID string) b
 	defer m.mu.Unlock()
 	id, ok := m.running[taskID]
 	return ok && id != exceptAgentID
+}
+
+func (m *mockAgents) ProviderRateLimited(string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.providerRateLimit
+}
+
+func (m *mockAgents) SetProviderRateLimited(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.providerRateLimit = v
 }
 
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
@@ -1011,6 +1024,39 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 	if agents.LastCall().Role != "implementation" {
 		t.Fatalf("expected implementation, got %q", agents.LastCall().Role)
+	}
+}
+
+func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected 0 agent starts while provider rate-limited, got %d", agents.CallCount())
+	}
+
+	// Once the cooldown clears, the next sweep resumes the step.
+	agents.SetProviderRateLimited(false)
+	engine.ResumeStalled()
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent start after rate limit cleared, got %d", agents.CallCount())
 	}
 }
 

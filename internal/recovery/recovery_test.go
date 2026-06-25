@@ -18,6 +18,26 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// fakeGate is a provider.HealthGate stub. IsHealthy/RateLimited return the
+// configured flags so tests can simulate a rate-limited (or auth-failed)
+// provider.
+type fakeGate struct {
+	healthy     bool
+	rateLimited bool
+}
+
+func (f fakeGate) IsHealthy(string) bool   { return f.healthy }
+func (f fakeGate) RateLimited(string) bool { return f.rateLimited }
+func (f fakeGate) Failover(string) string  { return "" }
+func (f fakeGate) Reason(string) string {
+	if f.rateLimited {
+		return "rate_limited"
+	}
+	return ""
+}
+func (f fakeGate) ReportAuthFailure(string, string)              {}
+func (f fakeGate) ReportRateLimit(string, time.Duration, string) {}
+
 // TestRunStartupCleanupEmpty verifies the boot pass is idempotent on a
 // fresh, empty store — no panics, no error returns, no spurious task
 // mutations.
@@ -113,6 +133,70 @@ func TestRestartStaleSkipsRecentRun(t *testing.T) {
 
 	if stub.startCalls != 0 {
 		t.Errorf("orchestrator was called %d times; want 0 (recent run debounce)", stub.startCalls)
+	}
+}
+
+// TestRestartStaleSkipsRateLimitedProvider verifies a stalled task whose last
+// run's provider is rate-limited is left in-progress (not re-dispatched, which
+// would just hit the limit again). The debounce is satisfied (old run) so the
+// provider gate is the only thing that can hold it back.
+func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents.SetHealthGate(fakeGate{rateLimited: true}) // provider rate-limited
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("rate-limited", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+	// Old run → debounce passes, so only the provider gate can stop re-dispatch.
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-1",
+		Mode:      "headless",
+		Provider:  "claude",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress()
+	wg.Wait()
+
+	if stub.startCalls != 0 {
+		t.Errorf("orchestrator was called %d times; want 0 (provider rate-limited)", stub.startCalls)
 	}
 }
 

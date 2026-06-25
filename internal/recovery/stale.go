@@ -37,6 +37,17 @@ func (r *Recovery) RestartStaleInProgress() {
 		if r.Agents.HasRunningAgentForTask(t.ID) {
 			continue
 		}
+		// Don't re-dispatch while the last run's provider is rate-limited — it
+		// would just hit the same limit again and churn the worktree. The
+		// cooldown clears on its own and the next sweep re-dispatches. (A
+		// rate-limited run is stalled in-progress by the completion handler, not
+		// flipped to human-required.) Auth failures are NOT skipped here: they
+		// take the human-required path so the operator knows to log in.
+		if lr := lastAgentRun(&t); lr != nil && r.Agents.ProviderRateLimited(lr.Provider) {
+			r.Logger.Info("restart-stale.skip",
+				"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
+			continue
+		}
 		if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
 			// recoverCompletedHeadlessRun handled this task (last headless run
 			// completed but workflow step was never recorded). Skip the generic

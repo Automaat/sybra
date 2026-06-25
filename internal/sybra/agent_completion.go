@@ -170,10 +170,19 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		// (NOT WaitStatus.Signaled), so isSignalKill alone misses
 		// Sybra-initiated stops — the failure mode reported in #641 plus the
 		// flake in TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow.
-		if isSignalKill(exitErr) || ag.WasStopped() {
+		// A transient provider limit (rate/session/usage limit) is not a real
+		// failure: marking the step failed would route verify_commits to
+		// human-required and strand the task. Stall instead, like a signal
+		// kill — the task stays in-progress and the gate-aware recovery loops
+		// re-dispatch once the provider's limit window clears. Auth failures are
+		// deliberately excluded: they need a human to log in, so they fall
+		// through to the normal failed→human-required path.
+		rateLimited := isRateLimitedRun(ag, exitErr)
+		if isSignalKill(exitErr) || ag.WasStopped() || rateLimited {
 			h.logger.Warn("agent.completion.stall",
 				"task_id", ag.TaskID, "agent_id", ag.ID,
-				"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped())
+				"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
+				"rate_limited", rateLimited)
 			h.workflowEngine.ClearAgentStep(ag.ID)
 			return
 		}
@@ -283,6 +292,15 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})
+}
+
+// isRateLimitedRun reports whether a failed run was rejected by a transient
+// provider limit (rate/session/usage limit) rather than crashing. Such runs are
+// stalled for retry instead of being marked failed (which would strand the task
+// in human-required). Auth failures are intentionally NOT included — they need
+// a human to log in, so they take the normal failed path.
+func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
+	return exitErr != nil && ag.GetErrorKind() == "rate_limit"
 }
 
 // isSignalKill reports whether err represents a process killed by an OS signal.

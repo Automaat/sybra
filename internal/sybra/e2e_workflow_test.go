@@ -2869,6 +2869,12 @@ func (g *scriptedGate) IsHealthy(p string) bool {
 	return g.healthy[p]
 }
 
+func (g *scriptedGate) RateLimited(p string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return !g.healthy[p] && g.reason[p] == "rate_limited"
+}
+
 func (g *scriptedGate) Failover(unhealthy string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -2919,6 +2925,13 @@ func (g *cooldownGate) IsHealthy(p string) bool {
 	defer g.mu.Unlock()
 	until, ok := g.limitedTo[p]
 	return !ok || time.Now().After(until)
+}
+
+func (g *cooldownGate) RateLimited(p string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	until, ok := g.limitedTo[p]
+	return ok && time.Now().Before(until)
 }
 
 func (g *cooldownGate) Failover(unhealthy string) string {

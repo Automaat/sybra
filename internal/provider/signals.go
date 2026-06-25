@@ -47,8 +47,8 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 		containsAny(content, "not logged in", "please run claude auth login") {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota") ||
-		containsAny(content, "rate_limit", "rate limit", "credit_balance_too_low", "quota") {
+	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit") ||
+		containsAny(content, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit") {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0

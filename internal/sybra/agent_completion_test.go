@@ -6,7 +6,36 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/agent"
 )
+
+func TestIsRateLimitedRun(t *testing.T) {
+	t.Parallel()
+	rateLimited := &agent.Agent{}
+	rateLimited.SetError("rate_limit", "rate_limited")
+	authFailed := &agent.Agent{}
+	authFailed.SetError("auth", "logged_out")
+
+	cases := []struct {
+		name    string
+		ag      *agent.Agent
+		exitErr error
+		want    bool
+	}{
+		{"rate limit with exit error", rateLimited, errors.New("exit status 1"), true},
+		{"rate limit but clean exit", rateLimited, nil, false},
+		{"auth failure is not retried", authFailed, errors.New("exit status 1"), false},
+		{"plain crash", &agent.Agent{}, errors.New("exit status 1"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRateLimitedRun(tc.ag, tc.exitErr); got != tc.want {
+				t.Errorf("isRateLimitedRun = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestIsSignalKill(t *testing.T) {
 	t.Parallel()
