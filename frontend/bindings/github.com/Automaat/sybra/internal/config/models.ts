@@ -41,6 +41,21 @@ export class AgentDefaults {
     "bashTimeoutSeconds": number;
 
     /**
+     * RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess
+     * for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now
+     * capped at 15) for server/unattended sessions. 0 means use
+     * DefaultRetryWatchdog (30).
+     */
+    "retryWatchdog": number;
+
+    /**
+     * FallbackModel, when set, passes --fallback-model to claude for headless
+     * runs. Paired with RetryWatchdog so the watchdog can retry with a less
+     * loaded model when the primary is overloaded.
+     */
+    "fallbackModel": string;
+
+    /**
      * MaxLogEvents caps how many NDJSON events are returned when replaying
      * a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
      */
@@ -106,6 +121,12 @@ export class AgentDefaults {
         }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
+        }
+        if (!("retryWatchdog" in $$source)) {
+            this["retryWatchdog"] = 0;
+        }
+        if (!("fallbackModel" in $$source)) {
+            this["fallbackModel"] = "";
         }
         if (!("maxLogEvents" in $$source)) {
             this["maxLogEvents"] = 0;
