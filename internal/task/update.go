@@ -28,6 +28,7 @@ type Update struct {
 	Reviewed       *bool
 	RunRole        *string
 	ReviewPhase    *string
+	PRPhase        *string
 	TodoistID      *string
 	Priority       *Priority
 	DueDate        **time.Time
@@ -63,7 +64,7 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "body",
 		"project_id", "branch", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
-		"review_phase":
+		"review_phase", "pr_phase":
 		return applyPlainStringField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
@@ -139,6 +140,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.CodeReview = &s
 	case "review_phase":
 		u.ReviewPhase = &s
+	case "pr_phase":
+		u.PRPhase = &s
 	}
 	return nil
 }

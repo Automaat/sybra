@@ -8,6 +8,7 @@ type PRIssueKind string
 const (
 	PRIssueConflict     PRIssueKind = "conflict"
 	PRIssueCIFailure    PRIssueKind = "ci_failure"
+	PRIssueComments     PRIssueKind = "comments"
 	PRIssueReadyToMerge PRIssueKind = "ready_to_merge"
 )
 
@@ -105,6 +106,11 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		}
 		if pr.CIStatus == "FAILURE" && !pr.HasPendingChecks {
 			issues = append(issues, PRIssue{Kind: PRIssueCIFailure, TaskID: tm.ID, PR: *pr})
+		}
+		// Reviewers asked for changes or left unresolved threads — dispatch a
+		// fix-review agent. Skip drafts: the author is still iterating.
+		if !pr.IsDraft && (pr.ReviewDecision == "CHANGES_REQUESTED" || pr.UnresolvedCount > 0) {
+			issues = append(issues, PRIssue{Kind: PRIssueComments, TaskID: tm.ID, PR: *pr})
 		}
 		if !pr.IsDraft && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {
 			issues = append(issues, PRIssue{Kind: PRIssueReadyToMerge, TaskID: tm.ID, PR: *pr})

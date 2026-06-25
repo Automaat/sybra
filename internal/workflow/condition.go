@@ -75,7 +75,7 @@ var FieldAllowedValues = map[string]map[string]bool{
 		"normal": true, "debug": true, "research": true, "chat": true,
 	},
 	"pr.issue_kind": {
-		"conflict": true, "ci_failure": true, "ready_to_merge": true,
+		"conflict": true, "ci_failure": true, "comments": true, "ready_to_merge": true,
 	},
 }
 

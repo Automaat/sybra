@@ -177,6 +177,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	r.reconcileReviewPhases(tasks, summary)
+	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 
 	if prNeedsAttention(monitoredPRs) {
@@ -315,6 +316,11 @@ func prNeedsAttention(prs []github.PullRequest) bool {
 			return true
 		}
 		if prs[i].Mergeable == "CONFLICTING" || prs[i].Mergeable == "UNKNOWN" {
+			return true
+		}
+		// Review comments just landed — poll fast so the fix agent dispatches
+		// and the In Review card flips to "fixing" without a 5-minute lag.
+		if !prs[i].IsDraft && (prs[i].ReviewDecision == "CHANGES_REQUESTED" || prs[i].UnresolvedCount > 0) {
 			return true
 		}
 		if !prs[i].IsDraft && prs[i].Mergeable == "MERGEABLE" && (prs[i].CIStatus == "SUCCESS" || prs[i].CIStatus == "") {

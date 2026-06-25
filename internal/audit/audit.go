@@ -19,6 +19,7 @@ const (
 	EventOrchestratorStop    = "orchestrator.stopped"
 	EventPRConflictDetected  = "pr_monitor.conflict_detected"
 	EventPRCIFailureDetected = "pr_monitor.ci_failure_detected"
+	EventPRCommentsDetected  = "pr_monitor.comments_detected"
 	EventPRFixAgentStarted   = "pr_monitor.fix_agent_started"
 	EventPRMerged            = "pr_monitor.merged"
 	EventPRClosed            = "pr_monitor.closed"

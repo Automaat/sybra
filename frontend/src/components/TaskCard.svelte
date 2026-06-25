@@ -1,12 +1,13 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
-  import { CheckCircle, XCircle, Clock, GitPullRequest, CircleDot, Copy, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, Copy, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
   import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, type ReviewPhaseIcon } from '../lib/review-phase.js'
+  import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import StatusPicker from './StatusPicker.svelte'
@@ -59,14 +60,23 @@
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)
   const isReviewTask = $derived(isReviewTaskFn(t))
+  // Own-PR task with a computed lifecycle phase (In Review column).
+  const ownPRPhase = $derived(isOwnPRTaskFn(t))
 
   // lucide components keyed by the phase meta's icon name.
   const PHASE_ICONS: Record<ReviewPhaseIcon, typeof CheckCircle> = {
     loader: Loader, eye: Eye, pen: PenLine, hourglass: Hourglass, shield: ShieldCheck, check: CheckCircle,
   }
 
+  // lucide components for the outbound PR phase glyph.
+  const PR_PHASE_ICONS: Record<PRPhaseIcon, typeof CheckCircle> = {
+    draft: GitPullRequestDraft, loader: Loader, wrench: Wrench, comment: MessageSquare, hourglass: Hourglass, check: CheckCircle,
+  }
+
   // Task is waiting on the user (not an agent) — drives the red tile accent.
-  const needsYou = $derived(awaitsHuman(t.status))
+  // Own-PR phases (draft / awaiting-approval / approved) count too, so the card
+  // flags "your move" while staying in the In Review column.
+  const needsYou = $derived(awaitsHuman(t.status) || prPhaseNeedsYou(t))
 
   // A granular sub-state folded into this column that ISN'T an attention state
   // (e.g. `new` in Todo, `ready-review` in In Review). The column shows the
@@ -175,11 +185,11 @@
       </span>
     {/if}
 
-    {#if needsYou && !isReviewTask}
+    {#if needsYou && !isReviewTask && !ownPRPhase}
       <Pill role="attention" class="bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200">
         {awaitsHumanLabel(t.status)}
       </Pill>
-    {:else if subStateLabel && !isReviewTask}
+    {:else if subStateLabel && !isReviewTask && !ownPRPhase}
       <span class="inline-flex items-center rounded-full bg-surface-200 px-2 py-0.5 text-surface-600 dark:bg-surface-700 dark:text-surface-300">
         {subStateLabel}
       </span>
@@ -202,6 +212,18 @@
     {#if isReviewTask}
       {@const ph = reviewPhaseMeta(t)}
       {@const PhaseIcon = PHASE_ICONS[ph.icon]}
+      <span
+        class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
+        title={t.statusReason || ph.label}
+      >
+        <PhaseIcon size={12} class="shrink-0" />
+        {#if topPR}#{topPR.number}{:else if t.prNumber}#{t.prNumber}{/if}
+        <span>{ph.label}</span>
+        {#if t.issue}{@render issueGlyph()}{/if}
+      </span>
+    {:else if ownPRPhase}
+      {@const ph = prPhaseMeta(t)}
+      {@const PhaseIcon = PR_PHASE_ICONS[ph.icon]}
       <span
         class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium {ph.classes}"
         title={t.statusReason || ph.label}

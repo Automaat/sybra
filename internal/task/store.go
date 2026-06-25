@@ -389,6 +389,9 @@ func applyReviewFields(t *Task, u Update) {
 	if u.ReviewPhase != nil {
 		t.ReviewPhase = *u.ReviewPhase
 	}
+	if u.PRPhase != nil {
+		t.PRPhase = *u.PRPhase
+	}
 }
 
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {

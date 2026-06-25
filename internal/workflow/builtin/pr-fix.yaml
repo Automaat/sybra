@@ -7,7 +7,7 @@ trigger:
   conditions:
     - field: pr.issue_kind
       operator: in
-      value: conflict,ci_failure
+      value: conflict,ci_failure,comments
 steps:
   - id: set_in_progress
     name: Mark In Progress

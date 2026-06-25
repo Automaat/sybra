@@ -103,6 +103,33 @@ func TestMatchTaskPRs(t *testing.T) {
 			},
 			want: []PRIssue{{Kind: PRIssueCIFailure, TaskID: "t1", PR: PullRequest{Number: 42, HeadRefName: "feat/x", CIStatus: "FAILURE"}}},
 		},
+		{
+			name:  "changes requested → comments fix",
+			prs:   []PullRequest{{Number: 42, ReviewDecision: "CHANGES_REQUESTED"}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
+		},
+		{
+			name:  "unresolved threads → comments fix",
+			prs:   []PullRequest{{Number: 42, UnresolvedCount: 2}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
+		},
+		{
+			name:  "draft with comments is not fixed",
+			prs:   []PullRequest{{Number: 42, IsDraft: true, ReviewDecision: "CHANGES_REQUESTED", UnresolvedCount: 3}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
+		},
+		{
+			name:  "CI failure and comments both trigger",
+			prs:   []PullRequest{{Number: 42, CIStatus: "FAILURE", ReviewDecision: "CHANGES_REQUESTED"}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want: []PRIssue{
+				{Kind: PRIssueCIFailure, TaskID: "t1"},
+				{Kind: PRIssueComments, TaskID: "t1"},
+			},
+		},
 	}
 
 	for _, tt := range tests {

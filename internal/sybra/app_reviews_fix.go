@@ -70,6 +70,12 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 			"pr": issue.PR.Number, "repo": issue.PR.Repository,
 		})
 
+	case github.PRIssueComments:
+		prompt = commentsPrompt(issue.PR)
+		r.logAudit(audit.EventPRCommentsDetected, t.ID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository,
+		})
+
 	case github.PRIssueReadyToMerge:
 		// handled by handleAutoMerge, not by agent spawn
 		return
@@ -132,7 +138,9 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 		d     string
 		wtErr error
 	)
-	if issue.Kind == github.PRIssueConflict {
+	// Conflict and comment fixes operate on the PR's existing branch, so check
+	// it out (PrepareForFix). A CI fix re-runs on a fresh worktree.
+	if issue.Kind == github.PRIssueConflict || issue.Kind == github.PRIssueComments {
 		d, wtErr = r.worktrees.PrepareForFix(t, issue.PR.Number)
 	} else {
 		d, wtErr = r.worktrees.PrepareForTask(t, nil)
@@ -159,6 +167,28 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 	}
 	delete(r.wtFailures, t.ID)
 	return d, true
+}
+
+// commentsPrompt instructs the fix agent to address unresolved review comments
+// on the user's own PR via the /fix-review skill (which replies on every
+// thread), then push and re-request review.
+func commentsPrompt(pr github.PullRequest) string {
+	return fmt.Sprintf(
+		"Run /fix-review %s --auto\n\n"+
+			"This is your own PR (#%d) — reviewers left comments or unresolved "+
+			"threads. Address the valid ones, reply on every thread, and push.\n\n"+
+			"IMPORTANT: when committing, use conventional commit format "+
+			"`fix(review): address PR review comments` (type(scope) required by "+
+			"repo hooks). Sign the commit with `git commit -s -S`.\n\n"+
+			"Push to the same remote the PR was opened from — never to `origin` "+
+			"when a `fork` remote exists:\n"+
+			"```sh\n"+
+			"PUSH_REMOTE=origin\n"+
+			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
+			"```",
+		pr.URL, pr.Number, pr.HeadRefName,
+	)
 }
 
 func conflictPrompt(pr github.PullRequest) string {
