@@ -7,11 +7,20 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const probeTimeout = 10 * time.Second
+
+// minCodexVersion is the lowest codex CLI version that ships the default model
+// (gpt-5.5). Older CLIs reject `--model gpt-5.5` at exec time, so the probe
+// surfaces a warning instead of letting every default run fail silently.
+const minCodexVersion = "0.142.2"
+
+var codexVersionRe = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
 
 // ProbeClaude runs `claude auth status --json` and maps the result to a Status.
 // A non-zero exit combined with "not logged in" stderr is treated as a logged-out
@@ -57,7 +66,83 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 			return Status{Provider: "codex", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 		}
 	}
-	return parseCodexLoginStatus(raw)
+	st, perr := parseCodexLoginStatus(raw)
+	if perr == nil && st.Healthy {
+		// Reuse cctx so the login and version probes share one probeTimeout
+		// budget rather than allowing ProbeCodex to run for up to 2× of it.
+		if v := probeCodexVersion(cctx); v != "" && !codexVersionAtLeast(v, minCodexVersion) {
+			warning := fmt.Sprintf("codex %s is older than %s; the default model gpt-5.5 requires %s+ — upgrade codex or pin an older model", v, minCodexVersion, minCodexVersion)
+			if st.Detail != "" {
+				st.Detail += " — " + warning // keep the login auth detail
+			} else {
+				st.Detail = warning
+			}
+		}
+	}
+	return st, perr
+}
+
+// probeCodexVersion runs `codex --version` and returns the dotted version string
+// (e.g. "0.142.2"), or "" if it cannot be determined.
+func probeCodexVersion(ctx context.Context) string {
+	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "codex", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return codexVersionRe.FindString(string(out))
+}
+
+// codexVersionAtLeast reports whether have >= want using dotted numeric
+// comparison. An unparseable `have` fails open (returns true) so a future
+// version-format change never blocks an otherwise-working CLI.
+func codexVersionAtLeast(have, want string) bool {
+	hp := splitVersion(have)
+	if hp == nil {
+		return true
+	}
+	wp := splitVersion(want)
+	for i := 0; i < len(hp) || i < len(wp); i++ {
+		var h, w int
+		if i < len(hp) {
+			h = hp[i]
+		}
+		if i < len(wp) {
+			w = wp[i]
+		}
+		if h != w {
+			return h > w
+		}
+	}
+	return true
+}
+
+// splitVersion parses a dotted version into numeric components, tolerating a
+// trailing non-numeric suffix per component (e.g. "2-beta" -> 2). Returns nil
+// if any component lacks a leading digit.
+func splitVersion(v string) []int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		end := 0
+		for end < len(p) && p[end] >= '0' && p[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			return nil
+		}
+		n, err := strconv.Atoi(p[:end])
+		if err != nil {
+			return nil
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 type claudeAuthStatusJSON struct {

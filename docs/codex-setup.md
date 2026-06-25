@@ -46,7 +46,7 @@ Edit `~/.sybra/config.yaml`:
 ```yaml
 agent:
   provider: codex
-  model: gpt-5.4   # optional; gpt-5.4 is the default
+  model: gpt-5.5   # optional; gpt-5.5 is the default
 ```
 
 To revert to Claude:
@@ -62,8 +62,8 @@ Sybra maps generic aliases to provider-specific model IDs at runtime:
 
 | Sybra alias | Codex model |
 |---------------|-------------|
-| `sonnet` (default) | `gpt-5.4` |
-| `opus` | `gpt-5.4` |
+| `sonnet` (default) | `gpt-5.5` |
+| `opus` | `gpt-5.5` |
 | `haiku` | `gpt-5.4-mini` |
 | any other string | passed through verbatim |
 
@@ -75,7 +75,7 @@ Sybra spawns a `codex exec` subprocess per task:
 
 ```bash
 # Headless mode always uses bypass (regardless of RequirePermissions)
-codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 -C <worktree> "<prompt>"
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --dangerously-bypass-approvals-and-sandbox --model gpt-5.5 -C <worktree> "<prompt>"
 ```
 
 `--sandbox workspace-write` is intentionally not used in headless mode. That mode requests user approval for writes outside the workspace; in a headless run there is no TTY or UI to serve the approval prompt, so every such request is auto-rejected and the agent run fails. The worktree directory itself provides task isolation.
