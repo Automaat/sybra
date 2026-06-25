@@ -3,13 +3,16 @@ package github
 import "testing"
 
 func TestParsePRCompare(t *testing.T) {
-	resp := `{"total_commits":2,"files":[{"additions":10,"deletions":3},{"additions":5,"deletions":1}]}`
+	resp := `{"total_commits":2,"status":"ahead","files":[{"additions":10,"deletions":3},{"additions":5,"deletions":1}]}`
 	got, err := parsePRCompare([]byte(resp))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if got.Commits != 2 {
 		t.Errorf("Commits = %d, want 2", got.Commits)
+	}
+	if got.Status != "ahead" {
+		t.Errorf("Status = %q, want ahead", got.Status)
 	}
 	if got.Additions != 15 || got.Deletions != 4 {
 		t.Errorf("Additions/Deletions = %d/%d, want 15/4", got.Additions, got.Deletions)

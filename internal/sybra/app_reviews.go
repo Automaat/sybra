@@ -263,8 +263,8 @@ func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state, base 
 	if agentSHA != "" {
 		data["agent_head_sha"] = agentSHA
 	}
-	if state != "CLOSED" && t.ProjectID != "" && prNumber > 0 {
-		enr := r.enrichLanding(t.ProjectID, prNumber, agentSHA)
+	if t.ProjectID != "" && prNumber > 0 {
+		enr := r.enrichLanding(t.ProjectID, prNumber, agentSHA, base)
 		outcome = enr.outcome
 		maps.Copy(data, enr.data)
 	}
@@ -277,21 +277,25 @@ type landingEnrich struct {
 	data    map[string]any
 }
 
-// enrichLanding fetches PR size and detects human edits made after the agent's
-// last push. All gh calls run under a single context deadline so a stalled call
-// is killed (releasing the global gh gate) rather than blocking the poll. A
-// merge is only classified merged_with_edits when the compare confirms the head
-// is genuinely ahead of the agent's SHA — guarding against unpushed-local
-// divergence or a moved base.
-func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA string) landingEnrich {
+// enrichLanding records PR size for any landing and, for a merge, detects human
+// edits made after the agent's last push. All gh calls run under a single
+// context deadline so a stalled call is killed (releasing the global gh gate)
+// rather than blocking the poll. A merge is classified merged_with_edits only
+// when the compare is strictly ahead of the agent's SHA (status=="ahead",
+// commits > 0) — so a rebase/force-push (diverged) or unpushed-local divergence
+// doesn't produce a false positive.
+func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA, base string) landingEnrich {
 	ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
 	defer cancel()
 
-	enr := landingEnrich{outcome: "merged", data: map[string]any{}}
+	enr := landingEnrich{outcome: base, data: map[string]any{}}
 	if s, err := github.FetchPRStatsContext(ctx, repo, prNumber); err == nil {
 		enr.data["additions"] = s.Additions
 		enr.data["deletions"] = s.Deletions
 		enr.data["changed_files"] = s.ChangedFiles
+	}
+	if base != "merged" {
+		return enr // closed (unmerged): size only, no edit detection
 	}
 	head, err := github.FetchPRHeadSHAContext(ctx, repo, prNumber)
 	if err != nil {
@@ -300,7 +304,7 @@ func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA string
 	if landingOutcome("MERGED", agentSHA, head) != "merged_with_edits" {
 		return enr
 	}
-	if cmp, err := github.FetchPRCompare(ctx, repo, agentSHA, head); err == nil && cmp.Commits > 0 {
+	if cmp, err := github.FetchPRCompare(ctx, repo, agentSHA, head); err == nil && cmp.Status == "ahead" && cmp.Commits > 0 {
 		enr.outcome = "merged_with_edits"
 		enr.data["human_edit_lines"] = cmp.Additions + cmp.Deletions
 		enr.data["human_edit_commits"] = cmp.Commits
