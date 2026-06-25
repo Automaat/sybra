@@ -305,7 +305,7 @@
               />
               <span class="flex flex-col">
                 <span class="text-sm font-medium">Open links in-app</span>
-                <span class="text-xs text-surface-500 dark:text-surface-400">Open GitHub issue &amp; PR links in a Sybra browser window — log in once, stay in one app. Hold ⌘ when clicking to use the system browser instead.</span>
+                <span class="text-xs text-surface-500 dark:text-surface-400">Open GitHub issue &amp; PR links in a Sybra browser window — log in once, stay in one app. Hold ⌘/Ctrl when clicking to use the system browser instead.</span>
               </span>
             </label>
           </section>

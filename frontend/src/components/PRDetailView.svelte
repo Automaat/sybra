@@ -122,7 +122,7 @@
       class="rounded-lg bg-surface-200 px-3 py-1.5 text-sm font-medium hover:bg-surface-300 dark:bg-surface-700 dark:hover:bg-surface-600"
       onclick={(e) => openLink(pr.url, e)}
     >
-      Open in Browser
+      View on GitHub
     </button>
 
     {#if onapprove && !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
