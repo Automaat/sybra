@@ -634,14 +634,14 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	if *body != "" {
 		updates["body"] = *body
 	}
-	if err := applyFileOrStringUpdate(fs, updates, "plan", "plan", *plan, *planFile); err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if err := applyFileOrStringUpdate(fs, updates, "plan-critique", "plan_critique", *planCritique, *planCritiqueFile); err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if err := applyFileOrStringUpdate(fs, updates, "code-review", "code_review", *codeReview, *codeReviewFile); err != nil {
-		return fatal(jsonOut, "%v", err)
+	for _, fu := range []struct{ flag, key, str, file string }{
+		{"plan", "plan", *plan, *planFile},
+		{"plan-critique", "plan_critique", *planCritique, *planCritiqueFile},
+		{"code-review", "code_review", *codeReview, *codeReviewFile},
+	} {
+		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
 	}
 	if *mode != "" {
 		updates["agent_mode"] = *mode
@@ -653,11 +653,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		updates["task_type"] = *ttype
 	}
 	if *tags != "" {
-		tagList := strings.Split(*tags, ",")
-		for i := range tagList {
-			tagList[i] = strings.TrimSpace(tagList[i])
-		}
-		updates["tags"] = tagList
+		updates["tags"] = parseTags(*tags)
 	}
 	if *proj != "" {
 		updates["project_id"] = *proj
@@ -676,11 +672,8 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		updates["max_turns"] = float64(*maxTurnsFlag)
 	}
 	if *reasoningEffort != "" {
-		v := *reasoningEffort
-		if v == "default" || v == "none" {
-			v = ""
-		}
-		if _, err := task.ValidateReasoningEffort(v); err != nil {
+		v, err := normalizeReasoningEffort(*reasoningEffort)
+		if err != nil {
 			return fatal(jsonOut, "%v", err)
 		}
 		updates["reasoning_effort"] = v
@@ -740,6 +733,22 @@ func applyFileOrStringUpdate(fs *flag.FlagSet, updates map[string]any, flagName,
 		})
 	}
 	return nil
+}
+
+func parseTags(s string) []string {
+	parts := strings.Split(s, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// normalizeReasoningEffort converts "default"/"none" to "" (use model default) then validates.
+func normalizeReasoningEffort(s string) (string, error) {
+	if s == "default" || s == "none" {
+		s = ""
+	}
+	return task.ValidateReasoningEffort(s)
 }
 
 func filterStatus(tasks []task.Task, status string) []task.Task {
