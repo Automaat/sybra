@@ -4,7 +4,8 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { BOARD_COLUMNS, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
+  import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
+  import { isReviewTask, reviewPhaseRank } from '../lib/review-phase.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
@@ -45,6 +46,9 @@
   }
 
   async function moveTask(taskId: string, status: string) {
+    // The PR Reviews lane key is a sentinel, not a real status — dropping onto
+    // it must not write an invalid status.
+    if (status === 'reviews') return
     const existing = taskStore.tasks.get(taskId)
     if (!existing || existing.status === status) return
     try {
@@ -64,8 +68,26 @@
   let assignProjectOpen = $state(false)
 
   function columnTasks(col: BoardColumn): Task[] {
+    if (col.kind === 'review') return reviewLaneTasks()
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
-    return filteredByStatuses(statuses)
+    // Review tasks live in the PR Reviews lane, never their status column.
+    return filteredByStatuses(statuses).filter((t) => !isReviewTask(t))
+  }
+
+  // The PR Reviews lane: every active inbound review task, sorted so the
+  // phases that need the user (post / approve) float to the top.
+  function reviewLaneTasks(): Task[] {
+    return taskStore.list
+      .filter((t: Task) => {
+        if (!isReviewTask(t)) return false
+        if (t.status === 'done' || t.status === 'cancelled') return false
+        if (!matchesQuery(t, searchQuery)) return false
+        if (!matchesProject(t, selectedProjectId)) return false
+        if (!matchesTags(t, selectedTags)) return false
+        if (!matchesAgentMode(t, selectedAgentMode)) return false
+        return true
+      })
+      .sort((a, b) => reviewPhaseRank(a) - reviewPhaseRank(b))
   }
 
   function getColumnTasksByIdx(colIndex: number): Task[] {
@@ -201,7 +223,7 @@
         block: 'nearest',
         inline: 'start',
       })
-      const idx = BOARD_COLUMNS.findIndex((c) => c.status === 'in-progress')
+      const idx = BOARD_LANES.findIndex((c) => c.status === 'in-progress')
       if (idx >= 0) focusedColIdx = idx
     })
   })
@@ -258,7 +280,7 @@
   })
 
   const visibleColumns = $derived(
-    effectiveShowDone ? BOARD_COLUMNS : BOARD_COLUMNS.filter(c => c.status !== 'done')
+    effectiveShowDone ? BOARD_LANES : BOARD_LANES.filter(c => c.status !== 'done')
   )
 
   // Tasks awaiting the user across all columns (same set as the per-card red

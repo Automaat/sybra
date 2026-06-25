@@ -207,6 +207,99 @@ func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
 	return false, nil
 }
 
+// MyReviewState summarises the authenticated user's own reviews on a PR.
+type MyReviewState struct {
+	Pending     bool   // an unsubmitted draft review exists
+	Submitted   bool   // a submitted (non-draft) review exists
+	Approved    bool   // the latest submitted review is an approval
+	ReviewedSHA string // commit_id of the latest submitted review ("" if none)
+}
+
+// FetchMyReviewState reports the authenticated user's review state on a PR.
+// It reads the per-PR reviews REST endpoint, which — unlike the
+// reviewed-by:@me search leg (filtered to approvals) — exposes COMMENTED and
+// CHANGES_REQUESTED reviews and each review's commit_id, the signals the
+// PR-review lifecycle needs.
+func FetchMyReviewState(repo string, number int) (MyReviewState, error) {
+	return fetchMyReviewStateWith(defaultExecer, repo, number)
+}
+
+func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, error) {
+	key := prCacheKey(repo, number)
+	if runtimeCacheEnabled(e) {
+		if cached, ok := myReviewStateCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	if err != nil {
+		if runtimeCacheEnabled(e) {
+			if stale, ok := myReviewStateCache.GetStale(key); ok {
+				return stale, nil
+			}
+		}
+		return MyReviewState{}, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(resp.body)), err)
+	}
+
+	var reviews []struct {
+		State       string `json:"state"`
+		CommitID    string `json:"commit_id"`
+		SubmittedAt string `json:"submitted_at"`
+		User        struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(resp.body, &reviews); err != nil {
+		return MyReviewState{}, fmt.Errorf("parse reviews: %w", err)
+	}
+
+	me := viewerLogin(e)
+	if me == "" {
+		// Without the viewer's login we cannot attribute submitted reviews, and
+		// guessing would misclassify the phase. Surface a (transient) error so
+		// the caller leaves the task's phase untouched this cycle rather than
+		// flapping it to "manual".
+		return MyReviewState{}, fmt.Errorf("resolve viewer login for %s#%d", repo, number)
+	}
+
+	var st MyReviewState
+	var latestReview, latestVerdict string // submitted_at watermarks
+	for i := range reviews {
+		r := reviews[i]
+		// PENDING (draft) reviews are visible only to their author, so any we
+		// can see are ours.
+		if r.State == "PENDING" {
+			st.Pending = true
+			continue
+		}
+		// Submitted reviews include every reviewer's — keep only the viewer's.
+		if r.User.Login != me {
+			continue
+		}
+		st.Submitted = true
+		// Track the commit of the most recent review of any kind, for
+		// push-past-reviewed-commit detection. ISO-8601 sorts lexically.
+		if r.SubmittedAt >= latestReview {
+			latestReview = r.SubmittedAt
+			st.ReviewedSHA = r.CommitID
+		}
+		// Only APPROVED/CHANGES_REQUESTED/DISMISSED carry a standing verdict; a
+		// COMMENTED review left after an approval does not revoke it.
+		if r.State == "APPROVED" || r.State == "CHANGES_REQUESTED" || r.State == "DISMISSED" {
+			if r.SubmittedAt >= latestVerdict {
+				latestVerdict = r.SubmittedAt
+				st.Approved = r.State == "APPROVED"
+			}
+		}
+	}
+
+	if runtimeCacheEnabled(e) {
+		myReviewStateCache.Set(key, st, 30*time.Second)
+	}
+	return st, nil
+}
+
 // ApprovePR approves a pull request.
 func ApprovePR(repo string, number int) error {
 	return approvePRWith(defaultExecer, repo, number)

@@ -1,0 +1,86 @@
+package sybra
+
+import (
+	"testing"
+
+	"github.com/Automaat/sybra/internal/task"
+)
+
+func TestComputeReviewPhase(t *testing.T) {
+	tests := []struct {
+		name string
+		sig  reviewSignals
+		want reviewPhaseResult
+	}{
+		{
+			name: "agent running trumps everything, leaves status untouched",
+			sig:  reviewSignals{AgentRunning: true, HasDraft: true, Submitted: true},
+			want: reviewPhaseResult{Phase: ReviewPhaseReviewing},
+		},
+		{
+			name: "approved waits for merge",
+			sig:  reviewSignals{ViewerApproved: true, Submitted: true, HeadSHA: "abc"},
+			want: reviewPhaseResult{Phase: ReviewPhaseApproved, Status: task.StatusInReview, Reason: "Approved — awaiting merge"},
+		},
+		{
+			name: "pending draft → drafted, needs human to post",
+			sig:  reviewSignals{HasDraft: true, ReRequested: true, HeadSHA: "abc"},
+			want: reviewPhaseResult{Phase: ReviewPhaseDrafted, Status: task.StatusHumanRequired, Reason: "Draft review ready — verify & submit on GitHub"},
+		},
+		{
+			name: "submitted at current head, not re-requested → awaiting author",
+			sig:  reviewSignals{Submitted: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
+		},
+		{
+			name: "submitted, head unknown → awaiting author (no false advance)",
+			sig:  reviewSignals{Submitted: true, ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
+		},
+		{
+			name: "author pushed past reviewed commit → needs approval",
+			sig:  reviewSignals{Submitted: true, HeadSHA: "sha2", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusHumanRequired, Reason: "Author updated PR — do a final review & approve"},
+		},
+		{
+			name: "re-requested after review → needs approval even at same head",
+			sig:  reviewSignals{Submitted: true, ReRequested: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusHumanRequired, Reason: "Author updated PR — do a final review & approve"},
+		},
+		{
+			name: "no agent, no draft, not submitted → manual (small-PR punt)",
+			sig:  reviewSignals{ReRequested: true, HeadSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeReviewPhase(tt.sig)
+			if got != tt.want {
+				t.Errorf("computeReviewPhase(%+v)\n got: %+v\nwant: %+v", tt.sig, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewPhasePublished(t *testing.T) {
+	tests := []struct {
+		prev, next string
+		want       bool
+	}{
+		{ReviewPhaseDrafted, ReviewPhaseAwaitingAuthor, true},
+		{ReviewPhaseManual, ReviewPhaseAwaitingAuthor, true},
+		{ReviewPhaseReviewing, ReviewPhaseNeedsApproval, true},
+		{"", ReviewPhaseAwaitingAuthor, true},
+		{ReviewPhaseAwaitingAuthor, ReviewPhaseNeedsApproval, false}, // already published
+		{ReviewPhaseDrafted, ReviewPhaseApproved, false},             // approval, not a publish
+		{ReviewPhaseAwaitingAuthor, ReviewPhaseApproved, false},
+		{ReviewPhaseDrafted, ReviewPhaseManual, false},
+	}
+	for _, tt := range tests {
+		if got := reviewPhasePublished(tt.prev, tt.next); got != tt.want {
+			t.Errorf("reviewPhasePublished(%q, %q) = %v, want %v", tt.prev, tt.next, got, tt.want)
+		}
+	}
+}

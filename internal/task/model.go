@@ -167,13 +167,19 @@ type Task struct {
 	// BlockedByIssue stores the URL of the GitHub issue that put the task
 	// into status=blocked. Set by the human-review automation when it
 	// concludes the human-required transition was caused by a Sybra bug.
-	BlockedByIssue string     `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
-	Reviewed       bool       `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole        string     `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
-	TodoistID      string     `yaml:"todoist_id,omitempty" json:"todoistId"`
-	Priority       Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
-	DueDate        *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
-	ClosedAt       *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
+	BlockedByIssue string `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
+	Reviewed       bool   `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole        string `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
+	// the review lifecycle: reviewing → drafted → awaiting-author →
+	// needs-approval → approved (plus `manual` for small PRs punted to the
+	// human). Computed by the PR poller; drives the board's PR Reviews lane.
+	// Empty for non-review tasks.
+	ReviewPhase string     `yaml:"review_phase,omitempty" json:"reviewPhase,omitempty"`
+	TodoistID   string     `yaml:"todoist_id,omitempty" json:"todoistId"`
+	Priority    Priority   `yaml:"priority,omitempty" json:"priority,omitempty"`
+	DueDate     *time.Time `yaml:"due_date,omitempty" json:"dueDate,omitempty"`
+	ClosedAt    *time.Time `yaml:"closed_at,omitempty" json:"closedAt,omitempty"`
 	// MaxTurns overrides the global agent turn limit for this task.
 	// Zero means "use global default".
 	MaxTurns int `yaml:"max_turns,omitempty" json:"maxTurns,omitempty"`

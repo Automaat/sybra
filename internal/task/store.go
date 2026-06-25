@@ -379,6 +379,18 @@ func (s *Store) Update(id string, u Update) (Task, error) {
 // UpdateWithPrev applies u and returns both the updated task and the prior
 // status. Lets callers (Manager.Update) wire status-change hooks without a
 // redundant Get to read the previous value before the write.
+// applyReviewFields copies the review-flow tracking fields (run role + inbound
+// PR-review phase) from an Update onto a task. Split out of UpdateWithPrev to
+// keep that function within the length budget.
+func applyReviewFields(t *Task, u Update) {
+	if u.RunRole != nil {
+		t.RunRole = *u.RunRole
+	}
+	if u.ReviewPhase != nil {
+		t.ReviewPhase = *u.ReviewPhase
+	}
+}
+
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	t, err := s.read(id)
 	if err != nil {
@@ -449,9 +461,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.Reviewed != nil {
 		t.Reviewed = *u.Reviewed
 	}
-	if u.RunRole != nil {
-		t.RunRole = *u.RunRole
-	}
+	applyReviewFields(&t, u)
 	if u.TodoistID != nil {
 		t.TodoistID = *u.TodoistID
 	}

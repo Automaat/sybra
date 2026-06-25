@@ -187,9 +187,17 @@
             </div>
           {/each}
         </div>
-        <div class="px-2 pb-2">
-          <InlineTaskAdd status={col.status} />
-        </div>
+        {#if col.kind === 'review'}
+          {#if tasks.length === 0}
+            <p class="px-3 pb-3 text-xs text-surface-500 dark:text-surface-400">
+              No PRs to review.
+            </p>
+          {/if}
+        {:else}
+          <div class="px-2 pb-2">
+            <InlineTaskAdd status={col.status} />
+          </div>
+        {/if}
       {/if}
     </div>
     {/if}
