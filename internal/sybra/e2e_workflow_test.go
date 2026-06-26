@@ -4593,8 +4593,8 @@ func TestE2E_CrossDefaultEmptyProvider_ResolvesDeterministically(t *testing.T) {
 			prov = tk.Workflow.StepHistory[i].Provider
 		}
 	}
-	if prov != "codex" {
-		t.Fatalf("cross_step provider = %q, want codex when default empty(normalized claude)", prov)
+	if prov != "claude" {
+		t.Fatalf("cross_step provider = %q, want claude default when no provenance exists", prov)
 	}
 }
 

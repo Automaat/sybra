@@ -113,7 +113,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		model = "sonnet"
 	}
 
-	provider := resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider())
+	provider := resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), ctx.Task)
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn("workflow.cross-provider.fallback", "wanted", provider, "reason", "CLI not found")
 		provider = ""
@@ -166,30 +166,89 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
-// flipProvider returns the opposite provider.
-func flipProvider(p string) string {
-	if p == "codex" {
-		return "claude"
-	}
-	return "codex"
-}
-
 // resolveProvider resolves the step-level provider string.
-// "cross" flips the last agent step's provider; "" defers to manager default.
-func resolveProvider(stepProv string, wfExec *Execution, defaultProv string) string {
+// "cross" flips the most relevant code-producing provider; "" defers to the
+// manager default.
+func resolveProvider(stepProv string, wfExec *Execution, _ string, t TaskInfo) string {
 	switch stepProv {
 	case "cross":
-		for i := range slices.Backward(wfExec.StepHistory) {
-			if p := wfExec.StepHistory[i].Provider; p != "" {
-				return flipProvider(p)
-			}
+		if p := lastWorkflowProvider(wfExec); p != "" {
+			return crossProvider(p)
 		}
-		return flipProvider(defaultProv)
+		if p := lastCodeAuthorProvider(t.AgentRuns); p != "" {
+			return crossProvider(p)
+		}
+		if p := normalizeExplicitWorkflowProvider(t.HandoffSourceProvider); p != "" {
+			return crossProvider(p)
+		}
+		return ""
 	case "":
 		return ""
 	default:
 		return stepProv
 	}
+}
+
+func lastWorkflowProvider(wfExec *Execution) string {
+	if wfExec == nil {
+		return ""
+	}
+	for i := range slices.Backward(wfExec.StepHistory) {
+		if p := normalizeExplicitWorkflowProvider(wfExec.StepHistory[i].Provider); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func lastCodeAuthorProvider(runs []AgentRunInfo) string {
+	for i := range slices.Backward(runs) {
+		if !isCodeAuthorRole(runs[i].Role) {
+			continue
+		}
+		if p := normalizeExplicitWorkflowProvider(runs[i].Provider); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func isCodeAuthorRole(role string) bool {
+	switch role {
+	case "", "implementation", "fix-review", "pr-fix":
+		return true
+	default:
+		return false
+	}
+}
+
+func crossProvider(provider string) string {
+	switch normalizeWorkflowProvider(provider) {
+	case "codex", "copilot":
+		return "claude"
+	default:
+		return "codex"
+	}
+}
+
+func normalizeWorkflowProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "claude":
+		return "claude"
+	case "codex":
+		return "codex"
+	case "copilot":
+		return "copilot"
+	default:
+		return ""
+	}
+}
+
+func normalizeExplicitWorkflowProvider(provider string) string {
+	if strings.TrimSpace(provider) == "" {
+		return ""
+	}
+	return normalizeWorkflowProvider(provider)
 }
 
 // providerAvailable reports whether the CLI for a provider is on PATH.

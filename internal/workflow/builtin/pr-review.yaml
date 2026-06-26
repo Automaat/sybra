@@ -53,6 +53,7 @@ steps:
       role: review
       mode: headless
       model: sonnet
+      provider: cross
       prompt: >-
         Run /pr-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
     next:
@@ -65,6 +66,7 @@ steps:
       role: review
       mode: headless
       model: opus
+      provider: cross
       prompt: >-
         Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
     next:

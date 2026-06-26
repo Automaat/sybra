@@ -155,35 +155,36 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 
 func taskToInfo(t task.Task) workflow.TaskInfo {
 	return workflow.TaskInfo{
-		ID:           t.ID,
-		Title:        t.Title,
-		Status:       string(t.Status),
-		Tags:         t.Tags,
-		AgentMode:    t.AgentMode,
-		ProjectID:    t.ProjectID,
-		PRNumber:     t.PRNumber,
-		Branch:       t.Branch,
-		Body:         t.Body,
-		Plan:         t.Plan,
-		PlanCritique: t.PlanCritique,
-		CodeReview:   t.CodeReview,
-		PlanDrafts:   t.PlanDrafts,
-		Issue:        t.Issue,
-		Reviewed:     t.Reviewed,
-		Workflow:     t.Workflow,
-		AgentRuns:    toRunInfos(t.AgentRuns),
+		ID:                    t.ID,
+		Title:                 t.Title,
+		Status:                string(t.Status),
+		Tags:                  t.Tags,
+		AgentMode:             t.AgentMode,
+		ProjectID:             t.ProjectID,
+		HandoffSourceProvider: t.HandoffSourceProvider,
+		PRNumber:              t.PRNumber,
+		Branch:                t.Branch,
+		Body:                  t.Body,
+		Plan:                  t.Plan,
+		PlanCritique:          t.PlanCritique,
+		CodeReview:            t.CodeReview,
+		PlanDrafts:            t.PlanDrafts,
+		Issue:                 t.Issue,
+		Reviewed:              t.Reviewed,
+		Workflow:              t.Workflow,
+		AgentRuns:             toRunInfos(t.AgentRuns),
 	}
 }
 
-// toRunInfos projects a task's agent runs onto the engine-visible subset
-// (role only) used by route_test_result's attempt counter.
+// toRunInfos projects a task's agent runs onto the engine-visible subset used
+// by route_test_result and cross-provider provenance.
 func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 	if len(runs) == 0 {
 		return nil
 	}
 	out := make([]workflow.AgentRunInfo, len(runs))
 	for i := range runs {
-		out[i] = workflow.AgentRunInfo{Role: runs[i].Role}
+		out[i] = workflow.AgentRunInfo{Role: runs[i].Role, Provider: runs[i].Provider}
 	}
 	return out
 }

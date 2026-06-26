@@ -527,14 +527,15 @@ func (e *Engine) fireComplete(c *CompletionInfo) {
 
 func taskFields(t TaskInfo) map[string]string {
 	fields := map[string]string{
-		"task.id":         t.ID,
-		"task.title":      t.Title,
-		"task.status":     t.Status,
-		"task.tags":       strings.Join(t.Tags, ","),
-		"task.agent_mode": t.AgentMode,
-		"task.project_id": t.ProjectID,
-		"task.branch":     t.Branch,
-		"task.reviewed":   strconv.FormatBool(t.Reviewed),
+		"task.id":                      t.ID,
+		"task.title":                   t.Title,
+		"task.status":                  t.Status,
+		"task.tags":                    strings.Join(t.Tags, ","),
+		"task.agent_mode":              t.AgentMode,
+		"task.project_id":              t.ProjectID,
+		"task.handoff_source_provider": t.HandoffSourceProvider,
+		"task.branch":                  t.Branch,
+		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)

@@ -165,6 +165,32 @@ func TestAllReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestValidateAgentProvider(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range []string{"", "claude", "codex", "copilot"} {
+		t.Run("valid_"+v, func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateAgentProvider(v)
+			if err != nil {
+				t.Fatalf("ValidateAgentProvider(%q): %v", v, err)
+			}
+			if got != v {
+				t.Errorf("got %q, want %q", got, v)
+			}
+		})
+	}
+
+	for _, v := range []string{"gpt", "Claude", " codex "} {
+		t.Run("invalid_"+v, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateAgentProvider(v); err == nil {
+				t.Fatalf("expected error for %q, got nil", v)
+			}
+		})
+	}
+}
+
 func TestTask_DirName_WithSlug(t *testing.T) {
 	t.Parallel()
 	task := Task{ID: "a1b2c3d4", Slug: "my-task"}
