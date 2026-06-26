@@ -5,7 +5,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
-  import { isReviewTask, reviewPhaseRank } from '../lib/review-phase.js'
+  import { isReviewTask, reviewPhaseNeedsYou, reviewPhaseRank } from '../lib/review-phase.js'
   import { prPhaseRank, prPhaseNeedsYou } from '../lib/pr-phase.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
@@ -293,7 +293,7 @@
   // Tasks awaiting the user across all columns (same set as the per-card red
   // attention border) — surfaced as a persistent board-toolbar counter so an
   // awaiting task is never missed when its column scrolls off-screen.
-  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status) || prPhaseNeedsYou(t)).length)
+  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status) || prPhaseNeedsYou(t) || reviewPhaseNeedsYou(t)).length)
 
   const hasActiveFilters = $derived(
     Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)

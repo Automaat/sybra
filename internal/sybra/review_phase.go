@@ -21,7 +21,9 @@ const (
 	// the PR author's court to push changes / respond.
 	ReviewPhaseAwaitingAuthor = "awaiting-author"
 	// ReviewPhaseNeedsApproval: the author re-requested review or pushed past
-	// the reviewed commit — the human needs a final pass and approval.
+	// the reviewed commit. This is a visible reviewer action, but it must not
+	// flip the task to human-required: the one automatic review round is already
+	// spent, so the follow-up is manual approval only.
 	ReviewPhaseNeedsApproval = "needs-approval"
 	// ReviewPhaseApproved: the human approved; the PR is waiting to merge.
 	ReviewPhaseApproved = "approved"
@@ -122,12 +124,14 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 
 	if s.Submitted {
 		// The author pushed past the commit we reviewed, or re-requested review:
-		// either way it needs a fresh human pass before approval.
+		// either way it needs a fresh human pass before approval. Keep the task
+		// in-review so the human-required auto-diagnostic machinery does not
+		// start another review round.
 		advanced := s.HeadSHA != "" && s.ReviewedSHA != "" && s.HeadSHA != s.ReviewedSHA
 		if s.ReRequested || advanced {
 			return reviewPhaseResult{
 				Phase:  ReviewPhaseNeedsApproval,
-				Status: task.StatusHumanRequired,
+				Status: task.StatusInReview,
 				Reason: "Author updated PR — do a final review & approve",
 			}
 		}

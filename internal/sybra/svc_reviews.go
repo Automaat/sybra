@@ -22,7 +22,7 @@ func (s *ReviewService) StartReview(taskID string) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", taskID)
 	}
-	return s.reviewer.startReviewAgent(t)
+	return s.reviewer.startReviewAgent(t, true)
 }
 
 // StartFixReview starts a headless fix-review agent that applies unresolved
