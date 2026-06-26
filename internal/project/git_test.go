@@ -545,6 +545,7 @@ func TestMergeChecks(t *testing.T) {
 		app           *ChecksConfig
 		wantPreCommit []string
 		wantPrePush   []string
+		wantVerify    []string
 		wantNil       bool
 	}{
 		{
@@ -586,6 +587,24 @@ func TestMergeChecks(t *testing.T) {
 			app:           &ChecksConfig{PreCommit: []string{"echo app"}},
 			wantPreCommit: []string{"echo app"},
 		},
+		{
+			name:       "verify only repo is non-nil",
+			repo:       &ChecksConfig{Verify: []string{"go test ./..."}},
+			wantVerify: []string{"go test ./..."},
+		},
+		{
+			name:       "repo wins verify",
+			repo:       &ChecksConfig{Verify: []string{"repo test"}},
+			app:        &ChecksConfig{Verify: []string{"app test"}},
+			wantVerify: []string{"repo test"},
+		},
+		{
+			name:          "verify falls back to app",
+			repo:          &ChecksConfig{PreCommit: []string{"echo repo"}},
+			app:           &ChecksConfig{Verify: []string{"app test"}},
+			wantPreCommit: []string{"echo repo"},
+			wantVerify:    []string{"app test"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -606,6 +625,9 @@ func TestMergeChecks(t *testing.T) {
 			}
 			if !slicesEqual(got.PrePush, tt.wantPrePush) {
 				t.Errorf("PrePush = %v, want %v", got.PrePush, tt.wantPrePush)
+			}
+			if !slicesEqual(got.Verify, tt.wantVerify) {
+				t.Errorf("Verify = %v, want %v", got.Verify, tt.wantVerify)
 			}
 		})
 	}

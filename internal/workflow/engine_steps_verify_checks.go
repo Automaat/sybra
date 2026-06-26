@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,7 +19,12 @@ import (
 // per-engine via SetVerifyTimeout (tests use a short value).
 const verifyChecksDefaultTimeout = 10 * time.Minute
 
-// verifyChecksOutputTail caps how much command output is kept in the artifact.
+// verifyChecksMaxOutput bounds how much command output is retained in memory.
+// A noisy or malicious verify command must not be able to OOM the engine, so
+// output streams into a fixed-size tail buffer rather than a growing slice.
+const verifyChecksMaxOutput = 64 * 1024
+
+// verifyChecksOutputTail caps how much of that buffer is stored in the artifact.
 const verifyChecksOutputTail = 8000
 
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
@@ -100,7 +106,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 			return e.flagVerifyChecks(taskID, step, reason, "timeout")
 		}
 		e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
-		return stepDone(step, "clean")
+		return stepDone(step, "skipped: context canceled")
 	}
 
 	if failedCmd != "" {
@@ -146,28 +152,56 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 
 // runVerifyCommands runs each command in order in the worktree via `sh -c`.
 // Returns the first command that exited non-zero (a real failure → caller
-// blocks). A non-nil err means the run could not complete (ctx timeout/cancel)
-// — the caller fails open rather than blocking on infra.
+// blocks). A non-nil err means the run could not complete (ctx timeout/cancel);
+// the caller decides the policy (fail closed on our deadline, open on shutdown).
+// Output streams into a fixed-size tail buffer so a flood of stdout/stderr
+// cannot exhaust memory.
 func runVerifyCommands(ctx context.Context, wtPath string, cmds []string) (failedCmd, output string, err error) {
-	var buf strings.Builder
+	tail := &boundedTail{max: verifyChecksMaxOutput}
 	for _, raw := range cmds {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", buf.String(), ctxErr
+			return "", tail.String(), ctxErr
 		}
+		_, _ = io.WriteString(tail, "$ "+raw+"\n")
 		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
 		cmd.Dir = wtPath
-		out, runErr := cmd.CombinedOutput()
-		buf.WriteString("$ " + raw + "\n")
-		buf.Write(out)
-		buf.WriteString("\n")
+		cmd.Stdout = tail
+		cmd.Stderr = tail
+		runErr := cmd.Run()
+		_, _ = io.WriteString(tail, "\n")
 		if runErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", buf.String(), ctxErr
+				return "", tail.String(), ctxErr
 			}
-			return raw, buf.String(), nil
+			return raw, tail.String(), nil
 		}
 	}
-	return "", buf.String(), nil
+	return "", tail.String(), nil
+}
+
+// boundedTail is a concurrency-safe io.Writer that retains only the last `max`
+// bytes written. os/exec writes stdout and stderr from separate goroutines when
+// they share a non-*os.File writer, so Write must be guarded.
+type boundedTail struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (b *boundedTail) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > b.max {
+		b.buf = b.buf[len(b.buf)-b.max:]
+	}
+	return len(p), nil
+}
+
+func (b *boundedTail) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
