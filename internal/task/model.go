@@ -89,15 +89,20 @@ const (
 	// TaskTypeChat is a synthetic task created for interactive chat sessions.
 	// Hidden from the task list UI and skipped by restart-stale/watchdog.
 	TaskTypeChat TaskType = "chat"
+	// TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
+	// It runs no agent: it rolls up the status of its child tasks and is the
+	// task the dependency gate flips to human-required on a dependency cycle.
+	TaskTypeUmbrella TaskType = "umbrella"
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true, TaskTypeChat: true,
+	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
+	TaskTypeChat: true, TaskTypeUmbrella: true,
 }
 
 // AllTaskTypes returns every valid task type in display order.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat}
+	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
 }
 
 func ValidateTaskType(s string) (TaskType, error) {
@@ -219,8 +224,18 @@ type Task struct {
 	// into status=blocked. Set by the human-review automation when it
 	// concludes the human-required transition was caused by a Sybra bug.
 	BlockedByIssue string `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
-	Reviewed       bool   `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole        string `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// UmbrellaIssue links this task to the ☂️ umbrella issue it was expanded
+	// from. Set on child tasks; empty for standalone tasks. The orchestrator's
+	// dependency gate reads it with DependsOn to decide when a child may leave
+	// `blocked`.
+	UmbrellaIssue string `yaml:"umbrella_issue,omitempty" json:"umbrellaIssue,omitempty"`
+	// DependsOn lists the issue refs (full URL or owner/repo#n) this task waits
+	// on. While the task is `blocked`, the gate holds it until every referenced
+	// task has reached `done`; an empty list releases immediately. Used only by
+	// umbrella child tasks.
+	DependsOn []string `yaml:"depends_on,omitempty" json:"dependsOn,omitempty"`
+	Reviewed  bool     `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole   string   `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	// SupervisorSteer is a one-shot corrective message left by the watchdog's
 	// headless nudge: it stops a looping headless agent (which has no mid-stream
 	// channel) and persists the steer here so the recovery loop re-dispatches

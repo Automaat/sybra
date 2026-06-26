@@ -17,6 +17,8 @@ type Update struct {
 	Status                *Status
 	StatusReason          *string
 	BlockedByIssue        *string
+	UmbrellaIssue         *string
+	DependsOn             *[]string
 	AgentMode             *string
 	TaskType              *TaskType
 	Body                  *string
@@ -68,10 +70,12 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
-	case "title", "slug", "status_reason", "blocked_by_issue", "body",
+	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
+	case "depends_on":
+		return applyDependsOnField(u, k, v)
 	case "handoff_source_provider":
 		return applyAgentProviderField(u, k, v)
 	case "priority":
@@ -138,6 +142,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.StatusReason = &s
 	case "blocked_by_issue":
 		u.BlockedByIssue = &s
+	case "umbrella_issue":
+		u.UmbrellaIssue = &s
 	case "body":
 		u.Body = &s
 	case "project_id":
@@ -233,6 +239,29 @@ func applyTagsField(u *Update, k string, v any) error {
 	case string:
 		parts := strings.Split(tv, ",")
 		u.Tags = &parts
+	default:
+		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyDependsOnField(u *Update, k string, v any) error {
+	switch dv := v.(type) {
+	case []string:
+		cp := make([]string, len(dv))
+		copy(cp, dv)
+		u.DependsOn = &cp
+	case string:
+		// Comma-separated shorthand from the CLI; trim and drop empties so a
+		// trailing comma or stray space cannot inject a blank dependency ref
+		// (which would otherwise resolve to "" and never satisfy).
+		var parts []string
+		for p := range strings.SplitSeq(dv, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				parts = append(parts, p)
+			}
+		}
+		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
 	}

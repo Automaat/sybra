@@ -199,6 +199,22 @@ export class Task {
      * concludes the human-required transition was caused by a Sybra bug.
      */
     "blockedByIssue"?: string;
+
+    /**
+     * UmbrellaIssue links this task to the ☂️ umbrella issue it was expanded
+     * from. Set on child tasks; empty for standalone tasks. The orchestrator's
+     * dependency gate reads it with DependsOn to decide when a child may leave
+     * `blocked`.
+     */
+    "umbrellaIssue"?: string;
+
+    /**
+     * DependsOn lists the issue refs (full URL or owner/repo#n) this task waits
+     * on. While the task is `blocked`, the gate holds it until every referenced
+     * task has reached `done`; an empty list releases immediately. Used only by
+     * umbrella child tasks.
+     */
+    "dependsOn"?: string[];
     "reviewed": boolean;
 
     /**
@@ -375,9 +391,10 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField31_0 = $$createType2;
-        const $$createField32_0 = $$createType4;
-        const $$createField39_0 = $$createType5;
+        const $$createField17_0 = $$createType0;
+        const $$createField33_0 = $$createType2;
+        const $$createField34_0 = $$createType4;
+        const $$createField41_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -385,14 +402,17 @@ export class Task {
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
+        if ("dependsOn" in $$parsedSource) {
+            $$parsedSource["dependsOn"] = $$createField17_0($$parsedSource["dependsOn"]);
+        }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField31_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField33_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField32_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField34_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField39_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField41_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -413,6 +433,13 @@ export enum TaskType {
      * Hidden from the task list UI and skipped by restart-stale/watchdog.
      */
     TaskTypeChat = "chat",
+
+    /**
+     * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
+     * It runs no agent: it rolls up the status of its child tasks and is the
+     * task the dependency gate flips to human-required on a dependency cycle.
+     */
+    TaskTypeUmbrella = "umbrella",
 };
 
 // Private type creation functions
