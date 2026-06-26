@@ -23,10 +23,9 @@ export interface ReviewPhaseMeta {
   classes: string
 }
 
-// The needs-you signal (red tile accent) is driven by the task's status, not
-// duplicated here — the poller sets human-required for the manual/drafted/
-// needs-approval phases, so awaitsHuman(status) stays the single source of
-// truth and can't drift from this table.
+// Needs-you phases drive the red tile accent via reviewPhaseNeedsYou. Drafted
+// and manual also use human-required status, but needs-approval intentionally
+// stays in-review so it cannot start another automatic diagnostic review.
 export const REVIEW_PHASE_META: Record<ReviewPhase, ReviewPhaseMeta> = {
   reviewing: {
     label: 'Reviewing',
@@ -101,4 +100,15 @@ export function reviewPhaseMeta(t: { reviewPhase?: string }): ReviewPhaseMeta {
 export function reviewPhaseRank(t: { reviewPhase?: string }): number {
   const idx = REVIEW_PHASE_ORDER.indexOf(reviewPhaseOf(t))
   return idx === -1 ? REVIEW_PHASE_ORDER.length : idx
+}
+
+const REVIEW_PHASE_NEEDS_YOU: ReadonlySet<ReviewPhase> = new Set<ReviewPhase>([
+  'manual',
+  'drafted',
+  'needs-approval',
+])
+
+/** True when an inbound PR review task awaits the user's review action. */
+export function reviewPhaseNeedsYou(t: { tags?: string[]; reviewPhase?: string }): boolean {
+  return isReviewTask(t) && REVIEW_PHASE_NEEDS_YOU.has(reviewPhaseOf(t))
 }

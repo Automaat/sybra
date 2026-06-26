@@ -150,6 +150,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+	h.markCompletedReview(ag, exitErr)
 
 	// Human-review agents are out-of-band diagnostics — they must not
 	// feed into the workflow engine (which would advance the step that
@@ -207,6 +208,16 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		if h.sandboxes != nil {
 			go h.sandboxes.Stop(ag.TaskID)
 		}
+	}
+}
+
+func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr error) {
+	if agent.RoleFromName(ag.Name) != agent.RoleReview || exitErr != nil {
+		return
+	}
+	reviewed := true
+	if _, err := h.tasks.Update(ag.TaskID, task.Update{Reviewed: &reviewed}); err != nil {
+		h.logger.Warn("task.mark-reviewed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
 

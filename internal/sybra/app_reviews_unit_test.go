@@ -300,6 +300,49 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	}
 }
 
+func TestReviewAgentAlreadyRan(t *testing.T) {
+	tests := []struct {
+		name string
+		tk   task.Task
+		want bool
+	}{
+		{
+			name: "reviewed flag counts",
+			tk:   task.Task{Reviewed: true},
+			want: true,
+		},
+		{
+			name: "prior review run counts even while running",
+			tk: task.Task{AgentRuns: []task.AgentRun{
+				{Role: string(agent.RoleReview), State: string(agent.StateRunning)},
+			}},
+			want: true,
+		},
+		{
+			name: "human diagnostic does not count as staff review",
+			tk: task.Task{AgentRuns: []task.AgentRun{
+				{Role: string(agent.RoleHumanReview), State: string(agent.StateStopped)},
+			}},
+			want: false,
+		},
+		{
+			name: "fix-review does not count as staff review",
+			tk: task.Task{AgentRuns: []task.AgentRun{
+				{Role: string(agent.RoleFixReview), State: string(agent.StateStopped)},
+			}},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reviewAgentAlreadyRan(tt.tk); got != tt.want {
+				t.Fatalf("reviewAgentAlreadyRan() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCancelResolvedPRFixWorkflows covers the loop where pr-fix kept
 // re-spawning agents long after the underlying CI failure was resolved.
 // The fix: cancel any in-flight pr-fix workflow whose pr_issue_kind is no

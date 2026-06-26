@@ -4,6 +4,7 @@ import {
   isReviewTask,
   reviewPhaseOf,
   reviewPhaseMeta,
+  reviewPhaseNeedsYou,
   reviewPhaseRank,
   type ReviewPhase,
 } from './review-phase.js'
@@ -66,6 +67,20 @@ describe('reviewPhaseRank', () => {
     const rank = (p: string) => reviewPhaseRank({ reviewPhase: p })
     expect(rank('conflict')).toBeGreaterThan(rank('approved'))
     expect(rank('conflict')).toBeGreaterThan(rank('needs-approval'))
+  })
+})
+
+describe('reviewPhaseNeedsYou', () => {
+  it('flags inbound review phases that need explicit reviewer action', () => {
+    expect(reviewPhaseNeedsYou({ tags: ['review'], reviewPhase: 'manual' })).toBe(true)
+    expect(reviewPhaseNeedsYou({ tags: ['review'], reviewPhase: 'drafted' })).toBe(true)
+    expect(reviewPhaseNeedsYou({ tags: ['review'], reviewPhase: 'needs-approval' })).toBe(true)
+  })
+
+  it('does not flag passive review phases or non-review tasks', () => {
+    expect(reviewPhaseNeedsYou({ tags: ['review'], reviewPhase: 'awaiting-author' })).toBe(false)
+    expect(reviewPhaseNeedsYou({ tags: ['review'], reviewPhase: 'approved' })).toBe(false)
+    expect(reviewPhaseNeedsYou({ reviewPhase: 'needs-approval' })).toBe(false)
   })
 })
 

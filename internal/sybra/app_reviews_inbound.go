@@ -54,7 +54,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
-		if err := r.startReviewAgent(t); err != nil {
+		if err := r.startReviewAgent(t, false); err != nil {
 			r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 		}
 		return
@@ -77,7 +77,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
-	if err := r.startReviewAgent(t); err != nil {
+	if err := r.startReviewAgent(t, false); err != nil {
 		r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 	}
 }
@@ -124,26 +124,48 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 	return nil
 }
 
-func (r *ReviewHandler) startReviewAgent(t task.Task) error {
-	if t.ProjectID == "" || t.PRNumber == 0 {
-		return fmt.Errorf("task %s has no linked PR", t.ID)
+func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
+	current := t
+	if force && r.tasks != nil {
+		if latest, err := r.tasks.Get(t.ID); err == nil {
+			current = latest
+		}
+	}
+	if r.agents != nil {
+		if !r.agents.ClaimTaskDispatch(current.ID) {
+			r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "dispatch_in_progress")
+			return nil
+		}
+		defer r.agents.ReleaseTaskDispatch(current.ID)
+	}
+	if !force && r.tasks != nil {
+		if latest, err := r.tasks.Get(current.ID); err == nil {
+			current = latest
+		}
+	}
+	if current.ProjectID == "" || current.PRNumber == 0 {
+		return fmt.Errorf("task %s has no linked PR", current.ID)
+	}
+	if !force && reviewAgentAlreadyRan(current) {
+		r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "already_reviewed")
+		return nil
 	}
 
 	dir := config.HomeDir()
-	if t.ProjectID != "" {
-		d, err := r.worktrees.PrepareForReview(t)
+	if current.ProjectID != "" {
+		d, err := r.worktrees.PrepareForReview(current)
 		if err != nil {
-			r.logger.Error("review.worktree", "task_id", t.ID, "err", err)
+			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
 		} else {
 			dir = d
 		}
 	}
 
-	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
+	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RoleReview.AgentName(t.Title),
+		TaskID: current.ID,
+		Name:   agent.RoleReview.AgentName(current.Title),
 		Mode:   "headless",
 		Prompt: prompt,
 		Dir:    dir,
@@ -154,15 +176,28 @@ func (r *ReviewHandler) startReviewAgent(t task.Task) error {
 	if err != nil {
 		return err
 	}
-	if err := r.tasks.AddRun(t.ID, task.AgentRun{
+	if err := r.tasks.AddRun(current.ID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 		Prompt: prompt,
 	}); err != nil {
-		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
+		r.logger.Error("task.add-run", "task_id", current.ID, "err", err)
+		if stopErr := r.agents.StopAgent(ag.ID); stopErr != nil {
+			return fmt.Errorf("record review run: %w; stop started agent %s: %w", err, ag.ID, stopErr)
+		}
+		return fmt.Errorf("record review run: %w", err)
 	}
-	r.logAudit(audit.EventReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber})
-	r.logger.Info("review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
+	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber})
+	r.logger.Info("review.agent-started", "task_id", current.ID, "agent_id", ag.ID, "pr", current.PRNumber)
 	return nil
+}
+
+func reviewAgentAlreadyRan(t task.Task) bool {
+	if t.Reviewed {
+		return true
+	}
+	return slices.ContainsFunc(t.AgentRuns, func(r task.AgentRun) bool {
+		return r.Role == string(agent.RoleReview)
+	})
 }
 
 func (r *ReviewHandler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {

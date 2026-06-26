@@ -60,12 +60,12 @@ func TestComputeReviewPhase(t *testing.T) {
 		{
 			name: "author pushed past reviewed commit → needs approval",
 			sig:  reviewSignals{Submitted: true, HeadSHA: "sha2", ReviewedSHA: "sha1"},
-			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusHumanRequired, Reason: "Author updated PR — do a final review & approve"},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
 		},
 		{
 			name: "re-requested after review → needs approval even at same head",
 			sig:  reviewSignals{Submitted: true, ReRequested: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
-			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusHumanRequired, Reason: "Author updated PR — do a final review & approve"},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
 		},
 		{
 			name: "no agent, no draft, not submitted → manual (small-PR punt)",
