@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 const IssuesPollInterval = 5 * time.Minute
@@ -33,6 +34,16 @@ type IssuesFetcher struct {
 	viewerLogin           func() string
 	transientFetchFails   int
 	transientLabeledFails int
+	// umbrellaExpand, when set, auto-expands a detected ☂️ umbrella issue into a
+	// gated task DAG instead of creating a flat task. nil = feature disabled.
+	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+}
+
+// SetUmbrellaExpander enables auto-expansion of umbrella issues. fn typically
+// wraps umbrella.Expand bound to the task store and a planner runner. A nil fn
+// leaves the feature disabled.
+func (f *IssuesFetcher) SetUmbrellaExpander(fn func(issueURL string) (umbrella.Result, error)) {
+	f.umbrellaExpand = fn
 }
 
 // NewIssuesFetcher creates an IssuesFetcher. allowsType filters issues whose
@@ -198,6 +209,24 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 
 	for i := range issues {
 		issue := &issues[i]
+
+		// Umbrella issues are expanded into a gated task DAG, not a flat task.
+		// Checked before the URL dedup so an already-expanded umbrella still
+		// ingests newly added sub-issues on re-poll (Expand is idempotent and
+		// short-circuits when nothing is new).
+		if f.umbrellaExpand != nil && umbrella.IsUmbrellaIssue(issue.Title, issue.Labels) {
+			proj, err := f.projects.Get(issue.Repository)
+			if err != nil || !f.allowsType(proj.Type) {
+				continue
+			}
+			if res, err := f.umbrellaExpand(issue.URL); err != nil {
+				f.logger.Error("issue-sync.umbrella-expand", "issue", issue.URL, "err", err)
+			} else if res.Created > 0 {
+				f.logger.Info("issue-sync.umbrella-expanded", "issue", issue.URL, "created", res.Created)
+			}
+			continue
+		}
+
 		if _, exists := issueURLs[issue.URL]; exists {
 			continue
 		}
