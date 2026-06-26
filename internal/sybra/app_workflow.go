@@ -24,6 +24,7 @@ var (
 	_ workflow.PRLinker          = (*prLinkerAdapter)(nil)
 	_ workflow.PRReviewRequester = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter    = (*worktreeGetterAdapter)(nil)
+	_ workflow.CheckConfigGetter = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ArtifactRecorder  = (*artifactRecorderAdapter)(nil)
 )
 
@@ -246,6 +247,40 @@ func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
 type worktreeGetterAdapter struct {
 	tasks *task.Manager
 	mgr   *worktree.Manager
+}
+
+// checkConfigGetterAdapter resolves a task's verify-suite commands by merging
+// the repo `.sybra.yaml` checks with the app-level project config.
+type checkConfigGetterAdapter struct {
+	tasks    *task.Manager
+	projects *project.Store
+	mgr      *worktree.Manager
+}
+
+func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return nil
+	}
+	wtPath := a.mgr.PathFor(t)
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		return nil
+	}
+	var repoChecks *project.ChecksConfig
+	if repoCfg, rErr := project.LoadRepoConfig(wtPath); rErr == nil && repoCfg != nil {
+		repoChecks = repoCfg.Checks
+	}
+	var appChecks *project.ChecksConfig
+	if t.ProjectID != "" {
+		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
+			appChecks = p.Checks
+		}
+	}
+	merged := project.MergeChecks(repoChecks, appChecks)
+	if merged == nil {
+		return nil
+	}
+	return merged.Verify
 }
 
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {

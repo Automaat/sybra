@@ -303,7 +303,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 		want   string
 	}{
 		{"flagged_ends_workflow", "human-required", ""},
-		{"clean_hands_off_to_review", "ready-review", "set_ready_review"},
+		{"clean_flows_to_verify_checks", "ready-review", "verify_checks"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -17,6 +17,15 @@ export class ChecksConfig {
     "preCommit"?: string[];
     "prePush"?: string[];
 
+    /**
+     * Verify is the project's deterministic verification suite (tests /
+     * typecheck), run by the verify_checks workflow step on the agent's branch
+     * before review so an implementation that does not pass its own tests
+     * cannot reach a PR. Opt-in: unset means the check is skipped. Each entry
+     * is a shell command run in the worktree root, in order.
+     */
+    "verify"?: string[];
+
     /** Creates a new ChecksConfig instance. */
     constructor($$source: Partial<ChecksConfig> = {}) {
 
@@ -29,12 +38,16 @@ export class ChecksConfig {
     static createFrom($$source: any = {}): ChecksConfig {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("preCommit" in $$parsedSource) {
             $$parsedSource["preCommit"] = $$createField0_0($$parsedSource["preCommit"]);
         }
         if ("prePush" in $$parsedSource) {
             $$parsedSource["prePush"] = $$createField1_0($$parsedSource["prePush"]);
+        }
+        if ("verify" in $$parsedSource) {
+            $$parsedSource["verify"] = $$createField2_0($$parsedSource["verify"]);
         }
         return new ChecksConfig($$parsedSource as Partial<ChecksConfig>);
     }
