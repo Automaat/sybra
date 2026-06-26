@@ -160,6 +160,9 @@ func TestStopWithSIGINT_EscalatesToSIGKILL(t *testing.T) {
 		t.Fatalf("read ready signal: %v", err)
 	}
 	pr.Close()
+	if string(ready) != "ready\n" {
+		t.Fatalf("unexpected ready signal %q, want %q (SIG_IGN guarantee not established)", ready, "ready\n")
+	}
 
 	// Pass a done channel that is never closed — simulates SIGINT being ignored.
 	neverDone := make(chan struct{})

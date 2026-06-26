@@ -233,12 +233,13 @@ func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
 	})
 
 	a := &Agent{
-		ID:     "race-agent",
-		TaskID: "task-1",
-		Mode:   "interactive",
-		State:  StateStopped,
-		done:   make(chan struct{}),
-		cancel: func() {},
+		ID:        "race-agent",
+		TaskID:    "task-1",
+		Mode:      "interactive",
+		State:     StateStopped,
+		StartedAt: time.Now(),
+		done:      make(chan struct{}),
+		cancel:    func() {},
 	}
 
 	var wg sync.WaitGroup
