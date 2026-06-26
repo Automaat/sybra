@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/google/uuid"
 )
@@ -30,6 +31,19 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, fmt.Errorf("agent.Run: Dir %q not accessible: %w", cfg.Dir, err)
 	} else if !info.IsDir() {
 		return nil, fmt.Errorf("agent.Run: Dir %q is not a directory", cfg.Dir)
+	}
+
+	// Inject the worktree's working-memory scratchpad (NOTES.md): a standing
+	// read/maintain instruction plus the file's current contents, giving Codex
+	// (no --resume) and any restarted agent cross-run continuity. Gated on
+	// SeedWorkingMemory, set only for code-author roles: verifier roles (review,
+	// test-runner, eval) reuse the SAME per-task worktree, so seeding them would
+	// feed an independent reviewer/tester the implementer's notes and quietly
+	// erode the reward-hacking defense. Done on the local cfg copy so the inlined
+	// notes never reach the persisted AgentRun.Prompt, which callers record from
+	// their own prompt variable. No-op when Dir has no NOTES.md.
+	if cfg.SeedWorkingMemory {
+		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
 
 	resolvedProvider, gateErr := m.gateProvider(cfg)

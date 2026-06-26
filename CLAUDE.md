@@ -179,6 +179,39 @@ tmux new-session -d -s sybra-<id> -x 200 -y 50 "claude"
 - GUI polls `tmux capture-pane -t sybra-<id> -p` for preview
 - User attaches via terminal
 
+### Worktree Agent Context
+
+Every implementation worktree is seeded with two git-excluded files (added to
+`.git/info/exclude`, never committed):
+
+- **`.sybra-context.md`** (`internal/worktree/context.go`) — identity beacon
+  (task id, title, branch). Regenerated on every prepare.
+- **`NOTES.md`** (`internal/notes` + `internal/worktree/notes.go`) — agent
+  working-memory scratchpad: running plan, decisions, dead ends. Seeded
+  **create-if-absent only** — `ensureNotesFile` must never clobber an existing
+  file, since it is the agent's memory across runs/resume.
+
+`agent.Manager.Run` is the single chokepoint that inlines `NOTES.md` (a
+read/maintain instruction + the file's current contents, head+tail-capped) into
+the prompt via `notes.SeedPrompt`. This is the resume substitute for Codex (no
+`--resume`) and a context-rot-resistant scratchpad for all providers. The seed
+lands on `Run`'s local `cfg` copy only, so the persisted `AgentRun.Prompt` stays
+clean.
+
+**Gated on `RunConfig.SeedWorkingMemory`, set only for code-author roles
+(`Role.AuthorsCode`: implementation/fix-review/pr-fix).** Verifier roles
+(review, test-runner, eval) reuse the *same* per-task worktree, so seeding them
+would feed an independent reviewer/tester the implementer's notes — and since
+`NOTES.md` is git-excluded, that bias is invisible to the diff-based
+`detect_tampering` / `verify_checks` gates. Do not flip a verifier role to
+seed.
+
+`ensureNotesFile` fails closed: it git-excludes *before* creating the file and
+aborts if exclusion fails, so an unignored scratchpad of work-derived notes is
+never left for `SanitizeWorktree`'s `git add -A` to commit onto the PR. For
+work-typed tasks the file stays local; route through `internal/scrub` if ever
+summarized into a persisted artifact.
+
 ### Per-Machine Automations
 
 Sybra can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.sybra/` and runs background automations independently. Two routing axes prevent duplicate work:

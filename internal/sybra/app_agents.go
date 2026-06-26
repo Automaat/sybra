@@ -259,6 +259,8 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 		MaxTurns:           t.MaxTurns,
 		ForkSubagent:       t.ForkSubagent,
 		ReasoningEffort:    t.ReasoningEffort,
+		// Always an implementation run — prime it with the NOTES.md scratchpad.
+		SeedWorkingMemory: true,
 	})
 	if err != nil {
 		// Gate block leaves no running agent. Flip the task back to todo so
@@ -446,6 +448,9 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		Dir:                dir,
 		Model:              "sonnet",
 		RequirePermissions: requirePerm,
+		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
+		// an adopted (handoff) worktree's scratchpad carries through.
+		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
 	})
 	if err != nil {
 		return err

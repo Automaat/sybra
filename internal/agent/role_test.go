@@ -60,6 +60,38 @@ func TestRole_IsSystem(t *testing.T) {
 	}
 }
 
+func TestRole_AuthorsCode(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role Role
+		want bool
+	}{
+		// Code authors — primed with NOTES.md working memory.
+		{RoleImplementation, true},
+		{RoleFixReview, true},
+		{RolePRFix, true},
+		{Role(""), true}, // empty maps to implementation
+		// Independent verifiers — must NOT inherit the implementer's scratchpad,
+		// or the reward-hacking defense is silently weakened.
+		{RoleReview, false},
+		{RoleTestRunner, false},
+		{RoleEval, false},
+		{RolePlan, false},
+		{RolePlanCritic, false},
+		{RoleTriage, false},
+		{RoleHumanReview, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.AuthorsCode(); got != tt.want {
+				t.Errorf("Role(%q).AuthorsCode() = %v, want %v", tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRoleFromName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
