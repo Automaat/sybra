@@ -66,6 +66,14 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	})
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
+		// Extract the adversarial test verdict from the UNtruncated output and
+		// stash it in a tiny dedicated var. The verdict marker sits on the final
+		// line and would otherwise be lost to the 2000-byte prefix truncation
+		// above whenever a thorough test-runner writes a long summary. No-op
+		// (empty) for every non-test step. See route_test_result.
+		if v := extractTestVerdict(output.Output); v != "" {
+			wfExec.SetVar("step."+output.StepID+".verdict", v)
+		}
 	}
 
 	// Retry failed steps if max_retries configured and not exhausted.
@@ -322,7 +330,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return nil, e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview, StepRouteTestResult:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -408,6 +416,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execValidatePlan(taskID, step, t)
 	case StepTriageReview:
 		return e.execTriageReview(taskID, step, t)
+	case StepRouteTestResult:
+		return e.execRouteTestResult(taskID, step, wfExec, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}

@@ -630,6 +630,13 @@ export enum StepType {
     StepTriageReview = "triage_review",
 
     /**
+     * StepRouteTestResult reads the test-runner verdict and routes the task:
+     * pass → ready-pr, fail → in-progress (re-implement) until the attempt
+     * cap is hit, then human-required.
+     */
+    StepRouteTestResult = "route_test_result",
+
+    /**
      * StepParallel runs its `Parallel` children concurrently as run_agent
      * steps. The parent step advances only after every child has terminated;
      * parent-level Next is evaluated against the parent step record (with the

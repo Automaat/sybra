@@ -382,7 +382,7 @@ func TestRunShipsWorkflowSkillsFromEmbeddedBundle(t *testing.T) {
 		PrimaryDst: primaryDst,
 	})
 
-	for _, name := range []string{"plan-critic", "plan-fork", "sybra-plan", "sybra-test-plan", "sybra-triage"} {
+	for _, name := range []string{"plan-critic", "plan-fork", "sybra-plan", "sybra-test", "sybra-triage"} {
 		if _, err := os.Stat(filepath.Join(primaryDst, name, "SKILL.md")); err != nil {
 			t.Errorf("%s skill missing: %v", name, err)
 		}

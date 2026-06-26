@@ -102,14 +102,10 @@ export const StopOrchestrator = pick(OrchestratorSvc.StopOrchestrator, http.Stop
 
 // PlanningService
 export const ApprovePlan = pick(PlanningSvc.ApprovePlan, http.ApprovePlan)
-export const ApproveTestPlan = pick(PlanningSvc.ApproveTestPlan, http.ApproveTestPlan)
 export const HasLivePlanAgent = pick(PlanningSvc.HasLivePlanAgent, http.HasLivePlanAgent)
-export const HasLiveTestPlanAgent = pick(PlanningSvc.HasLiveTestPlanAgent, http.HasLiveTestPlanAgent)
 export const PlanTask = pick(PlanningSvc.PlanTask, http.PlanTask)
 export const RejectPlan = pick(PlanningSvc.RejectPlan, http.RejectPlan)
-export const RejectTestPlan = pick(PlanningSvc.RejectTestPlan, http.RejectTestPlan)
 export const SendPlanMessage = pick(PlanningSvc.SendPlanMessage, http.SendPlanMessage)
-export const SendTestPlanMessage = pick(PlanningSvc.SendTestPlanMessage, http.SendTestPlanMessage)
 export const TriageTask = pick(PlanningSvc.TriageTask, http.TriageTask)
 
 // ProjectService

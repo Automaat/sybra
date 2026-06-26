@@ -73,28 +73,6 @@ func (s *PlanningService) HasLivePlanAgent(id string) bool {
 	return s.agents.FindRunningAgentForTask(id, agent.RolePlan) != nil
 }
 
-// ApproveTestPlan approves the manual test plan via the workflow engine.
-// Workflow-engine-level same as ApprovePlan; named separately so the frontend
-// binding stays explicit about which review page is acting.
-func (s *PlanningService) ApproveTestPlan(id string) (task.Task, error) {
-	return s.approve(id)
-}
-
-// RejectTestPlan rejects the manual test plan with optional feedback.
-func (s *PlanningService) RejectTestPlan(id, feedback string) (task.Task, error) {
-	return s.reject(id, feedback)
-}
-
-// SendTestPlanMessage sends a message to a live interactive test-plan agent.
-func (s *PlanningService) SendTestPlanMessage(id, message string) error {
-	return s.sendMessage(id, message, agent.RoleTestPlan)
-}
-
-// HasLiveTestPlanAgent reports whether a live test-plan agent exists for the task.
-func (s *PlanningService) HasLiveTestPlanAgent(id string) bool {
-	return s.agents.FindRunningAgentForTask(id, agent.RoleTestPlan) != nil
-}
-
 func (s *PlanningService) approve(id string) (task.Task, error) {
 	if err := s.engine.HandleHumanAction(id, "approve", nil); err != nil {
 		return task.Task{}, err
@@ -104,7 +82,7 @@ func (s *PlanningService) approve(id string) (task.Task, error) {
 
 // reject forwards an optional human-typed feedback plus any unresolved
 // inline review comments to the workflow engine as the "reject" action.
-// Shared by the plan-review and test-plan-review flows.
+// Used by the plan-review flow.
 func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 	data := map[string]string{}
 	combined := s.assembleFeedback(id, feedback)

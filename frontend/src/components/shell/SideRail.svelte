@@ -19,7 +19,7 @@
   )
 
   const reviewCount = $derived(
-    taskStore.byStatus('plan-review').length + taskStore.byStatus('test-plan-review').length
+    taskStore.byStatus('plan-review').length
   )
 
   interface NavItem {

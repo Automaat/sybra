@@ -13,6 +13,7 @@ type Config struct {
 	Logging       LoggingConfig      `yaml:"logging" json:"logging"`
 	Audit         AuditConfig        `yaml:"audit" json:"audit"`
 	Agent         AgentDefaults      `yaml:"agent" json:"agent"`
+	Testing       TestingConfig      `yaml:"testing" json:"testing"`
 	Notification  NotificationConfig `yaml:"notification" json:"notification"`
 	Orchestrator  OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
 	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
@@ -181,6 +182,46 @@ func (c *Config) SurviveRestartEnabled() bool {
 		return *c.Agent.SurviveRestart
 	}
 	return true
+}
+
+// TestingConfig controls the autonomous manual-testing phase. A task entering
+// status=testing spawns a single adversarial test-runner agent that starts the
+// real app/cluster in an isolated per-task sandbox and tries to prove the
+// implementation does not satisfy the task. Each test-runner holds its own
+// sandbox (Docker compose project / k3d cluster), so MaxConcurrent bounds
+// real-app/cluster load independently of Agent.MaxConcurrent.
+type TestingConfig struct {
+	// MaxConcurrent caps simultaneously-running test-runner agents on this
+	// machine. 0 falls back to DefaultTestingMaxConcurrent.
+	MaxConcurrent int `yaml:"max_concurrent" json:"maxConcurrent"`
+	// MaxAttempts caps how many times a task may fail testing and bounce back
+	// to in-progress for re-implementation before it is escalated to
+	// human-required instead. 0 falls back to DefaultTestingMaxAttempts.
+	MaxAttempts int `yaml:"max_attempts" json:"maxAttempts"`
+}
+
+// DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns
+// an isolated sandbox) when TestingConfig.MaxConcurrent is unset.
+const DefaultTestingMaxConcurrent = 3
+
+// DefaultTestingMaxAttempts bounds the testing → in-progress re-implementation
+// loop when TestingConfig.MaxAttempts is unset.
+const DefaultTestingMaxAttempts = 3
+
+// TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
+func (c *Config) TestingMaxConcurrent() int {
+	if c != nil && c.Testing.MaxConcurrent > 0 {
+		return c.Testing.MaxConcurrent
+	}
+	return DefaultTestingMaxConcurrent
+}
+
+// TestingMaxAttempts returns the configured cap or DefaultTestingMaxAttempts.
+func (c *Config) TestingMaxAttempts() int {
+	if c != nil && c.Testing.MaxAttempts > 0 {
+		return c.Testing.MaxAttempts
+	}
+	return DefaultTestingMaxAttempts
 }
 
 type NotificationConfig struct {

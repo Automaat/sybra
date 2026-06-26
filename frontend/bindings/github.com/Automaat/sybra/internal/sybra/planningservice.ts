@@ -24,28 +24,10 @@ export function ApprovePlan(id: string): $CancellablePromise<task$0.Task> {
 }
 
 /**
- * ApproveTestPlan approves the manual test plan via the workflow engine.
- * Workflow-engine-level same as ApprovePlan; named separately so the frontend
- * binding stays explicit about which review page is acting.
- */
-export function ApproveTestPlan(id: string): $CancellablePromise<task$0.Task> {
-    return $Call.ByID(733809700, id).then(($result: any) => {
-        return $$createType0($result);
-    });
-}
-
-/**
  * HasLivePlanAgent reports whether a live plan agent exists for the task.
  */
 export function HasLivePlanAgent(id: string): $CancellablePromise<boolean> {
     return $Call.ByID(2278048380, id);
-}
-
-/**
- * HasLiveTestPlanAgent reports whether a live test-plan agent exists for the task.
- */
-export function HasLiveTestPlanAgent(id: string): $CancellablePromise<boolean> {
-    return $Call.ByID(3686057056, id);
 }
 
 /**
@@ -68,26 +50,10 @@ export function RejectPlan(id: string, feedback: string): $CancellablePromise<ta
 }
 
 /**
- * RejectTestPlan rejects the manual test plan with optional feedback.
- */
-export function RejectTestPlan(id: string, feedback: string): $CancellablePromise<task$0.Task> {
-    return $Call.ByID(2281911474, id, feedback).then(($result: any) => {
-        return $$createType0($result);
-    });
-}
-
-/**
  * SendPlanMessage sends a message to a live interactive plan agent.
  */
 export function SendPlanMessage(id: string, message: string): $CancellablePromise<void> {
     return $Call.ByID(621463710, id, message);
-}
-
-/**
- * SendTestPlanMessage sends a message to a live interactive test-plan agent.
- */
-export function SendTestPlanMessage(id: string, message: string): $CancellablePromise<void> {
-    return $Call.ByID(1515959970, id, message);
 }
 
 /**

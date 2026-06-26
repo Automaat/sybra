@@ -1800,8 +1800,8 @@ func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
 }
 
 // testTestingTaskWorkflowYAML mirrors the real builtin testing-task.yaml
-// shape (id, trigger, step graph, transitions, human actions) but uses
-// headless agents so two consecutive run_agent steps are deterministic on CI.
+// shape (id, trigger, run_test → route_test_result graph) but omits the
+// notest short-circuit so the core verdict-routing is deterministic on CI.
 // The real builtin's YAML is exercised by internal/workflow/builtin_test.go.
 const testTestingTaskWorkflowYAML = `id: testing-task
 name: Test Manual Testing
@@ -1812,45 +1812,20 @@ trigger:
       operator: equals
       value: testing
 steps:
-  - id: plan_test
-    name: Prepare Test Plan
-    type: run_agent
-    config:
-      role: test-plan
-      mode: headless
-      model: opus
-      prompt: 'Plan test {{.Task.ID}}'
-    next:
-      - goto: review_test_plan
-
-  - id: review_test_plan
-    name: Review Test Plan
-    type: wait_human
-    config:
-      status: test-plan-review
-      human_actions:
-        - approve
-        - reject
-    next:
-      - when:
-          field: vars.human_action
-          operator: equals
-          value: approve
-        goto: execute_tests
-      - when:
-          field: vars.human_action
-          operator: equals
-          value: reject
-        goto: plan_test
-
-  - id: execute_tests
-    name: Execute Manual Testing
+  - id: run_test
+    name: Adversarial Testing
     type: run_agent
     config:
       role: test-runner
       mode: headless
       model: sonnet
-      prompt: 'Execute test {{.Task.ID}}'
+      prompt: 'Test {{.Task.ID}}'
+    next:
+      - goto: route_test
+
+  - id: route_test
+    name: Route Test Result
+    type: route_test_result
     next:
       - goto: ""
 `
@@ -1892,12 +1867,11 @@ func lastStepStatus(tk task.Task, stepID string) string {
 	return ""
 }
 
-// TestE2E_TestingTaskWorkflow_HappyPath drives the manual-testing workflow
-// from status→testing dispatch through plan_test, human approve, and
-// execute_tests, ending in ExecCompleted.
+// TestE2E_TestingTaskWorkflow_HappyPath drives the adversarial testing workflow
+// from status→testing dispatch through run_test (verdict PASS) and the
+// route_test_result router, ending in ExecCompleted with status=ready-pr.
 func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
-	// plan_test (success) → wait_human → execute_tests (success).
-	env := setupE2EMulti(t, []string{"success", "success"})
+	env := setupE2EMulti(t, []string{"test_pass"})
 	installTestingTaskWorkflow(t, env)
 
 	created, err := env.tasks.Create("manual test happy", "", "headless")
@@ -1915,23 +1889,42 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 		t.Fatalf("dispatched workflow = %q, want testing-task", wfID)
 	}
 
-	waitFor(t, 20*time.Second, "reaches review_test_plan", func() bool {
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil {
 			return false
 		}
-		return tk.Workflow != nil &&
-			tk.Workflow.CurrentStep == "review_test_plan" &&
-			tk.Workflow.State == workflow.ExecWaiting
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
 	})
 
-	tkWaiting, _ := env.tasks.Get(created.ID)
-	if tkWaiting.Status != task.StatusTestPlanReview {
-		t.Errorf("status at wait_human = %q, want %q", tkWaiting.Status, task.StatusTestPlanReview)
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("status after PASS = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+	for _, want := range []string{"run_test", "route_test"} {
+		if countStepRecords(tk, want) == 0 {
+			t.Errorf("missing step %q in history", want)
+		}
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation guards the
+// regression where a genuine PASS verdict on the final line of a >2000-char
+// test-runner summary was lost to step-output truncation and misrouted as a
+// failure. The verdict must be extracted from the untruncated result → ready-pr.
+func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T) {
+	env := setupE2EMulti(t, []string{"test_pass_verbose"})
+	installTestingTaskWorkflow(t, env)
+
+	created, err := env.tasks.Create("manual test long pass", "", "headless")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
-		t.Fatalf("approve: %v", err)
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
 	}
 
 	waitFor(t, 20*time.Second, "workflow completes", func() bool {
@@ -1943,29 +1936,19 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	})
 
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Workflow.WorkflowID != "testing-task" {
-		t.Errorf("workflow on task = %q, want testing-task", tk.Workflow.WorkflowID)
-	}
-	steps := map[string]int{}
-	for _, r := range tk.Workflow.StepHistory {
-		steps[r.StepID]++
-	}
-	for _, want := range []string{"plan_test", "review_test_plan", "execute_tests"} {
-		if steps[want] == 0 {
-			t.Errorf("missing step %q in history, got %v", want, steps)
-		}
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("status after long PASS = %q, want %q (verdict lost to truncation?)", tk.Status, task.StatusReadyPR)
 	}
 }
 
-// TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan verifies that rejecting
-// the test plan re-runs plan_test with human.feedback set on the workflow
-// vars, then the second plan can be approved and the workflow completes.
-func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
-	// plan_test → wait → reject → plan_test → wait → approve → execute_tests.
-	env := setupE2EMulti(t, []string{"success", "success", "success"})
+// TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement verifies a FAIL verdict
+// routes the task back to in-progress for re-implementation, marks it reviewed
+// (so the re-loop skips code review), and stays under the attempt cap.
+func TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement(t *testing.T) {
+	env := setupE2EMulti(t, []string{"test_fail"})
 	installTestingTaskWorkflow(t, env)
 
-	created, err := env.tasks.Create("manual test reject", "", "headless")
+	created, err := env.tasks.Create("manual test fail", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1976,54 +1959,7 @@ func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 
-	waitFor(t, 20*time.Second, "first review_test_plan", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		if gErr != nil {
-			return false
-		}
-		return tk.Workflow != nil &&
-			tk.Workflow.CurrentStep == "review_test_plan" &&
-			tk.Workflow.State == workflow.ExecWaiting
-	})
-
-	tkBefore, _ := env.tasks.Get(created.ID)
-	planRunsBefore := countStepRecords(tkBefore, "plan_test")
-	if planRunsBefore != 1 {
-		t.Fatalf("plan_test runs before reject = %d, want 1", planRunsBefore)
-	}
-
-	const feedback = "add cleanup steps"
-	if err := env.engine.HandleHumanAction(created.ID, "reject",
-		map[string]string{"feedback": feedback}); err != nil {
-		t.Fatalf("reject: %v", err)
-	}
-
-	waitFor(t, 20*time.Second, "second review_test_plan after reject", func() bool {
-		tk, gErr := env.tasks.Get(created.ID)
-		if gErr != nil {
-			return false
-		}
-		if tk.Workflow == nil ||
-			tk.Workflow.CurrentStep != "review_test_plan" ||
-			tk.Workflow.State != workflow.ExecWaiting {
-			return false
-		}
-		return countStepRecords(tk, "plan_test") > planRunsBefore
-	})
-
-	tkAfterReject, _ := env.tasks.Get(created.ID)
-	if got := tkAfterReject.Workflow.Variables["human.feedback"]; got != feedback {
-		t.Errorf("human.feedback var = %q, want %q", got, feedback)
-	}
-	if got := countStepRecords(tkAfterReject, "plan_test"); got != 2 {
-		t.Errorf("plan_test runs after reject = %d, want 2", got)
-	}
-
-	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
-		t.Fatalf("approve: %v", err)
-	}
-
-	waitFor(t, 20*time.Second, "workflow completes after approve", func() bool {
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil {
 			return false
@@ -2032,12 +1968,52 @@ func TestE2E_TestingTaskWorkflow_RejectLoopsBackToPlan(t *testing.T) {
 	})
 
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Workflow.State != workflow.ExecCompleted {
-		t.Fatalf("final state = %q (step=%s), want completed",
-			tk.Workflow.State, tk.Workflow.CurrentStep)
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status after FAIL = %q, want %q", tk.Status, task.StatusInProgress)
 	}
-	if got := countStepRecords(tk, "execute_tests"); got != 1 {
-		t.Errorf("execute_tests runs = %d, want 1", got)
+	if !tk.Reviewed {
+		t.Error("expected task marked reviewed so the re-implementation loop skips code review")
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_FailEscalatesAtCap verifies that once the task has
+// failed testing TestingMaxAttempts times (engine default 3 — here pre-seeded
+// with 2 prior test-runner runs plus this one), it escalates to human-required
+// instead of looping back to implement.
+func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
+	env := setupE2EMulti(t, []string{"test_fail"})
+	installTestingTaskWorkflow(t, env)
+
+	created, err := env.tasks.Create("manual test cap", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed two prior test-runner attempts; this run is the third → cap hit.
+	for range 2 {
+		if err := env.tasks.AddRun(created.ID, task.AgentRun{
+			AgentID: "prior", Role: "test-runner", Mode: "headless", State: "stopped",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusHumanRequired {
+		t.Errorf("status at attempt cap = %q, want %q", tk.Status, task.StatusHumanRequired)
 	}
 }
 

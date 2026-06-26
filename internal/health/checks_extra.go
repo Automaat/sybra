@@ -14,11 +14,12 @@ const (
 // statusDwellThresholds maps task status → max acceptable hours in that status
 // before flagging a bottleneck. Statuses absent from the map are not checked.
 var statusDwellThresholds = map[string]float64{
-	"plan-review":      12,
-	"in-review":        24,
-	"test-plan-review": 12,
-	"human-required":   24,
-	"todo":             24,
+	"plan-review":    12,
+	"in-review":      24,
+	"testing":        12,
+	"ready-pr":       2, // transient (PR opens in seconds); flag fast if PR-open stalls
+	"human-required": 24,
+	"todo":           24,
 }
 
 // isAgentFailure classifies an audit event as a failed agent run. Production

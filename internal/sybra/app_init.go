@@ -180,12 +180,18 @@ func (a *App) initStatusHook() {
 			}
 		case string(task.StatusTesting):
 			if a.workflowEngine != nil {
+				// ErrWorkflowAlreadyActive is benign and the COMMON case: when
+				// simple-task-review's done_review flips to testing, this hook
+				// fires while the review workflow is still active, so the start
+				// is rejected here and the cascade is driven by OnWorkflowComplete
+				// instead. Only a real, unexpected error is worth surfacing —
+				// this also serves the genuine manual "move card to Testing" path.
 				if _, err := a.workflowEngine.DispatchEvent(
 					taskID,
 					"task.status_changed",
 					map[string]string{"task.status": string(task.StatusTesting)},
 					nil,
-				); err != nil {
+				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
 				}
 			}
@@ -365,6 +371,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}

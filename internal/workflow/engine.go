@@ -36,6 +36,15 @@ type TaskInfo struct {
 	Issue      string
 	Reviewed   bool
 	Workflow   *Execution
+	// AgentRuns is the minimal per-task agent-run history the engine needs
+	// (role only). route_test_result counts prior test-runner runs to enforce
+	// the testing → re-implementation attempt cap.
+	AgentRuns []AgentRunInfo
+}
+
+// AgentRunInfo is the engine-visible subset of a task's agent run.
+type AgentRunInfo struct {
+	Role string
 }
 
 // TaskProvider reads and updates tasks.
@@ -130,7 +139,13 @@ type Engine struct {
 	agentSteps      map[string]agentEntry  // agentID → {taskID, stepID}
 	cascadeDepth    map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
 	resumeError     *logging.ErrorThrottle
+	maxTestAttempts int // testing → re-implement loop cap (0 → defaultTestAttempts)
 }
+
+// defaultTestAttempts caps the testing → in-progress re-implementation loop
+// when SetTestingMaxAttempts was never called. Mirrors
+// config.DefaultTestingMaxAttempts (kept as a literal to avoid a config import).
+const defaultTestAttempts = 3
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
@@ -178,3 +193,8 @@ func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.
 func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
+
+// SetTestingMaxAttempts sets how many times a task may fail manual testing and
+// bounce back to in-progress before route_test_result escalates it to
+// human-required. Values <= 0 fall back to defaultTestAttempts.
+func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }

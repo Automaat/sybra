@@ -1,0 +1,32 @@
+id: simple-task-handoff-testing
+name: Simple Task — Handoff (Testing)
+description: >-
+  A task handed off from an external tool (e.g. Orca) whose feature is already
+  implemented and reviewed in its worktree and only needs the adversarial
+  testing gate. Skip triage/planning/implementation/review; flip straight to
+  testing so testing-task validates the adopted worktree, then simple-task-pr
+  opens the PR once tests pass. The cascade in OnWorkflowComplete picks up the
+  status_changed event. Primarily a manual-testing / demo entry point
+  (`sybra-cli handoff --stage testing`).
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: handoff-testing
+    # A PR-review task (tag `review`) is its own lane; never collide with it.
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  # No triage/planning/implementation/review agent — a single deterministic flip
+  # into the testing gate. testing-task.yaml (triggered by the status_changed
+  # event) runs the test-runner in the adopted worktree (worktree_dir).
+  - id: set_testing
+    name: Hand Off to Testing
+    type: set_status
+    config:
+      status: testing
+    next:
+      - goto: ""

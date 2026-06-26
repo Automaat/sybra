@@ -5,11 +5,7 @@ const mockByStatus = vi.fn()
 const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
-const mockApproveTestPlan = vi.fn()
-const mockRejectTestPlan = vi.fn()
-const mockSendTestPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
-const mockHasLiveTestPlanAgent = vi.fn()
 const mockCommentLoad = vi.fn()
 const mockUnresolvedCount = vi.fn()
 
@@ -22,11 +18,7 @@ vi.mock('../stores/tasks.svelte.js', () => ({
     approvePlan: (...args: unknown[]) => mockApprovePlan(...args),
     rejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
     sendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
-    approveTestPlan: (...args: unknown[]) => mockApproveTestPlan(...args),
-    rejectTestPlan: (...args: unknown[]) => mockRejectTestPlan(...args),
-    sendTestPlanMessage: (...args: unknown[]) => mockSendTestPlanMessage(...args),
     hasLivePlanAgent: (...args: unknown[]) => mockHasLivePlanAgent(...args),
-    hasLiveTestPlanAgent: (...args: unknown[]) => mockHasLiveTestPlanAgent(...args),
   },
 }))
 
@@ -69,11 +61,7 @@ describe('Reviews', () => {
     mockApprovePlan.mockReset()
     mockRejectPlan.mockReset()
     mockSendPlanMessage.mockReset()
-    mockApproveTestPlan.mockReset()
-    mockRejectTestPlan.mockReset()
-    mockSendTestPlanMessage.mockReset()
     mockHasLivePlanAgent.mockResolvedValue(false)
-    mockHasLiveTestPlanAgent.mockResolvedValue(false)
     mockCommentLoad.mockResolvedValue(undefined)
     mockUnresolvedCount.mockReturnValue(0)
     mockByStatus.mockReturnValue([])
@@ -126,15 +114,6 @@ describe('Reviews', () => {
     expect(screen.getByText('Plan')).toBeDefined()
   })
 
-  it('shows Test badge for test-plan-review tasks', () => {
-    const task = makeTask({ id: 't1', status: 'test-plan-review' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'test-plan-review') return [task]
-      return []
-    })
-    render(Reviews)
-    expect(screen.getByText('Test')).toBeDefined()
-  })
 
   it('shows select-a-task placeholder when nothing selected', () => {
     render(Reviews)
@@ -308,42 +287,6 @@ describe('Reviews', () => {
     await fireEvent.click(screen.getByText('Send Message'))
     await vi.waitFor(() => {
       expect(mockSendPlanMessage).toHaveBeenCalledWith('t1', 'tighten section 3')
-    })
-  })
-
-  it('calls approveTestPlan for test-plan-review tasks', async () => {
-    const task = makeTask({ id: 't1', title: 'Test plan task', status: 'test-plan-review' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'test-plan-review') return [task]
-      return []
-    })
-    taskItemsMap.set('t1', task)
-    mockApproveTestPlan.mockResolvedValue(undefined)
-    render(Reviews)
-    await fireEvent.click(screen.getByText('Test plan task'))
-    await vi.waitFor(() => screen.getByText('Approve'))
-    await fireEvent.click(screen.getByText('Approve'))
-    await vi.waitFor(() => {
-      expect(mockApproveTestPlan).toHaveBeenCalledWith('t1')
-    })
-  })
-
-  it('calls rejectTestPlan with feedback for test-plan-review tasks', async () => {
-    const task = makeTask({ id: 't1', title: 'Test reject', status: 'test-plan-review' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'test-plan-review') return [task]
-      return []
-    })
-    taskItemsMap.set('t1', task)
-    mockRejectTestPlan.mockResolvedValue(undefined)
-    render(Reviews)
-    await fireEvent.click(screen.getByText('Test reject'))
-    await vi.waitFor(() => screen.getByPlaceholderText(/Rejection feedback/))
-    const textarea = screen.getByPlaceholderText(/Rejection feedback/)
-    await fireEvent.input(textarea, { target: { value: 'missing edge case' } })
-    await fireEvent.click(screen.getByText('Reject'))
-    await vi.waitFor(() => {
-      expect(mockRejectTestPlan).toHaveBeenCalledWith('t1', 'missing edge case')
     })
   })
 

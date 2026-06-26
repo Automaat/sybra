@@ -153,7 +153,7 @@ export enum Status {
     StatusPlanning = "planning",
     StatusPlanReview = "plan-review",
     StatusTesting = "testing",
-    StatusTestPlanReview = "test-plan-review",
+    StatusReadyPR = "ready-pr",
     StatusHumanRequired = "human-required",
     StatusBlocked = "blocked",
     StatusDone = "done",

@@ -62,6 +62,22 @@ func (m *Manager) FindRunningAgentForTask(taskID string, role Role) *Agent {
 	return nil
 }
 
+// CountLiveByRole returns the number of live agents (across all tasks) whose
+// role — derived from the agent name prefix — matches role. Used to enforce
+// the per-machine test-runner concurrency cap independently of the global
+// MaxConcurrent limit.
+func (m *Manager) CountLiveByRole(role Role) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, a := range m.agents {
+		if isLive(a.GetState()) && RoleFromName(a.Name) == role {
+			n++
+		}
+	}
+	return n
+}
+
 // FindAllRunningAgentsForTask returns all live agents for the given task
 // matching the provided role. An empty role matches all roles.
 func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent {

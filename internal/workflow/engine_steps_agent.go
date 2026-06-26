@@ -135,6 +135,13 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 			e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", step.ID)
 			return e.tasks.SetWorkflow(taskID, wfExec)
 		}
+		// Testing concurrency cap saturated — park and let ResumeStalled retry
+		// when a test-runner slot frees, same as dispatch-in-flight.
+		if errors.Is(err, ErrTestRunnerBusy) {
+			wfExec.State = ExecWaiting
+			e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", step.ID)
+			return e.tasks.SetWorkflow(taskID, wfExec)
+		}
 		return fmt.Errorf("start agent: %w", err)
 	}
 

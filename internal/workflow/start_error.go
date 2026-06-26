@@ -18,6 +18,13 @@ const startReasonMaxLen = 200
 // scary status_reason. ClassifyAgentStartError maps it to an empty reason.
 var ErrDispatchInFlight = errors.New("agent dispatch already in flight for task")
 
+// ErrTestRunnerBusy is returned by the agent-start path when the per-machine
+// test-runner concurrency cap (config.TestingMaxConcurrent) is saturated.
+// Like ErrDispatchInFlight it is benign and transient: the run_agent step
+// parks in ExecWaiting and ResumeStalled retries it once a testing slot frees,
+// so it must never flip the task to human-required or write a status_reason.
+var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
@@ -35,6 +42,9 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, ErrDispatchInFlight):
 		// Transient and self-healing: another dispatcher holds the claim and
 		// will start the agent. Suppress the reason entirely.
+		return "", false
+	case errors.Is(err, ErrTestRunnerBusy):
+		// Transient: the testing slot frees and ResumeStalled retries. No reason.
 		return "", false
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true

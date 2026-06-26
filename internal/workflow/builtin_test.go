@@ -202,68 +202,6 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 }
 
-// TestBuiltinTestingTask_MaybeCritiqueReplanSkip is the testing-task
-// mirror of the simple-task replan-skip guarantee above.
-func TestBuiltinTestingTask_MaybeCritiqueReplanSkip(t *testing.T) {
-	t.Parallel()
-
-	defs, err := BuiltinDefinitions()
-	if err != nil {
-		t.Fatalf("BuiltinDefinitions: %v", err)
-	}
-	var testing_ *Definition
-	for i := range defs {
-		if defs[i].ID == "testing-task" {
-			testing_ = &defs[i]
-			break
-		}
-	}
-	if testing_ == nil {
-		t.Fatal("testing-task builtin definition not found")
-	}
-	step := testing_.StepByID("maybe_critique_test")
-	if step == nil {
-		t.Fatal("maybe_critique_test step not found in testing-task")
-	}
-
-	cases := []struct {
-		name   string
-		fields map[string]string
-		want   string
-	}{
-		{
-			name:   "first_pass_runs_critique",
-			fields: map[string]string{"task.tags": "testing"},
-			want:   "critique_test_plan",
-		},
-		{
-			name:   "nocritic_tag_skips_critique",
-			fields: map[string]string{"task.tags": "testing,nocritic"},
-			want:   "review_test_plan",
-		},
-		{
-			name: "replan_skips_critique_even_without_nocritic",
-			fields: map[string]string{
-				"task.tags":                         "testing",
-				"vars.step.review_test_plan.output": "reject",
-			},
-			want: "review_test_plan",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(step.Next, tc.fields)
-			if err != nil {
-				t.Fatalf("ResolveTransition: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("goto = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuiltinDefinitions(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -307,17 +245,17 @@ func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 	}
 	var simple *Definition
 	for i := range defs {
-		if defs[i].ID == "simple-task-review" {
+		if defs[i].ID == "simple-task-pr" {
 			simple = &defs[i]
 			break
 		}
 	}
 	if simple == nil {
-		t.Fatal("simple-task-review builtin definition not found")
+		t.Fatal("simple-task-pr builtin definition not found")
 	}
 	step := simple.StepByID("create_pr")
 	if step == nil {
-		t.Fatal("create_pr step not found in simple-task-review")
+		t.Fatal("create_pr step not found in simple-task-pr")
 	}
 	prompt := step.Config.Prompt
 	for _, want := range []string{

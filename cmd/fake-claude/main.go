@@ -101,9 +101,7 @@ func main() {
 func runScenario(scenario, taskID string) bool {
 	switch scenario {
 	case "success":
-		emitSystem()
-		emitAssistant("Working on it...")
-		emitResult("Task completed successfully.")
+		runSuccess()
 	case "write_sidecar_success":
 		runWriteSidecarSuccess(taskID)
 	case "fail_exit":
@@ -127,6 +125,12 @@ func runScenario(scenario, taskID string) bool {
 		runPlanCriticNoSave()
 	case "code_review_success":
 		runCodeReviewSuccess(taskID)
+	case "test_pass":
+		runTestPass()
+	case "test_pass_verbose":
+		runTestPassVerbose()
+	case "test_fail":
+		runTestFail()
 	case "triage_to_done":
 		runTriage(taskID, "done", "")
 	case "triage_to_in_review":
@@ -140,12 +144,7 @@ func runScenario(scenario, taskID string) bool {
 	case "interactive_implement":
 		runInteractiveImplement()
 	case "evaluate":
-		emitSystem()
-		emitAssistant("Evaluating...")
-		if taskID != "" {
-			runCLI("update", taskID, "--status", "in-review")
-		}
-		emitResult("Evaluation complete. Status set to in-review.")
+		runEvaluate(taskID)
 	case "pr_created":
 		runPRCreated()
 	case "signal_kill":
@@ -174,6 +173,46 @@ func runScenario(scenario, taskID string) bool {
 		return false
 	}
 	return true
+}
+
+func runSuccess() {
+	emitSystem()
+	emitAssistant("Working on it...")
+	emitResult("Task completed successfully.")
+}
+
+func runEvaluate(taskID string) {
+	emitSystem()
+	emitAssistant("Evaluating...")
+	if taskID != "" {
+		runCLI("update", taskID, "--status", "in-review")
+	}
+	emitResult("Evaluation complete. Status set to in-review.")
+}
+
+// runTestPass / runTestFail emit the adversarial test-runner verdict marker the
+// testing-task workflow's route_test_result step branches on.
+func runTestPass() {
+	emitSystem()
+	emitAssistant("Ran the app; every case matched the task.")
+	emitResult("Could not break it.\nTEST_VERDICT: PASS")
+}
+
+func runTestFail() {
+	emitSystem()
+	emitAssistant("Found a defect against the task.")
+	emitResult("Observed wrong output on the happy path.\nTEST_VERDICT: FAIL")
+}
+
+// runTestPassVerbose emits a >2000-char summary BEFORE the final-line verdict,
+// reproducing a thorough tester's output. The step-output var is truncated to
+// 2000 bytes (prefix), so this guards that the engine extracts the verdict from
+// the untruncated result instead — a real PASS here must route to ready-pr.
+func runTestPassVerbose() {
+	emitSystem()
+	emitAssistant("Exercising every angle...")
+	long := strings.Repeat("Exercised an edge case and the feature held as the task requires. ", 50)
+	emitResult(long + "\nTEST_VERDICT: PASS")
 }
 
 // runInteractiveImplement emits a full implement result then blocks on stdin

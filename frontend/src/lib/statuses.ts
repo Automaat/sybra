@@ -7,7 +7,7 @@ export type TaskStatus =
   | 'ready-review'
   | 'in-review'
   | 'testing'
-  | 'test-plan-review'
+  | 'ready-pr'
   | 'human-required'
   | 'blocked'
   | 'done'
@@ -76,10 +76,10 @@ export const ALL_STATUSES: StatusMeta[] = [
     pillClasses: 'bg-secondary-200 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200',
   },
   {
-    value: 'test-plan-review',
-    label: 'Test Plan Review',
-    badgeClasses: 'bg-secondary-100 text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300',
-    pillClasses: 'bg-secondary-100 text-secondary-700 dark:bg-secondary-800 dark:text-secondary-300',
+    value: 'ready-pr',
+    label: 'Opening PR',
+    badgeClasses: 'bg-success-100 text-success-700 dark:bg-success-800 dark:text-success-300',
+    pillClasses: 'bg-success-100 text-success-700 dark:bg-success-800 dark:text-success-300',
   },
   {
     value: 'human-required',
@@ -110,13 +110,12 @@ export const ALL_STATUSES: StatusMeta[] = [
 /**
  * Statuses that await the user's own action — distinct from agent-driven
  * review states (`in-review`, `ready-review`) where an agent is working.
- * Mirrors orchestrator/CLAUDE.md: plan-review/test-plan-review wait for the
- * human to approve/reject; human-required/blocked need human input.
+ * Mirrors orchestrator/CLAUDE.md: plan-review waits for the human to
+ * approve/reject; human-required/blocked need human input.
  */
 export const AWAITS_HUMAN: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   'human-required',
   'plan-review',
-  'test-plan-review',
   'blocked',
 ])
 
@@ -172,8 +171,8 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'planning', label: 'Planning', border: 'border-t-tertiary-500 dark:border-t-tertiary-400', includes: ['planning', 'plan-review'] },
   { status: 'in-progress', label: 'In Progress', border: 'border-t-primary-500 dark:border-t-primary-400', includes: [] },
   { status: 'ready-review', label: 'Agentic Review', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
-  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review'] },
-  { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing', 'test-plan-review'] },
+  { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing'] },
+  { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review', 'ready-pr'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]
 
@@ -203,7 +202,7 @@ export const BOARD_LANES: BoardColumn[] = BOARD_COLUMNS.flatMap((c) =>
 /**
  * Core user-facing status set: the active board columns plus the terminal
  * states (`done`, `cancelled`). Granular states (new, plan-review,
- * test-plan-review, blocked) are internal/derived — set by automations, not
+ * ready-pr, blocked) are internal/derived — set by automations, not
  * picked by hand. Users choose from this small set so a task's status always
  * lines up with a board column.
  */

@@ -424,12 +424,12 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			want: "code_review_staff",
 		},
 		{
-			name: "skip_verdict_routes_to_maybe_create_pr",
+			name: "skip_verdict_routes_to_done_review",
 			fields: map[string]string{
 				"task.tags":                      "backend",
 				"vars.step.triage_review.output": "skip",
 			},
-			want: "maybe_create_pr",
+			want: "done_review",
 		},
 	}
 

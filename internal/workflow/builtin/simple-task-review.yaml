@@ -1,6 +1,6 @@
 id: simple-task-review
 name: Simple Task — Review
-description: Triage the review depth, run code review (simple or staff), apply fixes, then create the GitHub PR and link it back to the task. Triggered by the cascade after simple-task-implement flips status to ready-review.
+description: Triage the review depth, run code review (simple or staff), apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
 builtin: true
 trigger:
   on: task.status_changed
@@ -10,7 +10,7 @@ trigger:
       value: ready-review
 steps:
   # Skip review when tagged noreview or already reviewed in a prior run.
-  # On skip, jump straight to maybe_create_pr so the PR is still opened.
+  # On skip, jump straight to done_review so the task still advances to testing.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -24,13 +24,13 @@ steps:
           field: task.reviewed
           operator: equals
           value: "true"
-        goto: maybe_create_pr
+        goto: done_review
       - when:
           field: task.tags
           operator: not_contains
           value: noreview
         goto: triage_review
-      - goto: maybe_create_pr
+      - goto: done_review
 
   # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
   # "simple" or "staff" so pick_review_method below can pick between the
@@ -61,7 +61,7 @@ steps:
           field: vars.step.triage_review.output
           operator: equals
           value: skip
-        goto: maybe_create_pr
+        goto: done_review
       - when:
           field: vars.step.triage_review.output
           operator: equals
@@ -169,140 +169,17 @@ steps:
         creation). Sign commits with `git commit -s -S`.
         Use conventional commit format: `fix(review): address review comments`.
     next:
-      - goto: maybe_create_pr
+      - goto: done_review
 
-  # Guard: when the task already has a PR number (pr-fix tasks or retries),
-  # skip the create_pr agent entirely. Prevents duplicate PRs.
-  # The push_existing_pr step handles pushing review-fix commits to the branch.
-  - id: maybe_create_pr
-    name: Maybe Create PR
-    type: condition
-    next:
-      - when:
-          field: task.pr_number
-          operator: exists
-        goto: push_existing_pr
-      - goto: create_pr
-
-  # Push review-fix commits to the existing PR branch.
-  # Reached only when the task already has a pr_number (pr-fix retries or
-  # tasks that skipped create_pr). create_pr handles push for new PRs.
-  - id: push_existing_pr
-    name: Push to Existing PR
-    type: run_agent
+  # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
+  # created here — testing-task validates the feature first, then simple-task-pr
+  # opens the PR only once tests pass. A task tagged `notest` short-circuits
+  # the testing-task workflow straight to ready-pr.
+  - id: done_review
+    name: Hand to Testing
+    type: set_status
     config:
-      role: push-branch
-      mode: headless
-      model: sonnet
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Push any unpushed commits on the current branch to the existing PR (task
-        already has pr_number {{.Task.PRNumber}}).
-
-        Steps:
-          1. Determine the push remote by matching the PR's actual head repository:
-             BRANCH="$(git branch --show-current)"
-             PUSH_REMOTE="origin"
-             PR_HEAD="$(gh pr view {{.Task.PRNumber}} --json headRepository --jq '.headRepository.nameWithOwner')"
-             FORK_URL="$(git config --get remote.fork.url 2>/dev/null || true)"
-             if [ -n "$FORK_URL" ] && echo "$FORK_URL" | grep -qF "$PR_HEAD"; then PUSH_REMOTE="fork"; fi
-          2. Push: git push "$PUSH_REMOTE" HEAD:"$BRANCH"
-             If rejected due to divergence, force-push:
-             git push --force-with-lease "$PUSH_REMOTE" HEAD:"$BRANCH"
-          3. Verify the remote PR head matches local HEAD:
-             LOCAL_SHA="$(git rev-parse HEAD)"
-             PR_SHA="$(gh pr view {{.Task.PRNumber}} --json headRefOid --jq .headRefOid)"
-             test "$LOCAL_SHA" = "$PR_SHA"
-
-        No new commits — only push what is already committed locally.
-    next:
-      - goto: link_pr_and_review
-
-  # Create the GitHub PR after review fixes are committed locally.
-  # Check for an existing PR first to stay idempotent on retries.
-  - id: create_pr
-    name: Create PR
-    type: run_agent
-    config:
-      role: create-pr
-      mode: headless
-      model: sonnet
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Create a GitHub PR for the current branch if one does not exist yet.
-
-        Steps:
-          1. Set branch/remote variables:
-             BRANCH="$(git branch --show-current)"
-             PUSH_REMOTE="origin"
-             if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE="fork"; fi
-             REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"
-             HEAD_OWNER="$(gh repo view "$REMOTE_URL" --json owner --jq .owner.login)"
-             HEAD_ARG="$BRANCH"
-             if [ "$PUSH_REMOTE" = "fork" ]; then HEAD_ARG="$HEAD_OWNER:$BRANCH"; fi
-          2. Check: gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number'
-             If a PR number is returned, skip creation — the PR already exists.
-          3. If no PR exists, push the branch and create one:
-             git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"
-             If push is rejected because the remote has diverged (e.g. after a
-             rebase), force-push without asking for confirmation:
-             git push --force-with-lease -u "$PUSH_REMOTE" HEAD:"$BRANCH"
-             gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
-               --head "$HEAD_ARG" \
-               --title "<conventional-commit title>" \
-               --body "<PR body with ## Motivation and ## Implementation information>"
-             {{- if .Task.Issue}}
-             Include "Closes {{.Task.Issue}}" in the PR body.
-             {{- end}}
-          4. Verify the created PR head matches local HEAD:
-             PR="$(gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number')"
-             LOCAL_SHA="$(git rev-parse HEAD)"
-             PR_SHA="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
-             test "$LOCAL_SHA" = "$PR_SHA"
-
-        PR title must follow conventional commits format matching the task work.
-        PR body must have ## Motivation and ## Implementation information sections.
-        Never ask for confirmation — this is a feature branch owned by this task.
-    next:
-      - goto: link_pr_and_review
-
-  # Non-LLM step: recover PR number from task, agent result history, or
-  # gh pr list. Sets task to in-review and skips the LLM eval when a PR
-  # is unambiguously found. Falls through to evaluate only when all three
-  # sources fail to find a PR.
-  - id: link_pr_and_review
-    name: Link PR and Review
-    type: link_pr_and_review
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: in-review
-        goto: ensure_pr_closes_issue
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: evaluate
-
-  # Mechanical fallback (no LLM): reached only when link_pr_and_review failed
-  # to find a PR. Walks step history for the last run_agent record and flips
-  # the task to human-required with a truncated reason.
-  - id: evaluate
-    name: Evaluate
-    type: evaluate
-    next:
-      - goto: ""
-
-  # Mechanical check (no LLM): if the task is linked to a GitHub issue,
-  # make sure the PR's body carries a `Closes <issue-url>` reference so
-  # merging the PR auto-closes the issue. Auto-appends the reference if
-  # missing; flips to human-required if the edit/verification fails.
-  - id: ensure_pr_closes_issue
-    name: Ensure PR Closes Issue
-    type: ensure_pr_closes_issue
+      status: testing
+      status_reason: code reviewed — running manual tests
     next:
       - goto: ""
