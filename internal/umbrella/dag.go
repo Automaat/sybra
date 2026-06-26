@@ -7,7 +7,7 @@
 package umbrella
 
 import (
-	"slices"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -31,17 +31,18 @@ type Graph struct {
 
 // NormalizeIssueRef canonicalizes an issue URL or shorthand to
 // "owner/repo#number" (lowercased) so a DependsOn entry matches a task's Issue
-// field regardless of the spelling used to write it. A full GitHub issue/PR
-// URL collapses to that form; anything else is lowercased and trimmed so
-// shorthand like "Automaat/sybra#12" still matches a URL-form Issue. Empty in,
-// empty out.
+// field regardless of the spelling used to write it. Only a github.com
+// issue/PR URL collapses to that form; anything else (shorthand, or a
+// non-github.com host) is lowercased and trimmed so "Automaat/sybra#12" still
+// matches a URL-form Issue. The host is matched exactly to avoid a substring
+// like "notgithub.com" being read as github.com. Empty in, empty out.
 func NormalizeIssueRef(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
-	if _, after, ok := strings.Cut(s, "github.com/"); ok {
-		parts := strings.Split(after, "/")
+	if u, err := url.Parse(s); err == nil && isGitHubHost(u.Host) {
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 		if len(parts) >= 4 && (parts[2] == "issues" || parts[2] == "pull") {
 			if num := leadingDigits(parts[3]); num != "" {
 				return strings.ToLower(parts[0]+"/"+parts[1]) + "#" + num
@@ -49,6 +50,14 @@ func NormalizeIssueRef(s string) string {
 		}
 	}
 	return strings.ToLower(s)
+}
+
+// isGitHubHost reports whether h is github.com (case-insensitive, with or
+// without a www prefix). Anchored so a lookalike host cannot cross-link to an
+// unrelated github.com issue.
+func isGitHubHost(h string) bool {
+	h = strings.ToLower(h)
+	return h == "github.com" || h == "www.github.com"
 }
 
 // leadingDigits returns the run of ASCII digits at the start of s (empty if
@@ -136,47 +145,73 @@ func (g *Graph) depsSatisfied(i int) bool {
 }
 
 // cycleMembers returns the set of node indices that lie on at least one
-// dependency cycle, via DFS three-coloring over the resolved dependency edges.
-// Unresolvable dependency refs are skipped (they form no edge).
+// dependency cycle. A node is on a cycle iff its strongly-connected component
+// has more than one node, or it depends on itself. Computed with Tarjan's SCC
+// over the resolved dependency edges — a plain DFS back-edge walk misses cycle
+// members reached through an already-finished node. Unresolvable dependency
+// refs form no edge.
 func (g *Graph) cycleMembers() map[int]bool {
-	const (
-		white = 0
-		gray  = 1
-		black = 2
-	)
-	color := make([]int8, len(g.nodes))
-	onCycle := make(map[int]bool)
+	const unvisited = -1
+	n := len(g.nodes)
+	idx := make([]int, n)
+	low := make([]int, n)
+	onStack := make([]bool, n)
+	for i := range idx {
+		idx[i] = unvisited
+	}
 	var stack []int
+	counter := 0
+	onCycle := make(map[int]bool)
 
-	var dfs func(i int)
-	dfs = func(i int) {
-		color[i] = gray
-		stack = append(stack, i)
-		for _, dep := range g.nodes[i].DependsOn {
-			j, ok := g.byIssue[NormalizeIssueRef(dep)]
+	var strongconnect func(v int)
+	strongconnect = func(v int) {
+		idx[v] = counter
+		low[v] = counter
+		counter++
+		stack = append(stack, v)
+		onStack[v] = true
+
+		for _, dep := range g.nodes[v].DependsOn {
+			w, ok := g.byIssue[NormalizeIssueRef(dep)]
 			if !ok {
 				continue
 			}
-			switch color[j] {
-			case gray:
-				// Back-edge: every node from j to the top of the stack is on a cycle.
-				for _, n := range slices.Backward(stack) {
-					onCycle[n] = true
-					if n == j {
-						break
-					}
-				}
-			case white:
-				dfs(j)
+			if w == v {
+				onCycle[v] = true // self-loop
+			}
+			switch {
+			case idx[w] == unvisited:
+				strongconnect(w)
+				low[v] = min(low[v], low[w])
+			case onStack[w]:
+				low[v] = min(low[v], idx[w])
 			}
 		}
-		stack = stack[:len(stack)-1]
-		color[i] = black
+
+		if low[v] != idx[v] {
+			return
+		}
+		// v roots an SCC: pop it off the stack.
+		var comp []int
+		for {
+			w := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			onStack[w] = false
+			comp = append(comp, w)
+			if w == v {
+				break
+			}
+		}
+		if len(comp) > 1 {
+			for _, w := range comp {
+				onCycle[w] = true
+			}
+		}
 	}
 
-	for i := range g.nodes {
-		if color[i] == white {
-			dfs(i)
+	for v := range n {
+		if idx[v] == unvisited {
+			strongconnect(v)
 		}
 	}
 	return onCycle

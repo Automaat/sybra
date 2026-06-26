@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -19,7 +20,8 @@ func newUmbrellaGateApp(t *testing.T) (*App, *task.Manager) {
 	return app, tasks
 }
 
-// mkChild creates an umbrella child task in the given status.
+// mkChild creates a gate-managed umbrella child task in the given status,
+// carrying the gating marker tag the expander would set.
 func mkChild(t *testing.T, m *task.Manager, title, issue, umb string, deps []string, status task.Status) task.Task {
 	t.Helper()
 	tk, err := m.CreateFull(title, "", task.AgentModeHeadless, task.Update{
@@ -27,6 +29,7 @@ func mkChild(t *testing.T, m *task.Manager, title, issue, umb string, deps []str
 		UmbrellaIssue: task.Ptr(umb),
 		DependsOn:     task.Ptr(deps),
 		Status:        task.Ptr(status),
+		Tags:          task.Ptr([]string{umbrellaGatedTag}),
 	})
 	if err != nil {
 		t.Fatalf("CreateFull(%s): %v", title, err)
@@ -52,8 +55,45 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 
 	app.releaseUnblockedChildren()
 
-	if got := mustStatus(t, m, root.ID); got != task.StatusTodo {
-		t.Fatalf("root status = %q, want %q", got, task.StatusTodo)
+	released, err := m.Get(root.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if released.Status != task.StatusTodo {
+		t.Fatalf("root status = %q, want %q", released.Status, task.StatusTodo)
+	}
+	// The gating marker must be stripped on release so a later re-block cannot
+	// retrigger a release.
+	if slices.Contains(released.Tags, umbrellaGatedTag) {
+		t.Fatalf("gating tag not stripped on release: tags=%v", released.Tags)
+	}
+}
+
+func TestReleaseUnblockedChildren_IgnoresSybraBugBlock(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+
+	// A dependency that has merged.
+	mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusDone)
+	// An umbrella child that ran, hit a Sybra bug, and was parked in `blocked`
+	// by human-review WITHOUT the gating marker. Its dep is done, but the gate
+	// must not resurrect it.
+	bug, err := m.CreateFull("buggy", "", task.AgentModeHeadless, task.Update{
+		Issue:          task.Ptr("Automaat/sybra#2"),
+		UmbrellaIssue:  task.Ptr(umb),
+		DependsOn:      task.Ptr([]string{"Automaat/sybra#1"}),
+		Status:         task.Ptr(task.StatusBlocked),
+		BlockedByIssue: task.Ptr("https://github.com/Automaat/sybra/issues/500"),
+	})
+	if err != nil {
+		t.Fatalf("create buggy: %v", err)
+	}
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, bug.ID); got != task.StatusBlocked {
+		t.Fatalf("sybra-bug-blocked child was released to %q, want blocked", got)
 	}
 }
 

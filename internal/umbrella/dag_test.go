@@ -177,6 +177,20 @@ func TestCyclicUmbrellas(t *testing.T) {
 			want: []string{"o/r#100"},
 		},
 		{
+			// Regression: a cycle member reached through an already-finished
+			// node must still be flagged. D (umbrella 200) joins the A→B→C→A
+			// cycle via B→D, D→C; a plain DFS back-edge walk drops D and never
+			// flags umbrella 200. Tarjan SCC catches it.
+			name: "cross-component cycle flags both umbrellas",
+			nodes: []Node{
+				node("a", "o/r#1", "o/r#100", []string{"o/r#2"}, false, true),
+				node("b", "o/r#2", "o/r#100", []string{"o/r#3", "o/r#4"}, false, true),
+				node("c", "o/r#3", "o/r#100", []string{"o/r#1"}, false, true),
+				node("d", "o/r#4", "o/r#200", []string{"o/r#3"}, false, true),
+			},
+			want: []string{"o/r#100", "o/r#200"},
+		},
+		{
 			name: "diamond is acyclic",
 			nodes: []Node{
 				node("a", "o/r#1", "o/r#100", nil, true, false),

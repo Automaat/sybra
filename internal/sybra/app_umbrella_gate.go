@@ -1,14 +1,25 @@
 package sybra
 
 import (
+	"slices"
+
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
-// releaseUnblockedChildren scans umbrella child tasks held in `blocked` and
-// releases those whose dependencies have all reached `done`, in dependency
-// order. Children caught in a dependency cycle are never released; their
-// umbrella tracker is flipped to human-required instead. Runs every
+// umbrellaGatedTag marks a child task that is held in `blocked` specifically by
+// the umbrella dependency gate (set by the expander when the child is
+// materialized). It distinguishes umbrella gating from the unrelated `blocked`
+// the human-review automation uses for a contained Sybra bug, so the gate only
+// releases tasks it is actually responsible for. The gate strips the tag on
+// release, so a child that later re-enters `blocked` for a different reason is
+// never re-released.
+const umbrellaGatedTag = "umbrella-gated"
+
+// releaseUnblockedChildren scans umbrella child tasks held in `blocked` by the
+// gate and releases those whose dependencies have all reached `done`, in
+// dependency order. Children caught in a dependency cycle are never released;
+// their umbrella tracker is flipped to human-required instead. Runs every
 // orchestrator tick and is a no-op when no umbrella tasks exist.
 func (a *App) releaseUnblockedChildren() {
 	tasks, err := a.tasks.List()
@@ -16,10 +27,12 @@ func (a *App) releaseUnblockedChildren() {
 		return
 	}
 
+	byID := make(map[string]*task.Task, len(tasks))
 	nodes := make([]umbrella.Node, len(tasks))
 	hasUmbrella := false
 	for i := range tasks {
 		t := &tasks[i]
+		byID[t.ID] = t
 		if t.UmbrellaIssue != "" || t.TaskType == task.TaskTypeUmbrella {
 			hasUmbrella = true
 		}
@@ -29,7 +42,10 @@ func (a *App) releaseUnblockedChildren() {
 			Umbrella:  t.UmbrellaIssue,
 			DependsOn: t.DependsOn,
 			Done:      t.Status == task.StatusDone,
-			Awaiting:  t.UmbrellaIssue != "" && t.Status == task.StatusBlocked,
+			// Only a task the gate itself blocked is eligible for release —
+			// never one parked in `blocked` for a contained Sybra bug.
+			Awaiting: t.UmbrellaIssue != "" && t.Status == task.StatusBlocked &&
+				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
 	}
 	if !hasUmbrella {
@@ -43,8 +59,15 @@ func (a *App) releaseUnblockedChildren() {
 	}
 
 	for _, id := range g.ReadyToRelease() {
+		t := byID[id]
+		// Strip the gating marker on release so a later re-block (e.g. a
+		// Sybra-bug containment) cannot retrigger a release of the same task.
+		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
+			return s == umbrellaGatedTag
+		})
 		if _, err := a.tasks.Update(id, task.Update{
 			Status:       task.Ptr(task.StatusTodo),
+			Tags:         &newTags,
 			StatusReason: task.Ptr("umbrella dependencies satisfied"),
 		}); err != nil {
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
