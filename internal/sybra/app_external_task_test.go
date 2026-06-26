@@ -116,3 +116,49 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 		t.Errorf("pr-fix task: expected no task.created workflow, got %+v", pk.Workflow)
 	}
 }
+
+func TestSkipTaskCreatedWorkflow_PRLinkedHandoffExceptions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		task task.Task
+		want bool
+	}{
+		{
+			name: "ordinary linked PR review skips task.created",
+			task: task.Task{PRNumber: 42, Tags: []string{"review"}},
+			want: true,
+		},
+		{
+			name: "explicit PR handoff may enter task.created pr-review lane",
+			task: task.Task{PRNumber: 42, Tags: []string{"review", handoffPRTag}},
+			want: false,
+		},
+		{
+			name: "ready-pr worktree handoff may enter task.created lane with known PR",
+			task: task.Task{PRNumber: 42, Tags: []string{"handoff", "handoff-ready-pr"}},
+			want: false,
+		},
+		{
+			name: "manual raw-status handoff never starts a workflow",
+			task: task.Task{Tags: []string{handoffManualTag}},
+			want: true,
+		},
+		{
+			name: "run role still skips task.created",
+			task: task.Task{RunRole: "pr-fix", PRNumber: 42, Tags: []string{"handoff"}},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := skipTaskCreatedWorkflow(tt.task)
+			if got != tt.want {
+				t.Fatalf("skipTaskCreatedWorkflow() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

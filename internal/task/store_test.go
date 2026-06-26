@@ -746,6 +746,52 @@ func TestStoreListSkipsPlanSidecars(t *testing.T) {
 	}
 }
 
+func TestStoreCreateFullAppliesInitialWorkflowFields(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tags := []string{"handoff", "handoff-review"}
+	status := StatusReadyReview
+	plan := "# Plan\n\nReview the existing branch."
+	created, err := store.CreateFull("Review task", "Body", "headless", Update{
+		Status:      &status,
+		Tags:        &tags,
+		ProjectID:   Ptr("owner/repo"),
+		WorktreeDir: Ptr("/tmp/worktree"),
+		Plan:        &plan,
+	})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+
+	if created.Status != StatusReadyReview {
+		t.Errorf("Status = %q, want %q", created.Status, StatusReadyReview)
+	}
+	if created.ProjectID != "owner/repo" {
+		t.Errorf("ProjectID = %q, want owner/repo", created.ProjectID)
+	}
+	if created.WorktreeDir != "/tmp/worktree" {
+		t.Errorf("WorktreeDir = %q, want /tmp/worktree", created.WorktreeDir)
+	}
+	if created.Plan != plan {
+		t.Errorf("Plan = %q, want %q", created.Plan, plan)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Plan != plan {
+		t.Errorf("Get Plan = %q, want %q", got.Plan, plan)
+	}
+	if got.WorktreeDir != "/tmp/worktree" {
+		t.Errorf("Get WorktreeDir = %q, want /tmp/worktree", got.WorktreeDir)
+	}
+}
+
 func TestStoreCreateDefaultMode(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())

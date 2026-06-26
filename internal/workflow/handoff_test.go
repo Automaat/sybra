@@ -50,13 +50,16 @@ func TestBuiltinHandoff_SkipsPlanningToImplement(t *testing.T) {
 	if !hasCondition(plan.Trigger.Conditions, "task.tags", "not_contains", "handoff") {
 		t.Errorf("simple-task-plan must exclude handoff tasks; got %+v", plan.Trigger.Conditions)
 	}
-	// The implement-stage handoff must NOT also fire for review- or
-	// testing-stage tasks (which also carry the bare `handoff` tag).
+	// The implement-stage handoff must NOT also fire for later-stage handoff
+	// tasks (which also carry the bare `handoff` tag).
 	if !hasCondition(handoff.Trigger.Conditions, "task.tags", "not_contains", "handoff-review") {
 		t.Errorf("simple-task-handoff must exclude handoff-review tasks; got %+v", handoff.Trigger.Conditions)
 	}
 	if !hasCondition(handoff.Trigger.Conditions, "task.tags", "not_contains", "handoff-testing") {
 		t.Errorf("simple-task-handoff must exclude handoff-testing tasks; got %+v", handoff.Trigger.Conditions)
+	}
+	if !hasCondition(handoff.Trigger.Conditions, "task.tags", "not_contains", "handoff-ready-pr") {
+		t.Errorf("simple-task-handoff must exclude handoff-ready-pr tasks; got %+v", handoff.Trigger.Conditions)
 	}
 }
 
@@ -109,5 +112,70 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 	review := defByID(t, "simple-task-review")
 	if !hasCondition(review.Trigger.Conditions, "task.status", "equals", "ready-review") {
 		t.Errorf("simple-task-review must trigger on status=ready-review; got %+v", review.Trigger.Conditions)
+	}
+}
+
+// TestBuiltinHandoffReadyPR_SkipsToPR locks the ready-pr-stage contract: a
+// task tagged `handoff-ready-pr` fires simple-task-handoff-ready-pr on creation,
+// which flips it straight to ready-pr so simple-task-pr opens or updates the PR
+// from the adopted worktree.
+func TestBuiltinHandoffReadyPR_SkipsToPR(t *testing.T) {
+	t.Parallel()
+
+	hp := defByID(t, "simple-task-handoff-ready-pr")
+	if hp.Trigger.On != "task.created" {
+		t.Errorf("handoff-ready-pr trigger.on = %q, want task.created", hp.Trigger.On)
+	}
+	if !hasCondition(hp.Trigger.Conditions, "task.tags", "contains", "handoff-ready-pr") {
+		t.Errorf("handoff-ready-pr trigger must require tag handoff-ready-pr; got %+v", hp.Trigger.Conditions)
+	}
+	first := hp.FirstStep()
+	if first == nil || first.Type != StepSetStatus || first.Config.Status != "ready-pr" {
+		t.Errorf("handoff-ready-pr first step must set status ready-pr; got %+v", first)
+	}
+
+	pr := defByID(t, "simple-task-pr")
+	if !hasCondition(pr.Trigger.Conditions, "task.status", "equals", "ready-pr") {
+		t.Errorf("simple-task-pr must trigger on status=ready-pr; got %+v", pr.Trigger.Conditions)
+	}
+}
+
+// TestBuiltinHandoffReview_DoesNotEnterPRReview is the regression for a real
+// misroute: task.tags used substring matching, so `handoff-review` satisfied
+// the pr-review workflow's broad `contains review` trigger and Sybra tried to
+// review PR #0 instead of entering the ready-review lane.
+func TestBuiltinHandoffReview_DoesNotEnterPRReview(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]string{
+		"task.tags": "handoff,handoff-review,force-staff-review",
+	}
+
+	hr := defByID(t, "simple-task-handoff-review")
+	if !EvalConditions(hr.Trigger.Conditions, fields) {
+		t.Fatalf("simple-task-handoff-review should match tags %q; conditions=%+v", fields["task.tags"], hr.Trigger.Conditions)
+	}
+
+	pr := defByID(t, "pr-review")
+	if EvalConditions(pr.Trigger.Conditions, fields) {
+		t.Fatalf("pr-review must not match handoff-review tags %q; conditions=%+v", fields["task.tags"], pr.Trigger.Conditions)
+	}
+}
+
+func TestBuiltinHandoffPR_EntersPRReview(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]string{
+		"task.tags": "review,handoff-pr",
+	}
+
+	pr := defByID(t, "pr-review")
+	if !EvalConditions(pr.Trigger.Conditions, fields) {
+		t.Fatalf("pr-review should match handoff-pr tags %q; conditions=%+v", fields["task.tags"], pr.Trigger.Conditions)
+	}
+
+	plan := defByID(t, "simple-task-plan")
+	if EvalConditions(plan.Trigger.Conditions, fields) {
+		t.Fatalf("simple-task-plan must not match handoff-pr tags %q; conditions=%+v", fields["task.tags"], plan.Trigger.Conditions)
 	}
 }

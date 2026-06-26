@@ -1,0 +1,26 @@
+id: simple-task-handoff-ready-pr
+name: Simple Task - Handoff (Ready PR)
+description: >-
+  A task handed off from an external tool whose feature is already implemented,
+  reviewed, and tested in its worktree and only needs PR creation/push. Skip
+  triage/planning/implementation/review/testing; flip straight to ready-pr so
+  simple-task-pr opens or updates the PR from the adopted worktree.
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: handoff-ready-pr
+    # A PR-review task (tag `review`) is its own lane; never collide with it.
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  - id: set_ready_pr
+    name: Hand Off to Ready PR
+    type: set_status
+    config:
+      status: ready-pr
+    next:
+      - goto: ""

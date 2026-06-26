@@ -6,6 +6,7 @@ func TestEvalCondition(t *testing.T) {
 	fields := map[string]string{
 		"task.status": "in-progress",
 		"task.tags":   "backend,auth",
+		"task.title":  "implement auth middleware",
 		"empty":       "",
 	}
 
@@ -35,22 +36,27 @@ func TestEvalCondition(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "contains finds substring",
+			name: "contains finds exact tag",
 			cond: Condition{Field: "task.tags", Operator: "contains", Value: "auth"},
 			want: true,
 		},
 		{
-			name: "contains rejects missing substring",
+			name: "contains rejects missing tag",
 			cond: Condition{Field: "task.tags", Operator: "contains", Value: "frontend"},
 			want: false,
 		},
 		{
-			name: "not_contains passes when substring absent",
+			name: "contains keeps substring behavior for text fields",
+			cond: Condition{Field: "task.title", Operator: "contains", Value: "auth"},
+			want: true,
+		},
+		{
+			name: "not_contains passes when tag absent",
 			cond: Condition{Field: "task.tags", Operator: "not_contains", Value: "frontend"},
 			want: true,
 		},
 		{
-			name: "not_contains fails when substring present",
+			name: "not_contains fails when tag present",
 			cond: Condition{Field: "task.tags", Operator: "not_contains", Value: "auth"},
 			want: false,
 		},
@@ -108,6 +114,51 @@ func TestEvalCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			got := EvalCondition(tt.cond, fields)
+			if got != tt.want {
+				t.Errorf("EvalCondition(%+v) = %v, want %v", tt.cond, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvalCondition_TaskTagsUseExactMembership(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]string{
+		"task.tags": "handoff, handoff-review, force-staff-review",
+	}
+
+	tests := []struct {
+		name string
+		cond Condition
+		want bool
+	}{
+		{
+			name: "handoff-review is present",
+			cond: Condition{Field: "task.tags", Operator: "contains", Value: "handoff-review"},
+			want: true,
+		},
+		{
+			name: "broad review tag is not implied by suffixed tags",
+			cond: Condition{Field: "task.tags", Operator: "contains", Value: "review"},
+			want: false,
+		},
+		{
+			name: "not_contains broad review remains true for suffixed tags",
+			cond: Condition{Field: "task.tags", Operator: "not_contains", Value: "review"},
+			want: true,
+		},
+		{
+			name: "surrounding spaces are trimmed",
+			cond: Condition{Field: "task.tags", Operator: "contains", Value: "force-staff-review"},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := EvalCondition(tt.cond, fields)
 			if got != tt.want {
 				t.Errorf("EvalCondition(%+v) = %v, want %v", tt.cond, got, tt.want)

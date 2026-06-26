@@ -233,10 +233,10 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
 			return
 		}
-		// pr-fix / existing-PR tasks are driven by pr.event, not task.created.
-		// Skipping here prevents simple-task-plan from claiming the workflow
-		// slot before the DispatchEvent("pr.event") call in FixRenovateCI.
-		if t.RunRole != "" || t.PRNumber > 0 {
+		// pr-fix / ordinary existing-PR tasks are driven outside task.created.
+		// Explicit handoff entry points are the exception: they intentionally
+		// route through task.created even when a PR number is already known.
+		if skipTaskCreatedWorkflow(t) {
 			return
 		}
 		if t.Workflow != nil &&

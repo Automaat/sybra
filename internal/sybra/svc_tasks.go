@@ -93,8 +93,10 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	// pr-fix / existing-PR tasks are driven by pr.event, not task.created.
-	if t.RunRole != "" || t.PRNumber > 0 {
+	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
+	// Explicit handoff entry points are the exception: they intentionally route
+	// through task.created even when a PR number is already known.
+	if skipTaskCreatedWorkflow(t) {
 		return
 	}
 	info := taskToInfo(t)

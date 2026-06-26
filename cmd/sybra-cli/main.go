@@ -287,11 +287,10 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-// cmdHandoff creates a task pre-tagged `handoff` that bypasses Sybra's
-// triage/planning phases and starts implementing immediately in an existing
-// (externally created) git worktree. Intended for handing off a researched,
-// already-planned task from a tool like Orca: the human did the thinking, Sybra
-// runs the implementation autonomously in the same worktree.
+// cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
+// bypasses triage/planning and either starts the requested agentic stage in an
+// existing worktree, reviews an existing PR, or places the task in a raw status
+// without workflow dispatch.
 func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
@@ -301,7 +300,8 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	stage := fs.String("stage", "implement", "stage to hand off at: implement|review|testing|pr")
+	stage := fs.String("stage", "implement", "workflow entry stage: implement|in-progress|review|ready-review|agentic-review|testing|ready-pr|pr|in-review")
+	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
 	pr := fs.Int("pr", 0, "PR number (required for --stage pr)")
 	extraTags := fs.String("tags", "", "extra comma-separated tags")
 	if err := fs.Parse(args); err != nil {
@@ -310,9 +310,9 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if *title == "" {
 		return fatal(jsonOut, "title is required")
 	}
-	stageTags, ok := handoffStageTags(*stage)
-	if !ok {
-		return fatal(jsonOut, "invalid --stage %q (valid: implement, review, testing, pr)", *stage)
+	stageCfg, status, rawStatusMode, modeErr := resolveHandoffMode(fs, *stage, *rawStatus, *pr)
+	if modeErr != nil {
+		return fatal(jsonOut, "%v", modeErr)
 	}
 
 	dir, dErr := resolveWorktreeDir(*wtDir)
@@ -320,48 +320,38 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 		return fatal(jsonOut, "%v", dErr)
 	}
 
-	// --plan-file wins over --plan so callers can stream a large plan from disk.
-	planContent := *plan
-	if *planFile != "" {
-		data, rErr := os.ReadFile(*planFile)
-		if rErr != nil {
-			return fatal(jsonOut, "read plan file: %v", rErr)
-		}
-		planContent = string(data)
+	planContent, planErr := resolveHandoffPlan(*plan, *planFile)
+	if planErr != nil {
+		return fatal(jsonOut, "%v", planErr)
 	}
 
-	// A handoff task must carry a registered project so its agents run against
-	// the right repo. Derive owner/repo from the worktree's origin when omitted.
-	projectID := *proj
-	if projectID == "" {
-		derived, e := deriveProjectID(dir)
-		if e != nil {
-			return fatal(jsonOut, "derive project from %q: %v (pass --project owner/repo)", dir, e)
-		}
-		projectID = derived
-	}
-	projRec, gErr := ps.Get(projectID)
-	if gErr != nil {
-		return fatal(jsonOut, "project %q not registered: %v (run: sybra-cli project create --url <github-url>)", projectID, gErr)
+	projectID, projRec, projErr := resolveHandoffProject(ps, dir, *proj)
+	if projErr != nil {
+		return fatal(jsonOut, "%v", projErr)
 	}
 
-	updates := map[string]any{
-		"project_id": projectID,
-		"tags":       append(stageTags, parseExtraTags(*extraTags, stageTags)...),
+	tags := append([]string{}, stageCfg.tags...)
+	tags = append(tags, parseExtraTags(*extraTags, tags)...)
+	init := task.Update{
+		ProjectID: task.Ptr(projectID),
+		Tags:      &tags,
 	}
 	if planContent != "" {
-		updates["plan"] = planContent
+		init.Plan = &planContent
 	}
-	switch *stage {
+	if rawStatusMode {
+		init.Status = &status
+	}
+	switch stageCfg.name {
 	case "pr":
 		// Existing PR: Sybra reviews it via the pr-review lane. No worktree
 		// adoption — pr-review checks out the PR head itself.
 		if *pr <= 0 {
 			return fatal(jsonOut, "--stage pr requires --pr <number>")
 		}
-		updates["pr_number"] = float64(*pr)
+		init.PRNumber = task.Ptr(*pr)
 	default:
-		// implement/review adopt the worktree. Guard that the chosen project
+		// Non-PR stages adopt the worktree. Guard that the chosen project
 		// matches the worktree's origin — a mismatched --project (or stale
 		// ProjectID) would make agents run and push against the wrong repo.
 		// Best-effort: only enforced when origin is a parseable GitHub remote.
@@ -373,46 +363,113 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 		if e := assertFeatureBranch(dir, projRec); e != nil {
 			return fatal(jsonOut, "%v", e)
 		}
-		updates["worktree_dir"] = dir
+		init.WorktreeDir = task.Ptr(dir)
 		if *pr > 0 {
-			updates["pr_number"] = float64(*pr)
+			init.PRNumber = task.Ptr(*pr)
 		}
 	}
 
-	t, err := s.Create(*title, *body, *mode)
+	t, err := s.CreateFull(*title, *body, *mode, init)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
-	}
-	t, err = s.UpdateMap(t.ID, updates)
-	if err != nil {
-		return fatal(jsonOut, "update after create: %v", err)
 	}
 
 	if jsonOut {
 		return printJSON(t)
 	}
-	printHandoffResult(t, *stage, projectID, dir)
+	if rawStatusMode {
+		printHandoffStatusResult(t, status, projectID, dir)
+	} else {
+		printHandoffResult(t, stageCfg.name, projectID, dir)
+	}
 	return 0
 }
 
-// handoffStageTags maps a handoff stage to the tags that route the task into
-// the right Sybra lane on creation, or (nil,false) for an unknown stage.
+func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (handoffStageConfig, task.Status, bool, error) {
+	stageProvided := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "stage" {
+			stageProvided = true
+		}
+	})
+	if rawStatus != "" && stageProvided {
+		return handoffStageConfig{}, "", false, fmt.Errorf("--status is raw board placement and cannot be combined with --stage")
+	}
+	if rawStatus != "" {
+		status, err := task.ValidateStatus(rawStatus)
+		if err != nil {
+			return handoffStageConfig{}, "", false, err
+		}
+		return handoffStageConfig{name: "manual", tags: []string{handoffManualTag}}, status, true, nil
+	}
+
+	stageCfg, ok := handoffStageConfigFor(stage)
+	if !ok {
+		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, in-progress, review, ready-review, agentic-review, testing, ready-pr, pr, in-review)", stage)
+	}
+	if pr > 0 && stageCfg.name != "pr" && stageCfg.name != "ready-pr" {
+		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage pr or --stage ready-pr")
+	}
+	return stageCfg, "", false, nil
+}
+
+func resolveHandoffPlan(plan, planFile string) (string, error) {
+	if planFile == "" {
+		return plan, nil
+	}
+	data, err := os.ReadFile(planFile)
+	if err != nil {
+		return "", fmt.Errorf("read plan file: %w", err)
+	}
+	return string(data), nil
+}
+
+func resolveHandoffProject(ps *project.Store, dir, projectID string) (string, project.Project, error) {
+	if projectID == "" {
+		derived, err := deriveProjectID(dir)
+		if err != nil {
+			return "", project.Project{}, fmt.Errorf("derive project from %q: %w (pass --project owner/repo)", dir, err)
+		}
+		projectID = derived
+	}
+	projRec, err := ps.Get(projectID)
+	if err != nil {
+		return "", project.Project{}, fmt.Errorf("project %q not registered: %w (run: sybra-cli project create --url <github-url>)", projectID, err)
+	}
+	return projectID, projRec, nil
+}
+
+type handoffStageConfig struct {
+	name string
+	tags []string
+}
+
+const (
+	handoffManualTag = "handoff-manual"
+	handoffPRTag     = "handoff-pr"
+)
+
+// handoffStageConfigFor maps a handoff stage to the tags that route the task
+// into the right Sybra lane on creation, or false for an unknown stage.
 //   - implement: simple-task-handoff → in-progress → implement → review → testing → PR
 //   - review:    simple-task-handoff-review → ready-review → review → testing → PR
 //   - testing:   simple-task-handoff-testing → testing → adversarial test → PR
+//   - ready-pr:  simple-task-handoff-ready-pr → ready-pr → open/update PR
 //   - pr:        pr-review lane for an existing PR
-func handoffStageTags(stage string) ([]string, bool) {
-	switch stage {
-	case "implement":
-		return []string{"handoff"}, true
-	case "review":
-		return []string{"handoff", "handoff-review"}, true
-	case "testing":
-		return []string{"handoff", "handoff-testing"}, true
-	case "pr":
-		return []string{"review"}, true
+func handoffStageConfigFor(stage string) (handoffStageConfig, bool) {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "", "implement", "in-progress":
+		return handoffStageConfig{name: "implement", tags: []string{"handoff"}}, true
+	case "review", "ready-review", "agentic-review":
+		return handoffStageConfig{name: "review", tags: []string{"handoff", "handoff-review"}}, true
+	case "testing", "test":
+		return handoffStageConfig{name: "testing", tags: []string{"handoff", "handoff-testing"}}, true
+	case "ready-pr", "open-pr", "create-pr":
+		return handoffStageConfig{name: "ready-pr", tags: []string{"handoff", "handoff-ready-pr"}}, true
+	case "pr", "in-review", "pull-request", "pull_request":
+		return handoffStageConfig{name: "pr", tags: []string{"review", handoffPRTag}}, true
 	default:
-		return nil, false
+		return handoffStageConfig{}, false
 	}
 }
 
@@ -485,6 +542,9 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "testing":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to adversarial testing of this worktree.")
+	case "ready-pr":
+		fmt.Printf("  worktree: %s\n", dir)
+		fmt.Println("  Sybra will skip straight to opening or updating the PR from this worktree.")
 	case "pr":
 		fmt.Printf("  pr:       #%d\n", t.PRNumber)
 		fmt.Println("  Sybra will review the existing PR.")
@@ -492,6 +552,14 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip planning and start implementing in this worktree.")
 	}
+}
+
+func printHandoffStatusResult(t task.Task, status task.Status, projectID, dir string) {
+	fmt.Printf("Handed off task %s: %s\n", t.ID, t.Title)
+	fmt.Printf("  project:  %s\n", projectID)
+	fmt.Printf("  status:   %s\n", status)
+	fmt.Printf("  worktree: %s\n", dir)
+	fmt.Println("  Sybra created the task in that status without starting a workflow.")
 }
 
 // deriveProjectID reads the origin remote of a git worktree and converts it to
@@ -1272,13 +1340,16 @@ Commands:
   get      <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
-  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE] [--pr N] [--mode MODE] [--tags t1,t2]
-           Hand a task to Sybra at any stage, reusing the given git worktree
+  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--pr N] [--mode MODE] [--tags t1,t2]
+           Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
            when --project is omitted. STAGE (default implement):
-             implement  have a plan → Sybra implements, reviews, opens the PR
-             review     implemented locally → Sybra reviews + opens the PR
-             pr         existing PR (--pr N) → Sybra reviews the PR
+             implement      have a plan -> Sybra implements, reviews, tests, opens the PR
+             review         implemented locally -> Sybra enters agentic review
+             testing        reviewed locally -> Sybra tests, then opens the PR
+             ready-pr       tested locally -> Sybra opens or updates the PR
+             pr|in-review   existing PR (--pr N) -> Sybra reviews the PR
+           --status STATUS creates the task directly in that status without workflow dispatch
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 

@@ -300,10 +300,11 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 }
 
 // CreateFull persists a new task with optional initial field overrides applied
-// atomically in the first write. Use this instead of Create+Update when the
-// caller needs fields like RunRole, PRNumber, Tags, or ProjectID present before
-// any file-watcher can read the task — avoiding the race where watcher picks up
-// the bare task before the caller's Update applies.
+// atomically in the first task-file write. Use this instead of Create+Update
+// when the caller needs fields like RunRole, PRNumber, Tags, ProjectID,
+// WorktreeDir, or Plan present before any file-watcher can read the task —
+// avoiding the race where watcher picks up the bare task before the caller's
+// Update applies.
 func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) {
 	if mode == "" {
 		mode = AgentModeInteractive
@@ -329,8 +330,17 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if init.ProjectID != nil {
 		t.ProjectID = *init.ProjectID
 	}
+	if init.Branch != nil {
+		t.Branch = *init.Branch
+	}
+	if init.WorktreeDir != nil {
+		t.WorktreeDir = *init.WorktreeDir
+	}
 	if init.PRNumber != nil {
 		t.PRNumber = *init.PRNumber
+	}
+	if init.Issue != nil {
+		t.Issue = *init.Issue
 	}
 	if init.Tags != nil {
 		t.Tags = *init.Tags
@@ -338,8 +348,22 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if init.RunRole != nil {
 		t.RunRole = *init.RunRole
 	}
+	if init.Status != nil {
+		t.Status = *init.Status
+		if IsTerminalStatus(t.Status) {
+			closedAt := now
+			t.ClosedAt = &closedAt
+		}
+	}
+	if init.StatusReason != nil {
+		t.StatusReason = *init.StatusReason
+	}
 	if init.Body != nil {
 		t.Body = *init.Body
+	}
+
+	if err := s.writeSidecars(t.ID, init, &t); err != nil {
+		return Task{}, err
 	}
 
 	data, err := Marshal(t)
