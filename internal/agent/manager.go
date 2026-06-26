@@ -391,8 +391,8 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 	return nil
 }
 
-// recordCompletion is called from every runner's terminal site just before
-// onComplete fires. Records duration + result into the metrics pipeline.
+// recordCompletion records duration + result into the metrics pipeline.
+// Call through fireComplete — do not call directly from runner terminal sites.
 func (m *Manager) recordCompletion(a *Agent, ok bool) {
 	dur := time.Since(a.StartedAt)
 	result := "ok"
