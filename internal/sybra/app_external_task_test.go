@@ -146,6 +146,11 @@ func TestSkipTaskCreatedWorkflow_PRLinkedHandoffExceptions(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "umbrella tracker never starts a workflow",
+			task: task.Task{TaskType: task.TaskTypeUmbrella},
+			want: true,
+		},
+		{
 			name: "run role still skips task.created",
 			task: task.Task{RunRole: "pr-fix", PRNumber: 42, Tags: []string{"handoff"}},
 			want: true,
