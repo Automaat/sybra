@@ -209,10 +209,11 @@ export class Task {
     "umbrellaIssue"?: string;
 
     /**
-     * DependsOn lists the issue refs (full URL or owner/repo#n) this task waits
-     * on. While the task is `blocked`, the gate holds it until every referenced
-     * task has reached `done`; an empty list releases immediately. Used only by
-     * umbrella child tasks.
+     * DependsOn lists the issue refs (full github.com issue/PR URL or
+     * owner/repo#n shorthand) this task waits on — resolved by issue ref only,
+     * not task IDs. While the task is `blocked`, the gate holds it until every
+     * referenced task has reached `done`; an empty list releases immediately.
+     * Used only by umbrella child tasks.
      */
     "dependsOn"?: string[];
     "reviewed": boolean;

@@ -229,10 +229,11 @@ type Task struct {
 	// dependency gate reads it with DependsOn to decide when a child may leave
 	// `blocked`.
 	UmbrellaIssue string `yaml:"umbrella_issue,omitempty" json:"umbrellaIssue,omitempty"`
-	// DependsOn lists the issue refs (full URL or owner/repo#n) this task waits
-	// on. While the task is `blocked`, the gate holds it until every referenced
-	// task has reached `done`; an empty list releases immediately. Used only by
-	// umbrella child tasks.
+	// DependsOn lists the issue refs (full github.com issue/PR URL or
+	// owner/repo#n shorthand) this task waits on — resolved by issue ref only,
+	// not task IDs. While the task is `blocked`, the gate holds it until every
+	// referenced task has reached `done`; an empty list releases immediately.
+	// Used only by umbrella child tasks.
 	DependsOn []string `yaml:"depends_on,omitempty" json:"dependsOn,omitempty"`
 	Reviewed  bool     `yaml:"reviewed,omitempty" json:"reviewed"`
 	RunRole   string   `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
