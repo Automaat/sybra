@@ -29,12 +29,18 @@ type Config struct {
 	ClaudeRLCooldown  time.Duration
 	CodexRLCooldown   time.Duration
 	CopilotRLCooldown time.Duration
+	// ProbeErrorThreshold is the number of consecutive generic probe_error
+	// results required before a provider is marked unhealthy. Auth and
+	// rate-limit states still apply immediately.
+	ProbeErrorThreshold int
 }
 
 // failoverPriority is the order auto-failover prefers healthy peers in.
 // Copilot is last: it is never chosen over claude/codex, but can be a
 // fallback target when both are unhealthy, and can itself fail over to them.
 var failoverPriority = []string{"claude", "codex", "copilot"}
+
+const defaultProbeErrorThreshold = 2
 
 // HealthGate is the small surface the agent Manager depends on. Kept minimal
 // so tests can supply a fake without spinning up a Checker.
@@ -72,6 +78,10 @@ type Checker struct {
 	mu       sync.RWMutex
 	cfg      Config
 	statuses map[string]*Status
+	// probeFailures tracks consecutive generic probe_error results. The first
+	// one is treated as a soft failure so a transient local CLI hiccup does not
+	// flash a global provider outage or gate otherwise-working agents.
+	probeFailures map[string]int
 
 	emit   func(event string, data any)
 	logger *slog.Logger
@@ -96,6 +106,9 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	if cfg.CopilotRLCooldown <= 0 {
 		cfg.CopilotRLCooldown = 15 * time.Minute
 	}
+	if cfg.ProbeErrorThreshold <= 0 {
+		cfg.ProbeErrorThreshold = defaultProbeErrorThreshold
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -103,14 +116,15 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		emit = func(string, any) {}
 	}
 	c := &Checker{
-		cfg:          cfg,
-		statuses:     make(map[string]*Status),
-		emit:         emit,
-		logger:       logger,
-		probeClaude:  ProbeClaude,
-		probeCodex:   ProbeCodex,
-		probeCopilot: ProbeCopilot,
-		now:          time.Now,
+		cfg:           cfg,
+		statuses:      make(map[string]*Status),
+		probeFailures: make(map[string]int),
+		emit:          emit,
+		logger:        logger,
+		probeClaude:   ProbeClaude,
+		probeCodex:    ProbeCodex,
+		probeCopilot:  ProbeCopilot,
+		now:           time.Now,
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
 	c.statuses["claude"] = &Status{Provider: "claude", Healthy: cfg.ClaudeEnabled, Reason: initialReason(cfg.ClaudeEnabled)}
@@ -171,42 +185,103 @@ func (c *Checker) checkAll(ctx context.Context) {
 	}
 	wg.Wait()
 
+	results := make([]probeResult, 0, 3)
 	if doClaude {
-		c.applyProbeResult("claude", claudeStatus, claudeErr)
+		results = append(results, probeResult{provider: "claude", status: claudeStatus, err: claudeErr})
 	}
 	if doCodex {
-		c.applyProbeResult("codex", codexStatus, codexErr)
+		results = append(results, probeResult{provider: "codex", status: codexStatus, err: codexErr})
 	}
 	if doCopilot {
-		c.applyProbeResult("copilot", copilotStatus, copilotErr)
+		results = append(results, probeResult{provider: "copilot", status: copilotStatus, err: copilotErr})
 	}
-	c.clearExpiredRateLimits()
+	c.applyProbeResults(results)
 }
 
-func (c *Checker) applyProbeResult(name string, result Status, err error) {
-	metrics.ProviderProbe(name, err == nil)
-	if err != nil {
+type probeResult struct {
+	provider string
+	status   Status
+	err      error
+}
+
+func (c *Checker) applyProbeResults(results []probeResult) {
+	if len(results) == 0 {
+		return
+	}
+	for i := range results {
+		metrics.ProviderProbe(results[i].provider, results[i].err == nil)
+	}
+
+	var events []HealthEvent
+	c.mu.Lock()
+	var flips []Status
+	for i := range results {
+		status, ok := c.normalizeProbeResultLocked(results[i])
+		if !ok {
+			continue
+		}
+		if snapshot, flip := c.setStatusLocked(results[i].provider, status, true); flip {
+			flips = append(flips, snapshot)
+		}
+	}
+	flips = append(flips, c.clearExpiredRateLimitsLocked(c.now())...)
+	for _, st := range flips {
+		events = append(events, c.healthEventLocked(st))
+	}
+	c.mu.Unlock()
+
+	c.emitHealthEvents(events)
+}
+
+func (c *Checker) normalizeProbeResultLocked(r probeResult) (Status, bool) {
+	result := r.status
+	if r.err != nil {
 		result = Status{
-			Provider:  name,
+			Provider:  r.provider,
 			Healthy:   false,
 			Reason:    "probe_error",
-			Detail:    err.Error(),
+			Detail:    r.err.Error(),
 			LastCheck: c.now(),
 		}
+	}
+	if result.Provider == "" {
+		result.Provider = r.provider
 	}
 	if result.LastCheck.IsZero() {
 		result.LastCheck = c.now()
 	}
-	c.setStatus(name, result, true)
+	if !result.Healthy && result.Reason == "probe_error" {
+		c.probeFailures[r.provider]++
+		if c.probeFailures[r.provider] < c.cfg.ProbeErrorThreshold {
+			c.logger.Info("provider.probe.transient",
+				"provider", r.provider,
+				"failures", c.probeFailures[r.provider],
+				"threshold", c.cfg.ProbeErrorThreshold,
+				"detail", result.Detail)
+			return Status{}, false
+		}
+	} else {
+		c.probeFailures[r.provider] = 0
+	}
+	return result, true
 }
 
 // clearExpiredRateLimits walks the status map and flips providers back to
 // healthy when their rate-limit window has elapsed. Active probes will
 // eventually confirm state; this lets the gate release runs sooner.
 func (c *Checker) clearExpiredRateLimits() {
-	now := c.now()
-	var toEmit []Status
+	var events []HealthEvent
 	c.mu.Lock()
+	flips := c.clearExpiredRateLimitsLocked(c.now())
+	for _, st := range flips {
+		events = append(events, c.healthEventLocked(st))
+	}
+	c.mu.Unlock()
+	c.emitHealthEvents(events)
+}
+
+func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
+	var toEmit []Status
 	for _, s := range c.statuses {
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
 			s.RateLimitedUntil = time.Time{}
@@ -219,10 +294,7 @@ func (c *Checker) clearExpiredRateLimits() {
 			}
 		}
 	}
-	c.mu.Unlock()
-	for _, st := range toEmit {
-		c.emitHealthEvent(st)
-	}
+	return toEmit
 }
 
 // setStatus merges an incoming Status with the previous one and emits on flip.
@@ -231,10 +303,26 @@ func (c *Checker) clearExpiredRateLimits() {
 // not wipe a real-time auth failure).
 func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 	c.mu.Lock()
+	snapshot, flip := c.setStatusLocked(name, next, fromProbe)
+	var ev HealthEvent
+	if flip {
+		ev = c.healthEventLocked(snapshot)
+	}
+	c.mu.Unlock()
+
+	if flip {
+		c.emitHealthEvents([]HealthEvent{ev})
+	}
+}
+
+func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Status, bool) {
 	prev, ok := c.statuses[name]
 	if !ok {
 		prev = &Status{Provider: name}
 		c.statuses[name] = prev
+	}
+	if !fromProbe {
+		c.probeFailures[name] = 0
 	}
 	var flip bool
 	if fromProbe {
@@ -251,14 +339,12 @@ func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 	} else {
 		if next.Healthy {
 			// A passive "healthy" signal doesn't exist — guard anyway.
-			c.mu.Unlock()
-			return
+			return Status{}, false
 		}
 		// Passive failures only upgrade severity; they never mark a provider
 		// healthy and they never overwrite a more-recent probe result.
 		if !prev.Healthy && prev.Reason == next.Reason && prev.RateLimitedUntil.Equal(next.RateLimitedUntil) {
-			c.mu.Unlock()
-			return
+			return Status{}, false
 		}
 		prev.Healthy = false
 		prev.Reason = next.Reason
@@ -270,16 +356,7 @@ func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 		flip = true
 	}
 	snapshot := *prev
-	c.mu.Unlock()
-
-	if flip {
-		metrics.ProviderHealthFlip(snapshot.Provider, snapshot.Healthy)
-		c.logger.Info("provider.health.flip",
-			"provider", snapshot.Provider,
-			"healthy", snapshot.Healthy,
-			"reason", snapshot.Reason)
-		c.emitHealthEvent(snapshot)
-	}
+	return snapshot, flip
 }
 
 func statusChanged(a, b *Status) bool {
@@ -288,21 +365,36 @@ func statusChanged(a, b *Status) bool {
 		!a.RateLimitedUntil.Equal(b.RateLimitedUntil)
 }
 
-func (c *Checker) emitHealthEvent(s Status) {
-	ev := HealthEvent{
+func (c *Checker) healthEventLocked(s Status) HealthEvent {
+	return HealthEvent{
 		Provider:         s.Provider,
 		Healthy:          s.Healthy,
 		Reason:           s.Reason,
 		Detail:           s.Detail,
 		LastCheck:        s.LastCheck,
 		RateLimitedUntil: s.RateLimitedUntil,
-		FailoverActive:   c.failoverActive(s.Provider),
+		FailoverActive:   c.failoverActiveLocked(s.Provider),
 	}
-	c.emit(ProviderHealthEvent, ev)
 }
 
-func (c *Checker) failoverActive(unhealthy string) bool {
-	alt := c.Failover(unhealthy)
+func (c *Checker) emitHealthEvents(events []HealthEvent) {
+	for _, ev := range events {
+		metrics.ProviderHealthFlip(ev.Provider, ev.Healthy)
+		args := []any{
+			"provider", ev.Provider,
+			"healthy", ev.Healthy,
+			"reason", ev.Reason,
+		}
+		if ev.Detail != "" {
+			args = append(args, "detail", ev.Detail)
+		}
+		c.logger.Info("provider.health.flip", args...)
+		c.emit(ProviderHealthEvent, ev)
+	}
+}
+
+func (c *Checker) failoverActiveLocked(unhealthy string) bool {
+	alt := c.failoverLocked(unhealthy)
 	return alt != "" && alt != unhealthy
 }
 
@@ -350,6 +442,10 @@ func (c *Checker) Reason(provider string) string {
 func (c *Checker) Failover(unhealthy string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.failoverLocked(unhealthy)
+}
+
+func (c *Checker) failoverLocked(unhealthy string) string {
 	if !c.cfg.AutoFailover {
 		return ""
 	}
@@ -470,9 +566,11 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	} else if s.Reason == "disabled" {
 		s.Reason = "unknown"
 	}
+	c.probeFailures[provider] = 0
 	snapshot := *s
+	ev := c.healthEventLocked(snapshot)
 	c.mu.Unlock()
-	c.emitHealthEvent(snapshot)
+	c.emitHealthEvents([]HealthEvent{ev})
 }
 
 // AutoFailover reports the current auto-failover flag.
