@@ -84,6 +84,36 @@ func TestComputeReviewPhase(t *testing.T) {
 	}
 }
 
+func TestStickyConflictPhase(t *testing.T) {
+	tests := []struct {
+		name         string
+		mergeable    string
+		currentPhase string
+		wantDecided  bool
+		wantPhase    string
+	}{
+		{"definitive conflict decides over any current phase", "CONFLICTING", ReviewPhaseDrafted, true, ReviewPhaseConflict},
+		{"unknown holds an existing conflict", "UNKNOWN", ReviewPhaseConflict, true, ReviewPhaseConflict},
+		{"empty holds an existing conflict", "", ReviewPhaseConflict, true, ReviewPhaseConflict},
+		{"unknown does not invent a conflict", "UNKNOWN", ReviewPhaseAwaitingAuthor, false, ""},
+		{"empty does not invent a conflict", "", ReviewPhaseDrafted, false, ""},
+		{"mergeable clears a prior conflict", "MERGEABLE", ReviewPhaseConflict, false, ""},
+		{"unexpected state holds an existing conflict", "SOME_NEW_STATE", ReviewPhaseConflict, true, ReviewPhaseConflict},
+		{"unexpected state does not invent a conflict", "SOME_NEW_STATE", ReviewPhaseDrafted, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, decided := stickyConflictPhase(tt.mergeable, tt.currentPhase)
+			if decided != tt.wantDecided {
+				t.Fatalf("decided = %v, want %v", decided, tt.wantDecided)
+			}
+			if decided && res.Phase != tt.wantPhase {
+				t.Errorf("phase = %q, want %q", res.Phase, tt.wantPhase)
+			}
+		})
+	}
+}
+
 func TestReviewPhasePublished(t *testing.T) {
 	tests := []struct {
 		prev, next string
