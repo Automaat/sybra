@@ -142,10 +142,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		a.SetState(StateStopped)
 		m.logger.Info("agent.convo.done", "id", a.ID, "provider", a.Provider, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
-		m.recordCompletion(a, a.GetExitErr() == nil)
-		if m.onComplete != nil {
-			m.onComplete(a)
-		}
+		m.fireComplete(a, a.GetExitErr() == nil)
 		m.markAgentDone(a)
 	}()
 

@@ -429,9 +429,6 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
-	m.recordCompletion(a, a.GetExitErr() == nil)
-	if m.onComplete != nil {
-		m.onComplete(a)
-	}
+	m.fireComplete(a, a.GetExitErr() == nil)
 	m.markAgentDone(a)
 }

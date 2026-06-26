@@ -100,10 +100,7 @@ done:
 	a.SetState(StateStopped)
 	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
-	m.recordCompletion(a, a.GetExitErr() == nil)
-	if m.onComplete != nil {
-		m.onComplete(a)
-	}
+	m.fireComplete(a, a.GetExitErr() == nil)
 	// Close `done` only after onComplete returns. HasRunningAgentForTask
 	// gates ResumeStalled; releasing it before the workflow advance handler
 	// runs lets a tight ResumeStalled loop dispatch a duplicate agent.
@@ -646,10 +643,7 @@ func (m *Manager) handleError(a *Agent, err error) {
 	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
 	m.emit(events.AgentState(a.ID), a)
-	m.recordCompletion(a, false)
-	if m.onComplete != nil {
-		m.onComplete(a)
-	}
+	m.fireComplete(a, false)
 	m.markAgentDone(a)
 }
 

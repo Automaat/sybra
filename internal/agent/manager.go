@@ -402,6 +402,19 @@ func (m *Manager) recordCompletion(a *Agent, ok bool) {
 	metrics.AgentCompleted(result, dur)
 }
 
+// fireComplete records completion metrics and fires onComplete exactly once
+// per agent. The guard prevents a second runner goroutine (e.g.
+// runner_convo_survive whose tail is still live when runner_convo exits) from
+// calling onComplete a second time and double-advancing the workflow.
+func (m *Manager) fireComplete(a *Agent, ok bool) {
+	a.completedOnce.Do(func() {
+		m.recordCompletion(a, ok)
+		if m.onComplete != nil {
+			m.onComplete(a)
+		}
+	})
+}
+
 // RunningCount returns the number of currently running agents.
 func (m *Manager) RunningCount() int {
 	m.mu.RLock()
