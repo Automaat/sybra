@@ -111,10 +111,10 @@ func checkEnumValue(field, operator, value string) []string {
 }
 
 // checkEnumOperator reports whether the operator is semantically wrong for
-// an enum-shaped field. `contains`/`not_contains` do substring matching,
-// which silently fails on scalar enums (e.g. `contains "conflict,ci_failure"`
-// never matches `"ci_failure"`). Only free-form fields like task.tags — which
-// are joined into a single comma-separated string — should use these.
+// an enum-shaped field. `contains`/`not_contains` are list-membership checks
+// for task.tags and substring checks for other string fields, neither of which
+// is appropriate for scalar enums (e.g. `contains "ci"` would match
+// `"ci_failure"` by accident).
 func checkEnumOperator(field, operator string) bool {
 	if _, ok := FieldAllowedValues[field]; !ok {
 		return false
@@ -127,9 +127,8 @@ func checkEnumOperator(field, operator string) bool {
 //
 // Operators:
 //   - exists / equals / not_equals: single-value checks
-//   - contains / not_contains: substring check — field value must contain
-//     the condition value. Commonly used for comma-joined list fields
-//     (e.g. task.tags) to test element presence.
+//   - contains / not_contains: for task.tags, exact tag membership in the
+//     comma-joined tag list; for other fields, substring check.
 //   - in / not_in: membership check — condition value is a comma-separated
 //     list of allowed values, field must match one of them. Use this when
 //     the field is a single scalar (e.g. pr.issue_kind) and the trigger
@@ -145,9 +144,9 @@ func EvalCondition(c Condition, fields map[string]string) bool {
 	case "not_equals":
 		return val != c.Value
 	case "contains":
-		return strings.Contains(val, c.Value)
+		return containsFieldValue(c.Field, val, c.Value)
 	case "not_contains":
-		return !strings.Contains(val, c.Value)
+		return !containsFieldValue(c.Field, val, c.Value)
 	case "in":
 		return inList(val, c.Value)
 	case "not_in":
@@ -155,6 +154,13 @@ func EvalCondition(c Condition, fields map[string]string) bool {
 	default:
 		return false
 	}
+}
+
+func containsFieldValue(field, val, needle string) bool {
+	if field == "task.tags" {
+		return inList(needle, val)
+	}
+	return strings.Contains(val, needle)
 }
 
 // inList reports whether val exactly matches one of the comma-separated

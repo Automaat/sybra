@@ -3,7 +3,7 @@ name: sybra-handoff
 description: Hand a researched, already-decided task off to Sybra for autonomous implementation. Use after you have explored a problem in an Orca (or any) git worktree, agreed on the approach, and want Sybra to skip its own planning and start implementing immediately — reusing this exact worktree. Triggers on "hand this off to Sybra", "let Sybra implement this", "ship this to Sybra", "handoff to sybra". Works under both Claude Code and Codex.
 allowed-tools: Bash
 user-invocable: true
-argument-hint: "[--title \"...\"] [--plan-file PATH] [--worktree-dir DIR]"
+argument-hint: "[--stage STAGE | --status STATUS] [--title \"...\"] [--plan-file PATH] [--worktree-dir DIR] [--pr N]"
 ---
 
 # Sybra Handoff
@@ -13,34 +13,78 @@ human did the research and chose the approach here; Sybra takes the agreed plan
 and implements it **without re-planning**, running its agents **in this same
 worktree** so the work lands where you were just looking.
 
-This is the Orca → Sybra seam: Orca is the research/planning phase, Sybra is the
-autonomous execution phase.
+This is the Orca -> Sybra handoff point: Orca is the research/planning phase,
+Sybra is the autonomous execution phase.
 
 ## When to use
 
 Hand off at whatever stage you have reached — Sybra picks up from there:
 - You have a **plan** but have not implemented → `--stage implement` (default).
-- You have **implemented** locally and want review + PR → `--stage review`.
-- You already **opened a PR** and want Sybra to review it → `--stage pr --pr N`.
+- You have **implemented** locally and want agentic review + PR → `--stage review`
+  (aliases: `ready-review`, `agentic-review`).
+- You have **implemented and reviewed** locally and want the testing gate →
+  `--stage testing`.
+- You have **implemented, reviewed, and tested** locally and want Sybra to open
+  or update the PR from this worktree → `--stage ready-pr`.
+- You already **opened a PR** and want Sybra to review it → `--stage pr --pr N`
+  (alias: `in-review --pr N`).
 
 In all cases the approach is decided and you want Sybra to carry it the rest of
 the way autonomously. Do **not** use for exploratory work that still needs human
 direction — keep that in Orca.
 
+Use `--status STATUS` only when you explicitly want raw board placement with no
+workflow dispatch. For agentic handoff, prefer `--stage`; stage aliases are
+workflow entry points, not just column names.
+
 ## What it does
 
 `sybra-cli handoff` creates a task that skips straight to the requested stage —
-no triage, no planning gate — and (for implement/review) reuses **this** git
-worktree (`--worktree-dir`, default: cwd) instead of cutting a fresh one: no
+no triage, no planning gate — and (for all non-PR stages) reuses **this** git
+worktree (`--worktree-dir`, default: cwd) instead of creating a fresh one: no
 rebase, no force-push, and Sybra never deletes it.
+
+`sybra-cli handoff --status <status>` creates the task directly in that status
+with a `handoff-manual` tag and does **not** start any workflow. This is for
+manual board placement only.
 
 Stages:
 - **implement** (default): flips to `in-progress`; the implementation agent runs
   now with your plan as context, then review → PR.
 - **review**: flips to `ready-review`; Sybra reviews your existing commits in the
   worktree and opens the PR (no implementation step).
+- **testing**: flips to `testing`; Sybra runs the adversarial testing gate in the
+  adopted worktree and opens the PR if tests pass.
+- **ready-pr**: flips to `ready-pr`; Sybra opens or updates the PR from the
+  adopted worktree (no implementation, review, or testing step).
 - **pr**: for an existing PR (`--pr N`); Sybra reviews the open PR via its
   pr-review lane (no worktree adoption — it checks out the PR head itself).
+
+## Workflow entry context
+
+Pick the stage by the **next workflow Sybra should run**, not only by the visible
+column label:
+
+| CLI stage | Aliases | Workflow entry | Use when |
+| --- | --- | --- | --- |
+| `implement` | `in-progress` | `simple-task-handoff` -> `simple-task-implement` | The approach is decided but code is not written. |
+| `review` | `ready-review`, `agentic-review` | `simple-task-handoff-review` -> `simple-task-review` | Code exists in this worktree and needs Sybra's review/test/PR flow. |
+| `testing` | `test` | `simple-task-handoff-testing` -> `testing-task` | Code has already had the review you want and only needs Sybra's test/PR flow. |
+| `ready-pr` | `open-pr`, `create-pr` | `simple-task-handoff-ready-pr` -> `simple-task-pr` | Code has already been reviewed and tested, and Sybra should open/update the PR from this worktree. |
+| `pr` | `in-review`, `pull-request` | `pr-review` | A real PR already exists; pass `--pr N`. |
+
+Important status distinction:
+- `ready-review` / `agentic-review` means "start Sybra's review workflow".
+- `ready-pr` means "open or update a PR from this adopted worktree".
+- `in-review` means "an existing PR is already open and needs PR review"; it
+  requires `--pr N` and does not adopt the local worktree.
+- `--status in-review` means "place this task in the in-review column without
+  starting any review workflow"; use this only when a human or another system is
+  handling the next action.
+
+If unsure, inspect `internal/workflow/builtin/*.yaml` and choose the entry point
+whose trigger matches the next agentic step. Do not add broad workflow-lane tags
+such as `review` unless you intentionally want the existing-PR lane.
 
 ## Procedure
 
@@ -66,8 +110,8 @@ Stages:
    former.
 
 3. **Pick a clear title** (`type(scope): summary`, ≤50 chars), e.g.
-   `feat(auth): add jwt refresh middleware`. The implement/review handoff keeps
-   the worktree's existing branch — the title only names the task.
+   `feat(auth): add jwt refresh middleware`. Non-PR handoff stages keep the
+   worktree's existing branch — the title only names the task.
 
 4. **Run the handoff** from the worktree root:
    ```bash
@@ -76,9 +120,14 @@ Stages:
      --body  "One-paragraph problem statement + the research context Sybra needs." \
      --plan-file ./.sybra-handoff-plan.md
    ```
-   - `--stage review` to skip implementation (you already coded it); `--stage pr
-     --pr N` to hand off an existing PR. Default is `--stage implement`.
-   - `--plan-file` matters most for `--stage implement`; for `review`/`pr` it is
+   - `--stage review` / `ready-review` / `agentic-review` to skip implementation
+     (you already coded it); `--stage testing` to skip implementation and
+     review; `--stage ready-pr` to skip directly to PR creation/update;
+     `--stage pr --pr N` to hand off an existing PR. Default is
+     `--stage implement`.
+   - `--status STATUS` is mutually exclusive with `--stage` and creates a manual
+     task in that exact status without workflow dispatch.
+   - `--plan-file` matters most for `--stage implement`; for later stages it is
      optional context.
    - `--worktree-dir` defaults to the current directory; pass it explicitly if you
      run the command from elsewhere.
