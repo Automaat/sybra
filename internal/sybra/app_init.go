@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
@@ -271,6 +272,32 @@ func (a *App) initAudit() {
 	}
 }
 
+// initArtifacts constructs the artifact store, wires the task delete hook to
+// GC artifact directories on task deletion, and sweeps orphaned artifact
+// directories left by tasks that no longer exist.
+func (a *App) initArtifacts() {
+	a.artifacts = artifact.New(config.ArtifactsDir())
+	a.tasks.SetDeleteHook(func(id string) {
+		if err := a.artifacts.Delete(id); err != nil {
+			a.logger.Warn("artifact.gc.delete", "task_id", id, "err", err)
+		}
+	})
+	ids, err := a.artifacts.ListTaskIDs()
+	if err != nil {
+		a.logger.Warn("artifact.gc.list", "err", err)
+		return
+	}
+	for _, id := range ids {
+		if _, getErr := a.tasks.Get(id); getErr != nil {
+			if delErr := a.artifacts.Delete(id); delErr != nil {
+				a.logger.Warn("artifact.gc.orphan-sweep", "task_id", id, "err", delErr)
+				continue
+			}
+			a.logger.Info("artifact.orphan.swept", "task_id", id)
+		}
+	}
+}
+
 // initProviderHealth constructs the provider health checker, wires it into
 // the agent manager as a gate, and starts its background probe loop. When
 // providers.health_check.enabled=false the checker is skipped entirely and
@@ -345,6 +372,9 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	if a.artifacts != nil {
+		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
+	}
 	a.workflowEngine.SetContext(a.ctx)
 	// SetOnComplete moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.

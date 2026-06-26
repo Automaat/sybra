@@ -58,6 +58,14 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 		return
 	}
 	e.logger.Info("workflow.import-sidecar", "task_id", taskID, "step", stepID, "kind", kind, "path", path, "bytes", len(content))
+
+	// Capture a plan artifact for plan-kind sidecars so the raw markdown is
+	// available for later agent re-reading alongside its provenance metadata.
+	if cfg.Kind == "plan" && e.recorder != nil {
+		if recErr := e.recorder.PutPlanSnapshot(taskID, step.Config.Role, stepID, path, string(content)); recErr != nil {
+			e.logger.Warn("artifact.record.failed", "kind", "plan", "task_id", taskID, "step", stepID, "err", recErr)
+		}
+	}
 }
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {

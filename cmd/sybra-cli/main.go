@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -97,6 +98,8 @@ func run(args []string) int {
 		return cmdEvaluation(cfg, store, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
+	case "artifact":
+		return cmdArtifact(rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -1298,6 +1301,84 @@ Commands:
                                ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
                                (and the app skills dir) for Claude Code + Codex.
 
+  artifact list <task-id>      List artifacts for a task.
+  artifact get  <task-id> <name>  Print raw artifact bytes to stdout.
+  artifact reindex <task-id>   Rebuild index.json from *.meta.json files.
+
 Global flags:
   --json   Output as JSON`)
+}
+
+func cmdArtifact(args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "artifact: subcommand required (list|get|reindex)")
+	}
+	sub, rest := args[0], args[1:]
+	store := artifact.New(config.ArtifactsDir())
+	switch sub {
+	case "list":
+		return cmdArtifactList(store, rest, jsonOut)
+	case "get":
+		return cmdArtifactGet(store, rest)
+	case "reindex":
+		return cmdArtifactReindex(store, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "artifact: unknown subcommand %q", sub)
+	}
+}
+
+func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "artifact list: task-id required")
+	}
+	taskID := args[0]
+	metas, err := store.List(taskID)
+	if err != nil {
+		return fatal(jsonOut, "artifact list: %v", err)
+	}
+	if jsonOut {
+		return printJSON(metas)
+	}
+	if len(metas) == 0 {
+		fmt.Println("(no artifacts)")
+		return 0
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tKIND\tSIZE\tCREATED")
+	for i := range metas {
+		m := &metas[i]
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", m.Name, m.Kind, m.Size, m.CreatedAt.Format(time.RFC3339))
+	}
+	_ = w.Flush()
+	return 0
+}
+
+func cmdArtifactGet(store *artifact.Store, args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "artifact get: task-id and name required")
+		return 1
+	}
+	taskID, name := args[0], args[1]
+	data, _, err := store.Read(taskID, name)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_, _ = os.Stdout.Write(data)
+	return 0
+}
+
+func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "artifact reindex: task-id required")
+	}
+	taskID := args[0]
+	if err := store.Reindex(taskID); err != nil {
+		return fatal(jsonOut, "artifact reindex: %v", err)
+	}
+	if jsonOut {
+		return printJSON(map[string]string{"status": "ok", "task_id": taskID})
+	}
+	fmt.Printf("reindexed %s\n", taskID)
+	return 0
 }

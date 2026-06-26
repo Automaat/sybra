@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -23,7 +24,33 @@ var (
 	_ workflow.PRLinker          = (*prLinkerAdapter)(nil)
 	_ workflow.PRReviewRequester = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter    = (*worktreeGetterAdapter)(nil)
+	_ workflow.ArtifactRecorder  = (*artifactRecorderAdapter)(nil)
 )
+
+// artifactRecorderAdapter bridges artifact.Store → workflow.ArtifactRecorder.
+type artifactRecorderAdapter struct {
+	store *artifact.Store
+}
+
+func (a *artifactRecorderAdapter) RecordTrace(taskID string, ev any) error {
+	return a.store.Append(taskID, artifact.KindTrace, ev)
+}
+
+func (a *artifactRecorderAdapter) PutPlanSnapshot(taskID, role, stepID, sourcePath, content string) error {
+	name := ""
+	if stepID != "" {
+		name = "plan-" + stepID + ".md"
+	}
+	_, err := a.store.Put(taskID, artifact.Artifact{
+		Kind:         artifact.KindPlan,
+		Name:         name,
+		ProducerRole: role,
+		StepID:       stepID,
+		SourcePath:   sourcePath,
+		Content:      []byte(content),
+	})
+	return err
+}
 
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
 type taskAdapter struct {
@@ -314,8 +341,21 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", err
 	}
 
-	// Record agent run on task (was missing for system roles).
-	if addErr := a.tasks.AddRun(taskID, task.AgentRun{
+	// Flip human-required → in-progress when a system-role agent starts.
+	// A competing inline path (e.g. review.triage.small) may have set
+	// human-required before the pr-review workflow fires; leaving the task
+	// there while an agent runs creates an inconsistent observable state.
+	// We only flip human-required: other statuses (todo, planning, …) have
+	// their own semantics and should not be pre-empted by agent start.
+	//
+	// Re-read current status rather than relying on the snapshot taken at the
+	// top of this function: another goroutine (e.g. triage) may have flipped
+	// the task to human-required after that read.
+	var nextStatus *task.Status
+	if cur, rerr := a.tasks.Get(taskID); rerr == nil && cur.Status == task.StatusHumanRequired {
+		nextStatus = task.Ptr(task.StatusInProgress)
+	}
+	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
 		AgentID:   ag.ID,
 		Role:      role,
 		Mode:      mode,
@@ -323,7 +363,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
 		Prompt:    cfg.Prompt,
-	}); addErr != nil {
+	}, nextStatus); addErr != nil {
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 

@@ -31,6 +31,9 @@ func NoopEmitter() EventEmitter { return noopEmitter{} }
 // could not be read.
 type StatusChangeHook func(taskID, from, to string)
 
+// DeleteHook is invoked after a task is successfully deleted.
+type DeleteHook func(taskID string)
+
 // Manager is the single entrypoint for task mutations. It wraps Store with
 // per-task mutual exclusion and emits events on mutations.
 type Manager struct {
@@ -38,6 +41,7 @@ type Manager struct {
 	emitter      EventEmitter
 	locks        sync.Map // string -> *sync.Mutex
 	onStatusHook StatusChangeHook
+	onDeleteHook DeleteHook
 
 	// firedMu/firedStatus tracks the most recent status value that has
 	// triggered onStatusHook. OnExternalUpdate uses it to dedupe repeated
@@ -50,6 +54,10 @@ type Manager struct {
 // SetStatusChangeHook registers a callback fired on every status transition.
 // Passing nil disables the hook.
 func (m *Manager) SetStatusChangeHook(h StatusChangeHook) { m.onStatusHook = h }
+
+// SetDeleteHook registers a callback fired after a task is successfully deleted.
+// Passing nil disables the hook.
+func (m *Manager) SetDeleteHook(h DeleteHook) { m.onDeleteHook = h }
 
 // NewManager constructs a Manager over the given Store. If emitter is nil,
 // events are discarded.
@@ -258,6 +266,9 @@ func (m *Manager) Delete(id string) error {
 	m.forgetFiredStatus(id)
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
+	if m.onDeleteHook != nil {
+		m.onDeleteHook(id)
+	}
 	return nil
 }
 

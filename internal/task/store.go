@@ -445,6 +445,9 @@ func applyReviewFields(t *Task, u Update) {
 	if u.Outcome != nil {
 		t.Outcome = *u.Outcome
 	}
+	if u.MergeCommit != nil {
+		t.MergeCommit = *u.MergeCommit
+	}
 	if u.ReviewPhase != nil {
 		t.ReviewPhase = *u.ReviewPhase
 	}

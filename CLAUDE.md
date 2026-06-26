@@ -44,6 +44,9 @@ sybra/
 │   │   ├── model.go         # Task struct, Status enum
 │   │   ├── parser.go        # Frontmatter parse/marshal
 │   │   └── store.go         # Filesystem-backed store
+│   ├── artifact/            # Per-task harness artifact store (~/.sybra/artifacts/<task-id>/)
+│   │   ├── model.go         # Meta struct, Kind enum, Artifact write request
+│   │   └── store.go         # Put/Append/List/Read/Delete/Reindex
 │   ├── agent/               # Agent lifecycle management
 │   │   ├── model.go         # Agent struct, State enum, StreamEvent
 │   │   ├── manager.go       # Start/stop/list agents
@@ -390,3 +393,4 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
 - ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.
+- ❌ Surfacing `internal/artifact/` content in a GitHub issue/PR/comment without routing through `App.workScrubContextForTask` + `scrub.Scrub` first — the artifact store is raw/local-debug-only and never scrubs at write time.
