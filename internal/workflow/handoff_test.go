@@ -50,9 +50,39 @@ func TestBuiltinHandoff_SkipsPlanningToImplement(t *testing.T) {
 	if !hasCondition(plan.Trigger.Conditions, "task.tags", "not_contains", "handoff") {
 		t.Errorf("simple-task-plan must exclude handoff tasks; got %+v", plan.Trigger.Conditions)
 	}
-	// The implement-stage handoff must NOT also fire for review-stage tasks.
+	// The implement-stage handoff must NOT also fire for review- or
+	// testing-stage tasks (which also carry the bare `handoff` tag).
 	if !hasCondition(handoff.Trigger.Conditions, "task.tags", "not_contains", "handoff-review") {
 		t.Errorf("simple-task-handoff must exclude handoff-review tasks; got %+v", handoff.Trigger.Conditions)
+	}
+	if !hasCondition(handoff.Trigger.Conditions, "task.tags", "not_contains", "handoff-testing") {
+		t.Errorf("simple-task-handoff must exclude handoff-testing tasks; got %+v", handoff.Trigger.Conditions)
+	}
+}
+
+// TestBuiltinHandoffTesting_SkipsToTesting locks the testing-stage contract: a
+// task tagged `handoff-testing` fires simple-task-handoff-testing on creation,
+// which flips it straight to testing (no implement/review) so testing-task runs
+// the adversarial test-runner against the adopted worktree.
+func TestBuiltinHandoffTesting_SkipsToTesting(t *testing.T) {
+	t.Parallel()
+
+	ht := defByID(t, "simple-task-handoff-testing")
+	if ht.Trigger.On != "task.created" {
+		t.Errorf("handoff-testing trigger.on = %q, want task.created", ht.Trigger.On)
+	}
+	if !hasCondition(ht.Trigger.Conditions, "task.tags", "contains", "handoff-testing") {
+		t.Errorf("handoff-testing trigger must require tag handoff-testing; got %+v", ht.Trigger.Conditions)
+	}
+	first := ht.FirstStep()
+	if first == nil || first.Type != StepSetStatus || first.Config.Status != "testing" {
+		t.Errorf("handoff-testing first step must set status testing; got %+v", first)
+	}
+
+	// testing-task enters on status=testing, so the cascade reaches it.
+	testWf := defByID(t, "testing-task")
+	if !hasCondition(testWf.Trigger.Conditions, "task.status", "equals", "testing") {
+		t.Errorf("testing-task must trigger on status=testing; got %+v", testWf.Trigger.Conditions)
 	}
 }
 

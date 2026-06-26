@@ -298,7 +298,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	stage := fs.String("stage", "implement", "stage to hand off at: implement|review|pr")
+	stage := fs.String("stage", "implement", "stage to hand off at: implement|review|testing|pr")
 	pr := fs.Int("pr", 0, "PR number (required for --stage pr)")
 	extraTags := fs.String("tags", "", "extra comma-separated tags")
 	if err := fs.Parse(args); err != nil {
@@ -309,7 +309,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	}
 	stageTags, ok := handoffStageTags(*stage)
 	if !ok {
-		return fatal(jsonOut, "invalid --stage %q (valid: implement, review, pr)", *stage)
+		return fatal(jsonOut, "invalid --stage %q (valid: implement, review, testing, pr)", *stage)
 	}
 
 	dir, dErr := resolveWorktreeDir(*wtDir)
@@ -394,8 +394,9 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 
 // handoffStageTags maps a handoff stage to the tags that route the task into
 // the right Sybra lane on creation, or (nil,false) for an unknown stage.
-//   - implement: simple-task-handoff → in-progress → implement → review → PR
-//   - review:    simple-task-handoff-review → ready-review → review → PR
+//   - implement: simple-task-handoff → in-progress → implement → review → testing → PR
+//   - review:    simple-task-handoff-review → ready-review → review → testing → PR
+//   - testing:   simple-task-handoff-testing → testing → adversarial test → PR
 //   - pr:        pr-review lane for an existing PR
 func handoffStageTags(stage string) ([]string, bool) {
 	switch stage {
@@ -403,6 +404,8 @@ func handoffStageTags(stage string) ([]string, bool) {
 		return []string{"handoff"}, true
 	case "review":
 		return []string{"handoff", "handoff-review"}, true
+	case "testing":
+		return []string{"handoff", "handoff-testing"}, true
 	case "pr":
 		return []string{"review"}, true
 	default:
@@ -476,6 +479,9 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "review":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip to review and open the PR from this worktree.")
+	case "testing":
+		fmt.Printf("  worktree: %s\n", dir)
+		fmt.Println("  Sybra will skip straight to adversarial testing of this worktree.")
 	case "pr":
 		fmt.Printf("  pr:       #%d\n", t.PRNumber)
 		fmt.Println("  Sybra will review the existing PR.")

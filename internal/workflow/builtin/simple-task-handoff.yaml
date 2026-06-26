@@ -17,6 +17,11 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: handoff-review
+    # The testing-stage handoff (handoff-testing) is handled by
+    # simple-task-handoff-testing; never start implementation for it.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-testing
     # A PR-review task (tag `review`) is its own lane; never collide with it.
     - field: task.tags
       operator: not_contains
