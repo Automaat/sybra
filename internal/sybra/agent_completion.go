@@ -178,38 +178,8 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		h.pushFixReviewBranch(ag)
 	}
 
-	if h.workflowEngine != nil {
-		// Stall when (a) the process was killed by signal (ws.Signaled or the
-		// conventional 128+N exit codes claude/codex use after catching the
-		// signal), or (b) Sybra's own StopAgent set the `stopped` flag — even
-		// if the child exited cleanly. The latter is load-bearing: PR #722's
-		// SIGINT-first path lets default Go binaries (e.g. fake-claude in
-		// tests) terminate via the runtime's signal handler with ExitStatus=2
-		// (NOT WaitStatus.Signaled), so isSignalKill alone misses
-		// Sybra-initiated stops — the failure mode reported in #641 plus the
-		// flake in TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow.
-		// A transient provider limit (rate/session/usage limit) is not a real
-		// failure: marking the step failed would route verify_commits to
-		// human-required and strand the task. Stall instead, like a signal
-		// kill — the task stays in-progress and the gate-aware recovery loops
-		// re-dispatch once the provider's limit window clears. Auth failures are
-		// deliberately excluded: they need a human to log in, so they fall
-		// through to the normal failed→human-required path.
-		rateLimited := isRateLimitedRun(ag, exitErr)
-		if isSignalKill(exitErr) || ag.WasStopped() || rateLimited {
-			h.logger.Warn("agent.completion.stall",
-				"task_id", ag.TaskID, "agent_id", ag.ID,
-				"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
-				"rate_limited", rateLimited)
-			h.workflowEngine.ClearAgentStep(ag.ID)
-			return
-		}
-		h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-			AgentID:  ag.ID,
-			Result:   resultContent,
-			Provider: ag.Provider,
-			Success:  exitErr == nil,
-		})
+	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+		return
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine
@@ -220,6 +190,38 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Stop(ag.TaskID)
 		}
 	}
+}
+
+// notifyWorkflowEngine advances the workflow engine for a completed agent.
+// Returns false if the caller should return immediately (agent was stalled).
+// Stall conditions: signal kill, Sybra-initiated stop, or transient rate limit.
+// Auth failures fall through (need human login) — they take the normal failed path.
+//
+// Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
+// fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
+// isSignalKill alone misses Sybra-initiated stops — the failure mode from #641.
+// Rate limits stall rather than marking failed to avoid stranding tasks in
+// human-required while the provider's window clears.
+func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+	if h.workflowEngine == nil {
+		return true
+	}
+	rateLimited := isRateLimitedRun(ag, exitErr)
+	if isSignalKill(exitErr) || ag.WasStopped() || rateLimited {
+		h.logger.Warn("agent.completion.stall",
+			"task_id", ag.TaskID, "agent_id", ag.ID,
+			"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
+			"rate_limited", rateLimited)
+		h.workflowEngine.ClearAgentStep(ag.ID)
+		return false
+	}
+	h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+		AgentID:  ag.ID,
+		Result:   resultContent,
+		Provider: ag.Provider,
+		Success:  exitErr == nil,
+	})
+	return true
 }
 
 func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr error) {

@@ -454,7 +454,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
 	}
-	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"summary":{"type":"string"}},"required":["verdict"],"additionalProperties":false}`
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
 		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
 	}

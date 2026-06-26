@@ -52,7 +52,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"summary":{"type":"string"}},"required":["verdict"],"additionalProperties":false}
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Adversarially test task {{.Task.ID}} using the /sybra-test skill.
 

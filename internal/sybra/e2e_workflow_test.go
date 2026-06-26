@@ -2045,7 +2045,7 @@ steps:
       role: test-runner
       mode: headless
       model: sonnet
-      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"summary":{"type":"string"}},"required":["verdict"],"additionalProperties":false}'
+      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}'
       prompt: 'Test {{.Task.ID}}'
     next:
       - goto: route_test
