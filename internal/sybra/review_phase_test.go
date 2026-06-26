@@ -18,6 +18,26 @@ func TestComputeReviewPhase(t *testing.T) {
 			want: reviewPhaseResult{Phase: ReviewPhaseReviewing},
 		},
 		{
+			name: "agent running trumps a conflicting PR",
+			sig:  reviewSignals{AgentRunning: true, Mergeable: "CONFLICTING"},
+			want: reviewPhaseResult{Phase: ReviewPhaseReviewing},
+		},
+		{
+			name: "conflicting PR → conflict phase, passive in-review status",
+			sig:  reviewSignals{Mergeable: "CONFLICTING"},
+			want: reviewPhaseResult{Phase: ReviewPhaseConflict, Status: task.StatusInReview, Reason: "PR has merge conflicts — author must rebase"},
+		},
+		{
+			name: "conflict outranks a pending draft / submitted review",
+			sig:  reviewSignals{Mergeable: "CONFLICTING", HasDraft: true, Submitted: true, ViewerApproved: true},
+			want: reviewPhaseResult{Phase: ReviewPhaseConflict, Status: task.StatusInReview, Reason: "PR has merge conflicts — author must rebase"},
+		},
+		{
+			name: "UNKNOWN mergeable is not a conflict → normal awaiting-author",
+			sig:  reviewSignals{Mergeable: "UNKNOWN", Submitted: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
+		},
+		{
 			name: "approved waits for merge",
 			sig:  reviewSignals{ViewerApproved: true, Submitted: true, HeadSHA: "abc"},
 			want: reviewPhaseResult{Phase: ReviewPhaseApproved, Status: task.StatusInReview, Reason: "Approved — awaiting merge"},

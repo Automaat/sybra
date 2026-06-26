@@ -7,6 +7,10 @@ import "github.com/Automaat/sybra/internal/task"
 const (
 	// ReviewPhaseReviewing: a review agent is actively working the PR.
 	ReviewPhaseReviewing = "reviewing"
+	// ReviewPhaseConflict: the PR has merge conflicts and can't land until the
+	// author rebases. Passive — the lane sinks it to the bottom; the human waits
+	// on the author, so it never asserts the needs-you (human-required) signal.
+	ReviewPhaseConflict = "conflict"
 	// ReviewPhaseManual: the PR was too small for an agent and was punted to
 	// the human to review by hand.
 	ReviewPhaseManual = "manual"
@@ -33,6 +37,7 @@ type reviewSignals struct {
 	ReRequested    bool   // PR is back in viewer's review-requested list
 	HeadSHA        string // current PR head commit ("" if unknown)
 	ReviewedSHA    string // commit the viewer's latest review was made against
+	Mergeable      string // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 }
 
 // reviewPhaseResult is the desired task state for a review task.
@@ -53,6 +58,20 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 	// the status untouched so we don't fight triage/fix dispatch.
 	if s.AgentRunning {
 		return reviewPhaseResult{Phase: ReviewPhaseReviewing}
+	}
+
+	// A conflicting PR can't land until the author rebases, so reviewing or
+	// approving it is wasted effort — surface "conflict" and let the lane sink
+	// it to the bottom. Outranks every viewer-state phase (drafted, approved,
+	// awaiting-author, manual): the conflict is the actionable fact. Status stays
+	// in-review so it never lights the needs-you accent — the ball is the
+	// author's, not the reviewer's.
+	if s.Mergeable == "CONFLICTING" {
+		return reviewPhaseResult{
+			Phase:  ReviewPhaseConflict,
+			Status: task.StatusInReview,
+			Reason: "PR has merge conflicts — author must rebase",
+		}
 	}
 
 	if s.ViewerApproved {
