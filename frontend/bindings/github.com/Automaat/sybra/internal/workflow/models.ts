@@ -630,6 +630,14 @@ export enum StepType {
     StepTriageReview = "triage_review",
 
     /**
+     * StepDetectTampering inspects the worktree diff for reward-hacking /
+     * test-tampering signals (deleted assertions, added skip/xfail markers,
+     * deleted test files, neutered CI). A high-severity finding flips the task
+     * to human-required so it cannot reach done without an explicit human bless.
+     */
+    StepDetectTampering = "detect_tampering",
+
+    /**
      * StepRouteTestResult reads the test-runner verdict and routes the task:
      * pass → ready-pr, fail → in-progress (re-implement) until the attempt
      * cap is hit, then human-required.

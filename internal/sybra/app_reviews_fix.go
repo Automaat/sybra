@@ -143,6 +143,10 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 			"Fix failing CI on branch `%s` (PR #%d). "+
 				"Check the failing run with `gh run view --log-failed`, "+
 				"fix the code, commit and push. No unrelated changes.\n\n"+
+				"Never weaken, skip, delete, or hardcode tests, snapshots, or "+
+				"fixtures to make CI pass, and never edit CI config to neuter a "+
+				"gate — fix the underlying code. Tampering is detected and blocks "+
+				"the task.\n\n"+
 				"Push to the remote that hosts the PR's head branch:\n"+
 				"```sh\n"+
 				"PUSH_REMOTE=origin\n"+
@@ -264,6 +268,9 @@ func commentsPrompt(pr github.PullRequest) string {
 		"Run /fix-review %s --auto\n\n"+
 			"This is your own PR (#%d) — reviewers left comments or unresolved "+
 			"threads. Address the valid ones, reply on every thread, and push.\n\n"+
+			"Never weaken, skip, delete, or hardcode tests to satisfy a comment "+
+			"— fix the underlying code; tampering is detected and blocks the "+
+			"task.\n\n"+
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit -s -S`.\n\n"+

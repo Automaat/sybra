@@ -52,6 +52,16 @@ func (a *artifactRecorderAdapter) PutPlanSnapshot(taskID, role, stepID, sourcePa
 	return err
 }
 
+func (a *artifactRecorderAdapter) PutGeneric(taskID, name, stepID, content string) error {
+	_, err := a.store.Put(taskID, artifact.Artifact{
+		Kind:    artifact.KindGeneric,
+		Name:    name,
+		StepID:  stepID,
+		Content: []byte(content),
+	})
+	return err
+}
+
 // taskAdapter bridges task.Manager → workflow.TaskProvider.
 type taskAdapter struct {
 	tasks    *task.Manager

@@ -29,6 +29,12 @@ steps:
         section. If present, a prior implementation FAILED adversarial manual
         testing — fix the root cause of every reported defect (not just the
         symptom); the feature will be re-tested after this run.
+
+        Never weaken, skip, delete, comment out, or hardcode tests, snapshots,
+        or fixtures to make checks pass, and never edit CI config to neuter a
+        gate. If an existing test is genuinely wrong, fix it correctly and
+        explain why in the commit message — do not silently disable it.
+        Tampering is detected mechanically and will block the task.
         {{- if .Task.Plan}}
 
         ## Plan
@@ -67,6 +73,24 @@ steps:
           field: task.status
           operator: equals
           value: done
+        goto: ""
+      - goto: detect_tampering
+
+  # Mechanical check (no LLM): inspects the worktree diff for reward-hacking /
+  # test-tampering signals — deleted assertions, added skip/xfail markers,
+  # deleted test files, neutered CI config. A high-severity finding flips the
+  # task to human-required (with the offending rules in the reason) so it
+  # cannot reach done without an explicit human bless. Benign test changes are
+  # recorded in a tamper-report.json artifact but do not block. Skips
+  # gracefully when no worktree exists or no verification files changed.
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
         goto: ""
       - goto: set_ready_review
 
