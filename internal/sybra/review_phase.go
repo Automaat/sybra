@@ -50,6 +50,33 @@ type reviewPhaseResult struct {
 	Reason string
 }
 
+// stickyConflictPhase applies hysteresis to GitHub's noisy mergeability signal
+// so a conflicting PR can't flap out of the conflict phase. GitHub recomputes
+// mergeability asynchronously and reports UNKNOWN (or "") while a PR's base
+// branch is moving, so a genuinely-conflicting PR briefly looks non-conflicting
+// on any poll that catches that window. Conflict is the lane's most actionable
+// fact — the PR can't land until the author rebases — so it's sticky: only a
+// definitive MERGEABLE clears it.
+//
+// decided is true when mergeability settles the phase (the caller applies res
+// and stops); false means "not conflicting — fall through to the viewer-state
+// phase computation".
+func stickyConflictPhase(mergeable, currentPhase string) (res reviewPhaseResult, decided bool) {
+	switch mergeable {
+	case "CONFLICTING":
+		return computeReviewPhase(reviewSignals{Mergeable: "CONFLICTING"}), true
+	case "", "UNKNOWN":
+		// Indeterminate read: hold an existing conflict rather than flapping out
+		// of it. If the task isn't already conflict, let viewer state win.
+		if currentPhase == ReviewPhaseConflict {
+			return computeReviewPhase(reviewSignals{Mergeable: "CONFLICTING"}), true
+		}
+		return reviewPhaseResult{}, false
+	default: // MERGEABLE — definitively clears any prior conflict.
+		return reviewPhaseResult{}, false
+	}
+}
+
 // computeReviewPhase maps live PR signals to the desired review phase and
 // status. Pure and table-tested; the poller wraps it to apply only the deltas
 // (see reconcileReviewPhases).

@@ -265,8 +265,8 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 			mergeable = st.Mergeable
 		}
 	}
-	if mergeable == "CONFLICTING" {
-		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{Mergeable: mergeable}))
+	if res, decided := stickyConflictPhase(mergeable, t.ReviewPhase); decided {
+		r.applyReviewPhase(t, res)
 		return
 	}
 
