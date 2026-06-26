@@ -61,6 +61,7 @@ type Issue struct {
 	Title      string   `json:"title"`
 	Body       string   `json:"body"`
 	URL        string   `json:"url"`
+	State      string   `json:"state"`
 	Repository string   `json:"repository"`
 	RepoName   string   `json:"repoName"`
 	Labels     []string `json:"labels"`

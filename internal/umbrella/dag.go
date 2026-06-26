@@ -12,6 +12,13 @@ import (
 	"strings"
 )
 
+// GatedTag marks a child task held in `blocked` specifically by the umbrella
+// dependency gate. It distinguishes umbrella gating from the unrelated
+// `blocked` the human-review automation uses for a contained Sybra bug, so the
+// gate only releases tasks it is responsible for. The expander sets it; the
+// gate strips it on release.
+const GatedTag = "umbrella-gated"
+
 // Node is the minimal projection of a task the dependency DAG reasons about.
 type Node struct {
 	ID        string   // task ID
@@ -128,6 +135,11 @@ func (g *Graph) CyclicUmbrellas() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// HasCycle reports whether the graph contains any dependency cycle.
+func (g *Graph) HasCycle() bool {
+	return len(g.cycleMembers()) > 0
 }
 
 // depsSatisfied reports whether every dependency of node i resolves to a known
