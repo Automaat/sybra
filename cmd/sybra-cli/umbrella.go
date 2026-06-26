@@ -246,8 +246,17 @@ func claudePlannerRunner(model string) umbrella.Runner {
 		if model != "" {
 			cmdArgs = append(cmdArgs, "--model", model)
 		}
-		out, err := exec.CommandContext(ctx, "claude", cmdArgs...).Output()
+		cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
+		// Keep stdout clean for JSON parsing, but capture stderr so a planner
+		// failure (or a timeout-killed process) surfaces the real CLI message
+		// instead of a bare "exit status 1".
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
 		if err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return "", fmt.Errorf("run claude: %w: %s", err, msg)
+			}
 			return "", fmt.Errorf("run claude: %w", err)
 		}
 		return string(out), nil

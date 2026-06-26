@@ -91,7 +91,7 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString(umbrellaBody)
 	b.WriteString("\n\nSub-issues (reference each by its owner/repo#number):\n")
 	for _, s := range subs {
-		line := "- " + s.Ref + " — " + strings.TrimSpace(s.Title)
+		line := "- " + NormalizeIssueRef(s.Ref) + " — " + strings.TrimSpace(s.Title)
 		if s.Closed {
 			line += " (already done)"
 		}

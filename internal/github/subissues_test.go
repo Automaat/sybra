@@ -41,6 +41,13 @@ func TestFetchUmbrellaWith(t *testing.T) {
 			wantSubs:  nil,
 		},
 		{
+			name: "truncated sub-issue set is rejected",
+			output: `{"data":{"repository":{"issue":{` +
+				`"number":100,"title":"big","url":"https://github.com/o/r/issues/100","state":"OPEN","repository":{"name":"r","nameWithOwner":"o/r"},` +
+				`"subIssues":{"totalCount":150,"pageInfo":{"hasNextPage":true},"nodes":[]}}}}}`,
+			wantErr: "more than 100 sub-issues",
+		},
+		{
 			name:    "issue not found",
 			output:  `{"data":{"repository":{"issue":null}}}`,
 			wantErr: "not found",

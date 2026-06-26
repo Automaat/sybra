@@ -12,11 +12,15 @@ import (
 const umbrellaQuery = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      number title body url state
+      number title body url state createdAt updatedAt
+      author{ login }
       repository{ name nameWithOwner }
       subIssues(first:100){
+        totalCount
+        pageInfo{ hasNextPage }
         nodes{
-          number title body url state
+          number title body url state createdAt updatedAt
+          author{ login }
           repository{ name nameWithOwner }
           labels(first:20){ nodes{ name } }
         }
@@ -39,6 +43,10 @@ type gqlUmbrellaResponse struct {
 type gqlUmbrellaIssue struct {
 	gqlIssue
 	SubIssues struct {
+		TotalCount int `json:"totalCount"`
+		PageInfo   struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
 		Nodes []gqlIssue `json:"nodes"`
 	} `json:"subIssues"`
 }
@@ -77,6 +85,11 @@ func fetchUmbrellaWith(e execer, repo string, number int) (umbrella Issue, subs 
 	}
 
 	node := resp.Data.Repository.Issue
+	// Refuse to plan from a truncated sub-issue set rather than silently
+	// materializing an incomplete DAG. (first:100 is the page size.)
+	if node.SubIssues.PageInfo.HasNextPage {
+		return Issue{}, nil, fmt.Errorf("umbrella %s#%d has more than 100 sub-issues (%d); pagination not yet supported", repo, number, node.SubIssues.TotalCount)
+	}
 	umbrellas := convertIssues([]gqlIssue{node.gqlIssue})
 	if len(umbrellas) == 0 {
 		return Issue{}, nil, fmt.Errorf("issue %s#%d is not a convertible issue", repo, number)
