@@ -21,16 +21,21 @@ const (
 	testRunnerRole = "test-runner"
 )
 
-// extractTestVerdict returns "PASS"/"FAIL"/"" by scanning output for the verdict
-// marker. The last matching line wins (the skill prints it last), and the scan
-// runs over the untruncated agent result so the marker survives long summaries.
+// extractTestVerdict returns "PASS"/"FAIL"/"" by scanning output for a line that
+// is EXACTLY the verdict marker (after trimming surrounding whitespace). Exact
+// match — not substring — so an incidental mention in prose (e.g. the agent
+// quoting the contract "the final line must be TEST_VERDICT: PASS") is ignored
+// rather than misread as a real verdict. The last matching line wins (the skill
+// prints it last), and the scan runs over the untruncated agent result so the
+// marker survives long summaries. Missing/ambiguous output yields "" → FAIL,
+// which is the safe direction.
 func extractTestVerdict(output string) string {
 	verdict := ""
 	for line := range strings.SplitSeq(output, "\n") {
-		switch {
-		case strings.Contains(line, testVerdictPass):
+		switch strings.TrimSpace(line) {
+		case testVerdictPass:
 			verdict = "PASS"
-		case strings.Contains(line, testVerdictFail):
+		case testVerdictFail:
 			verdict = "FAIL"
 		}
 	}

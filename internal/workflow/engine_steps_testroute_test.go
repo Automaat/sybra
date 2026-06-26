@@ -23,6 +23,10 @@ func TestExtractTestVerdict(t *testing.T) {
 		{"empty", "", ""},
 		{"last_marker_wins", "TEST_VERDICT: FAIL\n...then fixed and re-ran...\nTEST_VERDICT: PASS", "PASS"},
 		{"trailing_whitespace", "TEST_VERDICT: PASS   \n", "PASS"},
+		// Incidental mentions in prose must NOT be read as a verdict (exact-line
+		// match, not substring) — else an agent quoting the contract ships broken.
+		{"contract_quote_ignored", "Remember: the final line must be exactly TEST_VERDICT: PASS\nbut I never actually ran the app", ""},
+		{"inline_prose_after_marker_ignored", "TEST_VERDICT: PASS (could not break it)", ""},
 	}
 
 	for _, tc := range cases {

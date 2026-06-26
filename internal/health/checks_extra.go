@@ -17,6 +17,7 @@ var statusDwellThresholds = map[string]float64{
 	"plan-review":    12,
 	"in-review":      24,
 	"testing":        12,
+	"ready-pr":       2, // transient (PR opens in seconds); flag fast if PR-open stalls
 	"human-required": 24,
 	"todo":           24,
 }
