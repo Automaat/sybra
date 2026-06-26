@@ -173,6 +173,41 @@ func TestApplyWorkProjectForcesInteractiveAndPlanning(t *testing.T) {
 	}
 }
 
+func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("debug workflow completion race", "no repository URL here", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("example-org/example-repo")})
+	if err != nil {
+		t.Fatalf("Update project: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "fix(workflow): handle completion race",
+		Size:  "small",
+		Type:  "bug",
+		Mode:  "headless",
+		Tags:  []string{"backend", "small", "bug"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "example-org/example-repo" {
+		t.Errorf("project_id: got %q, want example-org/example-repo", updated.ProjectID)
+	}
+	if updated.AgentMode != task.AgentModeInteractive {
+		t.Errorf("mode: got %q, want interactive", updated.AgentMode)
+	}
+	if updated.Status != task.StatusPlanning {
+		t.Errorf("status: got %s, want planning", updated.Status)
+	}
+}
+
 func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	// Create a work-project task that would normally go to planning.
