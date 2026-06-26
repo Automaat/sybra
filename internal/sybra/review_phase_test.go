@@ -98,6 +98,8 @@ func TestStickyConflictPhase(t *testing.T) {
 		{"unknown does not invent a conflict", "UNKNOWN", ReviewPhaseAwaitingAuthor, false, ""},
 		{"empty does not invent a conflict", "", ReviewPhaseDrafted, false, ""},
 		{"mergeable clears a prior conflict", "MERGEABLE", ReviewPhaseConflict, false, ""},
+		{"unexpected state holds an existing conflict", "SOME_NEW_STATE", ReviewPhaseConflict, true, ReviewPhaseConflict},
+		{"unexpected state does not invent a conflict", "SOME_NEW_STATE", ReviewPhaseDrafted, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -65,14 +65,17 @@ func stickyConflictPhase(mergeable, currentPhase string) (res reviewPhaseResult,
 	switch mergeable {
 	case "CONFLICTING":
 		return computeReviewPhase(reviewSignals{Mergeable: "CONFLICTING"}), true
-	case "", "UNKNOWN":
-		// Indeterminate read: hold an existing conflict rather than flapping out
-		// of it. If the task isn't already conflict, let viewer state win.
+	case "MERGEABLE":
+		// The only definitive non-conflict: clears any prior conflict and falls
+		// through to the viewer-state phase computation.
+		return reviewPhaseResult{}, false
+	default:
+		// Indeterminate read — UNKNOWN, "", or any unexpected/new state GitHub
+		// might return: hold an existing conflict rather than flapping out of it.
+		// If the task isn't already conflict, let viewer state win.
 		if currentPhase == ReviewPhaseConflict {
 			return computeReviewPhase(reviewSignals{Mergeable: "CONFLICTING"}), true
 		}
-		return reviewPhaseResult{}, false
-	default: // MERGEABLE — definitively clears any prior conflict.
 		return reviewPhaseResult{}, false
 	}
 }
