@@ -7,8 +7,15 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 )
+
+// tamperBlessedTag short-circuits the detector: a human who has reviewed a
+// flagged diff and accepted it adds this tag, then moves the task back into the
+// flow. Without it, re-dispatching a flagged task would re-scan the same
+// committed diff and re-flag forever (livelock).
+const tamperBlessedTag = "tamper-blessed"
 
 // tamperCategory classifies a changed file by the role it plays in the
 // project's verification surface. Only test/snapshot/fixture/ci files are
@@ -135,15 +142,81 @@ var (
 	// deleted test cases.
 	tamperTestDeclRe = regexp.MustCompile(
 		`\bfunc\s+(Test|Benchmark|Fuzz|Example)[A-Z_0-9]|\bdef\s+test_|\b(it|test|describe)\s*\(`)
+	// tamperCINeuterRe matches an added CI/quality-gate line that defeats the
+	// gate without failing it. Scoped to tamperCatCI files.
+	tamperCINeuterRe = regexp.MustCompile(
+		`continue-on-error:\s*true|allow_failure:\s*true|\|\|\s*true\b|\bif:\s*false\b|\bexit\s+0\b`)
+	// tamperTautoExpectRe matches a jest/vitest expect(...).toBe(...) pair; the
+	// two operands are compared in detectTautology.
+	tamperTautoExpectRe = regexp.MustCompile(
+		`expect\s*\(([^()]+)\)\s*\.\s*(?:toBe|toEqual|toStrictEqual)\s*\(([^()]+)\)`)
+	// tamperTautoCallRe matches an equality-assertion call with a flat (no
+	// nested parens) argument list.
+	tamperTautoCallRe = regexp.MustCompile(
+		`\b(?:assertEqual|assertEquals|assertSame|Equal|Equalf)\s*\(([^()]*)\)`)
+	// tamperTautoCmpRe matches a bare `assert`/`if` equality comparison.
+	tamperTautoCmpRe = regexp.MustCompile(
+		`\b(?:assert|if)\s+(.+?)\s*={2,3}\s*(.+?)\s*[:{]?\s*$`)
 )
+
+// looksLikeComment reports whether a (diff-stripped) line is a source comment.
+// Commenting code out adds nothing of substance, so commented additions are
+// ignored — a commented-out assertion then counts as a removal, not an offset.
+func looksLikeComment(s string) bool {
+	t := strings.TrimSpace(s)
+	return strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#") ||
+		strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "* ") ||
+		strings.HasPrefix(t, "<!--")
+}
+
+// detectTautology reports whether an added assertion compares a value to
+// itself (e.g. require.Equal(t, got, got), expect(x).toBe(x), assert a == a) —
+// a near-unambiguous way to make a test pass without testing anything. Pure
+// literal hardcoding (expected 5 → 4) is NOT detectable here; that is the
+// baseline-suite's job (see issue #1058 follow-up).
+func detectTautology(content string) bool {
+	if m := tamperTautoExpectRe.FindStringSubmatch(content); len(m) == 3 && eqOperand(m[1], m[2]) {
+		return true
+	}
+	if m := tamperTautoCallRe.FindStringSubmatch(content); len(m) == 2 {
+		args := splitTopArgs(m[1])
+		if n := len(args); n >= 2 && eqOperand(args[n-1], args[n-2]) {
+			return true
+		}
+	}
+	if m := tamperTautoCmpRe.FindStringSubmatch(content); len(m) == 3 && eqOperand(m[1], m[2]) {
+		return true
+	}
+	return false
+}
+
+func eqOperand(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	return a != "" && a == b
+}
+
+func splitTopArgs(s string) []string {
+	parts := strings.Split(s, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
 
 // scanTamperPatch inspects one file's unified diff for high-severity tampering
 // signals. Pure — no git, no IO — so it is exhaustively unit-tested.
+//
+// Hunk state is tracked explicitly: `---`/`+++` are file headers only before
+// the first `@@`, so a removed/added line whose content itself begins with
+// `--`/`++` is still classified by its leading diff marker rather than mistaken
+// for a header. Comment-only additions are ignored, so commenting out a test or
+// assertion registers as a removal (the deletion side) with no offsetting add.
 func scanTamperPatch(path string, cat tamperCategory, patch string) []tamperFinding {
 	var findings []tamperFinding
 	seen := map[string]bool{} // dedupe direct-match rules to one finding per file
 	addAssert, delAssert := 0, 0
 	addDecl, delDecl := 0, 0
+	isCI := cat == tamperCatCI
 
 	add := func(rule, detail string) {
 		if seen[rule] {
@@ -155,29 +228,58 @@ func scanTamperPatch(path string, cat tamperCategory, patch string) []tamperFind
 		})
 	}
 
+	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"), strings.HasPrefix(line, "@@"):
+		case strings.HasPrefix(line, "diff --git "), strings.HasPrefix(line, "index "),
+			strings.HasPrefix(line, "old mode "), strings.HasPrefix(line, "new mode "),
+			strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
+			strings.HasPrefix(line, "similarity "), strings.HasPrefix(line, "rename "),
+			strings.HasPrefix(line, "copy "), strings.HasPrefix(line, "Binary "):
+			inHunk = false
 			continue
-		case strings.HasPrefix(line, "+"):
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+			continue
+		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
+			continue
+		case inHunk && strings.HasPrefix(line, "+"):
 			content := line[1:]
+			// A build-ignore tag is syntactically a comment but a meaningful
+			// directive that excludes the file from the build — check it before
+			// the comment skip below.
+			if tamperBuildIgnoreRe.MatchString(strings.TrimSpace(content)) {
+				add("added-build-ignore", trimDiffLine(content))
+				continue
+			}
+			if looksLikeComment(content) {
+				continue
+			}
 			if tamperAddedSkipRe.MatchString(content) {
 				add("added-skip", trimDiffLine(content))
 			}
 			if tamperAddedExitRe.MatchString(content) {
 				add("added-early-exit", trimDiffLine(content))
 			}
-			if tamperBuildIgnoreRe.MatchString(strings.TrimSpace(content)) {
-				add("added-build-ignore", trimDiffLine(content))
+			if isCI && tamperCINeuterRe.MatchString(content) {
+				add("ci-neutered", trimDiffLine(content))
 			}
-			if tamperAssertionRe.MatchString(content) {
-				addAssert++
+			if !isCI {
+				if tamperAssertionRe.MatchString(content) {
+					addAssert++
+				}
+				if tamperTestDeclRe.MatchString(content) {
+					addDecl++
+				}
+				if detectTautology(content) {
+					add("tautological-assertion", trimDiffLine(content))
+				}
 			}
-			if tamperTestDeclRe.MatchString(content) {
-				addDecl++
-			}
-		case strings.HasPrefix(line, "-"):
+		case inHunk && strings.HasPrefix(line, "-"):
 			content := line[1:]
+			if isCI || looksLikeComment(content) {
+				continue
+			}
 			if tamperAssertionRe.MatchString(content) {
 				delAssert++
 			}
@@ -245,19 +347,31 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 }
 
 // execDetectTampering inspects the worktree diff (base...HEAD) for reward-
-// hacking / test-tampering signals. A high-severity finding flips the task to
-// human-required so it cannot reach done without an explicit human bless;
-// benign verification-file changes are recorded but do not block.
+// hacking / test-tampering signals: added skip/xfail markers, forced exit(0),
+// Go build-ignore tags, commented-out or net-removed assertions and test
+// cases, tautological self-comparisons, deleted verification files, and
+// neutered CI gates. A high-severity finding flips the task to human-required
+// so it cannot reach done without an explicit human bless; benign
+// verification-file changes are recorded but do not block.
 //
-// Skip conditions (no-op, returns "clean"):
-//   - No WorktreeGetter configured
-//   - No worktree found for the task
-//   - No verification files changed
+// Pure literal-value hardcoding (an expected `5` swapped to `4`) is NOT
+// detectable from the diff alone — that is the baseline-suite's job, deferred
+// to the issue #1058 follow-up.
+//
+// Short-circuits (no-op):
+//   - task carries the tamper-blessed tag (human already accepted the diff →
+//     returns "blessed" so re-dispatch does not re-flag the same commits)
+//   - No WorktreeGetter configured / no worktree / no verification files
+//     changed (returns "clean")
 //
 // Fail-open on git/context errors: verify_commits already gates broken
 // worktrees to human-required, so a diff failure here is logged and passed
 // through rather than double-flipping or stranding the task.
-func (e *Engine) execDetectTampering(taskID string, step *Step, _ TaskInfo) (StepOutput, error) {
+func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if slices.Contains(t.Tags, tamperBlessedTag) {
+		e.logger.Info("workflow.detect-tampering.blessed", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
+	}
 	if e.worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
@@ -309,7 +423,9 @@ func (e *Engine) collectTamperReport(taskID, wtPath string) (tamperReport, error
 	base := resolveOriginBase(ctx, wtPath)
 	rangeSpec := base + "...HEAD"
 
-	nsCmd := exec.CommandContext(ctx, "git", "diff", "--name-status", rangeSpec)
+	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
+	// the per-file diff pathspec below see the real filename.
+	nsCmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", "--name-status", rangeSpec)
 	nsCmd.Dir = wtPath
 	nsOut, err := nsCmd.Output()
 	if err != nil {
@@ -333,7 +449,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string) (tamperReport, error
 }
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", rangeSpec, "--", path)
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
 	if err != nil {

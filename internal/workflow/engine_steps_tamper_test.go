@@ -99,6 +99,36 @@ func TestScanTamperPatch(t *testing.T) {
 			patch:     "--- a/foo_test.go\n+++ b/foo_test.go\n@@ @@\n context\n",
 			wantRules: nil,
 		},
+		{
+			name:      "commented_out_assertion_counts_as_removal",
+			patch:     "@@ @@\n-\trequire.NoError(t, err)\n+\t// require.NoError(t, err)\n",
+			wantRules: []string{"removed-assertions"},
+		},
+		{
+			name:      "commented_out_test_func_counts_as_removal",
+			patch:     "@@ @@\n-func TestFoo(t *testing.T) {\n+// func TestFoo(t *testing.T) {\n",
+			wantRules: []string{"removed-test-cases"},
+		},
+		{
+			name:      "tautological_testify_equal",
+			patch:     "@@ @@\n-\trequire.Equal(t, want, got)\n+\trequire.Equal(t, got, got)\n",
+			wantRules: []string{"tautological-assertion"},
+		},
+		{
+			name:      "tautological_jest_tobe",
+			patch:     "@@ @@\n+\texpect(result).toBe(result)\n",
+			wantRules: []string{"tautological-assertion"},
+		},
+		{
+			name:      "tautological_python_assert",
+			patch:     "@@ @@\n+    assert value == value\n",
+			wantRules: []string{"tautological-assertion"},
+		},
+		{
+			name:      "removed_line_starting_with_dashes_not_header",
+			patch:     "@@ -1 +0,0 @@\n--- legacy bullet text\n",
+			wantRules: nil, // in-hunk content line (not a file header); no tokens → no finding
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,6 +417,139 @@ func TestExecDetectTampering_DeletedTestFlags(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_BlessedTagShortCircuits(t *testing.T) {
+	t.Parallel()
+	base := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo.go":      "package foo\n\nfunc Foo() int { return 1 }\n",
+		"internal/foo/foo_test.go": base,
+	})
+	// Same tampering as the AddedSkip test, but the human has blessed it.
+	tampered := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tt.Skip(\"flaky\")\n}\n"
+	writeRepoFile(t, wt, "internal/foo/foo_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: skip foo")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(),
+		TaskInfo{ID: "t1", Tags: []string{"tamper-blessed"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "blessed" {
+		t.Errorf("Output = %q, want blessed (tag short-circuits the scan)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (no block when blessed)", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_CommentedOutTestFlags(t *testing.T) {
+	t.Parallel()
+	base := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\trequire.NoError(t, doThing())\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo_test.go": base,
+	})
+	// Comment out the assertion instead of fixing the code.
+	tampered := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\t// require.NoError(t, doThing())\n}\n"
+	writeRepoFile(t, wt, "internal/foo/foo_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: comment out")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (commenting out an assertion is tampering)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_NeuteredCIFlags(t *testing.T) {
+	t.Parallel()
+	base := "name: ci\njobs:\n  test:\n    steps:\n      - run: go test ./...\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		".github/workflows/ci.yml": base,
+	})
+	tampered := "name: ci\njobs:\n  test:\n    continue-on-error: true\n    steps:\n      - run: go test ./...\n"
+	writeRepoFile(t, wt, ".github/workflows/ci.yml", tampered)
+	gitRun(t, wt, "commit", "-am", "ci: neuter")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (continue-on-error neuters the gate)", out.Output)
+	}
+}
+
+func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var prfix *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-fix" {
+			prfix = &defs[i]
+			break
+		}
+	}
+	if prfix == nil {
+		t.Fatal("pr-fix builtin not found")
+	}
+	if prfix.StepByID("detect_tampering") == nil {
+		t.Fatal("detect_tampering step missing from pr-fix")
+	}
+	vc := prfix.StepByID("verify_commits")
+	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "detect_tampering" {
+		t.Errorf("pr-fix verify_commits default goto = %q, want detect_tampering", got)
+	}
+}
+
+func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var rev *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			rev = &defs[i]
+			break
+		}
+	}
+	if rev == nil {
+		t.Fatal("simple-task-review builtin not found")
+	}
+	tamper := rev.StepByID("detect_tampering")
+	if tamper == nil {
+		t.Fatal("detect_tampering step missing from simple-task-review")
+	}
+	fix := rev.StepByID("fix_review")
+	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
+		t.Errorf("fix_review goto = %q, want detect_tampering", got)
+	}
+	if got, _ := ResolveTransition(tamper.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("flagged detect_tampering goto = %q, want end", got)
 	}
 }
 

@@ -168,7 +168,26 @@ steps:
         When done, commit your changes (do NOT push yet — push happens with PR
         creation). Sign commits with `git commit -s -S`.
         Use conventional commit format: `fix(review): address review comments`.
+
+        Never weaken, skip, delete, or hardcode tests to satisfy a review
+        comment — fix the underlying code. Tampering is checked and blocks the
+        task.
     next:
+      - goto: detect_tampering
+
+  # Mechanical check (no LLM): re-scan the full diff for test/CI tampering after
+  # the review-fix agent has added commits (the implement-stage scan only saw
+  # the original diff). A high-severity finding flips the task to
+  # human-required. Skips gracefully without a worktree.
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: done_review
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT

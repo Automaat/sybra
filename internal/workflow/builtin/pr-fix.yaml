@@ -49,6 +49,21 @@ steps:
           operator: equals
           value: done
         goto: ""
+      - goto: detect_tampering
+
+  # Mechanical check (no LLM): the pr-fix agent is under pressure to turn red
+  # CI green, the highest-risk context for reward hacking. Scan the diff for
+  # test/CI tampering before the PR moves on; a high-severity finding flips the
+  # task to human-required. Skips gracefully without a worktree.
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: link_pr_and_review
 
   # Non-LLM step: recover PR number from task, agent result history, or
