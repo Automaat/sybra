@@ -258,6 +258,12 @@ func (c *Checker) normalizeProbeResultLocked(r probeResult) (Status, bool) {
 				"failures", c.probeFailures[r.provider],
 				"threshold", c.cfg.ProbeErrorThreshold,
 				"detail", result.Detail)
+			// A probe did run — advance LastCheck on the stored status so
+			// Snapshot/UX don't look like probing stalled, while leaving the
+			// debounced Healthy/Reason untouched until the threshold trips.
+			if prev, ok := c.statuses[r.provider]; ok {
+				prev.LastCheck = c.now()
+			}
 			return Status{}, false
 		}
 	} else {
@@ -544,14 +550,20 @@ func (c *Checker) SetAutoFailover(v bool) {
 // SetProviderEnabled toggles per-provider probing and participation in failover.
 func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	c.mu.Lock()
+	var prev bool
 	switch provider {
 	case "claude":
-		c.cfg.ClaudeEnabled = v
+		prev, c.cfg.ClaudeEnabled = c.cfg.ClaudeEnabled, v
 	case "codex":
-		c.cfg.CodexEnabled = v
+		prev, c.cfg.CodexEnabled = c.cfg.CodexEnabled, v
 	case "copilot":
-		c.cfg.CopilotEnabled = v
+		prev, c.cfg.CopilotEnabled = c.cfg.CopilotEnabled, v
 	default:
+		c.mu.Unlock()
+		return
+	}
+	if prev == v {
+		// No-op toggle — don't emit a spurious health flip event.
 		c.mu.Unlock()
 		return
 	}

@@ -352,6 +352,53 @@ func TestChecker_ProbeSuccessResetsProbeErrorStreak(t *testing.T) {
 	}
 }
 
+func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
+	c, _, clock := newTestChecker(t)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	ctx := context.Background()
+	c.checkAll(ctx)
+	healthyAt := c.Snapshot()["claude"].LastCheck
+
+	clock.advance(time.Minute)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{}, errors.New("context deadline exceeded")
+	}
+	c.checkAll(ctx)
+
+	snap := c.Snapshot()["claude"]
+	if !snap.Healthy || snap.Reason != "ok" {
+		t.Fatalf("suppressed probe_error must not flip status: healthy=%v reason=%q", snap.Healthy, snap.Reason)
+	}
+	if !snap.LastCheck.After(healthyAt) {
+		t.Fatalf("suppressed probe_error should advance LastCheck: got %v, want after %v", snap.LastCheck, healthyAt)
+	}
+}
+
+func TestChecker_SetProviderEnabledNoOpDoesNotEmit(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	// claude is enabled by default — re-enabling is a no-op and must not emit.
+	c.SetProviderEnabled("claude", true)
+	if got := fe.count(); got != 0 {
+		t.Fatalf("no-op enable emitted %d events, want 0", got)
+	}
+
+	// Disabling is a real change — one event.
+	c.SetProviderEnabled("claude", false)
+	if got := fe.count(); got != 1 {
+		t.Fatalf("disable emitted %d events, want 1", got)
+	}
+	// Disabling again is a no-op — no further events.
+	c.SetProviderEnabled("claude", false)
+	if got := fe.count(); got != 1 {
+		t.Fatalf("repeated disable emitted %d events, want 1", got)
+	}
+}
+
 func TestChecker_BatchFailoverFlagsUseFinalStatuses(t *testing.T) {
 	c, fe, _ := newTestChecker(t)
 	c.probeClaude = func(context.Context) (Status, error) {
