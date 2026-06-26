@@ -388,6 +388,9 @@ func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	wantTag("sybra-bug")
 	wantTag("scrubbed")
 	wantTag("workflow")
+	if local.ProjectID != h.cfg.HumanReviewRepo() {
+		t.Errorf("local task project_id = %q, want %q", local.ProjectID, h.cfg.HumanReviewRepo())
+	}
 }
 
 func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {

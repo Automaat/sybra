@@ -278,7 +278,11 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 		return
 	}
 	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
-	if _, err := h.tasks.Update(newTask.ID, task.Update{Tags: &tags}); err != nil {
+	update := task.Update{Tags: &tags}
+	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
+		update.ProjectID = &projectID
+	}
+	if _, err := h.tasks.Update(newTask.ID, update); err != nil {
 		h.logger.Warn("human-review.local.tag", "new_task_id", newTask.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
