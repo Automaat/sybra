@@ -43,6 +43,7 @@ func TestParseRef(t *testing.T) {
 		{"https://github.com/Automaat/sybra/issues/100", "Automaat/sybra", 100, true},
 		{"https://github.com/Automaat/sybra/pull/7", "Automaat/sybra", 7, true},
 		{"Automaat/sybra#42", "Automaat/sybra", 42, true},
+		{"Automaat/sybra #42", "Automaat/sybra", 42, true},
 		{"#42", "", 0, false},
 		{"not a ref", "", 0, false},
 		{"https://notgithub.com/o/r/issues/5", "", 0, false},

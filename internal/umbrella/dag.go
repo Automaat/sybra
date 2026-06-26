@@ -83,6 +83,7 @@ func ParseRef(ref string) (repo string, number int, ok bool) {
 		return "", 0, false
 	}
 	r, num, found := strings.Cut(ref, "#")
+	r = strings.TrimSpace(r)
 	if found && strings.Contains(r, "/") {
 		if n, err := strconv.Atoi(strings.TrimSpace(num)); err == nil {
 			return r, n, true

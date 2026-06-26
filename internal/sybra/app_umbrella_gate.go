@@ -198,10 +198,12 @@ func trackerRollup(st *umbrellaState, cyclic bool) (status task.Status, reason s
 }
 
 // closeUmbrellaIssue closes the umbrella's GitHub issue with a generic comment
-// (no work content). It returns retry=true only on a transient failure, so the
-// caller holds off flipping the tracker to done and tries again next tick. An
-// unparseable ref is permanent (retry=false): the tracker still completes, the
-// issue is just left for manual closing.
+// (no work content). It returns retry=true on any close failure so the caller
+// holds off flipping the tracker to done and tries again next tick (gh issue
+// close is idempotent, so re-attempts are safe); a persistently failing close
+// leaves the tracker in-progress for the operator to notice. An unparseable
+// ref is permanent (retry=false): the tracker still completes, the issue is
+// just left for manual closing.
 func (a *App) closeUmbrellaIssue(umbRef string) (retry bool) {
 	repo, number, ok := umbrella.ParseRef(umbRef)
 	if !ok {
