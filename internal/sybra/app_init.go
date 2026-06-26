@@ -371,6 +371,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
+	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})

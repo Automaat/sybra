@@ -14,6 +14,12 @@ const (
 type ChecksConfig struct {
 	PreCommit []string `yaml:"pre_commit,omitempty" json:"preCommit,omitempty"`
 	PrePush   []string `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
+	// Verify is the project's deterministic verification suite (tests /
+	// typecheck), run by the verify_checks workflow step on the agent's branch
+	// before review so an implementation that does not pass its own tests
+	// cannot reach a PR. Opt-in: unset means the check is skipped. Each entry
+	// is a shell command run in the worktree root, in order.
+	Verify []string `yaml:"verify,omitempty" json:"verify,omitempty"`
 }
 
 // RepoConfig is the subset of Sybra config that can be defined in a repo's
@@ -61,7 +67,12 @@ func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
 	} else if app != nil {
 		out.PrePush = app.PrePush
 	}
-	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 {
+	if repo != nil && len(repo.Verify) > 0 {
+		out.Verify = repo.Verify
+	} else if app != nil {
+		out.Verify = app.Verify
+	}
+	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 && len(out.Verify) == 0 {
 		return nil
 	}
 	return out

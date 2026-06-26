@@ -92,6 +92,24 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: verify_checks
+
+  # Mechanical check (no LLM): run the project's `checks.verify` suite on the
+  # agent's branch HEAD before review. A non-zero exit flips the task to
+  # human-required so an implementation that does not pass its own declared
+  # tests cannot reach a PR. Complements detect_tampering (which catches
+  # structural test tampering). Opt-in: a no-op unless the project defines
+  # checks.verify. No git mutation; add the `verify-blessed` tag to override a
+  # known-flaky suite.
+  - id: verify_checks
+    name: Verify Checks
+    type: verify_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: set_ready_review
 
   # Terminal hand-off to simple-task-review: flip status to ready-review

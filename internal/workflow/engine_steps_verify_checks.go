@@ -1,0 +1,180 @@
+package workflow
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+)
+
+// verifyChecksDefaultTimeout bounds the whole verify run (every command). A test
+// suite is slower than the 30s shellTimeout used by lighter steps. Overridable
+// per-engine via SetVerifyTimeout (tests use a short value).
+const verifyChecksDefaultTimeout = 10 * time.Minute
+
+// verifyChecksOutputTail caps how much command output is kept in the artifact.
+const verifyChecksOutputTail = 8000
+
+// verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
+// suite) and let the task proceed instead of re-blocking on every re-dispatch.
+const verifyBlessedTag = "verify-blessed"
+
+// verifyChecksReport is the structured result, stored as a generic artifact.
+type verifyChecksReport struct {
+	Commands   []string `json:"commands"`
+	FailedCmd  string   `json:"failedCmd,omitempty"`
+	OutputTail string   `json:"outputTail,omitempty"`
+}
+
+// execVerifyChecks runs the project's deterministic verify suite
+// (`checks.verify`, opt-in) in the agent's worktree before it hands off to
+// review. A non-zero exit flips the task to human-required so an implementation
+// that does not pass its own declared verification suite cannot reach a PR.
+// Complements detect_tampering (phase 1): structural test tampering is caught
+// there; this catches incomplete/broken work the agent committed without the
+// suite passing.
+//
+// The commands run in the agent's already-set-up worktree with no git mutation,
+// reusing the same `sh -c` + inherited-env mechanism as worktree setup so the
+// toolchain (mise) resolves identically.
+//
+// Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
+// verify commands configured, or no worktree. A genuine command failure — or
+// the suite exceeding the time budget (an agent could hang a test to dodge) —
+// blocks. Only engine-shutdown cancellation fails open, so a harness problem on
+// teardown never strands work.
+func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if slices.Contains(t.Tags, verifyBlessedTag) {
+		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
+		return stepDone(step, "blessed")
+	}
+	if e.checks == nil {
+		return stepDone(step, "skipped: no check config getter")
+	}
+	cmds := e.checks.VerifyCommands(taskID)
+	if len(cmds) == 0 {
+		return stepDone(step, "skipped: no verify commands configured")
+	}
+	if e.worktrees == nil {
+		return stepDone(step, "skipped: no worktree getter configured")
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return stepDone(step, "skipped: no worktree for task")
+	}
+
+	timeout := e.verifyTimeout
+	if timeout <= 0 {
+		timeout = verifyChecksDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, timeout)
+	defer cancel()
+
+	maybeMiseTrust(ctx, wtPath)
+	failedCmd, output, runErr := runVerifyCommands(ctx, wtPath, cmds)
+
+	report := verifyChecksReport{
+		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
+	}
+	if e.recorder != nil {
+		if data, mErr := json.MarshalIndent(report, "", "  "); mErr == nil {
+			if recErr := e.recorder.PutGeneric(taskID, "verify-checks.json", step.ID, string(data)); recErr != nil {
+				e.logger.Warn("workflow.verify-checks.artifact", "task_id", taskID, "err", recErr)
+			}
+		}
+	}
+
+	// Engine-shutdown cancellation is the only fail-open: there is no point
+	// blocking work the engine is tearing down. Our own deadline fails CLOSED —
+	// otherwise an agent could hang a test past the budget to dodge the gate.
+	if runErr != nil {
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			reason := "verify suite exceeded the time budget (" + timeout.String() +
+				") — fix slow or hanging tests, or add the `verify-blessed` tag to override"
+			return e.flagVerifyChecks(taskID, step, reason, "timeout")
+		}
+		e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
+		return stepDone(step, "clean")
+	}
+
+	if failedCmd != "" {
+		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
+			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
+		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+	}
+
+	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
+	return stepDone(step, "clean")
+}
+
+// flagVerifyChecks flips the task to human-required. A failed status write
+// returns an error so the workflow stalls instead of advancing past the gate —
+// the YAML transition keys off task.status, so a silently-failed write would
+// otherwise route a failing implementation straight to review.
+func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
+	}
+	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
+	return stepDone(step, "flagged")
+}
+
+// maybeMiseTrust trusts a mise config in the worktree before running verify
+// commands, mirroring worktree setup. A task that adds or edits mise config
+// would otherwise hit "config not trusted" and fail verify on honest work.
+// Best-effort: errors are ignored (the verify command surfaces any real issue).
+func maybeMiseTrust(ctx context.Context, wtPath string) {
+	for _, name := range []string{"mise.toml", ".mise.toml", "mise.local.toml"} {
+		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
+			cmd := exec.CommandContext(ctx, "sh", "-c", "mise trust --yes")
+			cmd.Dir = wtPath
+			_ = cmd.Run()
+			return
+		}
+	}
+}
+
+func stepDone(step *Step, output string) (StepOutput, error) {
+	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
+}
+
+// runVerifyCommands runs each command in order in the worktree via `sh -c`.
+// Returns the first command that exited non-zero (a real failure → caller
+// blocks). A non-nil err means the run could not complete (ctx timeout/cancel)
+// — the caller fails open rather than blocking on infra.
+func runVerifyCommands(ctx context.Context, wtPath string, cmds []string) (failedCmd, output string, err error) {
+	var buf strings.Builder
+	for _, raw := range cmds {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", buf.String(), ctxErr
+		}
+		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
+		cmd.Dir = wtPath
+		out, runErr := cmd.CombinedOutput()
+		buf.WriteString("$ " + raw + "\n")
+		buf.Write(out)
+		buf.WriteString("\n")
+		if runErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", buf.String(), ctxErr
+			}
+			return raw, buf.String(), nil
+		}
+	}
+	return "", buf.String(), nil
+}
+
+// tailString returns the last n bytes of s, prefixed with an elision marker
+// when truncated. Debug output — not rune-aligned at the cut.
+func tailString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…(truncated)…\n" + s[len(s)-n:]
+}

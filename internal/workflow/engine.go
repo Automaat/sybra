@@ -81,6 +81,15 @@ type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
 }
 
+// CheckConfigGetter resolves a task's verify-suite commands (the project's
+// deterministic tests/typecheck), merged from repo `.sybra.yaml` and the
+// app-level project config. Returns nil/empty when the task has no verify
+// suite configured — the verify_checks step then becomes a no-op. Engine
+// operates with a nil getter (step skips), so unit tests need not wire one.
+type CheckConfigGetter interface {
+	VerifyCommands(taskID string) []string
+}
+
 // PRLinker inspects and updates GitHub pull request metadata for the
 // `ensure_pr_closes_issue` step. Implementations wrap `gh` CLI calls.
 // Engine operates with a nil PRLinker — the step becomes a no-op when
@@ -135,6 +144,7 @@ type Engine struct {
 	prLinker        PRLinker
 	prReviewers     PRReviewRequester
 	worktrees       WorktreeGetter
+	checks          CheckConfigGetter
 	recorder        ArtifactRecorder
 	onComplete      func(CompletionInfo)
 	logger          *slog.Logger
@@ -147,7 +157,8 @@ type Engine struct {
 	agentSteps      map[string]agentEntry  // agentID → {taskID, stepID}
 	cascadeDepth    map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
 	resumeError     *logging.ErrorThrottle
-	maxTestAttempts int // testing → re-implement loop cap (0 → defaultTestAttempts)
+	maxTestAttempts int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	verifyTimeout   time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -191,6 +202,14 @@ func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetCheckConfigGetter wires the project verify-suite resolver used by the
+// `verify_checks` step. Leaving it unset makes the step a no-op.
+func (e *Engine) SetCheckConfigGetter(g CheckConfigGetter) { e.checks = g }
+
+// SetVerifyTimeout overrides the verify_checks time budget. Zero keeps the
+// default (verifyChecksDefaultTimeout). Used by tests for a short budget.
+func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset

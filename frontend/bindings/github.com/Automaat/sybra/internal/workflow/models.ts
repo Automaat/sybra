@@ -638,6 +638,16 @@ export enum StepType {
     StepDetectTampering = "detect_tampering",
 
     /**
+     * StepVerifyChecks runs the project's deterministic verify suite
+     * (checks.verify, opt-in) on the agent's branch HEAD before review. A
+     * non-zero exit flips the task to human-required so an implementation that
+     * does not pass its own declared tests cannot reach a PR. Complements
+     * detect_tampering: structural test tampering is caught there; this catches
+     * incomplete/broken work committed without the suite passing.
+     */
+    StepVerifyChecks = "verify_checks",
+
+    /**
      * StepRouteTestResult reads the test-runner verdict and routes the task:
      * pass → ready-pr, fail → in-progress (re-implement) until the attempt
      * cap is hit, then human-required.

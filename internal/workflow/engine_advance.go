@@ -330,7 +330,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return nil, e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview, StepDetectTampering, StepRouteTestResult:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRouteTestResult:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -418,6 +418,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execTriageReview(taskID, step, t)
 	case StepDetectTampering:
 		return e.execDetectTampering(taskID, step, t)
+	case StepVerifyChecks:
+		return e.execVerifyChecks(taskID, step, t)
 	case StepRouteTestResult:
 		return e.execRouteTestResult(taskID, step, wfExec, t)
 	default:

@@ -27,3 +27,12 @@ checks:
   pre_push:
     - mise exec -- go test ./...
     - (cd frontend && npm run check)
+  # Verify suite run by the verify_checks workflow step (reward-hacking
+  # phase 2): runs on the agent's branch HEAD before review so an
+  # implementation that does not pass its own tests cannot reach a PR. Scoped
+  # to ./internal/... ./cmd/... because the root package's
+  # //go:embed all:frontend/dist needs a frontend build that worktrees don't
+  # run; the internal+cmd packages compile without it and hold the logic under
+  # test.
+  verify:
+    - mise exec -- go test ./internal/... ./cmd/...
