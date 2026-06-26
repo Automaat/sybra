@@ -198,6 +198,13 @@ type Task struct {
 	BlockedByIssue string `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
 	Reviewed       bool   `yaml:"reviewed,omitempty" json:"reviewed"`
 	RunRole        string `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// SupervisorSteer is a one-shot corrective message left by the watchdog's
+	// headless nudge: it stops a looping headless agent (which has no mid-stream
+	// channel) and persists the steer here so the recovery loop re-dispatches
+	// the resumed agent with the correction prepended to its prompt. Recovery
+	// clears it after consuming it exactly once. Empty for tasks with no pending
+	// nudge.
+	SupervisorSteer string `yaml:"supervisor_steer,omitempty" json:"supervisorSteer,omitempty"`
 	// ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
 	// the review lifecycle: reviewing → drafted → awaiting-author →
 	// needs-approval → approved (plus `manual` for small PRs punted to the

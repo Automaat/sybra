@@ -199,6 +199,16 @@ export class Task {
     "runRole": string;
 
     /**
+     * SupervisorSteer is a one-shot corrective message left by the watchdog's
+     * headless nudge: it stops a looping headless agent (which has no mid-stream
+     * channel) and persists the steer here so the recovery loop re-dispatches
+     * the resumed agent with the correction prepended to its prompt. Recovery
+     * clears it after consuming it exactly once. Empty for tasks with no pending
+     * nudge.
+     */
+    "supervisorSteer"?: string;
+
+    /**
      * ReviewPhase tracks where an inbound PR-review task (tag `review`) sits in
      * the review lifecycle: reviewing → drafted → awaiting-author →
      * needs-approval → approved (plus `manual` for small PRs punted to the
@@ -357,9 +367,9 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField29_0 = $$createType2;
-        const $$createField30_0 = $$createType4;
-        const $$createField37_0 = $$createType5;
+        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType4;
+        const $$createField38_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -368,13 +378,13 @@ export class Task {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField29_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField30_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField30_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField31_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField37_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField38_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

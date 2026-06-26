@@ -516,6 +516,9 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.BlockedByIssue != nil {
 		t.BlockedByIssue = *u.BlockedByIssue
 	}
+	if u.SupervisorSteer != nil {
+		t.SupervisorSteer = *u.SupervisorSteer
+	}
 	if u.AgentMode != nil {
 		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
 			return Task{}, "", err

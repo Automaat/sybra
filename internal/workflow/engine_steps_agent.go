@@ -74,6 +74,15 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return fmt.Errorf("render prompt: %w", err)
 	}
 
+	// Consume a pending watchdog headless-nudge steer (no-op when none). Done
+	// here, before dispatch (fresh or resumed via ResumeStalled), so a step
+	// re-run after the watchdog stopped a looping agent carries the correction.
+	if steered, sErr := e.tasks.ConsumeSupervisorSteer(taskID, prompt); sErr != nil {
+		e.logger.Warn("workflow.consume-steer", "task_id", taskID, "step", step.ID, "err", sErr)
+	} else {
+		prompt = steered
+	}
+
 	// Reuse a live agent if configured and one exists for this role.
 	if step.Config.ReuseAgent {
 		if agentID, found := e.agents.FindRunningAgentForRole(taskID, step.Config.Role); found {

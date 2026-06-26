@@ -102,6 +102,15 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 		return fmt.Errorf("render prompt: %w", err)
 	}
 
+	// Consume a pending watchdog headless-nudge steer here too, so a steer set
+	// for a looping parallel child is delivered to (and cleared by) this
+	// dispatch rather than leaking into a later run_agent step's prompt.
+	if steered, sErr := e.tasks.ConsumeSupervisorSteer(taskID, prompt); sErr != nil {
+		e.logger.Warn("workflow.parallel.consume-steer", "task_id", taskID, "child", child.ID, "err", sErr)
+	} else {
+		prompt = steered
+	}
+
 	mode := child.Config.Mode
 	if strings.Contains(mode, "{{") {
 		if rendered, rErr := RenderTemplate(mode, childCtx); rErr == nil {

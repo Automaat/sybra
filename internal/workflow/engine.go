@@ -55,6 +55,10 @@ type TaskProvider interface {
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	SetWorkflow(id string, wf *Execution) error
+	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
+	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
+	// correction exactly once. Returns prompt unchanged when none is pending.
+	ConsumeSupervisorSteer(taskID, prompt string) (string, error)
 	// WriteSidecar stores content as the named sidecar for the task. Used
 	// by run_agent steps that declare import_sidecar so the engine can
 	// ingest the agent's output file without depending on the agent's

@@ -128,12 +128,10 @@ func TestDecideTrigger(t *testing.T) {
 	}
 }
 
-// TestApplyVerdict_NudgeDeliversAndLeavesRunning covers the live-transport
-// delivery path. In production the watchdog only inspects headless agents,
-// which have no live transport, so the real path today is the degrade in
-// TestApplyVerdict_NudgeDegradesWhenNoTransport; this test guards the delivery
-// wiring used once interactive/conversational agents are supervised (#1105).
-func TestApplyVerdict_NudgeDeliversAndLeavesRunning(t *testing.T) {
+// TestApplyVerdict_NudgeLiveTransportDeliversInPlace covers the live-transport
+// path: an agent with a working SendPromptToAgent (interactive/conversational)
+// is steered in place and left running — no stop, no persisted steer.
+func TestApplyVerdict_NudgeLiveTransportDeliversInPlace(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
 	var nudged string
@@ -155,15 +153,22 @@ func TestApplyVerdict_NudgeDeliversAndLeavesRunning(t *testing.T) {
 		t.Fatalf("nudge message = %q", nudged)
 	}
 	if stopped {
-		t.Fatal("stopAgent called on nudge verdict")
+		t.Fatal("stopAgent called on a live-transport nudge")
 	}
 	got, _ := tasks.Get(tk.ID)
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (nudge must not flip status)", got.Status)
 	}
+	if got.SupervisorSteer != "" {
+		t.Fatalf("supervisor_steer = %q, want empty for a live nudge", got.SupervisorSteer)
+	}
 }
 
-func TestApplyVerdict_NudgeDegradesWhenNoTransport(t *testing.T) {
+// TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops covers the headless path:
+// no live transport, so the steer is persisted on the task and the agent is
+// stopped so the recovery loop re-dispatches with the correction. The task is
+// left in-progress (not human-required) so recovery resumes it.
+func TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
 	stopped := false
@@ -177,16 +182,18 @@ func TestApplyVerdict_NudgeDegradesWhenNoTransport(t *testing.T) {
 	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, agent.InspectorVerdict{
 		Recommendation: "nudge",
 		Reason:         "drifting",
+		Nudge:          "stop retrying the failing command",
 	})
 
-	// A headless agent cannot be nudged mid-stream; the nudge degrades to an
-	// advisory no-op — the agent keeps running and the task is untouched.
-	if stopped {
-		t.Fatal("stopAgent called when nudge degraded")
+	if !stopped {
+		t.Fatal("headless nudge must stop the agent so recovery re-dispatches")
 	}
 	got, _ := tasks.Get(tk.ID)
-	if got.Status != task.StatusInProgress || got.StatusReason != "" {
-		t.Fatalf("status=%q reason=%q, want in-progress with no reason", got.Status, got.StatusReason)
+	if got.SupervisorSteer != "stop retrying the failing command" {
+		t.Fatalf("supervisor_steer = %q, want the steer persisted", got.SupervisorSteer)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (recovery must resume, not park)", got.Status)
 	}
 }
 

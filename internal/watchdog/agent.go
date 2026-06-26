@@ -249,26 +249,27 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, verdict agent.InspectorVerdict)
 			w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 		}
 	case "nudge":
-		// Deliver a corrective steer to a live agent and leave it running. Only
-		// agents with a live transport (interactive/conversational) can be
-		// nudged mid-stream; a headless agent has no stdin, so SendPromptToAgent
-		// errors and the nudge degrades to an advisory escalate (leave running,
-		// debounce suppresses re-check). Headless nudge via stop+resume is
-		// tracked separately.
+		// Steer a drifting-but-recoverable agent. An agent with a live transport
+		// (interactive/conversational) is nudged in place. A headless agent has
+		// no mid-stream channel, so fall back to the resume path: persist the
+		// steer on the task and stop the looping run, so the recovery loop
+		// re-dispatches (resumes) it with the correction prepended.
 		steer := verdict.Nudge
 		if steer == "" {
 			steer = verdict.Reason
 		}
-		if w.nudgeAgent == nil {
-			w.logger.Warn("agent.watchdog.nudge.unwired", "id", ag.ID)
-			return
+		if steer == "" {
+			steer = "you appear to be repeating the same action; stop and reconsider your approach"
 		}
-		if err := w.nudgeAgent(ag.ID, "⚠️ Supervisor: "+steer); err != nil {
-			w.logger.Warn("agent.watchdog.nudge.degraded",
-				"id", ag.ID, "err", err, "steer", steer)
-			return
+		if w.nudgeAgent != nil {
+			if err := w.nudgeAgent(ag.ID, supervisorNudgePrefix+steer); err == nil {
+				w.logger.Info("agent.watchdog.nudge", "id", ag.ID, "transport", "live", "steer", steer)
+				return
+			} else {
+				w.logger.Info("agent.watchdog.nudge.no_live_transport", "id", ag.ID, "err", err)
+			}
 		}
-		w.logger.Info("agent.watchdog.nudge", "id", ag.ID, "steer", steer)
+		w.headlessNudge(ag, steer)
 	case "escalate":
 		// Ambiguous verdicts are advisory only. Flipping the task to
 		// human-required while the agent keeps running leaves task status
@@ -276,4 +277,27 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, verdict agent.InspectorVerdict)
 	case "continue":
 		// intentional no-op; debounce suppresses re-check
 	}
+}
+
+// supervisorNudgePrefix tags a watchdog steer delivered to a live agent so the
+// agent can tell it apart from a user message.
+const supervisorNudgePrefix = "⚠️ Supervisor: "
+
+// headlessNudge delivers a course-correction to a headless agent, which has no
+// mid-stream channel. It persists the steer on the task and stops the looping
+// run; the run's session is captured for --resume, and the recovery loop
+// re-dispatches the still-in-progress task with the steer prepended to the
+// prompt. The task is deliberately left in-progress (not human-required) so
+// recovery resumes it rather than parking it for a human.
+func (w *Watchdog) headlessNudge(ag *agent.Agent, steer string) {
+	if ag.TaskID != "" {
+		if _, err := w.tasks.Update(ag.TaskID, task.Update{SupervisorSteer: task.Ptr(steer)}); err != nil {
+			w.logger.Error("agent.watchdog.nudge.steer", "task_id", ag.TaskID, "err", err)
+		}
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.nudge.stop", "id", ag.ID, "err", err)
+		return
+	}
+	w.logger.Info("agent.watchdog.nudge", "id", ag.ID, "transport", "headless-resume", "steer", steer)
 }

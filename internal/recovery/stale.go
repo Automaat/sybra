@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -87,7 +88,11 @@ func (r *Recovery) RestartStaleInProgress() {
 		// Debounce respawn when a previous run started recently. Covers
 		// the dev-reload case: app restarts every few seconds, but a
 		// headless subprocess from the prior lifecycle is still alive.
-		if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge {
+		// A pending supervisor steer bypasses the debounce: the watchdog
+		// deliberately stopped a looping agent to re-dispatch it with a
+		// correction, and that should not wait out the recent-run window.
+		if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge &&
+			strings.TrimSpace(t.SupervisorSteer) == "" {
 			r.Logger.Info("restart-stale.skip",
 				"task_id", t.ID, "reason", "recent_run",
 				"last_run_age_s", time.Since(lr.StartedAt).Seconds())
@@ -136,6 +141,11 @@ func (r *Recovery) RestartStaleInProgress() {
 		if proj, pErr := r.Projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
 			prFlag = ""
 		}
+		// A pending supervisor steer (set by the watchdog's headless nudge) is
+		// consumed and prepended to the prompt inside AgentOrchestrator.StartAgent,
+		// the single dispatch choke point this path and the workflow resume path
+		// both funnel through — so it is delivered exactly once regardless of
+		// which loop re-dispatches the task.
 		prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
 		currentStatus := t.Status
 		r.WG.Go(func() {
