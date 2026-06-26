@@ -391,8 +391,8 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 	return nil
 }
 
-// recordCompletion is called from every runner's terminal site just before
-// onComplete fires. Records duration + result into the metrics pipeline.
+// recordCompletion records duration + result into the metrics pipeline.
+// Call through fireComplete — do not call directly from runner terminal sites.
 func (m *Manager) recordCompletion(a *Agent, ok bool) {
 	dur := time.Since(a.StartedAt)
 	result := "ok"
@@ -400,6 +400,19 @@ func (m *Manager) recordCompletion(a *Agent, ok bool) {
 		result = "error"
 	}
 	metrics.AgentCompleted(result, dur)
+}
+
+// fireComplete records completion metrics and fires onComplete exactly once
+// per agent. The guard prevents a second runner goroutine (e.g.
+// runner_convo_survive whose tail is still live when runner_convo exits) from
+// calling onComplete a second time and double-advancing the workflow.
+func (m *Manager) fireComplete(a *Agent, ok bool) {
+	a.completedOnce.Do(func() {
+		m.recordCompletion(a, ok)
+		if m.onComplete != nil {
+			m.onComplete(a)
+		}
+	})
 }
 
 // RunningCount returns the number of currently running agents.

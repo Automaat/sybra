@@ -214,6 +214,50 @@ func TestStopAgent(t *testing.T) {
 	}
 }
 
+// TestFireComplete_IdempotentUnderConcurrency verifies that two runner
+// goroutines both reaching their terminal site for the same agent (the
+// runner_convo + runner_convo_survive double-fire scenario) call onComplete
+// exactly once.
+func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	var (
+		mu    sync.Mutex
+		count int
+	)
+	m.SetOnComplete(func(_ *Agent) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+	})
+
+	a := &Agent{
+		ID:        "race-agent",
+		TaskID:    "task-1",
+		Mode:      "interactive",
+		State:     StateStopped,
+		StartedAt: time.Now(),
+		done:      make(chan struct{}),
+		cancel:    func() {},
+	}
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			m.fireComplete(a, true)
+		})
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := count
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("onComplete called %d times, want exactly 1", got)
+	}
+}
+
 // TestStopHeadlessDoesNotCallOnComplete verifies that StopAgent for a headless
 // agent does not call onComplete immediately — only the goroutine may call it
 // after the process exits, preventing premature worktree cleanup.

@@ -103,6 +103,11 @@ type Agent struct {
 	// doneOnce prevents double-close on done and lets Manager maintain an
 	// exact live-agent count even when multiple terminal paths race.
 	doneOnce sync.Once
+	// completedOnce guards recordCompletion + onComplete so that two runner
+	// goroutines reaching their terminal sites for the same agent (e.g.
+	// runner_convo and runner_convo_survive both firing when the process exits
+	// while a reattach tail is still live) only advance the workflow once.
+	completedOnce sync.Once
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.
