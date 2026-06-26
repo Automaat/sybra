@@ -39,8 +39,12 @@ func newLifecycleManager(app *App) *LifecycleManager {
 func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string, any)) {
 	a := lm.app
 
-	wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg)
-	a.wg.Go(func() { wdog.Run(ctx) })
+	if a.cfg.Watchdog.Enabled {
+		wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg, a.cfg.Watchdog)
+		a.wg.Go(func() { wdog.Run(ctx) })
+	} else {
+		a.logger.Info("watchdog.disabled")
+	}
 
 	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
 	a.wg.Go(func() { hcheck.Run(ctx) })

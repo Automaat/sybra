@@ -64,6 +64,19 @@ type Agent struct {
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
 	// landed PR) can be measured. Tracked in-memory during the run.
 	ToolCalls int `json:"toolCalls,omitempty"`
+	// lastToolSig / toolLoopStreak track consecutive identical tool-call
+	// signatures so the watchdog can detect an agent looping on the same call
+	// in real time (it never stalls, so the stall trigger misses it). Guarded
+	// by mu; updated from the headless stream via NoteToolSignature.
+	lastToolSig    string
+	toolLoopStreak int
+	// loopAckSig is the signature the watchdog has already inspected and
+	// decided not to kill. While it equals lastToolSig the loop trigger is
+	// suppressed, so a cleared (or legitimately repetitive) loop is not
+	// re-inspected every debounce window — and a now-frozen high streak no
+	// longer masks the stall trigger. Cleared implicitly when the signature
+	// changes (a genuinely new loop re-arms the trigger).
+	loopAckSig string
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// PluginErrors holds plugin load failures from the most recent init event.
@@ -382,6 +395,55 @@ func (a *Agent) GetToolCalls() int {
 	return a.ToolCalls
 }
 
+// NoteToolSignature feeds the next assistant event's tool-call signature into
+// the loop detector and returns the resulting consecutive-repeat streak. An
+// empty signature (an assistant turn with no tool calls — pure text/thinking)
+// carries no loop signal and leaves the streak untouched, so interleaved
+// reasoning between identical calls does not reset a genuine loop. A new
+// signature resets the streak to 1.
+func (a *Agent) NoteToolSignature(sig string) int {
+	if sig == "" {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		return a.toolLoopStreak
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if sig == a.lastToolSig {
+		a.toolLoopStreak++
+	} else {
+		a.lastToolSig = sig
+		a.toolLoopStreak = 1
+	}
+	return a.toolLoopStreak
+}
+
+// ToolLoopStreak returns the current count of consecutive identical tool-call
+// signatures. A high value means the agent is repeating the same call.
+func (a *Agent) ToolLoopStreak() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.toolLoopStreak
+}
+
+// AckToolLoop records the current loop signature as already inspected, so the
+// watchdog does not re-trigger on the same unchanged loop. Called after a
+// loop-triggered inspection whose verdict left the agent running.
+func (a *Agent) AckToolLoop() {
+	a.mu.Lock()
+	a.loopAckSig = a.lastToolSig
+	a.mu.Unlock()
+}
+
+// ToolLoopAcknowledged reports whether the current loop signature has already
+// been inspected (and the agent left running). True suppresses the loop
+// trigger until the signature changes.
+func (a *Agent) ToolLoopAcknowledged() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.loopAckSig != "" && a.loopAckSig == a.lastToolSig
+}
+
 // SetEscalationReason updates the escalation reason string.
 func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Lock()
@@ -663,6 +725,11 @@ type StreamEvent struct {
 	// in a Claude assistant turn, or a single Codex tool_use. The runner
 	// accumulates these into Agent.ToolCalls.
 	ToolCalls int `json:"tool_calls,omitempty"`
+	// toolSig is a canonical fingerprint of this event's tool calls (name +
+	// input), used by the watchdog's real-time loop detector to spot an agent
+	// repeating the same call. Unexported so it is never serialized to the
+	// NDJSON log or emitted to the frontend; it lives only in memory.
+	toolSig string
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool
