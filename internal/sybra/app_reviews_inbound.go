@@ -241,19 +241,34 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 		return
 	}
 
-	// A conflicting PR is blocked on the author rebasing — surface "conflict"
-	// and skip the viewer-state round-trip (the conflict outranks every review
-	// phase anyway). FetchPRState is 30s-cached, so this is cheap on the poll.
-	if st, err := github.FetchPRState(t.ProjectID, t.PRNumber); err != nil {
-		r.logger.Warn("review.pr-state", "task_id", t.ID, "err", err)
-	} else if st.Mergeable == "CONFLICTING" {
-		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{Mergeable: st.Mergeable}))
-		return
-	}
-
 	key := reviewPRKey(t.ProjectID, t.PRNumber)
 	reqPR, inReq := requested[key]
 	apPR, inApproved := approved[key]
+
+	// A conflicting PR is blocked on the author rebasing — surface "conflict" and
+	// sink it to the bottom of the lane, whatever the viewer's review state (the
+	// conflict outranks every other review phase). Prefer the mergeability already
+	// carried by the review summary; only spend a PR-state call when the PR is in
+	// neither leg (e.g. a submitted, non-re-requested review) or GitHub hasn't
+	// computed mergeability yet.
+	mergeable := ""
+	switch {
+	case inReq:
+		mergeable = reqPR.Mergeable
+	case inApproved:
+		mergeable = apPR.Mergeable
+	}
+	if mergeable == "" || mergeable == "UNKNOWN" {
+		if st, err := github.FetchPRState(t.ProjectID, t.PRNumber); err != nil {
+			r.logger.Warn("review.pr-state", "task_id", t.ID, "err", err)
+		} else {
+			mergeable = st.Mergeable
+		}
+	}
+	if mergeable == "CONFLICTING" {
+		r.applyReviewPhase(t, computeReviewPhase(reviewSignals{Mergeable: mergeable}))
+		return
+	}
 
 	myState, err := github.FetchMyReviewState(t.ProjectID, t.PRNumber)
 	if err != nil {
