@@ -59,7 +59,10 @@ func (a *App) releaseUnblockedChildren() {
 	}
 
 	for _, id := range g.ReadyToRelease() {
-		t := byID[id]
+		t, ok := byID[id]
+		if !ok || t == nil {
+			continue
+		}
 		// Strip the gating marker on release so a later re-block (e.g. a
 		// Sybra-bug containment) cannot retrigger a release of the same task.
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
