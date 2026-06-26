@@ -46,6 +46,7 @@ func TestScanTamperPatch(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
+		cat       tamperCategory // defaults to test when empty
 		patch     string
 		wantRules []string // high-severity rules expected (order-insensitive subset)
 	}{
@@ -129,10 +130,37 @@ func TestScanTamperPatch(t *testing.T) {
 			patch:     "@@ -1 +0,0 @@\n--- legacy bullet text\n",
 			wantRules: nil, // in-hunk content line (not a file header); no tokens → no finding
 		},
+		{
+			name:      "js_require_import_removal_is_not_an_assertion",
+			patch:     "@@ @@\n-const dep = require(\"dep\")\n",
+			wantRules: nil, // bare require is an import, not an assertion
+		},
+		{
+			name:      "ci_removed_test_step",
+			cat:       tamperCatCI,
+			patch:     "@@ @@\n       - run: go vet ./...\n-      - run: go test ./...\n",
+			wantRules: []string{"removed-ci-step"},
+		},
+		{
+			name:      "ci_neuter_token",
+			cat:       tamperCatCI,
+			patch:     "@@ @@\n+    continue-on-error: true\n",
+			wantRules: []string{"ci-neutered"},
+		},
+		{
+			name:      "ci_renamed_step_no_net_loss",
+			cat:       tamperCatCI,
+			patch:     "@@ @@\n-      - run: go test ./...\n+      - run: go test ./... -race\n",
+			wantRules: nil, // 1 removed, 1 re-added → net 0
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := scanTamperPatch("x_test.go", tamperCatTest, tc.patch)
+			cat := tc.cat
+			if cat == "" {
+				cat = tamperCatTest
+			}
+			got := scanTamperPatch("x_test.go", cat, tc.patch)
 			gotRules := map[string]bool{}
 			for _, f := range got {
 				if f.Severity != tamperHigh {
@@ -519,6 +547,9 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("detect_tampering step missing from pr-fix")
 	}
 	vc := prfix.StepByID("verify_commits")
+	if vc == nil {
+		t.Fatal("verify_commits step missing from pr-fix")
+	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "detect_tampering" {
 		t.Errorf("pr-fix verify_commits default goto = %q, want detect_tampering", got)
 	}
@@ -545,6 +576,9 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("detect_tampering step missing from simple-task-review")
 	}
 	fix := rev.StepByID("fix_review")
+	if fix == nil {
+		t.Fatal("fix_review step missing from simple-task-review")
+	}
 	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("fix_review goto = %q, want detect_tampering", got)
 	}

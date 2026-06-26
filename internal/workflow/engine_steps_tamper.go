@@ -134,9 +134,12 @@ var (
 	tamperBuildIgnoreRe = regexp.MustCompile(`^//go:build\s+ignore\b|^// \+build\s+ignore\b`)
 	// tamperAssertionRe matches an assertion line. Counted on both sides of the
 	// diff so a net removal (deletions > additions) flags weakened coverage
-	// without false-positiving on pure refactors/renames.
+	// without false-positiving on pure refactors/renames. Bare `require` is
+	// deliberately excluded: it matches JS `require("dep")` / Ruby
+	// `require "spec_helper"` imports, whose removal is not a coverage loss —
+	// only `require.` (testify-style assertions) counts.
 	tamperAssertionRe = regexp.MustCompile(
-		`\bassert\b|\brequire\b|\bassert\.|\brequire\.|\bexpect\s*\(|` +
+		`\bassert\b|\brequire\.|\bexpect\s*\(|` +
 			`\bt\.(Error|Errorf|Fatal|Fatalf)\b|\bEXPECT_|\bASSERT_|\.should\b|\bshould\.`)
 	// tamperTestDeclRe matches a test-case declaration. Net removal flags
 	// deleted test cases.
@@ -146,6 +149,14 @@ var (
 	// gate without failing it. Scoped to tamperCatCI files.
 	tamperCINeuterRe = regexp.MustCompile(
 		`continue-on-error:\s*true|allow_failure:\s*true|\|\|\s*true\b|\bif:\s*false\b|\bexit\s+0\b`)
+	// tamperCIRunRe matches a CI line that runs the project's checks. A net
+	// removal of such lines in a CI file flags a deleted gate (e.g. dropping
+	// the `run: go test` step) even when no neuter token is added.
+	tamperCIRunRe = regexp.MustCompile(
+		`(?i)\b(go test|go vet|npm (?:run )?(?:test|lint|check|typecheck)|` +
+			`pnpm (?:run )?(?:test|lint)|yarn (?:test|lint)|pytest|jest|vitest|` +
+			`golangci-lint|nilaway|make (?:test|lint|check)|cargo (?:test|clippy)|` +
+			`ctest|tox|svelte-check|tsc)\b`)
 	// tamperTautoExpectRe matches a jest/vitest expect(...).toBe(...) pair; the
 	// two operands are compared in detectTautology.
 	tamperTautoExpectRe = regexp.MustCompile(
@@ -212,96 +223,134 @@ func splitTopArgs(s string) []string {
 // for a header. Comment-only additions are ignored, so commenting out a test or
 // assertion registers as a removal (the deletion side) with no offsetting add.
 func scanTamperPatch(path string, cat tamperCategory, patch string) []tamperFinding {
-	var findings []tamperFinding
-	seen := map[string]bool{} // dedupe direct-match rules to one finding per file
-	addAssert, delAssert := 0, 0
-	addDecl, delDecl := 0, 0
-	isCI := cat == tamperCatCI
-
-	add := func(rule, detail string) {
-		if seen[rule] {
-			return
-		}
-		seen[rule] = true
-		findings = append(findings, tamperFinding{
-			File: path, Category: string(cat), Severity: tamperHigh, Rule: rule, Detail: detail,
-		})
-	}
-
+	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "diff --git "), strings.HasPrefix(line, "index "),
-			strings.HasPrefix(line, "old mode "), strings.HasPrefix(line, "new mode "),
-			strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
-			strings.HasPrefix(line, "similarity "), strings.HasPrefix(line, "rename "),
-			strings.HasPrefix(line, "copy "), strings.HasPrefix(line, "Binary "):
+		case isDiffHeaderLine(line):
 			inHunk = false
-			continue
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
-			continue
 		case !inHunk && (strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")):
-			continue
+			// file header before any hunk; ignore
 		case inHunk && strings.HasPrefix(line, "+"):
-			content := line[1:]
-			// A build-ignore tag is syntactically a comment but a meaningful
-			// directive that excludes the file from the build — check it before
-			// the comment skip below.
-			if tamperBuildIgnoreRe.MatchString(strings.TrimSpace(content)) {
-				add("added-build-ignore", trimDiffLine(content))
-				continue
-			}
-			if looksLikeComment(content) {
-				continue
-			}
-			if tamperAddedSkipRe.MatchString(content) {
-				add("added-skip", trimDiffLine(content))
-			}
-			if tamperAddedExitRe.MatchString(content) {
-				add("added-early-exit", trimDiffLine(content))
-			}
-			if isCI && tamperCINeuterRe.MatchString(content) {
-				add("ci-neutered", trimDiffLine(content))
-			}
-			if !isCI {
-				if tamperAssertionRe.MatchString(content) {
-					addAssert++
-				}
-				if tamperTestDeclRe.MatchString(content) {
-					addDecl++
-				}
-				if detectTautology(content) {
-					add("tautological-assertion", trimDiffLine(content))
-				}
-			}
+			s.feedAdded(line[1:])
 		case inHunk && strings.HasPrefix(line, "-"):
-			content := line[1:]
-			if isCI || looksLikeComment(content) {
-				continue
-			}
-			if tamperAssertionRe.MatchString(content) {
-				delAssert++
-			}
-			if tamperTestDeclRe.MatchString(content) {
-				delDecl++
-			}
+			s.feedRemoved(line[1:])
 		}
 	}
+	return s.finalize()
+}
 
-	if net := delAssert - addAssert; net > 0 {
-		findings = append(findings, tamperFinding{
-			File: path, Category: string(cat), Severity: tamperHigh,
-			Rule: "removed-assertions", Detail: fmt.Sprintf("net %d assertion line(s) removed", net),
-		})
+// isDiffHeaderLine reports whether a line is a git diff metadata header that
+// resets hunk state (so a subsequent `---`/`+++` is a file header, not content).
+func isDiffHeaderLine(line string) bool {
+	for _, p := range []string{"diff --git ", "index ", "old mode ", "new mode ",
+		"new file", "deleted file", "similarity ", "rename ", "copy ", "Binary "} {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
 	}
-	if net := delDecl - addDecl; net > 0 {
-		findings = append(findings, tamperFinding{
-			File: path, Category: string(cat), Severity: tamperHigh,
-			Rule: "removed-test-cases", Detail: fmt.Sprintf("net %d test declaration(s) removed", net),
-		})
+	return false
+}
+
+// tamperScan accumulates findings and net token counts while walking a patch.
+type tamperScan struct {
+	path      string
+	cat       tamperCategory
+	isCI      bool
+	seen      map[string]bool
+	findings  []tamperFinding
+	addAssert int
+	delAssert int
+	addDecl   int
+	delDecl   int
+	addRun    int
+	delRun    int
+}
+
+func (s *tamperScan) add(rule, detail string) {
+	if s.seen[rule] {
+		return
 	}
-	return findings
+	s.seen[rule] = true
+	s.findings = append(s.findings, tamperFinding{
+		File: s.path, Category: string(s.cat), Severity: tamperHigh, Rule: rule, Detail: detail,
+	})
+}
+
+func (s *tamperScan) feedAdded(content string) {
+	// A build-ignore tag is syntactically a comment but a meaningful directive
+	// that excludes the file from the build — check it before the comment skip.
+	if tamperBuildIgnoreRe.MatchString(strings.TrimSpace(content)) {
+		s.add("added-build-ignore", trimDiffLine(content))
+		return
+	}
+	if looksLikeComment(content) {
+		return
+	}
+	if tamperAddedSkipRe.MatchString(content) {
+		s.add("added-skip", trimDiffLine(content))
+	}
+	if tamperAddedExitRe.MatchString(content) {
+		s.add("added-early-exit", trimDiffLine(content))
+	}
+	if s.isCI {
+		if tamperCINeuterRe.MatchString(content) {
+			s.add("ci-neutered", trimDiffLine(content))
+		}
+		if tamperCIRunRe.MatchString(content) {
+			s.addRun++
+		}
+		return
+	}
+	if tamperAssertionRe.MatchString(content) {
+		s.addAssert++
+	}
+	if tamperTestDeclRe.MatchString(content) {
+		s.addDecl++
+	}
+	if detectTautology(content) {
+		s.add("tautological-assertion", trimDiffLine(content))
+	}
+}
+
+func (s *tamperScan) feedRemoved(content string) {
+	if looksLikeComment(content) {
+		return
+	}
+	if s.isCI {
+		if tamperCIRunRe.MatchString(content) {
+			s.delRun++
+		}
+		return
+	}
+	if tamperAssertionRe.MatchString(content) {
+		s.delAssert++
+	}
+	if tamperTestDeclRe.MatchString(content) {
+		s.delDecl++
+	}
+}
+
+// finalize appends the net-removal findings (a deletion not offset by an
+// addition signals weakened coverage / a removed gate) and returns the result.
+func (s *tamperScan) finalize() []tamperFinding {
+	netFinding := func(rule, noun string, del, add int) {
+		if net := del - add; net > 0 {
+			s.findings = append(s.findings, tamperFinding{
+				File: s.path, Category: string(s.cat), Severity: tamperHigh,
+				Rule: rule, Detail: fmt.Sprintf("net %d %s removed", net, noun),
+			})
+		}
+	}
+	if s.isCI {
+		netFinding("removed-ci-step", "check step(s)", s.delRun, s.addRun)
+		return s.findings
+	}
+	netFinding("removed-assertions", "assertion line(s)", s.delAssert, s.addAssert)
+	netFinding("removed-test-cases", "test declaration(s)", s.delDecl, s.addDecl)
+	return s.findings
 }
 
 // buildTamperReport assembles the report from the parsed diff. Pure function:
@@ -382,7 +431,10 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	report, err := e.collectTamperReport(taskID, wtPath)
 	if err != nil {
-		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+		// collectTamperReport wraps the per-step timeout/cancel into the
+		// returned error, so check the chain (not e.ctx, which stays live when
+		// only the inner shellTimeout fires).
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
 		}
 		e.logger.Warn("workflow.detect-tampering.diff-error", "task_id", taskID, "err", err)
@@ -429,17 +481,32 @@ func (e *Engine) collectTamperReport(taskID, wtPath string) (tamperReport, error
 	nsCmd.Dir = wtPath
 	nsOut, err := nsCmd.Output()
 	if err != nil {
+		// Surface the per-step timeout/cancel through the error chain so the
+		// caller can distinguish it from a genuine git failure.
+		if ctx.Err() != nil {
+			return tamperReport{}, fmt.Errorf("git diff --name-status: %w", ctx.Err())
+		}
 		return tamperReport{}, fmt.Errorf("git diff --name-status: %w", err)
 	}
 
 	changes := parseNameStatus(string(nsOut))
+	fetched := 0
 	for i := range changes {
 		c := &changes[i]
 		if classifyTamperPath(c.Path) == tamperCatOther || strings.HasPrefix(c.Status, "D") {
 			continue
 		}
+		// Honour the same cap buildTamperReport scans under, so a pathological
+		// diff cannot spawn an unbounded number of per-file `git diff` calls.
+		if fetched >= tamperMaxScannedFiles {
+			break
+		}
+		fetched++
 		patch, pErr := gitFilePatch(ctx, wtPath, rangeSpec, c.Path)
 		if pErr != nil {
+			if ctx.Err() != nil {
+				return tamperReport{}, fmt.Errorf("git diff %s: %w", c.Path, ctx.Err())
+			}
 			e.logger.Warn("workflow.detect-tampering.file-patch", "task_id", taskID, "file", c.Path, "err", pErr)
 			continue
 		}
