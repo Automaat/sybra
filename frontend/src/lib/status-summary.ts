@@ -25,8 +25,8 @@ const SUMMARY: Record<string, { hint: string; tone: StatusTone }> = {
   'in-progress': { hint: 'an agent is working on this', tone: 'info' },
   'ready-review': { hint: 'work is done — a review can start', tone: 'info' },
   'in-review': { hint: 'a review agent is checking the PR', tone: 'info' },
-  testing: { hint: 'running through the test plan', tone: 'info' },
-  'test-plan-review': { hint: 'awaiting your approval', tone: 'attention' },
+  testing: { hint: 'an agent is adversarially testing the feature', tone: 'info' },
+  'ready-pr': { hint: 'tests passed — opening the PR', tone: 'info' },
   'human-required': { hint: 'needs your input', tone: 'attention' },
   blocked: { hint: 'needs your response', tone: 'attention' },
 }

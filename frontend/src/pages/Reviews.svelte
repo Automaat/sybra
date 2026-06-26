@@ -17,16 +17,11 @@
   let errorMsg = $state('')
   let hasLiveAgent = $state(false)
 
-  const allReviewTasks = $derived([
-    ...taskStore.byStatus('plan-review'),
-    ...taskStore.byStatus('test-plan-review'),
-  ])
+  const allReviewTasks = $derived(taskStore.byStatus('plan-review'))
 
   const selectedTask = $derived(
     selectedId ? taskStore.items.get(selectedId) ?? null : null,
   )
-
-  const isTestPlan = $derived(selectedTask?.status === 'test-plan-review')
 
   const renderedCritique = $derived(renderMarkdown(selectedTask?.planCritique))
 
@@ -38,13 +33,8 @@
   })
 
   async function refreshLiveAgent(id: string) {
-    const task = taskStore.items.get(id)
     try {
-      if (task?.status === 'test-plan-review') {
-        hasLiveAgent = await taskStore.hasLiveTestPlanAgent(id)
-      } else {
-        hasLiveAgent = await taskStore.hasLivePlanAgent(id)
-      }
+      hasLiveAgent = await taskStore.hasLivePlanAgent(id)
     } catch {
       hasLiveAgent = false
     }
@@ -64,11 +54,7 @@
     actionLoading = true
     errorMsg = ''
     try {
-      if (isTestPlan) {
-        await taskStore.approveTestPlan(selectedId)
-      } else {
-        await taskStore.approvePlan(selectedId)
-      }
+      await taskStore.approvePlan(selectedId)
       selectedId = null
     } catch (e) {
       errorMsg = String(e)
@@ -82,11 +68,7 @@
     actionLoading = true
     errorMsg = ''
     try {
-      if (isTestPlan) {
-        await taskStore.rejectTestPlan(selectedId, rejectFeedback)
-      } else {
-        await taskStore.rejectPlan(selectedId, rejectFeedback)
-      }
+      await taskStore.rejectPlan(selectedId, rejectFeedback)
       rejectFeedback = ''
       selectedId = null
     } catch (e) {
@@ -101,11 +83,7 @@
     actionLoading = true
     errorMsg = ''
     try {
-      if (isTestPlan) {
-        await taskStore.sendTestPlanMessage(selectedId, rejectFeedback)
-      } else {
-        await taskStore.sendPlanMessage(selectedId, rejectFeedback)
-      }
+      await taskStore.sendPlanMessage(selectedId, rejectFeedback)
       rejectFeedback = ''
     } catch (e) {
       errorMsg = String(e)
@@ -194,11 +172,7 @@
               <div class="flex items-start justify-between gap-2">
                 <span class="text-sm font-medium leading-snug">{t.title}</span>
                 <div class="mt-0.5 flex shrink-0 items-center gap-1">
-                  {#if t.status === 'test-plan-review'}
-                    <span class="rounded bg-secondary-100 px-1.5 py-0.5 text-xs font-medium text-secondary-700 dark:bg-secondary-900/40 dark:text-secondary-300">Test</span>
-                  {:else}
-                    <span class="rounded bg-warning-100 px-1.5 py-0.5 text-xs font-medium text-warning-700 dark:bg-warning-900/40 dark:text-warning-300">Plan</span>
-                  {/if}
+                  <span class="rounded bg-warning-100 px-1.5 py-0.5 text-xs font-medium text-warning-700 dark:bg-warning-900/40 dark:text-warning-300">Plan</span>
                   {#if unresolvedCount > 0}
                     <span class="rounded-full bg-warning-500 px-1.5 py-0.5 text-xs font-medium text-white">{unresolvedCount}</span>
                   {/if}
@@ -227,7 +201,7 @@
       <div class="flex flex-1 items-center justify-center text-surface-400">
         <div class="text-center">
           <FileText size={48} class="mx-auto mb-3 opacity-40" />
-          <p class="text-sm">Select a task to review its {isTestPlan ? 'test plan' : 'plan'}</p>
+          <p class="text-sm">Select a task to review its plan</p>
         </div>
       </div>
     {:else}
@@ -274,7 +248,7 @@
         {/if}
         <div class="mb-3 flex items-center gap-2">
           <FileText size={16} class="text-surface-400" />
-          <span class="text-xs font-medium text-surface-500">{isTestPlan ? 'TEST_PLAN.md' : 'PLAN.md'}</span>
+          <span class="text-xs font-medium text-surface-500">PLAN.md</span>
           <span class="text-xs text-surface-400">— click <kbd class="rounded bg-surface-200 px-1 dark:bg-surface-700">+</kbd> on any line to comment</span>
         </div>
         <div class="rounded-lg border border-surface-300 bg-white dark:border-surface-700 dark:bg-surface-900">

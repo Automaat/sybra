@@ -129,7 +129,21 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Issue:        t.Issue,
 		Reviewed:     t.Reviewed,
 		Workflow:     t.Workflow,
+		AgentRuns:    toRunInfos(t.AgentRuns),
 	}
+}
+
+// toRunInfos projects a task's agent runs onto the engine-visible subset
+// (role only) used by route_test_result's attempt counter.
+func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
+	if len(runs) == 0 {
+		return nil
+	}
+	out := make([]workflow.AgentRunInfo, len(runs))
+	for i := range runs {
+		out[i] = workflow.AgentRunInfo{Role: runs[i].Role}
+	}
+	return out
 }
 
 // prLinkerAdapter wires the workflow engine's PRLinker interface to
@@ -234,6 +248,17 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", err
 	}
 
+	// Cap concurrent test-runner agents per machine — each one starts an
+	// isolated real-app/cluster sandbox, so this bounds sandbox load
+	// independently of Agent.MaxConcurrent. The benign race (two dispatches
+	// passing the check at once) is acceptable: the workflow step parks on
+	// ErrTestRunnerBusy and ResumeStalled retries when a slot frees.
+	if r == agent.RoleTestRunner {
+		if a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
+			return "", workflow.ErrTestRunnerBusy
+		}
+	}
+
 	cfg := agent.RunConfig{
 		TaskID:             taskID,
 		Name:               r.AgentName(t.Title),
@@ -272,9 +297,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		cfg.Dir = config.HomeDir()
 	}
 
-	// Inject sandbox env vars if a sandbox is already running for this task.
+	// Testing is where the real app/cluster runs: the test-runner starts (or
+	// reuses) the task's isolated sandbox and inherits SANDBOX_URL/KUBECONFIG.
+	// Every other role only inherits a sandbox that is already running — none
+	// is started during planning/implementation/review (gated to testing).
 	if a.sandboxes != nil {
-		if inst := a.sandboxes.Get(taskID); inst != nil {
+		if r == agent.RoleTestRunner {
+			cfg.ExtraEnv = a.agentOrch.sandboxEnv(taskID, cfg.Dir, t)
+		} else if inst := a.sandboxes.Get(taskID); inst != nil {
 			cfg.ExtraEnv = inst.EnvVars()
 		}
 	}

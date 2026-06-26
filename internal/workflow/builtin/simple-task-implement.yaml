@@ -22,7 +22,13 @@ steps:
       prompt: >-
         Implement this task. When done, commit your work and push the branch to
         origin. Do NOT create a PR yet — the PR will be created after local code
-        review so that review fixes land in the same branch before it is opened.
+        review and manual testing pass, so fixes land in the same branch before
+        it is opened.
+
+        First run `sybra-cli get {{.Task.ID}}` and check for a "## Test Failures"
+        section. If present, a prior implementation FAILED adversarial manual
+        testing — fix the root cause of every reported defect (not just the
+        symptom); the feature will be re-tested after this run.
         {{- if .Task.Plan}}
 
         ## Plan

@@ -10,26 +10,26 @@ import (
 type Status string
 
 const (
-	StatusNew            Status = "new"
-	StatusTodo           Status = "todo"
-	StatusInProgress     Status = "in-progress"
-	StatusReadyReview    Status = "ready-review"
-	StatusInReview       Status = "in-review"
-	StatusPlanning       Status = "planning"
-	StatusPlanReview     Status = "plan-review"
-	StatusTesting        Status = "testing"
-	StatusTestPlanReview Status = "test-plan-review"
-	StatusHumanRequired  Status = "human-required"
-	StatusBlocked        Status = "blocked"
-	StatusDone           Status = "done"
-	StatusCancelled      Status = "cancelled"
+	StatusNew           Status = "new"
+	StatusTodo          Status = "todo"
+	StatusInProgress    Status = "in-progress"
+	StatusReadyReview   Status = "ready-review"
+	StatusInReview      Status = "in-review"
+	StatusPlanning      Status = "planning"
+	StatusPlanReview    Status = "plan-review"
+	StatusTesting       Status = "testing"
+	StatusReadyPR       Status = "ready-pr"
+	StatusHumanRequired Status = "human-required"
+	StatusBlocked       Status = "blocked"
+	StatusDone          Status = "done"
+	StatusCancelled     Status = "cancelled"
 )
 
 var validStatuses = map[Status]bool{
 	StatusNew: true, StatusTodo: true, StatusInProgress: true,
 	StatusReadyReview: true, StatusInReview: true,
 	StatusPlanning: true, StatusPlanReview: true,
-	StatusTesting: true, StatusTestPlanReview: true,
+	StatusTesting: true, StatusReadyPR: true,
 	StatusHumanRequired: true, StatusBlocked: true,
 	StatusDone: true, StatusCancelled: true,
 }
@@ -39,7 +39,7 @@ func AllStatuses() []Status {
 	return []Status{
 		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
 		StatusInProgress, StatusReadyReview, StatusInReview,
-		StatusTesting, StatusTestPlanReview,
+		StatusTesting, StatusReadyPR,
 		StatusHumanRequired, StatusBlocked, StatusDone, StatusCancelled,
 	}
 }

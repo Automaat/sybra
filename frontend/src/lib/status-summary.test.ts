@@ -11,7 +11,6 @@ describe('statusSummary', () => {
     })
     expect(statusSummary('human-required')?.tone).toBe('attention')
     expect(statusSummary('blocked')?.tone).toBe('attention')
-    expect(statusSummary('test-plan-review')?.tone).toBe('attention')
   })
 
   it('summarises agent/pipeline states as info', () => {

@@ -105,14 +105,10 @@ export function StopOrchestrator(): Promise<void> { return call('OrchestratorSer
 
 // PlanningService
 export function ApprovePlan(arg1: string): Promise<Task> { return call('PlanningService', 'ApprovePlan', arg1) }
-export function ApproveTestPlan(arg1: string): Promise<Task> { return call('PlanningService', 'ApproveTestPlan', arg1) }
 export function HasLivePlanAgent(arg1: string): Promise<boolean> { return call('PlanningService', 'HasLivePlanAgent', arg1) }
-export function HasLiveTestPlanAgent(arg1: string): Promise<boolean> { return call('PlanningService', 'HasLiveTestPlanAgent', arg1) }
 export function PlanTask(arg1: string): Promise<void> { return call('PlanningService', 'PlanTask', arg1) }
 export function RejectPlan(arg1: string, arg2: string): Promise<Task> { return call('PlanningService', 'RejectPlan', arg1, arg2) }
-export function RejectTestPlan(arg1: string, arg2: string): Promise<Task> { return call('PlanningService', 'RejectTestPlan', arg1, arg2) }
 export function SendPlanMessage(arg1: string, arg2: string): Promise<void> { return call('PlanningService', 'SendPlanMessage', arg1, arg2) }
-export function SendTestPlanMessage(arg1: string, arg2: string): Promise<void> { return call('PlanningService', 'SendTestPlanMessage', arg1, arg2) }
 export function TriageTask(arg1: string): Promise<void> { return call('PlanningService', 'TriageTask', arg1) }
 
 // ProjectService

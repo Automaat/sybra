@@ -1,6 +1,11 @@
 id: testing-task
 name: Manual Testing
-description: Plan and execute manual testing of a feature
+description: >-
+  Adversarially test the implemented feature against the task description by
+  running the real app/cluster in an isolated per-task sandbox. Goal: PROVE the
+  feature does not behave as the task requires. Pass → ready-pr (a PR is opened).
+  Fail → back to in-progress for re-implementation, until the attempt cap, then
+  human-required. No human in the loop and no test-plan review.
 builtin: true
 trigger:
   on: task.status_changed
@@ -9,149 +14,71 @@ trigger:
       operator: equals
       value: testing
 steps:
-  - id: plan_test
-    name: Prepare Test Plan
-    type: run_agent
-    config:
-      role: test-plan
-      mode: interactive
-      model: opus
-      needs_worktree: true
-      reuse_agent: true
-      wait_for_status: test-plan-review
-      prompt: >-
-        {{- $feedback := getvar .Vars "human.feedback" }}
-        {{- if $feedback }}
-        Test plan rejected. Feedback:
-
-        {{ $feedback }}
-
-        Revise the manual test plan for task {{.Task.ID}} to address these points
-        using the /sybra-test-plan skill. Update --plan and set status back to
-        test-plan-review when done.
-        {{- else }}
-        Prepare a manual test plan for task {{.Task.ID}} using the /sybra-test-plan skill.
-
-        When the plan is ready:
-          1. sybra-cli update {{.Task.ID}} --plan "<full plan markdown>"
-          2. sybra-cli update {{.Task.ID}} --status test-plan-review
-
-        Then STOP and wait. Do NOT exit. Do NOT execute the tests yet.
-
-        If you receive feedback, address it, update --plan again, set status
-        back to test-plan-review, and wait again.
-        {{- end }}
-    next:
-      - goto: maybe_critique_test
-
-  # Skip critique on replan iterations (after a human reject) — the plan has
-  # already been critiqued once; re-critiquing each revision just burns tokens.
-  # `vars.step.review_test_plan.output` only exists after wait_human produced
-  # a verdict, which is the reliable marker for "this is a replan, not the
-  # first pass".
-  - id: maybe_critique_test
-    name: Test Critique Decision
+  # Escape hatch: a task tagged `notest` (docs, config-only, anything not
+  # runnable) skips testing and goes straight to ready-pr so the PR still opens.
+  - id: maybe_test
+    name: Testing Decision
     type: condition
-    config:
-      check:
-        field: task.tags
-        operator: not_contains
-        value: nocritic
     next:
-      - when:
-          field: vars.step.review_test_plan.output
-          operator: exists
-        goto: review_test_plan
       - when:
           field: task.tags
-          operator: not_contains
-          value: nocritic
-        goto: critique_test_plan
-      - goto: review_test_plan
+          operator: contains
+          value: notest
+        goto: skip_testing
+      - goto: run_test
 
-  - id: critique_test_plan
-    name: Critique Test Plan
-    type: run_agent
-    config:
-      role: test-plan-critic
-      mode: headless
-      model: sonnet
-      provider: cross
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Critique the test plan for task {{.Task.ID}} using the /plan-critic skill.
-
-        Steps:
-          1. Run: sybra-cli --json get {{.Task.ID}}
-          2. Extract the .plan field from the JSON output and write it to
-             /tmp/sybra-plan-{{.Task.ID}}.md
-          3. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
-          4. Capture the full markdown Plan Review report you produce and
-             write it to /tmp/sybra-critique-{{.Task.ID}}.md
-
-        Do NOT modify the plan. Do NOT change the task status. Sybra
-        ingests /tmp/sybra-critique-{{.Task.ID}}.md as the plan_critique
-        sidecar after you exit — no need to call sybra-cli.
-      allowed_tools:
-        - Bash
-        - Read
-        - Grep
-        - Glob
-        - Write
-        - Skill
-        - Agent
-      import_sidecar:
-        kind: plan_critique
-        from: /tmp/sybra-critique-{{.Task.ID}}.md
-    next:
-      - goto: review_test_plan
-
-  - id: review_test_plan
-    name: Review Test Plan
-    type: wait_human
-    config:
-      status: test-plan-review
-      human_actions:
-        - approve
-        - reject
-    next:
-      - when:
-          field: vars.human_action
-          operator: equals
-          value: approve
-        goto: execute_tests
-      - when:
-          field: vars.human_action
-          operator: equals
-          value: reject
-        goto: start_replan_test
-
-  - id: start_replan_test
-    name: Prepare Replan
+  - id: skip_testing
+    name: Skip Testing
     type: set_status
     config:
-      status: testing
+      status: ready-pr
+      status_reason: testing skipped (notest) — opening PR
     next:
-      - goto: plan_test
+      - goto: ""
 
-  - id: execute_tests
-    name: Execute Manual Testing
+  # A single headless adversarial test-runner. Its sandbox (Docker compose
+  # project / k3d cluster, keyed by task id) is started on demand by the agent
+  # launcher and exposed via SANDBOX_URL / KUBECONFIG. Concurrency across tasks
+  # is capped by config.testing.max_concurrent (default 3); when saturated the
+  # step parks and ResumeStalled retries once a slot frees.
+  - id: run_test
+    name: Adversarial Testing
     type: run_agent
     config:
       role: test-runner
-      mode: interactive
+      mode: headless
       model: sonnet
       needs_worktree: true
+      max_retries: 1
       prompt: >-
-        Execute the approved manual test plan for task {{.Task.ID}}.
+        Adversarially test task {{.Task.ID}} using the /sybra-test skill.
 
-        1. sybra-cli --json get {{.Task.ID}}  (the .plan field contains the approved test plan)
-        2. Run each test case. Start the app/CLI as needed, interact with it,
-           capture observed vs expected results.
-        3. Append a "## Test Results" section to the task body documenting
-           pass/fail for each case plus any reproduction notes.
-        4. sybra-cli update {{.Task.ID}} --status human-required
-           --status-reason "manual testing complete - verify results"
+        Your goal is to PROVE the implementation does NOT satisfy the task —
+        exercise the happy path AND edge cases, boundary inputs, and failure
+        modes. You decide how to start and drive the real app/cluster (read the
+        repo: README, .sybra.yaml, mise tasks, package.json, compose, Makefile).
+        If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
+        sandbox is already running for this task — use it. Bind only ephemeral
+        ports and tear down anything you start.
+
+        When done:
+          - If you found ANY deviation from the task's intent, append a
+            "## Test Failures" section to the task body via
+            `sybra-cli update {{.Task.ID}} --body "<full body>"` describing the
+            observed-vs-expected symptoms and exact reproduction steps. Do NOT
+            suggest fixes — only report what is broken.
+          - Print the verdict as the FINAL line of your output, exactly:
+            `TEST_VERDICT: PASS`  (only if you could not break it)
+            or
+            `TEST_VERDICT: FAIL`  (if any case failed)
+    next:
+      - goto: route_test
+
+  # Non-LLM router: reads run_test's verdict. PASS → ready-pr (simple-task-pr
+  # opens the PR). FAIL → in-progress to re-implement, until the per-task
+  # attempt cap (config.testing.max_attempts), then human-required.
+  - id: route_test
+    name: Route Test Result
+    type: route_test_result
     next:
       - goto: ""

@@ -178,7 +178,15 @@
       </span>
     {/if}
 
-    {#if agentRunning}
+    {#if t.status === 'testing'}
+      <span
+        class="inline-flex items-center gap-1 rounded bg-secondary-200 px-1.5 py-0.5 text-secondary-800 dark:bg-secondary-700 dark:text-secondary-200"
+        title={agentRunning ? 'Adversarial testing in progress' : 'Waiting for a testing slot'}
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-secondary-500 {agentRunning ? 'animate-pulse' : ''}"></span>
+        {agentRunning ? 'Testing' : 'Queued'}
+      </span>
+    {:else if agentRunning}
       <span class="inline-flex items-center gap-1 rounded bg-success-200 px-1.5 py-0.5 text-success-800 dark:bg-success-700 dark:text-success-200">
         <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
         Agent

@@ -68,7 +68,7 @@ var FieldAllowedValues = map[string]map[string]bool{
 		"new": true, "todo": true, "in-progress": true,
 		"ready-review": true, "in-review": true,
 		"planning": true, "plan-review": true, "testing": true,
-		"test-plan-review": true, "human-required": true, "blocked": true,
+		"ready-pr": true, "human-required": true, "blocked": true,
 		"done": true, "cancelled": true,
 	},
 	"task.task_type": {

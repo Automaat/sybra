@@ -10,10 +10,6 @@ const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
-const mockApproveTestPlan = vi.fn()
-const mockRejectTestPlan = vi.fn()
-const mockSendTestPlanMessage = vi.fn()
-const mockHasLiveTestPlanAgent = vi.fn()
 
 vi.mock('$lib/api', () => ({
   ListTasks: (...args: unknown[]) => mockListTasks(...args),
@@ -25,10 +21,6 @@ vi.mock('$lib/api', () => ({
   RejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
   SendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
   HasLivePlanAgent: (...args: unknown[]) => mockHasLivePlanAgent(...args),
-  ApproveTestPlan: (...args: unknown[]) => mockApproveTestPlan(...args),
-  RejectTestPlan: (...args: unknown[]) => mockRejectTestPlan(...args),
-  SendTestPlanMessage: (...args: unknown[]) => mockSendTestPlanMessage(...args),
-  HasLiveTestPlanAgent: (...args: unknown[]) => mockHasLiveTestPlanAgent(...args),
 }))
 
 const { taskStore } = await import('./tasks.svelte.js')
@@ -292,52 +284,6 @@ describe('TaskStore', () => {
       const result = await taskStore.hasLivePlanAgent('t1')
 
       expect(result).toBe(false)
-    })
-  })
-
-  describe('approveTestPlan', () => {
-    it('calls ApproveTestPlan and updates task', async () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
-      const updated = makeTask({ id: 't1', status: 'in-progress' })
-      mockApproveTestPlan.mockResolvedValue(updated)
-
-      const result = await taskStore.approveTestPlan('t1')
-
-      expect(mockApproveTestPlan).toHaveBeenCalledWith('t1')
-      expect(result.status).toBe('in-progress')
-    })
-  })
-
-  describe('rejectTestPlan', () => {
-    it('calls RejectTestPlan with feedback and updates task', async () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1' }))
-      const rejected = makeTask({ id: 't1', status: 'todo' })
-      mockRejectTestPlan.mockResolvedValue(rejected)
-
-      const result = await taskStore.rejectTestPlan('t1', 'missing edge cases')
-
-      expect(mockRejectTestPlan).toHaveBeenCalledWith('t1', 'missing edge cases')
-      expect(result.id).toBe('t1')
-    })
-  })
-
-  describe('sendTestPlanMessage', () => {
-    it('calls SendTestPlanMessage', async () => {
-      mockSendTestPlanMessage.mockResolvedValue(undefined)
-
-      await taskStore.sendTestPlanMessage('t1', 'add more assertions')
-
-      expect(mockSendTestPlanMessage).toHaveBeenCalledWith('t1', 'add more assertions')
-    })
-  })
-
-  describe('hasLiveTestPlanAgent', () => {
-    it('returns true when test plan agent is live', async () => {
-      mockHasLiveTestPlanAgent.mockResolvedValue(true)
-
-      const result = await taskStore.hasLiveTestPlanAgent('t1')
-
-      expect(result).toBe(true)
     })
   })
 

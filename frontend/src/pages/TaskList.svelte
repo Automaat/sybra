@@ -259,7 +259,7 @@
 
   const statusOrder: Record<string, number> = {
     'new': 0, 'todo': 1, 'planning': 2, 'plan-review': 3,
-    'in-progress': 4, 'in-review': 5, 'testing': 6, 'test-plan-review': 7,
+    'in-progress': 4, 'in-review': 5, 'testing': 6, 'ready-pr': 7,
     'human-required': 8, 'done': 9,
   }
   const priorityOrder: Record<string, number> = {

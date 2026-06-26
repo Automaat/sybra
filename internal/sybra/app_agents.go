@@ -116,10 +116,25 @@ func newAgentOrchestrator(
 	}
 }
 
+// sandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
+// already running for the task; it never starts one. Sandboxes are started
+// lazily by the testing phase (test-runner role), so implementation/review
+// agents inherit one only if testing left it up — they never spin a cluster.
+func (o *AgentOrchestrator) sandboxEnvIfRunning(taskID string) []string {
+	if o.sandboxes == nil {
+		return nil
+	}
+	if inst := o.sandboxes.Get(taskID); inst != nil {
+		return inst.EnvVars()
+	}
+	return nil
+}
+
 // sandboxEnv resolves the extra environment variables a task's configured
 // sandbox injects into its agent subprocess, starting the sandbox on demand.
 // Returns nil when no sandbox applies or startup fails (a failed start is
-// logged, not fatal — the agent runs without the sandbox env).
+// logged, not fatal — the agent runs without the sandbox env). Called from the
+// testing phase so the per-task sandbox spins up only when tests actually run.
 func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string {
 	if o.sandboxes == nil || t.ProjectID == "" {
 		return nil
@@ -185,7 +200,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	}
 	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart)
 
-	extraEnv := o.sandboxEnv(taskID, dir, t)
+	extraEnv := o.sandboxEnvIfRunning(taskID)
 
 	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
