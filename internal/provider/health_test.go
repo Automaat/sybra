@@ -210,6 +210,14 @@ func (f *fakeEmitter) count() int {
 	return len(f.events)
 }
 
+func (f *fakeEmitter) snapshot() []HealthEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]HealthEvent, len(f.events))
+	copy(out, f.events)
+	return out
+}
+
 func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 	t.Helper()
 	fe := &fakeEmitter{}
@@ -268,6 +276,157 @@ func TestChecker_FlipsOnFailure(t *testing.T) {
 	}
 	if c.IsHealthy("claude") {
 		t.Errorf("claude should be unhealthy")
+	}
+}
+
+func TestChecker_ProbeErrorRequiresConsecutiveFailures(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	ctx := context.Background()
+	c.checkAll(ctx)
+	before := fe.count()
+
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{}, errors.New("context deadline exceeded")
+	}
+	c.checkAll(ctx)
+	if !c.IsHealthy("claude") {
+		t.Fatalf("first generic probe_error should be suppressed; claude became unhealthy")
+	}
+	if got := c.Reason("claude"); got != "ok" {
+		t.Fatalf("first generic probe_error should preserve prior reason, got %q", got)
+	}
+	if got := fe.count(); got != before {
+		t.Fatalf("first generic probe_error emitted %d new events, want 0", got-before)
+	}
+
+	c.checkAll(ctx)
+	if c.IsHealthy("claude") {
+		t.Fatalf("second consecutive generic probe_error should mark claude unhealthy")
+	}
+	if got := c.Reason("claude"); got != "probe_error" {
+		t.Fatalf("Reason = %q, want probe_error", got)
+	}
+	if got := fe.count(); got != before+1 {
+		t.Fatalf("second consecutive probe_error should emit exactly one event: got count=%d before=%d", got, before)
+	}
+}
+
+func TestChecker_ProbeSuccessResetsProbeErrorStreak(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	ctx := context.Background()
+	c.checkAll(ctx)
+	before := fe.count()
+
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{}, errors.New("context deadline exceeded")
+	}
+	c.checkAll(ctx)
+
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.checkAll(ctx)
+
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{}, errors.New("context deadline exceeded")
+	}
+	c.checkAll(ctx)
+
+	if !c.IsHealthy("claude") {
+		t.Fatalf("non-consecutive generic probe_error should stay suppressed")
+	}
+	if got := fe.count(); got != before {
+		t.Fatalf("suppressed non-consecutive probe_error emitted %d new events, want 0", got-before)
+	}
+}
+
+func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
+	c, _, clock := newTestChecker(t)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	ctx := context.Background()
+	c.checkAll(ctx)
+	healthyAt := c.Snapshot()["claude"].LastCheck
+
+	clock.advance(time.Minute)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{}, errors.New("context deadline exceeded")
+	}
+	c.checkAll(ctx)
+
+	snap := c.Snapshot()["claude"]
+	if !snap.Healthy || snap.Reason != "ok" {
+		t.Fatalf("suppressed probe_error must not flip status: healthy=%v reason=%q", snap.Healthy, snap.Reason)
+	}
+	if !snap.LastCheck.After(healthyAt) {
+		t.Fatalf("suppressed probe_error should advance LastCheck: got %v, want after %v", snap.LastCheck, healthyAt)
+	}
+}
+
+func TestChecker_SetProviderEnabledNoOpDoesNotEmit(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	// claude is enabled by default — re-enabling is a no-op and must not emit.
+	c.SetProviderEnabled("claude", true)
+	if got := fe.count(); got != 0 {
+		t.Fatalf("no-op enable emitted %d events, want 0", got)
+	}
+
+	// Disabling is a real change — one event.
+	c.SetProviderEnabled("claude", false)
+	if got := fe.count(); got != 1 {
+		t.Fatalf("disable emitted %d events, want 1", got)
+	}
+	// Disabling again is a no-op — no further events.
+	c.SetProviderEnabled("claude", false)
+	if got := fe.count(); got != 1 {
+		t.Fatalf("repeated disable emitted %d events, want 1", got)
+	}
+}
+
+func TestChecker_BatchFailoverFlagsUseFinalStatuses(t *testing.T) {
+	c, fe, _ := newTestChecker(t)
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: true, Reason: "ok"}, nil
+	}
+	ctx := context.Background()
+	c.checkAll(ctx)
+	seed := fe.count()
+
+	c.probeClaude = func(context.Context) (Status, error) {
+		return Status{Provider: "claude", Healthy: false, Reason: "logged_out"}, nil
+	}
+	c.probeCodex = func(context.Context) (Status, error) {
+		return Status{Provider: "codex", Healthy: false, Reason: "logged_out"}, nil
+	}
+	c.checkAll(ctx)
+
+	events := fe.snapshot()[seed:]
+	if len(events) != 2 {
+		t.Fatalf("events after batch failure = %d, want 2: %#v", len(events), events)
+	}
+	for _, ev := range events {
+		if ev.FailoverActive {
+			t.Fatalf("%s emitted stale failoverActive=true even though all enabled peers failed in the same probe batch: %#v", ev.Provider, ev)
+		}
 	}
 }
 
