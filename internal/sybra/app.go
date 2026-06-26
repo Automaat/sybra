@@ -91,6 +91,9 @@ type App struct {
 	restartStaleErr               *logging.ErrorThrottle
 	recovery                      *recovery.Recovery
 	agentCompletion               *AgentCompletionHandler
+	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
+	// nil defaults to github.CloseIssue; overridden in tests.
+	umbrellaCloseIssue func(repo string, number int, comment string) error
 
 	bgops *bgop.Tracker
 

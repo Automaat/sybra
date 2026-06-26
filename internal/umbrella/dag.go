@@ -9,6 +9,7 @@ package umbrella
 import (
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +66,30 @@ func NormalizeIssueRef(s string) string {
 func isGitHubHost(h string) bool {
 	h = strings.ToLower(h)
 	return h == "github.com" || h == "www.github.com"
+}
+
+// ParseRef splits an issue ref into "owner/repo" and its number. It accepts a
+// github.com issue/PR URL (preserving the repo's original case for API calls)
+// or "owner/repo#n" shorthand. ok is false for anything else.
+func ParseRef(ref string) (repo string, number int, ok bool) {
+	ref = strings.TrimSpace(ref)
+	if u, err := url.Parse(ref); err == nil && isGitHubHost(u.Host) {
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) >= 4 && (parts[2] == "issues" || parts[2] == "pull") {
+			if n, err := strconv.Atoi(leadingDigits(parts[3])); err == nil {
+				return parts[0] + "/" + parts[1], n, true
+			}
+		}
+		return "", 0, false
+	}
+	r, num, found := strings.Cut(ref, "#")
+	r = strings.TrimSpace(r)
+	if found && strings.Contains(r, "/") {
+		if n, err := strconv.Atoi(strings.TrimSpace(num)); err == nil {
+			return r, n, true
+		}
+	}
+	return "", 0, false
 }
 
 // leadingDigits returns the run of ASCII digits at the start of s (empty if

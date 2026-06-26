@@ -15,6 +15,19 @@ func MaxParallelTag(n int) string {
 	return MaxParallelTagPrefix + strconv.Itoa(n)
 }
 
+// ParseMaxParallel reads the max-parallel value from a tracker's tags, falling
+// back to DefaultMaxParallel when the tag is absent or malformed.
+func ParseMaxParallel(tags []string) int {
+	for _, t := range tags {
+		if rest, ok := strings.CutPrefix(t, MaxParallelTagPrefix); ok {
+			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return DefaultMaxParallel
+}
+
 // controlTags are Sybra-load-bearing tags a child task must not inherit from a
 // GitHub sub-issue's labels — they route the task into other automations
 // (reviews, handoff lanes, the gate itself, bug containment).

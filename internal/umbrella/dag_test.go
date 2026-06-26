@@ -32,6 +32,30 @@ func TestNormalizeIssueRef(t *testing.T) {
 	}
 }
 
+func TestParseRef(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in     string
+		repo   string
+		number int
+		ok     bool
+	}{
+		{"https://github.com/Automaat/sybra/issues/100", "Automaat/sybra", 100, true},
+		{"https://github.com/Automaat/sybra/pull/7", "Automaat/sybra", 7, true},
+		{"Automaat/sybra#42", "Automaat/sybra", 42, true},
+		{"Automaat/sybra #42", "Automaat/sybra", 42, true},
+		{"#42", "", 0, false},
+		{"not a ref", "", 0, false},
+		{"https://notgithub.com/o/r/issues/5", "", 0, false},
+	}
+	for _, c := range cases {
+		repo, n, ok := ParseRef(c.in)
+		if repo != c.repo || n != c.number || ok != c.ok {
+			t.Errorf("ParseRef(%q) = (%q,%d,%v), want (%q,%d,%v)", c.in, repo, n, ok, c.repo, c.number, c.ok)
+		}
+	}
+}
+
 // node builds a Node; status flags are set by the caller per case.
 func node(id, issue, umb string, deps []string, done, awaiting bool) Node {
 	return Node{ID: id, Issue: issue, Umbrella: umb, DependsOn: deps, Done: done, Awaiting: awaiting}
