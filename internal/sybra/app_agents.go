@@ -425,7 +425,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 // review comments) and includes it so the agent amends the existing PR rather
 // than starting from scratch.
 func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
-	base := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.", t.Title, t.Body)
+	base := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.\n\nNever weaken, skip, delete, comment out, or hardcode tests, snapshots, or fixtures to make checks pass, and never edit CI config to neuter a gate. Fix the underlying code; tampering is detected and blocks the task.", t.Title, t.Body)
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return base
 	}

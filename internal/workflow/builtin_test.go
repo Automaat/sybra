@@ -77,9 +77,10 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 }
 
 // TestBuiltinSimpleTaskImplement_VerifyCommitsRouting pins the verify_commits
-// transition table: human-required and done end the run, everything else hands
-// off to review. (The sibling-still-running case is handled in Go by parking
-// the workflow in ExecWaiting, not by a transition — see execVerifyCommits.)
+// transition table: human-required and done end the run, everything else flows
+// into the detect_tampering gate before review. (The sibling-still-running case
+// is handled in Go by parking the workflow in ExecWaiting, not by a transition
+// — see execVerifyCommits.)
 func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
 	t.Parallel()
 
@@ -118,9 +119,9 @@ func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
 			want:   "",
 		},
 		{
-			name:   "clean in-progress hands off to review",
+			name:   "clean in-progress flows into tamper gate",
 			fields: map[string]string{"task.status": "in-progress"},
-			want:   "set_ready_review",
+			want:   "detect_tampering",
 		},
 	}
 	for _, tc := range cases {

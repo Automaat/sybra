@@ -104,6 +104,10 @@ type ArtifactRecorder interface {
 	RecordTrace(taskID string, ev any) error
 	// PutPlanSnapshot stores a raw markdown plan as an artifact for the task.
 	PutPlanSnapshot(taskID, role, stepID, sourcePath, content string) error
+	// PutGeneric stores an arbitrary named blob (e.g. a tamper-detection
+	// report) as a generic artifact for the task. Local debug/audit only —
+	// callers must scrub before surfacing the content on any public destination.
+	PutGeneric(taskID, name, stepID, content string) error
 }
 
 // CompletionInfo is passed to the OnComplete callback when a workflow finishes.
