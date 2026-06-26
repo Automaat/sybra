@@ -43,6 +43,9 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 		if a.sessionCWD != "" {
 			args = append(args, "-C", a.sessionCWD)
 		}
+		if cfg.outputSchemaPath != "" {
+			args = append(args, "--output-schema", cfg.outputSchemaPath)
+		}
 		prompt := rewriteSkillInvocations(cfg.Prompt, discoverCodexSkills())
 		args = append(args, prompt)
 		command = "codex " + strings.Join(args, " ")

@@ -21,7 +21,7 @@ type AgentCompletion struct {
 // workflow steps that expect a single turn — otherwise the agent sits paused
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	// HasOtherRunningAgentForTask reports whether an agent other than
 	// exceptAgentID is still running for the task. verify_commits uses it to

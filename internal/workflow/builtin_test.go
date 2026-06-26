@@ -427,3 +427,35 @@ func TestSyncBuiltins_IdempotentOnClean(t *testing.T) {
 			before.UpdatedAt, after.UpdatedAt)
 	}
 }
+
+// TestBuiltinTestingTask_RunTestOutputSchema verifies that the testing-task
+// builtin's run_test step carries a non-empty OutputSchema that round-trips
+// through YAML without alteration. Exact-string assertion so YAML folding
+// or escaping errors surface immediately rather than silently passing an
+// empty schema to codex.
+func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var testingDef *Definition
+	for i := range defs {
+		if defs[i].ID == "testing-task" {
+			testingDef = &defs[i]
+			break
+		}
+	}
+	if testingDef == nil {
+		t.Fatal("testing-task builtin definition not found")
+	}
+	step := testingDef.StepByID("run_test")
+	if step == nil {
+		t.Fatal("run_test step not found in testing-task")
+	}
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"summary":{"type":"string"}},"required":["verdict"],"additionalProperties":false}`
+	if step.Config.OutputSchema != wantSchema {
+		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
+	}
+}

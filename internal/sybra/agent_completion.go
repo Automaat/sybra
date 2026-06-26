@@ -75,11 +75,22 @@ type AgentCompletionHandler struct {
 // once per terminal agent state transition.
 func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	var resultContent string
+	var hasResultEvent bool
 	outputs := ag.Output()
 	for i := range outputs {
 		if outputs[i].Type == "result" {
 			resultContent = outputs[i].Content
+			hasResultEvent = true
 		}
+	}
+	// Codex's terminal turn.completed event carries no text — the final message
+	// arrives as an assistant StreamEvent. When a result event was seen but
+	// carried empty content, fall back to the last assistant turn so that
+	// result-dependent paths (extractTestVerdict, PR-URL scraping) work for
+	// codex too. Guard with hasResultEvent so agents that exit-0 without
+	// emitting any result event (no_result scenario) are NOT back-filled.
+	if hasResultEvent && resultContent == "" {
+		resultContent = lastAssistantText(ag)
 	}
 
 	// Snapshot mutable fields once under the agent's lock so both the

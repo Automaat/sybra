@@ -1054,6 +1054,61 @@ func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
 	})
 }
 
+// TestBuildHeadlessInvocation_OutputSchema verifies the --output-schema flag
+// is appended to codex args when cfg.outputSchemaPath is set, and is absent
+// for claude and when the path is empty.
+func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
+	t.Parallel()
+
+	t.Run("codex_with_schema_path", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:           "run tests",
+			outputSchemaPath: "/tmp/sybra-codex-schema-12345.json",
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--output-schema")
+		if idx < 0 {
+			t.Fatalf("args missing --output-schema; got %v", args)
+		}
+		if idx+1 >= len(args) || args[idx+1] != "/tmp/sybra-codex-schema-12345.json" {
+			t.Errorf("--output-schema value wrong; args=%v", args)
+		}
+		// Flag must appear before the prompt (last element).
+		promptIdx := len(args) - 1
+		if idx >= promptIdx {
+			t.Errorf("--output-schema must precede the prompt; flag at %d, prompt at %d; args=%v", idx, promptIdx, args)
+		}
+	})
+
+	t.Run("codex_without_schema_path", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "run tests"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--output-schema") {
+			t.Fatalf("--output-schema must be absent when outputSchemaPath empty; got %v", args)
+		}
+	})
+
+	t.Run("claude_ignores_schema_path", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:           "run tests",
+			outputSchemaPath: "/tmp/some-schema.json",
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--output-schema") {
+			t.Fatalf("--output-schema must not appear for claude provider; got %v", args)
+		}
+	})
+}
+
 // TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless
 // codex always bypasses approvals even when RequirePermissions=true. Interactive
 // mode with RequirePermissions=true must use --sandbox workspace-write.

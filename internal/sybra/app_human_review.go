@@ -534,6 +534,20 @@ func finalAssistantText(ag *agent.Agent) string {
 	return ""
 }
 
+// lastAssistantText returns the content of the last assistant-typed stream event.
+// Unlike finalAssistantText it applies no sybra-verdict gating — it is the
+// general "what did the model say last" accessor used to fill c.Result for
+// providers (codex) whose terminal turn.completed event carries no text.
+func lastAssistantText(ag *agent.Agent) string {
+	out := ag.Output()
+	for i := range slices.Backward(out) {
+		if out[i].Type == "assistant" {
+			return out[i].Content
+		}
+	}
+	return ""
+}
+
 // appendSection appends a `## header` section to body, separated by a blank
 // line. Keeps the source body intact even if it already ends without newline.
 func appendSection(body, header, content string) string {
