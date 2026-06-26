@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"log/slog"
 	"slices"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+var errTestClose = errors.New("close failed")
 
 // mkTracker creates an umbrella tracker task carrying the given parallelism cap.
 func mkTracker(t *testing.T, m *task.Manager, umb string, maxPar int) task.Task {
@@ -96,6 +99,44 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	}
 	if closes != 1 || gotRepo != "Automaat/sybra" || gotNum != 100 {
 		t.Fatalf("close = %d times repo=%q num=%d, want 1 Automaat/sybra 100", closes, gotRepo, gotNum)
+	}
+}
+
+func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	closes := 0
+	app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
+	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusCancelled)
+
+	app.releaseUnblockedChildren()
+
+	// A cancelled child must surface for a human, never silently complete/close.
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required on cancelled child", got)
+	}
+	if closes != 0 {
+		t.Fatalf("umbrella was closed %d times despite a cancelled child", closes)
+	}
+}
+
+func TestReleaseUnblockedChildren_CloseFailureDefersDone(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	app.umbrellaCloseIssue = func(string, int, string) error { return errTestClose }
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
+
+	app.releaseUnblockedChildren()
+
+	// Close failed transiently → tracker must NOT flip to done (so the close
+	// retries next tick rather than orphaning the open issue).
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress held for close retry", got)
 	}
 }
 

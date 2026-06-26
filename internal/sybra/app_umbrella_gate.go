@@ -15,13 +15,14 @@ const umbrellaGatedTag = umbrella.GatedTag
 
 // umbrellaState aggregates one umbrella's tracker and children for a gate tick.
 type umbrellaState struct {
-	tracker   *task.Task
-	cap       int // max children running at once
-	total     int // child task count
-	doneCount int
-	active    int // children occupying a parallelism slot
-	anyHR     bool
-	released  int // children released so far this tick (counts toward the cap)
+	tracker      *task.Task
+	cap          int // max children running at once
+	total        int // child task count
+	doneCount    int
+	active       int // children occupying a parallelism slot
+	anyHR        bool
+	anyCancelled bool
+	released     int // children released so far this tick (counts toward the cap)
 }
 
 // releaseUnblockedChildren is the umbrella gate, run every orchestrator tick.
@@ -95,6 +96,11 @@ func accumulateChild(st *umbrellaState, status task.Status) {
 	switch status {
 	case task.StatusDone:
 		st.doneCount++
+	case task.StatusCancelled:
+		// A cancelled prerequisite is a deliberate abandonment — surface it for
+		// a human rather than silently completing the umbrella or proceeding on
+		// the cancelled work (its dependents stay held; see depsSatisfied).
+		st.anyCancelled = true
 	case task.StatusHumanRequired:
 		st.anyHR = true
 		st.active++ // a stuck child still occupies a slot until resolved
@@ -156,6 +162,12 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if desired == st.tracker.Status {
 			continue
 		}
+		// Close the umbrella issue BEFORE flipping the tracker to done, so a
+		// transient close failure is retried next tick rather than leaving the
+		// issue open under a done tracker that never re-attempts the close.
+		if doClose && a.closeUmbrellaIssue(st.tracker.Issue) {
+			continue
+		}
 		if _, err := a.tasks.Update(st.tracker.ID, task.Update{
 			Status:       task.Ptr(desired),
 			StatusReason: task.Ptr(reason),
@@ -164,21 +176,20 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 			continue
 		}
 		a.logger.Info("umbrella.tracker.rollup", "task_id", st.tracker.ID, "status", desired)
-		if doClose {
-			a.closeUmbrellaIssue(st.tracker.Issue)
-		}
 	}
 }
 
 // trackerRollup decides an umbrella tracker's status from its children. A
-// cycle or a stuck (human-required) child surfaces as human-required and halts
-// only that chain; all-done closes the umbrella.
+// cycle, a stuck (human-required) child, or a cancelled child surfaces as
+// human-required (halting only that chain); all-done closes the umbrella.
 func trackerRollup(st *umbrellaState, cyclic bool) (status task.Status, reason string, doClose bool) {
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
 	case st.anyHR:
 		return task.StatusHumanRequired, "umbrella child needs attention", false
+	case st.anyCancelled:
+		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
 	default:
@@ -187,12 +198,15 @@ func trackerRollup(st *umbrellaState, cyclic bool) (status task.Status, reason s
 }
 
 // closeUmbrellaIssue closes the umbrella's GitHub issue with a generic comment
-// (no work content). Best-effort: a failure is logged, not retried.
-func (a *App) closeUmbrellaIssue(umbRef string) {
+// (no work content). It returns retry=true only on a transient failure, so the
+// caller holds off flipping the tracker to done and tries again next tick. An
+// unparseable ref is permanent (retry=false): the tracker still completes, the
+// issue is just left for manual closing.
+func (a *App) closeUmbrellaIssue(umbRef string) (retry bool) {
 	repo, number, ok := umbrella.ParseRef(umbRef)
 	if !ok {
 		a.logger.Warn("umbrella.close.skip", "reason", "unparseable ref", "ref", umbRef)
-		return
+		return false
 	}
 	closeFn := a.umbrellaCloseIssue
 	if closeFn == nil {
@@ -200,7 +214,8 @@ func (a *App) closeUmbrellaIssue(umbRef string) {
 	}
 	if err := closeFn(repo, number, "All umbrella sub-tasks completed."); err != nil {
 		a.logger.Error("umbrella.close.failed", "repo", repo, "number", number, "err", err)
-		return
+		return true
 	}
 	a.logger.Info("umbrella.closed", "repo", repo, "number", number)
+	return false
 }
