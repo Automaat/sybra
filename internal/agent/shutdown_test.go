@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -131,16 +133,34 @@ func TestStopWithSIGINT_ProcessReceivesInterrupt(t *testing.T) {
 // escalates to SIGKILL. Asserts SIGKILL (not hang) as the exit signal.
 func TestStopWithSIGINT_EscalatesToSIGKILL(t *testing.T) {
 	t.Parallel()
-	// bash with SIGINT ignored; sleep subprocess inherits the ignore disposition.
-	cmd := exec.Command("bash", "-c", "trap '' INT; sleep 30")
+	// Synchronize via stdout: bash prints "ready" only after trap '' INT is
+	// in effect, so SIGINT cannot arrive before the SIG_IGN disposition is set.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", "trap '' INT; echo ready; sleep 30")
+	cmd.Stdout = pw
+
 	if err := cmd.Start(); err != nil {
+		pw.Close()
+		pr.Close()
 		t.Fatalf("start: %v", err)
 	}
+	pw.Close() // write end belongs to the child only
 
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- cmd.Wait() }()
 
-	time.Sleep(20 * time.Millisecond) // let process settle
+	// Block until bash has printed "ready", guaranteeing SIG_IGN is active.
+	ready := make([]byte, 6) // "ready\n"
+	if _, err := io.ReadFull(pr, ready); err != nil {
+		pr.Close()
+		t.Fatalf("read ready signal: %v", err)
+	}
+	pr.Close()
+
 	// Pass a done channel that is never closed — simulates SIGINT being ignored.
 	neverDone := make(chan struct{})
 	stopWithSIGINT(cmd, neverDone, 150*time.Millisecond)
