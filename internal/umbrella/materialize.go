@@ -10,31 +10,47 @@ type ChildSpec struct {
 	Track     string
 }
 
-// ChildSpecs computes the child tasks to create for an umbrella expansion. It
-// is idempotent: a sub-issue whose ref is already in existingRefs (a task
-// exists for it) is skipped, so re-expanding an umbrella only materializes
-// newly added sub-issues. existingRefs keys are normalized issue refs
-// (NormalizeIssueRef). Plan children must already be validated against subs.
+// ChildSpecs computes the child tasks to create for an umbrella expansion from
+// a resolved, validated plan. It:
+//   - skips a sub-issue that already has a task (idempotent re-expansion),
+//   - skips a closed sub-issue (the work is done — no child),
+//   - drops a dependency that points at a closed sub-issue (already satisfied,
+//     and it would otherwise have no task to resolve against and block forever).
+//
+// existingRefs keys are normalized issue refs (NormalizeIssueRef). Plan child
+// refs must already be canonical (see Plan.resolve).
 func ChildSpecs(plan Plan, subs []SubIssue, existingRefs map[string]bool) []ChildSpec {
 	byRef := make(map[string]SubIssue, len(subs))
+	closed := make(map[string]bool, len(subs))
 	for _, s := range subs {
-		byRef[NormalizeIssueRef(s.Ref)] = s
+		key := NormalizeIssueRef(s.Ref)
+		byRef[key] = s
+		if s.Closed {
+			closed[key] = true
+		}
 	}
+
 	var specs []ChildSpec
 	for _, c := range plan.Children {
 		key := NormalizeIssueRef(c.Ref)
-		if existingRefs[key] {
+		if existingRefs[key] || closed[key] {
 			continue
 		}
 		s, ok := byRef[key]
 		if !ok {
 			continue
 		}
+		deps := make([]string, 0, len(c.DependsOn))
+		for _, d := range c.DependsOn {
+			if !closed[NormalizeIssueRef(d)] {
+				deps = append(deps, d)
+			}
+		}
 		specs = append(specs, ChildSpec{
 			Title:     s.Title,
 			Body:      s.Body,
 			Issue:     s.Ref,
-			DependsOn: c.DependsOn,
+			DependsOn: deps,
 			Track:     c.Track,
 		})
 	}

@@ -11,11 +11,17 @@ import (
 // the planner does not specify a value.
 const DefaultMaxParallel = 5
 
+// plannerAttempts is how many times Generate re-asks the model when its output
+// fails to parse or validate. The planner is stochastic, so a fresh sample
+// often fixes a malformed or incomplete DAG.
+const plannerAttempts = 3
+
 // SubIssue is the minimal projection of a GitHub sub-issue the planner needs.
 type SubIssue struct {
-	Ref   string // issue ref (owner/repo#n or full URL)
-	Title string
-	Body  string
+	Ref    string // issue ref (owner/repo#n or full URL)
+	Title  string
+	Body   string
+	Closed bool // already completed — no child task, satisfies dependents
 }
 
 // PlannedChild is one child task the planner proposes: the sub-issue it maps
@@ -37,56 +43,76 @@ type Plan struct {
 type Runner func(ctx context.Context, prompt string) (string, error)
 
 // Generate runs the planner end to end: build the prompt, invoke the model,
-// parse and normalize the result, and validate it against the sub-issues.
+// then resolve and validate the result against the sub-issues. A malformed or
+// invalid plan is retried (the model is stochastic); a runner error is fatal.
+// All child and dependency refs in the returned plan are canonical.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue) (Plan, error) {
 	if len(subs) == 0 {
 		return Plan{}, fmt.Errorf("umbrella %s has no sub-issues to expand", umbrellaRef)
 	}
-	raw, err := run(ctx, BuildPrompt(umbrellaRef, umbrellaBody, subs))
-	if err != nil {
-		return Plan{}, fmt.Errorf("run planner: %w", err)
+	idx := buildRefIndex(subs)
+	prompt := BuildPrompt(umbrellaRef, umbrellaBody, subs)
+
+	var lastErr error
+	for range plannerAttempts {
+		raw, err := run(ctx, prompt)
+		if err != nil {
+			return Plan{}, fmt.Errorf("run planner: %w", err)
+		}
+		plan, err := ParsePlan(raw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := plan.resolve(idx); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := plan.validate(subs); err != nil {
+			lastErr = err
+			continue
+		}
+		if plan.MaxParallel <= 0 {
+			plan.MaxParallel = DefaultMaxParallel
+		}
+		return plan, nil
 	}
-	plan, err := ParsePlan(raw)
-	if err != nil {
-		return Plan{}, err
-	}
-	plan.normalize(subs)
-	if err := plan.validate(subs); err != nil {
-		return Plan{}, err
-	}
-	return plan, nil
+	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w", plannerAttempts, lastErr)
 }
 
 // BuildPrompt renders the planner instruction. The model is asked to emit ONLY
-// a JSON object using the exact sub-issue refs provided, reading the umbrella
-// body for dependency edges and parallel tracks.
+// a JSON object covering every sub-issue, reading the umbrella body for
+// dependency edges and parallel tracks.
 func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	var b strings.Builder
 	b.WriteString("You are decomposing a GitHub umbrella issue into a dependency DAG of its sub-issues.\n")
 	b.WriteString("Umbrella: " + umbrellaRef + "\n\n")
 	b.WriteString("Umbrella body:\n")
 	b.WriteString(umbrellaBody)
-	b.WriteString("\n\nSub-issues (use these exact refs):\n")
+	b.WriteString("\n\nSub-issues (reference each by its owner/repo#number):\n")
 	for _, s := range subs {
-		b.WriteString("- " + s.Ref + " — " + strings.TrimSpace(s.Title) + "\n")
+		line := "- " + s.Ref + " — " + strings.TrimSpace(s.Title)
+		if s.Closed {
+			line += " (already done)"
+		}
+		b.WriteString(line + "\n")
 	}
-	b.WriteString("\nFrom the umbrella body, infer for each sub-issue which other sub-issues it depends on")
-	b.WriteString(" (must finish first) and an optional parallel-track label. Read dependency markers")
-	b.WriteString(" like \"← #N\" (depends on N) and \"⛔ blocks all\", plus any prose describing")
-	b.WriteString(" serial vs parallel work.\n\n")
+	b.WriteString("\nFor each sub-issue, infer which other sub-issues it depends on (must finish first)")
+	b.WriteString(" and an optional parallel-track label. Read dependency markers like \"← #N\"")
+	b.WriteString(" (depends on N) and \"⛔ blocks all\", plus prose describing serial vs parallel work.\n\n")
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
 	b.WriteString(`{"children":[{"issue":"<ref>","dependsOn":["<ref>"],"track":"<label>"}],"maxParallel":<int>}` + "\n")
-	b.WriteString("Rules: include every sub-issue exactly once; dependsOn must reference only the refs above;")
-	b.WriteString(" never create a cycle; maxParallel is the max children to run at once (default 5).\n")
+	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn must")
+	b.WriteString(" reference only the sub-issues above; never create a cycle; maxParallel is the max")
+	b.WriteString(" children to run at once (default 5).\n")
 	return b.String()
 }
 
-// ParsePlan extracts a Plan from a model's raw stdout. It tolerates the
-// claude `--output-format json` envelope ({"result":"..."}) and a surrounding
-// code fence or prose by extracting the first balanced JSON object.
+// ParsePlan extracts a Plan from a model's raw stdout. It tolerates the claude
+// `--output-format json` envelope ({"result":"..."}) and a surrounding code
+// fence or prose by extracting the first balanced JSON object.
 func ParsePlan(raw string) (Plan, error) {
 	text := raw
-	// Unwrap the claude json envelope if present.
 	var env struct {
 		Result string `json:"result"`
 	}
@@ -138,37 +164,36 @@ func firstJSONObject(s string) (string, bool) {
 	return "", false
 }
 
-// normalize fills defaults and drops anything that does not map onto a real
-// sub-issue, so a planner that hallucinates a ref or omits maxParallel still
-// yields a usable plan rather than failing validation outright.
-func (p *Plan) normalize(subs []SubIssue) {
-	if p.MaxParallel <= 0 {
-		p.MaxParallel = DefaultMaxParallel
-	}
-	known := make(map[string]bool, len(subs))
-	for _, s := range subs {
-		known[NormalizeIssueRef(s.Ref)] = true
-	}
-	children := p.Children[:0]
-	for _, c := range p.Children {
-		if !known[NormalizeIssueRef(c.Ref)] {
-			continue
+// resolve rewrites every child and dependency ref to its canonical sub-issue
+// ref, accepting shorthand (`#N`, `N`) and URL forms. It errors loudly on a
+// ref that matches no sub-issue rather than silently dropping the edge, so a
+// planner mistake becomes a retry instead of a wrong DAG. Self-dependencies
+// are dropped (they are noise, not ordering).
+func (p *Plan) resolve(idx refIndex) error {
+	for i := range p.Children {
+		c := &p.Children[i]
+		canon, ok := idx.lookup(c.Ref)
+		if !ok {
+			return fmt.Errorf("planner referenced unknown sub-issue %q", c.Ref)
 		}
-		deps := c.DependsOn[:0]
+		c.Ref = canon
+		deps := make([]string, 0, len(c.DependsOn))
 		for _, d := range c.DependsOn {
-			if known[NormalizeIssueRef(d)] && NormalizeIssueRef(d) != NormalizeIssueRef(c.Ref) {
-				deps = append(deps, d)
+			dc, ok := idx.lookup(d)
+			if !ok {
+				return fmt.Errorf("child %s has unresolved dependency %q", canon, d)
+			}
+			if dc != canon {
+				deps = append(deps, dc)
 			}
 		}
 		c.DependsOn = deps
-		children = append(children, c)
 	}
-	p.Children = children
+	return nil
 }
 
 // validate confirms the plan covers every sub-issue exactly once and is
-// acyclic. normalize must run first so refs are already constrained to the
-// sub-issue set.
+// acyclic. resolve must run first so all refs are canonical.
 func (p *Plan) validate(subs []SubIssue) error {
 	if len(p.Children) != len(subs) {
 		return fmt.Errorf("planner covered %d of %d sub-issues", len(p.Children), len(subs))
@@ -176,15 +201,75 @@ func (p *Plan) validate(subs []SubIssue) error {
 	seen := make(map[string]bool, len(p.Children))
 	nodes := make([]Node, 0, len(p.Children))
 	for _, c := range p.Children {
-		key := NormalizeIssueRef(c.Ref)
-		if seen[key] {
+		if seen[c.Ref] {
 			return fmt.Errorf("planner listed %s more than once", c.Ref)
 		}
-		seen[key] = true
+		seen[c.Ref] = true
 		nodes = append(nodes, Node{ID: c.Ref, Issue: c.Ref, DependsOn: c.DependsOn})
 	}
 	if Build(nodes).HasCycle() {
 		return fmt.Errorf("planner produced a dependency cycle")
 	}
 	return nil
+}
+
+// refIndex resolves an issue ref in any form (URL, owner/repo#n, or bare #n/n)
+// to the canonical ref of the sub-issue it names.
+type refIndex struct {
+	byNorm map[string]string // normalized ref -> canonical
+	byNum  map[string]string // issue number -> canonical (only when unambiguous)
+}
+
+func buildRefIndex(subs []SubIssue) refIndex {
+	idx := refIndex{byNorm: make(map[string]string, len(subs)), byNum: make(map[string]string, len(subs))}
+	ambiguous := map[string]bool{}
+	for _, s := range subs {
+		canon := NormalizeIssueRef(s.Ref)
+		idx.byNorm[canon] = canon
+		if n := numberOf(canon); n != "" {
+			if _, seen := idx.byNum[n]; seen {
+				ambiguous[n] = true
+			} else {
+				idx.byNum[n] = canon
+			}
+		}
+	}
+	// A number shared by sub-issues in different repos cannot be resolved from
+	// a bare "#N", so drop it from the number index.
+	for n := range ambiguous {
+		delete(idx.byNum, n)
+	}
+	return idx
+}
+
+func (idx refIndex) lookup(ref string) (string, bool) {
+	key := NormalizeIssueRef(ref)
+	if c, ok := idx.byNorm[key]; ok {
+		return c, true
+	}
+	if n := numberOf(key); n != "" {
+		if c, ok := idx.byNum[n]; ok {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// numberOf returns the trailing issue number of a ref ("o/r#12" -> "12",
+// "#12" -> "12", "12" -> "12"), or "" when the tail is not all digits.
+func numberOf(ref string) string {
+	r := ref
+	if i := strings.LastIndexByte(r, '#'); i >= 0 {
+		r = r[i+1:]
+	}
+	r = strings.TrimSpace(r)
+	if r == "" {
+		return ""
+	}
+	for i := range len(r) {
+		if r[i] < '0' || r[i] > '9' {
+			return ""
+		}
+	}
+	return r
 }

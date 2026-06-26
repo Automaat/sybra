@@ -68,28 +68,44 @@ func TestParsePlan(t *testing.T) {
 	}
 }
 
-func TestPlanNormalize(t *testing.T) {
+func TestPlanResolve(t *testing.T) {
 	t.Parallel()
-	p := Plan{
-		Children: []PlannedChild{
-			{Ref: "o/r#1", DependsOn: nil},
-			{Ref: "o/r#2", DependsOn: []string{"o/r#1", "o/r#999", "o/r#2"}}, // unknown + self dep
-			{Ref: "o/r#404"}, // hallucinated ref
-		},
-		MaxParallel: 0,
-	}
-	p.normalize(subs("o/r#1", "o/r#2"))
+	idx := buildRefIndex(subs("o/r#1", "o/r#2"))
 
-	if p.MaxParallel != DefaultMaxParallel {
-		t.Errorf("MaxParallel = %d, want default %d", p.MaxParallel, DefaultMaxParallel)
-	}
-	if len(p.Children) != 2 {
-		t.Fatalf("hallucinated child not dropped: %+v", p.Children)
-	}
-	deps := p.Children[1].DependsOn
-	if len(deps) != 1 || deps[0] != "o/r#1" {
-		t.Errorf("deps = %v, want [o/r#1] (unknown + self dep dropped)", deps)
-	}
+	t.Run("shorthand and self-dep", func(t *testing.T) {
+		t.Parallel()
+		// #2 depends on bare "#1" (shorthand) and on itself; resolve must
+		// canonicalize the shorthand and drop the self-dep.
+		p := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1"},
+			{Ref: "https://github.com/o/r/issues/2", DependsOn: []string{"#1", "o/r#2"}},
+		}}
+		if err := p.resolve(idx); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if p.Children[1].Ref != "o/r#2" {
+			t.Errorf("child ref not canonicalized: %q", p.Children[1].Ref)
+		}
+		if len(p.Children[1].DependsOn) != 1 || p.Children[1].DependsOn[0] != "o/r#1" {
+			t.Errorf("deps = %v, want [o/r#1] (shorthand resolved, self-dep dropped)", p.Children[1].DependsOn)
+		}
+	})
+
+	t.Run("unknown child ref errors", func(t *testing.T) {
+		t.Parallel()
+		p := Plan{Children: []PlannedChild{{Ref: "o/r#404"}}}
+		if err := p.resolve(idx); err == nil {
+			t.Error("expected error for hallucinated child ref")
+		}
+	})
+
+	t.Run("unresolved dependency errors loudly", func(t *testing.T) {
+		t.Parallel()
+		p := Plan{Children: []PlannedChild{{Ref: "o/r#1", DependsOn: []string{"o/r#999"}}}}
+		if err := p.resolve(idx); err == nil {
+			t.Error("expected error for unresolved dependency (must not be silently dropped)")
+		}
+	})
 }
 
 func TestPlanValidate(t *testing.T) {
@@ -169,6 +185,27 @@ func TestGenerate(t *testing.T) {
 		}
 		if plan.MaxParallel != 2 || len(plan.Children) != 2 {
 			t.Fatalf("unexpected plan: %+v", plan)
+		}
+	})
+
+	t.Run("shorthand deps resolve end to end", func(t *testing.T) {
+		t.Parallel()
+		// Model emits the dependency in bare "#1" shorthand — the natural form
+		// given the prompt's "← #N" markers. Must resolve, not silently drop.
+		shorthand := `{"children":[{"issue":"o/r#1","dependsOn":[]},{"issue":"o/r#2","dependsOn":["#1"]}],"maxParallel":2}`
+		run := func(_ context.Context, _ string) (string, error) { return shorthand, nil }
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		var child2 PlannedChild
+		for _, c := range plan.Children {
+			if c.Ref == "o/r#2" {
+				child2 = c
+			}
+		}
+		if len(child2.DependsOn) != 1 || child2.DependsOn[0] != "o/r#1" {
+			t.Fatalf("shorthand dep not resolved: %+v", child2)
 		}
 	})
 

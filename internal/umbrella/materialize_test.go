@@ -1,6 +1,9 @@
 package umbrella
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestChildSpecs(t *testing.T) {
 	t.Parallel()
@@ -39,6 +42,29 @@ func TestChildSpecs(t *testing.T) {
 		specs := ChildSpecs(plan, ss, existing)
 		if len(specs) != 1 || specs[0].Issue != "o/r#3" {
 			t.Fatalf("re-expansion should only create #3, got %+v", specs)
+		}
+	})
+
+	t.Run("closed sub-issue skipped and dropped as a dependency", func(t *testing.T) {
+		t.Parallel()
+		// #1 is already closed (done). It must not become a child, and #2/#3's
+		// dependency on it must be dropped (it has no task to gate against).
+		closedSubs := []SubIssue{
+			{Ref: "o/r#1", Title: "first", Closed: true},
+			{Ref: "o/r#2", Title: "second"},
+			{Ref: "o/r#3", Title: "third"},
+		}
+		specs := ChildSpecs(plan, closedSubs, nil)
+		if len(specs) != 2 {
+			t.Fatalf("closed #1 should be skipped, got %d specs: %+v", len(specs), specs)
+		}
+		for _, s := range specs {
+			if s.Issue == "o/r#1" {
+				t.Fatal("closed sub-issue must not be materialized")
+			}
+			if slices.Contains(s.DependsOn, "o/r#1") {
+				t.Fatalf("dependency on closed #1 must be dropped: %+v", s)
+			}
 		}
 	})
 }

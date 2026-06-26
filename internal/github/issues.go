@@ -365,6 +365,7 @@ func convertIssues(nodes []gqlIssue) []Issue {
 			Title:      n.Title,
 			Body:       n.Body,
 			URL:        n.URL,
+			State:      n.State,
 			Repository: n.Repository.NameWithOwner,
 			RepoName:   n.Repository.Name,
 			Labels:     labels,

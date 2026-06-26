@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -52,36 +53,71 @@ func cmdUmbrella(s *task.Manager, args []string, jsonOut bool) int {
 	planSubs := make([]umbrella.SubIssue, len(subs))
 	byRef := make(map[string]github.Issue, len(subs))
 	for i := range subs {
-		planSubs[i] = umbrella.SubIssue{Ref: subs[i].URL, Title: subs[i].Title, Body: subs[i].Body}
+		planSubs[i] = umbrella.SubIssue{
+			Ref:    subs[i].URL,
+			Title:  subs[i].Title,
+			Body:   subs[i].Body,
+			Closed: strings.EqualFold(subs[i].State, "CLOSED"),
+		}
 		byRef[umbrella.NormalizeIssueRef(subs[i].URL)] = subs[i]
 	}
 
-	plan, err := umbrella.Generate(context.Background(), claudePlannerRunner(*model), umb.URL, umb.Body, planSubs)
+	existing, trackerExists, err := scanExisting(s, umb.URL)
+	if err != nil {
+		return fatal(jsonOut, "scan existing tasks: %v", err)
+	}
+	// Short-circuit a full re-run: when every open sub-issue already has a task
+	// and the tracker exists, there is nothing to create — skip the (costly,
+	// stochastic) planner entirely.
+	if trackerExists && allMaterialized(planSubs, existing) {
+		return reportUmbrella(jsonOut, umb.URL, 0, len(subs))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), plannerTimeout)
+	defer cancel()
+	plan, err := umbrella.Generate(ctx, claudePlannerRunner(*model), umb.URL, umb.Body, planSubs)
 	if err != nil {
 		return fatal(jsonOut, "plan umbrella: %v", err)
 	}
 
-	existing, trackerExists := scanExisting(s, umb.URL)
 	specs := umbrella.ChildSpecs(plan, planSubs, existing)
-
-	created, err := materializeUmbrella(s, umb, repo, specs, byRef, trackerExists)
+	created, err := materializeUmbrella(s, umb, specs, byRef, trackerExists, plan.MaxParallel)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	return reportUmbrella(jsonOut, umb.URL, created, len(subs)-len(specs))
+	return reportUmbrella(jsonOut, umb.URL, created, len(subs)-created)
+}
+
+// plannerTimeout bounds a single planner LLM invocation so a hung claude
+// process cannot wedge the command indefinitely.
+const plannerTimeout = 5 * time.Minute
+
+// allMaterialized reports whether every open sub-issue already has a task.
+// Closed sub-issues never get a task, so they do not count as missing.
+func allMaterialized(subs []umbrella.SubIssue, existing map[string]bool) bool {
+	for _, s := range subs {
+		if s.Closed {
+			continue
+		}
+		if !existing[umbrella.NormalizeIssueRef(s.Ref)] {
+			return false
+		}
+	}
+	return true
 }
 
 // scanExisting returns the set of normalized issue refs that already have a
-// task, and whether the umbrella tracker task already exists.
-func scanExisting(s *task.Manager, umbrellaURL string) (map[string]bool, bool) {
-	refs := map[string]bool{}
-	trackerExists := false
-	umbKey := umbrella.NormalizeIssueRef(umbrellaURL)
+// task, and whether the umbrella tracker task already exists. A List failure
+// is propagated so the caller aborts rather than treating an unreadable store
+// as empty and creating a duplicate DAG.
+func scanExisting(s *task.Manager, umbrellaURL string) (refs map[string]bool, trackerExists bool, err error) {
 	tasks, err := s.List()
 	if err != nil {
-		return refs, false
+		return nil, false, err
 	}
+	refs = make(map[string]bool, len(tasks))
+	umbKey := umbrella.NormalizeIssueRef(umbrellaURL)
 	for i := range tasks {
 		t := &tasks[i]
 		if t.Issue != "" {
@@ -91,19 +127,19 @@ func scanExisting(s *task.Manager, umbrellaURL string) (map[string]bool, bool) {
 			trackerExists = true
 		}
 	}
-	return refs, trackerExists
+	return refs, trackerExists, nil
 }
 
 // materializeUmbrella creates the tracker (when absent) and one blocked child
 // task per spec. It returns the number of child tasks created.
-func materializeUmbrella(s *task.Manager, umb github.Issue, repo string, specs []umbrella.ChildSpec, byRef map[string]github.Issue, trackerExists bool) (int, error) {
+func materializeUmbrella(s *task.Manager, umb github.Issue, specs []umbrella.ChildSpec, byRef map[string]github.Issue, trackerExists bool, maxParallel int) (int, error) {
 	if !trackerExists {
 		if _, err := s.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
-			ProjectID: task.Ptr(repo),
+			ProjectID: task.Ptr(umb.Repository),
 			Status:    task.Ptr(task.StatusInProgress),
-			Tags:      task.Ptr([]string{"umbrella"}),
+			Tags:      task.Ptr([]string{"umbrella", umbrella.MaxParallelTag(maxParallel)}),
 		}); err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
@@ -115,7 +151,7 @@ func materializeUmbrella(s *task.Manager, umb github.Issue, repo string, specs [
 			Issue:         task.Ptr(spec.Issue),
 			UmbrellaIssue: task.Ptr(umb.URL),
 			DependsOn:     task.Ptr(canonicalizeDeps(spec.DependsOn, byRef)),
-			ProjectID:     task.Ptr(repo),
+			ProjectID:     task.Ptr(childProjectID(spec.Issue, byRef, umb.Repository)),
 			Status:        task.Ptr(task.StatusBlocked),
 			Tags:          task.Ptr(childTags(spec.Issue, byRef)),
 		}); err != nil {
@@ -124,6 +160,16 @@ func materializeUmbrella(s *task.Manager, umb github.Issue, repo string, specs [
 		created++
 	}
 	return created, nil
+}
+
+// childProjectID returns the repo a child task should be worked in: the
+// sub-issue's own repository (sub-issues can live in a different repo than the
+// umbrella), falling back to the umbrella's repo when unknown.
+func childProjectID(ref string, byRef map[string]github.Issue, fallback string) string {
+	if iss, ok := byRef[umbrella.NormalizeIssueRef(ref)]; ok && iss.Repository != "" {
+		return iss.Repository
+	}
+	return fallback
 }
 
 // canonicalizeDeps rewrites each dependency ref to the canonical issue URL of
@@ -145,11 +191,12 @@ func canonicalizeDeps(deps []string, byRef map[string]github.Issue) []string {
 	return out
 }
 
-// childTags returns the gating marker plus the sub-issue's own labels.
+// childTags returns the gating marker plus the sub-issue's inheritable labels
+// (load-bearing routing tags are filtered out so a child is not mis-routed).
 func childTags(ref string, byRef map[string]github.Issue) []string {
 	tags := []string{umbrella.GatedTag}
 	if iss, ok := byRef[umbrella.NormalizeIssueRef(ref)]; ok {
-		for _, l := range iss.Labels {
+		for _, l := range umbrella.InheritableLabels(iss.Labels) {
 			if !slices.Contains(tags, l) {
 				tags = append(tags, l)
 			}
@@ -168,7 +215,7 @@ func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int) int 
 		fmt.Println(string(out))
 		return 0
 	}
-	fmt.Printf("Expanded %s: created %d child task(s), %d already present.\n", umbrellaURL, created, skipped)
+	fmt.Printf("Expanded %s: created %d child task(s), %d skipped (done or already present).\n", umbrellaURL, created, skipped)
 	return 0
 }
 
