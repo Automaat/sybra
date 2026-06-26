@@ -11,6 +11,7 @@ func TestIsUmbrellaIssue(t *testing.T) {
 		want   bool
 	}{
 		{"umbrella emoji prefix", "☂️ feat(x): umbrella", nil, true},
+		{"bare umbrella rune (no VS16)", "☂ feat(x): umbrella", nil, true},
 		{"emoji with leading space", "  ☂️ leading space", nil, true},
 		{"umbrella label", "ordinary title", []string{"bug", "umbrella"}, true},
 		{"emoji mid-title is not a prefix", "feat ☂️ inline", nil, false},

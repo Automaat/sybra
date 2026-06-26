@@ -89,6 +89,50 @@ func TestIssuesFetcher_SyncIssuesToTasks_AutoExpandsUmbrella(t *testing.T) {
 	assertStringSetEqual(t, taskIssueURLs(t, env.tasks), []string{"https://github.com/acme/pet1/issues/2"})
 }
 
+func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	const subURL = "https://github.com/acme/pet1/issues/5"
+	// Simulate Expand creating a gated child task for sub-issue #5.
+	env.fetcher.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+		_, err := env.tasks.CreateFull("child 5", "", task.AgentModeHeadless, task.Update{
+			Issue:         task.Ptr(subURL),
+			UmbrellaIssue: task.Ptr(issueURL),
+			Status:        task.Ptr(task.StatusBlocked),
+			Tags:          task.Ptr([]string{umbrella.GatedTag}),
+		})
+		return umbrella.Result{Created: 1}, err
+	})
+
+	// Umbrella and its sub-issue arrive in the SAME batch.
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: "https://github.com/acme/pet1/issues/1", Repository: "acme/pet1"},
+		{Number: 5, Title: "sub issue 5", URL: subURL, Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	// Sub-issue #5 must have exactly one task — the gated child — not a second
+	// ungated flat todo task that would bypass the dependency DAG.
+	all, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	matches := 0
+	for i := range all {
+		if all[i].Issue == subURL {
+			matches++
+			if all[i].Status != task.StatusBlocked {
+				t.Fatalf("sub-issue task status = %q, want blocked (gated child)", all[i].Status)
+			}
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("sub-issue #5 has %d tasks, want 1 (no duplicate flat task)", matches)
+	}
+}
+
 func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaDisabledIsFlat(t *testing.T) {
 	t.Parallel()
 	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)

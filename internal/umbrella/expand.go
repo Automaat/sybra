@@ -217,9 +217,10 @@ func ClaudePlannerRunner(model string) Runner {
 }
 
 // IsUmbrellaIssue reports whether a GitHub issue should be auto-expanded as an
-// umbrella: a ☂️ title prefix or an "umbrella" label.
+// umbrella: a ☂ title prefix (with or without the U+FE0F variation selector
+// that renders it as emoji) or an "umbrella" label.
 func IsUmbrellaIssue(title string, labels []string) bool {
-	if strings.HasPrefix(strings.TrimSpace(title), "☂️") {
+	if strings.HasPrefix(strings.TrimSpace(title), "☂") {
 		return true
 	}
 	return slices.Contains(labels, "umbrella")
