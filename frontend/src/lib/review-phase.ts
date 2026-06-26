@@ -11,9 +11,10 @@ export type ReviewPhase =
   | 'awaiting-author'
   | 'needs-approval'
   | 'approved'
+  | 'conflict'
 
 /** Icon keys, resolved to lucide components at the call site. */
-export type ReviewPhaseIcon = 'loader' | 'eye' | 'pen' | 'hourglass' | 'shield' | 'check'
+export type ReviewPhaseIcon = 'loader' | 'eye' | 'pen' | 'hourglass' | 'shield' | 'check' | 'conflict'
 
 export interface ReviewPhaseMeta {
   label: string
@@ -57,9 +58,18 @@ export const REVIEW_PHASE_META: Record<ReviewPhase, ReviewPhaseMeta> = {
     icon: 'check',
     classes: 'bg-success-200 text-success-800 dark:bg-success-700 dark:text-success-200',
   },
+  // Blocked on the author rebasing — error-toned so it reads as a problem, but
+  // it sorts to the bottom (see REVIEW_PHASE_ORDER): nothing for you to do yet.
+  conflict: {
+    label: 'Conflict',
+    icon: 'conflict',
+    classes: 'bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200',
+  },
 }
 
-// Lane sort: the user's pending actions first, then waiting, then done.
+// Lane sort: the user's pending actions first, then waiting, then done, and
+// conflicting PRs last — they're blocked on the author, so they sink to the
+// bottom of the lane.
 const REVIEW_PHASE_ORDER: ReviewPhase[] = [
   'needs-approval',
   'drafted',
@@ -67,6 +77,7 @@ const REVIEW_PHASE_ORDER: ReviewPhase[] = [
   'reviewing',
   'awaiting-author',
   'approved',
+  'conflict',
 ]
 
 /** True when a task is an inbound PR review (reviewing someone else's code). */

@@ -61,6 +61,12 @@ describe('reviewPhaseRank', () => {
     expect(rank('drafted')).toBeLessThan(rank('awaiting-author'))
     expect(rank('awaiting-author')).toBeLessThan(rank('approved'))
   })
+
+  it('sinks conflicting PRs to the bottom of the lane', () => {
+    const rank = (p: string) => reviewPhaseRank({ reviewPhase: p })
+    expect(rank('conflict')).toBeGreaterThan(rank('approved'))
+    expect(rank('conflict')).toBeGreaterThan(rank('needs-approval'))
+  })
 })
 
 describe('BOARD_LANES', () => {

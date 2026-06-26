@@ -48,7 +48,7 @@
 
   // lucide components keyed by the phase meta's icon name.
   const PHASE_ICONS: Record<ReviewPhaseIcon, typeof CheckCircle> = {
-    loader: Loader, eye: Eye, pen: PenLine, hourglass: Hourglass, shield: ShieldCheck, check: CheckCircle,
+    loader: Loader, eye: Eye, pen: PenLine, hourglass: Hourglass, shield: ShieldCheck, check: CheckCircle, conflict: AlertTriangle,
   }
 
   // lucide components for the outbound PR phase glyph.
