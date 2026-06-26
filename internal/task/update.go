@@ -12,37 +12,38 @@ import (
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
 type Update struct {
-	Title           *string
-	Slug            *string
-	Status          *Status
-	StatusReason    *string
-	BlockedByIssue  *string
-	AgentMode       *string
-	TaskType        *TaskType
-	Body            *string
-	Tags            *[]string
-	ProjectID       *string
-	Branch          *string
-	WorktreeDir     *string
-	PRNumber        *int
-	Issue           *string
-	Reviewed        *bool
-	RunRole         *string
-	SupervisorSteer *string
-	ReviewPhase     *string
-	PRPhase         *string
-	TodoistID       *string
-	Priority        *Priority
-	DueDate         **time.Time
-	Workflow        **workflow.Execution
-	Plan            *string
-	PlanCritique    *string
-	CodeReview      *string
-	MaxTurns        *int
-	ForkSubagent    *bool
-	ReasoningEffort *string
-	Outcome         *string
-	MergeCommit     *string
+	Title                 *string
+	Slug                  *string
+	Status                *Status
+	StatusReason          *string
+	BlockedByIssue        *string
+	AgentMode             *string
+	TaskType              *TaskType
+	Body                  *string
+	Tags                  *[]string
+	ProjectID             *string
+	Branch                *string
+	WorktreeDir           *string
+	HandoffSourceProvider *string
+	PRNumber              *int
+	Issue                 *string
+	Reviewed              *bool
+	RunRole               *string
+	SupervisorSteer       *string
+	ReviewPhase           *string
+	PRPhase               *string
+	TodoistID             *string
+	Priority              *Priority
+	DueDate               **time.Time
+	Workflow              **workflow.Execution
+	Plan                  *string
+	PlanCritique          *string
+	CodeReview            *string
+	MaxTurns              *int
+	ForkSubagent          *bool
+	ReasoningEffort       *string
+	Outcome               *string
+	MergeCommit           *string
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -71,6 +72,8 @@ func applyMapField(u *Update, k string, v any) error {
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
+	case "handoff_source_provider":
+		return applyAgentProviderField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
 	case "status":
@@ -166,6 +169,19 @@ func applyPlainStringField(u *Update, k string, v any) error {
 	case "merge_commit":
 		u.MergeCommit = &s
 	}
+	return nil
+}
+
+func applyAgentProviderField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	prov, err := ValidateAgentProvider(strings.ToLower(strings.TrimSpace(s)))
+	if err != nil {
+		return err
+	}
+	u.HandoffSourceProvider = &prov
 	return nil
 }
 

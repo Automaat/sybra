@@ -361,6 +361,33 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if init.Body != nil {
 		t.Body = *init.Body
 	}
+	if init.Branch != nil {
+		t.Branch = *init.Branch
+	}
+	if init.WorktreeDir != nil {
+		t.WorktreeDir = *init.WorktreeDir
+	}
+	if init.HandoffSourceProvider != nil {
+		t.HandoffSourceProvider = *init.HandoffSourceProvider
+	}
+	if init.Issue != nil {
+		t.Issue = *init.Issue
+	}
+	if init.Reviewed != nil {
+		t.Reviewed = *init.Reviewed
+	}
+	if init.MaxTurns != nil {
+		t.MaxTurns = *init.MaxTurns
+	}
+	if init.ForkSubagent != nil {
+		t.ForkSubagent = *init.ForkSubagent
+	}
+	if init.ReasoningEffort != nil {
+		t.ReasoningEffort = *init.ReasoningEffort
+	}
+	if err := s.writeSidecars(id, init, &t); err != nil {
+		return Task{}, err
+	}
 
 	if err := s.writeSidecars(t.ID, init, &t); err != nil {
 		return Task{}, err
@@ -491,6 +518,9 @@ func applyLinkFields(t *Task, u Update) {
 	}
 	if u.WorktreeDir != nil {
 		t.WorktreeDir = *u.WorktreeDir
+	}
+	if u.HandoffSourceProvider != nil {
+		t.HandoffSourceProvider = *u.HandoffSourceProvider
 	}
 	if u.PRNumber != nil {
 		t.PRNumber = *u.PRNumber

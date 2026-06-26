@@ -17,15 +17,16 @@ import (
 // dead code, since its "project.type" condition had no populating caller.
 var KnownTriggerFields = map[string]bool{
 	// Populated by engine.taskFields for every dispatch/transition.
-	"task.id":         true,
-	"task.title":      true,
-	"task.status":     true,
-	"task.tags":       true,
-	"task.agent_mode": true,
-	"task.project_id": true,
-	"task.branch":     true,
-	"task.pr_number":  true,
-	"task.reviewed":   true,
+	"task.id":                      true,
+	"task.title":                   true,
+	"task.status":                  true,
+	"task.tags":                    true,
+	"task.agent_mode":              true,
+	"task.project_id":              true,
+	"task.handoff_source_provider": true,
+	"task.branch":                  true,
+	"task.pr_number":               true,
+	"task.reviewed":                true,
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.
 	"pr.issue_kind": true,

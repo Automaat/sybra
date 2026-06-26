@@ -125,7 +125,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 		model = "sonnet"
 	}
 
-	provider := resolveProvider(child.Config.Provider, wfExec, e.agents.DefaultProvider())
+	provider := resolveProvider(child.Config.Provider, wfExec, e.agents.DefaultProvider(), childCtx.Task)
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn("workflow.parallel.cross-provider.fallback", "child", child.ID, "wanted", provider, "reason", "CLI not found")
 		provider = ""

@@ -149,6 +149,24 @@ func ValidateReasoningEffort(s string) (string, error) {
 	return s, nil
 }
 
+// AllAgentProviders returns every supported CLI provider name in display order.
+func AllAgentProviders() []string { return []string{"claude", "codex", "copilot"} }
+
+var validAgentProviders = map[string]bool{"claude": true, "codex": true, "copilot": true}
+
+// ValidateAgentProvider accepts the empty string (unset/default) or one of the
+// providers Sybra can dispatch. It is used for handoff provenance, not the
+// task's execution mode.
+func ValidateAgentProvider(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	if !validAgentProviders[s] {
+		return "", fmt.Errorf("invalid provider %q (valid: claude, codex, copilot, or empty)", s)
+	}
+	return s, nil
+}
+
 type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
@@ -192,6 +210,11 @@ type Task struct {
 	PRNumber     int    `yaml:"pr_number,omitempty" json:"prNumber"`
 	Issue        string `yaml:"issue,omitempty" json:"issue"`
 	StatusReason string `yaml:"status_reason,omitempty" json:"statusReason"`
+	// HandoffSourceProvider records which local agent provider produced the
+	// work before a handoff skipped directly into review/testing/PR. Workflow
+	// steps with provider=cross use it when there is no Sybra-authored run
+	// history to flip from.
+	HandoffSourceProvider string `yaml:"handoff_source_provider,omitempty" json:"handoffSourceProvider,omitempty"`
 	// BlockedByIssue stores the URL of the GitHub issue that put the task
 	// into status=blocked. Set by the human-review automation when it
 	// concludes the human-required transition was caused by a Sybra bug.

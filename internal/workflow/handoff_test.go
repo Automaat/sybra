@@ -87,6 +87,13 @@ func TestBuiltinHandoffTesting_SkipsToTesting(t *testing.T) {
 	if !hasCondition(testWf.Trigger.Conditions, "task.status", "equals", "testing") {
 		t.Errorf("testing-task must trigger on status=testing; got %+v", testWf.Trigger.Conditions)
 	}
+	runTest := testWf.StepByID("run_test")
+	if runTest == nil {
+		t.Fatal("testing-task run_test step not found")
+	}
+	if runTest.Config.Provider != "cross" {
+		t.Errorf("testing-task run_test provider = %q, want cross", runTest.Config.Provider)
+	}
 }
 
 // TestBuiltinHandoffReview_SkipsToReview locks the review-stage contract: a task
@@ -112,6 +119,39 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 	review := defByID(t, "simple-task-review")
 	if !hasCondition(review.Trigger.Conditions, "task.status", "equals", "ready-review") {
 		t.Errorf("simple-task-review must trigger on status=ready-review; got %+v", review.Trigger.Conditions)
+	}
+	for _, stepID := range []string{"code_review_simple", "code_review_staff"} {
+		step := review.StepByID(stepID)
+		if step == nil {
+			t.Fatalf("simple-task-review %s step not found", stepID)
+		}
+		if step.Config.Provider != "cross" {
+			t.Errorf("simple-task-review %s provider = %q, want cross", stepID, step.Config.Provider)
+		}
+	}
+}
+
+// TestBuiltinHandoffPR_ReviewsCrossProvider locks the existing-PR handoff
+// contract: pr-review is also a cross-check lane, using handoff provenance when
+// present and default-provider fallback when no provenance exists.
+func TestBuiltinHandoffPR_ReviewsCrossProvider(t *testing.T) {
+	t.Parallel()
+
+	pr := defByID(t, "pr-review")
+	if pr.Trigger.On != "task.created" {
+		t.Errorf("pr-review trigger.on = %q, want task.created", pr.Trigger.On)
+	}
+	if !hasCondition(pr.Trigger.Conditions, "task.tags", "contains", "review") {
+		t.Errorf("pr-review trigger must require tag review; got %+v", pr.Trigger.Conditions)
+	}
+	for _, stepID := range []string{"review_simple", "review_staff"} {
+		step := pr.StepByID(stepID)
+		if step == nil {
+			t.Fatalf("pr-review %s step not found", stepID)
+		}
+		if step.Config.Provider != "cross" {
+			t.Errorf("pr-review %s provider = %q, want cross", stepID, step.Config.Provider)
+		}
 	}
 }
 

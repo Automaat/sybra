@@ -285,7 +285,7 @@ func (e *Engine) ResumeStalled() {
 		// just hit the limit again. The cooldown clears on its own and a later
 		// sweep resumes the step. Auth failures are NOT skipped here: those need
 		// a human to log in and take the human-required path instead.
-		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider()); e.agents.ProviderRateLimited(prov) {
+		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t); e.agents.ProviderRateLimited(prov) {
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
 			continue
