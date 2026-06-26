@@ -265,6 +265,32 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMarshalRoundTripSupervisorSteer guards the watchdog headless-nudge steer:
+// it must survive marshal→parse so a pending nudge is not lost if the app
+// restarts between the stop and the recovery re-dispatch.
+func TestMarshalRoundTripSupervisorSteer(t *testing.T) {
+	t.Parallel()
+	original := Task{
+		ID:              "ss1",
+		Title:           "Steer roundtrip",
+		Status:          StatusInProgress,
+		AgentMode:       "headless",
+		SupervisorSteer: "stop retrying the failing command; read the error first",
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.SupervisorSteer != original.SupervisorSteer {
+		t.Errorf("SupervisorSteer = %q, want %q", parsed.SupervisorSteer, original.SupervisorSteer)
+	}
+}
+
 func TestMarshalEmptyBody(t *testing.T) {
 	t.Parallel()
 	task := Task{ID: "e1", Title: "No body", Status: StatusTodo}

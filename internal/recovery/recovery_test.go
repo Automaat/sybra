@@ -2,6 +2,7 @@ package recovery_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -200,20 +202,100 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	}
 }
 
+// TestRestartStaleSteerBypassesRecentRunDebounce verifies the recovery half of
+// a watchdog headless nudge: a pending SupervisorSteer makes a just-stopped task
+// re-dispatch immediately instead of waiting out the recent-run debounce. The
+// steer is consumed + prepended inside AgentOrchestrator.StartAgent (covered by
+// the internal/sybra helper test), not here.
+func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("looping", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	steer := "stop retrying the failing command; read the error first"
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:          &inProg,
+		ProjectID:       &projID,
+		SupervisorSteer: &steer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// RECENT run: the debounce would normally skip it, but a pending steer
+	// (the watchdog just stopped a looping agent) must bypass the debounce.
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-1",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress()
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("dispatch count = %d, want 1 (steer must bypass the recent-run debounce)", stub.startCalls)
+	}
+}
+
 type stubOrchestrator struct {
 	startCalls    int
 	prFixCalls    int
 	startErr      error
 	prFixErr      error
 	startReturned *agent.Agent
+	lastPrompt    string
 }
 
-func (s *stubOrchestrator) StartAgent(_, _, _ string, _, _ bool) (*agent.Agent, error) {
+func (s *stubOrchestrator) StartAgent(_, _, prompt string, _, _ bool) (*agent.Agent, error) {
 	s.startCalls++
+	s.lastPrompt = prompt
 	return s.startReturned, s.startErr
 }
 
 func (s *stubOrchestrator) StartPRFixAgent(_ string) error {
 	s.prFixCalls++
 	return s.prFixErr
+}
+
+// stubProjects is a recovery.ProjectGetter that reports no project so the
+// re-dispatch prompt uses the default (non-pet) PR flag.
+type stubProjects struct{}
+
+func (stubProjects) Get(string) (project.Project, error) {
+	return project.Project{}, errors.New("no project")
 }

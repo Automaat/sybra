@@ -28,6 +28,7 @@ type Update struct {
 	Issue           *string
 	Reviewed        *bool
 	RunRole         *string
+	SupervisorSteer *string
 	ReviewPhase     *string
 	PRPhase         *string
 	TodoistID       *string
@@ -68,7 +69,7 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
-		"review_phase", "pr_phase", "outcome", "merge_commit":
+		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
@@ -146,6 +147,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.Issue = &s
 	case "run_role":
 		u.RunRole = &s
+	case "supervisor_steer":
+		u.SupervisorSteer = &s
 	case "todoist_id":
 		u.TodoistID = &s
 	case "plan":

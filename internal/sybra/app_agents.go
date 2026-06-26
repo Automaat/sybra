@@ -155,6 +155,38 @@ func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string
 	return inst.EnvVars()
 }
 
+// prependSupervisorSteer consumes a pending watchdog headless-nudge steer for
+// taskID: it clears the one-shot SupervisorSteer field and returns prompt with
+// the correction prepended. Returns prompt unchanged when none is pending.
+// Called at the head of the headless re-dispatch entry points (this orchestrator,
+// the workflow run_agent path, and the pr-fix agent) so the first agent resumed
+// after a nudge carries the correction and later ones do not. The orchestrator
+// resume loops (ResumeStalled then RestartStaleInProgress) run sequentially on a
+// single goroutine and each gates on no-running-agent before dispatching, so the
+// read-then-clear is not raced by a concurrent dispatcher for the same task.
+//
+// The prompt is steered ONLY after the clear succeeds, so a failed clear leaves
+// the steer pending (the error is returned, the prompt is unchanged) rather than
+// applying it twice — preserving the one-shot contract. A start that then fails
+// loses the nudge, which is recoverable: the watchdog re-nudges if the resumed
+// agent loops again.
+func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string, error) {
+	t, err := tasks.Get(taskID)
+	if err != nil {
+		// Cannot read the task → cannot consume a steer; dispatch unsteered and
+		// let the caller log. Any pending steer stays for a later dispatch.
+		return prompt, err
+	}
+	steer := strings.TrimSpace(t.SupervisorSteer)
+	if steer == "" {
+		return prompt, nil
+	}
+	if _, uErr := tasks.Update(taskID, task.Update{SupervisorSteer: task.Ptr("")}); uErr != nil {
+		return prompt, fmt.Errorf("clear supervisor steer: %w", uErr)
+	}
+	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
+}
+
 func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
@@ -166,6 +198,15 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 		return nil, workflow.ErrDispatchInFlight
 	}
 	defer o.agents.ReleaseTaskDispatch(taskID)
+
+	// Consume a pending watchdog headless-nudge steer (no-op when none). Held
+	// within the dispatch claim so the read-then-clear is serialized per task.
+	// On a clear failure the steer stays pending and we dispatch unsteered.
+	if steered, sErr := prependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
+	} else {
+		prompt = steered
+	}
 
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
@@ -391,6 +432,11 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	}
 
 	prompt := buildPRFixPrompt(t, o.logger)
+	if steered, sErr := prependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
+	} else {
+		prompt = steered
+	}
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             taskID,
 		Name:               agent.RolePRFix.AgentName(t.Title),

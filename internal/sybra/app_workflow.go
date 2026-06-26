@@ -126,6 +126,10 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	return err
 }
 
+func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
+	return prependSupervisorSteer(a.tasks, taskID, prompt)
+}
+
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 	// Plan drafts are namespaced "plan_draft.<name>" so the workflow can fan
 	// out to N parallel planners without growing the static sidecar enum.
@@ -265,6 +269,9 @@ type agentAdapter struct {
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
+	// (A pending watchdog headless-nudge steer is consumed upstream in
+	// execRunAgent, before the prompt reaches here.)
+
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via

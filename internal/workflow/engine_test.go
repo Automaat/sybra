@@ -62,10 +62,30 @@ type memTasks struct {
 	mu      sync.Mutex
 	tasks   map[string]*TaskInfo
 	reasons map[string]string
+	steers  map[string]string
 }
 
 func newMemTasks() *memTasks {
-	return &memTasks{tasks: make(map[string]*TaskInfo), reasons: make(map[string]string)}
+	return &memTasks{tasks: make(map[string]*TaskInfo), reasons: make(map[string]string), steers: make(map[string]string)}
+}
+
+// SetSteer arms a pending supervisor steer for a task, as the watchdog's
+// headless nudge would. Consumed (and cleared) by ConsumeSupervisorSteer.
+func (m *memTasks) SetSteer(id, steer string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.steers[id] = steer
+}
+
+func (m *memTasks) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	steer := m.steers[taskID]
+	if steer == "" {
+		return prompt, nil
+	}
+	delete(m.steers, taskID)
+	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
 }
 
 func (m *memTasks) Put(t TaskInfo) {
@@ -2545,6 +2565,47 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	engine.ResumeStalled()
 	if got := agents.CallCount(); got != before+1 {
 		t.Errorf("ResumeStalled after inflight cleared: calls %d → %d (want +1)", before, got)
+	}
+}
+
+// TestExecRunAgent_ConsumesSupervisorSteer verifies the workflow half of a
+// watchdog headless nudge: when a step is (re-)dispatched and a steer is
+// pending, execRunAgent prepends the correction to the agent's prompt and the
+// steer is consumed exactly once. This is the path ResumeStalled drives when it
+// re-runs a stalled run_agent step — the case a prior design missed entirely.
+func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	tasks.SetSteer("t1", "stop retrying the failing command")
+
+	step := &Step{
+		ID:     "implement",
+		Type:   StepRunAgent,
+		Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "do the work"},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got := agents.LastCall().Prompt
+	want := "Supervisor course-correction: stop retrying the failing command\n\ndo the work"
+	if got != want {
+		t.Fatalf("dispatched prompt = %q, want %q", got, want)
+	}
+
+	// One-shot: a second dispatch (steer consumed) carries only the step prompt.
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.LastCall().Prompt; got != "do the work" {
+		t.Fatalf("second dispatch prompt = %q, want unsteered (steer already consumed)", got)
 	}
 }
 
