@@ -1,9 +1,42 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"slices"
+	"strconv"
 	"strings"
 )
+
+// toolSignature returns a canonical fingerprint of a set of tool calls (each
+// tool's name plus its JSON-canonicalized input), order-independent, or "" when
+// there are no tool calls. The watchdog's loop detector compares consecutive
+// signatures to spot an agent repeating the same call. json.Marshal sorts map
+// keys, so the same call always hashes identically.
+func toolSignature(toolUses []ToolUseBlock) string {
+	if len(toolUses) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(toolUses))
+	for i := range toolUses {
+		var b strings.Builder
+		b.WriteString(toolUses[i].Name)
+		if toolUses[i].Input != nil {
+			if raw, err := json.Marshal(toolUses[i].Input); err == nil {
+				b.Write(raw)
+			}
+		}
+		parts = append(parts, b.String())
+	}
+	slices.Sort(parts)
+	h := fnv.New64a()
+	for _, p := range parts {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
+}
 
 // claudeEventToStreamEvent converts a shared ClaudeEvent into a StreamEvent
 // for the headless runner. Tool uses are formatted as "[name] cmd/desc" strings.
@@ -18,6 +51,7 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.Content = formatHeadlessAssistant(e.Message)
 			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
 			ev.ToolCalls = len(e.Message.ToolUses)
+			ev.toolSig = toolSignature(e.Message.ToolUses)
 		}
 	case "user":
 		if e.Message != nil {
@@ -89,6 +123,7 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
 			ev.Content = cmd
 			ev.ToolCalls = len(e.Message.ToolUses)
+			ev.toolSig = toolSignature(e.Message.ToolUses)
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {
@@ -128,6 +163,8 @@ func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
 		if e.Message != nil && len(e.Message.ToolUses) > 0 {
 			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
 			ev.Content = cmd
+			ev.ToolCalls = len(e.Message.ToolUses)
+			ev.toolSig = toolSignature(e.Message.ToolUses)
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {

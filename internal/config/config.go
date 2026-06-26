@@ -22,6 +22,7 @@ type Config struct {
 	Triage        TriageConfig       `yaml:"triage" json:"triage"`
 	HumanReview   HumanReviewConfig  `yaml:"human_review" json:"humanReview"`
 	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
+	Watchdog      WatchdogConfig     `yaml:"watchdog" json:"watchdog"`
 	SelfMonitor   SelfMonitorConfig  `yaml:"self_monitor" json:"selfMonitor"`
 	Evaluation    EvaluationConfig   `yaml:"evaluation" json:"evaluation"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
@@ -363,6 +364,19 @@ type MonitorConfig struct {
 	IssueRepo            string             `yaml:"issue_repo" json:"issueRepo"`
 }
 
+// WatchdogConfig controls the in-process agent watchdog (internal/watchdog),
+// which supervises running headless agents: it triggers a cheap LLM inspection
+// when an agent stalls, overruns its size budget, or loops on the same tool
+// call (real-time loop detection), then stops/escalates/nudges based on the
+// verdict. Enabled defaults to true — the watchdog is an always-on safety net,
+// not an opt-in automation. Model selects the cheap judge model; LoopThreshold
+// is the number of consecutive identical tool-call signatures that flags a loop.
+type WatchdogConfig struct {
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	Model         string `yaml:"model" json:"model"`
+	LoopThreshold int    `yaml:"loop_threshold" json:"loopThreshold"`
+}
+
 // EvaluationConfig controls the in-process evaluation service, which periodically
 // computes a fleet scorecard (autonomy, throughput, reliability, efficiency) from
 // stats + audit data. Read-only: it never dispatches agents or files issues, so
@@ -439,6 +453,10 @@ func DefaultConfig() *Config {
 		},
 		Monitor: MonitorConfig{
 			Enabled: true,
+		},
+		Watchdog: WatchdogConfig{
+			Enabled:       true,
+			LoopThreshold: 6,
 		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
@@ -563,10 +581,24 @@ func Load() (*Config, error) {
 
 	applyProvidersDefaults(cfg)
 	applyMonitorDefaults(cfg)
+	applyWatchdogDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
 
 	return cfg, nil
+}
+
+// applyWatchdogDefaults fills the Watchdog model default. Enabled and
+// LoopThreshold are seeded by DefaultConfig (true / 6), so a config missing the
+// watchdog block keeps the always-on default while an explicit `enabled: false`
+// or `loop_threshold: 0` survives — the latter being the documented way to keep
+// the watchdog running with the real-time loop trigger off. LoopThreshold is
+// deliberately NOT defaulted here so an explicit 0 is not clobbered back to 6.
+func applyWatchdogDefaults(cfg *Config) {
+	w := &cfg.Watchdog
+	if w.Model == "" {
+		w.Model = "claude-haiku-4-5-20251001"
+	}
 }
 
 // applyEvaluationDefaults fills zero values for the Evaluation block so older

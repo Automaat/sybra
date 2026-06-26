@@ -13,7 +13,10 @@ import (
 type InspectorVerdict struct {
 	Stuck          bool   `json:"stuck"`
 	Reason         string `json:"reason"`
-	Recommendation string `json:"recommendation"` // "stop" | "continue" | "escalate"
+	Recommendation string `json:"recommendation"` // "stop" | "continue" | "escalate" | "nudge"
+	// Nudge is the short corrective message the supervisor should deliver to the
+	// agent when Recommendation == "nudge". Empty for other recommendations.
+	Nudge string `json:"nudge,omitempty"`
 }
 
 // InspectInput holds the context handed to the inspector about the target agent.
@@ -23,6 +26,12 @@ type InspectInput struct {
 	LogPath   string
 	StallSec  int
 	TotalSec  int
+	// Trigger names why inspection fired ("stall", "budget", or "loop"), so the
+	// prompt can focus the judge. Empty is treated as a generic stall check.
+	Trigger string
+	// Model selects the judge model (e.g. a cheap "haiku" for routine checks).
+	// Empty falls back to "sonnet" for backwards compatibility.
+	Model string
 }
 
 // Inspect spawns `claude -p` to analyze a running agent's NDJSON log and return
@@ -36,11 +45,15 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 
 	prompt := buildInspectorPrompt(in)
 
+	model := in.Model
+	if model == "" {
+		model = "sonnet"
+	}
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p", prompt,
 		"--output-format", "json",
 		"--dangerously-skip-permissions",
-		"--model", "sonnet",
+		"--model", model,
 	)
 	out, err := cmd.Output()
 	if err != nil {
@@ -50,11 +63,16 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 }
 
 func buildInspectorPrompt(in InspectInput) string {
+	trigger := in.Trigger
+	if trigger == "" {
+		trigger = "stall"
+	}
 	return fmt.Sprintf(`You are a watchdog inspecting a running Claude Code agent that may be stuck.
 
 Agent ID: %s
 Task: %s
-Stalled for: %d seconds (no new stream events)
+Inspection trigger: %s
+Time since last stream event: %d seconds
 Total runtime: %d seconds
 NDJSON log path: %s
 
@@ -65,13 +83,16 @@ Read the log file (last ~200 lines are most relevant). Look for:
 - No forward progress toward the task goal
 
 Output ONLY a single JSON object on the final line, nothing else:
-{"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"}
+{"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"|"nudge", "nudge": "corrective steer (only when recommendation is nudge)"}
 
 Recommendations:
-- "stop": agent is clearly looping/stuck, kill it
+- "stop": agent is clearly looping/stuck with no recovery, kill it
+- "nudge": agent is drifting but recoverable — set "nudge" to a one-sentence
+  steer that redirects it (e.g. "stop retrying the failing command; read the
+  error and fix the root cause first")
 - "escalate": ambiguous or needs human judgment, flag for human
 - "continue": agent is making progress, leave it alone`,
-		in.AgentID, in.TaskTitle, in.StallSec, in.TotalSec, in.LogPath)
+		in.AgentID, in.TaskTitle, trigger, in.StallSec, in.TotalSec, in.LogPath)
 }
 
 // parseInspectorOutput extracts the verdict from `claude -p --output-format json` stdout.
@@ -96,7 +117,7 @@ func parseInspectorOutput(raw []byte) (InspectorVerdict, error) {
 		return InspectorVerdict{}, fmt.Errorf("unmarshal verdict: %w", err)
 	}
 	switch v.Recommendation {
-	case "stop", "continue", "escalate":
+	case "stop", "continue", "escalate", "nudge":
 	default:
 		return InspectorVerdict{}, fmt.Errorf("invalid recommendation: %q", v.Recommendation)
 	}

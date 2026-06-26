@@ -114,6 +114,60 @@ func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
 	}
 }
 
+func TestLoadWatchdogDefaults(t *testing.T) {
+	tests := []struct {
+		name          string
+		yaml          string
+		wantEnabled   bool
+		wantThreshold int
+		wantModel     string
+	}{
+		{
+			name:          "missing block keeps always-on defaults",
+			yaml:          "agent:\n  max_concurrent: 10\n",
+			wantEnabled:   true,
+			wantThreshold: 6,
+			wantModel:     "claude-haiku-4-5-20251001",
+		},
+		{
+			name:          "explicit loop_threshold 0 disables loop detection",
+			yaml:          "watchdog:\n  enabled: true\n  loop_threshold: 0\n",
+			wantEnabled:   true,
+			wantThreshold: 0,
+			wantModel:     "claude-haiku-4-5-20251001",
+		},
+		{
+			name:          "explicit overrides preserved",
+			yaml:          "watchdog:\n  enabled: false\n  loop_threshold: 3\n  model: sonnet\n",
+			wantEnabled:   false,
+			wantThreshold: 3,
+			wantModel:     "sonnet",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Watchdog.Enabled != tc.wantEnabled {
+				t.Errorf("Enabled = %v, want %v", cfg.Watchdog.Enabled, tc.wantEnabled)
+			}
+			if cfg.Watchdog.LoopThreshold != tc.wantThreshold {
+				t.Errorf("LoopThreshold = %d, want %d", cfg.Watchdog.LoopThreshold, tc.wantThreshold)
+			}
+			if cfg.Watchdog.Model != tc.wantModel {
+				t.Errorf("Model = %q, want %q", cfg.Watchdog.Model, tc.wantModel)
+			}
+		})
+	}
+}
+
 func TestLoadEnvOverride(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	t.Setenv("SYBRA_LOG_LEVEL", "error")

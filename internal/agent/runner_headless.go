@@ -493,6 +493,10 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	event.Timestamp = time.Now().UTC()
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
+	// Feed the tool-call fingerprint into the real-time loop detector. An empty
+	// signature (non-tool event) is a no-op, so the streak survives reasoning
+	// between identical calls and the watchdog can spot an active loop.
+	a.NoteToolSignature(event.toolSig)
 	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()

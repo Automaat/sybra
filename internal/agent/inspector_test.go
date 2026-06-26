@@ -30,6 +30,11 @@ func TestParseInspectorOutput(t *testing.T) {
 			want: InspectorVerdict{Stuck: true, Reason: "ambiguous", Recommendation: "escalate"},
 		},
 		{
+			name: "nudge recommendation with steer",
+			raw:  `{"result":"{\"stuck\":false,\"reason\":\"retrying failing cmd\",\"recommendation\":\"nudge\",\"nudge\":\"read the error and fix the root cause\"}"}`,
+			want: InspectorVerdict{Stuck: false, Reason: "retrying failing cmd", Recommendation: "nudge", Nudge: "read the error and fix the root cause"},
+		},
+		{
 			name:    "invalid recommendation",
 			raw:     `{"result":"{\"stuck\":true,\"reason\":\"x\",\"recommendation\":\"kill\"}"}`,
 			wantErr: true,
