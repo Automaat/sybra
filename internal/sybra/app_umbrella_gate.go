@@ -7,14 +7,10 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
-// umbrellaGatedTag marks a child task that is held in `blocked` specifically by
-// the umbrella dependency gate (set by the expander when the child is
-// materialized). It distinguishes umbrella gating from the unrelated `blocked`
-// the human-review automation uses for a contained Sybra bug, so the gate only
-// releases tasks it is actually responsible for. The gate strips the tag on
-// release, so a child that later re-enters `blocked` for a different reason is
-// never re-released.
-const umbrellaGatedTag = "umbrella-gated"
+// umbrellaGatedTag is the tag the expander sets on a gate-blocked child; the
+// gate requires it to release and strips it on release. Aliased from the
+// umbrella package so the CLI expander and this gate cannot drift.
+const umbrellaGatedTag = umbrella.GatedTag
 
 // releaseUnblockedChildren scans umbrella child tasks held in `blocked` by the
 // gate and releases those whose dependencies have all reached `done`, in
