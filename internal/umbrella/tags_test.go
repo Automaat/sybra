@@ -34,3 +34,23 @@ func TestMaxParallelTag(t *testing.T) {
 		t.Errorf("MaxParallelTag(5) = %q", got)
 	}
 }
+
+func TestParseMaxParallel(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		tags []string
+		want int
+	}{
+		{"present", []string{"umbrella", "umbrella-max-parallel:3"}, 3},
+		{"absent defaults", []string{"umbrella"}, DefaultMaxParallel},
+		{"malformed defaults", []string{"umbrella-max-parallel:abc"}, DefaultMaxParallel},
+		{"zero defaults", []string{"umbrella-max-parallel:0"}, DefaultMaxParallel},
+		{"nil defaults", nil, DefaultMaxParallel},
+	}
+	for _, c := range cases {
+		if got := ParseMaxParallel(c.tags); got != c.want {
+			t.Errorf("%s: ParseMaxParallel(%v) = %d, want %d", c.name, c.tags, got, c.want)
+		}
+	}
+}

@@ -6,7 +6,98 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+// mkTracker creates an umbrella tracker task carrying the given parallelism cap.
+func mkTracker(t *testing.T, m *task.Manager, umb string, maxPar int) task.Task {
+	t.Helper()
+	tk, err := m.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr(umb),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", umbrella.MaxParallelTag(maxPar)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+	return tk
+}
+
+func TestReleaseUnblockedChildren_RespectsMaxParallel(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	mkTracker(t, m, umb, 2)
+
+	c1 := mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
+	c2 := mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+	c3 := mkChild(t, m, "c3", "Automaat/sybra#3", umb, nil, task.StatusBlocked)
+
+	app.releaseUnblockedChildren()
+
+	released, held := 0, 0
+	for _, id := range []string{c1.ID, c2.ID, c3.ID} {
+		switch mustStatus(t, m, id) {
+		case task.StatusTodo:
+			released++
+		case task.StatusBlocked:
+			held++
+		default:
+		}
+	}
+	if released != 2 || held != 1 {
+		t.Fatalf("cap=2 should release 2 and hold 1, got released=%d held=%d", released, held)
+	}
+}
+
+func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	// One child is stuck needing a human; an unrelated child is ready.
+	stuck := mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
+	indep := mkChild(t, m, "indep", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required on stuck child", got)
+	}
+	if got := mustStatus(t, m, stuck.ID); got != task.StatusHumanRequired {
+		t.Fatalf("stuck child = %q, want human-required", got)
+	}
+	// Independent chains keep running.
+	if got := mustStatus(t, m, indep.ID); got != task.StatusTodo {
+		t.Fatalf("independent child = %q, want released to todo", got)
+	}
+}
+
+func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	var gotRepo string
+	var gotNum, closes int
+	app.umbrellaCloseIssue = func(repo string, number int, _ string) error {
+		gotRepo, gotNum, closes = repo, number, closes+1
+		return nil
+	}
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
+	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusDone)
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusDone {
+		t.Fatalf("tracker = %q, want done when all children done", got)
+	}
+	if closes != 1 || gotRepo != "Automaat/sybra" || gotNum != 100 {
+		t.Fatalf("close = %d times repo=%q num=%d, want 1 Automaat/sybra 100", closes, gotRepo, gotNum)
+	}
+}
 
 func newUmbrellaGateApp(t *testing.T) (*App, *task.Manager) {
 	t.Helper()
