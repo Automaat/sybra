@@ -51,7 +51,7 @@ export class Condition {
     "field": string;
 
     /**
-     * "equals", "not_equals", "contains", "not_contains", "exists"
+     * "equals", "not_equals", "contains", "not_contains", "exists", "in", "not_in"
      */
     "operator": string;
     "value": string;
