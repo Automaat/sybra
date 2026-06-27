@@ -101,7 +101,10 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 }
 
 func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
-	reason := fmt.Sprintf("required %s sidecar %s after step %s", kind, state, stepID)
+	reason := fmt.Sprintf("required %s sidecar %s", strings.ReplaceAll(kind, "_", " "), state)
+	if stepID != "" {
+		reason += " after step " + stepID
+	}
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}

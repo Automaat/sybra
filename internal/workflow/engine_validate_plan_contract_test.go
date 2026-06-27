@@ -107,18 +107,31 @@ func TestExecValidatePlanContract_RejectsMissingVerificationCriteria(t *testing.
 }
 
 func TestExecValidatePlanContract_RejectsMalformedFiles(t *testing.T) {
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "fa6919fc", Status: "planning"})
-	engine := newEngineForEval(t, tasks)
-	contract := strings.Replace(validPlanContract("fa6919fc"), `"internal/workflow/engine.go"`, `"/tmp/evil.go"`, 1)
+	for _, tc := range []struct {
+		name      string
+		path      string
+		wantError string
+	}{
+		{name: "absolute unix", path: "/tmp/evil.go", wantError: "repository-relative"},
+		{name: "absolute windows backslash", path: `C:\tmp\evil.go`, wantError: "forward slashes"},
+		{name: "absolute windows slash", path: "C:/tmp/evil.go", wantError: "repository-relative"},
+		{name: "relative backslash", path: `internal\workflow\engine.go`, wantError: "forward slashes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks := newMemTasks()
+			tasks.Put(TaskInfo{ID: "fa6919fc", Status: "planning"})
+			engine := newEngineForEval(t, tasks)
+			contract := strings.Replace(validPlanContract("fa6919fc"), `"internal/workflow/engine.go"`, fmt.Sprintf("%q", tc.path), 1)
 
-	_, err := engine.execValidatePlanContract("fa6919fc", newValidatePlanContractStep(),
-		TaskInfo{ID: "fa6919fc", PlanContract: contract})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, "repository-relative") {
-		t.Errorf("reason = %q, want malformed file path", reason)
+			_, err := engine.execValidatePlanContract("fa6919fc", newValidatePlanContractStep(),
+				TaskInfo{ID: "fa6919fc", PlanContract: contract})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, tc.wantError) {
+				t.Errorf("reason = %q, want %q", reason, tc.wantError)
+			}
+		})
 	}
 }
 

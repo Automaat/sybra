@@ -122,6 +122,12 @@ func validateContractPath(p string) error {
 	if strings.ContainsRune(p, '\x00') {
 		return fmt.Errorf("contains NUL byte")
 	}
+	if strings.Contains(p, `\`) {
+		return fmt.Errorf("must use forward slashes")
+	}
+	if isWindowsDrivePath(p) {
+		return fmt.Errorf("must be repository-relative")
+	}
 	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
 		return fmt.Errorf("must be repository-relative")
 	}
@@ -133,6 +139,14 @@ func validateContractPath(p string) error {
 		return fmt.Errorf("must be clean path %q", clean)
 	}
 	return nil
+}
+
+func isWindowsDrivePath(p string) bool {
+	if len(p) < 2 || p[1] != ':' {
+		return false
+	}
+	c := p[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 func nonEmptyStrings(values []string) []string {

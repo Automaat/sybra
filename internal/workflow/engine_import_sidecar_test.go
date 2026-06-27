@@ -81,7 +81,7 @@ func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
 	if got.Status != "human-required" {
 		t.Fatalf("Status = %q, want human-required", got.Status)
 	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "required plan_contract sidecar missing") {
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "required plan contract sidecar missing after step plan") {
 		t.Fatalf("reason = %q, want required sidecar missing", reason)
 	}
 }
