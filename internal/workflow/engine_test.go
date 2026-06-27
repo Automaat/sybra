@@ -174,10 +174,10 @@ func (m *memTasks) MarkAgentRunProtocolViolation(taskID, agentID, violation stri
 	for i := range t.AgentRuns {
 		if t.AgentRuns[i].AgentID == agentID {
 			t.AgentRuns[i].ProtocolViolation = violation
-			break
+			return nil
 		}
 	}
-	return nil
+	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 }
 
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {

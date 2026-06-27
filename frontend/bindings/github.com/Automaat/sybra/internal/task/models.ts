@@ -45,6 +45,13 @@ export class AgentRun {
     "sessionId"?: string;
 
     /**
+     * ProtocolViolation records deterministic workflow-level contract failures
+     * for this run. Test routing uses it to avoid counting a bad verifier report
+     * as an implementation failure across later workflow executions.
+     */
+    "protocolViolation"?: string;
+
+    /**
      * HeadSHA is the worktree HEAD commit at this run's completion — what the
      * agent left on the branch. Compared against the merged PR head to detect
      * human edits after the agent (merged_with_edits) and measure edit distance.
