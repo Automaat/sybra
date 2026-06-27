@@ -1809,9 +1809,8 @@ func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
 }
 
 // testTestingTaskWorkflowYAML mirrors the real builtin testing-task.yaml
-// shape (id, trigger, run_test → route_test_result graph) but omits the
-// notest short-circuit so the core verdict-routing is deterministic on CI.
-// The real builtin's YAML is exercised by internal/workflow/builtin_test.go.
+// shape (id, trigger, run_test → route_test_result graph). The real builtin's
+// YAML is exercised by internal/workflow/builtin_test.go.
 const testTestingTaskWorkflowYAML = `id: testing-task
 name: Test Manual Testing
 trigger:
@@ -2046,7 +2045,7 @@ steps:
       role: test-runner
       mode: headless
       model: sonnet
-      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}'
+      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"string"},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"}},"required":["command","expected","actual"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"}},"required":["command","actual"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}'
       prompt: 'Test {{.Task.ID}}'
     next:
       - goto: route_test

@@ -19,13 +19,14 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ workflow.TaskProvider      = (*taskAdapter)(nil)
-	_ workflow.AgentLauncher     = (*agentAdapter)(nil)
-	_ workflow.PRLinker          = (*prLinkerAdapter)(nil)
-	_ workflow.PRReviewRequester = (*prReviewRequesterAdapter)(nil)
-	_ workflow.WorktreeGetter    = (*worktreeGetterAdapter)(nil)
-	_ workflow.CheckConfigGetter = (*checkConfigGetterAdapter)(nil)
-	_ workflow.ArtifactRecorder  = (*artifactRecorderAdapter)(nil)
+	_ workflow.TaskProvider           = (*taskAdapter)(nil)
+	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
+	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
+	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
+	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
+	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
+	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
+	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
 )
 
 // artifactRecorderAdapter bridges artifact.Store → workflow.ArtifactRecorder.
@@ -295,6 +296,47 @@ type checkConfigGetterAdapter struct {
 	tasks    *task.Manager
 	projects *project.Store
 	mgr      *worktree.Manager
+}
+
+// manualTestConfigGetterAdapter resolves repo .sybra.yaml manual_test hints.
+type manualTestConfigGetterAdapter struct {
+	tasks    *task.Manager
+	projects *project.Store
+	mgr      *worktree.Manager
+}
+
+func (a *manualTestConfigGetterAdapter) ManualTestConfig(taskID string) workflow.ManualTestInfo {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return workflow.ManualTestInfo{}
+	}
+
+	var repoManual *project.ManualTestConfig
+	if a.mgr != nil {
+		wtPath := a.mgr.PathFor(t)
+		if _, statErr := os.Stat(wtPath); statErr == nil {
+			if repoCfg, rErr := project.LoadRepoConfig(wtPath); rErr == nil && repoCfg != nil {
+				repoManual = repoCfg.ManualTest
+			}
+		}
+	}
+
+	var appManual *project.ManualTestConfig
+	if t.ProjectID != "" && a.projects != nil {
+		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
+			appManual = p.ManualTest
+		}
+	}
+	manual := project.MergeManualTest(repoManual, appManual)
+	if manual == nil {
+		return workflow.ManualTestInfo{}
+	}
+	return workflow.ManualTestInfo{
+		Kind:          string(manual.Kind),
+		Command:       manual.Command,
+		HealthURL:     manual.HealthURL,
+		ProbeCommands: manual.ProbeCommands,
+	}
 }
 
 func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {

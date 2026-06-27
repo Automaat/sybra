@@ -360,12 +360,90 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
-			name:       "pass",
+			name:       "pass_with_manual_evidence",
 			status:     "completed",
-			output:     `{"verdict":"PASS"}`,
+			output:     structuredPassOutput(),
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
+		},
+		{
+			name:   "plain_text_pass_with_manual_evidence",
+			status: "completed",
+			output: "surface_kind: server\n" +
+				"app_started: true\n" +
+				"start_command: SYBRA_PORT=12345 go run ./cmd/sybra-server\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:12345/health\n" +
+				"manual_probes:\n" +
+				"command: curl -fsS http://127.0.0.1:12345/health\n" +
+				"expected: status ok\n" +
+				"actual: {\"status\":\"ok\"}\n" +
+				"automated_checks: go test ./internal/workflow => ok\n" +
+				"unable_to_run_reason:\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_without_manual_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_requires_regression_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","actual":"ok"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_notest_exemption_still_requires_regression_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"none","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","actual":"ok"}],"unable_to_run_reason":"task tagged notest; no product surface changed"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_docs_exemption_still_requires_regression_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"docs","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm run check","actual":"ok"}],"unable_to_run_reason":"docs-only task"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_static_only_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"rg -n rawThing internal","actual":"no matches"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_non_pass_outcome_rejected",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"product_bug","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"go run ./cmd/sybra-server","readiness_probe":"curl /health","manual_probes":[{"command":"curl /health","expected":"200","actual":"200"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_failures_markdown_rejected",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"## Test Failures\n\nCommand run: curl /health","surface_kind":"server","app_started":true,"start_command":"go run ./cmd/sybra-server","readiness_probe":"curl /health","manual_probes":[{"command":"curl /health","expected":"200","actual":"200"}],"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
 		},
 	}
 
@@ -376,7 +454,14 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wf := &Execution{Variables: map[string]string{}}
 			prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
 			out := StepOutput{StepID: testVerdictSourceStep, Status: tc.status, Output: tc.output}
-			violation, outcome, fingerprint := applyTestVerdictCompletion(wf, &out, body)
+			taskInfo := TaskInfo{}
+			if strings.Contains(tc.name, "_notest_") {
+				taskInfo.Tags = []string{"notest"}
+			}
+			if strings.Contains(tc.name, "_docs_") {
+				taskInfo.Tags = []string{"docs"}
+			}
+			violation, outcome, fingerprint := applyTestVerdictCompletion(wf, &out, body, taskInfo)
 			if outcome != tc.want {
 				t.Fatalf("outcome = %q, want %q", outcome, tc.want)
 			}
@@ -394,6 +479,10 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func structuredPassOutput() string {
+	return `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server","readiness_probe":"curl -fsS http://127.0.0.1:12345/health","manual_probes":[{"command":"curl -fsS http://127.0.0.1:12345/health","expected":"HTTP 200 ok","actual":"ok"}],"automated_checks":[{"command":"go test ./internal/workflow","actual":"ok"}],"unable_to_run_reason":""}`
 }
 
 // makeTestEngine builds a minimal Engine for route_test_result unit tests.

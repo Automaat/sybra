@@ -10,6 +10,16 @@ setup:
   - mise install
   - (cd frontend && npm ci)
 
+# Black-box testing guidance for the testing workflow. Test-runners must prefer
+# this runnable surface over static inspection: start the server, wait for
+# health, then drive at least one user/operator-facing probe.
+manual_test:
+  kind: server
+  command: PORT=${SYBRA_MANUAL_TEST_PORT:-$((49152 + RANDOM % 10000))}; printf '%s\n' "$PORT" > .sybra-manual-test-port; SYBRA_PORT=$PORT go run ./cmd/sybra-server
+  health_url: http://127.0.0.1:<port from .sybra-manual-test-port>/health
+  probe_commands:
+    - PORT=$(cat .sybra-manual-test-port); curl -fsS "http://127.0.0.1:${PORT}/health"
+
 # Git hooks installed by sybra into every worktree on creation.
 #
 # Every command is routed through `mise exec --` so the hook resolves tools
