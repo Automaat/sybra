@@ -1,6 +1,9 @@
 package limits
 
 import (
+	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -263,5 +266,40 @@ func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
 	snapshots := batch.snapshotsList()
 	if len(snapshots) != 1 || snapshots[0].PlanType != "new" {
 		t.Fatalf("snapshots = %+v, want latest only", snapshots)
+	}
+}
+
+func TestBackfillLocalSessionFiles_StopsOnCanceledContext(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = s.BackfillLocalSessionFiles(ctx, time.Time{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BackfillLocalSessionFiles error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWalkJSONL_StopsOnCanceledContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "session.jsonl"), []byte(`{"type":"message"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	err := walkJSONL(ctx, root, time.Time{}, func(string, int64, []byte) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("walkJSONL error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("walkJSONL callback ran after context cancellation")
 	}
 }

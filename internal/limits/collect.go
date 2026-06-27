@@ -2,6 +2,7 @@ package limits
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"hash/fnv"
 	"io"
@@ -198,19 +199,22 @@ func ParseCopilotLine(line []byte, source, id, sessionID string) (UsageEvent, bo
 // BackfillLocalSessionFiles imports usage from local provider session files
 // newer than cutoff. It is best-effort: unreadable provider directories are
 // skipped so one missing CLI never disables Sybra stats.
-func (s *Store) BackfillLocalSessionFiles(cutoff time.Time) error {
+func (s *Store) BackfillLocalSessionFiles(ctx context.Context, cutoff time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	home, ok := userHomeDir()
 	if !ok {
 		return nil
 	}
 	batch := newSessionImport()
-	if err := batch.backfillCodex(filepath.Join(home, ".codex", "sessions"), cutoff); err != nil {
+	if err := batch.backfillCodex(ctx, filepath.Join(home, ".codex", "sessions"), cutoff); err != nil {
 		return err
 	}
-	if err := batch.backfillClaude(filepath.Join(home, ".claude", "projects"), cutoff); err != nil {
+	if err := batch.backfillClaude(ctx, filepath.Join(home, ".claude", "projects"), cutoff); err != nil {
 		return err
 	}
-	if err := batch.backfillCopilot(filepath.Join(home, ".copilot", "session-state"), cutoff); err != nil {
+	if err := batch.backfillCopilot(ctx, filepath.Join(home, ".copilot", "session-state"), cutoff); err != nil {
 		return err
 	}
 	return s.Import(batch.events, batch.snapshotsList())
@@ -262,8 +266,8 @@ func (b *sessionImport) snapshotsList() []Snapshot {
 	return out
 }
 
-func (b *sessionImport) backfillCodex(root string, cutoff time.Time) error {
-	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
+func (b *sessionImport) backfillCodex(ctx context.Context, root string, cutoff time.Time) error {
+	return walkJSONL(ctx, root, cutoff, func(path string, offset int64, line []byte) error {
 		sessionID := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "rollout-"), ".jsonl")
 		snapshot, event, ok := ParseCodexLine(line, SourceSessionFiles, eventID(ProviderCodex, path, offset), sessionID)
 		if !ok {
@@ -279,8 +283,8 @@ func (b *sessionImport) backfillCodex(root string, cutoff time.Time) error {
 	})
 }
 
-func (b *sessionImport) backfillClaude(root string, cutoff time.Time) error {
-	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
+func (b *sessionImport) backfillClaude(ctx context.Context, root string, cutoff time.Time) error {
+	return walkJSONL(ctx, root, cutoff, func(path string, offset int64, line []byte) error {
 		event, ok := ParseClaudeLine(line, SourceSessionFiles, eventID(ProviderClaude, path, offset))
 		if !ok {
 			return nil
@@ -290,8 +294,8 @@ func (b *sessionImport) backfillClaude(root string, cutoff time.Time) error {
 	})
 }
 
-func (b *sessionImport) backfillCopilot(root string, cutoff time.Time) error {
-	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
+func (b *sessionImport) backfillCopilot(ctx context.Context, root string, cutoff time.Time) error {
+	return walkJSONL(ctx, root, cutoff, func(path string, offset int64, line []byte) error {
 		sessionID := filepath.Base(filepath.Dir(path))
 		event, ok := ParseCopilotLine(line, SourceSessionFiles, eventID(ProviderCopilot, path, offset), sessionID)
 		if !ok {
@@ -302,11 +306,17 @@ func (b *sessionImport) backfillCopilot(root string, cutoff time.Time) error {
 	})
 }
 
-func walkJSONL(root string, cutoff time.Time, fn func(path string, offset int64, line []byte) error) error {
+func walkJSONL(ctx context.Context, root string, cutoff time.Time, fn func(path string, offset int64, line []byte) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, ok := sessionRootInfo(root); !ok {
 		return nil
 	}
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkEntryUnreadable(err) || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
 			return nil
 		}
@@ -314,11 +324,14 @@ func walkJSONL(root string, cutoff time.Time, fn func(path string, offset int64,
 		if !ok || (!cutoff.IsZero() && modTime.Before(cutoff)) {
 			return nil
 		}
-		return scanLines(path, fn)
+		return scanLines(ctx, path, fn)
 	})
 }
 
-func scanLines(path string, fn func(path string, offset int64, line []byte) error) error {
+func scanLines(ctx context.Context, path string, fn func(path string, offset int64, line []byte) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f, ok := openSessionFile(path)
 	if !ok {
 		return nil
@@ -327,6 +340,9 @@ func scanLines(path string, fn func(path string, offset int64, line []byte) erro
 	r := bufio.NewReaderSize(f, 64*1024)
 	var offset int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
 			startOffset := offset
