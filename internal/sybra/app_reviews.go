@@ -61,6 +61,9 @@ type ReviewHandler struct {
 	// review-task's PR is still open. Overridable in tests; nil falls back to
 	// github.FetchPRState.
 	fetchPRStateFn func(repo string, number int) (github.PRState, error)
+	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
+	// falls back to github.FetchReviews.
+	fetchReviewsFn func() (github.ReviewSummary, error)
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
@@ -119,7 +122,11 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		return prPollSlow
 	}
 
-	summary, fetchErr := github.FetchReviews()
+	fetchFn := github.FetchReviews
+	if r.fetchReviewsFn != nil {
+		fetchFn = r.fetchReviewsFn
+	}
+	summary, fetchErr := fetchFn()
 	if fetchErr != nil {
 		if github.IsTransientError(fetchErr) {
 			r.transientFetchFails++
@@ -128,15 +135,14 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			} else {
 				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
 			}
+			// Reconcile stale review tasks on transient failures only. Non-transient
+			// errors (auth, 4xx) mean the per-task FetchPRState calls will also fail
+			// or be wasted, compounding backoff under an already-throttled API.
+			r.closeFinishedReviewTasks(tasks, nil)
 		} else {
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}
-		// Reconcile stale review tasks even without a live summary: any
-		// task whose PR FetchPRState confirms as merged/closed is advanced
-		// to done. Passing nil tells DetectClosedTaskPRs to check every
-		// review task directly instead of filtering against an open list.
-		r.closeFinishedReviewTasks(tasks, nil)
 		return prPollSlow
 	}
 	r.transientFetchFails = 0

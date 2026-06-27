@@ -948,3 +948,74 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 		})
 	}
 }
+
+// TestPollAndMonitorPRs_FetchErrorReconcile verifies that stale in-review
+// review tasks are reconciled (via FetchPRState) only on transient fetch
+// failures, not on non-transient ones (auth, 4xx) where those calls would
+// compound backoff against an already-throttled API.
+func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
+	transientErr := errors.New("dial tcp: connection refused")
+	nonTransientErr := errors.New("gh: authentication required")
+
+	tests := []struct {
+		name          string
+		fetchErr      error
+		wantReconcile bool // whether fetchPRStateFn should be called
+	}{
+		{
+			name:          "transient error — reconciliation runs",
+			fetchErr:      transientErr,
+			wantReconcile: true,
+		},
+		{
+			name:          "non-transient error — reconciliation skipped",
+			fetchErr:      nonTransientErr,
+			wantReconcile: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+
+			created, err := tasks.Create("Review: stale PR", "", string(task.AgentModeHeadless))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tags := []string{"review"}
+			if _, err := tasks.Update(created.ID, task.Update{
+				Status:    task.Ptr(task.StatusInReview),
+				Tags:      &tags,
+				ProjectID: task.Ptr("o/r"),
+				PRNumber:  task.Ptr(99),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			reconcileCalled := false
+			agentMgr := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+			r := &ReviewHandler{
+				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
+				tasks:         tasks,
+				agents:        agentMgr,
+				fetchReviewsFn: func() (github.ReviewSummary, error) {
+					return github.ReviewSummary{}, tt.fetchErr
+				},
+				fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
+					reconcileCalled = true
+					return github.PRState{State: "MERGED"}, nil
+				},
+			}
+
+			r.pollAndMonitorPRs()
+
+			if reconcileCalled != tt.wantReconcile {
+				t.Errorf("reconcileCalled = %v, want %v", reconcileCalled, tt.wantReconcile)
+			}
+		})
+	}
+}
