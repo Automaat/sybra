@@ -20,7 +20,7 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	// clone, checked out on its own branch.
 	ext := filepath.Join(t.TempDir(), "orca-worktree")
 	const extBranch = "orca/feature-x"
-	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
 
@@ -85,7 +85,7 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 
 	ext := filepath.Join(t.TempDir(), "orca-worktree")
 	const extBranch = "orca/fix-x"
-	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
 
@@ -156,7 +156,7 @@ func TestPrepareForTask_AdoptRejectsDefaultBranch(t *testing.T) {
 	h := prepareHarness(t, nil, 0)
 
 	ext := filepath.Join(t.TempDir(), "orca-on-main")
-	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "worktree", "add", ext, "main").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
 	}
 
@@ -173,7 +173,7 @@ func TestPrepareForTask_AdoptRejectsDetachedHead(t *testing.T) {
 	h := prepareHarness(t, nil, 0)
 
 	ext := filepath.Join(t.TempDir(), "orca-detached")
-	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "worktree", "add", "--detach", ext, "main").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "--detach", ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add --detach: %v: %s", err, out)
 	}
 

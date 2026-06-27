@@ -224,6 +224,7 @@ func (m *Manager) saveRegistry(a *Agent) {
 		CWD:                a.sessionCWD,
 		StartedAt:          a.StartedAt,
 		StdinPath:          a.stdinPath,
+		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
 		ReasoningEffort:    a.ReasoningEffort,

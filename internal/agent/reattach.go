@@ -251,6 +251,10 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	if r.LogPath != "" {
 		rehydratePerTurnConvoFromLog(a, r.LogPath)
 	}
+	if r.OneShot {
+		m.finalizePerTurnOneShot(r, a, reg)
+		return nil
+	}
 	a.SetState(StatePaused)
 
 	ctx, cancel := context.WithCancel(m.ctx)
@@ -275,6 +279,19 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	go m.runPerTurnConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
+}
+
+func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg *registryStore) {
+	if found, isError := a.lastConvoResult(); !found {
+		a.SetExitErr(errReattachedGone)
+	} else if isError {
+		a.SetExitErr(errReattachedResultError)
+	}
+	a.SetState(StateStopped)
+	m.logger.Info("agent.reattach.per-turn-oneshot.done", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
+	m.emit(events.AgentState(a.ID), a)
+	m.fireComplete(a, a.GetExitErr() == nil)
+	_ = reg.Delete(r.ID)
 }
 
 // reattachHeadless tails a reattached subprocess's log file from
@@ -425,6 +442,7 @@ func agentFromRecord(r Record) *Agent {
 		LastEventAt:        time.Now().UTC(),
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
+		oneShot:            r.OneShot,
 		stdinPath:          r.StdinPath,
 		requirePermissions: r.RequirePermissions,
 		ReasoningEffort:    r.ReasoningEffort,

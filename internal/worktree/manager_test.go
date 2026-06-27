@@ -52,11 +52,11 @@ func initBareWithCommitReturnSrc(t *testing.T) (bare, src string) {
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
 	}
 	// Ensure the bare has the tracking refs populated (origin/main).
-	if out, err := exec.Command("git", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
 	}
 	return bare, src

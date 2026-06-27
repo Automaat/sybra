@@ -84,6 +84,9 @@ type Agent struct {
 	loopAckSig string
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
+	// oneShot marks workflow-owned interactive runs that must complete after
+	// one provider turn instead of surviving as reusable chats.
+	oneShot bool
 	// PluginErrors holds plugin load failures from the most recent init event.
 	PluginErrors     []string `json:"pluginErrors,omitempty"`
 	EscalationReason string   `json:"escalationReason,omitempty"`
