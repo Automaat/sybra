@@ -947,10 +947,12 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 	if err != nil {
 		return err
 	}
+	found := false
 	for i := range t.AgentRuns {
 		if t.AgentRuns[i].AgentID != agentID {
 			continue
 		}
+		found = true
 		if v, ok := updates["state"].(string); ok {
 			t.AgentRuns[i].State = v
 		}
@@ -972,10 +974,16 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["session_id"].(string); ok && v != "" {
 			t.AgentRuns[i].SessionID = v
 		}
+		if v, ok := updates["protocol_violation"].(string); ok && v != "" {
+			t.AgentRuns[i].ProtocolViolation = v
+		}
 		if v, ok := updates["head_sha"].(string); ok && v != "" {
 			t.AgentRuns[i].HeadSHA = v
 		}
 		break
+	}
+	if !found {
+		return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 	}
 	d, err := Marshal(t)
 	if err != nil {

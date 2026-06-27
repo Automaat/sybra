@@ -700,10 +700,9 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Update with wrong agent ID — should not error but should not change anything
 	err = store.UpdateRun(created.ID, "agent-wrong", map[string]any{"state": "done"})
-	if err != nil {
-		t.Fatalf("UpdateRun with wrong agent: %v", err)
+	if err == nil {
+		t.Fatal("expected error for wrong agent")
 	}
 
 	got, err := store.Get(created.ID)

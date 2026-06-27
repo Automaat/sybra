@@ -193,6 +193,10 @@ type AgentRun struct {
 	VerdictRendered bool   `yaml:"verdict_rendered,omitempty" json:"verdictRendered,omitempty"`
 	LogFile         string `yaml:"log_file,omitempty" json:"logFile"`
 	SessionID       string `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
+	// ProtocolViolation records deterministic workflow-level contract failures
+	// for this run. Test routing uses it to avoid counting a bad verifier report
+	// as an implementation failure across later workflow executions.
+	ProtocolViolation string `yaml:"protocol_violation,omitempty" json:"protocolViolation,omitempty"`
 	// HeadSHA is the worktree HEAD commit at this run's completion — what the
 	// agent left on the branch. Compared against the merged PR head to detect
 	// human edits after the agent (merged_with_edits) and measure edit distance.

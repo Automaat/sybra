@@ -53,6 +53,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return pErr
 	}
 
+	if violation := applyTestVerdictCompletion(wfExec, &output, ctx.Task.Body); violation != "" && output.AgentID != "" {
+		if err := e.tasks.MarkAgentRunProtocolViolation(taskID, output.AgentID, violation); err != nil {
+			return fmt.Errorf("mark test protocol violation: %w", err)
+		}
+	}
+
 	// Record step completion.
 	now := time.Now().UTC()
 	wfExec.RecordStep(StepRecord{
@@ -170,6 +176,7 @@ type advanceContext struct {
 	WfExec         *Execution
 	Def            Definition
 	Step           *Step
+	Task           TaskInfo
 	ParallelParent *Step
 }
 
@@ -248,6 +255,7 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		WfExec:         t.Workflow,
 		Def:            def,
 		Step:           resolvedStep,
+		Task:           t,
 		ParallelParent: parallelParent,
 	}, false, nil
 }
