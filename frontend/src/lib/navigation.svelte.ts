@@ -2,7 +2,6 @@
 // Replaces the sprawling `page = {...}` reassigns in App.svelte.
 
 export type Page =
-  | { kind: 'dashboard' }
   | { kind: 'task-list'; filter?: 'in-progress' }
   | { kind: 'task-detail'; taskId: string }
   | { kind: 'project-list' }
@@ -60,7 +59,6 @@ class NavStore {
   get pageTitle(): string {
     const p = this.page
     switch (p.kind) {
-      case 'dashboard': return 'Dashboard'
       case 'task-list': return 'Board'
       // The detail page promotes the task title to its own heading (with a
       // "Back to tasks" chevron), so a generic "Task Detail" chrome heading is

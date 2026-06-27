@@ -34,13 +34,12 @@ describe('handleAppKeydown — Cmd shortcuts', () => {
   })
 
   it.each([
-    ['1', 'dashboard'],
-    ['2', 'task-list'],
-    ['3', 'project-list'],
-    ['4', 'agents'],
-    ['5', 'github'],
-    ['6', 'reviews'],
-    ['7', 'stats'],
+    ['1', 'task-list'],
+    ['2', 'project-list'],
+    ['3', 'agents'],
+    ['4', 'github'],
+    ['5', 'reviews'],
+    ['6', 'stats'],
     [',', 'settings'],
   ] as const)('Cmd+%s navigates to %s', (key, kind) => {
     const r = handleAppKeydown(ev({ key, metaKey: true }), ctx())
@@ -54,7 +53,7 @@ describe('handleAppKeydown — Cmd shortcuts', () => {
   })
 
   it('Cmd+F off github focuses task search', () => {
-    const r = handleAppKeydown(ev({ key: 'f', metaKey: true }), ctx({ currentPageKind: 'dashboard' }))
+    const r = handleAppKeydown(ev({ key: 'f', metaKey: true }), ctx({ currentPageKind: 'stats' }))
     expect(r.action).toEqual({ type: 'focus-search', target: 'tasks' })
   })
 
@@ -65,7 +64,7 @@ describe('handleAppKeydown — Cmd shortcuts', () => {
   })
 
   it('Cmd+I off task-list is a no-op (preventDefault still claims the combo)', () => {
-    const r = handleAppKeydown(ev({ key: 'i', metaKey: true }), ctx({ currentPageKind: 'dashboard' }))
+    const r = handleAppKeydown(ev({ key: 'i', metaKey: true }), ctx({ currentPageKind: 'stats' }))
     expect(r.action).toBeNull()
     expect(r.preventDefault).toBe(true)
   })

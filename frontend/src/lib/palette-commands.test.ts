@@ -108,7 +108,6 @@ describe('buildCommands', () => {
       const cmds = buildCommands(makeCtx())
       const pages = cmds.filter(c => c.section === 'page')
       const ids = pages.map(c => c.id)
-      expect(ids).toContain('page:dashboard')
       expect(ids).toContain('page:task-list')
       expect(ids).toContain('page:project-list')
       expect(ids).toContain('page:agents')
@@ -122,8 +121,8 @@ describe('buildCommands', () => {
 
     it('page shortcuts are set correctly', () => {
       const cmds = buildCommands(makeCtx())
-      expect(cmds.find(c => c.id === 'page:dashboard')?.shortcut).toBe('⌘1')
-      expect(cmds.find(c => c.id === 'page:task-list')?.shortcut).toBe('⌘2')
+      expect(cmds.find(c => c.id === 'page:task-list')?.shortcut).toBe('⌘1')
+      expect(cmds.find(c => c.id === 'page:project-list')?.shortcut).toBe('⌘2')
       expect(cmds.find(c => c.id === 'page:settings')?.shortcut).toBe('⌘,')
     })
 

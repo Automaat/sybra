@@ -5,21 +5,21 @@ const { navStore } = await import('./navigation.svelte.js')
 describe('NavStore', () => {
   describe('navigate', () => {
     it('updates page on navigate', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       expect(navStore.page.kind).toBe('settings')
     })
 
     it('pushes previous page to stack', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       expect(navStore.stack).toHaveLength(1)
-      expect(navStore.stack[0].kind).toBe('dashboard')
+      expect(navStore.stack[0].kind).toBe('task-list')
     })
 
     it('does nothing when navigating to same page', () => {
-      navStore.reset({ kind: 'dashboard' })
-      navStore.navigate({ kind: 'dashboard' })
+      navStore.reset({ kind: 'settings' })
+      navStore.navigate({ kind: 'settings' })
       expect(navStore.stack).toHaveLength(0)
     })
 
@@ -75,34 +75,34 @@ describe('NavStore', () => {
 
   describe('back', () => {
     it('restores previous page', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       navStore.back()
-      expect(navStore.page.kind).toBe('dashboard')
+      expect(navStore.page.kind).toBe('task-list')
     })
 
     it('removes page from stack', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       navStore.back()
       expect(navStore.stack).toHaveLength(0)
     })
 
     it('does nothing when stack is empty', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.back()
-      expect(navStore.page.kind).toBe('dashboard')
+      expect(navStore.page.kind).toBe('task-list')
     })
   })
 
   describe('canGoBack', () => {
     it('is false when stack is empty', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       expect(navStore.canGoBack).toBe(false)
     })
 
     it('is true when stack has items', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       expect(navStore.canGoBack).toBe(true)
     })
@@ -110,7 +110,7 @@ describe('NavStore', () => {
 
   describe('replace', () => {
     it('updates page without touching stack', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       navStore.replace({ kind: 'task-list' })
       expect(navStore.page.kind).toBe('task-list')
@@ -120,7 +120,7 @@ describe('NavStore', () => {
 
   describe('reset', () => {
     it('clears stack and sets page', () => {
-      navStore.reset({ kind: 'dashboard' })
+      navStore.reset({ kind: 'task-list' })
       navStore.navigate({ kind: 'settings' })
       navStore.navigate({ kind: 'task-list' })
       navStore.reset({ kind: 'reviews' })
@@ -131,7 +131,6 @@ describe('NavStore', () => {
 
   describe('pageTitle', () => {
     it.each([
-      [{ kind: 'dashboard' }, 'Dashboard'],
       [{ kind: 'task-list' }, 'Board'],
       [{ kind: 'task-detail', taskId: 't1' }, ''],
       [{ kind: 'project-list' }, 'Projects'],
@@ -162,7 +161,6 @@ describe('NavStore', () => {
       [{ kind: 'agents' }, 'agents'],
       [{ kind: 'agent-detail', agentId: 'a1' }, 'agents'],
       [{ kind: 'reviews' }, 'reviews'],
-      [{ kind: 'dashboard' }, 'more'],
       [{ kind: 'settings' }, 'more'],
       [{ kind: 'stats' }, 'more'],
     ] as const)('activeTab for %o is %s', (page: any, expected) => {

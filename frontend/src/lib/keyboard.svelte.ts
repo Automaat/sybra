@@ -12,7 +12,7 @@ export const SHORTCUTS: { scope: string; label: string; shortcuts: Shortcut[] }[
       { keys: '?', description: 'Keyboard shortcuts help' },
       { keys: '⌘/', description: 'Keyboard shortcuts help' },
       { keys: '⌘N', description: 'New task (quick add)' },
-      { keys: '⌘1 – ⌘7', description: 'Navigate pages' },
+      { keys: '⌘1 – ⌘6', description: 'Navigate pages' },
       { keys: '⌘,', description: 'Settings' },
       { keys: '⌘F  /  /', description: 'Focus task search' },
       { keys: '⌘B', description: 'Cycle view: List ↔ Board' },

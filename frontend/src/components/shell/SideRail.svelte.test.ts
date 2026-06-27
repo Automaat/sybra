@@ -41,7 +41,6 @@ describe('SideRail', () => {
   it('renders all navigation labels', () => {
     render(SideRail)
     expect(screen.getByText('Board')).toBeDefined()
-    expect(screen.getByText('Dashboard')).toBeDefined()
     expect(screen.getByText('Projects')).toBeDefined()
     expect(screen.getByText('Chats')).toBeDefined()
     expect(screen.getByText('Agents')).toBeDefined()
@@ -73,7 +72,7 @@ describe('SideRail', () => {
     }
     expect(screen.getByText('More')).toBeDefined()
     // Non-primary destinations and group headers are tucked away until expanded.
-    expect(screen.queryByText('Dashboard')).toBeNull()
+    expect(screen.queryByText('Projects')).toBeNull()
     expect(screen.queryByText('Stats')).toBeNull()
     expect(screen.queryByText('Work')).toBeNull()
   })
@@ -82,17 +81,17 @@ describe('SideRail', () => {
     focusModeStore.set(true)
     render(SideRail)
     await fireEvent.click(screen.getByText('More'))
-    expect(screen.getByText('Dashboard')).toBeDefined()
+    expect(screen.getByText('Projects')).toBeDefined()
     expect(screen.getByText('Stats')).toBeDefined()
     expect(screen.getByText('Less')).toBeDefined()
   })
 
   it('collapses to minimal reactively when focus mode is enabled after mount', async () => {
     render(SideRail)
-    expect(screen.getByText('Dashboard')).toBeDefined() // full nav while off
+    expect(screen.getByText('Projects')).toBeDefined() // full nav while off
     focusModeStore.set(true)
     await tick()
-    expect(screen.queryByText('Dashboard')).toBeNull() // collapsed without remount
+    expect(screen.queryByText('Projects')).toBeNull() // collapsed without remount
     expect(screen.getByText('More')).toBeDefined()
   })
 
@@ -100,13 +99,13 @@ describe('SideRail', () => {
     focusModeStore.set(true)
     render(SideRail)
     await fireEvent.click(screen.getByText('More')) // expand
-    expect(screen.getByText('Dashboard')).toBeDefined()
+    expect(screen.getByText('Projects')).toBeDefined()
     focusModeStore.set(false)
     await tick()
     focusModeStore.set(true)
     await tick()
     // Re-enabling starts minimal again, not stuck expanded.
-    expect(screen.queryByText('Dashboard')).toBeNull()
+    expect(screen.queryByText('Projects')).toBeNull()
     expect(screen.getByText('More')).toBeDefined()
   })
 
@@ -122,13 +121,6 @@ describe('SideRail', () => {
     render(SideRail)
     await fireEvent.click(screen.getByText('Settings'))
     expect(navStore.reset).toHaveBeenCalledWith({ kind: 'settings' })
-  })
-
-  it('calls navStore.reset when Dashboard clicked', async () => {
-    const { navStore } = await import('../../lib/navigation.svelte.js')
-    render(SideRail)
-    await fireEvent.click(screen.getByText('Dashboard'))
-    expect(navStore.reset).toHaveBeenCalledWith({ kind: 'dashboard' })
   })
 
   it('does not show agent badge when no running agents', () => {
