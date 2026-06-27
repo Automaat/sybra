@@ -145,7 +145,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
 	// before agentSteps is populated, causing the wrong step to advance.
 	e.mu.Lock()
-	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot)
+	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema)
 	if err != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", err)

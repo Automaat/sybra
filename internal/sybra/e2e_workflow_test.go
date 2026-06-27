@@ -252,11 +252,20 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		env.pendingCompletions.Add(1)
 		defer env.pendingCompletions.Add(-1)
 		var result string
+		var hasResult bool
 		output := ag.Output()
 		for i := range output {
 			if output[i].Type == "result" {
 				result = output[i].Content
+				hasResult = true
 			}
+		}
+		// B3: codex's turn.completed carries no text — fall back to the last
+		// assistant event so the workflow engine receives the model's response.
+		// Guard with hasResult so agents that exit-0 without any result event
+		// (no_result scenario) are not back-filled with assistant text.
+		if hasResult && result == "" {
+			result = lastAssistantText(ag)
 		}
 		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
 			AgentID:  ag.ID,
@@ -2014,6 +2023,129 @@ func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Errorf("status at attempt cap = %q, want %q", tk.Status, task.StatusHumanRequired)
+	}
+}
+
+// testTestingTaskWithOutputSchemaYAML mirrors testTestingTaskWorkflowYAML but
+// includes output_schema on the run_test step so --output-schema is passed to
+// codex and the JSON agent_message is captured via the B3 fallback.
+const testTestingTaskWithOutputSchemaYAML = `id: testing-task
+name: Test Manual Testing (with schema)
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  - id: run_test
+    name: Adversarial Testing
+    type: run_agent
+    config:
+      role: test-runner
+      mode: headless
+      model: sonnet
+      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}'
+      prompt: 'Test {{.Task.ID}}'
+    next:
+      - goto: route_test
+
+  - id: route_test
+    name: Route Test Result
+    type: route_test_result
+    next:
+      - goto: ""
+`
+
+// installTestingTaskWithOutputSchemaWorkflow writes the fixture with
+// output_schema into the engine's workflow store.
+func installTestingTaskWithOutputSchemaWorkflow(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
+		[]byte(testTestingTaskWithOutputSchemaYAML), 0o644,
+	); err != nil {
+		t.Fatalf("write testing-task.yaml: %v", err)
+	}
+}
+
+// TestE2E_Codex_TestVerdict_Pass_JSON verifies that when the codex provider
+// emits a schema-valid JSON verdict object as its final agent_message:
+//  1. The B3 fallback captures it as the run's result (resultContent).
+//  2. extractTestVerdict parses "PASS" from the JSON → route_test_result
+//     flips the task to ready-pr.
+//  3. The --output-schema flag reaches fake-codex via FAKE_CODEX_ARGS_LOG.
+func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
+	argsLog := filepath.Join(t.TempDir(), "codex-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_pass"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict pass", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("status after JSON PASS = %q, want %q", tk.Status, task.StatusReadyPR)
+	}
+
+	// Verify --output-schema reached fake-codex.
+	waitFor(t, 5*time.Second, "args log written", func() bool {
+		_, statErr := os.Stat(argsLog)
+		return statErr == nil
+	})
+	if data, readErr := os.ReadFile(argsLog); readErr == nil {
+		if !strings.Contains(string(data), "--output-schema") {
+			t.Errorf("--output-schema missing from codex args:\n%s", string(data))
+		}
+	}
+}
+
+// TestE2E_Codex_TestVerdict_Fail_JSON verifies that a JSON FAIL verdict from
+// codex routes the task back to in-progress (re-implement path).
+func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
+	env := setupE2EMultiProvider(t, "codex", []string{"test_verdict_fail"})
+	installTestingTaskWithOutputSchemaWorkflow(t, env)
+
+	created, err := env.tasks.Create("codex json verdict fail", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{workflow.WorkflowVarDir: env.agentDir}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInProgress {
+		t.Errorf("status after JSON FAIL = %q, want %q", tk.Status, task.StatusInProgress)
 	}
 }
 

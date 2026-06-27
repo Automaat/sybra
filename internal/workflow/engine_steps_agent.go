@@ -132,7 +132,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot)
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
 		// recovery loop won the race for this task). That agent will run and its

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -21,15 +22,39 @@ const (
 	testRunnerRole = "test-runner"
 )
 
-// extractTestVerdict returns "PASS"/"FAIL"/"" by scanning output for a line that
-// is EXACTLY the verdict marker (after trimming surrounding whitespace). Exact
-// match — not substring — so an incidental mention in prose (e.g. the agent
-// quoting the contract "the final line must be TEST_VERDICT: PASS") is ignored
-// rather than misread as a real verdict. The last matching line wins (the skill
-// prints it last), and the scan runs over the untruncated agent result so the
-// marker survives long summaries. Missing/ambiguous output yields "" → FAIL,
+// extractTestVerdict returns "PASS"/"FAIL"/"" from agent output.
+//
+// Object-shaped output (leading `{` after trimming BOM/whitespace) is treated
+// as authoritative JSON: the `verdict` field is parsed and the marker scan is
+// skipped entirely. A malformed or unexpected object yields "" → FAIL without
+// falling through to the marker, so a JSON body that incidentally contains a
+// marker-shaped substring cannot misroute. This is the path codex takes when
+// --output-schema enforces a structured response.
+//
+// Non-object-shaped output (claude plain text) falls to the exact-line marker
+// scan. The last matching line wins; missing/ambiguous output yields "" → FAIL,
 // which is the safe direction.
 func extractTestVerdict(output string) string {
+	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
+	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
+	if strings.HasPrefix(s, "{") {
+		// Object-shaped: JSON is authoritative. Parse fail → "" (→FAIL).
+		// No fall-through to marker scan.
+		var v struct {
+			Verdict string `json:"verdict"`
+		}
+		if json.Unmarshal([]byte(s), &v) == nil {
+			switch strings.ToUpper(strings.TrimSpace(v.Verdict)) {
+			case "PASS":
+				return "PASS"
+			case "FAIL":
+				return "FAIL"
+			}
+		}
+		return ""
+	}
+
+	// Plain-text path (claude): exact-line marker scan, last match wins.
 	verdict := ""
 	for line := range strings.SplitSeq(output, "\n") {
 		switch strings.TrimSpace(line) {

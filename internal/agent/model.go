@@ -700,6 +700,14 @@ type RunConfig struct {
 	// implementation worktree, so seeding them would feed an independent
 	// reviewer/tester the implementer's notes. No-op if the dir has no NOTES.md.
 	SeedWorkingMemory bool
+	// OutputSchema is an inline JSON Schema (codex only). The runner writes it
+	// to a temp file and passes --output-schema <path> to codex exec. Empty =
+	// no schema enforcement. Ignored by claude/copilot.
+	OutputSchema string
+	// outputSchemaPath is the temp file path the runner wrote OutputSchema to.
+	// Set intra-package before buildHeadlessInvocation; cleared by defer after
+	// the subprocess exits. Never set by callers.
+	outputSchemaPath string
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.
