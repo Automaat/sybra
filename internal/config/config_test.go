@@ -114,6 +114,48 @@ func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
 	}
 }
 
+func TestLoadHarnessEvolutionDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HarnessEvolve.Enabled {
+		t.Fatal("harness evolution should default enabled")
+	}
+	if cfg.HarnessEvolve.IntervalHours != 24 {
+		t.Fatalf("interval = %.0f, want 24", cfg.HarnessEvolve.IntervalHours)
+	}
+	if cfg.HarnessEvolve.LookbackHours != 168 {
+		t.Fatalf("lookback = %.0f, want 168", cfg.HarnessEvolve.LookbackHours)
+	}
+	if cfg.HarnessEvolve.MinClusterSize != 2 {
+		t.Fatalf("min cluster size = %d, want 2", cfg.HarnessEvolve.MinClusterSize)
+	}
+	if cfg.HarnessEvolve.Sink != "local-task" {
+		t.Fatalf("sink = %q, want local-task", cfg.HarnessEvolve.Sink)
+	}
+}
+
+func TestLoadHarnessEvolutionPreservesExplicitDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	yaml := []byte("harness_evolution:\n  enabled: false\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HarnessEvolve.Enabled {
+		t.Fatal("explicit harness_evolution.enabled=false was not preserved")
+	}
+}
+
 func TestLoadWatchdogDefaults(t *testing.T) {
 	tests := []struct {
 		name          string
