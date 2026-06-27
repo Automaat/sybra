@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -269,6 +270,91 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 
 	if stub.startCalls != 1 {
 		t.Fatalf("dispatch count = %d, want 1 (steer must bypass the recent-run debounce)", stub.startCalls)
+	}
+}
+
+// stubWorkflowEngine implements recovery.WorkflowRestarter for tests that need
+// a non-nil engine without a real workflow store.
+type stubWorkflowEngine struct {
+	startWorkflowCalls int
+}
+
+func (s *stubWorkflowEngine) StartWorkflow(_, _ string) error {
+	s.startWorkflowCalls++
+	return nil
+}
+
+func (s *stubWorkflowEngine) HandleAgentComplete(_ string, _ workflow.AgentCompletion) {}
+
+// TestRestartStalePRFixWorkflowRevertsToInReview verifies the root cause of the
+// b319d12f incident: a task left in-progress with a cancelled (ExecCompleted)
+// pr-fix workflow must NOT have StartWorkflow called on restart — that would
+// launch the agent with nil vars (wrong dir, empty prompt). Instead the task
+// reverts to in-review so the PR monitor re-detects and re-dispatches.
+func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	// Simulate the post-cancel shape: in-progress task with an ExecCompleted
+	// pr-fix workflow (what cancelResolvedPRFixWorkflows leaves behind).
+	created, err := tasks.Create("fix pr conflict", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	wfExec := &workflow.Execution{WorkflowID: "pr-fix", State: workflow.ExecCompleted}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &inProg,
+		Workflow: &wfExec,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress()
+	wg.Wait()
+
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d); want 0", stub.startCalls, stub.prFixCalls)
+	}
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("WorkflowEngine.StartWorkflow called %d times; want 0", wfStub.startWorkflowCalls)
+	}
+
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInReview {
+		t.Errorf("task status = %s; want %s", updated.Status, task.StatusInReview)
 	}
 }
 
