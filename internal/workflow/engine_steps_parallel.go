@@ -125,10 +125,9 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 		model = "sonnet"
 	}
 
-	provider := resolveProvider(child.Config.Provider, wfExec, e.agents.DefaultProvider(), childCtx.Task)
-	if provider != "" && !providerAvailable(provider) {
-		e.logger.Warn("workflow.parallel.cross-provider.fallback", "child", child.ID, "wanted", provider, "reason", "CLI not found")
-		provider = ""
+	provider, model, assignment, err := e.resolveAgentVariant(childCtx.Task, child, wfExec, model, "workflow.parallel.cross-provider.fallback")
+	if err != nil {
+		return err
 	}
 
 	// Headless one-shot: parallel children must terminate so the parent
@@ -145,7 +144,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
 	// before agentSteps is populated, causing the wrong step to advance.
 	e.mu.Lock()
-	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema, AgentAssignment{})
+	agentID, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema, assignment)
 	if err != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", err)

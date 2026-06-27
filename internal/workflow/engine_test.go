@@ -1548,6 +1548,10 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 }
 
 func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()

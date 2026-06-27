@@ -130,27 +130,10 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if model == "" {
 		model = "sonnet"
 	}
-	defaultModel := model
 
-	provider := resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), ctx.Task)
-	assignment := AgentAssignment{}
-	if step.Config.Provider == "" || step.Config.Provider == "ab" {
-		if selected, ok, aErr := e.selectABVariant(ctx.Task.ID, step.Config.Role, step.ID); aErr != nil {
-			return fmt.Errorf("select ab variant: %w", aErr)
-		} else if ok {
-			provider = selected.Provider
-			model = selected.Model
-			assignment = selected
-			if selected.ReasoningEffort != "" {
-				wfExec.SetVar("ab."+step.ID+".reasoning_effort", selected.ReasoningEffort)
-			}
-		}
-	}
-	if provider != "" && !providerAvailable(provider) {
-		e.logger.Warn("workflow.cross-provider.fallback", "wanted", provider, "reason", "CLI not found")
-		provider = ""
-		model = defaultModel
-		assignment = AgentAssignment{}
+	provider, model, assignment, err := e.resolveAgentVariant(ctx.Task, step, wfExec, model, "workflow.cross-provider.fallback")
+	if err != nil {
+		return err
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
@@ -215,6 +198,31 @@ func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, 
 		AssignmentKey:   a.AssignmentKey,
 		ReasoningEffort: a.ReasoningEffort,
 	}, true, nil
+}
+
+func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, model, fallbackLog string) (provider, resolvedModel string, assignment AgentAssignment, err error) {
+	defaultModel := model
+	provider = resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), t)
+	resolvedModel = model
+	if step.Config.Provider == "" || step.Config.Provider == "ab" {
+		selected, ok, err := e.selectABVariant(t.ID, step.Config.Role, step.ID)
+		if err != nil {
+			return "", "", AgentAssignment{}, fmt.Errorf("select ab variant: %w", err)
+		}
+		if ok {
+			provider = selected.Provider
+			resolvedModel = selected.Model
+			assignment = selected
+			if selected.ReasoningEffort != "" {
+				wfExec.SetVar("ab."+step.ID+".reasoning_effort", selected.ReasoningEffort)
+			}
+		}
+	}
+	if provider != "" && !providerAvailable(provider) {
+		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
+		return "", defaultModel, AgentAssignment{}, nil
+	}
+	return provider, resolvedModel, assignment, nil
 }
 
 // resolveProvider resolves the step-level provider string.
