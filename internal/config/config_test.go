@@ -100,8 +100,8 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	if cfg.AutoUpdate.Branch != "main" {
 		t.Fatalf("auto_update.branch = %q, want main", cfg.AutoUpdate.Branch)
 	}
-	if cfg.AutoUpdate.Mode != "auto" {
-		t.Fatalf("auto_update.mode = %q, want auto", cfg.AutoUpdate.Mode)
+	if cfg.AutoUpdate.Mode != "notify" {
+		t.Fatalf("auto_update.mode = %q, want notify", cfg.AutoUpdate.Mode)
 	}
 	if cfg.AutoUpdate.PollSeconds != 300 {
 		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)

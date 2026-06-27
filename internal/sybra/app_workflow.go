@@ -344,9 +344,6 @@ type agentAdapter struct {
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (string, error) {
-	// (A pending watchdog headless-nudge steer is consumed upstream in
-	// execRunAgent, before the prompt reaches here.)
-
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
@@ -474,6 +471,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		AssignmentUnit:  ag.AssignmentUnit,
 		AssignmentKey:   ag.AssignmentKey,
 		ReasoningEffort: ag.ReasoningEffort,
+		OneShot:         cfg.OneShot,
 		State:           string(agent.StateRunning),
 		StartedAt:       ag.StartedAt,
 		Prompt:          cfg.Prompt,

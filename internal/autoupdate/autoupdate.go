@@ -13,22 +13,18 @@ import (
 )
 
 const (
-	ModeAuto   = "auto"
-	ModeNotify = "notify"
-
+	ModeAuto        = "auto"
+	ModeNotify      = "notify"
 	RestartExitCode = 42
-	RestartMarker   = "restart-requested"
 )
 
 type Config struct {
-	Enabled           bool
-	RepoDir           string
-	Remote            string
-	Branch            string
-	Mode              string
-	PollInterval      time.Duration
-	RestartDelay      time.Duration
-	RestartMarkerPath string
+	Enabled      bool
+	RepoDir      string
+	Remote       string
+	Branch       string
+	Mode         string
+	PollInterval time.Duration
 }
 
 type Result struct {
@@ -40,36 +36,15 @@ type Result struct {
 }
 
 type Runner struct {
-	cfg       Config
-	logger    *slog.Logger
-	onRestart func()
+	cfg    Config
+	logger *slog.Logger
 }
 
-func New(cfg Config, logger *slog.Logger, onRestart func()) *Runner {
+func New(cfg Config, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{cfg: cfg.withDefaults(), logger: logger, onRestart: onRestart}
-}
-
-func RestartMarkerPath(homeDir string) string {
-	if homeDir == "" {
-		return ""
-	}
-	return filepath.Join(homeDir, RestartMarker)
-}
-
-func WriteRestartMarker(path string) error {
-	if path == "" {
-		return errors.New("restart marker path is empty")
-	}
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("restart marker path is not absolute: %s", path)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o644)
+	return &Runner{cfg: cfg.withDefaults(), logger: logger}
 }
 
 func (r *Runner) Run(ctx context.Context) {
@@ -134,18 +109,6 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	res := Result{Status: "available", OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}
-	if cfg.Mode == ModeNotify {
-		return res, nil
-	}
-
-	if err := WriteRestartMarker(cfg.RestartMarkerPath); err != nil {
-		return Result{}, fmt.Errorf("write restart marker: %w", err)
-	}
-	if _, err := git(ctx, cfg.RepoDir, "merge", "--ff-only", remoteSHA); err != nil {
-		_ = os.Remove(cfg.RestartMarkerPath)
-		return Result{}, fmt.Errorf("merge --ff-only %s: %w", remoteSHA, err)
-	}
-	res.Status = "updated"
 	return res, nil
 }
 
@@ -166,19 +129,6 @@ func (r *Runner) check(ctx context.Context) {
 		attrs = append(attrs, "changed", res.ChangedFiles)
 	}
 	r.logger.Info("autoupdate.check", attrs...)
-	if res.Status != "updated" {
-		return
-	}
-	if r.cfg.RestartDelay > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(r.cfg.RestartDelay):
-		}
-	}
-	if r.onRestart != nil {
-		r.onRestart()
-	}
 }
 
 func validateRepoState(ctx context.Context, cfg Config) error {
@@ -274,13 +224,10 @@ func (c Config) withDefaults() Config {
 		c.Branch = "main"
 	}
 	if c.Mode == "" {
-		c.Mode = ModeAuto
+		c.Mode = ModeNotify
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = 5 * time.Minute
-	}
-	if c.RestartDelay <= 0 {
-		c.RestartDelay = 2 * time.Second
 	}
 	return c
 }
