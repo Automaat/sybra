@@ -596,19 +596,13 @@ func applyLinkFields(t *Task, u Update) {
 	}
 }
 
-func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
-	t, err := s.read(id)
-	if err != nil {
-		return Task{}, "", err
-	}
-	prevStatus := t.Status
-
+func applyUpdateFields(t *Task, u Update) error {
 	if u.Title != nil {
 		t.Title = *u.Title
 	}
 	if u.Slug != nil {
 		if err := ValidateSlug(*u.Slug); err != nil {
-			return Task{}, "", err
+			return err
 		}
 		t.Slug = *u.Slug
 	}
@@ -641,7 +635,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	}
 	if u.AgentMode != nil {
 		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
-			return Task{}, "", err
+			return err
 		}
 		t.AgentMode = *u.AgentMode
 	}
@@ -654,11 +648,11 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.Tags != nil {
 		t.Tags = *u.Tags
 	}
-	applyLinkFields(&t, u)
+	applyLinkFields(t, u)
 	if u.Reviewed != nil {
 		t.Reviewed = *u.Reviewed
 	}
-	applyReviewFields(&t, u)
+	applyReviewFields(t, u)
 	if u.TodoistID != nil {
 		t.TodoistID = *u.TodoistID
 	}
@@ -679,6 +673,18 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	}
 	if u.ReasoningEffort != nil {
 		t.ReasoningEffort = *u.ReasoningEffort
+	}
+	return nil
+}
+
+func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
+	t, err := s.read(id)
+	if err != nil {
+		return Task{}, "", err
+	}
+	prevStatus := t.Status
+	if err := applyUpdateFields(&t, u); err != nil {
+		return Task{}, "", err
 	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err

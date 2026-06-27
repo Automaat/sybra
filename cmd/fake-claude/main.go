@@ -98,82 +98,49 @@ func main() {
 	}
 }
 
-func runScenario(scenario, taskID string) bool {
-	switch scenario {
-	case "success":
-		runSuccess()
-	case "write_sidecar_success":
-		runWriteSidecarSuccess(taskID)
-	case "revise_plan_sidecars":
-		runRevisePlanSidecars(taskID)
-	case "fail_exit":
-		emitSystem()
-		os.Exit(1)
-	case "no_result":
-		emitSystem()
-		emitAssistant("Working on it...")
-		os.Exit(0)
-	case "triage":
-		runTriage(taskID, "todo", "small")
-	case "triage_to_planning":
-		runTriage(taskID, "planning", "large")
-	case "triage_to_planning_nocritic":
-		runTriage(taskID, "planning", "large,nocritic")
-	case "triage_to_planning_noplan":
-		runTriage(taskID, "planning", "large,noplan")
-	case "plan_critic_success":
-		runPlanCriticSuccess(taskID)
-	case "plan_critic_no_save":
-		runPlanCriticNoSave()
-	case "code_review_success":
-		runCodeReviewSuccess(taskID)
-	case "test_pass":
-		runTestPass()
-	case "test_pass_verbose":
-		runTestPassVerbose()
-	case "test_fail":
-		runTestFail()
-	case "triage_to_done":
-		runTriage(taskID, "done", "")
-	case "triage_to_in_review":
-		runTriage(taskID, "in-review", "")
-	case "triage_to_human_required":
-		runTriage(taskID, "human-required", "")
-	case "implement":
+var scenarioHandlers = map[string]func(string){
+	"success":                     func(string) { runSuccess() },
+	"write_sidecar_success":       runWriteSidecarSuccess,
+	"revise_plan_sidecars":        runRevisePlanSidecars,
+	"fail_exit":                   func(string) { emitSystem(); os.Exit(1) },
+	"no_result":                   func(string) { emitSystem(); emitAssistant("Working on it..."); os.Exit(0) },
+	"triage":                      func(taskID string) { runTriage(taskID, "todo", "small") },
+	"triage_to_planning":          func(taskID string) { runTriage(taskID, "planning", "large") },
+	"triage_to_planning_nocritic": func(taskID string) { runTriage(taskID, "planning", "large,nocritic") },
+	"triage_to_planning_noplan":   func(taskID string) { runTriage(taskID, "planning", "large,noplan") },
+	"plan_critic_success":         runPlanCriticSuccess,
+	"plan_critic_no_save":         func(string) { runPlanCriticNoSave() },
+	"code_review_success":         runCodeReviewSuccess,
+	"test_pass":                   func(string) { runTestPass() },
+	"test_pass_verbose":           func(string) { runTestPassVerbose() },
+	"test_fail":                   func(string) { runTestFail() },
+	"triage_to_done":              func(taskID string) { runTriage(taskID, "done", "") },
+	"triage_to_in_review":         func(taskID string) { runTriage(taskID, "in-review", "") },
+	"triage_to_human_required":    func(taskID string) { runTriage(taskID, "human-required", "") },
+	"implement": func(string) {
 		emitSystem()
 		emitAssistant("Implementing...")
 		emitResult("Implementation done. PR created")
-	case "interactive_implement":
-		runInteractiveImplement()
-	case "evaluate":
-		runEvaluate(taskID)
-	case "pr_created":
-		runPRCreated()
-	case "signal_kill":
-		runSignalKill()
-	case "block_silent":
-		// Emit nothing and block on stdin until EOF. Reproduces the wedged
-		// orchestrator brain: a conversational agent started with no kickoff
-		// prompt parks in StatePaused with no session id (none is ever
-		// emitted) and idles on stdin forever.
-		_, _ = io.Copy(io.Discard, os.Stdin)
-	case "hang":
-		runHang()
-	case "auth_error":
-		emitSystem()
-		emitAssistant("Authentication failed. Please re-auth.")
-		os.Exit(1)
-	case "malformed_pr_output":
-		runMalformedPROutput()
-	case "perf_stream":
-		runPerfStream()
-	case "perf_burst":
-		runPerfBurst()
-	case "perf_long":
-		runPerfLong()
-	default:
+	},
+	"interactive_implement": func(string) { runInteractiveImplement() },
+	"evaluate":              runEvaluate,
+	"pr_created":            func(string) { runPRCreated() },
+	"signal_kill":           func(string) { runSignalKill() },
+	"block_silent":          func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
+	"hang":                  func(string) { runHang() },
+	"auth_error":            func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
+	"malformed_pr_output":   func(string) { runMalformedPROutput() },
+	"perf_stream":           func(string) { runPerfStream() },
+	"perf_burst":            func(string) { runPerfBurst() },
+	"perf_long":             func(string) { runPerfLong() },
+}
+
+func runScenario(scenario, taskID string) bool {
+	handler, ok := scenarioHandlers[scenario]
+	if !ok {
 		return false
 	}
+	handler(taskID)
 	return true
 }
 
