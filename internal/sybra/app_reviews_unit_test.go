@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -583,7 +584,8 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		}
 		ids[label] = created.ID
 		pr := 100
-		upd := task.Update{PRNumber: &pr}
+		status := task.StatusInProgress
+		upd := task.Update{PRNumber: &pr, Status: &status}
 		if hasWF {
 			wf := &workflow.Execution{
 				WorkflowID:  "pr-fix",
@@ -632,6 +634,12 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
 		t.Errorf("resolved CurrentStep = %q, want empty", got.Workflow.CurrentStep)
 	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("resolved status = %q, want %q", got.Status, task.StatusInReview)
+	}
+	if !strings.Contains(got.StatusReason, "ci_failure resolved") {
+		t.Errorf("resolved status reason = %q, want resolved issue kind", got.StatusReason)
+	}
 	// Cooldown was cleared, so a future ci_failure on a new SHA can re-trigger.
 	if !r.prTracker.ShouldHandle(ids["resolved"], github.PRIssueCIFailure, "sha-new") {
 		t.Error("prTracker.Clear was not called for resolved task")
@@ -643,6 +651,9 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Errorf("live workflow state = %+v, want still waiting", got.Workflow)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Errorf("live status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 }
 

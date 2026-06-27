@@ -161,7 +161,7 @@ func normalizeStructuredFailuresMarkdown(report, outcome string) string {
 func insertClassificationAfterFailuresHeading(report, outcome string) string {
 	lines := strings.Split(report, "\n")
 	for i, line := range lines {
-		if strings.EqualFold(strings.TrimSpace(line), testFailuresHeading) {
+		if isTestFailuresHeading(strings.TrimSpace(line)) {
 			out := append([]string{}, lines[:i+1]...)
 			out = append(out, "", "Classification: "+outcome)
 			out = append(out, lines[i+1:]...)
@@ -394,7 +394,7 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasObserved := containsAny(lower,
 		"actual output:", "actual:", "observed:", "observed output:",
 		"command output:", "stdout:", "stderr:", "exit code",
-		"printed:", "rendered:")
+		"printed:", "rendered:") || hasReportLinePrefix(report, "output:")
 	hasExpected := containsAny(lower,
 		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
 		"violates", "should render", "should not")
@@ -408,6 +408,24 @@ func containsAny(s string, needles ...string) bool {
 	for _, needle := range needles {
 		if strings.Contains(s, needle) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasReportLinePrefix(report string, prefixes ...string) bool {
+	normalizedPrefixes := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if prefix = strings.ToLower(strings.TrimSpace(prefix)); prefix != "" {
+			normalizedPrefixes = append(normalizedPrefixes, prefix)
+		}
+	}
+	for _, line := range reportScanLines(report) {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		for _, prefix := range normalizedPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
 		}
 	}
 	return false
@@ -483,8 +501,8 @@ func isTestFailuresHeading(line string) bool {
 	if len(line) == len(testFailuresHeading) {
 		return true
 	}
-	next := line[len(testFailuresHeading)]
-	return next == '('
+	suffix := line[len(testFailuresHeading):]
+	return strings.HasPrefix(suffix, "(") || strings.HasPrefix(suffix, " (")
 }
 
 // containsFixSuggestions reports whether the test-runner output includes
