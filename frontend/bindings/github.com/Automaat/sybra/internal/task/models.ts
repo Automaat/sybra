@@ -363,9 +363,6 @@ export class Task {
         if (!("statusReason" in $$source)) {
             this["statusReason"] = "";
         }
-        if (!("handoffSourceProvider" in $$source)) {
-            this["handoffSourceProvider"] = "";
-        }
         if (!("reviewed" in $$source)) {
             this["reviewed"] = false;
         }
@@ -374,9 +371,6 @@ export class Task {
         }
         if (!("todoistId" in $$source)) {
             this["todoistId"] = "";
-        }
-        if (!("dependsOn" in $$source)) {
-            this["dependsOn"] = [];
         }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
@@ -409,7 +403,7 @@ export class Task {
         const $$createField17_0 = $$createType0;
         const $$createField33_0 = $$createType2;
         const $$createField34_0 = $$createType4;
-        const $$createField41_0 = $$createType5;
+        const $$createField44_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -427,7 +421,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField34_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField41_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField44_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -448,6 +442,13 @@ export enum TaskType {
      * Hidden from the task list UI and skipped by restart-stale/watchdog.
      */
     TaskTypeChat = "chat",
+
+    /**
+     * TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
+     * It runs no agent: it rolls up the status of its child tasks and is the
+     * task the dependency gate flips to human-required on a dependency cycle.
+     */
+    TaskTypeUmbrella = "umbrella",
 };
 
 // Private type creation functions
