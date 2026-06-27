@@ -283,7 +283,7 @@ func (e *Engine) ResumeStalled() {
 		// workflow: that would override the triage verdict and re-dispatch an
 		// agent that the operator already suppressed.
 		if t.Status == "human-required" {
-			e.logger.Info("workflow.resume-stalled.skip",
+			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", "human_required", "step", step.ID)
 			continue
 		}
