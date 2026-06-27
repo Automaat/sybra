@@ -5,7 +5,7 @@
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
-  import { isReviewTask, reviewPhaseNeedsYou, reviewPhaseRank } from '../lib/review-phase.js'
+  import { isInboundReview, reviewPhaseNeedsYou, reviewPhaseRank } from '../lib/review-phase.js'
   import { prPhaseRank, prPhaseNeedsYou } from '../lib/pr-phase.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
@@ -71,8 +71,10 @@
   function columnTasks(col: BoardColumn): Task[] {
     if (col.kind === 'review') return reviewLaneTasks()
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
-    // Review tasks live in the PR Reviews lane, never their status column.
-    const tasks = filteredByStatuses(statuses).filter((t) => !isReviewTask(t))
+    // Inbound reviews live in the To Review lane, never their status column.
+    // Self-authored handoff PR reviews are NOT inbound — they stay here so a
+    // handed-off PR shows in In Review, not To Review.
+    const tasks = filteredByStatuses(statuses).filter((t) => !isInboundReview(t))
     // In Review: float the user's pending PR actions (merge / ping / mark-ready)
     // to the top, mirroring the PR Reviews lane.
     if (col.status === 'in-review') {
@@ -81,12 +83,13 @@
     return tasks
   }
 
-  // The PR Reviews lane: every active inbound review task, sorted so the
-  // phases that need the user (post / approve) float to the top.
+  // The To Review lane: every active inbound review task, sorted so the
+  // phases that need the user (post / approve) float to the top. Self-authored
+  // handoff PR reviews are excluded — they belong in their status column.
   function reviewLaneTasks(): Task[] {
     return taskStore.list
       .filter((t: Task) => {
-        if (!isReviewTask(t)) return false
+        if (!isInboundReview(t)) return false
         if (t.status === 'done' || t.status === 'cancelled') return false
         if (!matchesQuery(t, searchQuery)) return false
         if (!matchesProject(t, selectedProjectId)) return false

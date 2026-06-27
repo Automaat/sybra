@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   REVIEW_PHASE_META,
   isReviewTask,
+  isHandoffPRReview,
+  isInboundReview,
   reviewPhaseOf,
   reviewPhaseMeta,
   reviewPhaseNeedsYou,
@@ -16,6 +18,32 @@ describe('isReviewTask', () => {
     expect(isReviewTask({ tags: ['backend', 'review'] })).toBe(true)
     expect(isReviewTask({ tags: ['backend'] })).toBe(false)
     expect(isReviewTask({})).toBe(false)
+  })
+})
+
+describe('isHandoffPRReview', () => {
+  it('is true only when the handoff-pr tag is present', () => {
+    expect(isHandoffPRReview({ tags: ['review', 'handoff-pr'] })).toBe(true)
+    expect(isHandoffPRReview({ tags: ['handoff-pr'] })).toBe(true)
+    expect(isHandoffPRReview({ tags: ['review'] })).toBe(false)
+    expect(isHandoffPRReview({})).toBe(false)
+  })
+})
+
+describe('isInboundReview', () => {
+  it('is true for review tasks that are not self-authored handoffs', () => {
+    expect(isInboundReview({ tags: ['review'] })).toBe(true)
+    expect(isInboundReview({ tags: ['backend', 'review'] })).toBe(true)
+  })
+
+  it('excludes self-authored handoff PR reviews (they belong in In Review)', () => {
+    expect(isInboundReview({ tags: ['review', 'handoff-pr'] })).toBe(false)
+  })
+
+  it('is false for non-review tasks', () => {
+    expect(isInboundReview({ tags: ['backend'] })).toBe(false)
+    expect(isInboundReview({ tags: ['handoff-pr'] })).toBe(false)
+    expect(isInboundReview({})).toBe(false)
   })
 })
 

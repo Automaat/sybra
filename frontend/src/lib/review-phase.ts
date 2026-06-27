@@ -84,6 +84,29 @@ export function isReviewTask(t: { tags?: string[] }): boolean {
   return t.tags?.includes('review') ?? false
 }
 
+/** Tag set by `sybra-cli handoff --stage pr` on a self-authored PR. */
+export const HANDOFF_PR_TAG = 'handoff-pr'
+
+/**
+ * True when a review task is a self-authored PR handed off for cross-provider
+ * review. It keeps the `review` tag (so it reuses the pr-review workflow and the
+ * review-phase chrome), but it is the user's *own* PR — not inbound — so it must
+ * render in the In Review status column, never the inbound "To Review" lane.
+ */
+export function isHandoffPRReview(t: { tags?: string[] }): boolean {
+  return t.tags?.includes(HANDOFF_PR_TAG) ?? false
+}
+
+/**
+ * True only for INBOUND PR reviews (reviewing someone else's code) — the set
+ * that lives in the tag-based "To Review" board lane. Self-authored handoff PR
+ * reviews are excluded: they belong in their own status column. This is the
+ * single predicate that splits the To Review lane from the status columns.
+ */
+export function isInboundReview(t: { tags?: string[] }): boolean {
+  return isReviewTask(t) && !isHandoffPRReview(t)
+}
+
 /** A task's review phase, defaulting unknown/empty values to `reviewing`. */
 export function reviewPhaseOf(t: { reviewPhase?: string }): ReviewPhase {
   const p = t.reviewPhase
