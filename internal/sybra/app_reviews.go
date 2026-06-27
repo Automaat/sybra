@@ -770,7 +770,7 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 	}
 	*t = updated
 	r.logAudit(audit.EventPROrphanAdopted, taskID, "", map[string]any{
-		"pr": prNum, "repo": repo, "branch": branch, "state": "merged",
+		"pr": prNum, "repo": repo, "branch": branch, "state": state,
 	})
 	r.logAudit(audit.EventPRMerged, taskID, "", map[string]any{"pr": prNum, "state": state})
 	// Enrich with PR size, timing, human-edit data, and merge_commit for revert
@@ -798,16 +798,14 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 
 // findMergedPRByBranch queries GitHub for a merged PR matching the given head
 // branch in the repository. Returns the PR number, or 0 if none or ambiguous.
-// Uses env vars to keep project/branch out of the arg list (gosec G204).
 func findMergedPRByBranch(repo, branch string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c",
-		"gh pr list --repo \"$_REPO\" --head \"$_BRANCH\" --state merged --json number --limit 2")
-	cmd.Env = append(cmd.Environ(), "_REPO="+repo, "_BRANCH="+branch)
-	out, err := cmd.Output()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %s", err, out)
 	}
 	var prs []struct {
 		Number int `json:"number"`
