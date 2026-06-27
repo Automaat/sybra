@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -32,6 +33,10 @@ type TaskService struct {
 	fetchIssue          func(repo string, number int) (github.Issue, error)
 	fetchIssueLinkedPRs func(repo string, issueNumber int) ([]github.PullRequest, error)
 	viewerLogin         func() string
+	// umbrellaExpand expands a detected ☂️ umbrella issue into a gated child
+	// DAG instead of a flat task. Wired in wireServices; gated at call time on
+	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
+	umbrellaExpand func(issueURL string) (umbrella.Result, error)
 }
 
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
@@ -325,6 +330,18 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.logger.Error("enrich-issue.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
 		return
 	}
+
+	// An umbrella issue must not become a flat implementation task. Expand it
+	// into a gated child DAG (the expander builds its own tracker) and drop the
+	// stub. This mirrors the poll fetcher's pass-1 detection so manual "paste
+	// issue URL" creation and background polling converge on identical handling
+	// — previously a manually-added umbrella was triaged and implemented as one
+	// flat task, ignoring its sub-issues entirely.
+	if s.umbrellaExpansionEnabled() && umbrella.IsUmbrellaIssue(issue.Title, issue.Labels) {
+		s.expandUmbrellaStub(taskID, repo, issue)
+		return
+	}
+
 	slug := task.Slugify(issue.Title)
 	u := task.Update{
 		Title:     task.Ptr(issue.Title),
@@ -360,6 +377,44 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.startCreatedWorkflow(updated)
 	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
+}
+
+// umbrellaExpansionEnabled reports whether a detected umbrella issue should be
+// auto-expanded on the manual-create path. Read live (not wired-once) so a
+// config reload toggling umbrella.enabled takes effect without re-wiring.
+func (s *TaskService) umbrellaExpansionEnabled() bool {
+	return s.cfg != nil && s.cfg.Umbrella.Enabled && s.umbrellaExpand != nil
+}
+
+// expandUmbrellaStub expands a manually-created stub whose URL resolved to a
+// ☂️ umbrella issue into a gated child DAG, then deletes the stub — the
+// expander creates its own umbrella-typed tracker, so keeping the stub would
+// leave a duplicate flat task for the same issue. On expansion failure the stub
+// is enriched into an identifiable (but inert) task so the user is not left
+// empty-handed and can retry with `sybra-cli umbrella <url>`; crucially no flat
+// workflow is started on a known umbrella, which is the bug this path fixes.
+func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
+	res, err := s.umbrellaExpand(issue.URL)
+	if err != nil {
+		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
+		u := task.Update{
+			Title:     task.Ptr(issue.Title),
+			Issue:     task.Ptr(issue.URL),
+			ProjectID: task.Ptr(repo),
+			Slug:      task.Ptr(task.Slugify(issue.Title)),
+		}
+		if issue.Body != "" {
+			u.Body = task.Ptr(issue.Body)
+		}
+		if _, uerr := s.tasks.Update(taskID, u); uerr != nil {
+			s.logger.Error("enrich-issue.umbrella-fallback", "task_id", taskID, "err", uerr)
+		}
+		return
+	}
+	if err := s.tasks.Delete(taskID); err != nil {
+		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", err)
+	}
+	s.logger.Info("enrich-issue.umbrella-expanded", "issue", issue.URL, "created", res.Created, "stub", taskID)
 }
 
 func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {

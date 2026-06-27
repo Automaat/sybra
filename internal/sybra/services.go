@@ -1,9 +1,11 @@
 package sybra
 
 import (
+	"context"
 	"maps"
 
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 // wireServices populates the Wails-bound service structs that were pre-allocated
@@ -21,6 +23,13 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
 	a.taskSvc.cfg = a.cfg
+	// Expand a manually-added ☂️ umbrella issue into a gated child DAG instead
+	// of a flat task. Wired unconditionally; enrichFromIssue gates the call on
+	// cfg.Umbrella.Enabled so a config reload toggles it without re-wiring.
+	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
+	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
+		return umbrella.Expand(context.Background(), a.tasks, umbrella.ClaudePlannerRunner(a.cfg.Umbrella.Model), issueURL)
+	}
 	a.planSvc.engine = a.workflowEngine
 	a.planSvc.tasks = a.tasks
 	a.planSvc.agents = a.agents
