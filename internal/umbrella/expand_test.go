@@ -14,6 +14,7 @@ func TestIsUmbrellaIssue(t *testing.T) {
 		{"bare umbrella rune (no VS16)", "☂ feat(x): umbrella", nil, true},
 		{"emoji with leading space", "  ☂️ leading space", nil, true},
 		{"umbrella label", "ordinary title", []string{"bug", "umbrella"}, true},
+		{"umbrella label mixed case + space", "ordinary title", []string{" Umbrella "}, true},
 		{"emoji mid-title is not a prefix", "feat ☂️ inline", nil, false},
 		{"plain issue", "ordinary title", []string{"bug"}, false},
 		{"no title no labels", "", nil, false},
