@@ -29,6 +29,7 @@ type Config struct {
 	PollInterval      time.Duration
 	RestartDelay      time.Duration
 	RestartMarkerPath string
+	BlockRestart      func() string
 }
 
 type Result struct {
@@ -211,6 +212,11 @@ func validateRepoState(ctx context.Context, cfg Config) error {
 func repoBlockReason(ctx context.Context, cfg Config) string {
 	if err := validateRepoState(ctx, cfg); err != nil {
 		return err.Error()
+	}
+	if cfg.BlockRestart != nil {
+		if reason := cfg.BlockRestart(); reason != "" {
+			return reason
+		}
 	}
 	return ""
 }

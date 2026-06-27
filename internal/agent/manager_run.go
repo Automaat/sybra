@@ -91,6 +91,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		MaxTurns:               cfg.MaxTurns,
 		requirePermissions:     cfg.RequirePermissions,
 		headlessPermissionMode: cfg.HeadlessPermissionMode,
+		OneShot:                cfg.OneShot,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

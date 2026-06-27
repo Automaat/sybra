@@ -340,6 +340,7 @@ func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, t
 		AssignmentUnit:  ag.AssignmentUnit,
 		AssignmentKey:   ag.AssignmentKey,
 		ReasoningEffort: ag.ReasoningEffort,
+		OneShot:         ag.OneShot,
 		State:           string(agent.StateRunning),
 		StartedAt:       ag.StartedAt,
 		Prompt:          fullPrompt,

@@ -38,6 +38,7 @@ type Record struct {
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).
 	RequirePermissions bool `yaml:"require_permissions,omitempty"`
+	OneShot            bool `yaml:"one_shot,omitempty"`
 	// ReasoningEffort preserves the codex model_reasoning_effort across restarts.
 	// Codex convo respawns a fresh process per turn — without this the effort
 	// would revert to model default after a restart.

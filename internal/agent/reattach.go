@@ -236,6 +236,14 @@ func convoResumeState(evs []ConvoEvent) State {
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
 func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
+	if r.OneShot {
+		// A one-shot per-turn agent (Codex implement) has no follow-up turns.
+		// If it was interrupted, it's dead. Delete it so recovery can re-queue it.
+		_ = reg.Delete(r.ID)
+		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive", "oneshot", true)
+		return nil
+	}
+
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
 	// was down — that would leak a zombie agent gcOrphanChats can't reap.
@@ -425,6 +433,7 @@ func agentFromRecord(r Record) *Agent {
 		LastEventAt:        time.Now().UTC(),
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
+		OneShot:            r.OneShot,
 		stdinPath:          r.StdinPath,
 		requirePermissions: r.RequirePermissions,
 		ReasoningEffort:    r.ReasoningEffort,

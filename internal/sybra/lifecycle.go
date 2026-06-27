@@ -118,6 +118,12 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		PollInterval:      time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
 		RestartDelay:      time.Duration(a.cfg.AutoUpdate.RestartDelaySeconds) * time.Second,
 		RestartMarkerPath: autoupdate.RestartMarkerPath(homeDir),
+		BlockRestart: func() string {
+			if a.agents != nil && a.agents.RunningCount() > 0 {
+				return "active agents running"
+			}
+			return ""
+		},
 	}, a.logger, func() {
 		a.logger.Info("autoupdate.restart.requested")
 		if a.requestRestart != nil {

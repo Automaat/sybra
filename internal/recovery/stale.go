@@ -97,8 +97,12 @@ func (r *Recovery) RestartStaleInProgress() {
 		// step using the stored agent run result — same mechanism as
 		// onAgentComplete.
 		if t.AgentMode != "headless" {
-			r.recoverStaleInteractive(&t)
-			continue
+			lr := lastAgentRun(&t)
+			if lr == nil || !lr.OneShot {
+				r.recoverStaleInteractive(&t)
+				continue
+			}
+			r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 		}
 		if t.ProjectID == "" {
 			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")

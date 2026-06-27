@@ -94,6 +94,7 @@ type Agent struct {
 	// and CC exited with a valid session_id, meaning the next run can pass
 	// --resume to continue the conversation.
 	Resumable bool `json:"resumable,omitempty"`
+	OneShot   bool `json:"oneShot,omitempty"`
 
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
