@@ -1131,3 +1131,23 @@ func TestHookCmd_ExactLimitAccepted(t *testing.T) {
 		t.Errorf("hook must produce no stdout; got %q", out)
 	}
 }
+
+// TestHookCmd_FailsOpenOnBadConfig verifies the hook subcommand exits 0 even
+// when config.Load fails. config.Load runs before the hook fast-path, so a
+// malformed config must not make `sybra-cli hook` exit non-zero and stall a
+// codex agent run — the diagnosis bypasses the fail-open cmdHook handler.
+func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
+	home := setupStore(t)
+	// An unclosed flow sequence makes yaml.Unmarshal (and thus config.Load) error.
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("agent: [unclosed"), 0o644); err != nil {
+		t.Fatalf("write bad config: %v", err)
+	}
+	code, out := runHookWithStdin(t, `{"hook_event_name":"SessionStart","session_id":"s","model":"m"}`,
+		"hook", "SessionStart", "--task", "task-abc")
+	if code != 0 {
+		t.Errorf("hook must exit 0 (fail-open) when config.Load fails; got %d", code)
+	}
+	if out != "" {
+		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}

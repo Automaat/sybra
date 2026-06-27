@@ -60,15 +60,24 @@ func run(args []string) int {
 		return 1
 	}
 
+	// Detect the hook subcommand before config.Load can abort: codex lifecycle
+	// hooks must fail open (see cmdHook) — a malformed config must never make
+	// `sybra-cli hook` exit non-zero and stall an agent run.
+	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+
 	cfg, err := config.Load()
 	if err != nil {
+		if isHook {
+			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
+			return 0
+		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
 
 	// Fast path for hook subcommand — only needs cfg for AuditDir(), not stores.
 	// Branch before store construction so cold start is cheap (hook is invoked
 	// per-event by codex and must complete quickly).
-	if len(filtered) >= 1 && filtered[0] == "hook" {
+	if isHook {
 		return cmdHook(cfg, filtered[1:])
 	}
 
