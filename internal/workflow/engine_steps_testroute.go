@@ -91,15 +91,20 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "pass"}, nil
 	}
 
-	// Count only test-runner runs that belong to the current testing cycle
-	// (i.e. started at or after this workflow execution). Runs from prior
-	// cycles (before a human re-dispatched the task to testing) must not
-	// inflate the counter and cause immediate escalation on re-entry.
+	// Count test-runner runs that belong to the current testing cycle.
+	// When a human re-dispatches after human-required, TestingCycleStartedAt is
+	// set to the re-dispatch time; runs before that time are from prior cycles
+	// and must not inflate the counter. Nil means no re-dispatch has happened
+	// (first cycle or automatic implement→test loop), so all runs count.
 	attempts := 0
 	for i := range t.AgentRuns {
-		if t.AgentRuns[i].Role == testRunnerRole && !t.AgentRuns[i].StartedAt.Before(wfExec.StartedAt) {
-			attempts++
+		if t.AgentRuns[i].Role != testRunnerRole {
+			continue
 		}
+		if t.TestingCycleStartedAt != nil && t.AgentRuns[i].StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		attempts++
 	}
 	limit := e.maxTestAttempts
 	if limit <= 0 {

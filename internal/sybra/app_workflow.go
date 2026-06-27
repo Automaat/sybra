@@ -182,6 +182,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Reviewed:              t.Reviewed,
 		Workflow:              t.Workflow,
 		AgentRuns:             toRunInfos(t.AgentRuns),
+		TestingCycleStartedAt: t.TestingCycleStartedAt,
 	}
 }
 

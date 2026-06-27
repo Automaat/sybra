@@ -49,6 +49,7 @@ type Update struct {
 	ReasoningEffort       *string
 	Outcome               *string
 	MergeCommit           *string
+	TestingCycleStartedAt *time.Time
 }
 
 func (u Update) writesSidecar() bool {

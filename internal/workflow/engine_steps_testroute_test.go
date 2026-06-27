@@ -71,11 +71,14 @@ func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 
 // runRouteTestResult calls execRouteTestResult with the given verdict and
 // agent-run history seeded into the in-memory task store.
-func runRouteTestResult(e *Engine, tasks *memTasks, taskID, verdict string, wfStartedAt time.Time, runs []AgentRunInfo) (StepOutput, error) {
+// cycleStart, when non-nil, simulates a human re-dispatch boundary: only runs
+// at or after that time are counted toward the cap.
+func runRouteTestResult(e *Engine, tasks *memTasks, taskID, verdict string, wfStartedAt time.Time, runs []AgentRunInfo, cycleStart *time.Time) (StepOutput, error) {
 	tasks.Put(TaskInfo{
-		ID:        taskID,
-		Status:    "testing",
-		AgentRuns: runs,
+		ID:                    taskID,
+		Status:                "testing",
+		AgentRuns:             runs,
+		TestingCycleStartedAt: cycleStart,
 	})
 	step := &Step{ID: "route_test"}
 	wfExec := &Execution{
@@ -93,7 +96,7 @@ func runRouteTestResult(e *Engine, tasks *memTasks, taskID, verdict string, wfSt
 func TestRouteTestResult_Pass(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
-	out, err := runRouteTestResult(e, tasks, "t1", "PASS", time.Now().UTC(), nil)
+	out, err := runRouteTestResult(e, tasks, "t1", "PASS", time.Now().UTC(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +114,7 @@ func TestRouteTestResult_FailUnderCap(t *testing.T) {
 	e, tasks := makeTestEngine(t)
 	now := time.Now().UTC()
 	runs := []AgentRunInfo{{Role: testRunnerRole, StartedAt: now}}
-	out, err := runRouteTestResult(e, tasks, "t2", "FAIL", now, runs)
+	out, err := runRouteTestResult(e, tasks, "t2", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +136,7 @@ func TestRouteTestResult_FailAtCap(t *testing.T) {
 		{Role: testRunnerRole, StartedAt: now.Add(time.Minute)},
 		{Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute)},
 	}
-	out, err := runRouteTestResult(e, tasks, "t3", "FAIL", now, runs)
+	out, err := runRouteTestResult(e, tasks, "t3", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +169,7 @@ func TestRouteTestResult_ReDispatch(t *testing.T) {
 	priorRuns = append(priorRuns, AgentRunInfo{Role: testRunnerRole, StartedAt: newCycleStart.Add(time.Minute)})
 	runs := priorRuns
 
-	out, err := runRouteTestResult(e, tasks, "t4", "FAIL", newCycleStart, runs)
+	out, err := runRouteTestResult(e, tasks, "t4", "FAIL", newCycleStart, runs, &newCycleStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +206,7 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	priorRuns = append(priorRuns, newRuns...)
 	runs := priorRuns
 
-	out, err := runRouteTestResult(e, tasks, "t5", "FAIL", newCycleStart, runs)
+	out, err := runRouteTestResult(e, tasks, "t5", "FAIL", newCycleStart, runs, &newCycleStart)
 	if err != nil {
 		t.Fatal(err)
 	}

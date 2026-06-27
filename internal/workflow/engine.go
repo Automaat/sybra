@@ -44,6 +44,10 @@ type TaskInfo struct {
 	// route_test_result counts prior test-runner runs; provider=cross uses
 	// code-authoring run providers when a previous workflow wrote the code.
 	AgentRuns []AgentRunInfo
+	// TestingCycleStartedAt is the start of the current testing cycle, set when
+	// a human re-dispatches from human-required. Nil means no re-dispatch has
+	// occurred; route_test_result counts all test-runner runs in that case.
+	TestingCycleStartedAt *time.Time
 }
 
 // AgentRunInfo is the engine-visible subset of a task's agent run.

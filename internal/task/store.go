@@ -674,6 +674,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.ReasoningEffort != nil {
 		t.ReasoningEffort = *u.ReasoningEffort
 	}
+	if u.TestingCycleStartedAt != nil {
+		t.TestingCycleStartedAt = u.TestingCycleStartedAt
+	}
 	return nil
 }
 

@@ -167,6 +167,14 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	if err != nil {
 		return t, err
 	}
+	// When a human moves the task out of human-required, record the cycle start
+	// so route_test_result excludes prior-cycle test-runner runs from the count.
+	if cur.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
+		now := time.Now().UTC()
+		if _, uErr := s.tasks.Update(id, task.Update{TestingCycleStartedAt: &now}); uErr != nil {
+			s.logger.Warn("testing-cycle.reset-failed", "task_id", id, "err", uErr)
+		}
+	}
 	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
 			s.worktrees.Remove(t.ID)
