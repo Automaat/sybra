@@ -193,7 +193,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 	}
 	out := make([]workflow.AgentRunInfo, len(runs))
 	for i := range runs {
-		out[i] = workflow.AgentRunInfo{Role: runs[i].Role, Provider: runs[i].Provider}
+		out[i] = workflow.AgentRunInfo{Role: runs[i].Role, Provider: runs[i].Provider, StartedAt: runs[i].StartedAt}
 	}
 	return out
 }

@@ -48,8 +48,9 @@ type TaskInfo struct {
 
 // AgentRunInfo is the engine-visible subset of a task's agent run.
 type AgentRunInfo struct {
-	Role     string
-	Provider string
+	Role      string
+	Provider  string
+	StartedAt time.Time
 }
 
 // TaskProvider reads and updates tasks.
