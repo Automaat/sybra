@@ -51,6 +51,14 @@ const (
 	// EventAgentPermissionDenied is emitted once per auto-mode classifier denial
 	// observed during a headless claude run. Batched at completion time.
 	EventAgentPermissionDenied = "agent.permission_denied"
+
+	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
+	// when codex fires its session/subagent lifecycle hooks. Distinct from the
+	// stream-derived agent.* events to avoid double-counting.
+	EventCodexSessionStart  = "codex.session.start"
+	EventCodexSubagentStart = "codex.subagent.start"
+	EventCodexSubagentStop  = "codex.subagent.stop"
+	EventCodexSessionStop   = "codex.session.stop"
 )
 
 type Event struct {

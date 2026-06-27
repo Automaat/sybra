@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,5 +60,74 @@ func TestCodexReasoningArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildCodexConvoArgs_HooksPresent verifies that hook overrides and
+// --dangerously-bypass-hook-trust are injected into per-turn convo args when
+// sybra-cli is on PATH and TaskID is set.
+func TestBuildCodexConvoArgs_HooksPresent(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	a := &Agent{ID: "a", Provider: "codex", TaskID: "task-abc123"}
+	args := buildCodexConvoArgs(a, RunConfig{}, "hello")
+
+	if !slices.Contains(args, "--dangerously-bypass-hook-trust") {
+		t.Errorf("--dangerously-bypass-hook-trust missing; args=%v", args)
+	}
+	found := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "hooks.SessionStart=") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("hooks.SessionStart= override not found; args=%v", args)
+	}
+}
+
+// TestBuildCodexConvoArgs_HooksAbsentWithEmptyTaskID verifies that no hook args
+// appear when TaskID is empty (fail-open invariant).
+func TestBuildCodexConvoArgs_HooksAbsentWithEmptyTaskID(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	a := &Agent{ID: "a", Provider: "codex"} // TaskID empty
+	args := buildCodexConvoArgs(a, RunConfig{}, "hello")
+
+	for _, arg := range args {
+		if strings.Contains(arg, "hooks.") {
+			t.Errorf("hook override must be absent when TaskID empty; got %q", arg)
+		}
+		if arg == "--dangerously-bypass-hook-trust" {
+			t.Errorf("--dangerously-bypass-hook-trust must be absent when TaskID empty")
+		}
+	}
+}
+
+// TestBuildCodexConvoArgs_HooksBeforePrompt verifies that hook -c args appear
+// before the prompt (last positional argument).
+func TestBuildCodexConvoArgs_HooksBeforePrompt(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	a := &Agent{ID: "a", Provider: "codex", TaskID: "task-abc123"}
+	const prompt = "do the work"
+	args := buildCodexConvoArgs(a, RunConfig{}, prompt)
+
+	promptIdx := -1
+	for i, arg := range args {
+		if arg == prompt {
+			promptIdx = i
+			break
+		}
+	}
+	if promptIdx < 0 {
+		t.Fatalf("prompt not found in args; args=%v", args)
+	}
+
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "hooks.") && i > promptIdx {
+			t.Errorf("hook override at index %d appears after prompt at index %d; args=%v", i, promptIdx, args)
+		}
 	}
 }
