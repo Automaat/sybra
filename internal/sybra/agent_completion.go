@@ -257,6 +257,15 @@ func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultCon
 			"task_id", ag.TaskID, "agent_id", ag.ID,
 			"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
 			"rate_limited", rateLimited)
+		if h.shouldRetryStoppedPlanCritic(ag, rateLimited) {
+			h.workflowEngine.FailStoppedAgentStep(ag.TaskID, workflow.AgentCompletion{
+				AgentID:  ag.ID,
+				Result:   resultContent,
+				Provider: ag.Provider,
+				Success:  false,
+			})
+			return true
+		}
 		h.workflowEngine.ClearAgentStep(ag.ID)
 		return false
 	}
@@ -267,6 +276,21 @@ func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultCon
 		Success:  exitErr == nil,
 	})
 	return true
+}
+
+func (h *AgentCompletionHandler) shouldRetryStoppedPlanCritic(ag *agent.Agent, rateLimited bool) bool {
+	if rateLimited || agent.RoleFromName(ag.Name) != agent.RolePlanCritic {
+		return false
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		h.logger.Warn("agent.completion.plan-critic-retry.task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(t.StatusReason)), "watchdog:") {
+		return false
+	}
+	return strings.TrimSpace(t.PlanCritique) == ""
 }
 
 func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr error) {

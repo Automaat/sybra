@@ -298,6 +298,50 @@ func (e *Engine) ClearAgentStep(agentID string) {
 	e.clearAgentStep(agentID)
 }
 
+// FailStoppedAgentStep records a tracked stopped agent as a failed step and
+// lets the normal AdvanceStep retry policy decide whether to re-run it.
+//
+// This is intentionally narrower than HandleAgentComplete's untracked-agent
+// fallback: stopped/killed runs are incomplete, so only an agent the workflow
+// itself still tracks may drive recovery.
+func (e *Engine) FailStoppedAgentStep(taskID string, c AgentCompletion) bool {
+	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
+	if !tracked {
+		e.logger.Debug("workflow.stopped-agent.untracked",
+			"task_id", taskID, "agent_id", c.AgentID)
+		e.clearAgentStep(c.AgentID)
+		return false
+	}
+
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		e.logger.Error("workflow.stopped-agent.get", "task_id", taskID, "agent_id", c.AgentID, "err", err)
+		e.clearAgentStep(c.AgentID)
+		return false
+	}
+	if t.Workflow == nil || t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || t.Workflow.CurrentStep != spawnedStep {
+		e.logger.Debug("workflow.stopped-agent.stale",
+			"task_id", taskID, "agent_id", c.AgentID, "step", spawnedStep)
+		e.clearAgentStep(c.AgentID)
+		return false
+	}
+
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID:   spawnedStep,
+		Status:   "failed",
+		Output:   c.Result,
+		AgentID:  c.AgentID,
+		Provider: c.Provider,
+	}); err != nil {
+		e.logger.Error("workflow.stopped-agent.advance", "task_id", taskID, "agent_id", c.AgentID, "err", err)
+		if t.Status != "" {
+			e.surfaceStartFailure(taskID, t.Status, err)
+		}
+	}
+	e.clearAgentStep(c.AgentID)
+	return true
+}
+
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {

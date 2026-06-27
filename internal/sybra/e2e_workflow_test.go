@@ -2596,6 +2596,76 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	}
 }
 
+func TestE2E_BuiltinSimpleTask_WatchdogStoppedPlanCriticRetries(t *testing.T) {
+	env := setupE2EMulti(t, []string{
+		"triage_to_planning",        // triage: status=planning, tags=large
+		"write_sidecar_success",     // plan — writes the plan sidecars
+		"plan_critic_watchdog_stop", // critique_plan — watchdog-stopped, no critique
+		"plan_critic_success",       // critique_plan retry — saves critique
+		"revise_plan_sidecars",      // address_critique — rewrites artifacts and flips plan-review
+	})
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
+
+	created, err := env.tasks.Create("watchdog stopped critic e2e", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow reaches review_plan after critic retry", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if tk.Status == task.StatusHumanRequired {
+		t.Fatalf("task remained human-required after watchdog-stopped critic retry: %q", tk.StatusReason)
+	}
+	if tk.PlanCritique == "" {
+		t.Fatal("PlanCritique sidecar empty after retry")
+	}
+
+	var critiqueAttempts int
+	var failedCritique bool
+	for _, rec := range tk.Workflow.StepHistory {
+		if rec.StepID != "critique_plan" {
+			continue
+		}
+		critiqueAttempts++
+		if rec.Status == "failed" {
+			failedCritique = true
+		}
+	}
+	if critiqueAttempts != 2 {
+		t.Fatalf("critique_plan attempts = %d, want 2\nhistory: %v", critiqueAttempts, stepIDsFromHistory(tk.Workflow))
+	}
+	if !failedCritique {
+		t.Fatalf("critique_plan history missing failed watchdog attempt: %+v", tk.Workflow.StepHistory)
+	}
+
+	var criticRuns int
+	for _, r := range tk.AgentRuns {
+		if r.Role == "plan-critic" {
+			criticRuns++
+		}
+	}
+	if criticRuns != 2 {
+		t.Fatalf("plan-critic runs = %d, want 2", criticRuns)
+	}
+}
+
 // TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired covers the
 // failure mode that motivated the require_sidecar guard: the critic agent
 // exits cleanly (no process error) but never ran `sybra-cli update

@@ -18,6 +18,7 @@
 //   - triage_to_done: runs sybra-cli to set status=done
 //   - triage_to_in_review: runs sybra-cli to set status=in-review
 //   - triage_to_human_required: runs sybra-cli to set status=human-required
+//   - plan_critic_watchdog_stop: marks task watchdog-stopped, then exits via SIGTERM
 //   - implement: emits result with "PR created" text
 //   - interactive_implement: emits result then blocks on stdin until EOF,
 //     simulating a real conversational claude agent that stays alive between
@@ -110,6 +111,7 @@ var scenarioHandlers = map[string]func(string){
 	"triage_to_planning_noplan":   func(taskID string) { runTriage(taskID, "planning", "large,noplan") },
 	"plan_critic_success":         runPlanCriticSuccess,
 	"plan_critic_no_save":         func(string) { runPlanCriticNoSave() },
+	"plan_critic_watchdog_stop":   runPlanCriticWatchdogStop,
 	"code_review_success":         runCodeReviewSuccess,
 	"test_pass":                   func(string) { runTestPass() },
 	"test_pass_verbose":           func(string) { runTestPassVerbose() },
@@ -313,6 +315,16 @@ func runPlanCriticNoSave() {
 	emitSystem()
 	emitAssistant("Blocked by env. Did not save critique.")
 	emitResult("Blocked by env.")
+}
+
+func runPlanCriticWatchdogStop(taskID string) {
+	emitSystem()
+	emitAssistant("Looping during critique synthesis...")
+	if taskID != "" {
+		runCLI("update", taskID, "--status", "human-required", "--status-reason", "watchdog: repeated critique synthesis loop")
+	}
+	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	select {} // block until signal arrives
 }
 
 func runCodeReviewSuccess(taskID string) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -79,6 +80,8 @@ func runExec() {
 		runCodexPlanCriticSuccess(taskID)
 	case "plan_critic_no_save":
 		runCodexPlanCriticNoSave()
+	case "plan_critic_watchdog_stop":
+		runCodexPlanCriticWatchdogStop(taskID)
 	case "code_review_success":
 		runCodexCodeReviewSuccess(taskID)
 	case "triage_to_done":
@@ -154,6 +157,13 @@ func runCodexPlanCriticSuccess(taskID string) {
 func runCodexPlanCriticNoSave() {
 	emitAgentMessage("Blocked by env. Did not save critique.")
 	emitTurnCompleted(100, 20)
+}
+
+func runCodexPlanCriticWatchdogStop(taskID string) {
+	emitAgentMessage("Looping during critique synthesis...")
+	runCLI(taskID, "update", taskID, "--status", "human-required", "--status-reason", "watchdog: repeated critique synthesis loop")
+	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	select {} // block until signal arrives
 }
 
 func runCodexCodeReviewSuccess(taskID string) {
