@@ -72,12 +72,19 @@ steps:
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.
 
+        For each claimed defect you MUST have: (1) a real command you ran
+        and its verbatim output, and (2) when claiming a specific code bug,
+        a line quoted from the CURRENT file read with Read/cat/grep — not
+        from diff memory. Exclude any claimed defect you cannot back with
+        both. An ungrounded claim is not a defect.
+
         When done:
           - If you found ANY deviation from the task's intent, append a
             "## Test Failures" section to the task body via
-            `sybra-cli update {{.Task.ID}} --body "<full body>"` describing the
-            observed-vs-expected symptoms and exact reproduction steps. Do NOT
-            suggest fixes — only report what is broken.
+            `sybra-cli update {{.Task.ID}} --body "<full body>"` listing
+            per-defect: the exact command run, verbatim output, expected
+            behaviour (cite the task), and the quoted code line when
+            relevant. Do NOT suggest fixes — describe symptoms only.
           - Print the verdict as the FINAL line of your output, exactly:
             `TEST_VERDICT: PASS`  (only if you could not break it)
             or

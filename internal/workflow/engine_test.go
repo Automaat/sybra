@@ -164,6 +164,22 @@ func (m *memTasks) MarkTaskReviewed(id string) error {
 	return nil
 }
 
+func (m *memTasks) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			t.AgentRuns[i].ProtocolViolation = violation
+			break
+		}
+	}
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

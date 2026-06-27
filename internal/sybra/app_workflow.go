@@ -122,6 +122,10 @@ func (a *taskAdapter) MarkTaskReviewed(id string) error {
 	return err
 }
 
+func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
+	return a.tasks.UpdateRun(taskID, agentID, map[string]any{"protocol_violation": violation})
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
@@ -194,7 +198,13 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 	}
 	out := make([]workflow.AgentRunInfo, len(runs))
 	for i := range runs {
-		out[i] = workflow.AgentRunInfo{Role: runs[i].Role, Provider: runs[i].Provider, StartedAt: runs[i].StartedAt}
+		out[i] = workflow.AgentRunInfo{
+			AgentID:           runs[i].AgentID,
+			Role:              runs[i].Role,
+			Provider:          runs[i].Provider,
+			StartedAt:         runs[i].StartedAt,
+			ProtocolViolation: runs[i].ProtocolViolation,
+		}
 	}
 	return out
 }

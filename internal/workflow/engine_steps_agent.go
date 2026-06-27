@@ -111,6 +111,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 	}
 
+	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+
 	mode := step.Config.Mode
 	if strings.Contains(mode, "{{") {
 		rendered, rErr := RenderTemplate(mode, ctx)
