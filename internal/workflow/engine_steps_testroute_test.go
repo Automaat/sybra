@@ -340,6 +340,18 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
+			// Literal incident shape: a codex test-runner that exited 0 with empty
+			// stdout (e.g. crashed on "Reading additional input from stdin..."). The
+			// empty string skips parseStructuredTestOutput (unlike "{}"), so this
+			// guards the raw-empty branch that originally produced no outcome var.
+			name:       "empty_stdout_completed_is_infra",
+			status:     "completed",
+			output:     "",
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
 			name:       "failed_process_with_pass_verdict_is_infra",
 			status:     "failed",
 			output:     `{"verdict":"PASS"}`,
@@ -850,6 +862,75 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeInfraFailure {
 		t.Errorf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeInfraFailure)
+	}
+}
+
+// TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure reproduces
+// the original incident: a codex test-runner exited 0 with empty stdout (crashed
+// on "Reading additional input from stdin..."), so no TEST_VERDICT marker was
+// produced. Such a run must classify as an infrastructure
+// failure and escalate WITHOUT consuming a product-bug implementation attempt —
+// before #1176 the empty-output completion produced no outcome var and fell
+// through to the attempt-cap counter. Empty stdout (unlike "{}") skips structured
+// parsing, so this guards the exact branch that burned the cap.
+func TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure(t *testing.T) {
+	t.Parallel()
+	engine, tasks, agents := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+		StepHistory: []StepRecord{{
+			StepID: testVerdictSourceStep,
+			Status: "failed",
+		}},
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-empty-stdout",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-empty", Role: testRunnerRole}},
+	})
+
+	err := engine.AdvanceStep("t-empty-stdout", StepOutput{
+		StepID:   testVerdictSourceStep,
+		Status:   "completed",
+		Output:   "",
+		AgentID:  "agent-empty",
+		Provider: "codex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 — an infra crash must not dispatch an implementation agent", got)
+	}
+	got, err := tasks.GetTask("t-empty-stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t-empty-stdout")
+	if !strings.Contains(reason, "no implementation attempt consumed") {
+		t.Errorf("status reason = %q, want no implementation attempt consumed", reason)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeInfraFailure {
+		t.Errorf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeInfraFailure)
+	}
+	// An infra-classified run is skipped by the product-bug attempt counter, so it
+	// can never reach the escalation/duplicate paths that re-implement or burn the cap.
+	if got.AgentRuns[0].TestFailureFingerprint != "" {
+		t.Errorf("fingerprint = %q, want empty for infra failure", got.AgentRuns[0].TestFailureFingerprint)
 	}
 }
 
