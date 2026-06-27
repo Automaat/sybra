@@ -4,7 +4,6 @@
   // hot path.
   import TaskList from '../pages/TaskList.svelte'
   import TaskDetail from '../pages/TaskDetail.svelte'
-  import Dashboard from '../pages/Dashboard.svelte'
   import TaskSidebar from './TaskSidebar.svelte'
   import { navStore } from '../lib/navigation.svelte.js'
   import { lazyComponent } from '../lib/lazy.js'
@@ -57,9 +56,7 @@
 </script>
 
 <main class="flex min-h-0 flex-1 {navStore.page.kind === 'task-list' && sidebarTaskId ? 'flex-row overflow-hidden' : 'flex-col overflow-y-auto'}">
-  {#if navStore.page.kind === 'dashboard'}
-    <Dashboard onviewagent={navAgentDetail} />
-  {:else if navStore.page.kind === 'task-list'}
+  {#if navStore.page.kind === 'task-list'}
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
       <TaskList
         onselect={onselectTaskFromList}

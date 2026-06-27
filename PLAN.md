@@ -43,7 +43,6 @@ synapse/
 │   │   ├── App.svelte             # Router setup
 │   │   ├── main.ts                # Entry point
 │   │   ├── pages/
-│   │   │   ├── Dashboard.svelte   # Agent grid + stats
 │   │   │   ├── TaskList.svelte    # Filterable task list
 │   │   │   ├── TaskDetail.svelte  # Single task view + actions
 │   │   │   └── AgentDetail.svelte # Agent output + controls
@@ -172,9 +171,8 @@ func (a *App) GetAgentOutput(agentID string) []agent.StreamEvent
 - [x] `watcher/watcher.go`: fsnotify on tasks/, 200ms debounce
 - [x] Emit task:updated events, frontend auto-refreshes
 
-### Phase 6 — Dashboard + Polish [DONE]
-- [x] Dashboard page: running agents grid, task status summary, cost tracking
-- [x] Dashboard as default landing page with nav rail entry
+### Phase 6 — Board + Polish [DONE]
+- [x] Task board as default landing page with nav rail entry
 - [x] Graceful shutdown (kill tmux sessions on exit — already in manager.Shutdown())
 - Agent pause/resume — deferred (requires claude CLI support)
 - Error handling improvements — ongoing

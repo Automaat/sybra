@@ -49,13 +49,12 @@ function inEditable(target: EventTarget | null): boolean {
 
 function metaNav(key: string): Page | null {
   switch (key) {
-    case '1': return { kind: 'dashboard' }
-    case '2': return { kind: 'task-list' }
-    case '3': return { kind: 'project-list' }
-    case '4': return { kind: 'agents' }
-    case '5': return { kind: 'github' }
-    case '6': return { kind: 'reviews' }
-    case '7': return { kind: 'stats' }
+    case '1': return { kind: 'task-list' }
+    case '2': return { kind: 'project-list' }
+    case '3': return { kind: 'agents' }
+    case '4': return { kind: 'github' }
+    case '5': return { kind: 'reviews' }
+    case '6': return { kind: 'stats' }
     case ',': return { kind: 'settings' }
     default: return null
   }

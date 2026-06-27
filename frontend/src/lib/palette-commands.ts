@@ -74,13 +74,12 @@ export function buildCommands(ctx: PaletteCtx): Command[] {
 
   // --- PAGES ---
   const pageEntries: { id: string; title: string; shortcut?: string; page: Page }[] = [
-    { id: 'page:dashboard', title: 'Dashboard', shortcut: '⌘1', page: { kind: 'dashboard' } },
-    { id: 'page:task-list', title: 'Board', shortcut: '⌘2', page: { kind: 'task-list' } },
-    { id: 'page:project-list', title: 'Projects', shortcut: '⌘3', page: { kind: 'project-list' } },
-    { id: 'page:agents', title: 'Agents', shortcut: '⌘4', page: { kind: 'agents' } },
-    { id: 'page:github', title: 'GitHub', shortcut: '⌘5', page: { kind: 'github' } },
-    { id: 'page:reviews', title: 'Reviews', shortcut: '⌘6', page: { kind: 'reviews' } },
-    { id: 'page:stats', title: 'Stats', shortcut: '⌘7', page: { kind: 'stats' } },
+    { id: 'page:task-list', title: 'Board', shortcut: '⌘1', page: { kind: 'task-list' } },
+    { id: 'page:project-list', title: 'Projects', shortcut: '⌘2', page: { kind: 'project-list' } },
+    { id: 'page:agents', title: 'Agents', shortcut: '⌘3', page: { kind: 'agents' } },
+    { id: 'page:github', title: 'GitHub', shortcut: '⌘4', page: { kind: 'github' } },
+    { id: 'page:reviews', title: 'Reviews', shortcut: '⌘5', page: { kind: 'reviews' } },
+    { id: 'page:stats', title: 'Stats', shortcut: '⌘6', page: { kind: 'stats' } },
     { id: 'page:settings', title: 'Settings', shortcut: '⌘,', page: { kind: 'settings' } },
     { id: 'page:chats', title: 'Chats', page: { kind: 'chats' } },
     { id: 'page:workflows', title: 'Workflows', page: { kind: 'workflows' } },
