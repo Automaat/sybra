@@ -345,13 +345,14 @@ func TestMarshalRoundTripAgentRuns(t *testing.T) {
 		AgentMode: "headless",
 		AgentRuns: []AgentRun{
 			{
-				AgentID:   "agent-001",
-				Mode:      "headless",
-				State:     "done",
-				StartedAt: now,
-				CostUSD:   1.23,
-				Result:    "success",
-				LogFile:   "/tmp/log.txt",
+				AgentID:         "agent-001",
+				Mode:            "headless",
+				State:           "done",
+				StartedAt:       now,
+				CostUSD:         1.23,
+				PremiumRequests: 2.5,
+				Result:          "success",
+				LogFile:         "/tmp/log.txt",
 			},
 			{
 				AgentID:   "agent-002",
@@ -382,6 +383,9 @@ func TestMarshalRoundTripAgentRuns(t *testing.T) {
 	}
 	if r.CostUSD != 1.23 {
 		t.Errorf("AgentRuns[0].CostUSD = %f, want 1.23", r.CostUSD)
+	}
+	if r.PremiumRequests != 2.5 {
+		t.Errorf("AgentRuns[0].PremiumRequests = %f, want 2.5", r.PremiumRequests)
 	}
 	if r.Result != "success" {
 		t.Errorf("AgentRuns[0].Result = %q, want %q", r.Result, "success")

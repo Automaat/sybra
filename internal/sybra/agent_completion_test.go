@@ -228,6 +228,37 @@ func TestLastAssistantText(t *testing.T) {
 	})
 }
 
+func TestEstimatedRunCost(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reported cost wins", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{Provider: "codex", Model: "gpt-5"}
+		if got := estimatedRunCost(ag, 0.42, 9); got != 0.42 {
+			t.Errorf("estimatedRunCost reported = %g, want 0.42", got)
+		}
+	})
+
+	t.Run("codex estimates from tokens", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{Provider: "codex", Model: "gpt-5"}
+		ag.AddResultStats("", 0, 1_000_000, 100_000, 0)
+		ag.AddCacheStats(0, 800_000)
+		if got, want := estimatedRunCost(ag, 0, 0), 1.35; got != want {
+			t.Errorf("estimatedRunCost codex = %g, want %g", got, want)
+		}
+	})
+
+	t.Run("copilot estimates from credits", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{Provider: "copilot"}
+		ag.AddPremiumRequests(7.5)
+		if got, want := estimatedRunCost(ag, 0, ag.GetPremiumRequests()), 0.075; got != want {
+			t.Errorf("estimatedRunCost copilot = %g, want %g", got, want)
+		}
+	})
+}
+
 // itoa converts a small non-negative int to its decimal string representation
 // without importing strconv (avoids an extra import just for test helpers).
 func itoa(n int) string {

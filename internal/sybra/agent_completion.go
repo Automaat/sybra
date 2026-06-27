@@ -100,6 +100,8 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// persistence write and the audit entry see a consistent view.
 	state := ag.GetState()
 	cost := ag.GetCostUSD()
+	premiumRequests := ag.GetPremiumRequests()
+	cost = estimatedRunCost(ag, cost, premiumRequests)
 	exitErr := ag.GetExitErr()
 	reasoning := ag.GetReasoningTokens()
 
@@ -119,6 +121,9 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 	if reasoning > 0 {
 		auditData["reasoning_tokens"] = reasoning
+	}
+	if premiumRequests > 0 {
+		auditData["premium_requests"] = premiumRequests
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 
@@ -144,13 +149,14 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
 	}
 	runUpdates := map[string]any{
-		"state":      string(state),
-		"cost_usd":   cost,
-		"result":     truncated,
-		"log_file":   ag.LogPath,
-		"session_id": ag.GetSessionID(),
-		"model":      ag.Model,
-		"provider":   ag.Provider,
+		"state":            string(state),
+		"cost_usd":         cost,
+		"premium_requests": premiumRequests,
+		"result":           truncated,
+		"log_file":         ag.LogPath,
+		"session_id":       ag.GetSessionID(),
+		"model":            ag.Model,
+		"provider":         ag.Provider,
 	}
 	addRunMetadata(runUpdates, ag)
 	// For human-review agents, parse the verdict from the live (untruncated)
@@ -342,13 +348,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	cacheCreate := ag.GetCacheCreationInputTokens()
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
-	agCost := cost
-	if agCost == 0 && ag.Provider == "codex" {
-		// Codex CLI doesn't emit cost — estimate from token counts.
-		// Pricing covers cached vs uncached input separately so the estimate
-		// matches actual OpenAI billing rather than the gross-input ceiling.
-		agCost = stats.EstimateCostDetailed(ag.Model, in, out, 0, cacheRead, reasoning)
-	}
+	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
 	outcome := "failed"
 	if exitErr == nil {
 		outcome = "completed"
@@ -404,6 +404,26 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 			Timestamp:                time.Now(),
 		})
 	}
+}
+
+func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
+	if cost > 0 {
+		return cost
+	}
+	if ag.Provider == "copilot" {
+		return stats.EstimateCopilotCost(premiumRequests)
+	}
+	if ag.Provider == "codex" {
+		return stats.EstimateCostDetailed(
+			ag.Model,
+			ag.GetInputTokens(),
+			ag.GetOutputTokens(),
+			0,
+			ag.GetCacheReadInputTokens(),
+			ag.GetReasoningTokens(),
+		)
+	}
+	return 0
 }
 
 // isRateLimitedRun reports whether a failed run was rejected by a transient
