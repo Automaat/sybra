@@ -727,6 +727,9 @@ func TestStoreListSkipsPlanSidecars(t *testing.T) {
 	for _, name := range []string{
 		task.ID + ".plan.md",
 		task.ID + ".plan-critique.md",
+		task.ID + ".plan-research.md",
+		task.ID + ".plan-decisions.md",
+		task.ID + ".plan-brief.md",
 		task.ID + ".review.md",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("# plan content"), 0o644); err != nil {

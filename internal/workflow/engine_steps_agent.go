@@ -26,10 +26,24 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 		return
 	}
 	step := def.StepByID(stepID)
-	if step == nil || step.Type != StepRunAgent || step.Config.ImportSidecar == nil {
+	if step == nil || step.Type != StepRunAgent {
 		return
 	}
-	cfg := step.Config.ImportSidecar
+	for _, cfg := range step.Config.sidecarImports() {
+		e.importOneSidecar(taskID, stepID, step, info, cfg)
+	}
+}
+
+func (c StepConfig) sidecarImports() []ImportSidecar {
+	var out []ImportSidecar
+	if c.ImportSidecar != nil {
+		out = append(out, *c.ImportSidecar)
+	}
+	out = append(out, c.ImportSidecars...)
+	return out
+}
+
+func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) {
 	path, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,

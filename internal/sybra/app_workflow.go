@@ -146,8 +146,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.CodeReview = &content
 	case "plan_critique":
 		u.PlanCritique = &content
+	case "plan_research":
+		u.PlanResearch = &content
+	case "plan_decisions":
+		u.PlanDecisions = &content
+	case "plan_brief":
+		u.PlanBrief = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|code_review|plan_critique|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -167,6 +173,9 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		Body:                  t.Body,
 		Plan:                  t.Plan,
 		PlanCritique:          t.PlanCritique,
+		PlanResearch:          t.PlanResearch,
+		PlanDecisions:         t.PlanDecisions,
+		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
 		PlanDrafts:            t.PlanDrafts,
 		Issue:                 t.Issue,

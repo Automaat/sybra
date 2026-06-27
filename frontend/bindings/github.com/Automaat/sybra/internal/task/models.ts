@@ -302,6 +302,14 @@ export class Task {
     "body": string;
     "plan"?: string;
     "planCritique"?: string;
+
+    /**
+     * Planning support sidecars. Plan remains the compact execution contract
+     * consumed by implementation agents; these hold review/evidence material.
+     */
+    "planResearch"?: string;
+    "planDecisions"?: string;
+    "planBrief"?: string;
     "codeReview"?: string;
 
     /**
@@ -395,7 +403,7 @@ export class Task {
         const $$createField17_0 = $$createType0;
         const $$createField33_0 = $$createType2;
         const $$createField34_0 = $$createType4;
-        const $$createField41_0 = $$createType5;
+        const $$createField44_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -413,7 +421,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField34_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField41_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField44_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

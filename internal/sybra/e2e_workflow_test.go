@@ -2537,7 +2537,7 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
 		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
-		"success",               // address_critique
+		"revise_plan_sidecars",  // address_critique — rewrites all plan artifacts and flips plan-review
 	})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 

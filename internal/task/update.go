@@ -40,12 +40,24 @@ type Update struct {
 	Workflow              **workflow.Execution
 	Plan                  *string
 	PlanCritique          *string
+	PlanResearch          *string
+	PlanDecisions         *string
+	PlanBrief             *string
 	CodeReview            *string
 	MaxTurns              *int
 	ForkSubagent          *bool
 	ReasoningEffort       *string
 	Outcome               *string
 	MergeCommit           *string
+}
+
+func (u Update) writesSidecar() bool {
+	return u.Plan != nil ||
+		u.PlanCritique != nil ||
+		u.PlanResearch != nil ||
+		u.PlanDecisions != nil ||
+		u.PlanBrief != nil ||
+		u.CodeReview != nil
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -71,7 +83,8 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
-		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique", "code_review",
+		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique",
+		"plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
@@ -164,6 +177,12 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.Plan = &s
 	case "plan_critique":
 		u.PlanCritique = &s
+	case "plan_research":
+		u.PlanResearch = &s
+	case "plan_decisions":
+		u.PlanDecisions = &s
+	case "plan_brief":
+		u.PlanBrief = &s
 	case "code_review":
 		u.CodeReview = &s
 	case "review_phase":

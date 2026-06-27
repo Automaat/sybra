@@ -151,13 +151,21 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 }
 
 func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
-	if len(args) < 1 {
-		return fatal(jsonOut, "usage: get <id>")
+	fs := flag.NewFlagSet("get", flag.ContinueOnError)
+	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if fs.NArg() < 1 {
+		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := s.Get(args[0])
+	t, err := s.Get(fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
+	}
+	if *compact {
+		stripPlanningSupport(&t)
 	}
 
 	if jsonOut {
@@ -200,10 +208,26 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.PlanCritique != "" {
 		fmt.Printf("\n## Plan Critique\n\n%s\n", t.PlanCritique)
 	}
+	if t.PlanBrief != "" {
+		fmt.Printf("\n## Plan Brief\n\n%s\n", t.PlanBrief)
+	}
+	if t.PlanDecisions != "" {
+		fmt.Printf("\n## Plan Decisions\n\n%s\n", t.PlanDecisions)
+	}
+	if t.PlanResearch != "" {
+		fmt.Printf("\n## Plan Research\n\n%s\n", t.PlanResearch)
+	}
 	if t.CodeReview != "" {
 		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
 	}
 	return 0
+}
+
+func stripPlanningSupport(t *task.Task) {
+	t.PlanCritique = ""
+	t.PlanResearch = ""
+	t.PlanDecisions = ""
+	t.PlanBrief = ""
 }
 
 func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
@@ -212,6 +236,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	body := fs.String("body", "", "task body markdown")
 	plan := fs.String("plan", "", "plan content markdown")
 	planCritique := fs.String("plan-critique", "", "plan critique markdown")
+	planResearch := fs.String("plan-research", "", "plan research markdown")
+	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
+	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
@@ -277,6 +304,15 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *planCritique != "" {
 		updates["plan_critique"] = *planCritique
+	}
+	if *planResearch != "" {
+		updates["plan_research"] = *planResearch
+	}
+	if *planDecisions != "" {
+		updates["plan_decisions"] = *planDecisions
+	}
+	if *planBrief != "" {
+		updates["plan_brief"] = *planBrief
 	}
 	if len(updates) > 0 {
 		t, err = s.UpdateMap(t.ID, updates)
@@ -742,50 +778,62 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 }
 
 type updateFlags struct {
-	title            *string
-	status           *string
-	body             *string
-	plan             *string
-	planFile         *string
-	planCritique     *string
-	planCritiqueFile *string
-	codeReview       *string
-	codeReviewFile   *string
-	mode             *string
-	taskType         *string
-	tags             *string
-	project          *string
-	branch           *string
-	pr               *int
-	issue            *string
-	sourceProvider   *string
-	statusReason     *string
-	maxTurns         *int
-	reasoningEffort  *string
+	title             *string
+	status            *string
+	body              *string
+	plan              *string
+	planFile          *string
+	planCritique      *string
+	planCritiqueFile  *string
+	planResearch      *string
+	planResearchFile  *string
+	planDecisions     *string
+	planDecisionsFile *string
+	planBrief         *string
+	planBriefFile     *string
+	codeReview        *string
+	codeReviewFile    *string
+	mode              *string
+	taskType          *string
+	tags              *string
+	project           *string
+	branch            *string
+	pr                *int
+	issue             *string
+	sourceProvider    *string
+	statusReason      *string
+	maxTurns          *int
+	reasoningEffort   *string
 }
 
 func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 	return updateFlags{
-		title:            fs.String("title", "", "new title"),
-		status:           fs.String("status", "", "new status"),
-		body:             fs.String("body", "", "new body"),
-		plan:             fs.String("plan", "", "plan content markdown (empty string clears plan)"),
-		planFile:         fs.String("plan-file", "", "path to file with plan content"),
-		planCritique:     fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)"),
-		planCritiqueFile: fs.String("plan-critique-file", "", "path to file with plan critique content"),
-		codeReview:       fs.String("code-review", "", "code review markdown (empty string clears review)"),
-		codeReviewFile:   fs.String("code-review-file", "", "path to file with code review content"),
-		mode:             fs.String("mode", "", "new agent mode"),
-		taskType:         fs.String("type", "", "new task type: normal|debug|research"),
-		tags:             fs.String("tags", "", "comma-separated tags (replaces existing)"),
-		project:          fs.String("project", "", "project id (owner/repo)"),
-		branch:           fs.String("branch", "", "Git branch name"),
-		pr:               fs.Int("pr", 0, "GitHub PR number"),
-		issue:            fs.String("issue", "", "GitHub issue URL"),
-		sourceProvider:   fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
-		statusReason:     fs.String("status-reason", "", "reason for status change"),
-		maxTurns:         fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
-		reasoningEffort:  fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)"),
+		title:             fs.String("title", "", "new title"),
+		status:            fs.String("status", "", "new status"),
+		body:              fs.String("body", "", "new body"),
+		plan:              fs.String("plan", "", "plan content markdown (empty string clears plan)"),
+		planFile:          fs.String("plan-file", "", "path to file with plan content"),
+		planCritique:      fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)"),
+		planCritiqueFile:  fs.String("plan-critique-file", "", "path to file with plan critique content"),
+		planResearch:      fs.String("plan-research", "", "plan research markdown (empty string clears research)"),
+		planResearchFile:  fs.String("plan-research-file", "", "path to file with plan research content"),
+		planDecisions:     fs.String("plan-decisions", "", "plan decisions markdown (empty string clears decisions)"),
+		planDecisionsFile: fs.String("plan-decisions-file", "", "path to file with plan decisions content"),
+		planBrief:         fs.String("plan-brief", "", "plan brief markdown (empty string clears brief)"),
+		planBriefFile:     fs.String("plan-brief-file", "", "path to file with plan brief content"),
+		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
+		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
+		mode:              fs.String("mode", "", "new agent mode"),
+		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
+		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
+		project:           fs.String("project", "", "project id (owner/repo)"),
+		branch:            fs.String("branch", "", "Git branch name"),
+		pr:                fs.Int("pr", 0, "GitHub PR number"),
+		issue:             fs.String("issue", "", "GitHub issue URL"),
+		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
+		statusReason:      fs.String("status-reason", "", "reason for status change"),
+		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
+		reasoningEffort:   fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)"),
 	}
 }
 
@@ -838,6 +886,9 @@ func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateF
 	for _, fu := range []struct{ flag, key, str, file string }{
 		{"plan", "plan", *f.plan, *f.planFile},
 		{"plan-critique", "plan_critique", *f.planCritique, *f.planCritiqueFile},
+		{"plan-research", "plan_research", *f.planResearch, *f.planResearchFile},
+		{"plan-decisions", "plan_decisions", *f.planDecisions, *f.planDecisionsFile},
+		{"plan-brief", "plan_brief", *f.planBrief, *f.planBriefFile},
 		{"code-review", "code_review", *f.codeReview, *f.codeReviewFile},
 	} {
 		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
@@ -1449,7 +1500,7 @@ func usage() {
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|ready-pr|human-required|done|cancelled
-  get      <id>
+  get      [--compact] <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot] [--pr N] [--mode MODE] [--tags t1,t2]
@@ -1469,7 +1520,7 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 
   project list

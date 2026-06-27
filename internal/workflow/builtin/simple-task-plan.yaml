@@ -87,13 +87,10 @@ steps:
     next:
       - goto: ""
 
-  # Single plan step: one opus agent convenes the council of experts
-  # (/council core-eng) to debate the implementation approach, then synthesizes
-  # that debate into the canonical plan sidecar. core-eng is pinned so the
-  # skill never reaches its interactive profile-selection (this runs headless).
-  # This one step replaces the prior THREE (two parallel plan agents + a
-  # /plan-fork converge that re-critiqued the plan); the adversarial review is
-  # now solely the codex critique_plan step below.
+  # Single plan step: one opus agent does the research/council work, but writes
+  # separate artifacts. The canonical plan sidecar is now a compact execution
+  # contract only; research, decisions, and human-review brief stay separate so
+  # implementation agents do not ingest council/critique history.
   - id: plan
     name: Plan
     type: run_agent
@@ -105,7 +102,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       prompt: >-
-        Plan task {{.Task.ID}} by convening the expert council.
+        Plan task {{.Task.ID}} by producing separate planning artifacts.
 
         IDENTITY (read first, before anything else):
           - Your task ID is {{.Task.ID}}.
@@ -121,7 +118,7 @@ steps:
         other concurrent tasks against the same project repo and have
         nothing to do with you.
 
-        Steps:
+        Process:
           1. Run: sybra-cli --json get {{.Task.ID}}
           2. Read the relevant source files so the plan is grounded in the
              real code (name files and symbols you will touch).
@@ -131,15 +128,71 @@ steps:
              The personas will debate tradeoffs and surface risks from opposed
              engineering lenses. If /council is unavailable in this
              environment, plan directly using the same multi-lens scrutiny.
-          4. Synthesize the council's debate into a single detailed
-             implementation plan that names files, symbols (with `path:line`
-             references), the ordered steps, and per-step verification
-             criteria.
-          5. Write the full plan markdown to /tmp/sybra-plan-{{.Task.ID}}.md
+          4. Write these FOUR files:
+
+             A. /tmp/sybra-plan-research-{{.Task.ID}}.md
+                Raw research/evidence. Put file/symbol notes, council synthesis,
+                rejected alternatives, assumptions, and detailed rationale here.
+                This can be long. It is for audit/debug, not implementation.
+
+             B. /tmp/sybra-plan-decisions-{{.Task.ID}}.md
+                Human decision brief. Keep it short. Use this exact shape for
+                each decision that needs or may benefit from human choice:
+
+                # Decisions
+
+                ## <decision title>
+                Question: <one concrete question>
+                Recommended: <option label>
+
+                Options:
+                - <option label> - <tradeoff / consequence>
+                - <option label> - <tradeoff / consequence>
+
+                If there are no meaningful choices, write:
+                # Decisions
+
+                No open decisions. The recommended execution contract is fully
+                specified.
+
+             C. /tmp/sybra-plan-{{.Task.ID}}.md
+                The compact execution contract. This is the ONLY planning text
+                injected into implementation agents. Target 60-120 lines, hard
+                max 180 lines unless the task truly cannot fit. Use only:
+
+                # Execution Plan
+
+                ## Decision
+                <one paragraph with the chosen approach>
+
+                ## Scope
+                - In: ...
+                - Out: ...
+
+                ## Files
+                - `path` - change purpose
+
+                ## Steps
+                1. ...
+
+                ## Verification
+                - `command` - expected signal
+
+                ## Stop Conditions
+                - Stop/replan if ...
+
+                Do NOT include council synthesis, plan-critic history,
+                persona names, disagreement logs, acceptance traceability tables,
+                or long risk matrices in this file.
+
+             D. /tmp/sybra-plan-brief-{{.Task.ID}}.md
+                Human approval brief. Keep it under ~40 lines. Summarize final
+                shape, important decisions, unresolved choices (if any), and why
+                the execution contract is safe to approve.
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
-        plan sidecar after you exit. Do NOT modify the task plan field
-        directly. Do NOT change the task status.
+        task sidecars after you exit. Do NOT modify task fields directly.
+        Do NOT change the task status.
       allowed_tools:
         - Bash
         - Read
@@ -148,9 +201,15 @@ steps:
         - Write
         - Skill
         - Agent
-      import_sidecar:
-        kind: plan
-        from: /tmp/sybra-plan-{{.Task.ID}}.md
+      import_sidecars:
+        - kind: plan_research
+          from: /tmp/sybra-plan-research-{{.Task.ID}}.md
+        - kind: plan_decisions
+          from: /tmp/sybra-plan-decisions-{{.Task.ID}}.md
+        - kind: plan
+          from: /tmp/sybra-plan-{{.Task.ID}}.md
+        - kind: plan_brief
+          from: /tmp/sybra-plan-brief-{{.Task.ID}}.md
     next:
       - goto: require_plan
 
@@ -163,6 +222,45 @@ steps:
     type: require_sidecar
     config:
       sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_decisions
+
+  - id: require_plan_decisions
+    name: Require Plan Decisions
+    type: require_sidecar
+    config:
+      sidecar: plan_decisions
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_brief
+
+  - id: require_plan_brief
+    name: Require Plan Brief
+    type: require_sidecar
+    config:
+      sidecar: plan_brief
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_research
+
+  - id: require_plan_research
+    name: Require Plan Research
+    type: require_sidecar
+    config:
+      sidecar: plan_research
     next:
       - when:
           field: task.status
@@ -224,14 +322,19 @@ steps:
       needs_worktree: true
       max_retries: 2
       prompt: >-
-        Critique the plan for task {{.Task.ID}} using the /plan-critic skill.
+        Critique the execution contract for task {{.Task.ID}} using the
+        /plan-critic skill. Use the planning research, decisions, and brief as
+        context, but judge whether the compact execution contract is safe to
+        implement.
 
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
-          2. Extract the .plan field from the JSON output and write it to
-             /tmp/sybra-plan-{{.Task.ID}}.md
-          3. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
-          4. Capture the full markdown Plan Review report you produce and
+          2. Read .plan, .planResearch, .planDecisions, and .planBrief.
+          3. Extract the .plan field only and write it to
+             /tmp/sybra-plan-{{.Task.ID}}.md. Treat it as the execution
+             contract; do not require council/provenance detail inside it.
+          4. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
+          5. Capture the full markdown Plan Review report you produce and
              write it to /tmp/sybra-critique-{{.Task.ID}}.md
 
         Do NOT modify the plan. Do NOT change the task status. Sybra
@@ -292,13 +395,89 @@ steps:
         The plan critic has reviewed your plan for task {{.Task.ID}}.
 
         Steps:
-          1. sybra-cli --json get {{.Task.ID}} — read the .plan_critique field
-          2. For each concern raised, revise the plan to address it
-          3. sybra-cli update {{.Task.ID}} --plan "<full revised plan markdown>"
-          4. sybra-cli update {{.Task.ID}} --status plan-review
+          1. sybra-cli --json get {{.Task.ID}} — read .planCritique plus the
+             current .plan, .planResearch, .planDecisions, and .planBrief fields
+          2. For each blocking concern, revise the appropriate artifact. Keep
+             the canonical .plan as a compact execution contract only. Do NOT
+             paste critique history, council synthesis, or "refinements applied"
+             into the plan.
+          3. Write revised files under /tmp:
+             - /tmp/sybra-plan-research-{{.Task.ID}}.md
+             - /tmp/sybra-plan-decisions-{{.Task.ID}}.md
+             - /tmp/sybra-plan-{{.Task.ID}}.md
+             - /tmp/sybra-plan-brief-{{.Task.ID}}.md
+          4. sybra-cli update {{.Task.ID}} \
+               --plan-file /tmp/sybra-plan-{{.Task.ID}}.md \
+               --plan-research-file /tmp/sybra-plan-research-{{.Task.ID}}.md \
+               --plan-decisions-file /tmp/sybra-plan-decisions-{{.Task.ID}}.md \
+               --plan-brief-file /tmp/sybra-plan-brief-{{.Task.ID}}.md
+          5. sybra-cli update {{.Task.ID}} --status plan-review
 
         Then STOP and wait. Do NOT implement.
     next:
+      - goto: require_plan_after_address
+
+  - id: require_plan_after_address
+    name: Require Revised Plan
+    type: require_sidecar
+    config:
+      sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_decisions_after_address
+
+  - id: require_plan_decisions_after_address
+    name: Require Revised Plan Decisions
+    type: require_sidecar
+    config:
+      sidecar: plan_decisions
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_brief_after_address
+
+  - id: require_plan_brief_after_address
+    name: Require Revised Plan Brief
+    type: require_sidecar
+    config:
+      sidecar: plan_brief
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_research_after_address
+
+  - id: require_plan_research_after_address
+    name: Require Revised Plan Research
+    type: require_sidecar
+    config:
+      sidecar: plan_research
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_refs_after_address
+
+  - id: validate_plan_refs_after_address
+    name: Validate Revised Plan References
+    type: validate_plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: review_plan
 
   - id: review_plan

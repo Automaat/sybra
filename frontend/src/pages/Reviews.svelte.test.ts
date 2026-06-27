@@ -290,6 +290,45 @@ describe('Reviews', () => {
     })
   })
 
+  it('ignores stale live-agent availability results after switching tasks', async () => {
+    const first = makeTask({ id: 't1', title: 'First task' })
+    const second = makeTask({ id: 't2', title: 'Second task' })
+    mockByStatus.mockImplementation((status: string) => {
+      if (status === 'plan-review') return [first, second]
+      return []
+    })
+    taskItemsMap.set('t1', first)
+    taskItemsMap.set('t2', second)
+
+    let resolveFirst!: (value: boolean) => void
+    let resolveSecond!: (value: boolean) => void
+    mockHasLivePlanAgent.mockImplementation((id: string) => new Promise<boolean>(resolve => {
+      if (id === 't1') resolveFirst = resolve
+      if (id === 't2') resolveSecond = resolve
+    }))
+
+    render(Reviews)
+    await fireEvent.click(screen.getByText('First task'))
+    await vi.waitFor(() => {
+      expect(mockHasLivePlanAgent).toHaveBeenCalledWith('t1')
+    })
+    await fireEvent.click(screen.getByText('Second task'))
+
+    await vi.waitFor(() => {
+      expect(mockHasLivePlanAgent).toHaveBeenCalledWith('t2')
+    })
+    resolveSecond(false)
+    resolveFirst(true)
+    await fireEvent.input(screen.getByPlaceholderText(/Rejection feedback/), {
+      target: { value: 'planner question' },
+    })
+
+    await vi.waitFor(() => {
+      const button = screen.getByText('Send Message') as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+    })
+  })
+
   it('renders Plan Critique section when planCritique is present', async () => {
     const task = makeTask({
       id: 't1',

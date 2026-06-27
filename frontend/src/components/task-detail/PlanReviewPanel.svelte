@@ -2,6 +2,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { renderMarkdown } from '../../lib/markdown.js'
+  import PlanDecisionReview from './PlanDecisionReview.svelte'
 
   interface Props {
     task: Task
@@ -38,6 +39,11 @@
       loading = false
     }
   }
+
+  async function requestRevision(message: string) {
+    rejectFeedback = message
+    await reject()
+  }
 </script>
 
 {#if task.status === 'plan-review'}
@@ -55,6 +61,11 @@
     {#if error}
       <p class="text-xs text-error-500">{error}</p>
     {/if}
+    <PlanDecisionReview
+      {task}
+      disabled={loading}
+      onrequest={requestRevision}
+    />
     {#if task.plan}
       <div class="markdown-body max-h-72 overflow-y-auto rounded-md border border-tertiary-200 bg-surface-50 p-3 text-sm dark:border-tertiary-800 dark:bg-surface-900">
         {@html renderMarkdown(task.plan)}

@@ -23,6 +23,9 @@ type Store struct {
 	plans         *PlanStore
 	planDrafts    *PlanDraftStore
 	planCritiques *PlanCritiqueStore
+	planResearch  *PlanningSidecarStore
+	planDecisions *PlanningSidecarStore
+	planBrief     *PlanningSidecarStore
 	codeReviews   *CodeReviewStore
 	cacheMu       sync.RWMutex
 	listCache     []Task
@@ -39,6 +42,9 @@ func NewStore(dir string) (*Store, error) {
 		plans:         NewPlanStore(dir),
 		planDrafts:    NewPlanDraftStore(dir),
 		planCritiques: NewPlanCritiqueStore(dir),
+		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
+		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
+		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
 		codeReviews:   NewCodeReviewStore(dir),
 	}, nil
 }
@@ -59,6 +65,18 @@ func (s *Store) PlanCritiques() *PlanCritiqueStore {
 	return s.planCritiques
 }
 
+func (s *Store) PlanResearch() *PlanningSidecarStore {
+	return s.planResearch
+}
+
+func (s *Store) PlanDecisions() *PlanningSidecarStore {
+	return s.planDecisions
+}
+
+func (s *Store) PlanBrief() *PlanningSidecarStore {
+	return s.planBrief
+}
+
 func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
 }
@@ -72,6 +90,9 @@ func IsSidecarFile(base string) bool {
 	}
 	return strings.HasSuffix(base, ".plan.md") ||
 		strings.HasSuffix(base, ".plan-critique.md") ||
+		strings.HasSuffix(base, ".plan-research.md") ||
+		strings.HasSuffix(base, ".plan-decisions.md") ||
+		strings.HasSuffix(base, ".plan-brief.md") ||
 		strings.HasSuffix(base, ".review.md")
 }
 
@@ -112,6 +133,9 @@ func (s *Store) List() ([]Task, error) {
 		}
 		t.Plan = sidecars.plans[t.ID]
 		t.PlanCritique = sidecars.critiques[t.ID]
+		t.PlanResearch = sidecars.research[t.ID]
+		t.PlanDecisions = sidecars.decisions[t.ID]
+		t.PlanBrief = sidecars.briefs[t.ID]
 		t.CodeReview = sidecars.reviews[t.ID]
 		if drafts, ok := sidecars.drafts[t.ID]; ok {
 			t.PlanDrafts = drafts
@@ -140,6 +164,9 @@ func (s *Store) List() ([]Task, error) {
 type sidecarIndex struct {
 	plans     map[string]string
 	critiques map[string]string
+	research  map[string]string
+	decisions map[string]string
+	briefs    map[string]string
 	reviews   map[string]string
 	drafts    map[string]map[string]string
 }
@@ -153,6 +180,9 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 	idx := &sidecarIndex{
 		plans:     map[string]string{},
 		critiques: map[string]string{},
+		research:  map[string]string{},
+		decisions: map[string]string{},
+		briefs:    map[string]string{},
 		reviews:   map[string]string{},
 		drafts:    map[string]map[string]string{},
 	}
@@ -193,6 +223,30 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 				continue
 			}
 			idx.critiques[id] = string(data)
+		case strings.HasSuffix(base, ".plan-research.md"):
+			id := strings.TrimSuffix(base, ".plan-research.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.research[id] = string(data)
+		case strings.HasSuffix(base, ".plan-decisions.md"):
+			id := strings.TrimSuffix(base, ".plan-decisions.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.decisions[id] = string(data)
+		case strings.HasSuffix(base, ".plan-brief.md"):
+			id := strings.TrimSuffix(base, ".plan-brief.md")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.briefs[id] = string(data)
 		case strings.HasSuffix(base, ".plan.md"):
 			id := strings.TrimSuffix(base, ".plan.md")
 			data, err := os.ReadFile(filepath.Join(dir, base))
@@ -221,6 +275,9 @@ func (s *Store) Get(id string) (Task, error) {
 	}
 	t.Plan, _ = s.plans.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
+	t.PlanResearch, _ = s.planResearch.Read(t.ID)
+	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
+	t.PlanBrief, _ = s.planBrief.Read(t.ID)
 	t.CodeReview, _ = s.codeReviews.Read(t.ID)
 	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
 	return t, nil
@@ -433,6 +490,9 @@ func (s *Store) Delete(id string) error {
 	_ = s.comments.DeleteAll(id)
 	_ = s.plans.Delete(id)
 	_ = s.planCritiques.Delete(id)
+	_ = s.planResearch.Delete(id)
+	_ = s.planDecisions.Delete(id)
+	_ = s.planBrief.Delete(id)
 	_ = s.codeReviews.Delete(id)
 	s.deleteCachedTask(id)
 	return nil
@@ -450,6 +510,24 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 			return fmt.Errorf("write plan critique: %w", err)
 		}
 		t.PlanCritique = *u.PlanCritique
+	}
+	if u.PlanResearch != nil {
+		if err := s.planResearch.Write(id, *u.PlanResearch); err != nil {
+			return fmt.Errorf("write plan research: %w", err)
+		}
+		t.PlanResearch = *u.PlanResearch
+	}
+	if u.PlanDecisions != nil {
+		if err := s.planDecisions.Write(id, *u.PlanDecisions); err != nil {
+			return fmt.Errorf("write plan decisions: %w", err)
+		}
+		t.PlanDecisions = *u.PlanDecisions
+	}
+	if u.PlanBrief != nil {
+		if err := s.planBrief.Write(id, *u.PlanBrief); err != nil {
+			return fmt.Errorf("write plan brief: %w", err)
+		}
+		t.PlanBrief = *u.PlanBrief
 	}
 	if u.CodeReview != nil {
 		if err := s.codeReviews.Write(id, *u.CodeReview); err != nil {
@@ -518,19 +596,13 @@ func applyLinkFields(t *Task, u Update) {
 	}
 }
 
-func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
-	t, err := s.read(id)
-	if err != nil {
-		return Task{}, "", err
-	}
-	prevStatus := t.Status
-
+func applyUpdateFields(t *Task, u Update) error {
 	if u.Title != nil {
 		t.Title = *u.Title
 	}
 	if u.Slug != nil {
 		if err := ValidateSlug(*u.Slug); err != nil {
-			return Task{}, "", err
+			return err
 		}
 		t.Slug = *u.Slug
 	}
@@ -563,7 +635,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	}
 	if u.AgentMode != nil {
 		if _, err := ValidateAgentMode(*u.AgentMode); err != nil {
-			return Task{}, "", err
+			return err
 		}
 		t.AgentMode = *u.AgentMode
 	}
@@ -576,11 +648,11 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.Tags != nil {
 		t.Tags = *u.Tags
 	}
-	applyLinkFields(&t, u)
+	applyLinkFields(t, u)
 	if u.Reviewed != nil {
 		t.Reviewed = *u.Reviewed
 	}
-	applyReviewFields(&t, u)
+	applyReviewFields(t, u)
 	if u.TodoistID != nil {
 		t.TodoistID = *u.TodoistID
 	}
@@ -602,6 +674,18 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if u.ReasoningEffort != nil {
 		t.ReasoningEffort = *u.ReasoningEffort
 	}
+	return nil
+}
+
+func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
+	t, err := s.read(id)
+	if err != nil {
+		return Task{}, "", err
+	}
+	prevStatus := t.Status
+	if err := applyUpdateFields(&t, u); err != nil {
+		return Task{}, "", err
+	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}
@@ -612,6 +696,14 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	}
 	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
 		return Task{}, "", fmt.Errorf("write task file: %w", err)
+	}
+	if u.writesSidecar() {
+		full, err := s.Get(id)
+		if err != nil {
+			return Task{}, "", err
+		}
+		s.storeTaskCache(full)
+		return full, prevStatus, nil
 	}
 	s.storeTaskCache(t)
 	return t, prevStatus, nil

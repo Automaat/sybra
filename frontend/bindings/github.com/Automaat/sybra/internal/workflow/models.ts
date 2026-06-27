@@ -238,7 +238,7 @@ export class Execution {
  */
 export class ImportSidecar {
     /**
-     * Kind is the sidecar slot to populate: "code_review" or "plan_critique".
+     * Kind is the sidecar slot to populate.
      */
     "kind": string;
 
@@ -459,7 +459,8 @@ export class StepConfig {
 
     /**
      * require_sidecar: which sidecar must be non-empty for the step to pass.
-     * Valid values: "plan_critique", "code_review".
+     * Valid values: "plan", "plan_critique", "plan_research",
+     * "plan_decisions", "plan_brief", "code_review", or "plan_draft.<name>".
      */
     "sidecar": string;
 
@@ -474,6 +475,13 @@ export class StepConfig {
      * up empty, preserving the existing safety net.
      */
     "importSidecar"?: ImportSidecar | null;
+
+    /**
+     * ImportSidecars is the plural form for a step that produces multiple
+     * planning artifacts in one agent run. ImportSidecar remains supported for
+     * existing workflows and editor compatibility.
+     */
+    "importSidecars": ImportSidecar[];
 
     /**
      * run_agent (codex only): inline JSON Schema enforced on the model's final
@@ -535,6 +543,9 @@ export class StepConfig {
         if (!("sidecar" in $$source)) {
             this["sidecar"] = "";
         }
+        if (!("importSidecars" in $$source)) {
+            this["importSidecars"] = [];
+        }
 
         Object.assign(this, $$source);
     }
@@ -547,6 +558,7 @@ export class StepConfig {
         const $$createField7_0 = $$createType17;
         const $$createField10_0 = $$createType19;
         const $$createField17_0 = $$createType21;
+        const $$createField18_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -559,6 +571,9 @@ export class StepConfig {
         }
         if ("importSidecar" in $$parsedSource) {
             $$parsedSource["importSidecar"] = $$createField17_0($$parsedSource["importSidecar"]);
+        }
+        if ("importSidecars" in $$parsedSource) {
+            $$parsedSource["importSidecars"] = $$createField18_0($$parsedSource["importSidecars"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
@@ -750,7 +765,7 @@ export class Trigger {
      * Creates a new Trigger instance from a string or object.
      */
     static createFrom($$source: any = {}): Trigger {
-        const $$createField2_0 = $$createType22;
+        const $$createField2_0 = $$createType23;
         const $$createField3_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("conditions" in $$parsedSource) {
@@ -786,4 +801,5 @@ const $$createType18 = Condition.createFrom;
 const $$createType19 = $Create.Nullable($$createType18);
 const $$createType20 = ImportSidecar.createFrom;
 const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = $Create.Array($$createType18);
+const $$createType22 = $Create.Array($$createType20);
+const $$createType23 = $Create.Array($$createType18);

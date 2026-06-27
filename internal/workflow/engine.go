@@ -30,6 +30,9 @@ type TaskInfo struct {
 	Body                  string
 	Plan                  string
 	PlanCritique          string
+	PlanResearch          string
+	PlanDecisions         string
+	PlanBrief             string
 	CodeReview            string
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
@@ -67,6 +70,9 @@ type TaskProvider interface {
 	// sandbox being able to write to ~/.sybra/tasks/. Recognized kinds:
 	//   "plan"          — final implementation plan
 	//   "plan_critique" — plan-critic report
+	//   "plan_research" — raw planning research/evidence
+	//   "plan_decisions" — human decision brief
+	//   "plan_brief"    — final human-facing review brief
 	//   "code_review"   — staff-code-review report
 	//   "plan_draft.<name>" — raw per-provider plan during dual-/N-provider
 	//       planning; <name> is typically the parallel child step ID. The

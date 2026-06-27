@@ -4,6 +4,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { commentStore } from '../stores/comments.svelte.js'
   import PlanFileView from '../components/PlanFileView.svelte'
+  import PlanDecisionReview from '../components/task-detail/PlanDecisionReview.svelte'
   import { viewport } from '../lib/viewport.svelte.js'
 
   let { onviewtask }: { onviewtask?: (id: string) => void } = $props()
@@ -26,27 +27,27 @@
   const renderedCritique = $derived(renderMarkdown(selectedTask?.planCritique))
 
   $effect(() => {
-    if (selectedId) {
-      commentStore.load(selectedId)
-      void refreshLiveAgent(selectedId)
-    }
+    const id = selectedId
+    if (!id) return
+    hasLiveAgent = false
+    void commentStore.load(id)
+    void refreshLiveAgent(id)
   })
 
   async function refreshLiveAgent(id: string) {
     try {
-      hasLiveAgent = await taskStore.hasLivePlanAgent(id)
+      const live = await taskStore.hasLivePlanAgent(id)
+      if (selectedId === id) hasLiveAgent = live
     } catch {
-      hasLiveAgent = false
+      if (selectedId === id) hasLiveAgent = false
     }
   }
 
-  async function selectTask(id: string) {
+  function selectTask(id: string) {
     selectedId = id
     rejectFeedback = ''
     errorMsg = ''
     mobileView = 'detail'
-    await commentStore.load(id)
-    await refreshLiveAgent(id)
   }
 
   async function approve() {
@@ -85,6 +86,33 @@
     try {
       await taskStore.sendPlanMessage(selectedId, rejectFeedback)
       rejectFeedback = ''
+    } catch (e) {
+      errorMsg = String(e)
+    } finally {
+      actionLoading = false
+    }
+  }
+
+  async function requestRevision(message: string) {
+    if (!selectedId) return
+    actionLoading = true
+    errorMsg = ''
+    try {
+      await taskStore.rejectPlan(selectedId, message)
+      selectedId = null
+    } catch (e) {
+      errorMsg = String(e)
+    } finally {
+      actionLoading = false
+    }
+  }
+
+  async function sendDecisionMessage(message: string) {
+    if (!selectedId) return
+    actionLoading = true
+    errorMsg = ''
+    try {
+      await taskStore.sendPlanMessage(selectedId, message)
     } catch (e) {
       errorMsg = String(e)
     } finally {
@@ -236,6 +264,15 @@
 
       <!-- Plan content -->
       <div class="flex-1 overflow-y-auto px-6 py-4">
+        <div class="mb-4">
+          <PlanDecisionReview
+            task={selectedTask}
+            disabled={actionLoading}
+            {hasLiveAgent}
+            onrequest={requestRevision}
+            onmessage={sendDecisionMessage}
+          />
+        </div>
         {#if selectedTask.planCritique}
           <details class="mb-4 rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
             <summary class="cursor-pointer px-4 py-2 text-sm font-semibold text-warning-800 dark:text-warning-300">

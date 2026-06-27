@@ -199,6 +199,12 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 		t.CodeReview = content
 	case "plan_critique":
 		t.PlanCritique = content
+	case "plan_research":
+		t.PlanResearch = content
+	case "plan_decisions":
+		t.PlanDecisions = content
+	case "plan_brief":
+		t.PlanBrief = content
 	default:
 		return fmt.Errorf("unknown sidecar kind %q", kind)
 	}
@@ -3307,6 +3313,27 @@ func TestExecRequireSidecar_CodeReviewMissingFlipsHumanRequired(t *testing.T) {
 	}
 	if !strings.Contains(tasks.Reason("t1"), "code review") {
 		t.Errorf("reason = %q, want substring 'code review'", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRequireSidecar_PlanDecisionsPresent(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanDecisions: "# Decisions\n"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarStep("plan_decisions"), TaskInfo{ID: "t1", PlanDecisions: "# Decisions\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "plan decisions present") {
+		t.Errorf("Output = %q, want plan decisions present", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Errorf("unexpected status flip to human-required")
 	}
 }
 

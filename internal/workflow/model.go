@@ -167,7 +167,8 @@ type StepConfig struct {
 	Dir     string `yaml:"dir,omitempty" json:"dir"`
 
 	// require_sidecar: which sidecar must be non-empty for the step to pass.
-	// Valid values: "plan_critique", "code_review".
+	// Valid values: "plan", "plan_critique", "plan_research",
+	// "plan_decisions", "plan_brief", "code_review", or "plan_draft.<name>".
 	Sidecar string `yaml:"sidecar,omitempty" json:"sidecar"`
 
 	// run_agent: when set, the engine ingests a file produced by the agent
@@ -179,6 +180,10 @@ type StepConfig struct {
 	// guard still flips the task to human-required when the sidecar ends
 	// up empty, preserving the existing safety net.
 	ImportSidecar *ImportSidecar `yaml:"import_sidecar,omitempty" json:"importSidecar,omitempty"`
+	// ImportSidecars is the plural form for a step that produces multiple
+	// planning artifacts in one agent run. ImportSidecar remains supported for
+	// existing workflows and editor compatibility.
+	ImportSidecars []ImportSidecar `yaml:"import_sidecars,omitempty" json:"importSidecars"`
 
 	// run_agent (codex only): inline JSON Schema enforced on the model's final
 	// message via `codex exec --output-schema`. Ignored by claude/copilot, which
@@ -189,7 +194,7 @@ type StepConfig struct {
 // ImportSidecar describes a sidecar file the engine should ingest after a
 // run_agent step succeeds.
 type ImportSidecar struct {
-	// Kind is the sidecar slot to populate: "code_review" or "plan_critique".
+	// Kind is the sidecar slot to populate.
 	Kind string `yaml:"kind" json:"kind"`
 	// From is a Go template path the engine renders against the run's
 	// TemplateContext (e.g. /tmp/sybra-review-{{.Task.ID}}.md).

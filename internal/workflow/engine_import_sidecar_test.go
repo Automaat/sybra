@@ -115,3 +115,53 @@ func TestImportSidecar_UnknownKindLogsAndDoesNotWrite(t *testing.T) {
 		t.Errorf("unknown kind silently wrote a sidecar: code=%q plan=%q", got.CodeReview, got.PlanCritique)
 	}
 }
+
+func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-sidecars.yaml")
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	research := "# Research\n"
+	decisions := "# Decisions\n"
+	plan := "# Execution Plan\n"
+	brief := "# Final Brief\n"
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-sidecars",
+			CurrentStep: "plan",
+			Variables: map[string]string{
+				"research_path":  write("research.md", research),
+				"decisions_path": write("decisions.md", decisions),
+				"plan_path":      write("plan.md", plan),
+				"brief_path":     write("brief.md", brief),
+			},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "plan", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.PlanResearch != research {
+		t.Errorf("PlanResearch = %q, want %q", got.PlanResearch, research)
+	}
+	if got.PlanDecisions != decisions {
+		t.Errorf("PlanDecisions = %q, want %q", got.PlanDecisions, decisions)
+	}
+	if got.Plan != plan {
+		t.Errorf("Plan = %q, want %q", got.Plan, plan)
+	}
+	if got.PlanBrief != brief {
+		t.Errorf("PlanBrief = %q, want %q", got.PlanBrief, brief)
+	}
+}
