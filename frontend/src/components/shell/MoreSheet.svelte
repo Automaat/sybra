@@ -13,7 +13,6 @@
   type Item = { label: string; page: Page; badge?: number }
 
   const items: Item[] = $derived([
-    { label: 'Dashboard', page: { kind: 'dashboard' } },
     { label: 'Projects', page: { kind: 'project-list' } },
     { label: 'Logbook', page: { kind: 'logbook' } },
     { label: 'GitHub', page: { kind: 'github' } },

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LayoutGrid, ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp } from '@lucide/svelte'
+  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
@@ -41,7 +41,6 @@
   ]
 
   const secondaryItems: NavItem[] = [
-    { kind: ['dashboard'], label: 'Dashboard', icon: LayoutGrid, onclick: () => navStore.reset({ kind: 'dashboard' }) },
     { kind: ['logbook'], label: 'Logbook', icon: Archive, onclick: () => navStore.reset({ kind: 'logbook' }) },
     { kind: ['project-list', 'project-detail'], label: 'Projects', icon: Folder, onclick: () => navStore.reset({ kind: 'project-list' }) },
     { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },

@@ -75,15 +75,6 @@ for (const theme of ['light', 'dark'] as const) {
       await mockProviderHealth(page)
     })
 
-    // ─── Dashboard ───────────────────────────────────────────────────────────
-
-    test('dashboard', async ({ page }) => {
-      await page.goto('/')
-      await page.locator('[data-part="trigger"]', { hasText: /Dashboard/ }).click()
-      await page.locator('h2', { hasText: 'Dashboard' }).waitFor()
-      await shot(page, theme, 'dashboard')
-    })
-
     // ─── Task Board ───────────────────────────────────────────────────────────
 
     test('task-board', async ({ page }) => {
