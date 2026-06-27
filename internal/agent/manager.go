@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -272,14 +273,32 @@ func (m *Manager) SetHealthGate(g provider.HealthGate) {
 func (m *Manager) SetLimitGate(g LimitGate, policy limits.Policy) {
 	m.mu.Lock()
 	m.limitGate = g
-	m.limitPolicy = policy
+	m.limitPolicy = copyLimitPolicy(policy)
 	m.mu.Unlock()
 }
 
 func (m *Manager) LimitPolicy() limits.Policy {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.limitPolicy
+	return copyLimitPolicy(m.limitPolicy)
+}
+
+func copyLimitPolicy(policy limits.Policy) limits.Policy {
+	if policy.SubscriptionMonthlyUSD != nil {
+		policy.SubscriptionMonthlyUSD = copyStringFloatMap(policy.SubscriptionMonthlyUSD)
+	}
+	if policy.ProviderEnabled != nil {
+		policy.ProviderEnabled = copyStringBoolMap(policy.ProviderEnabled)
+	}
+	return policy
+}
+
+func copyStringFloatMap(in map[string]float64) map[string]float64 {
+	return maps.Clone(in)
+}
+
+func copyStringBoolMap(in map[string]bool) map[string]bool {
+	return maps.Clone(in)
 }
 
 func (m *Manager) SetLimitSink(fn func(limits.Snapshot)) {

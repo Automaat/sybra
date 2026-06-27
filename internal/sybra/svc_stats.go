@@ -29,7 +29,8 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 		if s.policy != nil {
 			policy = s.policy()
 		}
-		resp.Limits = s.limits.Summary(policy)
+		summary := s.limits.Summary(policy)
+		resp.Limits = &summary
 	}
 	return resp
 }

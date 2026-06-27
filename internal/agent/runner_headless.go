@@ -524,6 +524,9 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 			limitSink(snapshot)
 		}
 	}
+	if event.Type == "usage" && event.Content == "" && event.LimitSnapshot != nil {
+		return false
+	}
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
 	// Feed the tool-call fingerprint into the real-time loop detector. An empty

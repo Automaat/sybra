@@ -58,16 +58,16 @@ type GroupedStat struct {
 
 // StatsResponse is the full analytics payload returned to the frontend.
 type StatsResponse struct {
-	Today         Summary        `json:"today"`
-	ThisWeek      Summary        `json:"thisWeek"`
-	ThisMonth     Summary        `json:"thisMonth"`
-	AllTime       Summary        `json:"allTime"`
-	ByProject     []GroupedStat  `json:"byProject"`
-	ByProjectType []GroupedStat  `json:"byProjectType"`
-	ByMode        []GroupedStat  `json:"byMode"`
-	ByRole        []GroupedStat  `json:"byRole"`
-	ByModel       []GroupedStat  `json:"byModel"`
-	ByProvider    []GroupedStat  `json:"byProvider"`
-	RecentRuns    []RunRecord    `json:"recentRuns"`
-	Limits        limits.Summary `json:"limits"`
+	Today         Summary         `json:"today"`
+	ThisWeek      Summary         `json:"thisWeek"`
+	ThisMonth     Summary         `json:"thisMonth"`
+	AllTime       Summary         `json:"allTime"`
+	ByProject     []GroupedStat   `json:"byProject"`
+	ByProjectType []GroupedStat   `json:"byProjectType"`
+	ByMode        []GroupedStat   `json:"byMode"`
+	ByRole        []GroupedStat   `json:"byRole"`
+	ByModel       []GroupedStat   `json:"byModel"`
+	ByProvider    []GroupedStat   `json:"byProvider"`
+	RecentRuns    []RunRecord     `json:"recentRuns"`
+	Limits        *limits.Summary `json:"limits,omitempty"`
 }

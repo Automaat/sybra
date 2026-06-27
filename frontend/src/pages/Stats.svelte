@@ -68,7 +68,7 @@
   }
 
   function formatPercent(v?: number): string {
-    if (!v) return '—'
+    if (v == null) return '—'
     return `${v.toFixed(v >= 10 ? 0 : 1)}%`
   }
 
