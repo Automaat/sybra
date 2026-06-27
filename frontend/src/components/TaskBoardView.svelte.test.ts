@@ -8,7 +8,33 @@ vi.mock('../stores/notifications.svelte.js', () => ({
   notificationStore: { pushLocal: vi.fn() },
 }))
 
-const agentMock = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }))
+// Mirror the real store: TaskCard reads the precomputed agentStatusByTask map,
+// derived here from `list` so tests keep setting only `list`.
+const agentMock = vi.hoisted(() => {
+  type Flags = { triaging: boolean; evaluating: boolean; planning: boolean; running: boolean }
+  const m = {
+    list: [] as Array<Record<string, unknown>>,
+    get agentStatusByTask(): Map<string, Flags> {
+      const map = new Map<string, Flags>()
+      for (const a of m.list) {
+        if (a.state !== 'running' || !a.taskId) continue
+        const id = a.taskId as string
+        let s = map.get(id)
+        if (!s) {
+          s = { triaging: false, evaluating: false, planning: false, running: false }
+          map.set(id, s)
+        }
+        const name = (a.name as string) ?? ''
+        if (name.startsWith('triage:')) s.triaging = true
+        else if (name.startsWith('eval:')) s.evaluating = true
+        else if (name.startsWith('plan:')) s.planning = true
+        else s.running = true
+      }
+      return map
+    },
+  }
+  return m
+})
 vi.mock('../stores/agents.svelte.js', () => ({ agentStore: agentMock }))
 
 // Drives the empty-column thin-rail (desktop only); default off keeps the
