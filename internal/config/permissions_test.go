@@ -15,8 +15,14 @@ func TestNormalizeHeadlessPermissionMode(t *testing.T) {
 		{"bypass", "bypass", false},
 		{"auto", "auto", false},
 		{"dangerously-skip", "", true},
-		{"BYPASS", "", true},
-		{"AUTO", "", true},
+		// Formatting slips are normalized, not rejected — a casing/whitespace
+		// typo must not silently disable the guardrail by falling back to bypass.
+		{"BYPASS", "bypass", false},
+		{"AUTO", "auto", false},
+		{"Auto", "auto", false},
+		{"auto ", "auto", false},
+		{"  bypass  ", "bypass", false},
+		{"   ", "bypass", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {

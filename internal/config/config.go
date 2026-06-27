@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -187,7 +188,10 @@ func (c *Config) DefaultRequirePermissions() bool {
 // Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
 // Any other value is rejected with an error.
 func NormalizeHeadlessPermissionMode(s string) (string, error) {
-	switch s {
+	// Trim + lowercase first: a formatting slip (`auto `, `Auto`) must not
+	// silently fall through to the permissive bypass default and disable the
+	// guardrail this feature exists to provide.
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "bypass":
 		return "bypass", nil
 	case "auto":
