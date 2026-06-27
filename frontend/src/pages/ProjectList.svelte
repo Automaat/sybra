@@ -200,12 +200,12 @@
                             <div class="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-0.5 text-xs text-surface-500">
                               <span class="inline-flex items-center gap-1" title="Active tasks">
                                 <ListChecks size={13} class="shrink-0" />
-                                {active}
+                                {active} active
                               </span>
                               {#if prs > 0}
                                 <span class="inline-flex items-center gap-1" title="Open pull requests">
                                   <GitPullRequest size={13} class="shrink-0" />
-                                  {prs}
+                                  {prs} PR{prs === 1 ? '' : 's'}
                                 </span>
                               {/if}
                               {#if activity}

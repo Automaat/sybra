@@ -88,29 +88,63 @@ describe('ProjectList', () => {
     expect(screen.getByText('Add your first project')).toBeDefined()
   })
 
-  it('renders project owner/repo', () => {
+  it('renders the repo in a row under its owner group header', () => {
     mockProjectList.push(mockProject)
     render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('owner/repo')).toBeDefined()
+    expect(screen.getByText('repo')).toBeDefined() // row
+    expect(screen.getByText('owner')).toBeDefined() // owner group header
   })
 
-  it('shows pet type badge', () => {
+  it('groups pet projects under a Pet header', () => {
     mockProjectList.push({ ...mockProject, type: 'pet' })
     render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('pet')).toBeDefined()
+    expect(screen.getByText('Pet')).toBeDefined()
   })
 
-  it('shows work type badge', () => {
+  it('groups work projects under a Work header', () => {
     mockProjectList.push({ ...mockProject, type: 'work' })
     render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
-    expect(screen.getByText('work')).toBeDefined()
+    expect(screen.getByText('Work')).toBeDefined()
   })
 
-  it('calls onselect when project clicked', async () => {
+  it('groups projects by GitHub owner within a type', () => {
+    mockProjectList.push(
+      { ...mockProject, id: 'orgA/one', owner: 'orgA', repo: 'one' },
+      { ...mockProject, id: 'orgB/two', owner: 'orgB', repo: 'two' },
+    )
+    render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
+    expect(screen.getByText('orgA')).toBeDefined()
+    expect(screen.getByText('orgB')).toBeDefined()
+  })
+
+  it('filters projects by the search box', async () => {
+    mockProjectList.push(
+      { ...mockProject, id: 'owner/alpha', repo: 'alpha' },
+      { ...mockProject, id: 'owner/beta', repo: 'beta' },
+    )
+    render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
+    await fireEvent.input(screen.getByPlaceholderText('Search projects...'), {
+      target: { value: 'alpha' },
+    })
+    expect(screen.getByText('alpha')).toBeDefined()
+    expect(screen.queryByText('beta')).toBeNull()
+  })
+
+  it('shows a no-match message when search excludes everything', async () => {
+    mockProjectList.push(mockProject)
+    render(ProjectList, { props: { onselect: vi.fn(), onadd: vi.fn() } })
+    await fireEvent.input(screen.getByPlaceholderText('Search projects...'), {
+      target: { value: 'zzz-nomatch' },
+    })
+    expect(screen.queryByText('repo')).toBeNull()
+    expect(screen.getByText(/No projects match/)).toBeDefined()
+  })
+
+  it('calls onselect when a project row is clicked', async () => {
     mockProjectList.push(mockProject)
     const onselect = vi.fn()
     render(ProjectList, { props: { onselect, onadd: vi.fn() } })
-    await fireEvent.click(screen.getByText('owner/repo'))
+    await fireEvent.click(screen.getByText('repo'))
     expect(onselect).toHaveBeenCalledWith('owner/repo')
   })
 
