@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"cmp"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -36,19 +37,29 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 			monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 
 			for i := range list {
-				if list[i].Status == task.StatusDone {
-					resp.AllTime.TasksDone++
-					if !list[i].UpdatedAt.Before(todayStart) {
-						resp.Today.TasksDone++
-					}
-					if !list[i].UpdatedAt.Before(weekStart) {
-						resp.ThisWeek.TasksDone++
-					}
-					if !list[i].UpdatedAt.Before(monthStart) {
-						resp.ThisMonth.TasksDone++
-					}
+				if list[i].Status != task.StatusDone {
+					continue
+				}
+
+				resp.AllTime.TasksDone++
+
+				t := list[i].UpdatedAt
+				if list[i].ClosedAt != nil {
+					t = *list[i].ClosedAt
+				}
+
+				if !t.Before(todayStart) {
+					resp.Today.TasksDone++
+				}
+				if !t.Before(weekStart) {
+					resp.ThisWeek.TasksDone++
+				}
+				if !t.Before(monthStart) {
+					resp.ThisMonth.TasksDone++
 				}
 			}
+		} else {
+			slog.Warn("stats: failed to list tasks", "err", err)
 		}
 	}
 
@@ -116,5 +127,6 @@ func addSummary(a, b stats.Summary) stats.Summary {
 		TotalInputTokens:     a.TotalInputTokens + b.TotalInputTokens,
 		TotalOutputTokens:    a.TotalOutputTokens + b.TotalOutputTokens,
 		TotalReasoningTokens: a.TotalReasoningTokens + b.TotalReasoningTokens,
+		TasksDone:            a.TasksDone + b.TasksDone,
 	}
 }
