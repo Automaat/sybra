@@ -53,18 +53,8 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return pErr
 	}
 
-	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, &output, ctx.Task.Body)
-	if output.AgentID != "" {
-		if outcome != "" {
-			if err := e.tasks.MarkAgentRunTestOutcome(taskID, output.AgentID, outcome, fingerprint); err != nil {
-				return fmt.Errorf("mark test outcome: %w", err)
-			}
-		}
-	}
-	if violation != "" && output.AgentID != "" {
-		if err := e.tasks.MarkAgentRunProtocolViolation(taskID, output.AgentID, violation); err != nil {
-			return fmt.Errorf("mark test protocol violation: %w", err)
-		}
+	if err := e.prepareTestStepCompletion(taskID, &output, wfExec, &ctx.Task.Body); err != nil {
+		return err
 	}
 
 	// Record step completion.

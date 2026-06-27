@@ -197,6 +197,21 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 }
 
+func (m *memTasks) AppendTaskBody(id, content string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	body := strings.TrimRight(t.Body, "\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	t.Body = body + strings.TrimSpace(content) + "\n"
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
