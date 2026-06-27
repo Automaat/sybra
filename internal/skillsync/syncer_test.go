@@ -389,6 +389,55 @@ func TestRunShipsWorkflowSkillsFromEmbeddedBundle(t *testing.T) {
 	}
 }
 
+// TestRunEmbeddedSkillsLandInAllDirsWhenGoModPresent verifies that skills
+// present only in the embedded bundle (e.g. sybra-test) land in every
+// destination — primaryDst and all three per-agent skill dirs — even when
+// go.mod is present (merge mode, not embedded-only mode). Regression guard for
+// the case where Run was thought to skip embedded skills when a repo was found.
+func TestRunEmbeddedSkillsLandInAllDirsWhenGoModPresent(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Repo .claude/skills has a disk skill but NOT sybra-test — that one comes
+	// only from the embedded bundle.
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repoSkill := []byte("---\nname: repo-only\ndescription: t\n---\n")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "repo-only.md"), repoSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	primaryDst := filepath.Join(t.TempDir(), "app-skills")
+	userHome := t.TempDir()
+
+	newSyncer().Run(skillsync.Options{
+		RepoDir:     repoDir,
+		SkillsFS:    skills.FS,
+		PrimaryDst:  primaryDst,
+		UserHomeDir: userHome,
+	})
+
+	allDsts := []string{
+		primaryDst,
+		filepath.Join(userHome, ".claude", "skills"),
+		filepath.Join(userHome, ".codex", "skills"),
+		filepath.Join(userHome, ".agents", "skills"),
+	}
+	for _, dir := range allDsts {
+		// sybra-test lives only in the embedded bundle.
+		if _, err := os.Stat(filepath.Join(dir, "sybra-test", "SKILL.md")); err != nil {
+			t.Errorf("sybra-test/SKILL.md missing from %s: %v", dir, err)
+		}
+		// repo-only skill must also land in all destinations.
+		if _, err := os.Stat(filepath.Join(dir, "repo-only", "SKILL.md")); err != nil {
+			t.Errorf("repo-only/SKILL.md missing from %s: %v", dir, err)
+		}
+	}
+}
+
 func TestRunNoRepoDir(t *testing.T) {
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
 	// Should not panic; falls back to cwd.
