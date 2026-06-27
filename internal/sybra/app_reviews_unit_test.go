@@ -17,6 +17,35 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
+func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
+
+	for _, forbidden := range []string{
+		"more than 3",
+		"run `git rebase --abort` and stop",
+		"task needs human review",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("conflict prompt still contains count-based stop instruction %q:\n%s", forbidden, prompt)
+		}
+	}
+	for _, want := range []string{
+		"Use the task body, PR diff, changed-file list, and current code as context",
+		"Do not stop just because the conflict count is high",
+		"resolve all conflicts autonomously",
+		"Stop only for a concrete blocker",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // TestPRMonitorEligible exercises the scan predicate used by the PR monitor
 // loop. The regression: tasks whose workflow exited to in-progress with a
 // live PR number (because an evaluate step crashed, or a manually-spawned
