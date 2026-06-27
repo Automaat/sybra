@@ -32,6 +32,11 @@ func cleanEnvPath(p string) string {
 }
 
 func main() {
+	if len(os.Args) > 3 && os.Args[1] == "plugin" && os.Args[2] == "list" && os.Args[3] == "--json" {
+		fmt.Println(`{"installed":[],"available":[]}`)
+		return
+	}
+
 	if logFile := cleanEnvPath(os.Getenv("FAKE_CODEX_ARGS_LOG")); logFile != "" {
 		_ = os.WriteFile(logFile, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
 	}
