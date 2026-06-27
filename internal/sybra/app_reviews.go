@@ -2,9 +2,11 @@ package sybra
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -61,6 +63,10 @@ type ReviewHandler struct {
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
 	viewerLoginFn func() string
+	// findMergedPRFn looks up a merged PR by head branch in a project repo.
+	// Returns the PR number (0 = none or ambiguous). nil falls back to gh-based implementation.
+	// Overridable in tests.
+	findMergedPRFn func(repo, branch string) (int, error)
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
 }
@@ -647,20 +653,30 @@ func hasOrphanStrandReason(reason string) bool {
 }
 
 // orphanPRAdoptionEligible reports whether a task is a candidate for orphan-PR
-// adoption: parked in human-required with a branch but no linked PR, *and* with
-// a status_reason that marks it as stranded by the implement/verify/evaluate
-// path before a late-finishing agent opened the PR. The reason gate is what
-// keeps adoption from resurrecting a task a human or the watchdog deliberately
-// stopped. Chat tasks and inbound review tasks are never own-PR tasks.
+// adoption: a task with a branch but no linked PR that was either placed in
+// in-review without a PR being recorded, or stranded in human-required by the
+// implement/verify/evaluate path before a late-finishing agent opened the PR.
+// For human-required tasks the strand-reason gate prevents resurrecting a task
+// that a human or the watchdog deliberately stopped. For in-review tasks no
+// reason gate is needed — a task already in review with no PR is unambiguously
+// an orphan regardless of how it got there. Chat tasks and inbound review tasks
+// are never own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
 	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
 		return false
 	}
-	return t.Status == task.StatusHumanRequired &&
-		t.PRNumber == 0 &&
-		t.Branch != "" &&
-		t.ProjectID != "" &&
-		hasOrphanStrandReason(t.StatusReason)
+	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {
+		return false
+	}
+	// In-review tasks with no linked PR are always eligible: they've been placed
+	// in review state but the PR number was never recorded (e.g. PR opened
+	// manually without going through simple-task-pr).
+	if t.Status == task.StatusInReview {
+		return true
+	}
+	// Human-required tasks: only adopt if stranded by implement/verify/evaluate
+	// (never resurrect deliberate watchdog stops or dwell escalations).
+	return t.Status == task.StatusHumanRequired && hasOrphanStrandReason(t.StatusReason)
 }
 
 // adoptOrphanPRs re-links tasks stranded in human-required without a PR number
@@ -674,6 +690,9 @@ func orphanPRAdoptionEligible(t *task.Task) bool {
 // matching more than one open PR in the project is left untouched (ambiguous).
 // Matched entries of `tasks` are mutated in place so the caller's matcher
 // assembly observes the new state in the same poll.
+//
+// When no open PR is found, falls through to adoptOrphanMergedPR to handle the
+// race where the PR was opened and merged between two poll cycles.
 func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullRequest) {
 	for i := range tasks {
 		t := &tasks[i]
@@ -692,25 +711,112 @@ func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullReque
 			}
 			match = &prs[j]
 		}
-		if ambiguous || match == nil {
+		if ambiguous {
 			continue
 		}
-		updated, err := r.tasks.Update(t.ID, task.Update{
-			PRNumber:     task.Ptr(match.Number),
-			Status:       task.Ptr(task.StatusInReview),
-			StatusReason: task.Ptr(""),
-		})
-		if err != nil {
-			r.logger.Error("pr-monitor.orphan-adopt", "task_id", t.ID, "pr", match.Number, "err", err)
+		if match != nil {
+			updated, err := r.tasks.Update(t.ID, task.Update{
+				PRNumber:     task.Ptr(match.Number),
+				Status:       task.Ptr(task.StatusInReview),
+				StatusReason: task.Ptr(""),
+			})
+			if err != nil {
+				r.logger.Error("pr-monitor.orphan-adopt", "task_id", t.ID, "pr", match.Number, "err", err)
+				continue
+			}
+			tasks[i] = updated
+			r.logAudit(audit.EventPROrphanAdopted, t.ID, "", map[string]any{
+				"pr": match.Number, "repo": match.Repository, "branch": t.Branch,
+			})
+			r.logger.Info("pr-monitor.orphan-adopted",
+				"task_id", t.ID, "pr", match.Number, "branch", t.Branch)
 			continue
 		}
-		tasks[i] = updated
-		r.logAudit(audit.EventPROrphanAdopted, t.ID, "", map[string]any{
-			"pr": match.Number, "repo": match.Repository, "branch": t.Branch,
-		})
-		r.logger.Info("pr-monitor.orphan-adopted",
-			"task_id", t.ID, "pr", match.Number, "branch", t.Branch)
+		// No open PR found. Check for a recently merged PR: handles the race
+		// where the PR was opened and merged between poll cycles.
+		r.adoptOrphanMergedPR(t)
 	}
+}
+
+// adoptOrphanMergedPR checks whether a merged PR exists for an orphan task's
+// branch and, if exactly one is found, links it and advances the task to done.
+// Handles the race where a manually-opened PR is merged before the poll loop
+// finds it as an open PR (so adoptOrphanPRs never had a chance to link it).
+func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
+	fn := r.findMergedPRFn
+	if fn == nil {
+		fn = findMergedPRByBranch
+	}
+	prNum, err := fn(t.ProjectID, t.Branch)
+	if err != nil {
+		r.logger.Warn("pr-monitor.orphan-merged-check", "task_id", t.ID, "err", err)
+		return
+	}
+	if prNum == 0 {
+		return
+	}
+	taskID, repo, branch := t.ID, t.ProjectID, t.Branch
+	const state = "MERGED"
+	base := classifyLandingOutcome(state)
+	updated, err := r.tasks.Update(taskID, task.Update{
+		PRNumber:     task.Ptr(prNum),
+		Status:       task.Ptr(task.StatusDone),
+		Outcome:      task.Ptr(base),
+		StatusReason: task.Ptr(""),
+	})
+	if err != nil {
+		r.logger.Error("pr-monitor.orphan-merged-adopt", "task_id", taskID, "pr", prNum, "err", err)
+		return
+	}
+	*t = updated
+	r.logAudit(audit.EventPROrphanAdopted, taskID, "", map[string]any{
+		"pr": prNum, "repo": repo, "branch": branch, "state": state,
+	})
+	r.logAudit(audit.EventPRMerged, taskID, "", map[string]any{"pr": prNum, "state": state})
+	// Enrich with PR size, timing, human-edit data, and merge_commit for revert
+	// detection — same side effects as the normal advanceClosedTaskPRs path.
+	outcome, landData := r.computeLanding(taskID, prNum, state, base)
+	upd := task.Update{}
+	refine := false
+	if outcome != base {
+		upd.Outcome = task.Ptr(outcome)
+		refine = true
+	}
+	if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
+		upd.MergeCommit = task.Ptr(mc)
+		refine = true
+	}
+	if refine {
+		if _, err := r.tasks.Update(taskID, upd); err != nil {
+			r.logger.Warn("pr-monitor.orphan-merged-refine", "task_id", taskID, "err", err)
+		}
+	}
+	r.logAudit(audit.EventTaskLanded, taskID, "", landData)
+	r.logger.Info("pr-monitor.orphan-merged-adopted",
+		"task_id", taskID, "pr", prNum, "branch", branch)
+}
+
+// findMergedPRByBranch queries GitHub for a merged PR matching the given head
+// branch in the repository. Returns the PR number, or 0 if none or ambiguous.
+func findMergedPRByBranch(repo, branch string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+		"--repo", repo, "--head", branch, "--state", "merged", "--json", "number", "--limit", "2")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", err, out)
+	}
+	var prs []struct {
+		Number int `json:"number"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return 0, err
+	}
+	if len(prs) != 1 {
+		return 0, nil
+	}
+	return prs[0].Number, nil
 }
 
 func prNeedsAttention(prs []github.PullRequest) bool {

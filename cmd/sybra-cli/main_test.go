@@ -884,3 +884,117 @@ func TestArtifactNoSubcommand(t *testing.T) {
 		t.Error("expected non-zero exit when subcommand missing")
 	}
 }
+
+func TestLinkPR_AdvancesToInReview(t *testing.T) {
+	setupStore(t)
+
+	// Create a task that is stuck in human-required with no PR.
+	code, out := runCLI(t, "--json", "create", "--title", "stranded task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID, "--status", "human-required", "--status-reason", "commits pushed but no PR created")
+	if code != 0 {
+		t.Fatalf("update exit %d", code)
+	}
+
+	// Link PR → must advance to in-review.
+	code, out = runCLI(t, "--json", "link-pr", created.ID, "1150")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.PRNumber != 1150 {
+		t.Errorf("PRNumber = %d, want 1150", got.PRNumber)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("Status = %q, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Errorf("StatusReason = %q, want cleared", got.StatusReason)
+	}
+}
+
+func TestLinkPR_AlreadyInReview_PRUpdatedStatusUnchanged(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "in-review task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID, "--status", "in-review")
+	if code != 0 {
+		t.Fatalf("update to in-review exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "link-pr", created.ID, "42")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42", got.PRNumber)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("Status = %q, want in-review (unchanged)", got.Status)
+	}
+}
+
+func TestLinkPR_DoneTask_PRSetStatusUnchanged(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "done task")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "update", created.ID, "--status", "done")
+	if code != 0 {
+		t.Fatalf("update to done exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "link-pr", created.ID, "77")
+	if code != 0 {
+		t.Fatalf("link-pr exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.PRNumber != 77 {
+		t.Errorf("PRNumber = %d, want 77", got.PRNumber)
+	}
+	if got.Status != task.StatusDone {
+		t.Errorf("Status = %q, want done (unchanged)", got.Status)
+	}
+}
+
+func TestLinkPR_InvalidArgs(t *testing.T) {
+	setupStore(t)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing both args", []string{"--json", "link-pr"}},
+		{"missing pr number", []string{"--json", "link-pr", "some-id"}},
+		{"non-numeric pr", []string{"--json", "link-pr", "some-id", "abc"}},
+		{"zero pr", []string{"--json", "link-pr", "some-id", "0"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _ := runCLI(t, tt.args...)
+			if code == 0 {
+				t.Error("expected non-zero exit")
+			}
+		})
+	}
+}

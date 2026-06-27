@@ -412,6 +412,12 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		ProjectID: task.Ptr("o/r"),
 		PRNumber:  task.Ptr(42),
 	})
+	// In-review with no PR → eligible: PR was opened manually but never linked.
+	inReviewOrphan := mk("in-review-orphan", task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		Branch:    task.Ptr("feat/in-review-orphan"),
+		ProjectID: task.Ptr("o/r"),
+	})
 
 	r := &ReviewHandler{
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
@@ -429,6 +435,7 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		{Number: 9, HeadRefName: "feat/cross", Repository: "o/other-repo"}, // wrong repo
 		{Number: 10, HeadRefName: "feat/wd", Repository: "o/r"},            // watchdog task's branch
 		{Number: 42, HeadRefName: "feat/healthy", Repository: "o/r"},
+		{Number: 1055, HeadRefName: "feat/in-review-orphan", Repository: "o/r"},
 	}
 
 	r.adoptOrphanPRs(all, prs)
@@ -486,6 +493,16 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		}
 	})
 
+	t.Run("in-review orphan linked without status change", func(t *testing.T) {
+		got, _ := tasks.Get(inReviewOrphan)
+		if got.Status != task.StatusInReview {
+			t.Errorf("status = %q, want in-review (must not change)", got.Status)
+		}
+		if got.PRNumber != 1055 {
+			t.Errorf("PRNumber = %d, want 1055", got.PRNumber)
+		}
+	})
+
 	t.Run("ineligible task untouched", func(t *testing.T) {
 		got, _ := tasks.Get(healthy)
 		if got.Status != task.StatusInReview || got.PRNumber != 42 {
@@ -501,16 +518,24 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 		t    task.Task
 		want bool
 	}{
+		// human-required cases (strand-reason gate applies)
 		{"stranded orphan (no-commits)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, true},
 		{"evaluate orphan (no PR)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "commits pushed but no PR created"}, true},
 		{"has pr number", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", PRNumber: 5, StatusReason: orphanReason}, false},
 		{"no branch", task.Task{Status: task.StatusHumanRequired, ProjectID: "o/r", StatusReason: orphanReason}, false},
 		{"no project", task.Task{Status: task.StatusHumanRequired, Branch: "b", StatusReason: orphanReason}, false},
-		{"not human-required", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, false},
+		{"not human-required or in-review", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, false},
 		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
 		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
 		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
 		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, TaskType: task.TaskTypeChat}, false},
+		// in-review cases (no strand-reason gate: already in review with no PR is unambiguously an orphan)
+		{"in-review no PR — eligible", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r"}, true},
+		{"in-review with PR — not eligible (already linked)", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
+		{"in-review no branch — not eligible", task.Task{Status: task.StatusInReview, ProjectID: "o/r"}, false},
+		{"in-review no project — not eligible", task.Task{Status: task.StatusInReview, Branch: "b"}, false},
+		{"in-review review tag excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
+		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -796,6 +821,155 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	// Counter must be deleted so the next task start doesn't carry stale state.
 	if n := r.wtFailures[tk.ID]; n != 0 {
 		t.Fatalf("wtFailures[%s] = %d after circuit trip, want 0", tk.ID, n)
+	}
+}
+
+// TestAdoptOrphanMergedPR verifies that a task stranded in human-required with
+// a known branch is advanced to done when a merged PR is found on that branch
+// via the findMergedPRFn hook, and that the slice entry is updated in place.
+func TestAdoptOrphanMergedPR(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	mk := func(title string, u task.Update) string {
+		t.Helper()
+		created, cErr := tasks.Create(title, "", string(task.AgentModeHeadless))
+		if cErr != nil {
+			t.Fatalf("create %s: %v", title, cErr)
+		}
+		if _, uErr := tasks.Update(created.ID, u); uErr != nil {
+			t.Fatalf("update %s: %v", title, uErr)
+		}
+		return created.ID
+	}
+
+	// Task eligible for orphan adoption: stranded in human-required with a branch.
+	orphan := mk("stranded", task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("commits pushed but no PR created"),
+		Branch:       task.Ptr("feat/stranded"),
+		ProjectID:    task.Ptr("o/r"),
+	})
+	// Already linked — must not be touched.
+	linked := mk("linked", task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		PRNumber:  task.Ptr(99),
+		Branch:    task.Ptr("feat/linked"),
+		ProjectID: task.Ptr("o/r"),
+	})
+
+	calls := 0
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+		findMergedPRFn: func(repo, branch string) (int, error) {
+			calls++
+			if repo == "o/r" && branch == "feat/stranded" {
+				return 1051, nil
+			}
+			return 0, nil
+		},
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pass empty open-PR list so all eligible tasks fall through to merged check.
+	r.adoptOrphanPRs(all, nil)
+
+	t.Run("orphan advanced to done with merged PR", func(t *testing.T) {
+		got, _ := tasks.Get(orphan)
+		if got.Status != task.StatusDone {
+			t.Errorf("status = %q, want done", got.Status)
+		}
+		if got.PRNumber != 1051 {
+			t.Errorf("PRNumber = %d, want 1051", got.PRNumber)
+		}
+		if got.Outcome != "merged" {
+			t.Errorf("outcome = %q, want merged", got.Outcome)
+		}
+		if got.StatusReason != "" {
+			t.Errorf("StatusReason = %q, want cleared", got.StatusReason)
+		}
+	})
+
+	t.Run("in-place slice mutation visible to same poll", func(t *testing.T) {
+		for i := range all {
+			if all[i].ID == orphan {
+				if all[i].Status != task.StatusDone || all[i].PRNumber != 1051 {
+					t.Errorf("slice entry not updated: status=%q pr=%d", all[i].Status, all[i].PRNumber)
+				}
+				return
+			}
+		}
+		t.Fatal("orphan not found in slice")
+	})
+
+	t.Run("already-linked task not touched", func(t *testing.T) {
+		got, _ := tasks.Get(linked)
+		if got.Status != task.StatusHumanRequired || got.PRNumber != 99 {
+			t.Errorf("linked task mutated: status=%q pr=%d", got.Status, got.PRNumber)
+		}
+	})
+
+	t.Run("findMergedPRFn called only for eligible orphan", func(t *testing.T) {
+		// Only the orphan (no PR number, strand reason) should trigger the lookup.
+		if calls != 1 {
+			t.Errorf("findMergedPRFn calls = %d, want 1", calls)
+		}
+	})
+}
+
+// TestAdoptOrphanPRs_OpenTakesPrecedence verifies that when an open PR is found
+// for an eligible task, the merged-PR fallback is not called.
+func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("stranded", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("commits pushed but no PR created"),
+		Branch:       task.Ptr("feat/my-branch"),
+		ProjectID:    task.Ptr("o/r"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mergedCalled := false
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+		findMergedPRFn: func(_, _ string) (int, error) {
+			mergedCalled = true
+			return 0, nil
+		},
+	}
+
+	all, _ := tasks.List()
+	openPRs := []github.PullRequest{
+		{Number: 42, HeadRefName: "feat/my-branch", Repository: "o/r"},
+	}
+	r.adoptOrphanPRs(all, openPRs)
+
+	if mergedCalled {
+		t.Error("findMergedPRFn was called even though an open PR matched")
+	}
+	got, _ := tasks.Get(created.ID)
+	if got.Status != task.StatusInReview || got.PRNumber != 42 {
+		t.Errorf("status=%q pr=%d, want in-review/42", got.Status, got.PRNumber)
 	}
 }
 
