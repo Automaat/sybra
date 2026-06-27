@@ -448,7 +448,11 @@ func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPR
 	if len(matchers) == 0 {
 		return
 	}
-	closedPRs := github.DetectClosedTaskPRs(openReviewPRs, matchers, github.FetchPRState)
+	fetchFn := github.FetchPRState
+	if r.fetchPRStateFn != nil {
+		fetchFn = r.fetchPRStateFn
+	}
+	closedPRs := github.DetectClosedTaskPRs(openReviewPRs, matchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
 			r.logger.Info("review.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)

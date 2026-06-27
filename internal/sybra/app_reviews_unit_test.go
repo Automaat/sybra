@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -820,6 +821,129 @@ func TestHasReviewTask_ScopedByProject(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := r.hasReviewTask(existing, tt.projectID, tt.prNumber); got != tt.want {
 				t.Errorf("hasReviewTask(%q, %d) = %v, want %v", tt.projectID, tt.prNumber, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCloseFinishedReviewTasks verifies that review tasks whose linked PR is
+// merged or closed are advanced to done, and tasks with open or
+// inaccessible PRs are left untouched.
+//
+// Regression: before this fix, closeFinishedReviewTasks was only called when
+// FetchReviews() succeeded. A transient summary-fetch failure left any
+// in-review review task stranded indefinitely.
+func TestCloseFinishedReviewTasks(t *testing.T) {
+	tests := []struct {
+		name       string
+		taskStatus task.Status
+		prState    string
+		fetchErr   error
+		// openPRs lists PRs already known to be open (nil = check all tasks
+		// directly, which is what happens on the FetchReviews failure path).
+		openPRs    []github.PullRequest
+		wantStatus task.Status
+	}{
+		{
+			name:       "merged PR — task advances to done",
+			taskStatus: task.StatusInReview,
+			prState:    "MERGED",
+			wantStatus: task.StatusDone,
+		},
+		{
+			name:       "closed PR — task advances to done",
+			taskStatus: task.StatusInReview,
+			prState:    "CLOSED",
+			wantStatus: task.StatusDone,
+		},
+		{
+			name:       "open PR — task stays in-review",
+			taskStatus: task.StatusInReview,
+			prState:    "OPEN",
+			wantStatus: task.StatusInReview,
+		},
+		{
+			// PR still in the open-PR summary (e.g. GitHub search lag): the
+			// function must not re-check it via FetchPRState.
+			name:       "PR present in open list — suppressed, stays in-review",
+			taskStatus: task.StatusInReview,
+			prState:    "MERGED", // fetchPRStateFn would return MERGED, but must not be called
+			openPRs:    []github.PullRequest{{Number: 42, Repository: "o/r"}},
+			wantStatus: task.StatusInReview,
+		},
+		{
+			// human-required tasks are eligible too (small PR punted to human).
+			name:       "human-required review task with merged PR — advances to done",
+			taskStatus: task.StatusHumanRequired,
+			prState:    "MERGED",
+			wantStatus: task.StatusDone,
+		},
+		{
+			// FetchPRState fails transiently; task must be left untouched.
+			name:       "fetch error — task stays in-review",
+			taskStatus: task.StatusInReview,
+			fetchErr:   errors.New("network error"),
+			wantStatus: task.StatusInReview,
+		},
+		{
+			// Nil open list replicates the FetchReviews-failure path: every
+			// review task's PR is queried directly, so a merged PR is still caught.
+			name:       "nil open list (FetchReviews failure path) — merged PR caught",
+			taskStatus: task.StatusInReview,
+			prState:    "MERGED",
+			openPRs:    nil,
+			wantStatus: task.StatusDone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+
+			created, err := tasks.Create("Review: some PR", "", string(task.AgentModeHeadless))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tags := []string{"review"}
+			if _, err := tasks.Update(created.ID, task.Update{
+				Status:    task.Ptr(tt.taskStatus),
+				Tags:      &tags,
+				ProjectID: task.Ptr("o/r"),
+				PRNumber:  task.Ptr(42),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			agentMgr := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+
+			r := &ReviewHandler{
+				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+				tasks:         tasks,
+				agents:        agentMgr,
+				fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
+					if tt.fetchErr != nil {
+						return github.PRState{}, tt.fetchErr
+					}
+					return github.PRState{State: tt.prState}, nil
+				},
+			}
+
+			all, err := tasks.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.closeFinishedReviewTasks(all, tt.openPRs)
+
+			got, err := tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", got.Status, tt.wantStatus)
 			}
 		})
 	}

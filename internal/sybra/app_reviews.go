@@ -57,6 +57,10 @@ type ReviewHandler struct {
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
 	resolveThread func(threadID string) error
+	// fetchPRStateFn is used by closeFinishedReviewTasks to check whether a
+	// review-task's PR is still open. Overridable in tests; nil falls back to
+	// github.FetchPRState.
+	fetchPRStateFn func(repo string, number int) (github.PRState, error)
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
@@ -108,29 +112,36 @@ func (r *ReviewHandler) Poll(_ context.Context) time.Duration {
 }
 
 func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
-	summary, err := github.FetchReviews()
+	// Load tasks up-front so stale review-task reconciliation runs even
+	// when FetchReviews fails (transient errors, rate limits, etc.).
+	tasks, err := r.tasks.List()
 	if err != nil {
-		if github.IsTransientError(err) {
+		return prPollSlow
+	}
+
+	summary, fetchErr := github.FetchReviews()
+	if fetchErr != nil {
+		if github.IsTransientError(fetchErr) {
 			r.transientFetchFails++
 			if r.transientFetchFails < transientFetchWarnThreshold {
-				r.logger.Info("pr-monitor.fetch", "err", err)
+				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
 			} else {
-				r.logger.Warn("pr-monitor.fetch", "err", err, "consecutive", r.transientFetchFails)
+				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
 			}
 		} else {
 			r.transientFetchFails = 0
-			r.logger.Warn("pr-monitor.fetch", "err", err)
+			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}
+		// Reconcile stale review tasks even without a live summary: any
+		// task whose PR FetchPRState confirms as merged/closed is advanced
+		// to done. Passing nil tells DetectClosedTaskPRs to check every
+		// review task directly instead of filtering against an open list.
+		r.closeFinishedReviewTasks(tasks, nil)
 		return prPollSlow
 	}
 	r.transientFetchFails = 0
 
 	r.emit("reviews:updated", summary)
-
-	tasks, err := r.tasks.List()
-	if err != nil {
-		return prPollSlow
-	}
 
 	monitoredPRs := r.monitoredPRs(summary)
 
