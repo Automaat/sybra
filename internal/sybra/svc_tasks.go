@@ -397,24 +397,45 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 	res, err := s.umbrellaExpand(issue.URL)
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
-		u := task.Update{
-			Title:     task.Ptr(issue.Title),
-			Issue:     task.Ptr(issue.URL),
-			ProjectID: task.Ptr(repo),
-			Slug:      task.Ptr(task.Slugify(issue.Title)),
-		}
-		if issue.Body != "" {
-			u.Body = task.Ptr(issue.Body)
-		}
-		if _, uerr := s.tasks.Update(taskID, u); uerr != nil {
-			s.logger.Error("enrich-issue.umbrella-fallback", "task_id", taskID, "err", uerr)
-		}
+		s.enrichInertUmbrellaStub(taskID, repo, issue,
+			"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
 		return
 	}
-	if err := s.tasks.Delete(taskID); err != nil {
-		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", err)
+	// Expand created the real tracker + children; the stub is now a duplicate.
+	if delErr := s.tasks.Delete(taskID); delErr != nil {
+		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", delErr)
+		// Cleanup failed: enrich the stub so it is an identifiable,
+		// user-deletable duplicate rather than a raw-URL task with no metadata.
+		s.enrichInertUmbrellaStub(taskID, repo, issue,
+			"umbrella expanded to a separate tracker; this duplicate can be deleted")
+		return
 	}
 	s.logger.Info("enrich-issue.umbrella-expanded", "issue", issue.URL, "created", res.Created, "stub", taskID)
+}
+
+// enrichInertUmbrellaStub turns the stub into an identifiable, inert task: real
+// title/body/issue plus the issue's labels as tags (mirroring the normal
+// enrichFromIssue path so tag-driven routing and the UI still recognize it),
+// and a StatusReason explaining why no workflow started. No flat workflow is
+// started — the task is a known umbrella.
+func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	u := task.Update{
+		Title:        task.Ptr(issue.Title),
+		Issue:        task.Ptr(issue.URL),
+		ProjectID:    task.Ptr(repo),
+		Slug:         task.Ptr(task.Slugify(issue.Title)),
+		StatusReason: task.Ptr(reason),
+	}
+	if issue.Body != "" {
+		u.Body = task.Ptr(issue.Body)
+	}
+	if len(issue.Labels) > 0 {
+		labels := issue.Labels
+		u.Tags = &labels
+	}
+	if _, err := s.tasks.Update(taskID, u); err != nil {
+		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
+	}
 }
 
 func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {

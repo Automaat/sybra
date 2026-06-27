@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -122,6 +123,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 			Title:      "☂️ broken umbrella",
 			URL:        "https://github.com/owner/repo/issues/1151",
 			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
 		}, nil
 	}
 	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
@@ -140,6 +142,15 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	}
 	if got.Title != "☂️ broken umbrella" {
 		t.Fatalf("Title = %q, want enriched umbrella title", got.Title)
+	}
+	// Labels must be preserved so tag-driven routing/UI still identify the
+	// umbrella when the title doesn't start with ☂️.
+	if !slices.Equal(got.Tags, []string{"umbrella", "backend"}) {
+		t.Fatalf("Tags = %v, want [umbrella backend] from the issue labels", got.Tags)
+	}
+	// A StatusReason must explain why no workflow started.
+	if got.StatusReason == "" {
+		t.Fatal("StatusReason is empty, want an explanation for the inert stub")
 	}
 	// No flat workflow may be started on a known umbrella, even when expansion failed.
 	if got.Workflow != nil {
