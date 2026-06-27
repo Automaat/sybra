@@ -746,10 +746,12 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 		return
 	}
 	taskID, repo, branch := t.ID, t.ProjectID, t.Branch
+	const state = "MERGED"
+	base := classifyLandingOutcome(state)
 	updated, err := r.tasks.Update(taskID, task.Update{
 		PRNumber:     task.Ptr(prNum),
 		Status:       task.Ptr(task.StatusDone),
-		Outcome:      task.Ptr("merged"),
+		Outcome:      task.Ptr(base),
 		StatusReason: task.Ptr(""),
 	})
 	if err != nil {
@@ -760,6 +762,26 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 	r.logAudit(audit.EventPROrphanAdopted, taskID, "", map[string]any{
 		"pr": prNum, "repo": repo, "branch": branch, "state": "merged",
 	})
+	r.logAudit(audit.EventPRMerged, taskID, "", map[string]any{"pr": prNum, "state": state})
+	// Enrich with PR size, timing, human-edit data, and merge_commit for revert
+	// detection — same side effects as the normal advanceClosedTaskPRs path.
+	outcome, landData := r.computeLanding(taskID, prNum, state, base)
+	upd := task.Update{}
+	refine := false
+	if outcome != base {
+		upd.Outcome = task.Ptr(outcome)
+		refine = true
+	}
+	if mc, ok := landData["merge_commit"].(string); ok && mc != "" {
+		upd.MergeCommit = task.Ptr(mc)
+		refine = true
+	}
+	if refine {
+		if _, err := r.tasks.Update(taskID, upd); err != nil {
+			r.logger.Warn("pr-monitor.orphan-merged-refine", "task_id", taskID, "err", err)
+		}
+	}
+	r.logAudit(audit.EventTaskLanded, taskID, "", landData)
 	r.logger.Info("pr-monitor.orphan-merged-adopted",
 		"task_id", taskID, "pr", prNum, "branch", branch)
 }
