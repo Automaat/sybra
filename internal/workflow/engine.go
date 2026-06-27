@@ -50,6 +50,16 @@ type TaskInfo struct {
 	// a human re-dispatches from human-required. Nil means no re-dispatch has
 	// occurred; route_test_result counts all test-runner runs in that case.
 	TestingCycleStartedAt *time.Time
+	// ManualTest is repo/project-declared guidance for black-box testing.
+	ManualTest ManualTestInfo
+}
+
+// ManualTestInfo describes the runnable surface a test-runner should exercise.
+type ManualTestInfo struct {
+	Kind          string
+	Command       string
+	HealthURL     string
+	ProbeCommands []string
 }
 
 // AgentRunInfo is the engine-visible subset of a task's agent run.
@@ -114,6 +124,12 @@ type CheckConfigGetter interface {
 	VerifyCommands(taskID string) []string
 }
 
+// ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
+// Engine operates with a nil getter — prompts then fall back to repo discovery.
+type ManualTestConfigGetter interface {
+	ManualTestConfig(taskID string) ManualTestInfo
+}
+
 // PRLinker inspects and updates GitHub pull request metadata for the
 // `ensure_pr_closes_issue` step. Implementations wrap `gh` CLI calls.
 // Engine operates with a nil PRLinker — the step becomes a no-op when
@@ -169,6 +185,7 @@ type Engine struct {
 	prReviewers     PRReviewRequester
 	worktrees       WorktreeGetter
 	checks          CheckConfigGetter
+	manualTests     ManualTestConfigGetter
 	recorder        ArtifactRecorder
 	onComplete      func(CompletionInfo)
 	logger          *slog.Logger
@@ -232,6 +249,10 @@ func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
 // `verify_checks` step. Leaving it unset makes the step a no-op.
 func (e *Engine) SetCheckConfigGetter(g CheckConfigGetter) { e.checks = g }
 
+// SetManualTestConfigGetter wires the manual-test surface resolver used by
+// testing prompts. Leaving it unset makes the prompt rely on repo discovery.
+func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualTests = g }
+
 // SetVerifyTimeout overrides the verify_checks time budget. Zero keeps the
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
@@ -253,3 +274,11 @@ func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
 
 // SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
 func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
+
+func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
+	if e.manualTests == nil || t.ID == "" {
+		return t
+	}
+	t.ManualTest = e.manualTests.ManualTestConfig(t.ID)
+	return t
+}

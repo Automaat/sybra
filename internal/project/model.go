@@ -31,6 +31,30 @@ type RepoConfig struct {
 	// this project gets identical bootstrap (tool installs, dependency fetches)
 	// without per-instance UI toil.
 	Setup []string `yaml:"setup,omitempty" json:"setup,omitempty"`
+	// ManualTest tells the testing workflow how this project can be exercised
+	// through a user/operator-facing surface instead of only via unit tests.
+	ManualTest *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
+}
+
+// ManualTestKind identifies the runnable surface a test-runner should drive.
+type ManualTestKind string
+
+const (
+	ManualTestKindWeb     ManualTestKind = "web"
+	ManualTestKindCLI     ManualTestKind = "cli"
+	ManualTestKindServer  ManualTestKind = "server"
+	ManualTestKindDesktop ManualTestKind = "desktop"
+	ManualTestKindK8s     ManualTestKind = "k8s"
+	ManualTestKindLibrary ManualTestKind = "library"
+)
+
+// ManualTestConfig is repo-declared black-box testing guidance from .sybra.yaml.
+// Commands execute in the worktree root when a test-runner chooses to use them.
+type ManualTestConfig struct {
+	Kind          ManualTestKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Command       string         `yaml:"command,omitempty" json:"command,omitempty"`
+	HealthURL     string         `yaml:"health_url,omitempty" json:"healthUrl,omitempty"`
+	ProbeCommands []string       `yaml:"probe_commands,omitempty" json:"probeCommands,omitempty"`
 }
 
 // MergeSetup combines repo-declared setup (.sybra.yaml) with app-level setup
@@ -76,6 +100,15 @@ func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
 		return nil
 	}
 	return out
+}
+
+// MergeManualTest returns repo-declared manual-test guidance when present,
+// falling back to machine-local project config.
+func MergeManualTest(repo, app *ManualTestConfig) *ManualTestConfig {
+	if repo != nil {
+		return repo
+	}
+	return app
 }
 
 // SandboxConfig describes how to spin up an isolated app environment for a task.
@@ -140,10 +173,11 @@ type Project struct {
 	Type      ProjectType `yaml:"type" json:"type"`
 	// Status reflects the clone lifecycle. Empty value is treated as ready
 	// so existing projects without this field continue to work.
-	Status        ProjectStatus  `yaml:"status,omitempty" json:"status"`
-	SetupCommands []string       `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
-	Sandbox       *SandboxConfig `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Checks        *ChecksConfig  `yaml:"checks,omitempty"  json:"checks,omitempty"`
+	Status        ProjectStatus     `yaml:"status,omitempty" json:"status"`
+	SetupCommands []string          `yaml:"setup_commands,omitempty" json:"setupCommands,omitempty"`
+	Sandbox       *SandboxConfig    `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Checks        *ChecksConfig     `yaml:"checks,omitempty"  json:"checks,omitempty"`
+	ManualTest    *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
 	// WorktreeBaseRef controls the starting point for new worktree branches.
 	// "fresh" (default) branches off origin/<default>; "head" branches off the
 	// local HEAD so unpushed commits are included. Empty value treated as "fresh".

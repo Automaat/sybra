@@ -30,8 +30,9 @@ const (
 	testVerdictTaintedKey = "tainted"
 	// testFailureBodyStartLenKey records the task body length when run_test is
 	// dispatched. On completion, Codex structured output only contains
-	// {"verdict":"FAIL"}, so the actual failure text must be read from the body
-	// delta written by the runner.
+	// older structured-output runs returned only {"verdict":"FAIL"}, so the
+	// actual failure text had to be read from the body delta written by the
+	// runner.
 	testFailureBodyStartLenKey = "body_start_len"
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
@@ -49,9 +50,27 @@ const (
 )
 
 type structuredTestOutput struct {
-	Verdict          string `json:"verdict"`
-	Outcome          string `json:"outcome,omitempty"`
-	FailuresMarkdown string `json:"failures_markdown,omitempty"`
+	Verdict           string                   `json:"verdict"`
+	Outcome           string                   `json:"outcome,omitempty"`
+	FailuresMarkdown  string                   `json:"failures_markdown,omitempty"`
+	SurfaceKind       string                   `json:"surface_kind,omitempty"`
+	AppStarted        bool                     `json:"app_started,omitempty"`
+	StartCommand      string                   `json:"start_command,omitempty"`
+	ReadinessProbe    string                   `json:"readiness_probe,omitempty"`
+	ManualProbes      []manualProbeEvidence    `json:"manual_probes,omitempty"`
+	AutomatedChecks   []automatedCheckEvidence `json:"automated_checks,omitempty"`
+	UnableToRunReason string                   `json:"unable_to_run_reason,omitempty"`
+}
+
+type manualProbeEvidence struct {
+	Command  string `json:"command"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
+}
+
+type automatedCheckEvidence struct {
+	Command string `json:"command"`
+	Actual  string `json:"actual"`
 }
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -68,14 +87,14 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
 }
 
-func (e *Engine) prepareTestStepCompletion(taskID string, output *StepOutput, wfExec *Execution, body *string) error {
+func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *StepOutput, wfExec *Execution, body *string) error {
 	if appended, nextBody, appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
 		return appendErr
 	} else if appended {
 		*body = nextBody
 	}
 
-	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body)
+	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body, t)
 	if output.AgentID != "" && outcome != "" {
 		if err := e.tasks.MarkAgentRunTestOutcome(taskID, output.AgentID, outcome, fingerprint); err != nil {
 			return fmt.Errorf("mark test outcome: %w", err)
@@ -158,6 +177,179 @@ func normalizeStructuredFailuresMarkdown(report, outcome string) string {
 	return insertClassificationAfterFailuresHeading(report, outcome) + "\n"
 }
 
+func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
+	parsed, ok := parseStructuredTestOutput(output)
+	if !ok {
+		return hasPlainTextManualPassEvidence(output, t)
+	}
+	if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "PASS" {
+		return true, ""
+	}
+	if normalizeTestOutcome(parsed.Outcome) != testOutcomePass {
+		return false, "PASS report outcome was not pass"
+	}
+	if strings.TrimSpace(parsed.FailuresMarkdown) != "" {
+		return false, "PASS report included failures_markdown"
+	}
+	surface := normalizeSurfaceKind(parsed.SurfaceKind)
+	if surface == "" {
+		return false, "PASS report omitted surface_kind"
+	}
+	if isManualTestExemption(surface, t) {
+		if strings.TrimSpace(parsed.UnableToRunReason) == "" {
+			return false, "PASS used a no-app exemption but omitted unable_to_run_reason"
+		}
+		if !hasRegressionCheckEvidence(parsed.AutomatedChecks) {
+			return false, "PASS used a no-app exemption without CLI/test harness evidence"
+		}
+		return true, ""
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return false, "PASS skipped manual testing without an explicit docs/library exemption"
+	}
+	if !parsed.AppStarted {
+		return false, "PASS report did not confirm app_started"
+	}
+	if strings.TrimSpace(parsed.StartCommand) == "" {
+		return false, "PASS report omitted start_command"
+	}
+	if strings.TrimSpace(parsed.ReadinessProbe) == "" {
+		return false, "PASS report omitted readiness_probe"
+	}
+	if !hasManualProbeEvidence(parsed.ManualProbes) {
+		return false, "PASS report omitted user-facing manual probe evidence"
+	}
+	return true, ""
+}
+
+func normalizeSurfaceKind(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "web", "cli", "server", "desktop", "k8s", "library", "docs", "none":
+		return strings.ToLower(strings.TrimSpace(s))
+	default:
+		return ""
+	}
+}
+
+func isManualTestExemption(surface string, t TaskInfo) bool {
+	if surface == "library" {
+		return true
+	}
+	if surface == "docs" {
+		return taskHasAnyTag(t, "docs", "documentation", "notest")
+	}
+	if surface == "none" {
+		return taskHasAnyTag(t, "notest")
+	}
+	return false
+}
+
+func hasPlainTextManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
+	surface := normalizeSurfaceKind(firstPlainEvidenceField(output, "surface_kind", "surface kind"))
+	if surface == "" {
+		return false, "plain-text PASS report omitted surface_kind"
+	}
+	if isManualTestExemption(surface, t) {
+		if firstPlainEvidenceField(output, "unable_to_run_reason", "unable to run manual test") == "" {
+			return false, "plain-text PASS used a no-app exemption but omitted unable_to_run_reason"
+		}
+		if !hasPlainTextRegressionCheckEvidence(output) {
+			return false, "plain-text PASS used a no-app exemption without CLI/test harness evidence"
+		}
+		return true, ""
+	}
+	if surface == "library" || surface == "docs" || surface == "none" {
+		return false, "plain-text PASS skipped manual testing without an explicit docs/library exemption"
+	}
+	lower := strings.ToLower(output)
+	if !containsAny(lower, "app_started: true", "app started: true") {
+		return false, "plain-text PASS report did not confirm app_started"
+	}
+	if firstPlainEvidenceField(output, "start_command", "start command") == "" {
+		return false, "plain-text PASS report omitted start_command"
+	}
+	if firstPlainEvidenceField(output, "readiness_probe", "readiness probe") == "" {
+		return false, "plain-text PASS report omitted readiness_probe"
+	}
+	if !hasPlainTextManualProbeEvidence(output) {
+		return false, "plain-text PASS report omitted user-facing manual probe evidence"
+	}
+	return true, ""
+}
+
+func firstPlainEvidenceField(output string, names ...string) string {
+	for _, line := range reportScanLines(output) {
+		field, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		field = strings.Trim(strings.ToLower(field), "-* \t`")
+		field = strings.ReplaceAll(field, " ", "_")
+		for _, name := range names {
+			normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), " ", "_")
+			if field == normalized {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func hasPlainTextManualProbeEvidence(output string) bool {
+	lower := strings.ToLower(output)
+	return containsAny(lower, "manual_probes:", "manual probe:", "manual_probe:") &&
+		containsAny(lower, "command:", "curl ", "sybra-cli", "kubectl ", "go run ", "npm run ") &&
+		containsAny(lower, "expected:", "expected output:") &&
+		containsAny(lower, "actual:", "actual output:", "observed:", "observed output:")
+}
+
+func hasPlainTextRegressionCheckEvidence(output string) bool {
+	lower := strings.ToLower(output)
+	return containsAny(lower, "automated_checks:", "automated checks:", "regression check:", "test harness:") &&
+		containsAny(lower,
+			"go test", "npm test", "npm run test", "npm run check",
+			"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
+			"sybra-cli", "go run", "curl ", "kubectl ")
+}
+
+func taskHasAnyTag(t TaskInfo, tags ...string) bool {
+	for _, got := range t.Tags {
+		for _, want := range tags {
+			if strings.EqualFold(strings.TrimSpace(got), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
+	for _, p := range probes {
+		if strings.TrimSpace(p.Command) != "" &&
+			strings.TrimSpace(p.Expected) != "" &&
+			strings.TrimSpace(p.Actual) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
+	for _, c := range checks {
+		cmd := strings.ToLower(strings.TrimSpace(c.Command))
+		if cmd == "" || strings.TrimSpace(c.Actual) == "" {
+			continue
+		}
+		if containsAny(cmd,
+			"go test", "npm test", "npm run test", "npm run check",
+			"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
+			"sybra-cli", "go run", "curl ", "kubectl ") {
+			return true
+		}
+	}
+	return false
+}
+
 func insertClassificationAfterFailuresHeading(report, outcome string) string {
 	lines := strings.Split(report, "\n")
 	for i, line := range lines {
@@ -209,7 +401,7 @@ func stripTestVerdictMarkers(report string) string {
 // sending implementation agents after a bad report. It returns the violation
 // name when one should be persisted on the underlying AgentRun, plus the typed
 // outcome and failure fingerprint for attempt accounting.
-func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body string) (violation, outcome, fingerprint string) {
+func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body string, t TaskInfo) (violation, outcome, fingerprint string) {
 	if wfExec == nil || output == nil || output.StepID != testVerdictSourceStep {
 		return "", "", ""
 	}
@@ -235,6 +427,15 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 		output.Status = "failed"
 		output.Output = appendTestProtocolViolation(output.Output, "FAIL report lacked machine-checkable evidence")
 		return testProtocolMissingEvidence, outcome, fingerprint
+	}
+	if output.Status == "completed" && outcome == testOutcomePass && v == "PASS" {
+		if ok, reason := hasManualPassEvidence(output.Output, t); !ok {
+			wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, testOutcomeMissingEvidence)
+			wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
+			output.Status = "failed"
+			output.Output = appendTestProtocolViolation(output.Output, reason)
+			return testProtocolMissingEvidence, testOutcomeMissingEvidence, ""
+		}
 	}
 	if outcome == testOutcomeInfraFailure {
 		output.Status = "failed"
@@ -290,6 +491,9 @@ func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID 
 		return testOutcomeMissingEvidence, ""
 	}
 	if explicit := explicitTestOutcome(report); explicit != "" {
+		if explicit == testOutcomePass {
+			return testOutcomeMissingEvidence, ""
+		}
 		if explicit == testOutcomeProductBug || explicit == testOutcomeAmbiguousRequirement {
 			if !hasGroundedFailureEvidence(report) {
 				return testOutcomeMissingEvidence, ""
@@ -345,6 +549,8 @@ func normalizeTestOutcome(s string) string {
 	token = strings.NewReplacer("-", "_", " ", "_", ":", "_", ",", "_").Replace(token)
 	token = strings.Trim(token, "_")
 	switch {
+	case outcomeTokenStarts(token, testOutcomePass):
+		return testOutcomePass
 	case outcomeTokenStarts(token, testOutcomeProductBug, "bug", "product_failure"):
 		return testOutcomeProductBug
 	case outcomeTokenStarts(token, testOutcomeInfraFailure, "infrastructure_failure", "infrastructure", "infra"):
@@ -438,8 +644,9 @@ func testFailureFingerprint(report string) string {
 }
 
 // containsFixSuggestionsInCurrentTestReport scans the agent result and the task
-// body text added during the current run_test attempt. The body delta matters
-// for Codex output_schema runs, where the result is only {"verdict":"FAIL"}.
+// body text added during the current run_test attempt. The body delta keeps
+// compatibility with older Codex output_schema runs that returned only
+// {"verdict":"FAIL"}.
 func containsFixSuggestionsInCurrentTestReport(output, body string, wfExec *Execution, stepID string) bool {
 	if containsFixSuggestions(output) {
 		return true
