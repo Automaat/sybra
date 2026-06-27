@@ -116,6 +116,9 @@ func TestNoteAndGetPermissionDenials(t *testing.T) {
 	// GetPermissionDenials returns a copy — mutations don't affect original
 	denials[0].ToolUseID = "mutated"
 	original := a.GetPermissionDenials()
+	if len(original) == 0 {
+		t.Fatal("expected copy to still have denials")
+	}
 	if original[0].ToolUseID == "mutated" {
 		t.Error("GetPermissionDenials returned a reference, not a copy")
 	}
