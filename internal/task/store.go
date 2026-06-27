@@ -689,6 +689,16 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	if err := applyUpdateFields(&t, u); err != nil {
 		return Task{}, "", err
 	}
+	// When any caller (CLI, GUI, API) moves the task out of human-required,
+	// stamp TestingCycleStartedAt so route_test_result only counts runs from
+	// this new cycle, not from prior ones. Skipped when the caller already
+	// supplied an explicit value (u.TestingCycleStartedAt != nil).
+	if prevStatus == StatusHumanRequired &&
+		t.Status != StatusHumanRequired &&
+		u.TestingCycleStartedAt == nil {
+		now := time.Now().UTC()
+		t.TestingCycleStartedAt = &now
+	}
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}
