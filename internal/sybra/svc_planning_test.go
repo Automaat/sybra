@@ -450,7 +450,12 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	// simple-task-plan that still uses wait_for_status: plan-review (the
 	// plan step is now a parallel block of headless one-shots).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
-		"status": "planning",
+		"status":         "planning",
+		"plan":           "plan",
+		"plan_critique":  "critique",
+		"plan_research":  "research",
+		"plan_decisions": "decisions",
+		"plan_brief":     "brief",
 		"workflow": &workflow.Execution{
 			WorkflowID:  "simple-task-plan",
 			CurrentStep: "address_critique",

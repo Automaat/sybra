@@ -168,13 +168,17 @@ func (a *App) initStatusHook() {
 			if t, err := a.tasks.Get(taskID); err == nil {
 				msg = t.Title
 			}
-			a.notifier.Send(notification.LevelInfo, "Ready for review", msg, taskID, "")
+			if a.notifier != nil {
+				a.notifier.Send(notification.LevelInfo, "Ready for review", msg, taskID, "")
+			}
 		case string(task.StatusHumanRequired):
 			msg := taskID
 			if t, err := a.tasks.Get(taskID); err == nil {
 				msg = t.Title
 			}
-			a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
+			if a.notifier != nil {
+				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
+			}
 			if a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
