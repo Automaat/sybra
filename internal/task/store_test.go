@@ -412,6 +412,85 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 }
 
+// TestStoreUpdateTestingCycleStartedAt_AutoStamp verifies that UpdateWithPrev
+// automatically stamps TestingCycleStartedAt when a task moves out of
+// human-required. This covers all callers (CLI, GUI, engine) uniformly.
+func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Redispatch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Move to human-required (no cycle stamp set yet).
+	_, err = store.Update(created.ID, Update{Status: Ptr(StatusHumanRequired)})
+	if err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+	before, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.TestingCycleStartedAt != nil {
+		t.Error("expected TestingCycleStartedAt to be nil before re-dispatch")
+	}
+
+	// Human re-dispatches: move out of human-required.
+	after, err := store.Update(created.ID, Update{Status: Ptr(StatusTesting)})
+	if err != nil {
+		t.Fatalf("set testing: %v", err)
+	}
+	if after.TestingCycleStartedAt == nil {
+		t.Fatal("expected TestingCycleStartedAt to be set after human-required → testing transition")
+	}
+
+	// Reload from disk to confirm persistence.
+	reloaded, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TestingCycleStartedAt == nil {
+		t.Error("TestingCycleStartedAt not persisted after human-required → testing transition")
+	}
+	if reloaded.TestingCycleStartedAt.IsZero() {
+		t.Error("TestingCycleStartedAt is zero time")
+	}
+}
+
+// TestStoreUpdateTestingCycleStartedAt_NoAutoStampOnNonHumanRequired verifies
+// that the auto-stamp only fires for human-required → other transitions, not
+// for normal workflow-internal transitions (e.g. in-progress → testing).
+func TestStoreUpdateTestingCycleStartedAt_NoAutoStampOnNonHumanRequired(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Normal cycle task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Workflow-internal transition: in-progress → testing (auto-loop, not human re-dispatch).
+	_, err = store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
+	if err != nil {
+		t.Fatalf("set in-progress: %v", err)
+	}
+	after, err := store.Update(created.ID, Update{Status: Ptr(StatusTesting)})
+	if err != nil {
+		t.Fatalf("set testing: %v", err)
+	}
+	if after.TestingCycleStartedAt != nil {
+		t.Error("TestingCycleStartedAt must not be set for non-human-required → testing transitions")
+	}
+}
+
 func TestStoreUpdateNotFound(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())

@@ -291,11 +291,17 @@ type Task struct {
 	// via -c model_reasoning_effort=<v>. Empty = model default. Codex-only;
 	// ignored for claude agents. Distinct from the claude-only extended-thinking
 	// knob — different CLI surface and vocabulary (xhigh vs max).
-	ReasoningEffort string              `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
-	AgentRuns       []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
-	Workflow        *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
-	CreatedAt       time.Time           `yaml:"created_at" json:"createdAt"`
-	UpdatedAt       time.Time           `yaml:"updated_at" json:"updatedAt"`
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	// TestingCycleStartedAt marks the start of the current testing cycle. It is
+	// set when a human re-dispatches the task after a human-required escalation,
+	// so route_test_result can exclude test-runner runs from prior cycles when
+	// counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
+	// and all test-runner runs count (correct for first-ever cycles).
+	TestingCycleStartedAt *time.Time          `yaml:"testing_cycle_started_at,omitempty" json:"testingCycleStartedAt,omitempty"`
+	AgentRuns             []AgentRun          `yaml:"agent_runs,omitempty" json:"agentRuns"`
+	Workflow              *workflow.Execution `yaml:"workflow,omitempty" json:"workflow"`
+	CreatedAt             time.Time           `yaml:"created_at" json:"createdAt"`
+	UpdatedAt             time.Time           `yaml:"updated_at" json:"updatedAt"`
 
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`

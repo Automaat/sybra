@@ -310,6 +310,15 @@ export class Task {
      * knob — different CLI surface and vocabulary (xhigh vs max).
      */
     "reasoningEffort"?: string;
+
+    /**
+     * TestingCycleStartedAt marks the start of the current testing cycle. It is
+     * set when a human re-dispatches the task after a human-required escalation,
+     * so route_test_result can exclude test-runner runs from prior cycles when
+     * counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
+     * and all test-runner runs count (correct for first-ever cycles).
+     */
+    "testingCycleStartedAt"?: time$0.Time | null;
     "agentRuns": AgentRun[];
     "workflow": workflow$0.Execution | null;
     "createdAt": time$0.Time;
@@ -416,9 +425,9 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField17_0 = $$createType0;
-        const $$createField34_0 = $$createType2;
-        const $$createField35_0 = $$createType4;
-        const $$createField45_0 = $$createType5;
+        const $$createField35_0 = $$createType2;
+        const $$createField36_0 = $$createType4;
+        const $$createField46_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -430,13 +439,13 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField17_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField34_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField35_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField35_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField36_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField45_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField46_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
