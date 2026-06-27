@@ -56,7 +56,9 @@ func (a *App) maintenancePass() {
 
 // nudgeDispatch asks the orchestrator loop to run a dispatch pass promptly
 // instead of waiting for the next fast tick. Non-blocking and coalescing: a full
-// buffer means a pass is already pending. No-op if the loop hasn't started.
+// buffer means a pass is already pending. If the loop hasn't started yet, the
+// buffered signal is drained on its first iteration; the nil-guard only skips
+// when the channel was never created (non-NewApp test construction).
 func (a *App) nudgeDispatch() {
 	if a.dispatchNudge == nil {
 		return

@@ -4,10 +4,11 @@
 
   const report = $derived(evaluationStore.data)
   const phases = $derived(lifecycleStore.data)
-  // Share is computed from mean dwell so a phase only a few tasks hit still reads
-  // proportionally. Sum once for the denominator.
-  const phaseMeanSum = $derived(
-    (phases?.phases ?? []).reduce((acc, p) => acc + p.meanH, 0),
+  // Share is share-of-lead-time across the cohort, so the denominator is the
+  // summed time in each phase (totalH) — not meanH, which averages only over
+  // tasks that entered the phase and would over-weight phases many tasks skip.
+  const phaseTotalSum = $derived(
+    (phases?.phases ?? []).reduce((acc, p) => acc + p.totalH, 0),
   )
   // Stable colour per phase so the bar and legend agree across renders.
   const phaseColor: Record<string, string> = {
@@ -19,8 +20,8 @@
     waiting: 'bg-error-500',
     other: 'bg-surface-300',
   }
-  function phaseShare(meanH: number): number {
-    return phaseMeanSum > 0 ? (meanH / phaseMeanSum) * 100 : 0
+  function phaseShare(totalH: number): number {
+    return phaseTotalSum > 0 ? (totalH / phaseTotalSum) * 100 : 0
   }
   function phaseBreakdown(byPhase: { [_ in string]?: number }): string {
     const order = ['queued', 'planning', 'implementing', 'testing', 'review', 'waiting', 'other']
@@ -170,8 +171,8 @@
           {#each phases.phases as p (p.phase)}
             <div
               class="{phaseColor[p.phase] ?? 'bg-surface-300'} h-full"
-              style="width: {phaseShare(p.meanH)}%"
-              title="{p.phase}: {phaseShare(p.meanH).toFixed(0)}%"
+              style="width: {phaseShare(p.totalH)}%"
+              title="{p.phase}: {phaseShare(p.totalH).toFixed(0)}%"
             ></div>
           {/each}
         </div>
@@ -194,7 +195,7 @@
                   <span class="mr-2 inline-block h-2 w-2 rounded-full {phaseColor[p.phase] ?? 'bg-surface-300'}"></span>
                   {p.phase}
                 </td>
-                <td class="py-1.5 text-right">{phaseShare(p.meanH).toFixed(0)}%</td>
+                <td class="py-1.5 text-right">{phaseShare(p.totalH).toFixed(0)}%</td>
                 <td class="py-1.5 text-right">{hours(p.p50h)}</td>
                 <td class="py-1.5 text-right text-surface-400">{hours(p.p90h)}</td>
                 <td class="py-1.5 text-right">{hours(p.meanH)}</td>

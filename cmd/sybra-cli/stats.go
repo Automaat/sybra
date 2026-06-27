@@ -62,17 +62,20 @@ func printPhaseReport(rep evaluation.PhaseReport) {
 		return
 	}
 
-	var meanSum float64
+	// Share is share-of-lead-time across the cohort, so the denominator is the
+	// summed time in each phase (TotalH) — not MeanH, which averages only over
+	// tasks that entered the phase and would over-weight phases many tasks skip.
+	var totalSum float64
 	for _, p := range rep.Phases {
-		meanSum += p.MeanH
+		totalSum += p.TotalH
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "PHASE\tP50H\tP90H\tMEAN\tSHARE\tN")
 	for _, p := range rep.Phases {
 		share := 0.0
-		if meanSum > 0 {
-			share = p.MeanH / meanSum * 100
+		if totalSum > 0 {
+			share = p.TotalH / totalSum * 100
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%.1f\t%.1f\t%.1f\t%.0f%%\t%d\n",
 			p.Phase, p.P50H, p.P90H, p.MeanH, share, p.Count)
