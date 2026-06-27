@@ -124,10 +124,21 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	}
 
 	m.ensureBranch(t, wtBranch)
-	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
+	m.seedWorktree(t, wtPath, wtBranch)
+	return wtPath, nil
+}
+
+// seedWorktree drops the per-worktree agent context into an implementation
+// worktree: the identity beacon (writeContextFile) and the working-memory
+// scratchpad (ensureNotesFile). Both are git-excluded and best-effort —
+// failures are logged, not fatal, since neither blocks the agent from running.
+func (m *Manager) seedWorktree(t task.Task, wtPath, branch string) {
+	if err := writeContextFile(t, wtPath, branch); err != nil {
 		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
 	}
-	return wtPath, nil
+	if err := ensureNotesFile(wtPath); err != nil {
+		m.logger.Warn("worktree.notes-file", "task_id", t.ID, "err", err)
+	}
 }
 
 // adoptWorktree wires Sybra to run a task inside a pre-existing, externally
@@ -185,9 +196,7 @@ func (m *Manager) adoptWorktree(t task.Task, onPhase func(string)) (string, erro
 
 	m.ensureBranch(t, branch)
 	m.installChecks(wtPath, proj)
-	if err := writeContextFile(t, wtPath, branch); err != nil {
-		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-	}
+	m.seedWorktree(t, wtPath, branch)
 	m.logger.Info("worktree.adopted", "task_id", t.ID, "path", wtPath, "branch", branch)
 	return wtPath, nil
 }
@@ -197,9 +206,7 @@ func (m *Manager) adoptWorktree(t task.Task, onPhase func(string)) (string, erro
 func (m *Manager) finalizeWorktree(t task.Task, wtPath, wtBranch string, proj project.Project) (string, error) {
 	m.installChecks(wtPath, proj)
 	m.ensureBranch(t, wtBranch)
-	if err := writeContextFile(t, wtPath, wtBranch); err != nil {
-		m.logger.Warn("worktree.context-file", "task_id", t.ID, "err", err)
-	}
+	m.seedWorktree(t, wtPath, wtBranch)
 	return wtPath, nil
 }
 

@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,7 +29,9 @@ func writeContextFile(t task.Task, wtPath, branch string) error {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", contextFileName, err)
 	}
-	addToInfoExclude(wtPath, contextFileName)
+	// Best-effort for the beacon: it carries only task identity (no work content),
+	// so a failed exclude is a cosmetic git-status nuisance, not a leak.
+	_ = addToInfoExclude(wtPath, contextFileName)
 	return nil
 }
 
@@ -54,38 +57,51 @@ func renderContextFile(t task.Task, wtPath, branch string) string {
 }
 
 // addToInfoExclude appends entry to the worktree's per-worktree info/exclude
-// so `git status` and `git add -A` ignore it. Best-effort: a missing or
-// unwritable exclude file is logged elsewhere but not fatal — the beacon is
-// still usable, the agent just risks staging it.
-func addToInfoExclude(wtPath, entry string) {
+// so `git status` and `git add -A` ignore it. Returns an error when exclusion
+// could not be applied; callers for whom a committed file is merely cosmetic
+// (the identity beacon) may ignore it, while callers seeding agent-authored
+// content (NOTES.md) must fail closed — an unexcluded file would be swept into
+// SanitizeWorktree's `git add -A` auto-commit and pushed to the PR. The
+// "already present" case returns nil.
+func addToInfoExclude(wtPath, entry string) error {
 	cmd := exec.Command("git", "rev-parse", "--git-path", "info/exclude")
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
 	if err != nil {
-		return
+		return fmt.Errorf("resolve info/exclude: %w", err)
 	}
 	excludePath := strings.TrimSpace(string(out))
 	if !filepath.IsAbs(excludePath) {
 		excludePath = filepath.Join(wtPath, excludePath)
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
-		return
+		return fmt.Errorf("mkdir info dir: %w", err)
 	}
-	existing, _ := os.ReadFile(excludePath)
+	// A not-exist read is fine — the append below creates the file. Any other
+	// read error (e.g. unreadable exclude) must surface: silently treating it as
+	// empty would skip the dedup check and, worse, let a fail-closed caller
+	// (ensureNotesFile) believe exclusion succeeded when it could not be verified.
+	existing, rerr := os.ReadFile(excludePath)
+	if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return fmt.Errorf("read info/exclude: %w", rerr)
+	}
 	line := "/" + entry
 	for raw := range strings.SplitSeq(string(existing), "\n") {
 		if strings.TrimSpace(raw) == line {
-			return
+			return nil
 		}
 	}
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return
+		return fmt.Errorf("open info/exclude: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	prefix := ""
 	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
 		prefix = "\n"
 	}
-	_, _ = f.WriteString(prefix + line + "\n")
+	if _, err := f.WriteString(prefix + line + "\n"); err != nil {
+		return fmt.Errorf("append info/exclude: %w", err)
+	}
+	return nil
 }

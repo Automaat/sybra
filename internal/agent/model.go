@@ -694,6 +694,12 @@ type RunConfig struct {
 	// for this run. Empty = model default. Codex-only. NOT the same as Effort
 	// (claude --effort) — different provider, CLI surface, and value set.
 	ReasoningEffort string
+	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
+	// into the prompt (read/maintain instruction + current contents). Set only
+	// for code-author roles (see Role.AuthorsCode): verifier roles share the
+	// implementation worktree, so seeding them would feed an independent
+	// reviewer/tester the implementer's notes. No-op if the dir has no NOTES.md.
+	SeedWorkingMemory bool
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.
