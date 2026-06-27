@@ -65,6 +65,14 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 // Run guard that requires a valid, existing working dir. Uses os.MkdirTemp
 // with a best-effort cleanup (not t.TempDir) because background goroutines
 // spawned by runHeadless may still be touching the dir when the test ends.
+//
+// It also stops the agent and drains its done channel at teardown. A headless
+// agent spawns a *detached* claude child (runner_headless.go) that outlives the
+// test; left running, it keeps the manager's base `agents/` dir open, so the
+// strict t.TempDir RemoveAll from newTestManager fails non-deterministically
+// with "directory not empty". That flaked the whole package — and because the
+// workflow verify-checks gate runs `go test ./...` and previously blocked on a
+// single failure, the flake escalated unrelated tasks to human-required.
 func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string, allowedTools []string) (*Agent, error) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "sybra-agent-test-*")
@@ -72,7 +80,27 @@ func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
+	a, err := m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
+	if a != nil {
+		t.Cleanup(func() {
+			_ = m.StopAgent(a.ID)
+			// Wait for the runner goroutine to close done (released the dir)
+			// before the enclosing TempDir cleanups run. StopAgent kills the
+			// child within stopSIGINTGrace (3s) and the runner drains within
+			// drainTimeout (5s), so 10s is generous; if it is still not closed,
+			// fail loudly rather than swallow it — a child alive here is the
+			// exact tempdir-cleanup flake this teardown exists to prevent.
+			if a.done != nil {
+				select {
+				case <-a.done:
+				case <-time.After(10 * time.Second):
+					t.Errorf("agent %s did not exit within 10s of StopAgent; "+
+						"a lingering child process can flake t.TempDir cleanup", a.ID)
+				}
+			}
+		})
+	}
+	return a, err
 }
 
 func TestNewManager(t *testing.T) {
@@ -275,10 +303,11 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	// holdOpen blocks the onComplete callback from completing until we have
 	// checked completeCalls. Without this, in environments where the claude
 	// binary is absent the runner goroutine fails immediately and races to
-	// call onComplete before StopAgent returns. t.Cleanup closes it so the
-	// goroutine can eventually finish without leaking.
+	// call onComplete before StopAgent returns. defer (not t.Cleanup) closes
+	// it at body return — before startTestAgent's drain cleanup runs — so the
+	// goroutine finishes and a.done closes without the drain timing out.
 	holdOpen := make(chan struct{})
-	t.Cleanup(func() { close(holdOpen) })
+	defer close(holdOpen)
 
 	m.SetOnComplete(func(_ *Agent) {
 		<-holdOpen

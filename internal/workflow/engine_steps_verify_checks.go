@@ -31,6 +31,13 @@ const verifyChecksOutputTail = 8000
 // suite) and let the task proceed instead of re-blocking on every re-dispatch.
 const verifyBlessedTag = "verify-blessed"
 
+// verifyChecksFlakeRetries is how many extra times a failed verify command is
+// re-run before the gate blocks. A single retry absorbs a nondeterministic
+// flake (e.g. a test-teardown TempDir race) that would otherwise escalate
+// unrelated work to human-required. A genuine failure fails every attempt and
+// still blocks; the cost is one extra suite run only on the failing command.
+const verifyChecksFlakeRetries = 1
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
 	Commands   []string `json:"commands"`
@@ -83,7 +90,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	defer cancel()
 
 	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, runErr := runVerifyCommands(ctx, wtPath, cmds)
+	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
@@ -151,29 +158,45 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 }
 
 // runVerifyCommands runs each command in order in the worktree via `sh -c`.
-// Returns the first command that exited non-zero (a real failure → caller
-// blocks). A non-nil err means the run could not complete (ctx timeout/cancel);
-// the caller decides the policy (fail closed on our deadline, open on shutdown).
-// Output streams into a fixed-size tail buffer so a flood of stdout/stderr
-// cannot exhaust memory.
-func runVerifyCommands(ctx context.Context, wtPath string, cmds []string) (failedCmd, output string, err error) {
+// Returns the first command that exited non-zero on every attempt (a real
+// failure → caller blocks). A failing command is retried up to
+// verifyChecksFlakeRetries times to absorb nondeterministic flakes; a command
+// that passes on any attempt moves on. A non-nil err means the run could not
+// complete (ctx timeout/cancel) and is never retried — the budget is already
+// spent; the caller decides the policy (fail closed on our deadline, open on
+// shutdown). Output streams into a fixed-size tail buffer so a flood of
+// stdout/stderr cannot exhaust memory.
+func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	for _, raw := range cmds {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", tail.String(), ctxErr
-		}
-		_, _ = io.WriteString(tail, "$ "+raw+"\n")
-		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
-		cmd.Dir = wtPath
-		cmd.Stdout = tail
-		cmd.Stderr = tail
-		runErr := cmd.Run()
-		_, _ = io.WriteString(tail, "\n")
-		if runErr != nil {
+		passed := false
+		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return "", tail.String(), ctxErr
 			}
-			return raw, tail.String(), nil
+			if attempt > 0 {
+				_, _ = fmt.Fprintf(tail,
+					"[verify] command failed; retry %d/%d to rule out a flake\n", attempt, verifyChecksFlakeRetries)
+				e.logger.Info("workflow.verify-checks.retry",
+					"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(raw))
+			}
+			_, _ = io.WriteString(tail, "$ "+raw+"\n")
+			cmd := exec.CommandContext(ctx, "sh", "-c", raw)
+			cmd.Dir = wtPath
+			cmd.Stdout = tail
+			cmd.Stderr = tail
+			runErr := cmd.Run()
+			_, _ = io.WriteString(tail, "\n")
+			if runErr == nil {
+				passed = true
+				break // passed (possibly on retry) — go to the next command
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", tail.String(), ctxErr // deadline/cancel: do not retry
+			}
+		}
+		if !passed {
+			return raw, tail.String(), nil // failed every attempt → block
 		}
 	}
 	return "", tail.String(), nil
