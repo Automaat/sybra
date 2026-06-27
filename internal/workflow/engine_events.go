@@ -278,6 +278,15 @@ func (e *Engine) ResumeStalled() {
 		if step.Type != StepRunAgent {
 			continue
 		}
+		// A task in human-required was halted by a competing path (e.g. the
+		// inline review triage deciding the PR is too small). Do not resume its
+		// workflow: that would override the triage verdict and re-dispatch an
+		// agent that the operator already suppressed.
+		if t.Status == "human-required" {
+			e.logger.Info("workflow.resume-stalled.skip",
+				"task_id", t.ID, "reason", "human_required", "step", step.ID)
+			continue
+		}
 		if e.agents.HasRunningAgent(t.ID) {
 			continue
 		}
@@ -341,7 +350,7 @@ func (e *Engine) ResumeStalled() {
 		// calls: by the time we acquire dispatching, a prior goroutine may have
 		// already advanced the workflow past this step.
 		fresh, fErr := e.tasks.GetTask(t.ID)
-		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed {
+		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || fresh.Status == "human-required" {
 			e.mu.Lock()
 			delete(e.dispatching, t.ID)
 			e.mu.Unlock()
