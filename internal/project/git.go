@@ -25,6 +25,14 @@ var (
 // ErrBranchMissing is returned by PushSync when the local branch ref does not exist.
 var ErrBranchMissing = errors.New("local branch ref does not exist")
 
+func runBare(barePath string, args ...string) error {
+	return executil.Run(barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+}
+
+func outputBare(barePath string, args ...string) (string, error) {
+	return executil.Output(barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+}
+
 // LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
 // RepoConfig (not an error) if the file does not exist.
 func LoadRepoConfig(worktreePath string) (*RepoConfig, error) {
@@ -135,11 +143,11 @@ func CloneBare(repoURL, destPath string) error {
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
 	// standard refspec so fetches actually update tracking refs.
-	return executil.Run(destPath, "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	return runBare(destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 func DefaultBranch(barePath string) (string, error) {
-	ref, err := executil.Output(barePath, "git", "symbolic-ref", "HEAD")
+	ref, err := outputBare(barePath, "symbolic-ref", "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -151,7 +159,7 @@ func FetchOrigin(barePath string) error {
 	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
 	// configured, where `git fetch origin` silently skipped updating
 	// refs/remotes/origin/*.
-	return executil.Run(barePath, "git", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	return runBare(barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 }
 
 // FetchPRHead fetches a pull request's head commit into a stable local ref and
@@ -165,7 +173,7 @@ func FetchPRHead(barePath string, prNumber int) (string, error) {
 	// refs/remotes/origin/pr/<N>) cannot collide with the fetched PR head.
 	localRef := fmt.Sprintf("refs/sybra/pr/%d", prNumber)
 	refspec := fmt.Sprintf("+refs/pull/%d/head:%s", prNumber, localRef)
-	if err := executil.Run(barePath, "git", "fetch", "origin", refspec); err != nil {
+	if err := runBare(barePath, "fetch", "origin", refspec); err != nil {
 		return "", err
 	}
 	return localRef, nil
@@ -190,7 +198,7 @@ func SyncLocalBranch(barePath, branch string) error {
 	localSHA, localOK := resolveRef(barePath, localRef)
 	if !localOK {
 		// local branch absent — create it at the remote SHA
-		return executil.Run(barePath, "git", "update-ref", localRef, remoteSHA)
+		return runBare(barePath, "update-ref", localRef, remoteSHA)
 	}
 
 	if localSHA == remoteSHA {
@@ -202,7 +210,7 @@ func SyncLocalBranch(barePath, branch string) error {
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", localSHA, remoteSHA)
 	cmd.Dir = barePath
 	if cmd.Run() == nil {
-		return executil.Run(barePath, "git", "update-ref", localRef, remoteSHA)
+		return runBare(barePath, "update-ref", localRef, remoteSHA)
 	}
 	// local is not an ancestor (has local-only or diverged commits) — preserve
 	return nil
@@ -211,7 +219,7 @@ func SyncLocalBranch(barePath, branch string) error {
 // resolveRef resolves a git ref in the bare repo. Returns ("", false) if the
 // ref does not exist or cannot be resolved.
 func resolveRef(barePath, ref string) (string, bool) {
-	sha, err := executil.Output(barePath, "git", "rev-parse", "--verify", ref)
+	sha, err := outputBare(barePath, "rev-parse", "--verify", ref)
 	return sha, err == nil
 }
 
@@ -303,28 +311,28 @@ func rebaseStateDir(wtPath string) string {
 }
 
 func CreateWorktree(barePath, worktreePath, branch, baseBranch string) error {
-	return executil.Run(barePath, "git", "worktree", "add", worktreePath, "-b", branch, baseBranch)
+	return runBare(barePath, "worktree", "add", worktreePath, "-b", branch, baseBranch)
 }
 
 // CreateWorktreeExisting checks out an existing branch into a new worktree.
 func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
-	return executil.Run(barePath, "git", "worktree", "add", worktreePath, branch)
+	return runBare(barePath, "worktree", "add", worktreePath, branch)
 }
 
 // BranchExists reports whether a local branch exists in the repo.
 func BranchExists(barePath, branch string) bool {
-	err := executil.Run(barePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	err := runBare(barePath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return err == nil
 }
 
 // CreateWorktreeDetached creates a worktree in detached HEAD mode from a remote ref.
 // Used for read-only checkouts like code reviews.
 func CreateWorktreeDetached(barePath, worktreePath, ref string) error {
-	return executil.Run(barePath, "git", "worktree", "add", "--detach", worktreePath, ref)
+	return runBare(barePath, "worktree", "add", "--detach", worktreePath, ref)
 }
 
 func ListWorktrees(barePath string) ([]Worktree, error) {
-	out, err := executil.Output(barePath, "git", "worktree", "list", "--porcelain")
+	out, err := outputBare(barePath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
@@ -502,12 +510,12 @@ func PushSync(worktreePath, branch string) error {
 }
 
 func RemoveWorktree(barePath, worktreePath string) error {
-	return executil.Run(barePath, "git", "worktree", "remove", "--force", worktreePath)
+	return runBare(barePath, "worktree", "remove", "--force", worktreePath)
 }
 
 // PruneWorktrees removes stale worktree admin entries from the bare repo.
 func PruneWorktrees(barePath string) error {
-	return executil.Run(barePath, "git", "worktree", "prune")
+	return runBare(barePath, "worktree", "prune")
 }
 
 // WorktreeHealthy reports whether a checked-out worktree's git metadata is
@@ -523,7 +531,7 @@ func WorktreeHealthy(worktreePath string) bool {
 // rewrites the absolute path back-pointers in every checked-out worktree's
 // .git file and the bare's worktrees/<id>/gitdir file. Idempotent.
 func RepairWorktrees(barePath string) error {
-	return executil.Run(barePath, "git", "worktree", "repair")
+	return runBare(barePath, "worktree", "repair")
 }
 
 // RebaseOnto rebases the worktree's current branch onto the given ref.

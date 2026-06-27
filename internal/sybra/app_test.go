@@ -335,7 +335,7 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 		StartedAt: time.Now(),
 	})
 
-	remoteHead, err := exec.Command("git", "-C", barePath, "rev-parse", "refs/heads/"+branch).Output()
+	remoteHead, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", barePath, "rev-parse", "refs/heads/"+branch).Output()
 	if err != nil {
 		t.Fatalf("remote head: %v", err)
 	}
