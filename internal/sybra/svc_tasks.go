@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -58,7 +59,75 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 
 // GetTask returns a single task by ID.
 func (s *TaskService) GetTask(id string) (task.Task, error) {
-	return s.tasks.Get(id)
+	t, err := s.tasks.Get(id)
+	if err != nil {
+		return t, err
+	}
+	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
+	if len(t.AgentRuns) == 0 {
+		return t
+	}
+	for i := range t.AgentRuns {
+		run := &t.AgentRuns[i]
+		if run.CostUSD > 0 || run.LogFile == "" {
+			continue
+		}
+		provider := providerForRun(*run)
+		events, err := agent.ParseLogFile(run.LogFile, 0, provider)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Debug("task.agent-run-cost.log-parse-skipped", "task_id", t.ID, "agent_id", run.AgentID, "log", run.LogFile, "err", err)
+			}
+			continue
+		}
+		var input, output, cacheCreate, cacheRead, reasoning int
+		var cost, premiumRequests float64
+		for j := range events {
+			if events[j].Type != "result" {
+				continue
+			}
+			cost += events[j].CostUSD
+			premiumRequests += events[j].PremiumRequests
+			input += events[j].InputTokens
+			output += events[j].OutputTokens
+			cacheCreate += events[j].CacheCreationInputTokens
+			cacheRead += events[j].CacheReadInputTokens
+			reasoning += events[j].ReasoningTokens
+		}
+		if premiumRequests > 0 {
+			run.PremiumRequests = premiumRequests
+		}
+		if cost == 0 {
+			switch provider {
+			case "copilot":
+				cost = stats.EstimateCopilotCost(premiumRequests)
+			case "codex", "claude":
+				cost = stats.EstimateCostDetailed(run.Model, input, output, cacheCreate, cacheRead, reasoning)
+			}
+		}
+		run.CostUSD = cost
+	}
+	return t
+}
+
+func providerForRun(run task.AgentRun) string {
+	if run.Provider != "" {
+		return run.Provider
+	}
+	model := run.Model
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
+	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		return "codex"
+	}
+	if strings.HasPrefix(model, "claude-") || model == "sonnet" || model == "opus" || model == "haiku" {
+		return "claude"
+	}
+	return ""
 }
 
 // CreateTask creates a new task and starts a matching workflow.

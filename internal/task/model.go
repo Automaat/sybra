@@ -188,6 +188,7 @@ type AgentRun struct {
 	State           string    `yaml:"state" json:"state"`
 	StartedAt       time.Time `yaml:"started_at" json:"startedAt"`
 	CostUSD         float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
+	PremiumRequests float64   `yaml:"premium_requests,omitempty" json:"premiumRequests,omitempty"`
 	Prompt          string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Result          string    `yaml:"result,omitempty" json:"result"`
 	// Verdict holds the parsed decision for human-review runs ("human" or

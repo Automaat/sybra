@@ -35,6 +35,7 @@ export class AgentRun {
     "state": string;
     "startedAt": time$0.Time;
     "costUsd": number;
+    "premiumRequests"?: number;
     "prompt"?: string;
     "result": string;
 

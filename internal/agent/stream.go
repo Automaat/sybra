@@ -38,8 +38,8 @@ type ClaudeResult struct {
 	ErrorType   string
 	ErrorStatus int
 	// PremiumRequests is Copilot's billing unit (AI credits), mapped from the
-	// result event's `usage.premiumRequests`. Copilot reports no USD cost.
-	// Always 0 for claude/codex.
+	// result event's `usage.premiumRequests`. Sybra estimates USD from this
+	// separately; always 0 for claude/codex.
 	PremiumRequests float64
 }
 
