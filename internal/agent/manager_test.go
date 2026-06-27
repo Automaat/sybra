@@ -85,12 +85,17 @@ func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string
 		t.Cleanup(func() {
 			_ = m.StopAgent(a.ID)
 			// Wait for the runner goroutine to close done (released the dir)
-			// before the enclosing TempDir cleanups run; cap so a wedged child
-			// never hangs the suite.
+			// before the enclosing TempDir cleanups run. StopAgent kills the
+			// child within stopSIGINTGrace (3s) and the runner drains within
+			// drainTimeout (5s), so 10s is generous; if it is still not closed,
+			// fail loudly rather than swallow it — a child alive here is the
+			// exact tempdir-cleanup flake this teardown exists to prevent.
 			if a.done != nil {
 				select {
 				case <-a.done:
 				case <-time.After(10 * time.Second):
+					t.Errorf("agent %s did not exit within 10s of StopAgent; "+
+						"a lingering child process can flake t.TempDir cleanup", a.ID)
 				}
 			}
 		})
@@ -298,10 +303,11 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	// holdOpen blocks the onComplete callback from completing until we have
 	// checked completeCalls. Without this, in environments where the claude
 	// binary is absent the runner goroutine fails immediately and races to
-	// call onComplete before StopAgent returns. t.Cleanup closes it so the
-	// goroutine can eventually finish without leaking.
+	// call onComplete before StopAgent returns. defer (not t.Cleanup) closes
+	// it at body return — before startTestAgent's drain cleanup runs — so the
+	// goroutine finishes and a.done closes without the drain timing out.
 	holdOpen := make(chan struct{})
-	t.Cleanup(func() { close(holdOpen) })
+	defer close(holdOpen)
 
 	m.SetOnComplete(func(_ *Agent) {
 		<-holdOpen
