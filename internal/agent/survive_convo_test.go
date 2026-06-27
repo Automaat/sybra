@@ -147,6 +147,84 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 	}
 }
 
+func TestSaveRegistry_PreservesOneShot(t *testing.T) {
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	m.saveRegistry(&Agent{
+		ID:        "cx-one",
+		TaskID:    "t-cx",
+		Mode:      "interactive",
+		Provider:  "codex",
+		StartedAt: time.Now().UTC(),
+		oneShot:   true,
+	})
+
+	recs, err := m.reg.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	if !recs[0].OneShot {
+		t.Fatal("expected one-shot lifecycle bit persisted")
+	}
+}
+
+// TestReattachCodexConvo_OneShotNoResultFinalizes verifies a workflow-owned
+// per-turn Codex run interrupted before a terminal result is finalized as a
+// failed run instead of being resurrected as an idle chat forever.
+func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "cx1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lines := `{"type":"thread.started","thread_id":"cx-1"}` + "\n" +
+		`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"working"}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(lines), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	if err := m.EnableSurviveRestart(regDir); err != nil {
+		t.Fatalf("EnableSurviveRestart: %v", err)
+	}
+	var completed atomic.Bool
+	var failed atomic.Bool
+	m.SetOnComplete(func(a *Agent) {
+		completed.Store(true)
+		failed.Store(a.GetExitErr() != nil)
+	})
+
+	rec := Record{
+		ID: "cx1", TaskID: "t-cx", Mode: "interactive", Provider: "codex",
+		PID: 0, LogPath: logPath, SessionID: "cx-1", StartedAt: time.Now().UTC(), OneShot: true,
+	}
+	if err := m.reg.Save(rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected interrupted one-shot to finalize, not recreate, got %d agents", len(got))
+	}
+	if !completed.Load() {
+		t.Fatal("expected one-shot completion callback")
+	}
+	if !failed.Load() {
+		t.Fatal("expected interrupted one-shot to be marked failed")
+	}
+	if _, err := m.GetAgent("cx1"); err == nil {
+		t.Fatal("expected no idle agent registered for interrupted one-shot")
+	}
+	if list, _ := m.reg.List(); len(list) != 0 {
+		t.Fatalf("expected registry empty after one-shot finalization, got %d", len(list))
+	}
+}
+
 // TestReattachCodexConvo_SkipsDeletedTask verifies a codex record whose task
 // no longer exists is dropped (not recreated as a zombie agent).
 func TestReattachCodexConvo_SkipsDeletedTask(t *testing.T) {
