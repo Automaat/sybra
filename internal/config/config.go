@@ -13,33 +13,35 @@ import (
 )
 
 type Config struct {
-	Logging       LoggingConfig      `yaml:"logging" json:"logging"`
-	Audit         AuditConfig        `yaml:"audit" json:"audit"`
-	Agent         AgentDefaults      `yaml:"agent" json:"agent"`
-	Testing       TestingConfig      `yaml:"testing" json:"testing"`
-	Notification  NotificationConfig `yaml:"notification" json:"notification"`
-	Orchestrator  OrchestratorConfig `yaml:"orchestrator" json:"orchestrator"`
-	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
-	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
-	GitHub        GitHubConfig       `yaml:"github" json:"github"`
-	Umbrella      UmbrellaConfig     `yaml:"umbrella" json:"umbrella"`
-	Triage        TriageConfig       `yaml:"triage" json:"triage"`
-	HumanReview   HumanReviewConfig  `yaml:"human_review" json:"humanReview"`
-	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
-	Watchdog      WatchdogConfig     `yaml:"watchdog" json:"watchdog"`
-	SelfMonitor   SelfMonitorConfig  `yaml:"self_monitor" json:"selfMonitor"`
-	Evaluation    EvaluationConfig   `yaml:"evaluation" json:"evaluation"`
-	ABTesting     abtest.Config      `yaml:"ab_testing" json:"abTesting"`
-	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
-	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
-	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
-	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
-	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
-	RepoDir       string             `yaml:"repo_dir" json:"repoDir"`
-	ProjectsDir   string             `yaml:"projects_dir" json:"projectsDir"`
-	ClonesDir     string             `yaml:"clones_dir" json:"clonesDir"`
-	WorktreesDir  string             `yaml:"worktrees_dir" json:"worktreesDir"`
-	LoopAgentsDir string             `yaml:"loop_agents_dir" json:"loopAgentsDir"`
+	Logging       LoggingConfig       `yaml:"logging" json:"logging"`
+	Audit         AuditConfig         `yaml:"audit" json:"audit"`
+	Agent         AgentDefaults       `yaml:"agent" json:"agent"`
+	Testing       TestingConfig       `yaml:"testing" json:"testing"`
+	Notification  NotificationConfig  `yaml:"notification" json:"notification"`
+	Orchestrator  OrchestratorConfig  `yaml:"orchestrator" json:"orchestrator"`
+	Todoist       TodoistConfig       `yaml:"todoist" json:"todoist"`
+	Renovate      RenovateConfig      `yaml:"renovate" json:"renovate"`
+	GitHub        GitHubConfig        `yaml:"github" json:"github"`
+	Umbrella      UmbrellaConfig      `yaml:"umbrella" json:"umbrella"`
+	Triage        TriageConfig        `yaml:"triage" json:"triage"`
+	HumanReview   HumanReviewConfig   `yaml:"human_review" json:"humanReview"`
+	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
+	Watchdog      WatchdogConfig      `yaml:"watchdog" json:"watchdog"`
+	SelfMonitor   SelfMonitorConfig   `yaml:"self_monitor" json:"selfMonitor"`
+	Evaluation    EvaluationConfig    `yaml:"evaluation" json:"evaluation"`
+	HarnessEvolve HarnessEvolveConfig `yaml:"harness_evolution" json:"harnessEvolution"`
+	ABTesting     abtest.Config       `yaml:"ab_testing" json:"abTesting"`
+	Providers     ProvidersConfig     `yaml:"providers" json:"providers"`
+	Metrics       MetricsConfig       `yaml:"metrics" json:"metrics"`
+	AutoUpdate    AutoUpdateConfig    `yaml:"auto_update" json:"autoUpdate"`
+	ProjectTypes  []string            `yaml:"project_types" json:"projectTypes"`
+	TasksDir      string              `yaml:"tasks_dir" json:"tasksDir"`
+	SkillsDir     string              `yaml:"skills_dir" json:"skillsDir"`
+	RepoDir       string              `yaml:"repo_dir" json:"repoDir"`
+	ProjectsDir   string              `yaml:"projects_dir" json:"projectsDir"`
+	ClonesDir     string              `yaml:"clones_dir" json:"clonesDir"`
+	WorktreesDir  string              `yaml:"worktrees_dir" json:"worktreesDir"`
+	LoopAgentsDir string              `yaml:"loop_agents_dir" json:"loopAgentsDir"`
 }
 
 // AllowsProjectType reports whether automations on this machine should act on
@@ -449,6 +451,17 @@ type EvaluationConfig struct {
 	WindowDays    int     `yaml:"window_days" json:"windowDays"`
 }
 
+// HarnessEvolveConfig controls the governed harness-evolution proposal loop.
+// The loop proposes reviewable tasks/issues from telemetry; it never applies
+// prompt, workflow, permission, retry, validator, or deployment changes itself.
+type HarnessEvolveConfig struct {
+	Enabled        bool    `yaml:"enabled" json:"enabled"`
+	IntervalHours  float64 `yaml:"interval_hours" json:"intervalHours"`
+	LookbackHours  float64 `yaml:"lookback_hours" json:"lookbackHours"`
+	MinClusterSize int     `yaml:"min_cluster_size" json:"minClusterSize"`
+	Sink           string  `yaml:"sink" json:"sink"`
+}
+
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
 // copilot) and their background health-check loop. A missing block defaults to
 // "all providers enabled, health check on, auto-failover on, 300s interval".
@@ -487,6 +500,19 @@ type ProviderLimitsConfig struct {
 // Prometheus-format output for external scrapers.
 type MetricsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// AutoUpdateConfig controls the local source-checkout updater. It is intended
+// for development/runtime checkouts supervised by mise, not packaged app
+// updates.
+type AutoUpdateConfig struct {
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	RepoDir             string `yaml:"repo_dir" json:"repoDir"`
+	Remote              string `yaml:"remote" json:"remote"`
+	Branch              string `yaml:"branch" json:"branch"`
+	Mode                string `yaml:"mode" json:"mode"`
+	PollSeconds         int    `yaml:"poll_seconds" json:"pollSeconds"`
+	RestartDelaySeconds int    `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
 }
 
 func HomeDir() string {
@@ -528,11 +554,21 @@ func DefaultConfig() *Config {
 		Monitor: MonitorConfig{
 			Enabled: true,
 		},
+		HarnessEvolve: HarnessEvolveConfig{
+			Enabled: true,
+		},
 		Watchdog: WatchdogConfig{
 			Enabled:       true,
 			LoopThreshold: 6,
 		},
 		ABTesting: abtest.DefaultConfig(),
+		AutoUpdate: AutoUpdateConfig{
+			Remote:              "origin",
+			Branch:              "main",
+			Mode:                "auto",
+			PollSeconds:         300,
+			RestartDelaySeconds: 2,
+		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
 				Enabled:         true,
@@ -666,10 +702,30 @@ func Load() (*Config, error) {
 	applyWatchdogDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
+	applyHarnessEvolveDefaults(cfg)
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
+	applyAutoUpdateDefaults(cfg)
 
 	return cfg, nil
+}
+
+func applyAutoUpdateDefaults(cfg *Config) {
+	if cfg.AutoUpdate.Remote == "" {
+		cfg.AutoUpdate.Remote = "origin"
+	}
+	if cfg.AutoUpdate.Branch == "" {
+		cfg.AutoUpdate.Branch = "main"
+	}
+	if cfg.AutoUpdate.Mode == "" {
+		cfg.AutoUpdate.Mode = "auto"
+	}
+	if cfg.AutoUpdate.PollSeconds <= 0 {
+		cfg.AutoUpdate.PollSeconds = 300
+	}
+	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
+		cfg.AutoUpdate.RestartDelaySeconds = 2
+	}
 }
 
 func applyABTestingDefaults(cfg *Config) {
@@ -710,6 +766,24 @@ func applyEvaluationDefaults(cfg *Config) {
 	}
 	if e.WindowDays <= 0 {
 		e.WindowDays = 30
+	}
+}
+
+// applyHarnessEvolveDefaults fills zero values while preserving Enabled from
+// DefaultConfig or an explicit YAML override.
+func applyHarnessEvolveDefaults(cfg *Config) {
+	h := &cfg.HarnessEvolve
+	if h.IntervalHours < 1 {
+		h.IntervalHours = 24
+	}
+	if h.LookbackHours <= 0 {
+		h.LookbackHours = 168
+	}
+	if h.MinClusterSize <= 0 {
+		h.MinClusterSize = 2
+	}
+	if h.Sink == "" {
+		h.Sink = "local-task"
 	}
 }
 
@@ -945,6 +1019,12 @@ func ArtifactsDir() string {
 // the service owns.
 func SelfMonitorDir() string {
 	return filepath.Join(HomeDir(), "selfmonitor")
+}
+
+// HarnessEvolveDir is the local store for governed harness-evolution proposal
+// records and run snapshots.
+func HarnessEvolveDir() string {
+	return filepath.Join(HomeDir(), "harness-evolution")
 }
 
 // SelfMonitorLedgerPath is the append-only ledger file selfmonitor.Open uses.

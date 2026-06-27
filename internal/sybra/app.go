@@ -90,6 +90,7 @@ type App struct {
 	emit                          func(string, any)
 	emitFactory                   func(context.Context) func(string, any)
 	openBrowser                   func(string)
+	requestRestart                func()
 	restartStaleErr               *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
@@ -145,6 +146,12 @@ func WithEmit(fn func(string, any)) Option {
 // headless server, where BrowserService.Open reports the feature unavailable.
 func WithBrowserOpener(fn func(string)) Option {
 	return func(a *App) { a.openBrowser = fn }
+}
+
+// WithRestartRequest injects the host-specific graceful-restart hook. Desktop
+// uses Wails Quit; the HTTP server cancels its root context.
+func WithRestartRequest(fn func()) Option {
+	return func(a *App) { a.requestRestart = fn }
 }
 
 // WithSkillsFS sets an embedded FS used as a fallback source for skill files

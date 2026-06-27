@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,35 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
+
+func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
+
+	for _, forbidden := range []string{
+		"more than 3",
+		"run `git rebase --abort` and stop",
+		"task needs human review",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("conflict prompt still contains count-based stop instruction %q:\n%s", forbidden, prompt)
+		}
+	}
+	for _, want := range []string{
+		"Use the task body, PR diff, changed-file list, and current code as context",
+		"Do not stop just because the conflict count is high",
+		"resolve all conflicts autonomously",
+		"Stop only for a concrete blocker",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
 
 // TestPRMonitorEligible exercises the scan predicate used by the PR monitor
 // loop. The regression: tasks whose workflow exited to in-progress with a
@@ -583,7 +613,8 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		}
 		ids[label] = created.ID
 		pr := 100
-		upd := task.Update{PRNumber: &pr}
+		status := task.StatusInProgress
+		upd := task.Update{PRNumber: &pr, Status: &status}
 		if hasWF {
 			wf := &workflow.Execution{
 				WorkflowID:  "pr-fix",
@@ -632,6 +663,12 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
 		t.Errorf("resolved CurrentStep = %q, want empty", got.Workflow.CurrentStep)
 	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("resolved status = %q, want %q", got.Status, task.StatusInReview)
+	}
+	if !strings.Contains(got.StatusReason, "ci_failure resolved") {
+		t.Errorf("resolved status reason = %q, want resolved issue kind", got.StatusReason)
+	}
 	// Cooldown was cleared, so a future ci_failure on a new SHA can re-trigger.
 	if !r.prTracker.ShouldHandle(ids["resolved"], github.PRIssueCIFailure, "sha-new") {
 		t.Error("prTracker.Clear was not called for resolved task")
@@ -643,6 +680,9 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Errorf("live workflow state = %+v, want still waiting", got.Workflow)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Errorf("live status = %q, want %q", got.Status, task.StatusInProgress)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
@@ -52,6 +53,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
 	lm.startEvaluationService(ctx, emit)
+	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.registerMetricsObservers()
 }
@@ -83,6 +85,46 @@ func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 		return
 	}
 	a.configWatcher = cw
+}
+
+func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
+	a := lm.app
+	if !a.cfg.AutoUpdate.Enabled {
+		return
+	}
+	repoDir := a.cfg.AutoUpdate.RepoDir
+	if repoDir == "" {
+		repoDir = a.repoDir
+	}
+	homeDir := config.HomeDir()
+	if repoDir == "" {
+		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is empty")
+		return
+	}
+	if !filepath.IsAbs(repoDir) {
+		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is not absolute", "repo", repoDir)
+		return
+	}
+	if !filepath.IsAbs(homeDir) {
+		a.logger.Error("autoupdate.disabled", "reason", "sybra home is not absolute", "home", homeDir)
+		return
+	}
+	runner := autoupdate.New(autoupdate.Config{
+		Enabled:           a.cfg.AutoUpdate.Enabled,
+		RepoDir:           repoDir,
+		Remote:            a.cfg.AutoUpdate.Remote,
+		Branch:            a.cfg.AutoUpdate.Branch,
+		Mode:              a.cfg.AutoUpdate.Mode,
+		PollInterval:      time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		RestartDelay:      time.Duration(a.cfg.AutoUpdate.RestartDelaySeconds) * time.Second,
+		RestartMarkerPath: autoupdate.RestartMarkerPath(homeDir),
+	}, a.logger, func() {
+		a.logger.Info("autoupdate.restart.requested")
+		if a.requestRestart != nil {
+			a.requestRestart()
+		}
+	})
+	a.wg.Go(func() { runner.Run(ctx) })
 }
 
 // startAgentLogPruneLoop sweeps stale per-agent NDJSON files once a day.

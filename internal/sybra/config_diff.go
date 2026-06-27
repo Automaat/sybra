@@ -91,6 +91,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if !reflect.DeepEqual(old.SelfMonitor, next.SelfMonitor) {
 		restart = append(restart, "self_monitor")
 	}
+	if !reflect.DeepEqual(old.HarnessEvolve, next.HarnessEvolve) {
+		restart = append(restart, "harness_evolution")
+	}
 	if !reflect.DeepEqual(old.ABTesting, next.ABTesting) {
 		restart = append(restart, "ab_testing")
 	}
@@ -102,6 +105,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	}
 	if !reflect.DeepEqual(old.ProjectTypes, next.ProjectTypes) {
 		restart = append(restart, "project_types")
+	}
+	if !reflect.DeepEqual(old.AutoUpdate, next.AutoUpdate) {
+		restart = append(restart, "auto_update")
 	}
 
 	return hot, restart

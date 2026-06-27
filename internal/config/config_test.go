@@ -78,6 +78,39 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+func TestLoadAutoUpdateDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("auto_update:\n  enabled: true\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoUpdate.Enabled {
+		t.Fatal("auto_update.enabled = false, want true")
+	}
+	if cfg.AutoUpdate.Remote != "origin" {
+		t.Fatalf("auto_update.remote = %q, want origin", cfg.AutoUpdate.Remote)
+	}
+	if cfg.AutoUpdate.Branch != "main" {
+		t.Fatalf("auto_update.branch = %q, want main", cfg.AutoUpdate.Branch)
+	}
+	if cfg.AutoUpdate.Mode != "auto" {
+		t.Fatalf("auto_update.mode = %q, want auto", cfg.AutoUpdate.Mode)
+	}
+	if cfg.AutoUpdate.PollSeconds != 300 {
+		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
+	}
+	if cfg.AutoUpdate.RestartDelaySeconds != 2 {
+		t.Fatalf("auto_update.restart_delay_seconds = %d, want 2", cfg.AutoUpdate.RestartDelaySeconds)
+	}
+}
+
 func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
@@ -111,6 +144,48 @@ func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
 	}
 	if cfg.Monitor.DispatchLimit != 4 {
 		t.Fatalf("dispatch limit = %d, want 4", cfg.Monitor.DispatchLimit)
+	}
+}
+
+func TestLoadHarnessEvolutionDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HarnessEvolve.Enabled {
+		t.Fatal("harness evolution should default enabled")
+	}
+	if cfg.HarnessEvolve.IntervalHours != 24 {
+		t.Fatalf("interval = %.0f, want 24", cfg.HarnessEvolve.IntervalHours)
+	}
+	if cfg.HarnessEvolve.LookbackHours != 168 {
+		t.Fatalf("lookback = %.0f, want 168", cfg.HarnessEvolve.LookbackHours)
+	}
+	if cfg.HarnessEvolve.MinClusterSize != 2 {
+		t.Fatalf("min cluster size = %d, want 2", cfg.HarnessEvolve.MinClusterSize)
+	}
+	if cfg.HarnessEvolve.Sink != "local-task" {
+		t.Fatalf("sink = %q, want local-task", cfg.HarnessEvolve.Sink)
+	}
+}
+
+func TestLoadHarnessEvolutionPreservesExplicitDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	yaml := []byte("harness_evolution:\n  enabled: false\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HarnessEvolve.Enabled {
+		t.Fatal("explicit harness_evolution.enabled=false was not preserved")
 	}
 }
 

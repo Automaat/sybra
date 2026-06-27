@@ -57,32 +57,15 @@ func (r *Recovery) RestartStaleInProgress() {
 			// etc.) fall through so they can still be restarted.
 			continue
 		}
+		if r.recoverCancelledPRFix(&t) {
+			continue
+		}
 		// Tasks with a terminal workflow stuck at in-progress: restart the
 		// workflow rather than spawning a bare agent. A bare agent spawn
 		// would loop forever (completion callback can't advance a terminal
 		// workflow), but restarting the workflow gives the callback a live
 		// execution to advance.
-		if r.WorkflowEngine != nil && t.Workflow != nil &&
-			(t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed) {
-			wfID := t.Workflow.WorkflowID
-			// Review tasks are driven by the pr-review workflow, not the
-			// plan/implement pipeline. If simple-task-plan (or any non-review
-			// workflow) ended up attached to a review-tagged task due to the
-			// create-before-tag race, do NOT restart it — that would loop
-			// triage indefinitely. Skip so the task can be triaged manually
-			// or picked up by the correct workflow on the next create.
-			if slices.Contains(t.Tags, "review") && wfID == "simple-task-plan" {
-				r.Logger.Info("restart-stale.skip",
-					"task_id", t.ID, "reason", "review_task_on_plan_workflow", "workflow", wfID)
-				continue
-			}
-			taskID := t.ID
-			r.Logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
-			r.WG.Go(func() {
-				if wfErr := r.WorkflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
-					r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
-				}
-			})
+		if r.handleTerminalWorkflow(&t) {
 			continue
 		}
 		// Debounce respawn when a previous run started recently. Covers
@@ -160,6 +143,77 @@ func (r *Recovery) RestartStaleInProgress() {
 			}
 		})
 	}
+}
+
+// handleTerminalWorkflow handles a task whose workflow reached a terminal state
+// (ExecCompleted/ExecFailed) while the task stayed in-progress. Returns true
+// when the task was handled and the caller should continue to the next task.
+//
+// Workflows that require external vars (pr-fix) are reverted to in-review so
+// the originating dispatcher re-evaluates rather than receiving nil vars from
+// a bare StartWorkflow call, which would launch the agent in the wrong dir.
+func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
+	if r.WorkflowEngine == nil || t.Workflow == nil {
+		return false
+	}
+	if t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
+		return false
+	}
+	wfID := t.Workflow.WorkflowID
+	// Review tasks are driven by the pr-review workflow, not the
+	// plan/implement pipeline. If simple-task-plan ended up attached to a
+	// review-tagged task due to the create-before-tag race, do NOT restart it.
+	if slices.Contains(t.Tags, "review") && wfID == "simple-task-plan" {
+		r.Logger.Info("restart-stale.skip",
+			"task_id", t.ID, "reason", "review_task_on_plan_workflow", "workflow", wfID)
+		return true
+	}
+	// pr-fix workflows require WorkflowVarDir and prompt vars seeded by
+	// DispatchEvent. StartWorkflow(nil vars) would launch in ~/.sybra (wrong
+	// dir) with an empty prompt → exit 1 → escalate to human-required.
+	if wfID == "pr-fix" {
+		r.Logger.Info("restart-stale.revert-to-review",
+			"task_id", t.ID, "reason", "pr_fix_workflow_not_restartable")
+		reason := "pr-fix terminal workflow is not restartable without PR-event context"
+		if _, updErr := r.Tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: &reason,
+		}); updErr != nil {
+			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
+		}
+		return true
+	}
+	taskID := t.ID
+	r.Logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
+	r.WG.Go(func() {
+		if wfErr := r.WorkflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
+			r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
+		}
+	})
+	return true
+}
+
+func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
+	if t.Workflow == nil ||
+		t.Workflow.WorkflowID != "pr-fix" ||
+		(t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed) {
+		return false
+	}
+	cancelReason := t.Workflow.Variables["cancel_reason"]
+	if !strings.HasPrefix(cancelReason, "pr-monitor: ") {
+		return false
+	}
+	status := task.StatusInReview
+	reason := "pr-fix cancelled: " + strings.TrimPrefix(cancelReason, "pr-monitor: ")
+	r.Logger.Info("restart-stale.revert-cancelled-pr-fix", "task_id", t.ID, "reason", reason)
+	if _, updErr := r.Tasks.Update(t.ID, task.Update{
+		Status:       &status,
+		StatusReason: &reason,
+	}); updErr != nil {
+		r.Logger.Error("restart-stale.revert-cancelled-pr-fix.failed", "task_id", t.ID, "err", updErr)
+		return false
+	}
+	return true
 }
 
 // surfaceStartFailure mirrors workflow.Engine.surfaceStartFailure for the

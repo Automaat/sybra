@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 )
@@ -213,9 +215,15 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	}
 
 	if e.recorder != nil {
+		tid := traceID(taskID, spawnedStep, c.AgentID)
 		ev := map[string]any{
+			"trace_id": tid,
+			"traceId":  tid,
+			"task_id":  taskID,
+			"taskId":   taskID,
 			"step":     spawnedStep,
 			"status":   status,
+			"agent_id": c.AgentID,
 			"agentId":  c.AgentID,
 			"provider": c.Provider,
 		}
@@ -241,6 +249,11 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 	e.clearAgentStep(c.AgentID)
+}
+
+func traceID(taskID, stepID, agentID string) string {
+	sum := sha256.Sum256([]byte(taskID + "|" + stepID + "|" + agentID + "|"))
+	return "trace-" + hex.EncodeToString(sum[:])[:12]
 }
 
 // lookupAgentStep returns the stepID an agent was spawned for and whether it

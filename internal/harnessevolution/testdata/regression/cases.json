@@ -1,0 +1,40 @@
+[
+  {
+    "id": "retry-loop",
+    "category": "agent_retry_loop",
+    "failureKind": "step_retry_exhausted",
+    "wantKind": "retry_limit_change"
+  },
+  {
+    "id": "permission-denied",
+    "category": "failure_rate",
+    "failureKind": "permission_denied",
+    "wantKind": "permission_policy_change",
+    "requiresHumanApproval": true
+  },
+  {
+    "id": "context-loss",
+    "category": "failure_rate",
+    "failureKind": "context_packing_loss",
+    "wantKind": "context_packing_change"
+  },
+  {
+    "id": "triage-topology",
+    "category": "triage_mismatch",
+    "failureKind": "topology_dead_end",
+    "wantKind": "workflow_topology_change"
+  },
+  {
+    "id": "validator-reject",
+    "category": "failure_rate",
+    "failureKind": "validator_rejected",
+    "wantKind": "validator_change"
+  },
+  {
+    "id": "network-boundary",
+    "category": "failure_rate",
+    "failureKind": "network_access",
+    "wantKind": "network_access_change",
+    "requiresHumanApproval": true
+  }
+]

@@ -68,6 +68,10 @@ steps:
         and still emit FAIL (a human resolves the spec). You decide how to start
         and drive the real app/cluster (read the repo: README, .sybra.yaml, mise
         tasks, package.json, compose, Makefile).
+        Existing `## Test Failures` sections in the task body are historical
+        context only. Reproduce them against the CURRENT worktree before counting
+        them; if the current code no longer exhibits that behavior, ignore the
+        stale report instead of emitting FAIL.
         If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.

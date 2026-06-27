@@ -2,6 +2,8 @@ package sybra
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,90 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+func TestTaskService_WithEstimatedAgentRunCosts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	codexLog := filepath.Join(dir, "codex.ndjson")
+	if err := os.WriteFile(codexLog, []byte(`{"type":"turn.completed","usage":{"input_tokens":1000000,"cached_input_tokens":800000,"output_tokens":100000}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	copilotLog := filepath.Join(dir, "copilot.ndjson")
+	if err := os.WriteFile(copilotLog, []byte(`{"type":"result","sessionId":"s1","usage":{"premiumRequests":7.5}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &TaskService{}
+	got := svc.withEstimatedAgentRunCosts(task.Task{
+		AgentRuns: []task.AgentRun{
+			{AgentID: "codex", Model: "gpt-5", LogFile: codexLog},
+			{AgentID: "copilot", Provider: "copilot", LogFile: copilotLog},
+			{AgentID: "copilot-old", Model: "gpt-5", LogFile: copilotLog},
+			{AgentID: "reported", Provider: "codex", Model: "gpt-5", CostUSD: 0.42, LogFile: codexLog},
+		},
+	})
+
+	if diff := got.AgentRuns[0].CostUSD - 1.35; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("codex cost = %g, want 1.35", got.AgentRuns[0].CostUSD)
+	}
+	if diff := got.AgentRuns[1].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("copilot cost = %g, want 0.075", got.AgentRuns[1].CostUSD)
+	}
+	if got.AgentRuns[1].PremiumRequests != 7.5 {
+		t.Fatalf("copilot premium requests = %g, want 7.5", got.AgentRuns[1].PremiumRequests)
+	}
+	if diff := got.AgentRuns[2].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("legacy copilot cost = %g, want 0.075", got.AgentRuns[2].CostUSD)
+	}
+	if got.AgentRuns[2].PremiumRequests != 7.5 {
+		t.Fatalf("legacy copilot premium requests = %g, want 7.5", got.AgentRuns[2].PremiumRequests)
+	}
+	if got.AgentRuns[3].CostUSD != 0.42 {
+		t.Fatalf("reported cost = %g, want 0.42", got.AgentRuns[3].CostUSD)
+	}
+}
+
+func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "copilot.ndjson")
+	if err := os.WriteFile(logPath, []byte(`{"type":"result","sessionId":"s1","usage":{"premiumRequests":7.5}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.tasks.Create("Persist cost", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "agent-cost",
+		Model:     "gpt-5",
+		Mode:      "headless",
+		State:     "stopped",
+		StartedAt: time.Now().UTC(),
+		LogFile:   logPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := got.AgentRuns[0].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("returned cost = %g, want 0.075", got.AgentRuns[0].CostUSD)
+	}
+	persisted, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := persisted.AgentRuns[0].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("persisted cost = %g, want 0.075", persisted.AgentRuns[0].CostUSD)
+	}
+	if persisted.AgentRuns[0].Provider != "copilot" {
+		t.Fatalf("persisted provider = %q, want copilot", persisted.AgentRuns[0].Provider)
+	}
+}
 
 func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {
 	svc, _ := setupTaskService(t)

@@ -15,6 +15,11 @@ import (
 
 const wtFailureLimit = 5
 
+const prFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
+	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If you intentionally stopped because the PR needs a human, end with " +
+	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
+
 // readyForCopilotAutoMerge reports whether a pet PR satisfies the auto-merge
 // policy: mechanically mergeable, CI green (or no checks), GitHub Copilot has
 // submitted a review, no unresolved review threads, and no outstanding change
@@ -184,7 +189,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	// Dispatch pr.event through the engine so trigger conditions in the
 	// workflow YAML stay authoritative. StartWorkflow would bypass them.
-	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s", t.Title, prompt)
+	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s%s", t.Title, prompt, prFixResultContract)
 	vars := map[string]string{
 		"prompt":                fullPrompt,
 		"pr_issue_kind":         string(issue.Kind),
@@ -298,14 +303,19 @@ func conflictPrompt(pr github.PullRequest) string {
 		filesCtx = sb.String()
 	}
 
+	return buildConflictPrompt(pr, filesCtx)
+}
+
+func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 	return fmt.Sprintf(
 		"Fix merge conflicts on branch `%s` (PR #%d). "+
-			"Do NOT investigate git state — go straight to rebasing.\n\n"+
+			"Use the task body, PR diff, changed-file list, and current code as context, then rebase.\n\n"+
 			"Steps:\n"+
 			"```bash\n"+
 			"git fetch origin\n"+
 			"git rebase refs/remotes/origin/main\n"+
-			"# resolve each conflict, git add, git rebase --continue\n"+
+			"# resolve every conflict preserving the PR intent and upstream changes\n"+
+			"# run targeted tests for touched code, then git add and git rebase --continue\n"+
 			"PUSH_REMOTE=origin\n"+
 			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
 			"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s\n"+
@@ -314,7 +324,8 @@ func conflictPrompt(pr github.PullRequest) string {
 			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
-			"- If rebase produces more than 3 conflicting files, run `git rebase --abort` and stop — the task needs human review\n"+
+			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
 		pr.HeadRefName, pr.Number, pr.HeadRefName, filesCtx,

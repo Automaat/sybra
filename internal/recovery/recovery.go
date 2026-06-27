@@ -31,6 +31,13 @@ type ProjectGetter interface {
 	Get(id string) (project.Project, error)
 }
 
+// WorkflowRestarter is the subset of *workflow.Engine that recovery needs.
+// Defined as an interface so tests can stub it without wiring the full engine.
+type WorkflowRestarter interface {
+	StartWorkflow(taskID, workflowID string) error
+	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
+}
+
 // Recovery owns the dependencies needed by the boot-time cleanup pass and
 // the periodic restart-stale sweep. Construct once during App.Startup,
 // reuse from the orchestrator loop.
@@ -38,7 +45,7 @@ type Recovery struct {
 	Tasks          *task.Manager
 	Agents         *agent.Manager
 	Worktrees      *worktree.Manager
-	WorkflowEngine *workflow.Engine // optional; nil-safe
+	WorkflowEngine WorkflowRestarter // optional; nil-safe
 	Orchestrator   Orchestrator
 	Projects       ProjectGetter
 	Logger         *slog.Logger

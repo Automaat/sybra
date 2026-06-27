@@ -647,6 +647,7 @@ func TestStoreUpdateRun(t *testing.T) {
 	err = store.UpdateRun(created.ID, "agent-upd", map[string]any{
 		"state":                    "done",
 		"cost_usd":                 0.42,
+		"premium_requests":         1.5,
 		"result":                   "success",
 		"test_outcome":             "product_bug",
 		"test_failure_fingerprint": "abc123",
@@ -668,6 +669,9 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 	if r.CostUSD != 0.42 {
 		t.Errorf("CostUSD = %f, want 0.42", r.CostUSD)
+	}
+	if r.PremiumRequests != 1.5 {
+		t.Errorf("PremiumRequests = %f, want 1.5", r.PremiumRequests)
 	}
 	if r.Result != "success" {
 		t.Errorf("Result = %q, want %q", r.Result, "success")

@@ -22,9 +22,11 @@ import (
 	"os/signal"
 	"path"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/logging"
@@ -36,21 +38,27 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	code, err := run()
+	if err != nil {
 		println("fatal:", err.Error())
-		os.Exit(1)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if code != 0 {
+		os.Exit(code)
 	}
 }
 
-func run() error {
+func run() (int, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("config: %w", err)
+		return 1, fmt.Errorf("config: %w", err)
 	}
 
 	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return 1, fmt.Errorf("logger: %w", err)
 	}
 	defer cleanup()
 
@@ -59,7 +67,7 @@ func run() error {
 	log.SetOutput(slogWriter{logger})
 
 	if err := metrics.Init(cfg.Metrics); err != nil {
-		return fmt.Errorf("metrics: %w", err)
+		return 1, fmt.Errorf("metrics: %w", err)
 	}
 	defer func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -70,16 +78,29 @@ func run() error {
 	}()
 
 	broker := sse.New()
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	var restartRequested atomic.Bool
 
-	app := sybra.NewApp(logger, levelVar, cfg, sybra.WithEmit(broker.Emit), sybra.WithSkillsFS(skills.FS))
+	app := sybra.NewApp(logger, levelVar, cfg,
+		sybra.WithEmit(broker.Emit),
+		sybra.WithSkillsFS(skills.FS),
+		sybra.WithRestartRequest(func() {
+			restartRequested.Store(true)
+			rootCancel()
+		}),
+	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(rootCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	if err := app.Startup(ctx); err != nil {
-		return fmt.Errorf("startup: %w", err)
+		return 1, fmt.Errorf("startup: %w", err)
 	}
 	defer app.Shutdown(ctx)
+	if restartRequested.Load() {
+		return autoupdate.RestartExitCode, nil
+	}
 
 	mux := buildMux(logger, broker, app)
 
@@ -119,10 +140,13 @@ func run() error {
 		}
 	case serveErr := <-errCh:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			return fmt.Errorf("serve: %w", serveErr)
+			return 1, fmt.Errorf("serve: %w", serveErr)
 		}
 	}
-	return nil
+	if restartRequested.Load() {
+		return autoupdate.RestartExitCode, nil
+	}
+	return 0, nil
 }
 
 // buildMux wires every HTTP route the server exposes onto a fresh ServeMux:

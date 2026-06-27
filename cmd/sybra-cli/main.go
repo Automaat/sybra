@@ -81,15 +81,9 @@ func run(args []string) int {
 		return cmdHook(cfg, filtered[1:])
 	}
 
-	rawStore, err := task.NewStore(cfg.TasksDir)
+	store, projStore, err := openStores(cfg)
 	if err != nil {
-		return fatal(jsonOut, "open store: %v", err)
-	}
-	store := task.NewManager(rawStore, nil)
-
-	projStore, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
-	if err != nil {
-		return fatal(jsonOut, "open project store: %v", err)
+		return fatal(jsonOut, "%v", err)
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
@@ -126,6 +120,8 @@ func run(args []string) int {
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
 	case "evaluation":
 		return cmdEvaluation(cfg, store, rest, jsonOut)
+	case "harness-evolution":
+		return cmdHarnessEvolution(cfg, store, rest, jsonOut)
 	case "stats":
 		return cmdStats(cfg, rest, jsonOut)
 	case "install-skills":
@@ -135,6 +131,18 @@ func run(args []string) int {
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
+}
+
+func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
+	rawStore, err := task.NewStore(cfg.TasksDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open store: %w", err)
+	}
+	projStore, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open project store: %w", err)
+	}
+	return task.NewManager(rawStore, nil), projStore, nil
 }
 
 func cmdList(s *task.Manager, args []string, jsonOut bool) int {
@@ -1713,6 +1721,8 @@ Commands:
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
   evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
+  harness-evolution run [--lookback 168h] [--min-cluster-size 2] [--file] [--json]
+           Cluster selfmonitor failures into governed harness-change proposals.
   stats lifecycle [--since 30d] [--slowest N] [--json]
            Per-phase lead-time breakdown (planning/implementing/testing/review/
            waiting) for tasks that landed in the window — where time is spent.
