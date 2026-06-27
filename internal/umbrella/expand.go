@@ -16,6 +16,10 @@ import (
 // cannot wedge an expansion indefinitely.
 const PlannerTimeout = 5 * time.Minute
 
+// FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
+// wedge the caller (notably the issue poll loop).
+const FetchTimeout = 60 * time.Second
+
 // Result summarizes an expansion.
 type Result struct {
 	UmbrellaURL string
@@ -35,7 +39,9 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
 	}
-	umb, subs, err := github.FetchUmbrella(repo, number)
+	fctx, fcancel := context.WithTimeout(ctx, FetchTimeout)
+	umb, subs, err := github.FetchUmbrella(fctx, repo, number)
+	fcancel()
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch umbrella: %w", err)
 	}
