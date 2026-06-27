@@ -414,7 +414,7 @@ export class StepConfig {
     "model": string;
 
     /**
-     * "", "claude", "codex", "cross"
+     * "", "claude", "codex", "copilot", "cross"
      */
     "provider": string;
     "prompt": string;

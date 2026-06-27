@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -40,6 +43,19 @@ func runCLI(t *testing.T, args ...string) (exitCode int, output string) {
 	buf := make([]byte, 64*1024)
 	n, _ := r.Read(buf)
 	return code, string(buf[:n])
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, string(out))
+	}
+	return string(out)
 }
 
 func TestListEmpty(t *testing.T) {
@@ -413,6 +429,111 @@ func TestCreateWithProject(t *testing.T) {
 	mustUnmarshal(t, out, &created)
 	if created.ProjectID != "owner/repo" {
 		t.Errorf("projectId = %q, want %q", created.ProjectID, "owner/repo")
+	}
+}
+
+func TestHandoffPersistsSourceProviderAtomically(t *testing.T) {
+	setupStore(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	ps, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	proj, err := ps.CreateMeta("https://github.com/acme/repo.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(proj.ClonePath), 0o755); err != nil {
+		t.Fatalf("mkdir clone parent: %v", err)
+	}
+	runGit(t, "", "init", "--bare", proj.ClonePath)
+	runGit(t, proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	worktree := filepath.Join(t.TempDir(), "repo")
+	runGit(t, "", "init", worktree)
+	runGit(t, worktree, "checkout", "-b", "feature/handoff")
+	runGit(t, worktree, "remote", "add", "origin", "https://github.com/acme/repo.git")
+
+	code, out := runCLI(t,
+		"--json", "handoff",
+		"--title", "feat(test): handoff source",
+		"--body", "body",
+		"--plan", "approved plan",
+		"--project", "acme/repo",
+		"--worktree-dir", worktree,
+		"--stage", "review",
+		"--source-provider", "CoDeX",
+	)
+	if code != 0 {
+		t.Fatalf("handoff exit %d: %s", code, out)
+	}
+
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+	if created.ProjectID != "acme/repo" {
+		t.Errorf("ProjectID = %q, want acme/repo", created.ProjectID)
+	}
+	if created.WorktreeDir != worktree {
+		t.Errorf("WorktreeDir = %q, want %q", created.WorktreeDir, worktree)
+	}
+	if created.HandoffSourceProvider != "codex" {
+		t.Errorf("HandoffSourceProvider = %q, want codex", created.HandoffSourceProvider)
+	}
+	if created.Plan != "approved plan" {
+		t.Errorf("Plan = %q, want approved plan", created.Plan)
+	}
+	wantTags := []string{"handoff", "handoff-review"}
+	for i := range wantTags {
+		if i >= len(created.Tags) || created.Tags[i] != wantTags[i] {
+			t.Fatalf("Tags = %v, want prefix %v", created.Tags, wantTags)
+		}
+	}
+}
+
+func TestHandoffReviewRequiresSourceProvider(t *testing.T) {
+	setupStore(t)
+
+	code, _ := runCLI(t,
+		"--json", "handoff",
+		"--title", "feat(test): missing source",
+		"--stage", "review",
+	)
+	if code == 0 {
+		t.Fatal("handoff review without source provider succeeded, want failure")
+	}
+}
+
+func TestUpdateHandoffSourceProvider(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "source repair")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--source-provider", "Copilot")
+	if code != 0 {
+		t.Fatalf("update source exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.HandoffSourceProvider != "copilot" {
+		t.Fatalf("HandoffSourceProvider = %q, want copilot", updated.HandoffSourceProvider)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID, "--source-provider", "none")
+	if code != 0 {
+		t.Fatalf("clear source exit %d: %s", code, out)
+	}
+	var cleared task.Task
+	mustUnmarshal(t, out, &cleared)
+	if cleared.HandoffSourceProvider != "" {
+		t.Fatalf("HandoffSourceProvider = %q, want cleared", cleared.HandoffSourceProvider)
 	}
 }
 

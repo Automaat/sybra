@@ -17,37 +17,39 @@ const (
 
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
-	ID            string
-	Title         string
-	Status        string
-	Tags          []string
-	AgentMode     string
-	ProjectID     string
-	ProjectType   string
-	PRNumber      int
-	Branch        string
-	Body          string
-	Plan          string
-	PlanCritique  string
-	PlanResearch  string
-	PlanDecisions string
-	PlanBrief     string
-	CodeReview    string
+	ID                    string
+	Title                 string
+	Status                string
+	Tags                  []string
+	AgentMode             string
+	ProjectID             string
+	ProjectType           string
+	HandoffSourceProvider string
+	PRNumber              int
+	Branch                string
+	Body                  string
+	Plan                  string
+	PlanCritique          string
+	PlanResearch          string
+	PlanDecisions         string
+	PlanBrief             string
+	CodeReview            string
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
 	PlanDrafts map[string]string
 	Issue      string
 	Reviewed   bool
 	Workflow   *Execution
-	// AgentRuns is the minimal per-task agent-run history the engine needs
-	// (role only). route_test_result counts prior test-runner runs to enforce
-	// the testing → re-implementation attempt cap.
+	// AgentRuns is the minimal per-task agent-run history the engine needs.
+	// route_test_result counts prior test-runner runs; provider=cross uses
+	// code-authoring run providers when a previous workflow wrote the code.
 	AgentRuns []AgentRunInfo
 }
 
 // AgentRunInfo is the engine-visible subset of a task's agent run.
 type AgentRunInfo struct {
-	Role string
+	Role     string
+	Provider string
 }
 
 // TaskProvider reads and updates tasks.

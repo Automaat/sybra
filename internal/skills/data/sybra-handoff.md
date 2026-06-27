@@ -1,9 +1,9 @@
 ---
 name: sybra-handoff
-description: Hand a researched, already-decided task off to Sybra for autonomous implementation. Use after you have explored a problem in an Orca (or any) git worktree, agreed on the approach, and want Sybra to skip its own planning and start implementing immediately — reusing this exact worktree. Triggers on "hand this off to Sybra", "let Sybra implement this", "ship this to Sybra", "handoff to sybra". Works under both Claude Code and Codex.
+description: Hand a researched, already-decided task off to Sybra for autonomous implementation or cross-provider review/testing. Use after you have explored a problem in an Orca (or any) git worktree, agreed on the approach, and want Sybra to skip its own planning and start at the right stage — reusing this exact worktree. Triggers on "hand this off to Sybra", "let Sybra implement this", "ship this to Sybra", "handoff to sybra". Works under Claude Code, Codex, and Copilot.
 allowed-tools: Bash
 user-invocable: true
-argument-hint: "[--stage STAGE | --status STATUS] [--title \"...\"] [--plan-file PATH] [--worktree-dir DIR] [--pr N]"
+argument-hint: "[--stage STAGE | --status STATUS] [--title \"...\"] [--plan-file PATH] [--worktree-dir DIR] [--source-provider claude|codex|copilot] [--pr N]"
 ---
 
 # Sybra Handoff
@@ -20,14 +20,14 @@ Sybra is the autonomous execution phase.
 
 Hand off at whatever stage you have reached — Sybra picks up from there:
 - You have a **plan** but have not implemented → `--stage implement` (default).
-- You have **implemented** locally and want agentic review + PR → `--stage review`
+- You have **implemented** locally and want cross-provider agentic review + PR → `--stage review`
   (aliases: `ready-review`, `agentic-review`).
 - You have **implemented and reviewed** locally and want the testing gate →
-  `--stage testing`.
+  `--stage testing` with a different provider.
 - You have **implemented, reviewed, and tested** locally and want Sybra to open
   or update the PR from this worktree → `--stage ready-pr`.
-- You already **opened a PR** and want Sybra to review it → `--stage pr --pr N`
-  (alias: `in-review --pr N`).
+- You already **opened a PR** and want Sybra to review it with a different
+  provider → `--stage pr --pr N` (alias: `in-review --pr N`).
 
 In all cases the approach is decided and you want Sybra to carry it the rest of
 the way autonomously. Do **not** use for exploratory work that still needs human
@@ -52,13 +52,14 @@ Stages:
 - **implement** (default): flips to `in-progress`; the implementation agent runs
   now with your plan as context, then review → PR.
 - **review**: flips to `ready-review`; Sybra reviews your existing commits in the
-  worktree and opens the PR (no implementation step).
+  worktree with a different provider and opens the PR (no implementation step).
 - **testing**: flips to `testing`; Sybra runs the adversarial testing gate in the
-  adopted worktree and opens the PR if tests pass.
+  adopted worktree with a different provider and opens the PR if tests pass.
 - **ready-pr**: flips to `ready-pr`; Sybra opens or updates the PR from the
   adopted worktree (no implementation, review, or testing step).
 - **pr**: for an existing PR (`--pr N`); Sybra reviews the open PR via its
-  pr-review lane (no worktree adoption — it checks out the PR head itself).
+  pr-review lane with a different provider (no worktree adoption — it checks out
+  the PR head itself).
 
 ## Workflow entry context
 
@@ -118,8 +119,14 @@ such as `review` unless you intentionally want the existing-PR lane.
    sybra-cli handoff \
      --title "feat(auth): add jwt refresh middleware" \
      --body  "One-paragraph problem statement + the research context Sybra needs." \
+     --source-provider "<claude|codex|copilot>" \
      --plan-file ./.sybra-handoff-plan.md
    ```
+   Set `--source-provider` to the provider running this skill: Claude Code uses
+   `claude`, Codex uses `codex`, and Copilot uses `copilot`. It is required for
+   `--stage review`, `--stage testing`, and `--stage pr`, and recommended for
+   `--stage implement` and `--stage ready-pr` so provenance is visible on the
+   task.
    - `--stage review` / `ready-review` / `agentic-review` to skip implementation
      (you already coded it); `--stage testing` to skip implementation and
      review; `--stage ready-pr` to skip directly to PR creation/update;

@@ -76,6 +76,8 @@ func run(args []string) int {
 		return cmdCreate(store, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
+	case "umbrella":
+		return cmdUmbrella(store, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, rest, jsonOut)
 	case "delete":
@@ -191,6 +193,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if t.Issue != "" {
 		fmt.Printf("Issue: %s\n", t.Issue)
+	}
+	if t.HandoffSourceProvider != "" {
+		fmt.Printf("Source: %s\n", t.HandoffSourceProvider)
 	}
 	fmt.Printf("Created: %s\n", t.CreatedAt.Format("2006-01-02 15:04"))
 	fmt.Printf("Updated: %s\n", t.UpdatedAt.Format("2006-01-02 15:04"))
@@ -338,6 +343,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	stage := fs.String("stage", "implement", "workflow entry stage: implement|in-progress|review|ready-review|agentic-review|testing|ready-pr|pr|in-review")
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
+	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot")
 	pr := fs.Int("pr", 0, "PR number (required for --stage pr)")
 	extraTags := fs.String("tags", "", "extra comma-separated tags")
 	if err := fs.Parse(args); err != nil {
@@ -349,6 +355,13 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	stageCfg, status, rawStatusMode, modeErr := resolveHandoffMode(fs, *stage, *rawStatus, *pr)
 	if modeErr != nil {
 		return fatal(jsonOut, "%v", modeErr)
+	}
+	handoffSource, srcErr := normalizeHandoffSourceProvider(*sourceProvider)
+	if srcErr != nil {
+		return fatal(jsonOut, "%v", srcErr)
+	}
+	if !rawStatusMode && handoffSource == "" && handoffStageRequiresSource(stageCfg.name) {
+		return fatal(jsonOut, "--stage %s requires --source-provider <claude|codex|copilot> so cross-provider review/testing is deterministic", *stage)
 	}
 
 	dir, dErr := resolveWorktreeDir(*wtDir)
@@ -374,6 +387,9 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	}
 	if planContent != "" {
 		init.Plan = &planContent
+	}
+	if handoffSource != "" {
+		init.HandoffSourceProvider = &handoffSource
 	}
 	if rawStatusMode {
 		init.Status = &status
@@ -509,6 +525,27 @@ func handoffStageConfigFor(stage string) (handoffStageConfig, bool) {
 	}
 }
 
+func handoffStageRequiresSource(stage string) bool {
+	switch stage {
+	case "review", "testing", "pr":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeHandoffSourceProvider(raw string) (string, error) {
+	provider := strings.ToLower(strings.TrimSpace(raw))
+	switch provider {
+	case "none", "clear":
+		provider = ""
+	}
+	if _, err := task.ValidateAgentProvider(provider); err != nil {
+		return "", err
+	}
+	return provider, nil
+}
+
 // resolveWorktreeDir resolves the handoff worktree (default: cwd) to an
 // absolute path and verifies it is an existing directory.
 func resolveWorktreeDir(wtDir string) (string, error) {
@@ -571,6 +608,9 @@ func parseExtraTags(extra string, exclude []string) []string {
 func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	fmt.Printf("Handed off task %s: %s\n", t.ID, t.Title)
 	fmt.Printf("  project:  %s\n", projectID)
+	if t.HandoffSourceProvider != "" {
+		fmt.Printf("  source:   %s\n", t.HandoffSourceProvider)
+	}
 	switch stage {
 	case "review":
 		fmt.Printf("  worktree: %s\n", dir)
@@ -711,94 +751,14 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 
 	id := args[0]
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
-	title := fs.String("title", "", "new title")
-	status := fs.String("status", "", "new status")
-	body := fs.String("body", "", "new body")
-	plan := fs.String("plan", "", "plan content markdown (empty string clears plan)")
-	planFile := fs.String("plan-file", "", "path to file with plan content")
-	planCritique := fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)")
-	planCritiqueFile := fs.String("plan-critique-file", "", "path to file with plan critique content")
-	planResearch := fs.String("plan-research", "", "plan research markdown (empty string clears research)")
-	planResearchFile := fs.String("plan-research-file", "", "path to file with plan research content")
-	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown (empty string clears decisions)")
-	planDecisionsFile := fs.String("plan-decisions-file", "", "path to file with plan decisions content")
-	planBrief := fs.String("plan-brief", "", "plan brief markdown (empty string clears brief)")
-	planBriefFile := fs.String("plan-brief-file", "", "path to file with plan brief content")
-	codeReview := fs.String("code-review", "", "code review markdown (empty string clears review)")
-	codeReviewFile := fs.String("code-review-file", "", "path to file with code review content")
-	mode := fs.String("mode", "", "new agent mode")
-	ttype := fs.String("type", "", "new task type: normal|debug|research")
-	tags := fs.String("tags", "", "comma-separated tags (replaces existing)")
-	proj := fs.String("project", "", "project id (owner/repo)")
-	branch := fs.String("branch", "", "Git branch name")
-	pr := fs.Int("pr", 0, "GitHub PR number")
-	issue := fs.String("issue", "", "GitHub issue URL")
-	statusReason := fs.String("status-reason", "", "reason for status change")
-	maxTurnsFlag := fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)")
-	reasoningEffort := fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)")
+	flags := newUpdateFlags(fs)
 	if err := fs.Parse(args[1:]); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := map[string]any{}
-	if *title != "" {
-		updates["title"] = *title
-	}
-	if *status != "" {
-		updates["status"] = *status
-	}
-	if *statusReason != "" {
-		updates["status_reason"] = *statusReason
-	}
-	if *body != "" {
-		updates["body"] = *body
-	}
-	for _, fu := range []struct{ flag, key, str, file string }{
-		{"plan", "plan", *plan, *planFile},
-		{"plan-critique", "plan_critique", *planCritique, *planCritiqueFile},
-		{"plan-research", "plan_research", *planResearch, *planResearchFile},
-		{"plan-decisions", "plan_decisions", *planDecisions, *planDecisionsFile},
-		{"plan-brief", "plan_brief", *planBrief, *planBriefFile},
-		{"code-review", "code_review", *codeReview, *codeReviewFile},
-	} {
-		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-	}
-	if *mode != "" {
-		updates["agent_mode"] = *mode
-	}
-	if *ttype != "" {
-		if _, err := task.ValidateTaskType(*ttype); err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		updates["task_type"] = *ttype
-	}
-	if *tags != "" {
-		updates["tags"] = parseTags(*tags)
-	}
-	if *proj != "" {
-		updates["project_id"] = *proj
-	}
-	if *branch != "" {
-		updates["branch"] = *branch
-	}
-	if *pr > 0 {
-		updates["pr_number"] = float64(*pr)
-	}
-	if *issue != "" {
-		updates["issue"] = *issue
-	}
-	// -1 is the sentinel "not provided"; 0 clears override, >0 sets limit.
-	if *maxTurnsFlag >= 0 {
-		updates["max_turns"] = float64(*maxTurnsFlag)
-	}
-	if *reasoningEffort != "" {
-		v, err := normalizeReasoningEffort(*reasoningEffort)
-		if err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		updates["reasoning_effort"] = v
+	updates, uErr := buildUpdateMap(fs, flags)
+	if uErr != nil {
+		return fatal(jsonOut, "%v", uErr)
 	}
 
 	if len(updates) == 0 {
@@ -815,6 +775,154 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	fmt.Printf("Updated task %s\n", t.ID)
 	return 0
+}
+
+type updateFlags struct {
+	title             *string
+	status            *string
+	body              *string
+	plan              *string
+	planFile          *string
+	planCritique      *string
+	planCritiqueFile  *string
+	planResearch      *string
+	planResearchFile  *string
+	planDecisions     *string
+	planDecisionsFile *string
+	planBrief         *string
+	planBriefFile     *string
+	codeReview        *string
+	codeReviewFile    *string
+	mode              *string
+	taskType          *string
+	tags              *string
+	project           *string
+	branch            *string
+	pr                *int
+	issue             *string
+	sourceProvider    *string
+	statusReason      *string
+	maxTurns          *int
+	reasoningEffort   *string
+}
+
+func newUpdateFlags(fs *flag.FlagSet) updateFlags {
+	return updateFlags{
+		title:             fs.String("title", "", "new title"),
+		status:            fs.String("status", "", "new status"),
+		body:              fs.String("body", "", "new body"),
+		plan:              fs.String("plan", "", "plan content markdown (empty string clears plan)"),
+		planFile:          fs.String("plan-file", "", "path to file with plan content"),
+		planCritique:      fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)"),
+		planCritiqueFile:  fs.String("plan-critique-file", "", "path to file with plan critique content"),
+		planResearch:      fs.String("plan-research", "", "plan research markdown (empty string clears research)"),
+		planResearchFile:  fs.String("plan-research-file", "", "path to file with plan research content"),
+		planDecisions:     fs.String("plan-decisions", "", "plan decisions markdown (empty string clears decisions)"),
+		planDecisionsFile: fs.String("plan-decisions-file", "", "path to file with plan decisions content"),
+		planBrief:         fs.String("plan-brief", "", "plan brief markdown (empty string clears brief)"),
+		planBriefFile:     fs.String("plan-brief-file", "", "path to file with plan brief content"),
+		codeReview:        fs.String("code-review", "", "code review markdown (empty string clears review)"),
+		codeReviewFile:    fs.String("code-review-file", "", "path to file with code review content"),
+		mode:              fs.String("mode", "", "new agent mode"),
+		taskType:          fs.String("type", "", "new task type: normal|debug|research"),
+		tags:              fs.String("tags", "", "comma-separated tags (replaces existing)"),
+		project:           fs.String("project", "", "project id (owner/repo)"),
+		branch:            fs.String("branch", "", "Git branch name"),
+		pr:                fs.Int("pr", 0, "GitHub PR number"),
+		issue:             fs.String("issue", "", "GitHub issue URL"),
+		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
+		statusReason:      fs.String("status-reason", "", "reason for status change"),
+		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
+		reasoningEffort:   fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)"),
+	}
+}
+
+func buildUpdateMap(fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+	updates := map[string]any{}
+	applyBasicUpdateFlags(updates, f)
+	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
+		return nil, err
+	}
+	if err := applyTypedUpdateFlags(fs, updates, f); err != nil {
+		return nil, err
+	}
+	return updates, nil
+}
+
+func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
+	if *f.title != "" {
+		updates["title"] = *f.title
+	}
+	if *f.status != "" {
+		updates["status"] = *f.status
+	}
+	if *f.statusReason != "" {
+		updates["status_reason"] = *f.statusReason
+	}
+	if *f.body != "" {
+		updates["body"] = *f.body
+	}
+	if *f.mode != "" {
+		updates["agent_mode"] = *f.mode
+	}
+	if *f.tags != "" {
+		updates["tags"] = parseTags(*f.tags)
+	}
+	if *f.project != "" {
+		updates["project_id"] = *f.project
+	}
+	if *f.branch != "" {
+		updates["branch"] = *f.branch
+	}
+	if *f.pr > 0 {
+		updates["pr_number"] = float64(*f.pr)
+	}
+	if *f.issue != "" {
+		updates["issue"] = *f.issue
+	}
+}
+
+func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+	for _, fu := range []struct{ flag, key, str, file string }{
+		{"plan", "plan", *f.plan, *f.planFile},
+		{"plan-critique", "plan_critique", *f.planCritique, *f.planCritiqueFile},
+		{"plan-research", "plan_research", *f.planResearch, *f.planResearchFile},
+		{"plan-decisions", "plan_decisions", *f.planDecisions, *f.planDecisionsFile},
+		{"plan-brief", "plan_brief", *f.planBrief, *f.planBriefFile},
+		{"code-review", "code_review", *f.codeReview, *f.codeReviewFile},
+	} {
+		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+	if *f.taskType != "" {
+		if _, err := task.ValidateTaskType(*f.taskType); err != nil {
+			return err
+		}
+		updates["task_type"] = *f.taskType
+	}
+	if flagWasProvided(fs, "source-provider") {
+		v, err := normalizeHandoffSourceProvider(*f.sourceProvider)
+		if err != nil {
+			return err
+		}
+		updates["handoff_source_provider"] = v
+	}
+	if *f.maxTurns >= 0 {
+		updates["max_turns"] = float64(*f.maxTurns)
+	}
+	if *f.reasoningEffort != "" {
+		v, err := normalizeReasoningEffort(*f.reasoningEffort)
+		if err != nil {
+			return err
+		}
+		updates["reasoning_effort"] = v
+	}
+	return nil
 }
 
 func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
@@ -855,6 +963,16 @@ func applyFileOrStringUpdate(fs *flag.FlagSet, updates map[string]any, flagName,
 		})
 	}
 	return nil
+}
+
+func flagWasProvided(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 func parseTags(s string) []string {
@@ -1385,7 +1503,7 @@ Commands:
   get      [--compact] <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
-  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--pr N] [--mode MODE] [--tags t1,t2]
+  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
            when --project is omitted. STAGE (default implement):
@@ -1394,8 +1512,15 @@ Commands:
              testing        reviewed locally -> Sybra tests, then opens the PR
              ready-pr       tested locally -> Sybra opens or updates the PR
              pr|in-review   existing PR (--pr N) -> Sybra reviews the PR
+           --source-provider records which local agent produced handed-off work
+           so review/testing/PR steps can run on a different provider.
+           Required for --stage review|testing|pr; optional for implement/ready-pr.
            --status STATUS creates the task directly in that status without workflow dispatch
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
+  umbrella <issue-url> [--model M]
+           Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
+           plus one blocked child per sub-issue, with dependency edges extracted by an
+           LLM planner. Re-running only materializes sub-issues without an existing task.
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 
   project list

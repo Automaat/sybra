@@ -29,7 +29,7 @@ func (r *Recovery) RestartStaleInProgress() {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if t.TaskType == task.TaskTypeChat {
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if t.Status != task.StatusInProgress {

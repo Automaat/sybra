@@ -12,6 +12,11 @@ const (
 )
 
 func skipTaskCreatedWorkflow(t task.Task) bool {
+	// An umbrella tracker runs no agent — it only rolls up its children — so it
+	// must never trigger the plan/implement pipeline.
+	if t.TaskType == task.TaskTypeUmbrella {
+		return true
+	}
 	if slices.Contains(t.Tags, handoffManualTag) {
 		return true
 	}

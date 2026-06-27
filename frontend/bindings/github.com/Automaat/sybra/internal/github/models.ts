@@ -53,6 +53,7 @@ export class Issue {
     "title": string;
     "body": string;
     "url": string;
+    "state": string;
     "repository": string;
     "repoName": string;
     "labels": string[];
@@ -73,6 +74,9 @@ export class Issue {
         }
         if (!("url" in $$source)) {
             this["url"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
         }
         if (!("repository" in $$source)) {
             this["repository"] = "";
@@ -100,10 +104,10 @@ export class Issue {
      * Creates a new Issue instance from a string or object.
      */
     static createFrom($$source: any = {}): Issue {
-        const $$createField6_0 = $$createType0;
+        const $$createField7_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
-            $$parsedSource["labels"] = $$createField6_0($$parsedSource["labels"]);
+            $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         return new Issue($$parsedSource as Partial<Issue>);
     }

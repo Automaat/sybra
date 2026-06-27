@@ -384,21 +384,31 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	}
 	// Apply initial field overrides before the first disk write so that any
 	// watcher reading the file sees the complete task from the start.
-	if init.ProjectID != nil {
-		t.ProjectID = *init.ProjectID
+	applyCreateInit(&t, init, now)
+	if err := s.writeSidecars(t.ID, init, &t); err != nil {
+		return Task{}, err
 	}
-	if init.Branch != nil {
-		t.Branch = *init.Branch
+
+	data, err := Marshal(t)
+	if err != nil {
+		return Task{}, err
 	}
-	if init.WorktreeDir != nil {
-		t.WorktreeDir = *init.WorktreeDir
+	filename := fmt.Sprintf("%s.md", t.ID)
+	t.FilePath = filepath.Join(s.dir, filename)
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
-	if init.PRNumber != nil {
-		t.PRNumber = *init.PRNumber
-	}
-	if init.Issue != nil {
-		t.Issue = *init.Issue
-	}
+	s.storeTaskCache(t)
+	return t, nil
+}
+
+// applyCreateInit applies the CreateFull init overrides onto a fresh task.
+// Split out of CreateFull so the create path stays within the length budget as
+// new initializable fields are added. Link fields (project, branch, worktree,
+// PR, issue, umbrella, depends_on) reuse applyLinkFields so the create and
+// update paths cannot drift.
+func applyCreateInit(t *Task, init Update, now time.Time) {
+	applyLinkFields(t, init)
 	if init.Tags != nil {
 		t.Tags = *init.Tags
 	}
@@ -418,22 +428,21 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if init.Body != nil {
 		t.Body = *init.Body
 	}
-
-	if err := s.writeSidecars(t.ID, init, &t); err != nil {
-		return Task{}, err
+	if init.Reviewed != nil {
+		t.Reviewed = *init.Reviewed
 	}
-
-	data, err := Marshal(t)
-	if err != nil {
-		return Task{}, err
+	if init.TaskType != nil {
+		t.TaskType = *init.TaskType
 	}
-	filename := fmt.Sprintf("%s.md", t.ID)
-	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write task file: %w", err)
+	if init.MaxTurns != nil {
+		t.MaxTurns = *init.MaxTurns
 	}
-	s.storeTaskCache(t)
-	return t, nil
+	if init.ForkSubagent != nil {
+		t.ForkSubagent = *init.ForkSubagent
+	}
+	if init.ReasoningEffort != nil {
+		t.ReasoningEffort = *init.ReasoningEffort
+	}
 }
 
 // CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
@@ -570,11 +579,20 @@ func applyLinkFields(t *Task, u Update) {
 	if u.WorktreeDir != nil {
 		t.WorktreeDir = *u.WorktreeDir
 	}
+	if u.HandoffSourceProvider != nil {
+		t.HandoffSourceProvider = *u.HandoffSourceProvider
+	}
 	if u.PRNumber != nil {
 		t.PRNumber = *u.PRNumber
 	}
 	if u.Issue != nil {
 		t.Issue = *u.Issue
+	}
+	if u.UmbrellaIssue != nil {
+		t.UmbrellaIssue = *u.UmbrellaIssue
+	}
+	if u.DependsOn != nil {
+		t.DependsOn = slices.Clone(*u.DependsOn)
 	}
 }
 
@@ -799,6 +817,7 @@ func cloneTask(t Task) Task {
 	clone := t
 	clone.AllowedTools = slices.Clone(t.AllowedTools)
 	clone.Tags = slices.Clone(t.Tags)
+	clone.DependsOn = slices.Clone(t.DependsOn)
 	clone.AgentRuns = slices.Clone(t.AgentRuns)
 	if t.DueDate != nil {
 		d := *t.DueDate

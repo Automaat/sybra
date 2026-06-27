@@ -12,40 +12,43 @@ import (
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
 type Update struct {
-	Title           *string
-	Slug            *string
-	Status          *Status
-	StatusReason    *string
-	BlockedByIssue  *string
-	AgentMode       *string
-	TaskType        *TaskType
-	Body            *string
-	Tags            *[]string
-	ProjectID       *string
-	Branch          *string
-	WorktreeDir     *string
-	PRNumber        *int
-	Issue           *string
-	Reviewed        *bool
-	RunRole         *string
-	SupervisorSteer *string
-	ReviewPhase     *string
-	PRPhase         *string
-	TodoistID       *string
-	Priority        *Priority
-	DueDate         **time.Time
-	Workflow        **workflow.Execution
-	Plan            *string
-	PlanCritique    *string
-	PlanResearch    *string
-	PlanDecisions   *string
-	PlanBrief       *string
-	CodeReview      *string
-	MaxTurns        *int
-	ForkSubagent    *bool
-	ReasoningEffort *string
-	Outcome         *string
-	MergeCommit     *string
+	Title                 *string
+	Slug                  *string
+	Status                *Status
+	StatusReason          *string
+	BlockedByIssue        *string
+	UmbrellaIssue         *string
+	DependsOn             *[]string
+	AgentMode             *string
+	TaskType              *TaskType
+	Body                  *string
+	Tags                  *[]string
+	ProjectID             *string
+	Branch                *string
+	WorktreeDir           *string
+	HandoffSourceProvider *string
+	PRNumber              *int
+	Issue                 *string
+	Reviewed              *bool
+	RunRole               *string
+	SupervisorSteer       *string
+	ReviewPhase           *string
+	PRPhase               *string
+	TodoistID             *string
+	Priority              *Priority
+	DueDate               **time.Time
+	Workflow              **workflow.Execution
+	Plan                  *string
+	PlanCritique          *string
+	PlanResearch          *string
+	PlanDecisions         *string
+	PlanBrief             *string
+	CodeReview            *string
+	MaxTurns              *int
+	ForkSubagent          *bool
+	ReasoningEffort       *string
+	Outcome               *string
+	MergeCommit           *string
 }
 
 func (u Update) writesSidecar() bool {
@@ -79,11 +82,15 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
-	case "title", "slug", "status_reason", "blocked_by_issue", "body",
+	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique",
 		"plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
+	case "depends_on":
+		return applyDependsOnField(u, k, v)
+	case "handoff_source_provider":
+		return applyAgentProviderField(u, k, v)
 	case "priority":
 		return applyPriorityField(u, v)
 	case "status":
@@ -148,6 +155,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.StatusReason = &s
 	case "blocked_by_issue":
 		u.BlockedByIssue = &s
+	case "umbrella_issue":
+		u.UmbrellaIssue = &s
 	case "body":
 		u.Body = &s
 	case "project_id":
@@ -185,6 +194,19 @@ func applyPlainStringField(u *Update, k string, v any) error {
 	case "merge_commit":
 		u.MergeCommit = &s
 	}
+	return nil
+}
+
+func applyAgentProviderField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	prov, err := ValidateAgentProvider(strings.ToLower(strings.TrimSpace(s)))
+	if err != nil {
+		return err
+	}
+	u.HandoffSourceProvider = &prov
 	return nil
 }
 
@@ -236,6 +258,29 @@ func applyTagsField(u *Update, k string, v any) error {
 	case string:
 		parts := strings.Split(tv, ",")
 		u.Tags = &parts
+	default:
+		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyDependsOnField(u *Update, k string, v any) error {
+	switch dv := v.(type) {
+	case []string:
+		cp := make([]string, len(dv))
+		copy(cp, dv)
+		u.DependsOn = &cp
+	case string:
+		// Comma-separated shorthand from the CLI; trim and drop empties so a
+		// trailing comma or stray space cannot inject a blank dependency ref
+		// (which would otherwise resolve to "" and never satisfy).
+		var parts []string
+		for p := range strings.SplitSeq(dv, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				parts = append(parts, p)
+			}
+		}
+		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
 	}

@@ -212,6 +212,12 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	if err != nil {
 		return nil, err
 	}
+	// An umbrella tracker task runs no agent — it only rolls up its children.
+	// Refuse here, the single dispatch choke point, so no path (workflow,
+	// recovery, manual start) can launch an agent against it.
+	if t.TaskType == task.TaskTypeUmbrella {
+		return nil, fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
+	}
 	researchDir := ""
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir

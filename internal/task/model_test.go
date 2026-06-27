@@ -69,8 +69,8 @@ func TestValidateTaskType_Invalid(t *testing.T) {
 func TestAllTaskTypes(t *testing.T) {
 	t.Parallel()
 	types := AllTaskTypes()
-	if len(types) != 4 {
-		t.Errorf("got %d types, want 4", len(types))
+	if len(types) != 5 {
+		t.Errorf("got %d types, want 5", len(types))
 	}
 }
 
@@ -162,6 +162,32 @@ func TestAllReasoningEfforts(t *testing.T) {
 	efforts := AllReasoningEfforts()
 	if len(efforts) != 4 {
 		t.Errorf("got %d efforts, want 4", len(efforts))
+	}
+}
+
+func TestValidateAgentProvider(t *testing.T) {
+	t.Parallel()
+
+	for _, v := range []string{"", "claude", "codex", "copilot"} {
+		t.Run("valid_"+v, func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateAgentProvider(v)
+			if err != nil {
+				t.Fatalf("ValidateAgentProvider(%q): %v", v, err)
+			}
+			if got != v {
+				t.Errorf("got %q, want %q", got, v)
+			}
+		})
+	}
+
+	for _, v := range []string{"gpt", "Claude", " codex "} {
+		t.Run("invalid_"+v, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateAgentProvider(v); err == nil {
+				t.Fatalf("expected error for %q, got nil", v)
+			}
+		})
 	}
 }
 

@@ -89,15 +89,20 @@ const (
 	// TaskTypeChat is a synthetic task created for interactive chat sessions.
 	// Hidden from the task list UI and skipped by restart-stale/watchdog.
 	TaskTypeChat TaskType = "chat"
+	// TaskTypeUmbrella is the tracker task for an expanded ☂️ umbrella issue.
+	// It runs no agent: it rolls up the status of its child tasks and is the
+	// task the dependency gate flips to human-required on a dependency cycle.
+	TaskTypeUmbrella TaskType = "umbrella"
 )
 
 var validTaskTypes = map[TaskType]bool{
-	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true, TaskTypeChat: true,
+	TaskTypeNormal: true, TaskTypeDebug: true, TaskTypeResearch: true,
+	TaskTypeChat: true, TaskTypeUmbrella: true,
 }
 
 // AllTaskTypes returns every valid task type in display order.
 func AllTaskTypes() []TaskType {
-	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat}
+	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
 }
 
 func ValidateTaskType(s string) (TaskType, error) {
@@ -149,6 +154,24 @@ func ValidateReasoningEffort(s string) (string, error) {
 	return s, nil
 }
 
+// AllAgentProviders returns every supported CLI provider name in display order.
+func AllAgentProviders() []string { return []string{"claude", "codex", "copilot"} }
+
+var validAgentProviders = map[string]bool{"claude": true, "codex": true, "copilot": true}
+
+// ValidateAgentProvider accepts the empty string (unset/default) or one of the
+// providers Sybra can dispatch. It is used for handoff provenance, not the
+// task's execution mode.
+func ValidateAgentProvider(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	if !validAgentProviders[s] {
+		return "", fmt.Errorf("invalid provider %q (valid: claude, codex, copilot, or empty)", s)
+	}
+	return s, nil
+}
+
 type AgentRun struct {
 	AgentID   string    `yaml:"agent_id" json:"agentId"`
 	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
@@ -192,12 +215,28 @@ type Task struct {
 	PRNumber     int    `yaml:"pr_number,omitempty" json:"prNumber"`
 	Issue        string `yaml:"issue,omitempty" json:"issue"`
 	StatusReason string `yaml:"status_reason,omitempty" json:"statusReason"`
+	// HandoffSourceProvider records which local agent provider produced the
+	// work before a handoff skipped directly into review/testing/PR. Workflow
+	// steps with provider=cross use it when there is no Sybra-authored run
+	// history to flip from.
+	HandoffSourceProvider string `yaml:"handoff_source_provider,omitempty" json:"handoffSourceProvider,omitempty"`
 	// BlockedByIssue stores the URL of the GitHub issue that put the task
 	// into status=blocked. Set by the human-review automation when it
 	// concludes the human-required transition was caused by a Sybra bug.
 	BlockedByIssue string `yaml:"blocked_by_issue,omitempty" json:"blockedByIssue,omitempty"`
-	Reviewed       bool   `yaml:"reviewed,omitempty" json:"reviewed"`
-	RunRole        string `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
+	// UmbrellaIssue links this task to the ☂️ umbrella issue it was expanded
+	// from. Set on child tasks; empty for standalone tasks. The orchestrator's
+	// dependency gate reads it with DependsOn to decide when a child may leave
+	// `blocked`.
+	UmbrellaIssue string `yaml:"umbrella_issue,omitempty" json:"umbrellaIssue,omitempty"`
+	// DependsOn lists the issue refs (full github.com issue/PR URL or
+	// owner/repo#n shorthand) this task waits on — resolved by issue ref only,
+	// not task IDs. While the task is `blocked`, the gate holds it until every
+	// referenced task has reached `done`; an empty list releases immediately.
+	// Used only by umbrella child tasks.
+	DependsOn []string `yaml:"depends_on,omitempty" json:"dependsOn,omitempty"`
+	Reviewed  bool     `yaml:"reviewed,omitempty" json:"reviewed"`
+	RunRole   string   `yaml:"run_role,omitempty" json:"runRole"` // pr-fix when fixing review issues, "" for initial impl
 	// SupervisorSteer is a one-shot corrective message left by the watchdog's
 	// headless nudge: it stops a looping headless agent (which has no mid-stream
 	// channel) and persists the steer here so the recovery loop re-dispatches
