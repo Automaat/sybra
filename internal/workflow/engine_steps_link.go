@@ -9,10 +9,17 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
 var prShortRe = regexp.MustCompile(`\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#(\d+)`)
+
+const (
+	workflowRetryAfterVar     = "workflow.retry_after"
+	prCreateRetryBackoff      = 15 * time.Minute
+	prCreateRetryStatusReason = "GitHub rate limit during PR creation — retrying later"
+)
 
 // execLinkPRAndReview is a non-LLM mechanical step that tries to recover the
 // PR number from three sources and flip the task to in-review:
@@ -136,6 +143,19 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 
 	reason := "no agent result to evaluate"
 	if last != nil {
+		if isPRCreationStep(last.StepID) && looksLikeGitHubRateLimit(last.Output) {
+			wfExec.CurrentStep = last.StepID
+			wfExec.State = ExecWaiting
+			wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
+			if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+				return StepOutput{}, err
+			}
+			if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, prCreateRetryStatusReason); statusErr != nil {
+				return StepOutput{}, statusErr
+			}
+			e.logger.Warn("workflow.evaluate.pr-create-rate-limited", "task_id", taskID, "step", last.StepID)
+			return StepOutput{}, errStepParked
+		}
 		if last.Status == "failed" {
 			reason = truncate(strings.TrimSpace(last.Output), 200)
 			if reason == "" {
@@ -151,4 +171,20 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 	}
 	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+}
+
+func isPRCreationStep(stepID string) bool {
+	return stepID == "create_pr" || stepID == "push_existing_pr"
+}
+
+func looksLikeGitHubRateLimit(output string) bool {
+	lower := strings.ToLower(output)
+	if !strings.Contains(lower, "rate limit") {
+		return false
+	}
+	return strings.Contains(lower, "github") ||
+		strings.Contains(lower, "graphql") ||
+		strings.Contains(lower, "gh ") ||
+		strings.Contains(lower, "api rate limit") ||
+		strings.Contains(lower, "secondary rate limit")
 }

@@ -1145,6 +1145,46 @@ func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wf := &Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			workflowRetryAfterVar: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow:  wf,
+	})
+
+	engine.ResumeStalled()
+	if agents.CallCount() != 0 {
+		t.Fatalf("agent starts before retry window = %d, want 0", agents.CallCount())
+	}
+
+	wf.Variables[workflowRetryAfterVar] = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow:  wf,
+	})
+
+	engine.ResumeStalled()
+	if agents.CallCount() != 1 {
+		t.Fatalf("agent starts after retry window = %d, want 1", agents.CallCount())
+	}
+}
+
 func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -3629,6 +3669,47 @@ func TestExecEvaluate_LastAgentSucceededFlipsHumanRequiredWithDefault(t *testing
 	}
 	if got := tasks.Reason("t1"); got != "commits pushed but no PR created" {
 		t.Errorf("reason = %q, want %q", got, "commits pushed but no PR created")
+	}
+}
+
+func TestExecEvaluate_PRCreateRateLimitParksForRetry(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		WorkflowID:  "simple-task-pr",
+		CurrentStep: "evaluate",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+		StepHistory: []StepRecord{
+			{
+				StepID:  "create_pr",
+				Status:  "completed",
+				AgentID: "a1",
+				Output:  "GitHub GraphQL rate limit exhausted; I will wait for reset.",
+			},
+		},
+	}
+
+	_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "create_pr" {
+		t.Errorf("CurrentStep = %q, want create_pr", wfExec.CurrentStep)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wfExec.State)
+	}
+	if _, ok := workflowRetryAfter(wfExec); !ok {
+		t.Errorf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "ready-pr" {
+		t.Errorf("task status = %q, want ready-pr", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != prCreateRetryStatusReason {
+		t.Errorf("reason = %q, want %q", got, prCreateRetryStatusReason)
 	}
 }
 
