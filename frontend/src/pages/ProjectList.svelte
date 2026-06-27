@@ -133,6 +133,7 @@
         bind:value={query}
         type="text"
         placeholder="Search projects..."
+        aria-label="Search projects"
         class="h-9 w-full rounded-md border border-surface-300 bg-surface-50 pl-8 pr-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-700 dark:bg-surface-800 dark:focus:border-primary-500 dark:focus:ring-primary-500"
         data-testid="project-search"
       />
@@ -148,6 +149,7 @@
             <button
               type="button"
               class="flex items-center gap-2 text-left"
+              aria-expanded={!typeCollapsed}
               onclick={() => toggle(g.type)}
             >
               {#if typeCollapsed}
@@ -168,6 +170,7 @@
                     <button
                       type="button"
                       class="flex items-center gap-1.5 text-left"
+                      aria-expanded={!ownerCollapsed}
                       onclick={() => toggle(ownerKey)}
                     >
                       {#if ownerCollapsed}
