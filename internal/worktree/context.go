@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,7 +77,14 @@ func addToInfoExclude(wtPath, entry string) error {
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
 		return fmt.Errorf("mkdir info dir: %w", err)
 	}
-	existing, _ := os.ReadFile(excludePath)
+	// A not-exist read is fine — the append below creates the file. Any other
+	// read error (e.g. unreadable exclude) must surface: silently treating it as
+	// empty would skip the dedup check and, worse, let a fail-closed caller
+	// (ensureNotesFile) believe exclusion succeeded when it could not be verified.
+	existing, rerr := os.ReadFile(excludePath)
+	if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return fmt.Errorf("read info/exclude: %w", rerr)
+	}
 	line := "/" + entry
 	for raw := range strings.SplitSeq(string(existing), "\n") {
 		if strings.TrimSpace(raw) == line {

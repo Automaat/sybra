@@ -32,7 +32,9 @@ func ensureNotesFile(wtPath string) error {
 	case statErr == nil:
 		return nil // already present and now excluded — preserve contents
 	case errors.Is(statErr, os.ErrNotExist):
-		if err := os.WriteFile(path, []byte(notes.SeedTemplate), 0o644); err != nil {
+		// 0600, not 0644: the scratchpad holds agent-authored (for work tasks,
+		// work-derived) content, so keep it private to the user on multi-user hosts.
+		if err := os.WriteFile(path, []byte(notes.SeedTemplate), 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", notes.FileName, err)
 		}
 		return nil

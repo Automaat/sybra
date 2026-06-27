@@ -52,8 +52,10 @@ and current.
 `
 
 // Read returns the scratchpad contents for the worktree at dir and whether it
-// exists. A missing file (non-worktree agent, or an unseeded worktree) yields
-// ("", false) so callers can no-op.
+// was read. Any read failure — a missing file (non-worktree agent or unseeded
+// worktree), a permission error, or transient IO — yields ("", false) so
+// callers no-op rather than seed a partial/empty scratchpad. "false" therefore
+// means "unavailable", not strictly "file missing".
 func Read(dir string) (string, bool) {
 	if strings.TrimSpace(dir) == "" {
 		return "", false
