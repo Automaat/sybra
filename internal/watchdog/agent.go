@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 const (
@@ -236,7 +237,7 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, verdict agent.InspectorVerdict)
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
-				reason = "watchdog: " + verdict.Reason
+				reason = watchdogreason.Prefix + " " + verdict.Reason
 			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
 				Status:       task.Ptr(task.StatusHumanRequired),

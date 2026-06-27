@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -258,13 +259,12 @@ func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultCon
 			"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
 			"rate_limited", rateLimited)
 		if h.shouldRetryStoppedPlanCritic(ag, rateLimited) {
-			h.workflowEngine.FailStoppedAgentStep(ag.TaskID, workflow.AgentCompletion{
+			return h.workflowEngine.FailStoppedAgentStep(ag.TaskID, workflow.AgentCompletion{
 				AgentID:  ag.ID,
 				Result:   resultContent,
 				Provider: ag.Provider,
 				Success:  false,
 			})
-			return true
 		}
 		h.workflowEngine.ClearAgentStep(ag.ID)
 		return false
@@ -287,7 +287,7 @@ func (h *AgentCompletionHandler) shouldRetryStoppedPlanCritic(ag *agent.Agent, r
 		h.logger.Warn("agent.completion.plan-critic-retry.task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		return false
 	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(t.StatusReason)), "watchdog:") {
+	if !watchdogreason.HasPrefix(t.StatusReason) {
 		return false
 	}
 	return strings.TrimSpace(t.PlanCritique) == ""

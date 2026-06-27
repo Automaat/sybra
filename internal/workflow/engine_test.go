@@ -58,6 +58,43 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 	return store
 }
 
+func newPlanCriticTestStore(t *testing.T, maxRetries int) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf(`id: plan-critic-test
+name: Plan Critic Test
+trigger:
+  on: task.created
+steps:
+  - id: critique_plan
+    name: Critique Plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      model: sonnet
+      max_retries: %d
+      prompt: "Critique {{.Task.ID}}"
+    next:
+      - goto: require_plan_critique
+  - id: require_plan_critique
+    name: Require Plan Critique
+    type: require_sidecar
+    config:
+      sidecar: plan_critique
+    next:
+      - goto: ""
+`, maxRetries)
+	if err := os.WriteFile(filepath.Join(dir, "plan-critic-test.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
@@ -1242,6 +1279,91 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	// Must NOT dispatch an agent: human-required overrides the workflow.
 	if agents.CallCount() != 0 {
 		t.Fatalf("expected 0 agent starts for human-required task, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_RetriesWatchdogStoppedPlanCritic(t *testing.T) {
+	store := newPlanCriticTestStore(t, 1)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: repeated critique synthesis loop",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critic-test",
+			CurrentStep: "critique_plan",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("agent starts = %d, want 1 retry", got)
+	}
+	if call := agents.LastCall(); call.Role != "plan-critic" {
+		t.Fatalf("retried role = %q, want plan-critic", call.Role)
+	}
+}
+
+func TestResumeStalled_DoesNotRetryManualStoppedPlanCritic(t *testing.T) {
+	store := newPlanCriticTestStore(t, 1)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "operator stopped plan critic",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critic-test",
+			CurrentStep: "critique_plan",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("agent starts = %d, want 0 for non-watchdog stop", got)
+	}
+}
+
+func TestAdvanceStep_WatchdogPlanCriticExhaustionReason(t *testing.T) {
+	store := newPlanCriticTestStore(t, 1)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: repeated critique synthesis loop",
+		Workflow: &Execution{
+			WorkflowID:  "plan-critic-test",
+			CurrentStep: "critique_plan",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+			StepHistory: []StepRecord{{StepID: "critique_plan", Status: "failed"}},
+		},
+	})
+
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "critique_plan", Status: "failed"}); err != nil {
+		t.Fatalf("AdvanceStep failed: %v", err)
+	}
+
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "watchdog-stopped plan critic exhausted retries") {
+		t.Fatalf("reason = %q, want watchdog retry exhaustion context", reason)
+	}
+	if !strings.Contains(reason, "watchdog: repeated critique synthesis loop") {
+		t.Fatalf("reason = %q, want original watchdog reason", reason)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 // errStepParked is a sentinel returned by a synchronous step that has parked
@@ -169,6 +170,9 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 	}
 	if strings.TrimSpace(content) == "" {
 		reason := label + " missing — upstream agent step completed without writing its sidecar"
+		if step.Config.Sidecar == "plan_critique" && watchdogreason.HasPrefix(t.StatusReason) {
+			reason = "plan critique missing after watchdog-stopped plan critic exhausted retries: " + strings.TrimSpace(t.StatusReason)
+		}
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)
 		}

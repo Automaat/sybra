@@ -183,6 +183,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		ID:                    t.ID,
 		Title:                 t.Title,
 		Status:                string(t.Status),
+		StatusReason:          t.StatusReason,
 		Tags:                  t.Tags,
 		AgentMode:             t.AgentMode,
 		ProjectID:             t.ProjectID,

@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -381,16 +384,33 @@ func (e *Engine) ResumeStalled() {
 				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAt.Format(time.RFC3339), "step", step.ID)
 			continue
 		}
+		if e.agents.HasRunningAgent(t.ID) {
+			continue
+		}
 		// A task in human-required was halted by a competing path (e.g. the
 		// inline review triage deciding the PR is too small). Do not resume its
 		// workflow: that would override the triage verdict and re-dispatch an
 		// agent that the operator already suppressed.
+		//
+		// Narrow exception: a watchdog-stopped plan-critic can leave the task in
+		// human-required before the stopped agent's completion callback records a
+		// failed step. Convert only that exact persisted state back into the
+		// normal failed-step retry path.
 		if t.Status == "human-required" {
-			e.logger.Debug("workflow.resume-stalled.skip",
-				"task_id", t.ID, "reason", "human_required", "step", step.ID)
-			continue
-		}
-		if e.agents.HasRunningAgent(t.ID) {
+			if shouldFailStoppedPlanCritic(t, step) {
+				e.logger.Info("workflow.resume-stalled.watchdog-plan-critic",
+					"task_id", t.ID, "step", step.ID)
+				if err := e.AdvanceStep(t.ID, StepOutput{
+					StepID: step.ID,
+					Status: "failed",
+					Output: "watchdog-stopped plan critic exited before writing plan critique",
+				}); err != nil {
+					e.logger.Error("workflow.resume-stalled.watchdog-plan-critic.advance", "task_id", t.ID, "step", step.ID, "err", err)
+				}
+			} else {
+				e.logger.Debug("workflow.resume-stalled.skip",
+					"task_id", t.ID, "reason", "human_required", "step", step.ID)
+			}
 			continue
 		}
 		// Don't re-dispatch while the step's provider is rate-limited — it would
@@ -476,6 +496,14 @@ func (e *Engine) ResumeStalled() {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
 		}
 	}
+}
+
+func shouldFailStoppedPlanCritic(t *TaskInfo, step *Step) bool {
+	return step != nil &&
+		step.Type == StepRunAgent &&
+		step.Config.Role == "plan-critic" &&
+		watchdogreason.HasPrefix(t.StatusReason) &&
+		strings.TrimSpace(t.PlanCritique) == ""
 }
 
 func workflowRetryAfter(wf *Execution) (time.Time, bool) {
