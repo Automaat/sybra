@@ -507,6 +507,50 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 	}
 }
 
+func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	// Regression: a task body that already contains a heading beginning with
+	// "## Auto-review" (for reasons unrelated to human-review rendering) must
+	// NOT satisfy the idempotency gate when the onComplete rendering hasn't run.
+	// Previously strings.Contains(body, "## Auto-review") was too broad and
+	// would strand the task in human-required with no diagnosis.
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	body := "Original task body.\n\n## Auto-review requirements\n\nThis task is about auto-review diagnostics, but no diagnostic has been rendered yet.\n"
+	tk, err := tasks.Create("Crash window with preexisting auto-review text", body, "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	// Verdict persisted by onAgentComplete but onComplete never rendered the note.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-crashed",
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "stopped",
+		Verdict: "human",
+	}); err != nil {
+		t.Fatalf("add prior run: %v", err)
+	}
+
+	// Gate must NOT block — panic on nil agents.Run confirms spawn was attempted.
+	panicked := func() (p bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				p = true
+			}
+		}()
+		h.maybeSpawn(tk.ID, "")
+		return false
+	}()
+	if !panicked {
+		t.Fatal("expected spawn attempt; gate should not treat pre-existing ## Auto-review heading as a rendered verdict")
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	t.Parallel()
 	h, tasks, _, cleanup := newReviewTestEnv(t)

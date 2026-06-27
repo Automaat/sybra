@@ -582,10 +582,14 @@ func urlOrPlaceholder(url, title string) string {
 // verdictAlreadyRendered reports whether any completed human-review agent run
 // already recorded a parsed verdict on t AND onComplete successfully rendered
 // the diagnosis into the task body. Both conditions are required: Verdict proves
-// the prior run parsed the outcome, and the "## Auto-review" section proves
-// onComplete appended the note. If only Verdict is set (e.g. the process crashed
-// between persisting the verdict and appending the note), we allow a re-spawn so
-// the task is not permanently stranded.
+// the prior run parsed the outcome, and the presence of a specific rendered
+// section header proves onComplete appended the note. If only Verdict is set
+// (e.g. the process crashed between persisting the verdict and appending the
+// note), we allow a re-spawn so the task is not permanently stranded.
+//
+// The pattern must be specific: "## Auto-review verdict:" or "## Auto-review ("
+// are the only headers appended by onComplete. A broader "## Auto-review" match
+// would falsely trigger on pre-existing headings in the task body.
 func verdictAlreadyRendered(t task.Task) bool {
 	hasVerdict := false
 	for i := range t.AgentRuns {
@@ -597,9 +601,13 @@ func verdictAlreadyRendered(t task.Task) bool {
 	if !hasVerdict {
 		return false
 	}
-	// Every onComplete path appends a "## Auto-review …" section; its presence
-	// confirms the rendering completed, not just that the verdict was parsed.
-	return strings.Contains(t.Body, "## Auto-review")
+	// Every onComplete path appends exactly one of:
+	//   "## Auto-review verdict: …"  (human / sybra_bug / unknown-decision paths)
+	//   "## Auto-review (…)"         (unparseable-verdict path)
+	// Check for these specific prefixes so a pre-existing "## Auto-review <other>"
+	// heading in the original task body does not falsely satisfy the gate.
+	return strings.Contains(t.Body, "## Auto-review verdict:") ||
+		strings.Contains(t.Body, "## Auto-review (")
 }
 
 // tailFile reads the last n lines of path. Best-effort: returns "" on error
