@@ -1979,6 +1979,39 @@ func TestPlanReuse_ApproveAdvancesPastReviewPlan(t *testing.T) {
 	}
 }
 
+func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
+	store := newTestStoreWith(t, "test-plan-reuse.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
+	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
+		t.Fatalf("start workflow: %v", err)
+	}
+
+	// Simulate a cross-process sybra-cli status write that happened while the
+	// app was down, or whose watcher event was missed: the task is visibly
+	// plan-review, but the workflow is still parked on the run_agent step.
+	tasks.SetStatus("t1", "plan-review")
+	stuck, _ := tasks.GetTask("t1")
+	if stuck.Workflow.CurrentStep != "plan" {
+		t.Fatalf("precondition: CurrentStep = %q, want plan", stuck.Workflow.CurrentStep)
+	}
+
+	if err := engine.HandleHumanAction("t1", "approve", nil); err != nil {
+		t.Fatalf("approve should reconcile stale wait_for_status step: %v", err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("Status = %q, want in-progress", ti.Status)
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
+	}
+}
+
 // --- ensure_pr_closes_issue step ---
 
 // fakePRLinker is a scripted PRLinker used by executor tests.
