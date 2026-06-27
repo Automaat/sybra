@@ -52,7 +52,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]}},"required":["verdict"],"additionalProperties":false}
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Adversarially test task {{.Task.ID}} using the /sybra-test skill.
 
@@ -87,15 +87,18 @@ steps:
         failure; report the infrastructure failure plainly.
 
         When done:
-          - If you found ANY deviation from the task's intent, append a
-            "## Test Failures" section to the task body via
-            `sybra-cli update {{.Task.ID}} --body "<full body>"` listing
-            per-defect: the exact command run, verbatim output, expected
-            behaviour (cite the task), and the quoted code line when
-            relevant. Classify each defect as product_bug, infra_failure,
-            ambiguous_requirement, or missing_evidence in prose. Do NOT suggest
-            fixes — describe symptoms only.
-          - Print the verdict as the FINAL line of your output, exactly:
+          - Do NOT call `sybra-cli update` or mutate the task. Sybra ingests
+            your final report and appends it to the task atomically.
+          - If you found ANY deviation from the task's intent, include a
+            "## Test Failures" markdown report listing per-defect: the exact
+            command run, verbatim output, expected behaviour (cite the task),
+            and the quoted code line when relevant. Classify each defect as
+            product_bug, infra_failure, ambiguous_requirement, or
+            missing_evidence in prose. Do NOT suggest fixes — describe
+            symptoms only.
+          - If your provider returns JSON, set `verdict` and put that report in
+            `failures_markdown` (plus `outcome` when clear). Otherwise print
+            the report, then print the verdict as the FINAL line exactly:
             `TEST_VERDICT: PASS`  (only if you could not break it)
             or
             `TEST_VERDICT: FAIL`  (if any case failed)

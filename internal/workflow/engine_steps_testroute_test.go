@@ -207,10 +207,40 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
+			name:       "structured_json_outcome_with_heading",
+			status:     "completed",
+			output:     `{"verdict":"FAIL","outcome":"infra_failure","failures_markdown":` + strconv.Quote(strings.TrimSpace(groundedReport)) + `}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:   "structured_json_ignores_fenced_heading",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
+				"Requirement tested: the task says Markdown headings render escaped.\n\n"+
+					"Command run:\n```sh\ncurl /preview\n```\n\n"+
+					"Observed output:\n```md\n## Test Failures\n```\n\n"+
+					"Expected: escaped text.\n\n"+
+					"Code evidence: internal/preview.go:42",
+			) + `}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:       "expected_output_counts_as_evidence",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,
 			bodySuffix: strings.ReplaceAll(groundedReport, "Expected:", "Expected output:"),
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			name:       "observed_output_counts_as_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "Actual output:", "Observed output:"),
 			want:       testOutcomeProductBug,
 			wantStatus: "completed",
 		},
@@ -302,6 +332,15 @@ func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetTestingMaxAttempts(3)
 	return engine, tasks
+}
+
+func productBugRun(startedAt time.Time, fingerprint string) AgentRunInfo {
+	return AgentRunInfo{
+		Role:                   testRunnerRole,
+		StartedAt:              startedAt,
+		TestOutcome:            testOutcomeProductBug,
+		TestFailureFingerprint: fingerprint,
+	}
 }
 
 // runRouteTestResult calls execRouteTestResult with the given verdict and
@@ -417,6 +456,178 @@ func TestAdvanceStep_TestProtocolViolationRetriesRunTestFromBodyDelta(t *testing
 	}
 	if got.AgentRuns[0].ProtocolViolation != testProtocolFixSuggestions {
 		t.Errorf("agent run protocol violation = %q, want %q", got.AgentRuns[0].ProtocolViolation, testProtocolFixSuggestions)
+	}
+}
+
+func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-structured",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-structured", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: the task says the status endpoint should return HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	err := engine.AdvanceStep("t-structured", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-structured",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-structured")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
+		t.Fatalf("task body missing structured failure report:\n%s", got.Body)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.AgentRuns[0].TestFailureFingerprint == "" {
+		t.Fatal("test failure fingerprint is empty")
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_StructuredFailureAppendsAfterUnrelatedBodyDelta(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	currentBody := initialBody + "\n\n## Test Failures are stale\n\nChecked locally while tester was running.\n"
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-structured-delta",
+		Status:    "testing",
+		Body:      currentBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-structured-delta", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: the task says the status endpoint should return HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	err := engine.AdvanceStep("t-structured-delta", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-structured-delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-structured-delta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Body, "## Test Failures are stale") || !strings.Contains(got.Body, "## Test Failures") {
+		t.Fatalf("body should preserve unrelated delta and append test report:\n%s", got.Body)
+	}
+	if strings.Count(got.Body, "\n\n## Test Failures\n") != 1 {
+		t.Fatalf("body should append exactly one test report section:\n%s", got.Body)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-plain",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-plain", Role: testRunnerRole}},
+	})
+	output := "## Test Failures\n\n" +
+		"Requirement tested: the task says the status endpoint should return HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nTEST_VERDICT: FAIL\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n\n" +
+		"TEST_VERDICT: FAIL"
+
+	err := engine.AdvanceStep("t-plain", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  output,
+		AgentID: "agent-plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
+		t.Fatalf("task body missing plain-text failure report:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, testVerdictFail) {
+		t.Fatalf("task body should preserve verdict-shaped observed output:\n%s", got.Body)
+	}
+	if count := strings.Count(got.Body, testVerdictFail); count != 1 {
+		t.Fatalf("task body should strip only the final verdict marker, count=%d:\n%s", count, got.Body)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
 	}
 }
 
@@ -602,7 +813,7 @@ func TestRouteTestResult_FailUnderCap(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
 	now := time.Now().UTC()
-	runs := []AgentRunInfo{{Role: testRunnerRole, StartedAt: now}}
+	runs := []AgentRunInfo{productBugRun(now, "fp-1")}
 	out, err := runRouteTestResult(e, tasks, "t2", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -621,9 +832,9 @@ func TestRouteTestResult_FailAtCap(t *testing.T) {
 	e, tasks := makeTestEngine(t)
 	now := time.Now().UTC()
 	runs := []AgentRunInfo{
-		{Role: testRunnerRole, StartedAt: now},
-		{Role: testRunnerRole, StartedAt: now.Add(time.Minute)},
-		{Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute)},
+		productBugRun(now, "fp-1"),
+		productBugRun(now.Add(time.Minute), "fp-2"),
+		productBugRun(now.Add(2*time.Minute), "fp-3"),
 	}
 	out, err := runRouteTestResult(e, tasks, "t3", "FAIL", now, runs, nil)
 	if err != nil {
@@ -644,8 +855,8 @@ func TestRouteTestResult_ProtocolViolationRunsDoNotCountTowardCap(t *testing.T) 
 	now := time.Now().UTC()
 	runs := []AgentRunInfo{
 		{AgentID: "bad-report", Role: testRunnerRole, StartedAt: now, ProtocolViolation: testProtocolFixSuggestions},
-		{AgentID: "valid-1", Role: testRunnerRole, StartedAt: now.Add(time.Minute)},
-		{AgentID: "valid-2", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute)},
+		productBugRun(now.Add(time.Minute), "fp-1"),
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
 	}
 	out, err := runRouteTestResult(e, tasks, "t3-protocol", "FAIL", now, runs, nil)
 	if err != nil {
@@ -660,12 +871,35 @@ func TestRouteTestResult_ProtocolViolationRunsDoNotCountTowardCap(t *testing.T) 
 	}
 }
 
+func TestRouteTestResult_LegacyEmptyOutcomeRunsDoNotCountTowardCap(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		{AgentID: "legacy-1", Role: testRunnerRole, StartedAt: now},
+		{AgentID: "legacy-2", Role: testRunnerRole, StartedAt: now.Add(time.Minute)},
+		{AgentID: "legacy-3", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute)},
+		productBugRun(now.Add(3*time.Minute), "current-grounded"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t3-legacy", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Errorf("output = %q, want reimplement", out.Output)
+	}
+	ti, _ := tasks.GetTask("t3-legacy")
+	if ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress", ti.Status)
+	}
+}
+
 func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
 	now := time.Now().UTC()
 	runs := []AgentRunInfo{
-		{AgentID: "valid-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug},
+		{AgentID: "valid-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-1"},
 		{AgentID: "infra", Role: testRunnerRole, StartedAt: now.Add(time.Minute), TestOutcome: testOutcomeInfraFailure},
 	}
 	tasks.Put(TaskInfo{
@@ -784,12 +1018,12 @@ func TestRouteTestResult_ReDispatch(t *testing.T) {
 
 	// 3 runs from a prior testing cycle (all before newCycleStart).
 	priorRuns := []AgentRunInfo{
-		{Role: testRunnerRole, StartedAt: priorCycleEnd.Add(-2 * time.Minute)},
-		{Role: testRunnerRole, StartedAt: priorCycleEnd.Add(-time.Minute)},
-		{Role: testRunnerRole, StartedAt: priorCycleEnd},
+		productBugRun(priorCycleEnd.Add(-2*time.Minute), "old-1"),
+		productBugRun(priorCycleEnd.Add(-time.Minute), "old-2"),
+		productBugRun(priorCycleEnd, "old-3"),
 	}
 	// 1 new run in the current cycle — must NOT count prior runs toward the cap.
-	priorRuns = append(priorRuns, AgentRunInfo{Role: testRunnerRole, StartedAt: newCycleStart.Add(time.Minute)})
+	priorRuns = append(priorRuns, productBugRun(newCycleStart.Add(time.Minute), "new-1"))
 	runs := priorRuns
 
 	out, err := runRouteTestResult(e, tasks, "t4", "FAIL", newCycleStart, runs, &newCycleStart)
@@ -816,15 +1050,15 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 
 	// 3 prior-cycle runs (must be ignored).
 	priorRuns := []AgentRunInfo{
-		{Role: testRunnerRole, StartedAt: priorCycleEnd.Add(-2 * time.Minute)},
-		{Role: testRunnerRole, StartedAt: priorCycleEnd.Add(-time.Minute)},
-		{Role: testRunnerRole, StartedAt: priorCycleEnd},
+		productBugRun(priorCycleEnd.Add(-2*time.Minute), "old-1"),
+		productBugRun(priorCycleEnd.Add(-time.Minute), "old-2"),
+		productBugRun(priorCycleEnd, "old-3"),
 	}
 	// 3 new-cycle runs — cap=3 → escalate.
 	newRuns := []AgentRunInfo{
-		{Role: testRunnerRole, StartedAt: newCycleStart.Add(time.Minute)},
-		{Role: testRunnerRole, StartedAt: newCycleStart.Add(2 * time.Minute)},
-		{Role: testRunnerRole, StartedAt: newCycleStart.Add(3 * time.Minute)},
+		productBugRun(newCycleStart.Add(time.Minute), "new-1"),
+		productBugRun(newCycleStart.Add(2*time.Minute), "new-2"),
+		productBugRun(newCycleStart.Add(3*time.Minute), "new-3"),
 	}
 	priorRuns = append(priorRuns, newRuns...)
 	runs := priorRuns

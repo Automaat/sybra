@@ -679,7 +679,10 @@ func urlOrPlaceholder(url, title string) string {
 // re-spawn so the task is not permanently stranded in human-required.
 func verdictAlreadyRendered(t task.Task) bool {
 	for i := range t.AgentRuns {
-		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) && t.AgentRuns[i].VerdictRendered {
+		if t.AgentRuns[i].Role != string(agent.RoleHumanReview) || !t.AgentRuns[i].VerdictRendered {
+			continue
+		}
+		if t.TestingCycleStartedAt == nil || !t.AgentRuns[i].StartedAt.Before(*t.TestingCycleStartedAt) {
 			return true
 		}
 	}
