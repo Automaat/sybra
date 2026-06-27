@@ -48,6 +48,12 @@ const (
 	testProtocolMissingEvidence = "missing-evidence"
 )
 
+type structuredTestOutput struct {
+	Verdict          string `json:"verdict"`
+	Outcome          string `json:"outcome,omitempty"`
+	FailuresMarkdown string `json:"failures_markdown,omitempty"`
+}
+
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
 // test-runner starts. This prevents a protocol violation from a prior retry
 // from poisoning a clean retry.
@@ -60,6 +66,141 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictTaintedKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictOutcomeKey)
 	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
+}
+
+func (e *Engine) prepareTestStepCompletion(taskID string, output *StepOutput, wfExec *Execution, body *string) error {
+	if appended, nextBody, appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
+		return appendErr
+	} else if appended {
+		*body = nextBody
+	}
+
+	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body)
+	if output.AgentID != "" && outcome != "" {
+		if err := e.tasks.MarkAgentRunTestOutcome(taskID, output.AgentID, outcome, fingerprint); err != nil {
+			return fmt.Errorf("mark test outcome: %w", err)
+		}
+	}
+	if output.AgentID != "" && violation != "" {
+		if err := e.tasks.MarkAgentRunProtocolViolation(taskID, output.AgentID, violation); err != nil {
+			return fmt.Errorf("mark test protocol violation: %w", err)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExec *Execution, body string) (appended bool, nextBody string, err error) {
+	if wfExec == nil || output.StepID != testVerdictSourceStep {
+		return false, body, nil
+	}
+	if output.Status != "completed" {
+		return false, body, nil
+	}
+
+	report := ""
+	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
+		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
+			return false, body, nil
+		}
+		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
+	} else if extractTestVerdict(output.Output) == "FAIL" {
+		report = plainTestFailureReport(output.Output)
+	}
+	if report == "" {
+		return false, body, nil
+	}
+	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
+		return false, body, nil
+	}
+	if err := e.tasks.AppendTaskBody(taskID, report); err != nil {
+		return false, body, fmt.Errorf("append test failure report: %w", err)
+	}
+	return true, appendRawBody(body, report), nil
+}
+
+func plainTestFailureReport(output string) string {
+	section := testFailSectionOf(output)
+	if section == "" {
+		return ""
+	}
+	return stripTestVerdictMarkers(section)
+}
+
+func parseStructuredTestOutput(output string) (structuredTestOutput, bool) {
+	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
+	if !strings.HasPrefix(s, "{") {
+		return structuredTestOutput{}, false
+	}
+	var parsed structuredTestOutput
+	if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+		return structuredTestOutput{}, false
+	}
+	return parsed, true
+}
+
+func normalizeStructuredFailuresMarkdown(report, outcome string) string {
+	report = strings.TrimSpace(report)
+	if report == "" {
+		return ""
+	}
+	report = stripTestVerdictMarkers(report)
+	outcome = normalizeTestOutcome(outcome)
+	if testFailSectionOf(report) == "" {
+		prefix := testFailuresHeading + "\n\n"
+		if outcome != "" {
+			prefix += "Classification: " + outcome + "\n\n"
+		}
+		return prefix + report + "\n"
+	}
+	if outcome == "" || explicitTestOutcome(report) != "" {
+		return report + "\n"
+	}
+	return insertClassificationAfterFailuresHeading(report, outcome) + "\n"
+}
+
+func insertClassificationAfterFailuresHeading(report, outcome string) string {
+	lines := strings.Split(report, "\n")
+	for i, line := range lines {
+		if strings.EqualFold(strings.TrimSpace(line), testFailuresHeading) {
+			out := append([]string{}, lines[:i+1]...)
+			out = append(out, "", "Classification: "+outcome)
+			out = append(out, lines[i+1:]...)
+			return strings.Join(out, "\n")
+		}
+	}
+	return report
+}
+
+func appendRawBody(body, content string) string {
+	body = strings.TrimRight(body, "\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	return body + strings.TrimSpace(content) + "\n"
+}
+
+func stripTestVerdictMarkers(report string) string {
+	lines := strings.Split(report, "\n")
+	lastNonEmpty := -1
+	lastNonEmptyInFence := false
+	inFence := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			lastNonEmpty = i
+			lastNonEmptyInFence = inFence
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+		}
+	}
+	if lastNonEmpty >= 0 && !lastNonEmptyInFence {
+		trimmed := strings.TrimSpace(lines[lastNonEmpty])
+		if trimmed == testVerdictPass || trimmed == testVerdictFail {
+			lines = append(lines[:lastNonEmpty], lines[lastNonEmpty+1:]...)
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // applyTestVerdictCompletion extracts the machine verdict from run_test output,
@@ -164,6 +305,11 @@ func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID 
 }
 
 func currentTestFailureReport(output, body string, wfExec *Execution, stepID string) string {
+	if parsed, ok := parseStructuredTestOutput(output); ok {
+		if report := normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome); report != "" {
+			return report
+		}
+	}
 	if section := testFailSectionOf(output); section != "" {
 		return section
 	}
@@ -246,8 +392,9 @@ func hasGroundedFailureEvidence(report string) bool {
 		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
 		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ")
 	hasObserved := containsAny(lower,
-		"actual output:", "actual:", "observed:", "stdout:", "stderr:",
-		"exit code", "printed:", "rendered:")
+		"actual output:", "actual:", "observed:", "observed output:",
+		"command output:", "stdout:", "stderr:", "exit code",
+		"printed:", "rendered:")
 	hasExpected := containsAny(lower,
 		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
 		"violates", "should render", "should not")
@@ -312,11 +459,32 @@ func testFailureBodyDelta(body string, wfExec *Execution, stepID string) (string
 // to the part the runner authored under failure context, reducing false
 // positives from quoted app error messages or task description prose.
 func testFailSectionOf(output string) string {
-	idx := strings.Index(strings.ToLower(output), strings.ToLower(testFailuresHeading))
-	if idx < 0 {
-		return ""
+	inFence := false
+	offset := 0
+	for _, line := range strings.SplitAfter(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			offset += len(line)
+			continue
+		}
+		if !inFence && isTestFailuresHeading(trimmed) {
+			return output[offset:]
+		}
+		offset += len(line)
 	}
-	return output[idx:]
+	return ""
+}
+
+func isTestFailuresHeading(line string) bool {
+	if !strings.HasPrefix(strings.ToLower(line), strings.ToLower(testFailuresHeading)) {
+		return false
+	}
+	if len(line) == len(testFailuresHeading) {
+		return true
+	}
+	next := line[len(testFailuresHeading)]
+	return next == '('
 }
 
 // containsFixSuggestions reports whether the test-runner output includes
@@ -604,7 +772,10 @@ func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (i
 			continue
 		}
 		switch run.TestOutcome {
-		case "", testOutcomeProductBug:
+		case testOutcomeProductBug:
+			if run.TestFailureFingerprint == "" {
+				continue
+			}
 			attempts++
 			if currentFingerprint != "" && run.TestFailureFingerprint == currentFingerprint {
 				lastMatchingFailure = currentMatchingFailure

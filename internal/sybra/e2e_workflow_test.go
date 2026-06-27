@@ -1998,9 +1998,10 @@ func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pre-seed two prior test-runner attempts; this run is the third → cap hit.
-	for range 2 {
+	for i := range 2 {
 		if err := env.tasks.AddRun(created.ID, task.AgentRun{
-			AgentID: "prior", Role: "test-runner", Mode: "headless", State: "stopped",
+			AgentID: fmt.Sprintf("prior-%d", i), Role: "test-runner", Mode: "headless", State: "stopped",
+			TestOutcome: "product_bug", TestFailureFingerprint: fmt.Sprintf("prior-fp-%d", i),
 		}); err != nil {
 			t.Fatal(err)
 		}

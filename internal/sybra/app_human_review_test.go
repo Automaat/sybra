@@ -463,6 +463,48 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	}
 }
 
+func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Re-tested task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	cycleStart := time.Now().UTC()
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:                task.Ptr(task.StatusHumanRequired),
+		TestingCycleStartedAt: &cycleStart,
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "agent-old-review",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		StartedAt:       cycleStart.Add(-time.Minute),
+		Verdict:         "human",
+		VerdictRendered: true,
+	}); err != nil {
+		t.Fatalf("add prior run: %v", err)
+	}
+
+	panicked := func() (p bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				p = true
+			}
+		}()
+		h.maybeSpawn(tk.ID, "")
+		return false
+	}()
+	if !panicked {
+		t.Fatal("expected spawn attempt; old rendered verdict must not block a new testing cycle")
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testing.T) {
 	t.Parallel()
 	// Regression test for the crash-window: Verdict persisted by onAgentComplete

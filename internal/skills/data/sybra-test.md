@@ -15,7 +15,11 @@ You run headless, inside the task's own git worktree, with no human in the loop.
 
 ## Output contract (required)
 
-The **final line** of your output MUST be exactly one of:
+If your runtime enforces a JSON output schema, return a JSON object with
+`verdict` (`PASS` or `FAIL`), optional `outcome`, and on FAIL a
+`failures_markdown` string containing the full `## Test Failures` report.
+
+Otherwise, the **final line** of your output MUST be exactly one of:
 
 ```
 TEST_VERDICT: PASS
@@ -26,12 +30,9 @@ TEST_VERDICT: FAIL
 
 `PASS` only when you genuinely could not break it. Anything ambiguous, unreproducible-but-suspicious, or unverifiable → `FAIL` (be conservative; a false PASS ships a broken feature).
 
-On **FAIL**, before printing the verdict, append a `## Test Failures` section to the task body so the re-implementation agent sees it:
-
-```bash
-sybra-cli get <task-id>                      # read current body
-sybra-cli update <task-id> --body "<full body + ## Test Failures>"
-```
+On **FAIL**, include a `## Test Failures` section in your final output (or in
+`failures_markdown` for JSON output). Do **not** call `sybra-cli update` or
+mutate the task body; Sybra ingests your final report and appends it atomically.
 
 In `## Test Failures` record, per defect: what you did (exact steps/commands), what you expected (cite the task), what actually happened (paste the error/output). **Describe symptoms only — do NOT propose fixes.** The implementer diagnoses; you report.
 

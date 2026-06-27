@@ -71,6 +71,7 @@ type TaskProvider interface {
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
+	AppendTaskBody(id, content string) error
 	SetWorkflow(id string, wf *Execution) error
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the

@@ -134,6 +134,11 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, updates)
 }
 
+func (a *taskAdapter) AppendTaskBody(id, content string) error {
+	_, err := a.tasks.AppendBody(id, content)
+	return err
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err

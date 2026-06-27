@@ -250,6 +250,33 @@ func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
 	return m.Update(id, u)
 }
 
+// AppendBody appends markdown to a task body under the per-task mutation lock.
+func (m *Manager) AppendBody(id, content string) (Task, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return m.Get(id)
+	}
+	mu := m.lockFor(id)
+	mu.Lock()
+	defer mu.Unlock()
+	t, err := m.store.Get(id)
+	if err != nil {
+		return Task{}, err
+	}
+	body := strings.TrimRight(t.Body, "\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	body += content + "\n"
+	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	if err != nil {
+		return t, err
+	}
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	return t, nil
+}
+
 // Delete removes a task and emits task:deleted.
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
