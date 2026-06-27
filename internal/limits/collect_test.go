@@ -1,6 +1,9 @@
 package limits
 
 import (
+	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -196,5 +199,107 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	}
 	if codex.SessionPremiumRequests != 2 || codex.WeeklyPremiumRequests != 2 {
 		t.Fatalf("premium requests = session %d weekly %d, want 2/2", codex.SessionPremiumRequests, codex.WeeklyPremiumRequests)
+	}
+}
+
+func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	if err := s.Import(
+		[]UsageEvent{
+			{ID: "claude-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 10},
+			{ID: "claude-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 99},
+			{ID: "codex-1", Provider: ProviderCodex, Source: SourceSessionFiles, InputTokens: 20, Timestamp: now.Add(-time.Minute)},
+		},
+		[]Snapshot{
+			{Provider: ProviderCodex, Source: SourceSessionFiles, Confidence: ConfidenceExact, PlanType: "new", CapturedAt: now},
+			{Provider: ProviderCodex, Source: SourceSessionFiles, Confidence: ConfidenceExact, PlanType: "old", CapturedAt: now.Add(-time.Hour)},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s.events) != 2 {
+		t.Fatalf("events = %d, want 2 after duplicate import", len(s.events))
+	}
+	if s.events[0].Timestamp != now {
+		t.Fatalf("zero timestamp was not normalized: %v", s.events[0].Timestamp)
+	}
+	snap, ok := s.Snapshot(ProviderCodex)
+	if !ok || snap.PlanType != "new" {
+		t.Fatalf("snapshot = %+v, ok=%v; want latest snapshot", snap, ok)
+	}
+
+	reopened, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.events) != 2 {
+		t.Fatalf("persisted events = %d, want 2", len(reopened.events))
+	}
+	snap, ok = reopened.Snapshot(ProviderCodex)
+	if !ok || snap.PlanType != "new" {
+		t.Fatalf("persisted snapshot = %+v, ok=%v; want latest snapshot", snap, ok)
+	}
+}
+
+func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	batch := newSessionImport()
+
+	batch.addEvent(UsageEvent{ID: "event-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 1})
+	batch.addEvent(UsageEvent{ID: "event-1", Provider: ProviderClaude, Source: SourceSessionFiles, InputTokens: 2})
+	batch.addEvent(UsageEvent{ID: "", Provider: ProviderClaude, Source: SourceSessionFiles})
+
+	batch.addSnapshot(Snapshot{Provider: ProviderCodex, PlanType: "new", CapturedAt: now})
+	batch.addSnapshot(Snapshot{Provider: ProviderCodex, PlanType: "old", CapturedAt: now.Add(-time.Hour)})
+
+	if len(batch.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(batch.events))
+	}
+	snapshots := batch.snapshotsList()
+	if len(snapshots) != 1 || snapshots[0].PlanType != "new" {
+		t.Fatalf("snapshots = %+v, want latest only", snapshots)
+	}
+}
+
+func TestBackfillLocalSessionFiles_StopsOnCanceledContext(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = s.BackfillLocalSessionFiles(ctx, time.Time{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BackfillLocalSessionFiles error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWalkJSONL_StopsOnCanceledContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "session.jsonl"), []byte(`{"type":"message"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	err := walkJSONL(ctx, root, time.Time{}, func(string, int64, []byte) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("walkJSONL error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("walkJSONL callback ran after context cancellation")
 	}
 }

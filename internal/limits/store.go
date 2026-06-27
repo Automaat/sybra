@@ -66,8 +66,43 @@ func NewStore(path string) (*Store, error) {
 }
 
 func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
-	if snapshot.Provider == "" {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.updateSnapshotLocked(snapshot) {
 		return nil
+	}
+	return s.flushLocked()
+}
+
+func (s *Store) RecordUsage(e UsageEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.recordUsageLocked(e) {
+		return nil
+	}
+	return s.flushLocked()
+}
+
+// Import records a batch of parsed session-file data and flushes at most once.
+func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for i := range snapshots {
+		changed = s.updateSnapshotLocked(snapshots[i]) || changed
+	}
+	for i := range events {
+		changed = s.recordUsageLocked(events[i]) || changed
+	}
+	if !changed {
+		return nil
+	}
+	return s.flushLocked()
+}
+
+func (s *Store) updateSnapshotLocked(snapshot Snapshot) bool {
+	if snapshot.Provider == "" {
+		return false
 	}
 	if snapshot.CapturedAt.IsZero() {
 		snapshot.CapturedAt = s.now().UTC()
@@ -78,31 +113,27 @@ func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
 	if snapshot.Confidence == "" {
 		snapshot.Confidence = ConfidenceExact
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	prev, ok := s.snapshots[snapshot.Provider]
 	if ok && snapshot.CapturedAt.Before(prev.CapturedAt) {
-		return nil
+		return false
 	}
 	s.snapshots[snapshot.Provider] = snapshot
-	return s.flushLocked()
+	return true
 }
 
-func (s *Store) RecordUsage(e UsageEvent) error {
+func (s *Store) recordUsageLocked(e UsageEvent) bool {
 	if e.ID == "" || e.Provider == "" {
-		return nil
+		return false
 	}
 	if e.Timestamp.IsZero() {
 		e.Timestamp = s.now().UTC()
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.seen[e.ID]; ok {
-		return nil
+		return false
 	}
 	s.events = append(s.events, e)
 	s.seen[e.ID] = struct{}{}
-	return s.flushLocked()
+	return true
 }
 
 func (s *Store) Snapshot(provider string) (Snapshot, bool) {
