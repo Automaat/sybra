@@ -33,12 +33,12 @@ type Record struct {
 	StartedAt      time.Time `yaml:"started_at"`
 	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
 	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
+	OneShot        bool      `yaml:"one_shot,omitempty"`
 	MaxTurns       int       `yaml:"max_turns,omitempty"`
 	// RequirePermissions preserves a codex chat's sandbox/approval choice
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).
 	RequirePermissions bool `yaml:"require_permissions,omitempty"`
-	OneShot            bool `yaml:"one_shot,omitempty"`
 	// ReasoningEffort preserves the codex model_reasoning_effort across restarts.
 	// Codex convo respawns a fresh process per turn — without this the effort
 	// would revert to model default after a restart.

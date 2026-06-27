@@ -61,10 +61,13 @@ func (s *Store) All() []RunRecord {
 }
 
 func (s *Store) Query() StatsResponse {
+	return s.QueryAt(time.Now())
+}
+
+func (s *Store) QueryAt(now time.Time) StatsResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())

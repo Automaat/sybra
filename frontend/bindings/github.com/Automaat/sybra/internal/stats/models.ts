@@ -251,6 +251,7 @@ export class Summary {
     "totalCacheReadInputTokens"?: number;
     "totalReasoningTokens"?: number;
     "totalPremiumRequests"?: number;
+    "tasksDone": number;
 
     /** Creates a new Summary instance. */
     constructor($$source: Partial<Summary> = {}) {
@@ -274,6 +275,9 @@ export class Summary {
         }
         if (!("totalOutputTokens" in $$source)) {
             this["totalOutputTokens"] = 0;
+        }
+        if (!("tasksDone" in $$source)) {
+            this["tasksDone"] = 0;
         }
 
         Object.assign(this, $$source);

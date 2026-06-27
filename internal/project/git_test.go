@@ -1119,11 +1119,11 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 	}
 
 	// Branch should exist on fork, not origin.
-	forkOut, _ := exec.Command("git", "-C", forkBare, "branch", "--list", "sybra/route-test").Output()
+	forkOut, _ := exec.Command("git", "-c", "safe.bareRepository=all", "-C", forkBare, "branch", "--list", "sybra/route-test").Output()
 	if strings.TrimSpace(string(forkOut)) == "" {
 		t.Error("branch missing on fork after PushUpstream")
 	}
-	originOut, _ := exec.Command("git", "-C", originBare, "branch", "--list", "sybra/route-test").Output()
+	originOut, _ := exec.Command("git", "-c", "safe.bareRepository=all", "-C", originBare, "branch", "--list", "sybra/route-test").Output()
 	if strings.TrimSpace(string(originOut)) != "" {
 		t.Errorf("branch should not exist on origin; got %q", originOut)
 	}
@@ -1379,7 +1379,7 @@ func setupPushSyncWorktree(t *testing.T) (remoteBare, wtPath, wtBranch string) {
 		t.Fatalf("init remote bare: %v: %s", err, out)
 	}
 	// Enable reflog on the bare so we can count actual ref updates per branch.
-	if out, err := exec.Command("git", "-C", remoteBare, "config", "core.logAllRefUpdates", "true").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", remoteBare, "config", "core.logAllRefUpdates", "true").CombinedOutput(); err != nil {
 		t.Fatalf("config logAllRefUpdates: %v: %s", err, out)
 	}
 	for _, args := range [][]string{
@@ -1446,7 +1446,7 @@ func makeCommit(t *testing.T, wtPath, content string) string {
 // remoteRefSHA returns the SHA the remote bare resolves for branch, or "" if absent.
 func remoteRefSHA(t *testing.T, remoteBare, branch string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", remoteBare, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "-C", remoteBare, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -1457,7 +1457,7 @@ func remoteRefSHA(t *testing.T, remoteBare, branch string) string {
 // remoteReflogCount returns the number of reflog entries for branch on the remote bare.
 func remoteReflogCount(t *testing.T, remoteBare, branch string) int {
 	t.Helper()
-	cmd := exec.Command("git", "-C", remoteBare, "reflog", "show", "refs/heads/"+branch)
+	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "-C", remoteBare, "reflog", "show", "refs/heads/"+branch)
 	out, _ := cmd.Output() // empty output is fine when the ref has no entries yet
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" {
@@ -1529,7 +1529,7 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	}
 
 	// Reject force-pushes on the remote so a fast-forward must succeed without force.
-	if out, err := exec.Command("git", "-C", remoteBare, "config", "receive.denyNonFastForwards", "true").CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", remoteBare, "config", "receive.denyNonFastForwards", "true").CombinedOutput(); err != nil {
 		t.Fatalf("denyNonFastForwards: %v: %s", err, out)
 	}
 
@@ -1626,7 +1626,7 @@ func TestFetchPRHead(t *testing.T) {
 	if ref != "refs/sybra/pr/42" {
 		t.Errorf("ref = %q, want refs/sybra/pr/42", ref)
 	}
-	got, err := exec.Command("git", "-C", bare, "rev-parse", ref).CombinedOutput()
+	got, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", ref).CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse %s: %v: %s", ref, err, got)
 	}

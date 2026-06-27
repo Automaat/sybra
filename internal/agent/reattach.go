@@ -236,14 +236,6 @@ func convoResumeState(evs []ConvoEvent) State {
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
 func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
-	if r.OneShot {
-		// A one-shot per-turn agent (Codex implement) has no follow-up turns.
-		// If it was interrupted, it's dead. Delete it so recovery can re-queue it.
-		_ = reg.Delete(r.ID)
-		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive", "oneshot", true)
-		return nil
-	}
-
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
 	// was down — that would leak a zombie agent gcOrphanChats can't reap.
@@ -258,6 +250,10 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	a := agentFromRecord(r)
 	if r.LogPath != "" {
 		rehydratePerTurnConvoFromLog(a, r.LogPath)
+	}
+	if r.OneShot {
+		m.finalizePerTurnOneShot(r, a, reg)
+		return nil
 	}
 	a.SetState(StatePaused)
 
@@ -283,6 +279,19 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	go m.runPerTurnConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
+}
+
+func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg *registryStore) {
+	if found, isError := a.lastConvoResult(); !found {
+		a.SetExitErr(errReattachedGone)
+	} else if isError {
+		a.SetExitErr(errReattachedResultError)
+	}
+	a.SetState(StateStopped)
+	m.logger.Info("agent.reattach.per-turn-oneshot.done", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
+	m.emit(events.AgentState(a.ID), a)
+	m.fireComplete(a, a.GetExitErr() == nil)
+	_ = reg.Delete(r.ID)
 }
 
 // reattachHeadless tails a reattached subprocess's log file from
@@ -433,7 +442,7 @@ func agentFromRecord(r Record) *Agent {
 		LastEventAt:        time.Now().UTC(),
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
-		OneShot:            r.OneShot,
+		oneShot:            r.OneShot,
 		stdinPath:          r.StdinPath,
 		requirePermissions: r.RequirePermissions,
 		ReasoningEffort:    r.ReasoningEffort,

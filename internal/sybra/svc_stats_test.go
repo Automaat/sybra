@@ -3,9 +3,57 @@ package sybra
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/task"
 )
+
+func TestAggregateTasksDone(t *testing.T) {
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC) // A Monday
+
+	t1Time := now.Add(-1 * time.Hour)       // Today
+	t2Time := now.Add(-2 * 24 * time.Hour)  // Last week (Saturday)
+	t3Time := now.Add(-5 * 24 * time.Hour)  // Last week (Wednesday)
+	t4Time := now.Add(-20 * 24 * time.Hour) // Last month
+	t5Time := now.AddDate(0, -2, 0)         // A long time ago
+
+	list := []task.Task{
+		{Status: task.StatusDone, UpdatedAt: t1Time},
+		{Status: task.StatusDone, UpdatedAt: t2Time}, // closed at will be set
+		{Status: task.StatusDone, UpdatedAt: t3Time},
+		{Status: task.StatusDone, UpdatedAt: t4Time},
+		{Status: task.StatusDone, UpdatedAt: t5Time},
+		{Status: task.StatusInProgress, UpdatedAt: now}, // Ignored
+	}
+
+	// Make t2 ClosedAt be today, to test ClosedAt taking precedence over UpdatedAt
+	t2ClosedAt := now.Add(-2 * time.Hour)
+	list[1].ClosedAt = &t2ClosedAt
+
+	var resp stats.StatsResponse
+	aggregateTasksDone(&resp, list, now)
+
+	// AllTime: 5 done tasks
+	if resp.AllTime.TasksDone != 5 {
+		t.Errorf("AllTime: got %d, want 5", resp.AllTime.TasksDone)
+	}
+
+	// Today: t1 and t2
+	if resp.Today.TasksDone != 2 {
+		t.Errorf("Today: got %d, want 2", resp.Today.TasksDone)
+	}
+
+	// ThisWeek (since June 14, Sunday): t1, t2
+	if resp.ThisWeek.TasksDone != 2 {
+		t.Errorf("ThisWeek: got %d, want 2", resp.ThisWeek.TasksDone)
+	}
+
+	// ThisMonth (since June 1): t1, t2, t3
+	if resp.ThisMonth.TasksDone != 3 {
+		t.Errorf("ThisMonth: got %d, want 3", resp.ThisMonth.TasksDone)
+	}
+}
 
 func TestAggregateByProjectType(t *testing.T) {
 	byProject := []stats.GroupedStat{

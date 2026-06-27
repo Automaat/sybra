@@ -454,6 +454,13 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 		if ev.SessionID != "" {
 			a.SetSessionID(ev.SessionID)
 		}
+		if ev.Type == "result" {
+			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
+			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
+			if ev.PremiumRequests > 0 {
+				a.AddPremiumRequests(ev.PremiumRequests)
+			}
+		}
 	}
 }
 

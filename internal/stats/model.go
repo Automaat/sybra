@@ -55,6 +55,7 @@ type Summary struct {
 	TotalCacheReadInputTokens     int     `json:"totalCacheReadInputTokens,omitempty"`
 	TotalReasoningTokens          int     `json:"totalReasoningTokens,omitempty"`
 	TotalPremiumRequests          float64 `json:"totalPremiumRequests,omitempty"`
+	TasksDone                     int     `json:"tasksDone"`
 }
 
 // GroupedStat is an aggregate keyed by a dimension (project, mode, etc).
