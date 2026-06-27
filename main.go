@@ -21,10 +21,12 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/notification"
@@ -36,20 +38,27 @@ import (
 var assets embed.FS
 
 func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
+	code, err := run()
+	if err != nil {
+		log.Print(err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if code != 0 {
+		os.Exit(code)
 	}
 }
 
-func run() error {
+func run() (int, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("config: %w", err)
+		return 1, fmt.Errorf("config: %w", err)
 	}
 
 	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
-		return fmt.Errorf("logging: %w", err)
+		return 1, fmt.Errorf("logging: %w", err)
 	}
 	defer cleanup()
 
@@ -60,6 +69,8 @@ func run() error {
 
 	v3emit := func(string, any) {}
 	v3openBrowser := func(string) {}
+	var restartRequested atomic.Bool
+	var v3app *application.App
 
 	sybraApp := sybra.NewApp(logger, levelVar, cfg,
 		sybra.WithSkillsFS(skills.FS),
@@ -67,18 +78,18 @@ func run() error {
 			return func(event string, data any) { v3emit(event, data) }
 		}),
 		sybra.WithBrowserOpener(func(url string) { v3openBrowser(url) }),
+		sybra.WithRestartRequest(func() {
+			restartRequested.Store(true)
+			if v3app != nil {
+				v3app.Quit()
+			}
+		}),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := sybraApp.Startup(ctx); err != nil {
-		logger.Error("app.startup.fatal", "err", err)
-		return fmt.Errorf("sybra startup: %w", err)
-	}
-	defer sybraApp.Shutdown(ctx)
-
-	v3app := application.New(application.Options{
+	v3app = application.New(application.Options{
 		Name:        "Sybra",
 		Description: "Sybra orchestrator",
 		LogLevel:    slog.LevelInfo,
@@ -111,6 +122,15 @@ func run() error {
 	v3emit = desktopEvents.Emit
 	v3openBrowser = func(url string) { openInAppBrowser(v3app, url) }
 
+	if err := sybraApp.Startup(ctx); err != nil {
+		logger.Error("app.startup.fatal", "err", err)
+		return 1, fmt.Errorf("sybra startup: %w", err)
+	}
+	defer sybraApp.Shutdown(ctx)
+	if restartRequested.Load() {
+		return autoupdate.RestartExitCode, nil
+	}
+
 	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Sybra",
 		Width:            1280,
@@ -119,7 +139,13 @@ func run() error {
 		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
 	})
 
-	return v3app.Run()
+	if err := v3app.Run(); err != nil {
+		return 1, err
+	}
+	if restartRequested.Load() {
+		return autoupdate.RestartExitCode, nil
+	}
+	return 0, nil
 }
 
 // openInAppBrowser opens url in a fresh in-app webview window. The window uses
