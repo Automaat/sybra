@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -157,6 +158,97 @@ func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 	}
 	if summary.CreatedByMe[0].HasPendingChecks {
 		t.Error("HasPendingChecks = true, want false")
+	}
+}
+
+func TestFetchReviewsWith_actionableReviewThreads(t *testing.T) {
+	t.Parallel()
+	createdResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {
+				"nodes": [
+					{
+						"number": 1,
+						"title": "my PR",
+						"url": "https://github.com/o/r/pull/1",
+						"author": {"login": "me", "type": "User"},
+						"repository": {"name": "r", "nameWithOwner": "o/r"},
+						"labels": {"nodes": []},
+						"commits": {"nodes": []},
+						"reviewThreads": {"nodes": [
+							{
+								"id": "T1",
+								"isResolved": false,
+								"comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer"}}]}
+							}
+						]},
+						"latestReviews": {"nodes": [
+							{"state": "COMMENTED", "author": {"login": "copilot-pull-request-reviewer"}}
+						]}
+					}
+				]
+			}
+		}
+	}`
+	emptyResponse := `{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {"nodes": []}
+		}
+	}`
+
+	fe := &sequenceExecer{outputs: [][]byte{
+		[]byte(createdResponse),
+		[]byte(emptyResponse),
+		[]byte(emptyResponse),
+	}}
+	summary, err := fetchReviewsWith(fe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pr := summary.CreatedByMe[0]
+	if pr.UnresolvedCount != 1 {
+		t.Errorf("UnresolvedCount = %d, want 1", pr.UnresolvedCount)
+	}
+	if pr.ActionableCount != 1 {
+		t.Errorf("ActionableCount = %d, want 1", pr.ActionableCount)
+	}
+	if pr.FeedbackSig == "" {
+		t.Error("FeedbackSig is empty, want unresolved thread id included")
+	}
+	if !pr.CopilotReviewed {
+		t.Error("CopilotReviewed = false, want true")
+	}
+}
+
+func TestFetchReviewSearchWith_queryRequestsActionableThreadSignals(t *testing.T) {
+	t.Parallel()
+	fe := &recordingExecer{output: []byte(`{
+		"data": {
+			"viewer": {"login": "me"},
+			"search": {"nodes": []}
+		}
+	}`)}
+
+	if _, err := fetchReviewSearchWith(fe, "is:pr is:open author:@me"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var query string
+	for _, arg := range fe.lastArgs {
+		if after, ok := strings.CutPrefix(arg, "query="); ok {
+			query = after
+			break
+		}
+	}
+	if query == "" {
+		t.Fatal("graphql query argument not captured")
+	}
+	normalized := strings.Join(strings.Fields(query), " ")
+	want := "reviewThreads(first: 100) { nodes { id isResolved comments(last: 1) { nodes { author { login } } } } }"
+	if !strings.Contains(normalized, want) {
+		t.Errorf("reviewThreads selection missing actionable thread signals\nwant fragment: %s\nquery: %s", want, normalized)
 	}
 }
 
