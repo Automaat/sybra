@@ -64,21 +64,32 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 // CreateTask creates a new task and starts a matching workflow.
 // If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
-	t, err := s.tasks.Create(title, body, mode)
+	prRepo, prNumber := github.ParsePRURL(title)
+	issueRepo, issueNumber := github.ParseIssueURL(title)
+	isURLStub := prRepo != "" || issueRepo != ""
+
+	// A URL stub is created with the enrich-pending marker so the emit-path
+	// task.created dispatch can't race async enrichment and start a flat
+	// workflow on the un-enriched stub (CreateFull persists the tag before
+	// emitting TaskCreated). Non-URL tasks take the plain create path.
+	var t task.Task
+	var err error
+	if isURLStub {
+		t, err = s.tasks.CreateFull(title, body, mode, task.Update{Tags: task.Ptr([]string{enrichPendingTag})})
+	} else {
+		t, err = s.tasks.Create(title, body, mode)
+	}
 	if err != nil {
 		return t, err
 	}
-	isIssueURL := false
-	// Enrich from GitHub PR URL if title looks like one.
-	if repo, number := github.ParsePRURL(title); repo != "" {
+
+	if prRepo != "" {
 		s.wg.Go(func() {
-			s.enrichFromPR(t.ID, repo, number)
+			s.enrichFromPR(t.ID, prRepo, prNumber)
 		})
-	} else if repo, number := github.ParseIssueURL(title); repo != "" {
-		isIssueURL = true
-		// Enrich from GitHub issue URL if title looks like one.
+	} else if issueRepo != "" {
 		s.wg.Go(func() {
-			s.enrichFromIssue(t.ID, repo, number)
+			s.enrichFromIssue(t.ID, issueRepo, issueNumber)
 		})
 	}
 	if s.audit != nil {
@@ -88,8 +99,9 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 			Data:   map[string]any{"title": title, "mode": mode},
 		})
 	}
-	// Match and start a workflow for the new task.
-	if !isIssueURL {
+	// A URL stub is dispatched by its enrich step (after the marker clears);
+	// only plain tasks start their workflow here.
+	if !isURLStub {
 		s.startCreatedWorkflow(t)
 	}
 	return t, nil
@@ -240,11 +252,10 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		Branch:    task.Ptr(pr.HeadRefName),
 		Slug:      task.Ptr(slug),
 	}
-	var labels []string
-	if len(pr.Labels) > 0 {
-		labels = pr.Labels
-		u.Tags = &labels
-	}
+	// Replace tags with the PR's labels (possibly empty), which also clears the
+	// enrich-pending marker set on the URL stub at creation.
+	labels := pr.Labels
+	u.Tags = &labels
 
 	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
@@ -352,10 +363,10 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	if len(issue.Labels) > 0 {
-		labels := issue.Labels
-		u.Tags = &labels
-	}
+	// Replace tags with the issue's labels (possibly empty), which also clears
+	// the enrich-pending marker so startCreatedWorkflow below can dispatch.
+	labels := issue.Labels
+	u.Tags = &labels
 	linkedPRs, linkedErr := s.fetchIssueLinkedPRsFunc()(repo, number)
 	if linkedErr != nil {
 		s.logger.Warn("enrich-issue.linked-prs", "task_id", taskID, "repo", repo, "number", number, "err", linkedErr)
@@ -402,7 +413,10 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 		return
 	}
 	// Expand created the real tracker + children; the stub is now a duplicate.
-	if delErr := s.tasks.Delete(taskID); delErr != nil {
+	// Use DeleteTask (not the raw store Delete) so any agent/sandbox/worktree
+	// that started on the stub — e.g. if a flat workflow won the create race
+	// before the enrich-pending marker took effect — is torn down, not leaked.
+	if delErr := s.DeleteTask(taskID); delErr != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", delErr)
 		// Cleanup failed: enrich the stub so it is an identifiable,
 		// user-deletable duplicate rather than a raw-URL task with no metadata.
@@ -429,10 +443,10 @@ func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	if len(issue.Labels) > 0 {
-		labels := issue.Labels
-		u.Tags = &labels
-	}
+	// Replace tags with the issue's labels (possibly empty), preserving them for
+	// identification/routing while clearing the enrich-pending marker.
+	labels := issue.Labels
+	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
 	}

@@ -189,6 +189,59 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	}
 }
 
+func TestSkipTaskCreatedWorkflow_EnrichPendingStub(t *testing.T) {
+	t.Parallel()
+	if !skipTaskCreatedWorkflow(task.Task{Tags: []string{enrichPendingTag}}) {
+		t.Fatal("enrich-pending stub must be skipped by the emit-path dispatch")
+	}
+	if skipTaskCreatedWorkflow(task.Task{Tags: []string{"backend"}}) {
+		t.Fatal("an ordinary task must not be skipped")
+	}
+}
+
+func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	releaseFetch := make(chan struct{})
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		<-releaseFetch
+		return github.Issue{
+			Number:     13,
+			Title:      "plain issue",
+			URL:        "https://github.com/owner/repo/issues/13",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	svc.viewerLogin = func() string { return "me" }
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/13", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before enrichment: the stub carries the marker so the emit-path
+	// task.created dispatch skips it (no flat workflow on a raw-URL stub).
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
+	}
+	if skipTaskCreatedWorkflow(got) != true {
+		t.Fatal("stub must be skipped while enrich-pending")
+	}
+
+	// After enrichment: marker is cleared and the workflow dispatches.
+	close(releaseFetch)
+	svc.wg.Wait()
+	got = waitForWorkflow(t, svc, created.ID)
+	if slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, enrich-pending marker should be cleared after enrichment", got.Tags)
+	}
+}
+
 func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.fetchIssue = func(string, int) (github.Issue, error) {
