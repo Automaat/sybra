@@ -318,6 +318,44 @@ func TestBuiltinDefinitions_Valid(t *testing.T) {
 	}
 }
 
+func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var prfix *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-fix" {
+			prfix = &defs[i]
+			break
+		}
+	}
+	if prfix == nil {
+		t.Fatal("pr-fix builtin definition not found")
+	}
+	fix := prfix.StepByID("fix")
+	if fix == nil {
+		t.Fatal("fix step missing from pr-fix")
+	}
+	if got, err := ResolveTransition(fix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "route_pr_fix_result" {
+		t.Fatalf("fix next = %q, err=%v; want route_pr_fix_result", got, err)
+	}
+	route := prfix.StepByID("route_pr_fix_result")
+	if route == nil {
+		t.Fatal("route_pr_fix_result step missing from pr-fix")
+	}
+	if route.Type != StepRoutePRFixResult {
+		t.Fatalf("route_pr_fix_result type = %q, want %q", route.Type, StepRoutePRFixResult)
+	}
+	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("human-required route next = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
+		t.Fatalf("default route next = %q, err=%v; want verify_commits", got, err)
+	}
+}
+
 func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
