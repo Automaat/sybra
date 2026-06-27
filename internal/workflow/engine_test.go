@@ -198,6 +198,10 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 }
 
 func (m *memTasks) AppendTaskBody(id, content string) error {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -208,7 +212,7 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 	if body != "" {
 		body += "\n\n"
 	}
-	t.Body = body + strings.TrimSpace(content) + "\n"
+	t.Body = body + content + "\n"
 	return nil
 }
 

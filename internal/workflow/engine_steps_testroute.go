@@ -113,7 +113,7 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 		return false, body, nil
 	}
 	if err := e.tasks.AppendTaskBody(taskID, report); err != nil {
-		return false, body, fmt.Errorf("append structured test failure report: %w", err)
+		return false, body, fmt.Errorf("append test failure report: %w", err)
 	}
 	return true, appendRawBody(body, report), nil
 }
