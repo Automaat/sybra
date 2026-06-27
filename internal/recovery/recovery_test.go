@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -312,15 +313,27 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 
 	// Simulate the post-cancel shape: in-progress task with an ExecCompleted
 	// pr-fix workflow (what cancelResolvedPRFixWorkflows leaves behind).
-	created, err := tasks.Create("fix pr conflict", "", "headless")
+
+	created, err := tasks.Create("cancelled pr-fix", "", "headless")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inProg := task.StatusInProgress
-	wfExec := &workflow.Execution{WorkflowID: "pr-fix", State: workflow.ExecCompleted}
-	if _, err := tasks.Update(created.ID, task.Update{
-		Status:   &inProg,
-		Workflow: &wfExec,
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		State:       workflow.ExecCompleted,
+		Variables:   map[string]string{"cancel_reason": "pr-monitor: conflict resolved"},
+		CompletedAt: task.Ptr(time.Now().UTC()),
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Status: &status, Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-pr-fix",
+		Role:      "pr-fix",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -355,6 +368,9 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 	if updated.Status != task.StatusInReview {
 		t.Errorf("task status = %s; want %s", updated.Status, task.StatusInReview)
+	}
+	if !strings.Contains(updated.StatusReason, "conflict resolved") {
+		t.Errorf("status reason = %q, want cancellation reason", updated.StatusReason)
 	}
 }
 

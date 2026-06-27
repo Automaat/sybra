@@ -57,6 +57,9 @@ func (r *Recovery) RestartStaleInProgress() {
 			// etc.) fall through so they can still be restarted.
 			continue
 		}
+		if r.recoverCancelledPRFix(&t) {
+			continue
+		}
 		// Tasks with a terminal workflow stuck at in-progress: restart the
 		// workflow rather than spawning a bare agent. A bare agent spawn
 		// would loop forever (completion callback can't advance a terminal
@@ -171,7 +174,11 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 	if wfID == "pr-fix" {
 		r.Logger.Info("restart-stale.revert-to-review",
 			"task_id", t.ID, "reason", "pr_fix_workflow_not_restartable")
-		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
+		reason := "pr-fix terminal workflow is not restartable without PR-event context"
+		if _, updErr := r.Tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: &reason,
+		}); updErr != nil {
 			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
 		return true
@@ -183,6 +190,29 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 			r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
 		}
 	})
+	return true
+}
+
+func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
+	if t.Workflow == nil ||
+		t.Workflow.WorkflowID != "pr-fix" ||
+		(t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed) {
+		return false
+	}
+	cancelReason := t.Workflow.Variables["cancel_reason"]
+	if !strings.HasPrefix(cancelReason, "pr-monitor: ") {
+		return false
+	}
+	status := task.StatusInReview
+	reason := "pr-fix cancelled: " + strings.TrimPrefix(cancelReason, "pr-monitor: ")
+	r.Logger.Info("restart-stale.revert-cancelled-pr-fix", "task_id", t.ID, "reason", reason)
+	if _, updErr := r.Tasks.Update(t.ID, task.Update{
+		Status:       &status,
+		StatusReason: &reason,
+	}); updErr != nil {
+		r.Logger.Error("restart-stale.revert-cancelled-pr-fix.failed", "task_id", t.ID, "err", updErr)
+		return false
+	}
 	return true
 }
 
