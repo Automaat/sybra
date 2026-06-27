@@ -61,6 +61,102 @@ export class Breakdown {
 }
 
 /**
+ * PhaseReport is the per-phase lifecycle-duration breakdown over a window.
+ */
+export class PhaseReport {
+    "since": time$0.Time;
+    "until": time$0.Time;
+
+    /**
+     * landed tasks analyzed
+     */
+    "cohort": number;
+    "phases": PhaseStat[];
+    "slowest"?: TaskPhases[];
+
+    /** Creates a new PhaseReport instance. */
+    constructor($$source: Partial<PhaseReport> = {}) {
+        if (!("since" in $$source)) {
+            this["since"] = null;
+        }
+        if (!("until" in $$source)) {
+            this["until"] = null;
+        }
+        if (!("cohort" in $$source)) {
+            this["cohort"] = 0;
+        }
+        if (!("phases" in $$source)) {
+            this["phases"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PhaseReport instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PhaseReport {
+        const $$createField3_0 = $$createType1;
+        const $$createField4_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("phases" in $$parsedSource) {
+            $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
+        }
+        if ("slowest" in $$parsedSource) {
+            $$parsedSource["slowest"] = $$createField4_0($$parsedSource["slowest"]);
+        }
+        return new PhaseReport($$parsedSource as Partial<PhaseReport>);
+    }
+}
+
+/**
+ * PhaseStat aggregates one phase across the landed-task cohort. Percentiles and
+ * mean are over the tasks that actually entered the phase (Count), so a phase
+ * many tasks skip is not dragged toward zero; TotalH sums across the whole
+ * cohort for share-of-lead-time.
+ */
+export class PhaseStat {
+    "phase": string;
+    "count": number;
+    "p50h": number;
+    "p90h": number;
+    "meanH": number;
+    "totalH": number;
+
+    /** Creates a new PhaseStat instance. */
+    constructor($$source: Partial<PhaseStat> = {}) {
+        if (!("phase" in $$source)) {
+            this["phase"] = "";
+        }
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("p50h" in $$source)) {
+            this["p50h"] = 0;
+        }
+        if (!("p90h" in $$source)) {
+            this["p90h"] = 0;
+        }
+        if (!("meanH" in $$source)) {
+            this["meanH"] = 0;
+        }
+        if (!("totalH" in $$source)) {
+            this["totalH"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PhaseStat instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PhaseStat {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PhaseStat($$parsedSource as Partial<PhaseStat>);
+    }
+}
+
+/**
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
@@ -95,11 +191,11 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType0;
-        const $$createField4_0 = $$createType2;
-        const $$createField5_0 = $$createType2;
-        const $$createField6_0 = $$createType4;
-        const $$createField7_0 = $$createType5;
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
+        const $$createField5_0 = $$createType6;
+        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -298,6 +394,43 @@ export class Scorecard {
 }
 
 /**
+ * TaskPhases is one landed task's lifecycle decomposition (≈ its lead time split
+ * by phase).
+ */
+export class TaskPhases {
+    "taskId": string;
+    "totalH": number;
+    "byPhase": { [_ in string]?: number };
+
+    /** Creates a new TaskPhases instance. */
+    constructor($$source: Partial<TaskPhases> = {}) {
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("totalH" in $$source)) {
+            this["totalH"] = 0;
+        }
+        if (!("byPhase" in $$source)) {
+            this["byPhase"] = {};
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TaskPhases instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TaskPhases {
+        const $$createField2_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("byPhase" in $$parsedSource) {
+            $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
+        }
+        return new TaskPhases($$parsedSource as Partial<TaskPhases>);
+    }
+}
+
+/**
  * Weakness is one systematic shortfall the scorecard surfaces, paired with a
  * concrete suggested action — the deterministic half of the improvement loop.
  */
@@ -338,9 +471,14 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = Scorecard.createFrom;
-const $$createType1 = Breakdown.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = Weakness.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $Create.Array($Create.Any);
+const $$createType0 = PhaseStat.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = TaskPhases.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = Scorecard.createFrom;
+const $$createType5 = Breakdown.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = Weakness.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Array($Create.Any);
+const $$createType10 = $Create.Map($Create.Any, $Create.Any);

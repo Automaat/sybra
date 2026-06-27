@@ -46,6 +46,17 @@ export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> 
 }
 
 /**
+ * GetLifecyclePhases returns the per-phase lifecycle-duration breakdown for
+ * tasks that landed in the evaluation window — where end-to-end time is spent
+ * (planning vs implementing vs testing vs review vs waiting).
+ */
+export function GetLifecyclePhases(): $CancellablePromise<evaluation$0.PhaseReport> {
+    return $Call.ByID(842035659).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetMonitorReport returns the most recent finished report from the
  * in-process monitor service. Ready is false until the first tick completes;
  * the frontend should show an empty state in that window. Enabled mirrors
@@ -53,7 +64,7 @@ export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> 
  */
 export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBinding> {
     return $Call.ByID(936556103).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -62,7 +73,7 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
  */
 export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
     return $Call.ByID(729571497).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType4($result);
     });
 }
 
@@ -71,7 +82,7 @@ export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
  */
 export function ListNotifications(): $CancellablePromise<notification$0.Notification[]> {
     return $Call.ByID(706012029).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
@@ -100,7 +111,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -111,7 +122,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -139,18 +150,19 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
 // Private type creation functions
 const $$createType0 = evaluation$0.Report.createFrom;
-const $$createType1 = $models.MonitorReportBinding.createFrom;
-const $$createType2 = bgop$0.Operation.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = notification$0.Notification.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = agent$0.Agent.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = application$0.Service.createFrom;
-const $$createType9 = $Create.Array($$createType8);
+const $$createType1 = evaluation$0.PhaseReport.createFrom;
+const $$createType2 = $models.MonitorReportBinding.createFrom;
+const $$createType3 = bgop$0.Operation.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = notification$0.Notification.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = agent$0.Agent.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = application$0.Service.createFrom;
+const $$createType10 = $Create.Array($$createType9);

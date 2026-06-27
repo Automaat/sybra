@@ -164,6 +164,11 @@ func (a *App) initStatusHook() {
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
 
+		// Wake the dispatch pass immediately so a task that just became ready
+		// (e.g. a dependency completing, a stage advancing) is picked up now
+		// instead of waiting for the next fast tick.
+		a.nudgeDispatch()
+
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
 		// never exit between turns) signal step completion.

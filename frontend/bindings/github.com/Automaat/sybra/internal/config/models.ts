@@ -205,6 +205,22 @@ export class OrchestratorConfig {
     "autoTriage": boolean;
     "autoPlan": boolean;
 
+    /**
+     * DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
+     * dispatch pass (start the orchestrator, release unblocked children). Kept
+     * short — and also fired on demand on every status change — so a
+     * freshly-ready task is not left idle for a full tick. Default 10.
+     */
+    "dispatchIntervalSeconds": number;
+
+    /**
+     * MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup
+     * pass (resume stalled workflows, restart stale agents, prune orphan
+     * worktrees) which hits git and may spawn agents, so it must not run hot.
+     * Default 60.
+     */
+    "maintenanceIntervalSeconds": number;
+
     /** Creates a new OrchestratorConfig instance. */
     constructor($$source: Partial<OrchestratorConfig> = {}) {
         if (!("autoTriage" in $$source)) {
@@ -212,6 +228,12 @@ export class OrchestratorConfig {
         }
         if (!("autoPlan" in $$source)) {
             this["autoPlan"] = false;
+        }
+        if (!("dispatchIntervalSeconds" in $$source)) {
+            this["dispatchIntervalSeconds"] = 0;
+        }
+        if (!("maintenanceIntervalSeconds" in $$source)) {
+            this["maintenanceIntervalSeconds"] = 0;
         }
 
         Object.assign(this, $$source);

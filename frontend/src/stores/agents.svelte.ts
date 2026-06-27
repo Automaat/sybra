@@ -13,9 +13,41 @@ import { EntityStore } from './entity-store.svelte.js'
 import { extractStepText } from '$lib/step-text.js'
 import type { TimestampedStreamEvent } from '$lib/timeline.js'
 
+// Per-task agent-status flags, precomputed once per agent-list change so a
+// card reads O(1) instead of scanning the whole agent list 4× per render.
+// Mirrors the running/role predicates TaskCard used to compute inline.
+export type AgentTaskStatus = {
+  triaging: boolean
+  evaluating: boolean
+  planning: boolean
+  running: boolean
+}
+
 class AgentStore extends EntityStore<Agent> {
   outputs = new SvelteMap<string, TimestampedStreamEvent[]>()
   stepTexts = new SvelteMap<string, string>()
+
+  // taskId → role flags for that task's running agents. Recomputed once when
+  // the agent list changes; cards index into it by task id (see TaskCard).
+  // Each running agent maps to exactly one flag, matching the original
+  // mutually-exclusive prefix predicates (triage:/eval:/plan:, else generic).
+  agentStatusByTask = $derived.by(() => {
+    const map = new Map<string, AgentTaskStatus>()
+    for (const a of this.list) {
+      if (a.state !== 'running' || !a.taskId) continue
+      let s = map.get(a.taskId)
+      if (!s) {
+        s = { triaging: false, evaluating: false, planning: false, running: false }
+        map.set(a.taskId, s)
+      }
+      const name = a.name ?? ''
+      if (name.startsWith('triage:')) s.triaging = true
+      else if (name.startsWith('eval:')) s.evaluating = true
+      else if (name.startsWith('plan:')) s.planning = true
+      else s.running = true
+    }
+    return map
+  })
 
   constructor() {
     super(

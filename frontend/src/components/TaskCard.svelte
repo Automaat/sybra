@@ -24,21 +24,13 @@
   let dragging = $state(false)
   let moveMenuOpen = $state(false)
 
-  const triaging = $derived(
-    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('triage:') && a.state === 'running')
-  )
-
-  const evaluating = $derived(
-    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('eval:') && a.state === 'running')
-  )
-
-  const planning = $derived(
-    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.name?.startsWith('plan:') && a.state === 'running')
-  )
-
-  const agentRunning = $derived(
-    (agentStore.list ?? []).some((a) => a.taskId === t.id && a.state === 'running' && !a.name?.startsWith('triage:') && !a.name?.startsWith('eval:') && !a.name?.startsWith('plan:'))
-  )
+  // O(1) lookup into the store's precomputed per-task status map instead of
+  // scanning the full agent list 4× per render.
+  const agentStatus = $derived(agentStore.agentStatusByTask.get(t.id))
+  const triaging = $derived(agentStatus?.triaging ?? false)
+  const evaluating = $derived(agentStatus?.evaluating ?? false)
+  const planning = $derived(agentStatus?.planning ?? false)
+  const agentRunning = $derived(agentStatus?.running ?? false)
 
   const linkedPRs = $derived(reviewStore.byTask(t))
   const topPR = $derived(linkedPRs.length > 0 ? linkedPRs[0] : null)

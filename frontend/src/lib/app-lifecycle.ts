@@ -34,33 +34,60 @@ export interface AppLifecycleHooks {
   onQuitConfirm: () => void
 }
 
-function onEvents(events: string[], handler: () => void): () => void {
-  const unsubs = events.map((e) => EventsOn(e, handler))
-  return () => unsubs.forEach((u) => u())
+// The backend can fire dozens of task:created/updated/deleted events per second
+// when agents churn (restart-stale loops, rapid workflow advances, large
+// headless sessions). A full taskStore.load() on every event re-builds the
+// reactive Map and forces every kanban card to re-render, which saturates the
+// WebKit main thread and freezes the UI even though the Go side is idle.
+//
+// Instead we patch only the affected task. The watcher payload is the changed
+// file's path: a task lives at `<id>.md`, its sidecars (plan, critique, drafts)
+// at `<id>.<suffix>.md`. Task ids are dot-free (uuid[:8]), so the id is the
+// basename's first segment, and a sidecar change maps to a patch of its parent.
+function taskIdFromPath(path: string): string {
+  const base = path.split('/').pop() ?? path
+  return base.split('.')[0] ?? ''
 }
 
-// Coalesce bursts of backend events into a single handler call. The backend
-// can fire dozens of task:updated events per second when agents churn
-// (restart-stale loops, rapid workflow advances, large headless sessions);
-// a full taskStore.load() on every event re-builds the reactive Map and
-// forces every kanban card to re-render, which saturates the WebKit main
-// thread and freezes the UI even though the Go side is idle.
-function debounced(fn: () => void, wait = 150): () => void {
+// A primary task file is `<id>.md` exactly; a sidecar carries an extra dotted
+// segment. Only removing the primary file deletes the task — a sidecar removal
+// is a content change on the still-present parent.
+function isPrimaryTaskFile(path: string): boolean {
+  const base = path.split('/').pop() ?? path
+  return /^[^.]+\.md$/.test(base)
+}
+
+type TaskEventKind = 'change' | 'delete'
+
+// Coalesce a burst of file events into one action PER task id, flushed on a
+// trailing timer. 50 events for one task collapse to a single fetch, and
+// events for different tasks don't cancel each other. A `remove` is sticky: a
+// task-file delete plus its sidecar-delete cascade must not downgrade back to a
+// patch of an already-gone task.
+function makeTaskEventCoalescer(): (path: string, kind: TaskEventKind) => void {
+  const pending = new Map<string, 'patch' | 'remove'>()
   let timer: ReturnType<typeof setTimeout> | null = null
-  let lastInvoke = 0
-  return () => {
-    const now = Date.now()
-    if (now - lastInvoke >= wait && timer === null) {
-      lastInvoke = now
-      fn()
-      return
+  const flushDelay = 120
+
+  const flush = (): void => {
+    timer = null
+    const batch = [...pending.entries()]
+    pending.clear()
+    for (const [id, action] of batch) {
+      if (action === 'remove') taskStore.removeOne(id)
+      else void taskStore.patchOne(id)
     }
-    if (timer !== null) clearTimeout(timer)
-    timer = setTimeout(() => {
-      lastInvoke = Date.now()
-      timer = null
-      fn()
-    }, wait)
+  }
+
+  return (path: string, kind: TaskEventKind): void => {
+    const id = taskIdFromPath(path)
+    if (!id) return
+    if (kind === 'delete' && isPrimaryTaskFile(path)) {
+      pending.set(id, 'remove')
+    } else if (pending.get(id) !== 'remove') {
+      pending.set(id, 'patch')
+    }
+    if (timer === null) timer = setTimeout(flush, flushDelay)
   }
 }
 
@@ -76,8 +103,16 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
   // ever opened. The GitHub page owns the live polling.
   reviewStore.load()
 
-  const reloadTasks = debounced(() => taskStore.load(), 150)
-  const unsubTasks = onEvents([ev.TaskCreated, ev.TaskUpdated, ev.TaskDeleted], reloadTasks)
+  // Patch only the affected task per event instead of reloading the whole list.
+  const onTaskEvent = makeTaskEventCoalescer()
+  const unsubTaskCreated = EventsOn(ev.TaskCreated, (p: unknown) => onTaskEvent(String(p ?? ''), 'change'))
+  const unsubTaskUpdated = EventsOn(ev.TaskUpdated, (p: unknown) => onTaskEvent(String(p ?? ''), 'change'))
+  const unsubTaskDeleted = EventsOn(ev.TaskDeleted, (p: unknown) => onTaskEvent(String(p ?? ''), 'delete'))
+  const unsubTasks = (): void => {
+    unsubTaskCreated()
+    unsubTaskUpdated()
+    unsubTaskDeleted()
+  }
   notificationStore.load()
   const unsubNotif = notificationStore.listen()
   bgopStore.load()

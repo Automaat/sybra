@@ -233,6 +233,16 @@ type NotificationConfig struct {
 type OrchestratorConfig struct {
 	AutoTriage bool `yaml:"auto_triage" json:"autoTriage"`
 	AutoPlan   bool `yaml:"auto_plan" json:"autoPlan"`
+	// DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
+	// dispatch pass (start the orchestrator, release unblocked children). Kept
+	// short — and also fired on demand on every status change — so a
+	// freshly-ready task is not left idle for a full tick. Default 10.
+	DispatchIntervalSeconds int `yaml:"dispatch_interval_seconds" json:"dispatchIntervalSeconds"`
+	// MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup
+	// pass (resume stalled workflows, restart stale agents, prune orphan
+	// worktrees) which hits git and may spawn agents, so it must not run hot.
+	// Default 60.
+	MaintenanceIntervalSeconds int `yaml:"maintenance_interval_seconds" json:"maintenanceIntervalSeconds"`
 }
 
 type TodoistConfig struct {
@@ -594,6 +604,7 @@ func Load() (*Config, error) {
 	applyWatchdogDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
+	applyOrchestratorDefaults(cfg)
 
 	return cfg, nil
 }
@@ -679,6 +690,18 @@ func applySelfMonitorDefaults(cfg *Config) {
 	}
 	if s.SuppressionThreshold <= 0 {
 		s.SuppressionThreshold = 3
+	}
+}
+
+// applyOrchestratorDefaults fills zero values for the Orchestrator block so the
+// dispatch loop has a fast scheduling cadence and a slower maintenance cadence
+// even on configs that predate the split.
+func applyOrchestratorDefaults(cfg *Config) {
+	if cfg.Orchestrator.DispatchIntervalSeconds <= 0 {
+		cfg.Orchestrator.DispatchIntervalSeconds = 10
+	}
+	if cfg.Orchestrator.MaintenanceIntervalSeconds <= 0 {
+		cfg.Orchestrator.MaintenanceIntervalSeconds = 60
 	}
 }
 

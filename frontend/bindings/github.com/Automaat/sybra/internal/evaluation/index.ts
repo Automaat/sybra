@@ -3,7 +3,10 @@
 
 export {
     Breakdown,
+    PhaseReport,
+    PhaseStat,
     Report,
     Scorecard,
+    TaskPhases,
     Weakness
 } from "./models.js";
