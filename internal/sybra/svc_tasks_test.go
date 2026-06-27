@@ -3,6 +3,7 @@ package sybra
 import (
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,15 +88,18 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 			Repository: "owner/repo",
 		}, nil
 	}
-	// A linked-PR fetch must NOT happen on the umbrella path — fail loudly if it does.
+	// A linked-PR fetch must NOT happen on the umbrella path. Record the call
+	// from the async enrichment goroutine and assert after wg.Wait() — calling
+	// t.Fatal from a non-test goroutine is unreliable.
+	var linkedPRFetched atomic.Bool
 	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
-		t.Fatal("linked-PR fetch must not run for an umbrella issue")
+		linkedPRFetched.Store(true)
 		return nil, nil
 	}
 
-	var expandedURL string
+	var expandedURL atomic.Value
 	svc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
-		expandedURL = issueURL
+		expandedURL.Store(issueURL)
 		return umbrella.Result{UmbrellaURL: issueURL, Created: 6}, nil
 	}
 
@@ -105,8 +109,11 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 	}
 	svc.wg.Wait()
 
-	if expandedURL != "https://github.com/owner/repo/issues/1151" {
-		t.Fatalf("expander called with %q, want the umbrella URL", expandedURL)
+	if linkedPRFetched.Load() {
+		t.Fatal("linked-PR fetch must not run for an umbrella issue")
+	}
+	if got, _ := expandedURL.Load().(string); got != "https://github.com/owner/repo/issues/1151" {
+		t.Fatalf("expander called with %q, want the umbrella URL", got)
 	}
 	// The stub must be deleted — the expander created its own tracker.
 	if _, err := svc.GetTask(created.ID); err == nil {
@@ -171,8 +178,9 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	}
 	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
 	svc.viewerLogin = func() string { return "me" }
+	var expanderCalled atomic.Bool
 	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
-		t.Fatal("expander must not run when umbrella.enabled is false")
+		expanderCalled.Store(true)
 		return umbrella.Result{}, nil
 	}
 
@@ -182,6 +190,9 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	}
 	svc.wg.Wait()
 
+	if expanderCalled.Load() {
+		t.Fatal("expander must not run when umbrella.enabled is false")
+	}
 	// Disabled → flat enrichment proceeds and a workflow is started.
 	got := waitForWorkflow(t, svc, created.ID)
 	if got.Title != "☂️ umbrella but feature off" {
