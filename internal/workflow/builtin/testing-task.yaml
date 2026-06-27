@@ -58,8 +58,16 @@ steps:
 
         Your goal is to PROVE the implementation does NOT satisfy the task —
         exercise the happy path AND edge cases, boundary inputs, and failure
-        modes. You decide how to start and drive the real app/cluster (read the
-        repo: README, .sybra.yaml, mise tasks, package.json, compose, Makefile).
+        modes. Test ONLY behaviour the task description states or directly
+        implies; attack the edges OF those requirements. Do NOT invent new
+        requirements the task never stated (e.g. legacy/back-compat behaviour,
+        an API the task did not promise) and fail the implementation on them —
+        that escalates correct work to a human. If the task's own stated
+        requirements contradict each other or are too ambiguous to verify, that
+        is not an implementation defect: say so plainly in `## Test Failures`
+        and still emit FAIL (a human resolves the spec). You decide how to start
+        and drive the real app/cluster (read the repo: README, .sybra.yaml, mise
+        tasks, package.json, compose, Makefile).
         If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.

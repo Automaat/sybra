@@ -37,7 +37,7 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
 
 ## Procedure
 
-1. **Derive acceptance criteria.** Read the task (`sybra-cli get <task-id>`) and its PR/diff if present. Write down, concretely, what "works" means: every behaviour the description promises, plus the implicit ones (errors handled, nothing regressed).
+1. **Derive acceptance criteria — from the task, not your imagination.** Read the task (`sybra-cli get <task-id>`) and its PR/diff if present. Write down, concretely, what "works" means: every behaviour the description promises, plus the narrowly-implicit ones (errors handled, nothing the change touched regressed). **Do not invent requirements the task never stated** — legacy/back-compat behaviour, APIs the task did not promise, a stricter contract than asked. Failing the implementation on an unstated requirement escalates correct work to a human. If the task's own stated requirements contradict each other or are too under-specified to verify, that is a spec problem, not an implementation defect: record it as such (see Rules) rather than manufacturing a failing case.
 
 2. **Figure out how to run it.** You decide — inspect the repo: `README`, `.sybra.yaml` (`setup:`/run hints), `mise tasks ls`, `package.json` scripts, `Makefile`, `docker-compose*.yml`, `cmd/`. Pick the smallest way to exercise the changed surface for real.
 
@@ -51,6 +51,7 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
    - **Edge cases** — empty/missing input, max/min/boundary values, unicode, very large input, concurrent/repeated calls, re-entrancy.
    - **Negative/abuse** — invalid input, wrong order of operations, missing prerequisites, permission/auth gaps. Expect graceful failure, not a crash.
    - **Regression** — adjacent behaviour the change could have broken.
+   Keep every angle anchored to a requirement the task actually states or directly implies — stress those edges hard, but don't fail the build on a requirement you wish the task had.
    For breadth you MAY fan out parallel explorations with the Agent tool, but converge to one verdict yourself.
 
 5. **Use real oracles.** Compare observed vs the task's stated intent. HTTP: assert status + body via `curl "$SANDBOX_URL/..."`. K8s: `kubectl get/logs/describe`, port-forward + curl. CLI: run it, check exit code + stdout/stderr. Desktop/GUI apps that can't run headless (e.g. the Sybra Wails app itself): test the equivalent HTTP server surface (`cmd/*-server`, started in the sandbox) instead.
@@ -62,4 +63,5 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
 - Execute, don't plan. No test-plan document, no human approval step.
 - Don't suggest fixes — report symptoms + reproduction only.
 - Be conservative: when you cannot actually verify a claim, that is a FAIL, not a PASS.
+- Stay in scope: a deviation must be from a requirement the task **states or directly implies**. Never invent a new/contradictory requirement and fail the implementation on it. If the task's stated requirements themselves conflict or are unverifiable, write that plainly in `## Test Failures` ("spec is contradictory/under-specified: …") and emit FAIL — a human resolves the spec; the implementer cannot.
 - Never push, never open/modify a PR, never change task status — the workflow does that based on your verdict.

@@ -128,12 +128,34 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	// Fails the first run, succeeds on retry (the marker persists in the
+	// worktree between attempts) — a nondeterministic flake must not block.
+	flaky := "test -f .flake-marker || { touch .flake-marker; exit 1; }"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{flaky})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (flake absorbed by retry)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (retry passed)", ti.Status)
+	}
+}
+
 func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	failed, _, err := runVerifyCommands(ctx, wt, []string{"sleep 20"})
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
 	}

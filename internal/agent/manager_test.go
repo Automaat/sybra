@@ -65,6 +65,14 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 // Run guard that requires a valid, existing working dir. Uses os.MkdirTemp
 // with a best-effort cleanup (not t.TempDir) because background goroutines
 // spawned by runHeadless may still be touching the dir when the test ends.
+//
+// It also stops the agent and drains its done channel at teardown. A headless
+// agent spawns a *detached* claude child (runner_headless.go) that outlives the
+// test; left running, it keeps the manager's base `agents/` dir open, so the
+// strict t.TempDir RemoveAll from newTestManager fails non-deterministically
+// with "directory not empty". That flaked the whole package — and because the
+// workflow verify-checks gate runs `go test ./...` and previously blocked on a
+// single failure, the flake escalated unrelated tasks to human-required.
 func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string, allowedTools []string) (*Agent, error) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "sybra-agent-test-*")
@@ -72,7 +80,22 @@ func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
+	a, err := m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
+	if a != nil {
+		t.Cleanup(func() {
+			_ = m.StopAgent(a.ID)
+			// Wait for the runner goroutine to close done (released the dir)
+			// before the enclosing TempDir cleanups run; cap so a wedged child
+			// never hangs the suite.
+			if a.done != nil {
+				select {
+				case <-a.done:
+				case <-time.After(10 * time.Second):
+				}
+			}
+		})
+	}
+	return a, err
 }
 
 func TestNewManager(t *testing.T) {
