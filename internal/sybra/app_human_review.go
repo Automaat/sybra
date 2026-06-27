@@ -580,17 +580,26 @@ func urlOrPlaceholder(url, title string) string {
 }
 
 // verdictAlreadyRendered reports whether any completed human-review agent run
-// already recorded a parsed verdict on t. A non-empty Verdict field means the
-// prior run finished cleanly enough for the handler to act on the diagnosis —
-// re-spawning on app restart or a repeated status-hook fire would only
-// duplicate the work.
+// already recorded a parsed verdict on t AND onComplete successfully rendered
+// the diagnosis into the task body. Both conditions are required: Verdict proves
+// the prior run parsed the outcome, and the "## Auto-review" section proves
+// onComplete appended the note. If only Verdict is set (e.g. the process crashed
+// between persisting the verdict and appending the note), we allow a re-spawn so
+// the task is not permanently stranded.
 func verdictAlreadyRendered(t task.Task) bool {
+	hasVerdict := false
 	for i := range t.AgentRuns {
 		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) && t.AgentRuns[i].Verdict != "" {
-			return true
+			hasVerdict = true
+			break
 		}
 	}
-	return false
+	if !hasVerdict {
+		return false
+	}
+	// Every onComplete path appends a "## Auto-review …" section; its presence
+	// confirms the rendering completed, not just that the verdict was parsed.
+	return strings.Contains(t.Body, "## Auto-review")
 }
 
 // tailFile reads the last n lines of path. Best-effort: returns "" on error

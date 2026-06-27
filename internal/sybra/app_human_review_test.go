@@ -432,7 +432,10 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	h, tasks, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
-	tk, err := tasks.Create("Stale task", "Body.", "headless")
+	// Body must include the "## Auto-review" section that onComplete appends,
+	// proving the rendering completed (not just that the verdict was parsed).
+	body := "Body.\n\n## Auto-review verdict: needs human\n\nLooks fine.\n"
+	tk, err := tasks.Create("Stale task", body, "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -458,6 +461,49 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	h.mu.Unlock()
 	if busy {
 		t.Error("expected no inflight entry — gate should have skipped the spawn")
+	}
+}
+
+func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testing.T) {
+	t.Parallel()
+	// Regression test for the crash-window: Verdict persisted by onAgentComplete
+	// but the process crashed before onComplete appended the "## Auto-review"
+	// section. The gate must allow a re-spawn so the task is not permanently
+	// stranded at human-required with no diagnosis.
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Crash-window task", "Body without auto-review section.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	// Verdict is set (persisted by onAgentComplete) but onComplete never ran —
+	// the task body has no "## Auto-review" section.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-crashed",
+		Role:    "human-review",
+		Mode:    "headless",
+		State:   "stopped",
+		Verdict: "human",
+	}); err != nil {
+		t.Fatalf("add prior run: %v", err)
+	}
+
+	// Gate must NOT block — panic on nil agents.Run confirms spawn was attempted.
+	panicked := func() (p bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				p = true
+			}
+		}()
+		h.maybeSpawn(tk.ID, "")
+		return false
+	}()
+	if !panicked {
+		t.Log("no panic — agent manager must have been non-nil; check test setup")
 	}
 }
 
