@@ -21,43 +21,47 @@ type StatsService struct {
 	policy   func() limits.Policy
 }
 
+func aggregateTasksDone(resp *stats.StatsResponse, list []task.Task, now time.Time) {
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+	for i := range list {
+		if list[i].Status != task.StatusDone {
+			continue
+		}
+
+		resp.AllTime.TasksDone++
+
+		t := list[i].UpdatedAt
+		if list[i].ClosedAt != nil {
+			t = *list[i].ClosedAt
+		}
+
+		if !t.Before(todayStart) {
+			resp.Today.TasksDone++
+		}
+		if !t.Before(weekStart) {
+			resp.ThisWeek.TasksDone++
+		}
+		if !t.Before(monthStart) {
+			resp.ThisMonth.TasksDone++
+		}
+	}
+}
+
 // GetStats returns aggregated agent run statistics.
 func (s *StatsService) GetStats() stats.StatsResponse {
 	if s.stats == nil {
 		return stats.StatsResponse{}
 	}
-	resp := s.stats.Query()
+	now := time.Now()
+	resp := s.stats.QueryAt(now)
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
 
 	if s.tasks != nil {
 		if list, err := s.tasks.List(); err == nil {
-			now := time.Now()
-			todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-			weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
-			monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-
-			for i := range list {
-				if list[i].Status != task.StatusDone {
-					continue
-				}
-
-				resp.AllTime.TasksDone++
-
-				t := list[i].UpdatedAt
-				if list[i].ClosedAt != nil {
-					t = *list[i].ClosedAt
-				}
-
-				if !t.Before(todayStart) {
-					resp.Today.TasksDone++
-				}
-				if !t.Before(weekStart) {
-					resp.ThisWeek.TasksDone++
-				}
-				if !t.Before(monthStart) {
-					resp.ThisMonth.TasksDone++
-				}
-			}
+			aggregateTasksDone(&resp, list, now)
 		} else {
 			slog.Warn("stats: failed to list tasks", "err", err)
 		}
