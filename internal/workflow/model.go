@@ -100,6 +100,9 @@ const (
 	// detect_tampering: structural test tampering is caught there; this catches
 	// incomplete/broken work committed without the suite passing.
 	StepVerifyChecks StepType = "verify_checks"
+	// StepRoutePRFixResult inspects the completed pr-fix agent output before
+	// mechanical PR relinking can overwrite a human-required escalation.
+	StepRoutePRFixResult StepType = "route_pr_fix_result"
 	// StepRouteTestResult reads the test-runner verdict and routes the task:
 	// pass → ready-pr, fail → in-progress (re-implement) until the attempt
 	// cap is hit, then human-required.

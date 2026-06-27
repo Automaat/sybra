@@ -132,8 +132,9 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		"# Task: Fix CI: %s\n\n"+
 			"Fix failing CI on branch `%s` (PR #%d). "+
 			"Check the failing run with `gh run view --log-failed`, "+
-			"fix the code, commit and push. No unrelated changes.",
+			"fix the code, commit and push. No unrelated changes.%s",
 		title, branch, number,
+		prFixResultContract,
 	)
 
 	ciFailure := string(github.PRIssueCIFailure)

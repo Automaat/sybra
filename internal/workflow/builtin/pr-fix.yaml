@@ -27,6 +27,20 @@ steps:
       prompt: >-
         {{ getvar .Vars "prompt" }}
     next:
+      - goto: route_pr_fix_result
+
+  # Mechanical check (no LLM): if the pr-fix agent deliberately stopped and
+  # requested human review (for example too many merge conflicts), preserve that
+  # escalation before PR relinking can move the task back to in-review.
+  - id: route_pr_fix_result
+    name: Route PR Fix Result
+    type: route_pr_fix_result
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: verify_commits
 
   # Mechanical check (no LLM): verifies the task's branch has at least one

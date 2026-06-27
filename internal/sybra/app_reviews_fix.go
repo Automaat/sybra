@@ -15,6 +15,11 @@ import (
 
 const wtFailureLimit = 5
 
+const prFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
+	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If you intentionally stopped because the PR needs a human, end with " +
+	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
+
 // readyForCopilotAutoMerge reports whether a pet PR satisfies the auto-merge
 // policy: mechanically mergeable, CI green (or no checks), GitHub Copilot has
 // submitted a review, no unresolved review threads, and no outstanding change
@@ -184,7 +189,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	// Dispatch pr.event through the engine so trigger conditions in the
 	// workflow YAML stay authoritative. StartWorkflow would bypass them.
-	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s", t.Title, prompt)
+	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s%s", t.Title, prompt, prFixResultContract)
 	vars := map[string]string{
 		"prompt":                fullPrompt,
 		"pr_issue_kind":         string(issue.Kind),

@@ -79,6 +79,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			if v := extractTestVerdict(output.Output); v != "" {
 				wfExec.SetVar("step."+output.StepID+".verdict", v)
 			}
+			if currentStep.Config.Role == "pr-fix" {
+				if requiresHuman, reason := classifyPRFixResult(output.Output); requiresHuman {
+					wfExec.SetVar("step."+output.StepID+".pr_fix_requires_human", "true")
+					wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
+				}
+			}
 		}
 	}
 
@@ -338,7 +344,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return nil, e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRouteTestResult:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -428,6 +434,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execDetectTampering(taskID, step, t)
 	case StepVerifyChecks:
 		return e.execVerifyChecks(taskID, step, t)
+	case StepRoutePRFixResult:
+		return e.execRoutePRFixResult(taskID, step, wfExec)
 	case StepRouteTestResult:
 		return e.execRouteTestResult(taskID, step, wfExec, t)
 	default:
