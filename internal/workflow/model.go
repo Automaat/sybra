@@ -75,19 +75,20 @@ type Condition struct {
 type StepType string
 
 const (
-	StepRunAgent            StepType = "run_agent"
-	StepWaitHuman           StepType = "wait_human"
-	StepSetStatus           StepType = "set_status"
-	StepCondition           StepType = "condition"
-	StepShell               StepType = "shell"
-	StepEnsurePRClosesIssue StepType = "ensure_pr_closes_issue"
-	StepRerequestReview     StepType = "rerequest_review"
-	StepVerifyCommits       StepType = "verify_commits"
-	StepLinkPRAndReview     StepType = "link_pr_and_review"
-	StepEvaluate            StepType = "evaluate"
-	StepRequireSidecar      StepType = "require_sidecar"
-	StepValidatePlan        StepType = "validate_plan"
-	StepTriageReview        StepType = "triage_review"
+	StepRunAgent             StepType = "run_agent"
+	StepWaitHuman            StepType = "wait_human"
+	StepSetStatus            StepType = "set_status"
+	StepCondition            StepType = "condition"
+	StepShell                StepType = "shell"
+	StepEnsurePRClosesIssue  StepType = "ensure_pr_closes_issue"
+	StepRerequestReview      StepType = "rerequest_review"
+	StepVerifyCommits        StepType = "verify_commits"
+	StepLinkPRAndReview      StepType = "link_pr_and_review"
+	StepEvaluate             StepType = "evaluate"
+	StepRequireSidecar       StepType = "require_sidecar"
+	StepValidatePlan         StepType = "validate_plan"
+	StepValidatePlanContract StepType = "validate_plan_contract"
+	StepTriageReview         StepType = "triage_review"
 	// StepDetectTampering inspects the worktree diff for reward-hacking /
 	// test-tampering signals (deleted assertions, added skip/xfail markers,
 	// deleted test files, neutered CI). A high-severity finding flips the task
@@ -202,6 +203,11 @@ type ImportSidecar struct {
 	// From is a Go template path the engine renders against the run's
 	// TemplateContext (e.g. /tmp/sybra-review-{{.Task.ID}}.md).
 	From string `yaml:"from" json:"from"`
+	// Required flips the task to human-required when the imported file is
+	// missing or empty. Existing optional sidecars keep the old log-only
+	// behavior; new mandatory artifacts can fail closed without blocking
+	// markdown-only migration tasks that never ran the producing step.
+	Required bool `yaml:"required,omitempty" json:"required,omitempty"`
 }
 
 const maxRetries = 10

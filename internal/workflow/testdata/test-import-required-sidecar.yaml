@@ -1,0 +1,14 @@
+id: test-import-required-sidecar
+name: Test Required Import Sidecar
+builtin: false
+steps:
+  - id: plan
+    type: run_agent
+    config:
+      role: plan
+      mode: headless
+      prompt: plan
+      import_sidecar:
+        kind: plan_contract
+        from: "{{.Vars.contract_path}}"
+        required: true

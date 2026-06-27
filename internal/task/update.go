@@ -39,6 +39,7 @@ type Update struct {
 	DueDate               **time.Time
 	Workflow              **workflow.Execution
 	Plan                  *string
+	PlanContract          *string
 	PlanCritique          *string
 	PlanResearch          *string
 	PlanDecisions         *string
@@ -54,6 +55,7 @@ type Update struct {
 
 func (u Update) writesSidecar() bool {
 	return u.Plan != nil ||
+		u.PlanContract != nil ||
 		u.PlanCritique != nil ||
 		u.PlanResearch != nil ||
 		u.PlanDecisions != nil ||
@@ -85,7 +87,7 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique",
-		"plan_research", "plan_decisions", "plan_brief", "code_review",
+		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
@@ -176,6 +178,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.TodoistID = &s
 	case "plan":
 		u.Plan = &s
+	case "plan_contract":
+		u.PlanContract = &s
 	case "plan_critique":
 		u.PlanCritique = &s
 	case "plan_research":

@@ -82,12 +82,12 @@ func (m *Manager) Store() *Store { return m.store }
 // reach engine.HandleStatusChange and interactive plan agents leave
 // their workflow stranded on the plan step.
 func (m *Manager) OnExternalUpdate(path string) {
-	if !strings.HasSuffix(path, ".md") {
-		return
-	}
 	base := filepath.Base(path)
 	if IsSidecarFile(base) {
 		m.store.InvalidatePath(path)
+		return
+	}
+	if !strings.HasSuffix(base, ".md") {
 		return
 	}
 	id := strings.TrimSuffix(base, ".md")

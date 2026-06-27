@@ -17,3 +17,5 @@ steps:
           from: "{{.Vars.plan_path}}"
         - kind: plan_brief
           from: "{{.Vars.brief_path}}"
+        - kind: plan_contract
+          from: "{{.Vars.contract_path}}"

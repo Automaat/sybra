@@ -137,6 +137,9 @@ func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (Ste
 func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	var content, label string
 	switch sk := step.Config.Sidecar; {
+	case sk == "plan_contract":
+		content = t.PlanContract
+		label = "plan contract"
 	case sk == "plan_critique":
 		content = t.PlanCritique
 		label = "plan critique"
@@ -162,7 +165,7 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 	case sk == "":
 		return StepOutput{}, fmt.Errorf("require_sidecar: config.sidecar is required")
 	default:
-		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan|plan_critique|plan_research|plan_decisions|plan_brief|code_review|plan_draft.<name>)", sk)
+		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan|plan_contract|plan_critique|plan_research|plan_decisions|plan_brief|code_review|plan_draft.<name>)", sk)
 	}
 	if strings.TrimSpace(content) == "" {
 		reason := label + " missing — upstream agent step completed without writing its sidecar"

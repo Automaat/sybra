@@ -33,15 +33,23 @@ steps:
         Before committing broad/sweep changes ("everywhere", "all", "single
         utility", "unified", "no raw X remains"), derive and run a cheap
         acceptance probe such as a repo-wide `rg` invariant that would catch
-        missed call sites. If the task has a plan, use its Verification probes
-        as part of your final checks.
+        missed call sites. If the task has a plan contract, follow its files,
+        steps, verification commands, and acceptance criteria as the primary
+        implementation contract.
 
         Never weaken, skip, delete, comment out, or hardcode tests, snapshots,
         or fixtures to make checks pass, and never edit CI config to neuter a
         gate. If an existing test is genuinely wrong, fix it correctly and
         explain why in the commit message — do not silently disable it.
         Tampering is detected mechanically and will block the task.
-        {{- if .Task.Plan}}
+        {{- if .Task.PlanContract}}
+
+        ## Executable Plan Contract
+
+        ```json
+        {{.Task.PlanContract}}
+        ```
+        {{- else if .Task.Plan}}
 
         ## Plan
 

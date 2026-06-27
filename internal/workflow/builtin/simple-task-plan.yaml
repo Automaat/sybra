@@ -128,7 +128,7 @@ steps:
              The personas will debate tradeoffs and surface risks from opposed
              engineering lenses. If /council is unavailable in this
              environment, plan directly using the same multi-lens scrutiny.
-          4. Write these FOUR files:
+          4. Write these FIVE files:
 
              A. /tmp/sybra-plan-research-{{.Task.ID}}.md
                 Raw research/evidence. Put file/symbol notes, council synthesis,
@@ -156,8 +156,7 @@ steps:
                 specified.
 
              C. /tmp/sybra-plan-{{.Task.ID}}.md
-                The compact execution contract. This is the ONLY planning text
-                injected into implementation agents. Target 60-120 lines, hard
+                The human-readable compact execution plan. Target 60-120 lines, hard
                 max 180 lines unless the task truly cannot fit. Use only:
 
                 # Execution Plan
@@ -196,6 +195,31 @@ steps:
                 shape, important decisions, unresolved choices (if any), and why
                 the execution contract is safe to approve.
 
+             E. /tmp/sybra-plan-contract-{{.Task.ID}}.json
+                Executable plan contract consumed by implementation agents and
+                validated mechanically. Write valid JSON with exactly this shape:
+
+                {
+                  "task_id": "{{.Task.ID}}",
+                  "branch": "<current branch>",
+                  "worktree": "<current working directory>",
+                  "files": [
+                    {"path": "repo/relative/path.go", "purpose": "inspect|edit", "symbols": ["optionalSymbol"]}
+                  ],
+                  "steps": ["ordered implementation step"],
+                  "verification": [
+                    {"command": "go test ./...", "expected": "tests pass"}
+                  ],
+                  "acceptance_criteria": ["observable criterion"],
+                  "risk_tier": "low|medium|high",
+                  "permission_tier": "read-only|repo-write|network|privileged",
+                  "rollback": "how to recover or revert safely"
+                }
+
+                File paths MUST be repository-relative clean paths, not absolute
+                paths and not ../ escapes. Verification and acceptance arrays
+                must be non-empty.
+
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.
         Do NOT change the task status.
@@ -216,6 +240,9 @@ steps:
           from: /tmp/sybra-plan-{{.Task.ID}}.md
         - kind: plan_brief
           from: /tmp/sybra-plan-brief-{{.Task.ID}}.md
+        - kind: plan_contract
+          from: /tmp/sybra-plan-contract-{{.Task.ID}}.json
+          required: true
     next:
       - goto: require_plan
 
@@ -289,6 +316,17 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: validate_plan_contract
+
+  - id: validate_plan_contract
+    name: Validate Plan Contract
+    type: validate_plan_contract
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: maybe_critique
 
   # Branch around critique_plan when the task is tagged `nocritic`, and also
@@ -335,11 +373,14 @@ steps:
 
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
-          2. Read .plan, .planResearch, .planDecisions, and .planBrief.
-          3. Extract the .plan field only and write it to
-             /tmp/sybra-plan-{{.Task.ID}}.md. Treat it as the execution
-             contract; do not require council/provenance detail inside it.
-          4. Invoke: /plan-critic /tmp/sybra-plan-{{.Task.ID}}.md
+          2. Read .planContract, .plan, .planResearch, .planDecisions, and .planBrief.
+          3. Write /tmp/sybra-plan-contract-review-{{.Task.ID}}.md with the
+             executable JSON contract FIRST, followed by the human-readable
+             .plan as secondary context. The contract is the artifact
+             implementation consumes, so critique it directly for missing files,
+             weak verification, acceptance gaps, risk, permission posture, and
+             rollback/recovery coverage.
+          4. Invoke: /plan-critic /tmp/sybra-plan-contract-review-{{.Task.ID}}.md
           5. Capture the full markdown Plan Review report you produce and
              write it to /tmp/sybra-critique-{{.Task.ID}}.md
 
@@ -402,9 +443,10 @@ steps:
 
         Steps:
           1. sybra-cli --json get {{.Task.ID}} — read .planCritique plus the
-             current .plan, .planResearch, .planDecisions, and .planBrief fields
+             current .plan, .planContract, .planResearch, .planDecisions, and .planBrief fields
           2. For each blocking concern, revise the appropriate artifact. Keep
-             the canonical .plan as a compact execution contract only. Do NOT
+             .plan as a compact execution plan and .planContract as the
+             executable JSON contract. Do NOT
              paste critique history, council synthesis, or "refinements applied"
              into the plan.
           3. Write revised files under /tmp:
@@ -412,8 +454,10 @@ steps:
              - /tmp/sybra-plan-decisions-{{.Task.ID}}.md
              - /tmp/sybra-plan-{{.Task.ID}}.md
              - /tmp/sybra-plan-brief-{{.Task.ID}}.md
+             - /tmp/sybra-plan-contract-{{.Task.ID}}.json
           4. sybra-cli update {{.Task.ID}} \
                --plan-file /tmp/sybra-plan-{{.Task.ID}}.md \
+               --plan-contract-file /tmp/sybra-plan-contract-{{.Task.ID}}.json \
                --plan-research-file /tmp/sybra-plan-research-{{.Task.ID}}.md \
                --plan-decisions-file /tmp/sybra-plan-decisions-{{.Task.ID}}.md \
                --plan-brief-file /tmp/sybra-plan-brief-{{.Task.ID}}.md
@@ -478,6 +522,17 @@ steps:
   - id: validate_plan_refs_after_address
     name: Validate Revised Plan References
     type: validate_plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_contract_after_address
+
+  - id: validate_plan_contract_after_address
+    name: Validate Revised Plan Contract
+    type: validate_plan_contract
     next:
       - when:
           field: task.status

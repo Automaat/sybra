@@ -8,9 +8,8 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
-// PlanningSidecarStore persists planning-support markdown sidecars next to the
-// task file. The canonical plan sidecar remains the execution contract; these
-// sidecars hold research, decision prompts, and the human-facing final brief.
+// PlanningSidecarStore persists planning-support sidecars next to the task file.
+// These sidecars hold JSON contracts, research, decision prompts, and briefs.
 type PlanningSidecarStore struct {
 	dir    string
 	suffix string
