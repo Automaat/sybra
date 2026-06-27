@@ -32,6 +32,7 @@ type Config struct {
 	ABTesting     abtest.Config      `yaml:"ab_testing" json:"abTesting"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
+	AutoUpdate    AutoUpdateConfig   `yaml:"auto_update" json:"autoUpdate"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
 	TasksDir      string             `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir     string             `yaml:"skills_dir" json:"skillsDir"`
@@ -489,6 +490,19 @@ type MetricsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
+// AutoUpdateConfig controls the local source-checkout updater. It is intended
+// for development/runtime checkouts supervised by mise, not packaged app
+// updates.
+type AutoUpdateConfig struct {
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	RepoDir             string `yaml:"repo_dir" json:"repoDir"`
+	Remote              string `yaml:"remote" json:"remote"`
+	Branch              string `yaml:"branch" json:"branch"`
+	Mode                string `yaml:"mode" json:"mode"`
+	PollSeconds         int    `yaml:"poll_seconds" json:"pollSeconds"`
+	RestartDelaySeconds int    `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
+}
+
 func HomeDir() string {
 	if dir := os.Getenv("SYBRA_HOME"); dir != "" {
 		return dir
@@ -533,6 +547,13 @@ func DefaultConfig() *Config {
 			LoopThreshold: 6,
 		},
 		ABTesting: abtest.DefaultConfig(),
+		AutoUpdate: AutoUpdateConfig{
+			Remote:              "origin",
+			Branch:              "main",
+			Mode:                "auto",
+			PollSeconds:         300,
+			RestartDelaySeconds: 2,
+		},
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
 				Enabled:         true,
@@ -668,8 +689,27 @@ func Load() (*Config, error) {
 	applyEvaluationDefaults(cfg)
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
+	applyAutoUpdateDefaults(cfg)
 
 	return cfg, nil
+}
+
+func applyAutoUpdateDefaults(cfg *Config) {
+	if cfg.AutoUpdate.Remote == "" {
+		cfg.AutoUpdate.Remote = "origin"
+	}
+	if cfg.AutoUpdate.Branch == "" {
+		cfg.AutoUpdate.Branch = "main"
+	}
+	if cfg.AutoUpdate.Mode == "" {
+		cfg.AutoUpdate.Mode = "auto"
+	}
+	if cfg.AutoUpdate.PollSeconds <= 0 {
+		cfg.AutoUpdate.PollSeconds = 300
+	}
+	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
+		cfg.AutoUpdate.RestartDelaySeconds = 2
+	}
 }
 
 func applyABTestingDefaults(cfg *Config) {

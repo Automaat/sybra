@@ -78,6 +78,39 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+func TestLoadAutoUpdateDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("auto_update:\n  enabled: true\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoUpdate.Enabled {
+		t.Fatal("auto_update.enabled = false, want true")
+	}
+	if cfg.AutoUpdate.Remote != "origin" {
+		t.Fatalf("auto_update.remote = %q, want origin", cfg.AutoUpdate.Remote)
+	}
+	if cfg.AutoUpdate.Branch != "main" {
+		t.Fatalf("auto_update.branch = %q, want main", cfg.AutoUpdate.Branch)
+	}
+	if cfg.AutoUpdate.Mode != "auto" {
+		t.Fatalf("auto_update.mode = %q, want auto", cfg.AutoUpdate.Mode)
+	}
+	if cfg.AutoUpdate.PollSeconds != 300 {
+		t.Fatalf("auto_update.poll_seconds = %d, want 300", cfg.AutoUpdate.PollSeconds)
+	}
+	if cfg.AutoUpdate.RestartDelaySeconds != 2 {
+		t.Fatalf("auto_update.restart_delay_seconds = %d, want 2", cfg.AutoUpdate.RestartDelaySeconds)
+	}
+}
+
 func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

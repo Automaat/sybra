@@ -18,6 +18,11 @@ run = [
 description = "Install CLI, refresh agent skills, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
+[tasks."dev:auto"]
+run = "scripts/sybra-dev-supervisor.sh"
+description = "Run dev mode under an auto-update supervisor; restarts only when Sybra requests it."
+env = { SYBRA_PPROF = "127.0.0.1:6060" }
+
 [tasks.build]
 run = ["cd frontend && npm run build:desktop", "go build -o build/bin/sybra ."]
 description = "Build production desktop binary."

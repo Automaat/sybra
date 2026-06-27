@@ -103,6 +103,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if !reflect.DeepEqual(old.ProjectTypes, next.ProjectTypes) {
 		restart = append(restart, "project_types")
 	}
+	if !reflect.DeepEqual(old.AutoUpdate, next.AutoUpdate) {
+		restart = append(restart, "auto_update")
+	}
 
 	return hot, restart
 }
