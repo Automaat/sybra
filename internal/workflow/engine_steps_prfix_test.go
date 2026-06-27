@@ -39,6 +39,20 @@ func TestClassifyPRFixResult(t *testing.T) {
 			output:    "The conflict is resolved; no human review is required.\nSYBRA_PR_FIX_RESULT: continue\n",
 			wantHuman: false,
 		},
+		{
+			name: "last sentinel wins",
+			output: "Example contract:\nSYBRA_PR_FIX_RESULT: human-required\n\nActual result:\n" +
+				"SYBRA_PR_FIX_RESULT: continue\n",
+			wantHuman: false,
+		},
+		{
+			name: "last reason wins",
+			output: "SYBRA_PR_FIX_REASON: example only\n" +
+				"SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: real blocker\n",
+			wantHuman:  true,
+			wantReason: "real blocker",
+		},
 	}
 
 	for _, tc := range cases {
@@ -96,6 +110,39 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "Human review is required") {
 		t.Errorf("reason = %q, want agent output excerpt", reason)
+	}
+}
+
+func TestPRFixRequiresHuman_UsesLastAgentStepVars(t *testing.T) {
+	t.Parallel()
+
+	wf := &Execution{
+		StepHistory: []StepRecord{
+			{
+				StepID:  "old_fix",
+				Status:  "completed",
+				Output:  "SYBRA_PR_FIX_RESULT: human-required\nSYBRA_PR_FIX_REASON: stale\n",
+				AgentID: "agent-1",
+			},
+			{
+				StepID:  "repair_conflicts",
+				Status:  "completed",
+				Output:  "SYBRA_PR_FIX_RESULT: human-required\nSYBRA_PR_FIX_REASON: ignored because explicit false var wins\n",
+				AgentID: "agent-2",
+			},
+		},
+		Variables: map[string]string{
+			"step.old_fix.pr_fix_requires_human":          "true",
+			"step.old_fix.pr_fix_reason":                  "stale",
+			"step.repair_conflicts.pr_fix_requires_human": "false",
+			"step.repair_conflicts.pr_fix_reason":         "",
+			"step.repair_conflicts.output":                "SYBRA_PR_FIX_RESULT: human-required\n",
+		},
+	}
+
+	gotHuman, gotReason := prFixRequiresHuman(wf)
+	if gotHuman {
+		t.Fatalf("requiresHuman = true, reason %q; want explicit false from latest agent step", gotReason)
 	}
 }
 

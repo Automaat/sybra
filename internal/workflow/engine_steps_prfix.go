@@ -28,21 +28,30 @@ func prFixRequiresHuman(wfExec *Execution) (requiresHuman bool, reason string) {
 	if wfExec == nil {
 		return false, ""
 	}
-	if wfExec.Variables != nil && wfExec.Variables["step.fix.pr_fix_requires_human"] == "true" {
-		return true, wfExec.Variables["step.fix.pr_fix_reason"]
+	stepID := wfExec.LastAgentStepID()
+	if stepID == "" {
+		return false, ""
 	}
-	return classifyPRFixResult(lastPRFixOutput(wfExec))
+	if wfExec.Variables != nil {
+		switch wfExec.Variables["step."+stepID+".pr_fix_requires_human"] {
+		case "true":
+			return true, wfExec.Variables["step."+stepID+".pr_fix_reason"]
+		case "false":
+			return false, ""
+		}
+	}
+	return classifyPRFixResult(lastPRFixOutput(wfExec, stepID))
 }
 
-func lastPRFixOutput(wfExec *Execution) string {
-	if wfExec == nil {
+func lastPRFixOutput(wfExec *Execution, stepID string) string {
+	if wfExec == nil || stepID == "" {
 		return ""
 	}
-	if rec := wfExec.RecordForStep("fix"); rec != nil {
+	if rec := wfExec.RecordForStep(stepID); rec != nil {
 		return rec.Output
 	}
 	if wfExec.Variables != nil {
-		return wfExec.Variables["step.fix.output"]
+		return wfExec.Variables["step."+stepID+".output"]
 	}
 	return ""
 }
@@ -51,7 +60,9 @@ func classifyPRFixResult(output string) (requiresHuman bool, reason string) {
 	if strings.TrimSpace(output) == "" {
 		return false, ""
 	}
-	if m := prFixSentinelRe.FindStringSubmatch(output); len(m) == 2 {
+	matches := prFixSentinelRe.FindAllStringSubmatch(output, -1)
+	if len(matches) > 0 {
+		m := matches[len(matches)-1]
 		switch strings.ToLower(strings.TrimSpace(m[1])) {
 		case "human-required", "human_required", "human":
 			return true, extractPRFixReason(output)
@@ -98,7 +109,9 @@ func classifyPRFixResult(output string) (requiresHuman bool, reason string) {
 }
 
 func extractPRFixReason(output string) string {
-	if m := prFixReasonRe.FindStringSubmatch(output); len(m) == 2 {
+	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
+	if len(matches) > 0 {
+		m := matches[len(matches)-1]
 		return truncate(strings.TrimSpace(m[1]), 200)
 	}
 	return "pr-fix agent requested human review"

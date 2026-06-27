@@ -79,13 +79,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			if v := extractTestVerdict(output.Output); v != "" {
 				wfExec.SetVar("step."+output.StepID+".verdict", v)
 			}
-			if currentStep.Config.Role == "pr-fix" {
-				if requiresHuman, reason := classifyPRFixResult(output.Output); requiresHuman {
-					wfExec.SetVar("step."+output.StepID+".pr_fix_requires_human", "true")
-					wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
-				}
-			}
 		}
+	}
+	if output.Status == "completed" && currentStep.Config.Role == "pr-fix" {
+		requiresHuman, reason := classifyPRFixResult(output.Output)
+		wfExec.SetVar("step."+output.StepID+".pr_fix_requires_human", strconv.FormatBool(requiresHuman))
+		wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
 	}
 
 	// Retry failed steps if max_retries configured and not exhausted.
