@@ -48,6 +48,9 @@ const (
 	// EventPRReverted records that a previously-merged PR was reverted on the
 	// default branch — a change-failure signal. Reserved for revert detection.
 	EventPRReverted = "pr.reverted"
+	// EventAgentPermissionDenied is emitted once per auto-mode classifier denial
+	// observed during a headless claude run. Batched at completion time.
+	EventAgentPermissionDenied = "agent.permission_denied"
 )
 
 type Event struct {

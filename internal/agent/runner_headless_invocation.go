@@ -75,11 +75,7 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}
-	if len(cfg.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
-	} else if !cfg.RequirePermissions {
-		args = append(args, "--dangerously-skip-permissions")
-	}
+	args = append(args, claudePermissionArgs(cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -108,4 +104,24 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 	}
 	command = "claude " + strings.Join(args, " ")
 	return
+}
+
+// claudePermissionArgs returns the permission-related CLI flags for a claude headless run.
+//
+// Precedence:
+//  1. len(allowed)>0 → --allowedTools <list> (explicit tool allowlist wins)
+//  2. requirePerms → nil (approval-hook mode; no bypass or auto flag)
+//  3. mode=="auto" → --permission-mode auto (auto-mode classifier)
+//  4. else → --dangerously-skip-permissions (legacy bypass, default)
+func claudePermissionArgs(allowed []string, requirePerms bool, mode string) []string {
+	if len(allowed) > 0 {
+		return []string{"--allowedTools", strings.Join(allowed, ",")}
+	}
+	if requirePerms {
+		return nil
+	}
+	if mode == "auto" {
+		return []string{"--permission-mode", "auto"}
+	}
+	return []string{"--dangerously-skip-permissions"}
 }

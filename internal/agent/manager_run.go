@@ -68,21 +68,22 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 
 	now := time.Now().UTC()
 	a := &Agent{
-		ID:                 id,
-		TaskID:             cfg.TaskID,
-		Name:               cfg.Name,
-		Mode:               cfg.Mode,
-		Provider:           resolvedProvider,
-		Model:              normalizeModel(resolvedProvider, cfg.Model),
-		ReasoningEffort:    cfg.ReasoningEffort,
-		Prompt:             cfg.Prompt,
-		State:              StateRunning,
-		StartedAt:          now,
-		LastEventAt:        now,
-		cancel:             cancel,
-		sessionCWD:         cfg.Dir,
-		MaxTurns:           cfg.MaxTurns,
-		requirePermissions: cfg.RequirePermissions,
+		ID:                     id,
+		TaskID:                 cfg.TaskID,
+		Name:                   cfg.Name,
+		Mode:                   cfg.Mode,
+		Provider:               resolvedProvider,
+		Model:                  normalizeModel(resolvedProvider, cfg.Model),
+		ReasoningEffort:        cfg.ReasoningEffort,
+		Prompt:                 cfg.Prompt,
+		State:                  StateRunning,
+		StartedAt:              now,
+		LastEventAt:            now,
+		cancel:                 cancel,
+		sessionCWD:             cfg.Dir,
+		MaxTurns:               cfg.MaxTurns,
+		requirePermissions:     cfg.RequirePermissions,
+		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)
@@ -183,18 +184,14 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	case "copilot":
 		return buildCopilotCommand(model), nil
 	default:
-		return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions), nil
+		return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode), nil
 	}
 }
 
 // buildClaudeCommand builds the display command string for a Claude agent.
-func buildClaudeCommand(model string, allowedTools []string, requirePerms bool) string {
+func buildClaudeCommand(model string, allowedTools []string, requirePerms bool, mode string) string {
 	parts := []string{"claude"}
-	if len(allowedTools) > 0 {
-		parts = append(parts, "--allowedTools", strings.Join(allowedTools, ","))
-	} else if !requirePerms {
-		parts = append(parts, "--dangerously-skip-permissions")
-	}
+	parts = append(parts, claudePermissionArgs(allowedTools, requirePerms, mode)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}

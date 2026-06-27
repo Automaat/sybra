@@ -151,6 +151,15 @@ type Agent struct {
 	// choice across a restart instead of silently becoming permissive.
 	requirePermissions bool
 
+	// headlessPermissionMode is the resolved posture passed via RunConfig
+	// ("bypass" or "auto"). Stored for OnComplete so the denial audit events
+	// can record the posture without re-resolving it.
+	headlessPermissionMode string
+
+	// permissionDenials accumulates auto-mode classifier denial records
+	// observed during the run. Flushed to audit in OnComplete.
+	permissionDenials []PermissionDenial
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
@@ -456,6 +465,35 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Unlock()
 }
 
+// NotePermissionDenial records an auto-mode classifier denial observed during the run.
+func (a *Agent) NotePermissionDenial(toolUseID, reason string) {
+	a.mu.Lock()
+	a.permissionDenials = append(a.permissionDenials, PermissionDenial{
+		ToolUseID: toolUseID,
+		Reason:    reason,
+	})
+	a.mu.Unlock()
+}
+
+// GetPermissionDenials returns a snapshot of the recorded auto-mode denial records.
+func (a *Agent) GetPermissionDenials() []PermissionDenial {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.permissionDenials) == 0 {
+		return nil
+	}
+	cp := make([]PermissionDenial, len(a.permissionDenials))
+	copy(cp, a.permissionDenials)
+	return cp
+}
+
+// GetHeadlessPermissionMode returns the resolved headless permission posture for this run.
+func (a *Agent) GetHeadlessPermissionMode() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.headlessPermissionMode
+}
+
 // SetPluginErrors records plugin load failures from the init event.
 func (a *Agent) SetPluginErrors(errs []string) {
 	a.mu.Lock()
@@ -708,6 +746,20 @@ type RunConfig struct {
 	// Set intra-package before buildHeadlessInvocation; cleared by defer after
 	// the subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// HeadlessPermissionMode overrides the permission posture for this run.
+	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
+	// "bypass" (or empty) keeps --dangerously-skip-permissions.
+	// Only effective for claude headless runs when AllowedTools is empty and
+	// RequirePermissions is false.
+	HeadlessPermissionMode string
+}
+
+// PermissionDenial records a single auto-mode classifier denial observed during
+// a headless run. Populated from tool_result error blocks that match the Claude
+// Code auto-mode classifier denial marker.
+type PermissionDenial struct {
+	ToolUseID string
+	Reason    string
 }
 
 // PlanStep represents a single item from a TodoWrite tool call.
@@ -749,6 +801,10 @@ type StreamEvent struct {
 	// repeating the same call. Unexported so it is never serialized to the
 	// NDJSON log or emitted to the frontend; it lives only in memory.
 	toolSig string
+	// permissionDenials carries auto-mode classifier denial records extracted
+	// from this event's tool_result error blocks. Unexported so it is never
+	// serialized; lives in-memory only. Populated for claude "user" events only.
+	permissionDenials []PermissionDenial
 }
 
 // ConvoEvent is a rich event for conversational mode, preserving full tool

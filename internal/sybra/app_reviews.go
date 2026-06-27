@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -39,6 +40,7 @@ type ReviewHandler struct {
 	prTracker      *github.IssueTracker
 	worktrees      *worktree.Manager
 	workflowEngine *workflow.Engine
+	cfg            *config.Config
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
@@ -81,6 +83,7 @@ func newReviewHandler(
 	emit func(string, any),
 	worktrees *worktree.Manager,
 	renovatePRsFn func() []github.PullRequest,
+	cfg *config.Config,
 ) *ReviewHandler {
 	return &ReviewHandler{
 		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
@@ -94,6 +97,7 @@ func newReviewHandler(
 		mergePR:       github.MergePR,
 		fetchThreads:  github.FetchReviewThreads,
 		resolveThread: github.ResolveReviewThread,
+		cfg:           cfg,
 	}
 }
 

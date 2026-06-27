@@ -48,6 +48,21 @@ func resolvePermission(t task.Task, cfg *config.Config) bool {
 	return cfg.DefaultRequirePermissions()
 }
 
+// resolveHeadlessPermissionMode returns the effective headless permission posture.
+// Priority: task field > config default > "bypass".
+// When the task carries an invalid value, an error is returned and the caller
+// must abort the launch rather than silently falling back to bypass.
+func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, error) {
+	if t.HeadlessPermissionMode != "" {
+		mode, err := config.NormalizeHeadlessPermissionMode(t.HeadlessPermissionMode)
+		if err != nil {
+			return "", fmt.Errorf("task %s: %w", t.ID, err)
+		}
+		return mode, nil
+	}
+	return cfg.DefaultHeadlessPermissionMode(), nil
+}
+
 // pickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
 // to the current workflow execution.
@@ -247,24 +262,30 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	}
 	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart)
 
+	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
+	if postureErr != nil {
+		return nil, postureErr
+	}
+
 	extraEnv := o.sandboxEnvIfRunning(taskID)
 
 	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:             taskID,
-		Name:               t.Title,
-		Mode:               effMode,
-		Prompt:             fullPrompt,
-		AllowedTools:       t.AllowedTools,
-		Dir:                dir,
-		Model:              "sonnet",
-		RequirePermissions: requirePerm,
-		OneShot:            oneShot,
-		ResumeSessionID:    resumeSessionID,
-		ExtraEnv:           extraEnv,
-		MaxTurns:           t.MaxTurns,
-		ForkSubagent:       t.ForkSubagent,
-		ReasoningEffort:    t.ReasoningEffort,
+		TaskID:                 taskID,
+		Name:                   t.Title,
+		Mode:                   effMode,
+		Prompt:                 fullPrompt,
+		AllowedTools:           t.AllowedTools,
+		Dir:                    dir,
+		Model:                  "sonnet",
+		RequirePermissions:     requirePerm,
+		HeadlessPermissionMode: posture,
+		OneShot:                oneShot,
+		ResumeSessionID:        resumeSessionID,
+		ExtraEnv:               extraEnv,
+		MaxTurns:               t.MaxTurns,
+		ForkSubagent:           t.ForkSubagent,
+		ReasoningEffort:        t.ReasoningEffort,
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
@@ -284,6 +305,7 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
+		"permission_posture": posture,
 	})
 	var nextStatus *task.Status
 	if t.Status != task.StatusInProgress {
@@ -439,6 +461,11 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		return fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
+	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
+	if postureErr != nil {
+		return postureErr
+	}
+
 	prompt := buildPRFixPrompt(t, o.logger)
 	if steered, sErr := prependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
 		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
@@ -446,14 +473,15 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		prompt = steered
 	}
 	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:             taskID,
-		Name:               agent.RolePRFix.AgentName(t.Title),
-		Mode:               effMode,
-		Prompt:             prompt,
-		AllowedTools:       t.AllowedTools,
-		Dir:                dir,
-		Model:              "sonnet",
-		RequirePermissions: requirePerm,
+		TaskID:                 taskID,
+		Name:                   agent.RolePRFix.AgentName(t.Title),
+		Mode:                   effMode,
+		Prompt:                 prompt,
+		AllowedTools:           t.AllowedTools,
+		Dir:                    dir,
+		Model:                  "sonnet",
+		RequirePermissions:     requirePerm,
+		HeadlessPermissionMode: posture,
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
@@ -466,6 +494,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
+		"permission_posture": posture,
 	})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,

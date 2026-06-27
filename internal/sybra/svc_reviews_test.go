@@ -105,7 +105,7 @@ updated_at: 2025-01-01T00:00:00Z
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
 
-	handler := newReviewHandler(taskMgr, projStore, agentMgr, nil, logger, nil, func(string, any) {}, wm, nil)
+	handler := newReviewHandler(taskMgr, projStore, agentMgr, nil, logger, nil, func(string, any) {}, wm, nil, nil)
 	svc := &ReviewService{reviewer: handler, tasks: taskMgr}
 
 	return svc, taskMgr, barePath

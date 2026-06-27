@@ -515,6 +515,10 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	// signature (non-tool event) is a no-op, so the streak survives reasoning
 	// between identical calls and the watchdog can spot an active loop.
 	a.NoteToolSignature(event.toolSig)
+	// Record any auto-mode classifier denials observed in this event's tool results.
+	for _, d := range event.permissionDenials {
+		a.NotePermissionDenial(d.ToolUseID, d.Reason)
+	}
 	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()

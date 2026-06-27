@@ -27,6 +27,7 @@ type TaskService struct {
 	wg                  *sync.WaitGroup
 	logger              *slog.Logger
 	audit               *audit.Logger
+	cfg                 *config.Config
 	fetchPR             func(repo string, number int) (github.PullRequest, error)
 	fetchIssue          func(repo string, number int) (github.Issue, error)
 	fetchIssueLinkedPRs func(repo string, issueNumber int) ([]github.PullRequest, error)
@@ -270,6 +271,11 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 
 // startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
 func (s *TaskService) startPRReviewAgent(t task.Task) error {
+	posture, postureErr := resolveHeadlessPermissionMode(t, s.cfg)
+	if postureErr != nil {
+		return postureErr
+	}
+
 	dir := config.HomeDir()
 	if t.ProjectID != "" {
 		d, err := s.worktrees.PrepareForReview(t)
@@ -282,12 +288,13 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
 	ag, err := s.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RoleReview.AgentName(t.Title),
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    dir,
-		Model:  "opus",
+		TaskID:                 t.ID,
+		Name:                   agent.RoleReview.AgentName(t.Title),
+		Mode:                   "headless",
+		Prompt:                 prompt,
+		Dir:                    dir,
+		Model:                  "opus",
+		HeadlessPermissionMode: posture,
 		// MaxTurns intentionally not inherited: review agents need
 		// enough turns to fetch the PR, run the skill, and write findings.
 	})
