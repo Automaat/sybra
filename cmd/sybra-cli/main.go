@@ -1583,13 +1583,19 @@ func cmdHook(cfg *config.Config, args []string) int {
 		fmt.Fprintln(os.Stderr, "hook: invalid --task value")
 		return 0
 	}
-	_ = event // event is validated by codexhook.Map via the JSON payload
-
 	// Read the hook payload from stdin (codex pipes JSON here).
-	payload, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024))
+	// Use a limit of 64 KiB; if exactly that many bytes are read the input
+	// exceeded the bound (LimitReader truncates silently) — reject it.
+	const maxPayloadBytes = 64 * 1024
+	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxPayloadBytes))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook: read stdin: %v\n", err)
 		logHookFailure(cfg, *taskID, "read_error")
+		return 0
+	}
+	if len(payload) >= maxPayloadBytes {
+		fmt.Fprintln(os.Stderr, "hook: stdin payload exceeds size limit")
+		logHookFailure(cfg, *taskID, "oversized_payload")
 		return 0
 	}
 	if len(bytes.TrimSpace(payload)) == 0 {
@@ -1598,7 +1604,7 @@ func cmdHook(cfg *config.Config, args []string) int {
 		return 0
 	}
 
-	auditEvent, err := codexhook.Map(payload, *taskID)
+	auditEvent, err := codexhook.Map(payload, *taskID, event)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook: map payload: %v\n", err)
 		logHookFailure(cfg, *taskID, "map_error")

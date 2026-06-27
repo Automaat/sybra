@@ -1012,8 +1012,12 @@ func runHookWithStdin(t *testing.T, stdin string, args ...string) (exitCode int,
 	oldStdin := os.Stdin
 	sr, sw, _ := os.Pipe()
 	os.Stdin = sr
-	_, _ = sw.WriteString(stdin)
-	_ = sw.Close()
+	// Write stdin in a goroutine: large payloads (> pipe buffer ~64 KiB) would
+	// deadlock if written synchronously before run() starts reading.
+	go func() {
+		_, _ = sw.WriteString(stdin)
+		_ = sw.Close()
+	}()
 
 	code := run(args)
 
@@ -1065,6 +1069,18 @@ func TestHookCmd_FailOpen(t *testing.T) {
 			name:  "unknown_event_in_payload",
 			args:  []string{"hook", "PreToolUse", "--task", "task-abc"},
 			stdin: `{"hook_event_name":"PreToolUse","session_id":"s"}`,
+		},
+		{
+			// Positional event arg disagrees with payload's hook_event_name.
+			name:  "event_mismatch",
+			args:  []string{"hook", "Stop", "--task", "task-abc"},
+			stdin: `{"hook_event_name":"SessionStart","session_id":"s-mismatch","model":"m"}`,
+		},
+		{
+			// Payload > 64 KiB: first bytes are valid JSON but total exceeds limit.
+			name:  "oversized_payload",
+			args:  []string{"hook", "SessionStart", "--task", "task-abc"},
+			stdin: `{"hook_event_name":"SessionStart","session_id":"s-oversize"}` + strings.Repeat(" ", 70000),
 		},
 	}
 

@@ -34,16 +34,22 @@ var knownEvents = map[string]string{
 }
 
 // Map parses raw JSON hook payload bytes and maps them to an audit.Event for
-// the given taskID. Returns an error for unknown event names or malformed JSON
-// — callers should treat errors as fail-open (exit 0, log to stderr only).
+// the given taskID. expectedEvent is the hook name passed on the command line
+// (e.g. "SessionStart"); it must match the payload's hook_event_name field —
+// a mismatch indicates the wrong hook fired or the payload was corrupted.
+// Returns an error for unknown/mismatched event names or malformed JSON —
+// callers should treat errors as fail-open (exit 0, log to stderr only).
 //
 // The returned Data map carries only structural fields: hook_event_name,
 // session_id, model, subagent_id, kind. The marshaled event line is always
 // well under 4096 bytes with these constraints.
-func Map(raw []byte, taskID string) (audit.Event, error) {
+func Map(raw []byte, taskID, expectedEvent string) (audit.Event, error) {
 	var p Payload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return audit.Event{}, fmt.Errorf("unmarshal codex hook payload: %w", err)
+	}
+	if p.HookEventName != expectedEvent {
+		return audit.Event{}, fmt.Errorf("hook event mismatch: arg=%q payload=%q", expectedEvent, p.HookEventName)
 	}
 	eventType, ok := knownEvents[p.HookEventName]
 	if !ok {

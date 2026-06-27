@@ -11,7 +11,7 @@ import (
 func TestMap_SessionStart(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"SessionStart","session_id":"sess-1","model":"gpt-5.5"}`)
-	ev, err := Map(raw, "task-abc123")
+	ev, err := Map(raw, "task-abc123", "SessionStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestMap_SessionStart(t *testing.T) {
 func TestMap_SubagentStart(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"SubagentStart","session_id":"s","subagent_id":"sa-1","kind":"coder","model":"gpt-5.5"}`)
-	ev, err := Map(raw, "task-xyz")
+	ev, err := Map(raw, "task-xyz", "SubagentStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestMap_SubagentStart(t *testing.T) {
 func TestMap_SubagentStop(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"SubagentStop","session_id":"s","subagent_id":"sa-1","kind":"coder"}`)
-	ev, err := Map(raw, "t")
+	ev, err := Map(raw, "t", "SubagentStop")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestMap_SubagentStop(t *testing.T) {
 func TestMap_Stop(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"Stop","session_id":"s","model":"gpt-5.5"}`)
-	ev, err := Map(raw, "t")
+	ev, err := Map(raw, "t", "Stop")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestMap_Stop(t *testing.T) {
 func TestMap_UnknownEvent(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"PreToolUse","session_id":"s"}`)
-	_, err := Map(raw, "t")
+	_, err := Map(raw, "t", "PreToolUse")
 	if err == nil {
 		t.Fatal("expected error for unknown event")
 	}
@@ -86,9 +86,22 @@ func TestMap_UnknownEvent(t *testing.T) {
 	}
 }
 
+func TestMap_EventMismatch(t *testing.T) {
+	t.Parallel()
+	// Positional event "Stop" but payload says "SessionStart" — must error.
+	raw := []byte(`{"hook_event_name":"SessionStart","session_id":"s-mismatch","model":"m"}`)
+	_, err := Map(raw, "t", "Stop")
+	if err == nil {
+		t.Fatal("expected error for event name mismatch")
+	}
+	if !strings.Contains(err.Error(), "mismatch") {
+		t.Errorf("error should mention mismatch; got %v", err)
+	}
+}
+
 func TestMap_MalformedJSON(t *testing.T) {
 	t.Parallel()
-	_, err := Map([]byte("{not json"), "t")
+	_, err := Map([]byte("{not json"), "t", "SessionStart")
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -109,7 +122,7 @@ func TestMap_NoForbiddenFields(t *testing.T) {
 		"prompt": "secret prompt text",
 		"command": "rm -rf /"
 	}`)
-	ev, err := Map(raw, "task-1")
+	ev, err := Map(raw, "task-1", "SessionStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
@@ -127,7 +140,7 @@ func TestMap_NoForbiddenFields(t *testing.T) {
 func TestMap_LineSizeUnder4096(t *testing.T) {
 	t.Parallel()
 	raw := []byte(`{"hook_event_name":"SubagentStart","session_id":"sess-aaaaaaaaaaaaaaaaaaaaaaaaa","model":"gpt-5.5-turbo-xxxx","subagent_id":"subagent-bbbbbbbbbbbbbb","kind":"coder-specialist"}`)
-	ev, err := Map(raw, "task-cccccccccccccccccccc")
+	ev, err := Map(raw, "task-cccccccccccccccccccc", "SubagentStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
 	}
