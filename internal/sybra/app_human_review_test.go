@@ -262,7 +262,7 @@ func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
 	}
 }
 
-func TestOnComplete_SinkError_LeavesHumanRequired(t *testing.T) {
+func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -287,14 +287,15 @@ func TestOnComplete_SinkError_LeavesHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Errorf("status: got %q want human-required (sink error path)", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Errorf("status: got %q want blocked (local fallback path)", got.Status)
 	}
 	if got.BlockedByIssue != "" {
 		t.Errorf("BlockedByIssue should be empty on sink error; got %q", got.BlockedByIssue)
 	}
-	if !strings.Contains(got.Body, "issue submission failed") {
-		t.Errorf("expected failure note in body; got:\n%s", got.Body)
+	if !strings.Contains(got.Body, "Auto-review verdict: blocked by Sybra bug (local fallback)") ||
+		!strings.Contains(got.Body, "GitHub issue filing failed: rate limited") {
+		t.Errorf("expected local fallback note in body; got:\n%s", got.Body)
 	}
 }
 

@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -31,9 +33,19 @@ const (
 	// {"verdict":"FAIL"}, so the actual failure text must be read from the body
 	// delta written by the runner.
 	testFailureBodyStartLenKey = "body_start_len"
+	testVerdictOutcomeKey      = "outcome"
+	testFailureFingerprintKey  = "failure_fingerprint"
 	testFailuresHeading        = "## Test Failures"
 
-	testProtocolFixSuggestions = "fix-suggestions"
+	testOutcomePass                 = "pass"
+	testOutcomeProductBug           = "product_bug"
+	testOutcomeAmbiguousRequirement = "ambiguous_requirement"
+	testOutcomeInfraFailure         = "infra_failure"
+	testOutcomeMissingEvidence      = "missing_evidence"
+	testOutcomeProtocolViolation    = "protocol_violation"
+
+	testProtocolFixSuggestions  = "fix-suggestions"
+	testProtocolMissingEvidence = "missing-evidence"
 )
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -46,42 +58,218 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 	wfExec.SetVar("step."+stepID+"."+testFailureBodyStartLenKey, strconv.Itoa(len(body)))
 	delete(wfExec.Variables, "step."+stepID+".verdict")
 	delete(wfExec.Variables, "step."+stepID+"."+testVerdictTaintedKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testVerdictOutcomeKey)
+	delete(wfExec.Variables, "step."+stepID+"."+testFailureFingerprintKey)
 }
 
 // applyTestVerdictCompletion extracts the machine verdict from run_test output,
 // records protocol violations, and turns protocol-violating reports into failed
 // steps. The run_agent max_retries budget then retries the tester instead of
 // sending implementation agents after a bad report. It returns the violation
-// name when one should be persisted on the underlying AgentRun.
-func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body string) string {
+// name when one should be persisted on the underlying AgentRun, plus the typed
+// outcome and failure fingerprint for attempt accounting.
+func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body string) (violation, outcome, fingerprint string) {
 	if wfExec == nil || output == nil || output.StepID != testVerdictSourceStep {
-		return ""
+		return "", "", ""
 	}
 	if output.Status != "completed" && output.Status != "failed" {
-		return ""
+		return "", "", ""
 	}
 	v := extractTestVerdict(output.Output)
-	if (v == "" || v == "FAIL") && containsFixSuggestionsInCurrentTestReport(output.Output, body, wfExec, output.StepID) {
+	outcome, fingerprint = classifyTestOutcome(output.Status, output.Output, body, wfExec, output.StepID)
+	if outcome != "" {
+		wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, outcome)
+	}
+	if fingerprint != "" {
+		wfExec.SetVar("step."+output.StepID+"."+testFailureFingerprintKey, fingerprint)
+	}
+	if outcome == testOutcomeProtocolViolation {
 		wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolFixSuggestions)
 		output.Status = "failed"
-		output.Output = appendTestProtocolViolation(output.Output)
-		return testProtocolFixSuggestions
+		output.Output = appendTestProtocolViolation(output.Output, "FAIL report contained fix suggestions instead of observed symptoms")
+		return testProtocolFixSuggestions, outcome, fingerprint
+	}
+	if outcome == testOutcomeMissingEvidence {
+		wfExec.SetVar("step."+output.StepID+"."+testVerdictTaintedKey, testProtocolMissingEvidence)
+		output.Status = "failed"
+		output.Output = appendTestProtocolViolation(output.Output, "FAIL report lacked machine-checkable evidence")
+		return testProtocolMissingEvidence, outcome, fingerprint
+	}
+	if outcome == testOutcomeInfraFailure {
+		output.Status = "failed"
+		output.Output = appendTestInfrastructureFailure(output.Output)
+		return "", outcome, fingerprint
 	}
 	if output.Status != "completed" {
-		return ""
+		return "", outcome, fingerprint
 	}
 	if v != "" {
 		wfExec.SetVar("step."+output.StepID+".verdict", v)
 	}
-	return ""
+	return "", outcome, fingerprint
 }
 
-func appendTestProtocolViolation(output string) string {
-	msg := "test-runner protocol violation: FAIL report contained fix suggestions instead of observed symptoms"
+func appendTestProtocolViolation(output, detail string) string {
+	msg := "test-runner protocol violation: " + detail
 	if strings.TrimSpace(output) == "" {
 		return msg
 	}
 	return strings.TrimRight(output, "\n") + "\n\n" + msg
+}
+
+func appendTestInfrastructureFailure(output string) string {
+	msg := "test-runner infrastructure failure: runner exited without a parseable, evidenced verdict"
+	if strings.TrimSpace(output) == "" {
+		return msg
+	}
+	return strings.TrimRight(output, "\n") + "\n\n" + msg
+}
+
+func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID string) (outcome, fingerprint string) {
+	v := extractTestVerdict(output)
+	if status == "failed" {
+		return testOutcomeInfraFailure, ""
+	}
+	if (v == "" || v == "FAIL") && containsFixSuggestionsInCurrentTestReport(output, body, wfExec, stepID) {
+		return testOutcomeProtocolViolation, ""
+	}
+	switch v {
+	case "PASS":
+		return testOutcomePass, ""
+	case "FAIL":
+	default:
+		if currentTestFailureReport(output, body, wfExec, stepID) == "" {
+			return testOutcomeInfraFailure, ""
+		}
+		return testOutcomeMissingEvidence, ""
+	}
+
+	report := currentTestFailureReport(output, body, wfExec, stepID)
+	if strings.TrimSpace(report) == "" {
+		return testOutcomeMissingEvidence, ""
+	}
+	if explicit := explicitTestOutcome(report); explicit != "" {
+		if explicit == testOutcomeProductBug || explicit == testOutcomeAmbiguousRequirement {
+			if !hasGroundedFailureEvidence(report) {
+				return testOutcomeMissingEvidence, ""
+			}
+			return explicit, testFailureFingerprint(report)
+		}
+		return explicit, ""
+	}
+	if !hasGroundedFailureEvidence(report) {
+		return testOutcomeMissingEvidence, ""
+	}
+	return testOutcomeProductBug, testFailureFingerprint(report)
+}
+
+func currentTestFailureReport(output, body string, wfExec *Execution, stepID string) string {
+	if section := testFailSectionOf(output); section != "" {
+		return section
+	}
+	delta, ok := testFailureBodyDelta(body, wfExec, stepID)
+	if !ok || strings.TrimSpace(delta) == "" {
+		return ""
+	}
+	if section := testFailSectionOf(delta); section != "" {
+		return section
+	}
+	return delta
+}
+
+func explicitTestOutcome(report string) string {
+	for _, line := range reportScanLines(report) {
+		field, value, ok := strings.Cut(strings.ToLower(line), ":")
+		if !ok {
+			continue
+		}
+		field = strings.Trim(field, "-* \t")
+		if field != "classification" && field != "class" && field != "type" && field != "outcome" {
+			continue
+		}
+		if outcome := normalizeTestOutcome(value); outcome != "" {
+			return outcome
+		}
+	}
+	return ""
+}
+
+func normalizeTestOutcome(s string) string {
+	token := strings.Trim(strings.ToLower(s), " .;,-_*`\"'")
+	token = strings.NewReplacer("-", "_", " ", "_", ":", "_", ",", "_").Replace(token)
+	token = strings.Trim(token, "_")
+	switch {
+	case outcomeTokenStarts(token, testOutcomeProductBug, "bug", "product_failure"):
+		return testOutcomeProductBug
+	case outcomeTokenStarts(token, testOutcomeInfraFailure, "infrastructure_failure", "infrastructure", "infra"):
+		return testOutcomeInfraFailure
+	case outcomeTokenStarts(token, testOutcomeMissingEvidence, "ungrounded", "no_evidence"):
+		return testOutcomeMissingEvidence
+	case outcomeTokenStarts(token, testOutcomeAmbiguousRequirement, "ambiguous", "spec_ambiguity", "ambiguous_spec"):
+		return testOutcomeAmbiguousRequirement
+	case outcomeTokenStarts(token, testOutcomeProtocolViolation, "test_protocol_violation", "protocol"):
+		return testOutcomeProtocolViolation
+	default:
+		return ""
+	}
+}
+
+func outcomeTokenStarts(token string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if token == candidate || strings.HasPrefix(token, candidate+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func reportScanLines(text string) []string {
+	var out []string
+	inFence := false
+	for line := range strings.SplitSeq(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func hasGroundedFailureEvidence(report string) bool {
+	lower := strings.ToLower(report)
+	hasCommand := containsAny(lower,
+		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
+		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg -n ", "grep ")
+	hasObserved := containsAny(lower,
+		"actual output:", "actual:", "observed:", "stdout:", "stderr:",
+		"exit code", "printed:", "rendered:")
+	hasExpected := containsAny(lower,
+		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
+		"violates", "should render", "should not")
+	hasGrounding := containsAny(lower,
+		"code evidence:", "quoted code", "current source", "src/", "internal/",
+		".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
+	return hasCommand && hasObserved && hasExpected && hasGrounding
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func testFailureFingerprint(report string) string {
+	normalized := strings.Join(strings.Fields(strings.ToLower(report)), " ")
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:8])
 }
 
 // containsFixSuggestionsInCurrentTestReport scans the agent result and the task
@@ -298,17 +486,19 @@ func extractTestVerdict(output string) string {
 // The test-runner's job is to PROVE the implementation does not satisfy the
 // task. It prints testVerdictPass only when it failed to break the feature.
 //
-//   - pass  → ready-pr   (a separate workflow opens the PR)
-//   - fail  → in-progress (re-implement, carrying the agent's test-failure
-//     notes in the task body) — until the attempt cap, then human-required.
+//   - pass        → ready-pr (a separate workflow opens the PR)
+//   - product bug → in-progress with the latest grounded repro, until the
+//     distinct-defect cap, then human-required for targeted local reproduction.
+//   - tester/provisioning failures and ambiguous specs do not consume the
+//     implementation retry budget.
 //
 // Counting prior test-runner runs (which persist on the task across the
 // implement→review→test loop) gives a natural, stateless attempt counter:
 // the just-finished run is already recorded, so the Nth failure sees N runs.
 func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	// Read the untruncated verdict var (set in engine_advance from the full
-	// agent output). Anything other than PASS — including a missing verdict from
-	// a crashed/empty run — is treated as a failure, conservative by design.
+	// Read the untruncated verdict/outcome vars (set in engine_advance from the
+	// full agent output and current body delta). Missing or infrastructure-shaped
+	// outcomes fail closed, but do not burn implementation attempts.
 	if wfExec.Variables["step."+testVerdictSourceStep+".verdict"] == "PASS" {
 		if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", "manual testing passed"); err != nil {
 			return StepOutput{}, err
@@ -319,11 +509,38 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 
 	if violation := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictTaintedKey]; violation != "" {
 		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
+		if violation == testProtocolMissingEvidence {
+			reason = "test-runner report violated testing protocol after retry: missing machine-checkable evidence"
+		}
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Warn("workflow.test.protocol-violation", "task_id", taskID, "violation", violation)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
+	}
+	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
+	switch outcome {
+	case testOutcomeInfraFailure:
+		reason := "testing infrastructure failed after retry — no implementation attempt consumed; rerun testing or inspect the test-runner log"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.infra-failure", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "infra failure"}, nil
+	case testOutcomeMissingEvidence:
+		reason := "test-runner failed without grounded evidence after retry — needs local reproduction before implementation retries"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.missing-evidence", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "missing evidence"}, nil
+	case testOutcomeAmbiguousRequirement:
+		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "ambiguous requirement"}, nil
 	}
 
 	// Count test-runner runs that belong to the current testing cycle.
@@ -331,26 +548,23 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// set to the re-dispatch time; runs before that time are from prior cycles
 	// and must not inflate the counter. Nil means no re-dispatch has happened
 	// (first cycle or automatic implement→test loop), so all runs count.
-	attempts := 0
-	for i := range t.AgentRuns {
-		if t.AgentRuns[i].Role != testRunnerRole {
-			continue
-		}
-		if t.AgentRuns[i].ProtocolViolation != "" {
-			continue
-		}
-		if t.TestingCycleStartedAt != nil && t.AgentRuns[i].StartedAt.Before(*t.TestingCycleStartedAt) {
-			continue
-		}
-		attempts++
-	}
+	attempts, duplicate := e.countValidProductTestAttempts(t, wfExec)
 	limit := e.maxTestAttempts
 	if limit <= 0 {
 		limit = defaultTestAttempts
 	}
 
+	if duplicate {
+		reason := "same grounded test failure reproduced twice — needs targeted local reproduction/fix from latest ## Test Failures"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, err
+		}
+		e.logger.Warn("workflow.test.duplicate-failure", "task_id", taskID)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "duplicate failure"}, nil
+	}
+
 	if attempts >= limit {
-		reason := fmt.Sprintf("manual testing failed %d×: feature still does not match the task — needs a human", attempts)
+		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
 		}
@@ -365,10 +579,63 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	if err := e.tasks.MarkTaskReviewed(taskID); err != nil {
 		e.logger.Warn("workflow.test.mark-reviewed", "task_id", taskID, "err", err)
 	}
-	reason := "manual testing found defects — re-implementing (see ## Test Failures in the task)"
+	reason := "manual testing found a grounded product defect — re-implementing the latest ## Test Failures repro"
 	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "reimplement"}, nil
+}
+
+func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (int, bool) {
+	currentFingerprint := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
+	attempts := 0
+	lastMatchingFailure := -1
+	currentMatchingFailure := -1
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole {
+			continue
+		}
+		if run.ProtocolViolation != "" {
+			continue
+		}
+		switch run.TestOutcome {
+		case "", testOutcomeProductBug:
+			attempts++
+			if currentFingerprint != "" && run.TestFailureFingerprint == currentFingerprint {
+				lastMatchingFailure = currentMatchingFailure
+				currentMatchingFailure = i
+			}
+		default:
+			continue
+		}
+	}
+	return attempts, currentMatchingFailure >= 0 &&
+		lastMatchingFailure >= 0 &&
+		hasInterveningCodeAuthorRun(t.AgentRuns, lastMatchingFailure, currentMatchingFailure)
+}
+
+func hasInterveningCodeAuthorRun(runs []AgentRunInfo, prev, current int) bool {
+	if prev < 0 || current <= prev || current > len(runs) {
+		return false
+	}
+	for i := prev + 1; i < current; i++ {
+		if isCodeAuthorRun(runs[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodeAuthorRun(run AgentRunInfo) bool {
+	switch run.Role {
+	case "", "implementation", "fix-review", "pr-fix":
+		return true
+	default:
+		return false
+	}
 }

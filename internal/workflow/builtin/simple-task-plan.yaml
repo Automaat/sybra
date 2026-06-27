@@ -178,6 +178,12 @@ steps:
                 ## Verification
                 - `command` - expected signal
 
+                For sweep/refactor tasks ("everywhere", "all", "single
+                utility", "unified", "no raw X remains"), include at least one
+                cheap acceptance probe such as a repo-wide `rg` invariant that
+                would catch missed call sites. If no mechanical probe is
+                possible, say why.
+
                 ## Stop Conditions
                 - Stop/replan if ...
 
