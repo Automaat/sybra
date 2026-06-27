@@ -950,6 +950,9 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["verdict"].(string); ok && v != "" {
 			t.AgentRuns[i].Verdict = v
 		}
+		if v, ok := updates["verdict_rendered"].(bool); ok && v {
+			t.AgentRuns[i].VerdictRendered = true
+		}
 		if v, ok := updates["log_file"].(string); ok {
 			t.AgentRuns[i].LogFile = v
 		}

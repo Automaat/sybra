@@ -432,23 +432,21 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	h, tasks, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
-	// Body must include the "## Auto-review" section that onComplete appends,
-	// proving the rendering completed (not just that the verdict was parsed).
-	body := "Body.\n\n## Auto-review verdict: needs human\n\nLooks fine.\n"
-	tk, err := tasks.Create("Stale task", body, "headless")
+	tk, err := tasks.Create("Stale task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
-	// Simulate a prior completed review: add a run with a verdict already set.
+	// Simulate a fully completed review: VerdictRendered proves onComplete ran.
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
-		AgentID: "agent-prior",
-		Role:    "human-review",
-		Mode:    "headless",
-		State:   "stopped",
-		Verdict: "human",
+		AgentID:         "agent-prior",
+		Role:            "human-review",
+		Mode:            "headless",
+		State:           "stopped",
+		Verdict:         "human",
+		VerdictRendered: true,
 	}); err != nil {
 		t.Fatalf("add prior run: %v", err)
 	}
@@ -511,9 +509,9 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 	t.Parallel()
 	// Regression: a task body that already contains a heading beginning with
 	// "## Auto-review" (for reasons unrelated to human-review rendering) must
-	// NOT satisfy the idempotency gate when the onComplete rendering hasn't run.
-	// Previously strings.Contains(body, "## Auto-review") was too broad and
-	// would strand the task in human-required with no diagnosis.
+	// NOT satisfy the idempotency gate when onComplete has not run.
+	// The gate now checks AgentRun.VerdictRendered, not body text, so
+	// pre-existing headings never falsely block a re-spawn.
 	h, tasks, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
@@ -589,5 +587,55 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 		// If agents wasn't nil we'd check h.inflight; in tests it panics on
 		// agents.Run, confirming the gate let it through.
 		t.Log("no panic — agent manager must have been non-nil; check test setup")
+	}
+}
+
+func TestOnComplete_SetsVerdictRendered(t *testing.T) {
+	t.Parallel()
+	// Verifies that onComplete sets VerdictRendered on the matching AgentRun so
+	// verdictAlreadyRendered can use it as the durable rendered-marker on restart.
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-hr-1"
+	tk, err := tasks.Create("Billing refactor", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Analysis done.\n\n```sybra-verdict\n" +
+			`{"decision":"human","summary":"scope clarification needed"}` +
+			"\n```\n",
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	var rendered bool
+	for i := range got.AgentRuns {
+		if got.AgentRuns[i].AgentID == agentID {
+			rendered = got.AgentRuns[i].VerdictRendered
+			break
+		}
+	}
+	if !rendered {
+		t.Error("expected AgentRun.VerdictRendered=true after onComplete; idempotency gate will not block re-spawn")
 	}
 }
