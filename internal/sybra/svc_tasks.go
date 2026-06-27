@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -58,7 +59,136 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 
 // GetTask returns a single task by ID.
 func (s *TaskService) GetTask(id string) (task.Task, error) {
-	return s.tasks.Get(id)
+	t, err := s.tasks.Get(id)
+	if err != nil {
+		return t, err
+	}
+	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
+	if len(t.AgentRuns) == 0 {
+		return t
+	}
+	for i := range t.AgentRuns {
+		run := &t.AgentRuns[i]
+		if run.CostUSD > 0 || run.LogFile == "" {
+			continue
+		}
+		estimate, ok := estimateAgentRunUsage(*run)
+		if !ok {
+			if s.logger != nil {
+				s.logger.Debug("task.agent-run-cost.estimate-skipped", "task_id", t.ID, "agent_id", run.AgentID, "log", run.LogFile)
+			}
+			continue
+		}
+		if estimate.PremiumRequests > 0 {
+			run.PremiumRequests = estimate.PremiumRequests
+		}
+		run.CostUSD = estimate.CostUSD
+		if estimate.CostUSD > 0 && s.tasks != nil {
+			updates := map[string]any{"cost_usd": estimate.CostUSD}
+			if estimate.PremiumRequests > 0 {
+				updates["premium_requests"] = estimate.PremiumRequests
+			}
+			if run.Provider == "" && estimate.Provider != "" {
+				updates["provider"] = estimate.Provider
+				run.Provider = estimate.Provider
+			}
+			if err := s.tasks.UpdateRun(t.ID, run.AgentID, updates); err != nil && s.logger != nil {
+				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
+			}
+		}
+	}
+	return t
+}
+
+type agentRunUsageEstimate struct {
+	CostUSD         float64
+	PremiumRequests float64
+	Provider        string
+}
+
+func estimateAgentRunUsage(run task.AgentRun) (agentRunUsageEstimate, bool) {
+	for _, provider := range providersForRun(run) {
+		events, err := agent.ParseLogFile(run.LogFile, 0, provider)
+		if err != nil {
+			continue
+		}
+		estimate, ok := estimateUsageFromEvents(run.Model, provider, events)
+		if ok {
+			return estimate, true
+		}
+	}
+	return agentRunUsageEstimate{}, false
+}
+
+func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent) (agentRunUsageEstimate, bool) {
+	var input, output, cacheCreate, cacheRead, reasoning int
+	var cost, premiumRequests float64
+	var resultSeen bool
+	for j := range events {
+		if events[j].Type != "result" {
+			continue
+		}
+		resultSeen = true
+		cost += events[j].CostUSD
+		premiumRequests += events[j].PremiumRequests
+		input += events[j].InputTokens
+		output += events[j].OutputTokens
+		cacheCreate += events[j].CacheCreationInputTokens
+		cacheRead += events[j].CacheReadInputTokens
+		reasoning += events[j].ReasoningTokens
+	}
+	if !resultSeen {
+		return agentRunUsageEstimate{}, false
+	}
+	if cost == 0 {
+		switch provider {
+		case "copilot":
+			cost = stats.EstimateCopilotCost(premiumRequests)
+		case "codex", "claude":
+			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning)
+		}
+	}
+	if cost == 0 && premiumRequests == 0 {
+		return agentRunUsageEstimate{}, false
+	}
+	return agentRunUsageEstimate{CostUSD: cost, PremiumRequests: premiumRequests, Provider: provider}, true
+}
+
+func providersForRun(run task.AgentRun) []string {
+	if run.Provider != "" {
+		return []string{run.Provider}
+	}
+	preferred := providerForRun(run)
+	providers := make([]string, 0, 3)
+	if preferred != "" {
+		providers = append(providers, preferred)
+	}
+	for _, provider := range []string{"codex", "copilot", "claude"} {
+		if provider != preferred {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
+}
+
+func providerForRun(run task.AgentRun) string {
+	if run.Provider != "" {
+		return run.Provider
+	}
+	model := run.Model
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
+	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		return "codex"
+	}
+	if strings.HasPrefix(model, "claude-") || model == "sonnet" || model == "opus" || model == "haiku" {
+		return "claude"
+	}
+	return ""
 }
 
 // CreateTask creates a new task and starts a matching workflow.

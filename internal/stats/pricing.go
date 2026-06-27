@@ -2,6 +2,8 @@ package stats
 
 import "strings"
 
+const copilotAICreditUSD = 0.01
+
 // Per-million-token USD rates. Cached input rates apply to the
 // `cached_input_tokens` (Codex) or `cache_read_input_tokens` (Claude) subset.
 // Cache-write rate applies to Claude `cache_creation_input_tokens`.
@@ -63,6 +65,14 @@ func EstimateCost(model string, inputTokens, outputTokens int) float64 {
 		return 0
 	}
 	return float64(inputTokens)/1_000_000*p.in + float64(outputTokens)/1_000_000*p.out
+}
+
+// EstimateCopilotCost converts Copilot AI credit usage to USD overage-equivalent cost.
+func EstimateCopilotCost(premiumRequests float64) float64 {
+	if premiumRequests <= 0 {
+		return 0
+	}
+	return premiumRequests * copilotAICreditUSD
 }
 
 // EstimateCostDetailed prices a run using the full token breakdown.

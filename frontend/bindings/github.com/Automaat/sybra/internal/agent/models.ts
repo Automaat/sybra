@@ -29,9 +29,8 @@ export class Agent {
     "reasoningTokens"?: number;
 
     /**
-     * PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
-     * no USD cost, so this is the usage signal surfaced for copilot agents;
-     * always 0 for claude/codex.
+     * PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
+     * raw count alongside the estimated USD equivalent persisted on task runs.
      */
     "premiumRequests"?: number;
     "startedAt": time$0.Time;

@@ -959,6 +959,9 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["cost_usd"].(float64); ok {
 			t.AgentRuns[i].CostUSD = v
 		}
+		if v, ok := updates["premium_requests"].(float64); ok {
+			t.AgentRuns[i].PremiumRequests = v
+		}
 		if v, ok := updates["result"].(string); ok {
 			t.AgentRuns[i].Result = v
 		}

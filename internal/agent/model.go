@@ -44,9 +44,8 @@ type Agent struct {
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
-	// PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
-	// no USD cost, so this is the usage signal surfaced for copilot agents;
-	// always 0 for claude/codex.
+	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
+	// raw count alongside the estimated USD equivalent persisted on task runs.
 	PremiumRequests float64   `json:"premiumRequests,omitempty"`
 	StartedAt       time.Time `json:"startedAt"`
 	LastEventAt     time.Time `json:"lastEventAt"`

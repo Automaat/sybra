@@ -33,6 +33,15 @@ func TestEstimateCost(t *testing.T) {
 	}
 }
 
+func TestEstimateCopilotCost(t *testing.T) {
+	if got, want := EstimateCopilotCost(7.5), 0.075; got != want {
+		t.Errorf("EstimateCopilotCost(7.5) = %g, want %g", got, want)
+	}
+	if got := EstimateCopilotCost(0); got != 0 {
+		t.Errorf("EstimateCopilotCost(0) = %g, want 0", got)
+	}
+}
+
 func TestEstimateCostDetailed_ClaudeMatchesReportedTotalCost(t *testing.T) {
 	// Cross-check against a real Claude result event captured from a Sybra
 	// agent run (logs/agents/ff4fb283-*.ndjson). Claude reports
