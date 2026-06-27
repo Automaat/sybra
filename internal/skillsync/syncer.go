@@ -78,7 +78,7 @@ func (s *Syncer) Run(opts Options) {
 	dsts := s.destinations(opts.PrimaryDst, opts.UserHomeDir)
 
 	if useEmbedded {
-		s.info("skills.sync.embedded", "dst", opts.PrimaryDst)
+		s.info("skills.sync.embedded", "dsts", dsts)
 		for _, dst := range dsts {
 			s.SyncFS(opts.SkillsFS, "data", dst)
 		}
@@ -87,7 +87,7 @@ func (s *Syncer) Run(opts Options) {
 	}
 
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
-	s.info("skills.sync.start", "src", repoDir, "dst", opts.PrimaryDst)
+	s.info("skills.sync.start", "src", repoDir, "dsts", dsts)
 	for _, dst := range dsts {
 		if opts.SkillsFS == nil {
 			s.SyncDir(skillsSrc, dst)
