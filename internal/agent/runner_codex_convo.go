@@ -292,6 +292,8 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 	if a.sessionCWD != "" {
 		args = append(args, "-C", a.sessionCWD)
 	}
+	// Lifecycle hooks (fail-open: omitted when sybra-cli unresolvable or taskID unsafe).
+	args = append(args, buildCodexHookArgs(a.TaskID)...)
 	args = append(args, rewriteSkillInvocations(prompt, discoverCodexSkills()))
 	return args
 }

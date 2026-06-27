@@ -998,3 +998,156 @@ func TestLinkPR_InvalidArgs(t *testing.T) {
 		})
 	}
 }
+
+// runHook calls sybra-cli hook <event> --task <taskID> with stdin payload.
+// Returns exit code and (stdout, stderr) combined via the same pipe used by
+// runCLI (stdout). Hook always exits 0, so this is primarily used to verify
+// no panic and no stdout decision output.
+func runHookWithStdin(t *testing.T, stdin string, args ...string) (exitCode int, stdout string) {
+	t.Helper()
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	oldStdin := os.Stdin
+	sr, sw, _ := os.Pipe()
+	os.Stdin = sr
+	// Write stdin in a goroutine: large payloads (> pipe buffer ~64 KiB) would
+	// deadlock if written synchronously before run() starts reading.
+	go func() {
+		_, _ = sw.WriteString(stdin)
+		_ = sw.Close()
+	}()
+
+	code := run(args)
+
+	_ = w.Close()
+	os.Stdout = old
+	os.Stdin = oldStdin
+
+	buf := make([]byte, 64*1024)
+	n, _ := r.Read(buf)
+	return code, string(buf[:n])
+}
+
+// TestHookCmd_FailOpen verifies that every error path in cmdHook exits 0 and
+// produces no stdout content (observe-only, never a decision output).
+func TestHookCmd_FailOpen(t *testing.T) {
+	setupStore(t)
+
+	cases := []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{
+			name:  "missing_event",
+			args:  []string{"hook"},
+			stdin: "",
+		},
+		{
+			name:  "missing_task_flag",
+			args:  []string{"hook", "SessionStart"},
+			stdin: `{"hook_event_name":"SessionStart"}`,
+		},
+		{
+			name:  "invalid_task_id",
+			args:  []string{"hook", "SessionStart", "--task", "bad id with spaces"},
+			stdin: `{"hook_event_name":"SessionStart"}`,
+		},
+		{
+			name:  "empty_stdin",
+			args:  []string{"hook", "SessionStart", "--task", "task-abc"},
+			stdin: "",
+		},
+		{
+			name:  "malformed_json",
+			args:  []string{"hook", "SessionStart", "--task", "task-abc"},
+			stdin: "not json",
+		},
+		{
+			name:  "unknown_event_in_payload",
+			args:  []string{"hook", "PreToolUse", "--task", "task-abc"},
+			stdin: `{"hook_event_name":"PreToolUse","session_id":"s"}`,
+		},
+		{
+			// Positional event arg disagrees with payload's hook_event_name.
+			name:  "event_mismatch",
+			args:  []string{"hook", "Stop", "--task", "task-abc"},
+			stdin: `{"hook_event_name":"SessionStart","session_id":"s-mismatch","model":"m"}`,
+		},
+		{
+			// Payload > 64 KiB: first bytes are valid JSON but total exceeds limit.
+			name:  "oversized_payload",
+			args:  []string{"hook", "SessionStart", "--task", "task-abc"},
+			stdin: `{"hook_event_name":"SessionStart","session_id":"s-oversize"}` + strings.Repeat(" ", 70000),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := runHookWithStdin(t, tc.stdin, tc.args...)
+			if code != 0 {
+				t.Errorf("hook must exit 0 (fail-open); got %d", code)
+			}
+			if out != "" {
+				t.Errorf("hook must produce no stdout; got %q", out)
+			}
+		})
+	}
+}
+
+// TestHookCmd_ValidPayloadExitsZero verifies a well-formed SessionStart payload
+// succeeds without panicking.
+func TestHookCmd_ValidPayloadExitsZero(t *testing.T) {
+	setupStore(t)
+	payload := `{"hook_event_name":"SessionStart","session_id":"sess-1","model":"gpt-5.5"}`
+	code, out := runHookWithStdin(t, payload, "hook", "SessionStart", "--task", "task-abc123")
+	if code != 0 {
+		t.Errorf("expected exit 0; got %d", code)
+	}
+	if out != "" {
+		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// TestHookCmd_ExactLimitAccepted verifies that a payload padded to exactly
+// 64 KiB (the inclusive upper bound) is accepted as a valid lifecycle event,
+// not rejected as oversized.
+func TestHookCmd_ExactLimitAccepted(t *testing.T) {
+	setupStore(t)
+	const maxPayloadBytes = 64 * 1024
+	base := `{"hook_event_name":"SessionStart","session_id":"s-exact"}`
+	pad := maxPayloadBytes - len(base)
+	payload := base + strings.Repeat(" ", pad)
+	if len(payload) != maxPayloadBytes {
+		t.Fatalf("test setup: payload length %d != %d", len(payload), maxPayloadBytes)
+	}
+	code, out := runHookWithStdin(t, payload, "hook", "SessionStart", "--task", "task-exact")
+	if code != 0 {
+		t.Errorf("exact-limit payload must exit 0; got %d", code)
+	}
+	if out != "" {
+		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// TestHookCmd_FailsOpenOnBadConfig verifies the hook subcommand exits 0 even
+// when config.Load fails. config.Load runs before the hook fast-path, so a
+// malformed config must not make `sybra-cli hook` exit non-zero and stall a
+// codex agent run — the diagnosis bypasses the fail-open cmdHook handler.
+func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
+	home := setupStore(t)
+	// An unclosed flow sequence makes yaml.Unmarshal (and thus config.Load) error.
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("agent: [unclosed"), 0o644); err != nil {
+		t.Fatalf("write bad config: %v", err)
+	}
+	code, out := runHookWithStdin(t, `{"hook_event_name":"SessionStart","session_id":"s","model":"m"}`,
+		"hook", "SessionStart", "--task", "task-abc")
+	if code != 0 {
+		t.Errorf("hook must exit 0 (fail-open) when config.Load fails; got %d", code)
+	}
+	if out != "" {
+		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}

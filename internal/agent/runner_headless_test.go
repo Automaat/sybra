@@ -1139,3 +1139,77 @@ func TestCodexSandboxArgs_HeadlessAlwaysBypasses(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildHeadlessInvocation_CodexHooksPresent verifies that when sybra-cli is
+// on PATH and a.TaskID is set, codex headless invocations include hook overrides
+// and --dangerously-bypass-hook-trust.
+func TestBuildHeadlessInvocation_CodexHooksPresent(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	a := &Agent{ID: "a", Provider: "codex", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+
+	if !slices.Contains(args, "--dangerously-bypass-hook-trust") {
+		t.Errorf("--dangerously-bypass-hook-trust missing from codex args; args=%v", args)
+	}
+
+	found := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "hooks.SessionStart=") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("hooks.SessionStart= override not found in codex args; args=%v", args)
+	}
+}
+
+// TestBuildHeadlessInvocation_CodexHooksAbsentWithEmptyTaskID verifies that
+// when TaskID is empty no hook args are injected (fail-open: existing task-less
+// invocations must be byte-for-byte unchanged).
+func TestBuildHeadlessInvocation_CodexHooksAbsentWithEmptyTaskID(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	a := &Agent{ID: "a", Provider: "codex"} // TaskID empty
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+
+	for _, arg := range args {
+		if strings.Contains(arg, "hooks.") {
+			t.Errorf("hook override must be absent when TaskID empty; got arg %q", arg)
+		}
+		if arg == "--dangerously-bypass-hook-trust" {
+			t.Errorf("--dangerously-bypass-hook-trust must be absent when TaskID empty")
+		}
+	}
+}
+
+// TestBuildHeadlessInvocation_Claude_NoHooks verifies that Claude and Copilot
+// invocations never receive codex hook args regardless of TaskID.
+func TestBuildHeadlessInvocation_Claude_NoHooks(t *testing.T) {
+	makeFakeSybraCLI(t)
+
+	for _, provider := range []string{"claude", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			a := &Agent{ID: "a", Provider: provider, TaskID: "task-abc123"}
+			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
+			if err != nil {
+				t.Fatalf("buildHeadlessInvocation: %v", err)
+			}
+			for _, arg := range args {
+				if strings.Contains(arg, "hooks.") {
+					t.Errorf("%s: hook override must be absent; got arg %q", provider, arg)
+				}
+				if arg == "--dangerously-bypass-hook-trust" {
+					t.Errorf("%s: --dangerously-bypass-hook-trust must be absent", provider)
+				}
+			}
+		})
+	}
+}

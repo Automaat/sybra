@@ -46,6 +46,8 @@ func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []
 		if cfg.outputSchemaPath != "" {
 			args = append(args, "--output-schema", cfg.outputSchemaPath)
 		}
+		// Lifecycle hooks (fail-open: omitted when sybra-cli unresolvable or taskID unsafe).
+		args = append(args, buildCodexHookArgs(a.TaskID)...)
 		prompt := rewriteSkillInvocations(cfg.Prompt, discoverCodexSkills())
 		args = append(args, prompt)
 		command = "codex " + strings.Join(args, " ")

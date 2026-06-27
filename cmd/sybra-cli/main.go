@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
@@ -24,6 +28,11 @@ import (
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// hookTaskIDRe mirrors agent.safeArgRe: alphanumerics, dot, underscore,
+// hyphen, forward-slash. Shared allowlist keeps arg builder and hook receiver
+// in sync without an import cycle.
+var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -51,9 +60,25 @@ func run(args []string) int {
 		return 1
 	}
 
+	// Detect the hook subcommand before config.Load can abort: codex lifecycle
+	// hooks must fail open (see cmdHook) — a malformed config must never make
+	// `sybra-cli hook` exit non-zero and stall an agent run.
+	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+
 	cfg, err := config.Load()
 	if err != nil {
+		if isHook {
+			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
+			return 0
+		}
 		return fatal(jsonOut, "load config: %v", err)
+	}
+
+	// Fast path for hook subcommand — only needs cfg for AuditDir(), not stores.
+	// Branch before store construction so cold start is cheap (hook is invoked
+	// per-event by codex and must complete quickly).
+	if isHook {
+		return cmdHook(cfg, filtered[1:])
 	}
 
 	rawStore, err := task.NewStore(cfg.TasksDir)
@@ -1538,6 +1563,99 @@ func parseSince(s string, now time.Time) time.Time {
 		return t
 	}
 	return now.Add(-24 * time.Hour)
+}
+
+// cmdHook is the fast-path handler for "sybra-cli hook <Event> --task <id>".
+// It is invoked by codex lifecycle hooks — once per event, as a short-lived
+// subprocess. Only config.Load() is needed (no task/project stores). Always
+// exits 0 (fail-open): hook errors must never stall a codex agent run.
+func cmdHook(cfg *config.Config, args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "hook: missing event name")
+		return 0
+	}
+	event := args[0]
+	rest := args[1:]
+
+	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	taskID := fs.String("task", "", "task id")
+	if err := fs.Parse(rest); err != nil {
+		return 0 // flag already wrote to stderr
+	}
+
+	if *taskID == "" {
+		fmt.Fprintln(os.Stderr, "hook: --task required")
+		return 0
+	}
+	if !hookTaskIDRe.MatchString(*taskID) {
+		fmt.Fprintln(os.Stderr, "hook: invalid --task value")
+		return 0
+	}
+	// Read the hook payload from stdin (codex pipes JSON here).
+	// Read up to 64 KiB + 1: if more than 64 KiB are available, the extra
+	// byte will be read and len(payload) > maxPayloadBytes, signalling
+	// overflow without silently truncating a valid exactly-64-KiB payload.
+	const maxPayloadBytes = 64 * 1024
+	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxPayloadBytes+1))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hook: read stdin: %v\n", err)
+		logHookFailure(cfg, *taskID, "read_error")
+		return 0
+	}
+	if len(payload) > maxPayloadBytes {
+		fmt.Fprintln(os.Stderr, "hook: stdin payload exceeds size limit")
+		logHookFailure(cfg, *taskID, "oversized_payload")
+		return 0
+	}
+	if len(bytes.TrimSpace(payload)) == 0 {
+		fmt.Fprintln(os.Stderr, "hook: empty stdin payload")
+		logHookFailure(cfg, *taskID, "empty_payload")
+		return 0
+	}
+
+	auditEvent, err := codexhook.Map(payload, *taskID, event)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hook: map payload: %v\n", err)
+		logHookFailure(cfg, *taskID, "map_error")
+		return 0
+	}
+
+	logger, err := audit.NewLogger(cfg.AuditDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hook: create audit logger: %v\n", err)
+		return 0
+	}
+	defer func() { _ = logger.Close() }()
+
+	if err := logger.Log(auditEvent); err != nil {
+		fmt.Fprintf(os.Stderr, "hook: log: %v\n", err)
+		_ = logger.Log(audit.Event{
+			Timestamp: time.Now().UTC(),
+			Type:      audit.EventCodexHookFailed,
+			TaskID:    *taskID,
+			Data:      map[string]any{"reason": "log_error"},
+		})
+	}
+	return 0
+}
+
+// logHookFailure writes a diagnostic audit event for hook receiver errors.
+// It is best-effort: all errors are silently discarded so the caller always
+// exits 0 and the hook stays fail-open. The reason field is a categorical
+// label — never the raw error message — so no sensitive content is persisted.
+func logHookFailure(cfg *config.Config, taskID, reason string) {
+	logger, err := audit.NewLogger(cfg.AuditDir())
+	if err != nil {
+		return
+	}
+	defer func() { _ = logger.Close() }()
+	_ = logger.Log(audit.Event{
+		Timestamp: time.Now().UTC(),
+		Type:      audit.EventCodexHookFailed,
+		TaskID:    taskID,
+		Data:      map[string]any{"reason": reason},
+	})
 }
 
 func usage() {

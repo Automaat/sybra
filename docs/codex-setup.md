@@ -110,6 +110,52 @@ Existing Sybra skills (`/sybra-tasks`, `/sybra-triage`, `/sybra-plan`, etc.) are
 
 The orchestrator prompt (`orchestrator/CLAUDE.md`) governs the Sybra orchestrator session, which always runs as a Claude Code agent. Codex is used for implementation agents dispatched by the orchestrator, not for the orchestrator itself.
 
+## Lifecycle Hook Telemetry
+
+Sybra injects observe-only lifecycle hooks into every `codex exec` invocation using inline `-c hooks.<Event>=...` config overrides. This is the only channel that survives Sybra's `--ignore-user-config --ignore-rules` flags — per-worktree `.codex/hooks.json` and `~/.codex` plugin files are explicitly ignored by those flags and do not fire.
+
+### Instrumented events
+
+| Event | Audit type |
+|-------|-----------|
+| `SessionStart` | `codex.session.start` |
+| `SubagentStart` | `codex.subagent.start` |
+| `SubagentStop` | `codex.subagent.stop` |
+| `Stop` | `codex.session.stop` |
+
+`PreToolUse` and `PostToolUse` are deliberately excluded — per-tool-call hooks would sit on the agent's critical path.
+
+### How it works
+
+For each event, Sybra appends a `-c` override to the `codex exec` command:
+
+```
+-c 'hooks.SessionStart=[{hooks=[{type="command",command="sybra-cli hook SessionStart --task <id>",run_mode="background",timeout_seconds=5}]}]'
+```
+
+The `--dangerously-bypass-hook-trust` flag is also passed so codex executes the hook without requiring a trusted source check.
+
+`sybra-cli hook <Event> --task <id>` is the hook receiver: it reads the JSON payload from stdin, maps it to a structural-only `audit.Event` (session_id, subagent_id, kind, model — never cwd, prompts, tool_input, or file paths), and appends it to the daily audit NDJSON (`~/.sybra/logs/audit/<date>.ndjson`). The receiver always exits 0 (fail-open) so hook errors never stall the agent run.
+
+### Fail-open behaviour
+
+Hooks are omitted (the codex run proceeds normally, without hooks) when:
+- `sybra-cli` is not on `PATH` and not adjacent to the Sybra binary
+- The resolved `sybra-cli` path contains shell-sensitive characters
+- The task ID is empty or contains characters outside `[a-zA-Z0-9._/-]`
+
+### Minimum supported codex version
+
+`--dangerously-bypass-hook-trust` is required and was verified present in codex **0.142.2**. Hooks fire via `-c` config overrides starting from codex **0.131** (when plugin hooks became default-enabled). Sybra does not probe the codex version at runtime — if the flag is unsupported, codex will reject the invocation and the agent will fail to start; update to 0.142.2+ in that case.
+
+### Viewing hook events
+
+```bash
+sybra-cli audit --type codex.session.start
+sybra-cli audit --type codex.subagent.start
+sybra-cli audit --since 1h --summary
+```
+
 ## Troubleshooting
 
 **`codex: command not found`**
