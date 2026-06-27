@@ -866,9 +866,9 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 }
 
 // TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure reproduces
-// the original incident (task 337b20c2 / 294d29b0): a codex test-runner exited 0
-// with empty stdout (crashed on "Reading additional input from stdin..."), so no
-// TEST_VERDICT marker was produced. Such a run must classify as an infrastructure
+// the original incident: a codex test-runner exited 0 with empty stdout (crashed
+// on "Reading additional input from stdin..."), so no TEST_VERDICT marker was
+// produced. Such a run must classify as an infrastructure
 // failure and escalate WITHOUT consuming a product-bug implementation attempt —
 // before #1176 the empty-output completion produced no outcome var and fell
 // through to the attempt-cap counter. Empty stdout (unlike "{}") skips structured
