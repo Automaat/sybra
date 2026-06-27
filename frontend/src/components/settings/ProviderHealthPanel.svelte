@@ -2,6 +2,7 @@
   import {
     EventsOn,
     GetProviderHealth,
+    UpdateSettings,
     SetProviderAutoFailover,
     SetProviderEnabled,
   } from '$lib/api'
@@ -18,6 +19,23 @@
   }
 
   const { settings, enabled, onsettingschange }: Props = $props()
+
+  function ensureProviderLimitDefaults() {
+    const providers = settings.providers as any
+    providers.limits ??= {
+      enabled: true,
+      sessionThresholdPercent: 85,
+      weeklyThresholdPercent: 90,
+      preferUnderused: true,
+      backfillDays: 14,
+    }
+    for (const name of ['claude', 'codex', 'copilot']) {
+      providers[name] ??= { enabled: false, rateLimitCooldownSeconds: 900, monthlySubscriptionUsd: 0 }
+      providers[name].monthlySubscriptionUsd ??= 0
+    }
+  }
+
+  ensureProviderLimitDefaults()
 
   type ProviderHealthEntry = {
     provider: string
@@ -77,6 +95,42 @@
     }
   }
 
+  async function persistProviderSettings() {
+    try {
+      await UpdateSettings(settings)
+      onsettingschange()
+      await load()
+    } catch (err) {
+      error = String(err)
+    }
+  }
+
+  async function onLimitEnabledChange(e: Event) {
+    settings.providers.limits.enabled = (e.target as HTMLInputElement).checked
+    await persistProviderSettings()
+  }
+
+  async function onPreferUnderusedChange(e: Event) {
+    settings.providers.limits.preferUnderused = (e.target as HTMLInputElement).checked
+    await persistProviderSettings()
+  }
+
+  type LimitNumberKey = 'sessionThresholdPercent' | 'weeklyThresholdPercent' | 'backfillDays'
+
+  async function onLimitNumberChange(key: LimitNumberKey, e: Event) {
+    const value = Number((e.target as HTMLInputElement).value)
+    if (!Number.isFinite(value)) return
+    settings.providers.limits[key] = value
+    await persistProviderSettings()
+  }
+
+  async function onSubscriptionChange(name: ProviderName, e: Event) {
+    const value = Number((e.target as HTMLInputElement).value)
+    if (!Number.isFinite(value) || value < 0) return
+    settings.providers[name].monthlySubscriptionUsd = value
+    await persistProviderSettings()
+  }
+
   function badgeClass(p: ProviderHealthEntry): string {
     if (p.healthy) return 'bg-success-500/20 text-success-600 dark:text-success-300'
     if (p.reason === 'disabled') return 'bg-surface-300 text-surface-600 dark:bg-surface-600 dark:text-surface-300'
@@ -110,15 +164,29 @@
               <span class="text-xs text-surface-500 dark:text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
             {/if}
           </div>
-          <label class="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
-              checked={settings.providers[name as ProviderName]?.enabled ?? false}
-              onchange={(e) => onProviderEnabledChange(name as ProviderName, e)}
-            />
-            <span>Enabled</span>
-          </label>
+          <div class="flex items-center gap-3">
+            <label class="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
+                checked={settings.providers[name as ProviderName]?.enabled ?? false}
+                onchange={(e) => onProviderEnabledChange(name as ProviderName, e)}
+              />
+              <span>Enabled</span>
+            </label>
+            <label class="flex items-center gap-1 text-xs text-surface-500">
+              <span>$/mo</span>
+              <input
+                aria-label={`${name} monthly subscription`}
+                class="w-16 rounded border border-surface-300 bg-white px-1 py-0.5 text-right text-xs dark:border-surface-600 dark:bg-surface-950"
+                min="0"
+                step="1"
+                type="number"
+                value={settings.providers[name as ProviderName]?.monthlySubscriptionUsd ?? 0}
+                onchange={(e) => onSubscriptionChange(name as ProviderName, e)}
+              />
+            </label>
+          </div>
         </div>
       {/each}
       <label class="flex cursor-pointer items-center gap-3 pt-2">
@@ -133,6 +201,66 @@
       <span class="text-xs text-surface-500 dark:text-surface-400">
         Health check interval: {settings.providers.healthCheck.intervalSeconds}s. Edit config.yaml to change.
       </span>
+      <div class="mt-2 border-t border-surface-200 pt-3 dark:border-surface-700">
+        <div class="mb-3 flex flex-col gap-2">
+          <label class="flex cursor-pointer items-center gap-3">
+            <input
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer rounded border-surface-300"
+              checked={settings.providers.limits.enabled}
+              onchange={onLimitEnabledChange}
+            />
+            <span class="text-sm">Use session and weekly limits when selecting providers</span>
+          </label>
+          <label class="flex cursor-pointer items-center gap-3">
+            <input
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer rounded border-surface-300"
+              checked={settings.providers.limits.preferUnderused}
+              onchange={onPreferUnderusedChange}
+            />
+            <span class="text-sm">Prefer underused providers when quota pressure is high</span>
+          </label>
+        </div>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <label class="text-xs text-surface-500">
+            <span>Session threshold %</span>
+            <input
+              class="mt-1 w-full rounded border border-surface-300 bg-white px-2 py-1 text-sm dark:border-surface-600 dark:bg-surface-950"
+              min="1"
+              max="100"
+              step="1"
+              type="number"
+              value={settings.providers.limits.sessionThresholdPercent}
+              onchange={(e) => onLimitNumberChange('sessionThresholdPercent', e)}
+            />
+          </label>
+          <label class="text-xs text-surface-500">
+            <span>Weekly threshold %</span>
+            <input
+              class="mt-1 w-full rounded border border-surface-300 bg-white px-2 py-1 text-sm dark:border-surface-600 dark:bg-surface-950"
+              min="1"
+              max="100"
+              step="1"
+              type="number"
+              value={settings.providers.limits.weeklyThresholdPercent}
+              onchange={(e) => onLimitNumberChange('weeklyThresholdPercent', e)}
+            />
+          </label>
+          <label class="text-xs text-surface-500">
+            <span>Backfill days</span>
+            <input
+              class="mt-1 w-full rounded border border-surface-300 bg-white px-2 py-1 text-sm dark:border-surface-600 dark:bg-surface-950"
+              min="1"
+              max="90"
+              step="1"
+              type="number"
+              value={settings.providers.limits.backfillDays}
+              onchange={(e) => onLimitNumberChange('backfillDays', e)}
+            />
+          </label>
+        </div>
+      </div>
     </div>
   </div>
 {/if}

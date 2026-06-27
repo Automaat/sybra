@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 // NOTE on concurrency: Agent has two distinct mutexes.
@@ -796,6 +798,10 @@ type StreamEvent struct {
 	// in a Claude assistant turn, or a single Codex tool_use. The runner
 	// accumulates these into Agent.ToolCalls.
 	ToolCalls int `json:"tool_calls,omitempty"`
+	// LimitSnapshot carries provider quota status emitted by CLIs such as
+	// Codex. It is forwarded to the limits ledger and not rendered as normal
+	// assistant output.
+	LimitSnapshot *limits.Snapshot `json:"limit_snapshot,omitempty"`
 	// toolSig is a canonical fingerprint of this event's tool calls (name +
 	// input), used by the watchdog's real-time loop detector to spot an agent
 	// repeating the same call. Unexported so it is never serialized to the
@@ -823,6 +829,7 @@ type ConvoEvent struct {
 	CacheReadInputTokens     int               `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int               `json:"reasoningTokens,omitempty"`
 	PremiumRequests          int               `json:"premiumRequests,omitempty"`
+	LimitSnapshot            *limits.Snapshot  `json:"limitSnapshot,omitempty"`
 	IsPartial                bool              `json:"isPartial,omitempty"`
 	Timestamp                time.Time         `json:"timestamp"`
 	Raw                      json.RawMessage   `json:"raw,omitempty"`

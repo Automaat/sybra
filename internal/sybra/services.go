@@ -55,12 +55,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.loopAgentSvc.sched = a.loopSched
 	a.loopAgentSvc.auditDir = a.auditDir
 	a.loopAgentSvc.logger = a.logger
-	a.configSvc.cfg = a.cfg
-	a.configSvc.logLevel = a.logLevel
-	a.configSvc.notifier = a.notifier
-	a.configSvc.agents = a.agents
-	a.configSvc.logger = a.logger
-	a.configSvc.reloadHook = a.reloadTodoist
+	a.wireConfigService()
 	a.intgSvc.tasks = a.tasks
 	a.intgSvc.projects = a.projects
 	a.intgSvc.agents = a.agents
@@ -73,8 +68,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.intgSvc.workflowEngine = a.workflowEngine
 	a.intgSvc.providerHealth = a.providerHealth
 	a.intgSvc.saveConfig = func() error { return a.cfg.Save() }
-	a.statsSvc.stats = a.stats
-	a.statsSvc.projects = a.projects
+	a.wireStatsService()
 	a.workflowSvc.engine = a.workflowEngine
 	a.workflowSvc.store = a.workflowStore
 	a.browserSvc.open = a.openBrowser
@@ -87,6 +81,24 @@ func (a *App) wireServices(emit func(string, any)) {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetOnComplete(a.agentCompletion.OnWorkflowComplete)
 	}
+}
+
+func (a *App) wireConfigService() {
+	a.configSvc.cfg = a.cfg
+	a.configSvc.logLevel = a.logLevel
+	a.configSvc.notifier = a.notifier
+	a.configSvc.agents = a.agents
+	a.configSvc.limits = a.limits
+	a.configSvc.logger = a.logger
+	a.configSvc.policy = a.limitPolicy
+	a.configSvc.reloadHook = a.reloadTodoist
+}
+
+func (a *App) wireStatsService() {
+	a.statsSvc.stats = a.stats
+	a.statsSvc.limits = a.limits
+	a.statsSvc.projects = a.projects
+	a.statsSvc.policy = a.limitPolicy
 }
 
 // ServiceRegistry returns the named service instances for HTTP dispatch.

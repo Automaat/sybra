@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"slices"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/stats"
 )
@@ -11,7 +12,9 @@ import (
 // StatsService exposes statistics as Wails-bound methods.
 type StatsService struct {
 	stats    *stats.Store
+	limits   *limits.Store
 	projects *project.Store
+	policy   func() limits.Policy
 }
 
 // GetStats returns aggregated agent run statistics.
@@ -21,6 +24,13 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 	}
 	resp := s.stats.Query()
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
+	if s.limits != nil {
+		policy := limits.DefaultPolicy()
+		if s.policy != nil {
+			policy = s.policy()
+		}
+		resp.Limits = s.limits.Summary(policy)
+	}
 	return resp
 }
 

@@ -49,6 +49,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.SelfMonitor = next.SelfMonitor
 	s.cfg.Metrics = next.Metrics
 	s.cfg.ProjectTypes = next.ProjectTypes
+	s.refreshLimitGate()
 
 	// Selectively call live setters only for fields that actually changed.
 	// This avoids restarting Todoist or other services on every config write

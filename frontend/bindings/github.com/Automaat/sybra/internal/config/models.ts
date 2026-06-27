@@ -264,6 +264,12 @@ export class ProviderEntryConfig {
     "enabled": boolean;
     "rateLimitCooldownSeconds": number;
 
+    /**
+     * MonthlySubscriptionUSD is optional and used only for Stats value
+     * comparison. Zero means "not configured".
+     */
+    "monthlySubscriptionUsd": number;
+
     /** Creates a new ProviderEntryConfig instance. */
     constructor($$source: Partial<ProviderEntryConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -271,6 +277,9 @@ export class ProviderEntryConfig {
         }
         if (!("rateLimitCooldownSeconds" in $$source)) {
             this["rateLimitCooldownSeconds"] = 0;
+        }
+        if (!("monthlySubscriptionUsd" in $$source)) {
+            this["monthlySubscriptionUsd"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -310,6 +319,43 @@ export class ProviderHealthCheckConfig {
     }
 }
 
+export class ProviderLimitsConfig {
+    "enabled": boolean;
+    "sessionThresholdPercent": number;
+    "weeklyThresholdPercent": number;
+    "preferUnderused": boolean;
+    "backfillDays": number;
+
+    /** Creates a new ProviderLimitsConfig instance. */
+    constructor($$source: Partial<ProviderLimitsConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("sessionThresholdPercent" in $$source)) {
+            this["sessionThresholdPercent"] = 0;
+        }
+        if (!("weeklyThresholdPercent" in $$source)) {
+            this["weeklyThresholdPercent"] = 0;
+        }
+        if (!("preferUnderused" in $$source)) {
+            this["preferUnderused"] = false;
+        }
+        if (!("backfillDays" in $$source)) {
+            this["backfillDays"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderLimitsConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProviderLimitsConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderLimitsConfig($$parsedSource as Partial<ProviderLimitsConfig>);
+    }
+}
+
 /**
  * ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
  * copilot) and their background health-check loop. A missing block defaults to
@@ -320,6 +366,7 @@ export class ProvidersConfig {
     "claude": ProviderEntryConfig;
     "codex": ProviderEntryConfig;
     "copilot": ProviderEntryConfig;
+    "limits": ProviderLimitsConfig;
     "autoFailover": boolean;
 
     /** Creates a new ProvidersConfig instance. */
@@ -336,6 +383,9 @@ export class ProvidersConfig {
         if (!("copilot" in $$source)) {
             this["copilot"] = (new ProviderEntryConfig());
         }
+        if (!("limits" in $$source)) {
+            this["limits"] = (new ProviderLimitsConfig());
+        }
         if (!("autoFailover" in $$source)) {
             this["autoFailover"] = false;
         }
@@ -351,6 +401,7 @@ export class ProvidersConfig {
         const $$createField1_0 = $$createType1;
         const $$createField2_0 = $$createType1;
         const $$createField3_0 = $$createType1;
+        const $$createField4_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -363,6 +414,9 @@ export class ProvidersConfig {
         }
         if ("copilot" in $$parsedSource) {
             $$parsedSource["copilot"] = $$createField3_0($$parsedSource["copilot"]);
+        }
+        if ("limits" in $$parsedSource) {
+            $$parsedSource["limits"] = $$createField4_0($$parsedSource["limits"]);
         }
         return new ProvidersConfig($$parsedSource as Partial<ProvidersConfig>);
     }
@@ -433,3 +487,4 @@ export class TodoistConfig {
 // Private type creation functions
 const $$createType0 = ProviderHealthCheckConfig.createFrom;
 const $$createType1 = ProviderEntryConfig.createFrom;
+const $$createType2 = ProviderLimitsConfig.createFrom;

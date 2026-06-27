@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 	"gopkg.in/yaml.v3"
 )
@@ -286,6 +287,40 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	}
 	if warnCount != 0 {
 		t.Errorf("second reload with same content emitted %d restart warnings, want 0", warnCount)
+	}
+}
+
+func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.limits = limitStore
+	svc.policy = func() limits.Policy {
+		p := limits.DefaultPolicy()
+		p.Enabled = svc.cfg.Providers.Limits.Enabled
+		p.ProviderEnabled = map[string]bool{
+			limits.ProviderClaude:  svc.cfg.Providers.Claude.Enabled,
+			limits.ProviderCodex:   svc.cfg.Providers.Codex.Enabled,
+			limits.ProviderCopilot: svc.cfg.Providers.Copilot.Enabled,
+		}
+		return p
+	}
+	svc.refreshLimitGate()
+	if !svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
+		t.Fatal("initial manager limit policy did not enable codex")
+	}
+
+	next := *svc.cfg
+	next.Providers.Codex.Enabled = false
+	writeConfigYAML(t, cfgPath, &next)
+
+	if _, err := svc.ReloadFromDisk(); err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
+		t.Fatal("manager limit policy stayed stale after provider reload")
 	}
 }
 

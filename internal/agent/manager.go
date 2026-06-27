@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
 )
@@ -43,6 +44,9 @@ type Manager struct {
 	retryWatchdog int
 	fallbackModel string
 	gate          provider.HealthGate
+	limitGate     LimitGate
+	limitPolicy   limits.Policy
+	limitSink     func(limits.Snapshot)
 
 	// reg persists live-agent records so subprocesses can be reattached
 	// after an app restart. nil disables survival (legacy behaviour).
@@ -70,6 +74,11 @@ type Manager struct {
 	// dispatching its next agent inside the prior agent's onComplete (whose
 	// `done` channel is not yet closed) is never blocked.
 	dispatchClaims map[string]struct{}
+}
+
+type LimitGate interface {
+	ProviderAvailable(provider string, policy limits.Policy) (bool, string)
+	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
@@ -257,6 +266,25 @@ func (m *Manager) SetDefaultProvider(name string) {
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetLimitGate(g LimitGate, policy limits.Policy) {
+	m.mu.Lock()
+	m.limitGate = g
+	m.limitPolicy = policy
+	m.mu.Unlock()
+}
+
+func (m *Manager) LimitPolicy() limits.Policy {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.limitPolicy
+}
+
+func (m *Manager) SetLimitSink(fn func(limits.Snapshot)) {
+	m.mu.Lock()
+	m.limitSink = fn
 	m.mu.Unlock()
 }
 

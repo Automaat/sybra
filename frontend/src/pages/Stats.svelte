@@ -28,6 +28,7 @@
   // not represented, so the captions flag it and the tables below stay
   // authoritative for full totals.
   const recentRuns = $derived(statsStore.data?.recentRuns ?? [])
+  const limitProviders = $derived(statsStore.data?.limits?.providers ?? [])
   // The backend only caps recentRuns once there are MORE than 50 total runs.
   const sampleCapped = $derived((statsStore.data?.allTime?.totalRuns ?? 0) > 50)
   const cutoff = $derived(periodCutoff(period, now))
@@ -55,6 +56,41 @@
     const d = new Date(ts)
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
       ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  }
+
+  function providerLabel(provider: string): string {
+    switch (provider) {
+      case 'claude': return 'Claude'
+      case 'codex': return 'Codex'
+      case 'copilot': return 'Copilot'
+      default: return provider || 'Provider'
+    }
+  }
+
+  function formatPercent(v?: number): string {
+    if (!v) return '—'
+    return `${v.toFixed(v >= 10 ? 0 : 1)}%`
+  }
+
+  function progressWidth(v?: number): string {
+    return `${Math.max(0, Math.min(100, v ?? 0))}%`
+  }
+
+  function resetLabel(ts?: any): string {
+    if (!ts) return 'unknown reset'
+    const d = new Date(ts)
+    if (Number.isNaN(d.getTime())) return 'unknown reset'
+    return `resets ${d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+  }
+
+  function spendLine(sessionUsd?: number, weeklyUsd?: number): string {
+    return `$${(sessionUsd ?? 0).toFixed(2)} session / $${(weeklyUsd ?? 0).toFixed(2)} week`
+  }
+
+  function subscriptionLine(monthly?: number, weekly?: number): string {
+    if (!monthly) return ''
+    const ratio = ((weekly ?? 0) / monthly) * 100
+    return `${ratio.toFixed(0)}% of $${monthly.toFixed(0)}/mo`
   }
 
   function roleBadgeClasses(role: string): string {
@@ -131,6 +167,69 @@
 
   <!-- Charts -->
   {#if statsStore.data}
+    {#if limitProviders.length > 0}
+      <div class="space-y-3">
+        <div class="mb-3 flex items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-surface-500">Agent Limits</h3>
+          <span class="text-[10px] text-surface-400">session + weekly cycles</span>
+        </div>
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
+          {#each limitProviders as p (p.provider)}
+            <div class="rounded border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <p class="text-sm font-semibold">{providerLabel(p.provider)}</p>
+                  <p class="text-xs text-surface-500">{p.planType || p.confidence || 'usage only'}</p>
+                </div>
+                {#if p.quotaLimited}
+                  <span class="rounded bg-warning-200 px-1.5 py-0.5 text-xs text-warning-800 dark:bg-warning-800 dark:text-warning-100">limited</span>
+                {:else if p.confidence === 'exact'}
+                  <span class="rounded bg-success-200 px-1.5 py-0.5 text-xs text-success-800 dark:bg-success-800 dark:text-success-100">exact</span>
+                {:else}
+                  <span class="rounded bg-surface-200 px-1.5 py-0.5 text-xs text-surface-600 dark:bg-surface-700 dark:text-surface-200">estimated</span>
+                {/if}
+              </div>
+              <div class="space-y-2">
+                <div>
+                  <div class="mb-1 flex justify-between text-xs">
+                    <span>Session</span>
+                    <span>{formatPercent(p.sessionUsedPercent)}</span>
+                  </div>
+                  <div class="h-1.5 overflow-hidden rounded bg-surface-200 dark:bg-surface-700">
+                    <div class="h-full bg-primary-500" style={`width: ${progressWidth(p.sessionUsedPercent)}`}></div>
+                  </div>
+                  <p class="mt-1 text-[10px] text-surface-400">{resetLabel(p.sessionResetsAt)}</p>
+                </div>
+                <div>
+                  <div class="mb-1 flex justify-between text-xs">
+                    <span>Weekly</span>
+                    <span>{formatPercent(p.weeklyUsedPercent)}</span>
+                  </div>
+                  <div class="h-1.5 overflow-hidden rounded bg-surface-200 dark:bg-surface-700">
+                    <div class="h-full bg-secondary-500" style={`width: ${progressWidth(p.weeklyUsedPercent)}`}></div>
+                  </div>
+                  <p class="mt-1 text-[10px] text-surface-400">{resetLabel(p.weeklyResetsAt)}</p>
+                </div>
+              </div>
+              <div class="mt-3 border-t border-surface-100 pt-2 text-xs dark:border-surface-700">
+                <p class="font-medium">{spendLine(p.sessionSpendUsd, p.weeklySpendUsd)}</p>
+                <p class="text-surface-500">
+                  {formatTokens(p.weeklyInputTokens ?? 0)} in / {formatTokens(p.weeklyOutputTokens ?? 0)} out
+                  {#if p.weeklyPremiumRequests} · {p.weeklyPremiumRequests} premium{/if}
+                </p>
+                {#if p.monthlySubscriptionUsd}
+                  <p class="text-surface-500">{subscriptionLine(p.monthlySubscriptionUsd, p.weeklySpendUsd)}</p>
+                {/if}
+                {#if p.quotaReason}
+                  <p class="mt-1 text-warning-600 dark:text-warning-300">{p.quotaReason}</p>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <div class="mb-3 flex items-baseline justify-between gap-2">

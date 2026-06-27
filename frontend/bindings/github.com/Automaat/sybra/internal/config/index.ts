@@ -8,6 +8,7 @@ export {
     OrchestratorConfig,
     ProviderEntryConfig,
     ProviderHealthCheckConfig,
+    ProviderLimitsConfig,
     ProvidersConfig,
     RenovateConfig,
     TodoistConfig

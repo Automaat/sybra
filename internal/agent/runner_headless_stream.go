@@ -117,7 +117,7 @@ func extractTodoWriteSteps(toolUses []ToolUseBlock) []PlanStep {
 // codexEventToStreamEvent converts a shared CodexEvent into a StreamEvent
 // for the headless runner.
 func codexEventToStreamEvent(e CodexEvent) StreamEvent {
-	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID, LimitSnapshot: e.Limits}
 	switch e.Type {
 	case "assistant":
 		if e.Message != nil {

@@ -20,11 +20,12 @@ import (
 // Claude stream-json convention used by the frontend.
 func codexEventToConvoEvent(e CodexEvent) ConvoEvent {
 	ev := ConvoEvent{
-		Type:      e.Type,
-		Subtype:   e.Subtype,
-		SessionID: e.SessionID,
-		Timestamp: time.Now().UTC(),
-		Raw:       e.Raw,
+		Type:          e.Type,
+		Subtype:       e.Subtype,
+		SessionID:     e.SessionID,
+		Timestamp:     time.Now().UTC(),
+		Raw:           e.Raw,
+		LimitSnapshot: e.Limits,
 	}
 	switch e.Type {
 	case "assistant":
@@ -356,6 +357,19 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 		}
 
 		switch event.Type {
+		case "usage":
+			if event.LimitSnapshot != nil {
+				snapshot := *event.LimitSnapshot
+				if snapshot.Provider == "" {
+					snapshot.Provider = a.Provider
+				}
+				m.mu.RLock()
+				limitSink := m.limitSink
+				m.mu.RUnlock()
+				if limitSink != nil {
+					limitSink(snapshot)
+				}
+			}
 		case "system":
 			if event.SessionID != "" {
 				a.SetSessionID(event.SessionID)
