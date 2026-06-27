@@ -75,42 +75,103 @@ func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
 		if run.CostUSD > 0 || run.LogFile == "" {
 			continue
 		}
-		provider := providerForRun(*run)
-		events, err := agent.ParseLogFile(run.LogFile, 0, provider)
-		if err != nil {
+		estimate, ok := estimateAgentRunUsage(*run)
+		if !ok {
 			if s.logger != nil {
-				s.logger.Debug("task.agent-run-cost.log-parse-skipped", "task_id", t.ID, "agent_id", run.AgentID, "log", run.LogFile, "err", err)
+				s.logger.Debug("task.agent-run-cost.estimate-skipped", "task_id", t.ID, "agent_id", run.AgentID, "log", run.LogFile)
 			}
 			continue
 		}
-		var input, output, cacheCreate, cacheRead, reasoning int
-		var cost, premiumRequests float64
-		for j := range events {
-			if events[j].Type != "result" {
-				continue
+		if estimate.PremiumRequests > 0 {
+			run.PremiumRequests = estimate.PremiumRequests
+		}
+		run.CostUSD = estimate.CostUSD
+		if estimate.CostUSD > 0 && s.tasks != nil {
+			updates := map[string]any{"cost_usd": estimate.CostUSD}
+			if estimate.PremiumRequests > 0 {
+				updates["premium_requests"] = estimate.PremiumRequests
 			}
-			cost += events[j].CostUSD
-			premiumRequests += events[j].PremiumRequests
-			input += events[j].InputTokens
-			output += events[j].OutputTokens
-			cacheCreate += events[j].CacheCreationInputTokens
-			cacheRead += events[j].CacheReadInputTokens
-			reasoning += events[j].ReasoningTokens
-		}
-		if premiumRequests > 0 {
-			run.PremiumRequests = premiumRequests
-		}
-		if cost == 0 {
-			switch provider {
-			case "copilot":
-				cost = stats.EstimateCopilotCost(premiumRequests)
-			case "codex", "claude":
-				cost = stats.EstimateCostDetailed(run.Model, input, output, cacheCreate, cacheRead, reasoning)
+			if run.Provider == "" && estimate.Provider != "" {
+				updates["provider"] = estimate.Provider
+				run.Provider = estimate.Provider
+			}
+			if err := s.tasks.UpdateRun(t.ID, run.AgentID, updates); err != nil && s.logger != nil {
+				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
 			}
 		}
-		run.CostUSD = cost
 	}
 	return t
+}
+
+type agentRunUsageEstimate struct {
+	CostUSD         float64
+	PremiumRequests float64
+	Provider        string
+}
+
+func estimateAgentRunUsage(run task.AgentRun) (agentRunUsageEstimate, bool) {
+	for _, provider := range providersForRun(run) {
+		events, err := agent.ParseLogFile(run.LogFile, 0, provider)
+		if err != nil {
+			continue
+		}
+		estimate, ok := estimateUsageFromEvents(run.Model, provider, events)
+		if ok {
+			return estimate, true
+		}
+	}
+	return agentRunUsageEstimate{}, false
+}
+
+func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent) (agentRunUsageEstimate, bool) {
+	var input, output, cacheCreate, cacheRead, reasoning int
+	var cost, premiumRequests float64
+	var resultSeen bool
+	for j := range events {
+		if events[j].Type != "result" {
+			continue
+		}
+		resultSeen = true
+		cost += events[j].CostUSD
+		premiumRequests += events[j].PremiumRequests
+		input += events[j].InputTokens
+		output += events[j].OutputTokens
+		cacheCreate += events[j].CacheCreationInputTokens
+		cacheRead += events[j].CacheReadInputTokens
+		reasoning += events[j].ReasoningTokens
+	}
+	if !resultSeen {
+		return agentRunUsageEstimate{}, false
+	}
+	if cost == 0 {
+		switch provider {
+		case "copilot":
+			cost = stats.EstimateCopilotCost(premiumRequests)
+		case "codex", "claude":
+			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning)
+		}
+	}
+	if cost == 0 && premiumRequests == 0 {
+		return agentRunUsageEstimate{}, false
+	}
+	return agentRunUsageEstimate{CostUSD: cost, PremiumRequests: premiumRequests, Provider: provider}, true
+}
+
+func providersForRun(run task.AgentRun) []string {
+	if run.Provider != "" {
+		return []string{run.Provider}
+	}
+	preferred := providerForRun(run)
+	providers := make([]string, 0, 3)
+	if preferred != "" {
+		providers = append(providers, preferred)
+	}
+	for _, provider := range []string{"codex", "copilot", "claude"} {
+		if provider != preferred {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
 }
 
 func providerForRun(run task.AgentRun) string {
