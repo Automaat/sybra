@@ -576,6 +576,15 @@ func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues [
 		// prTracker.Cleanup; we need the explicit clear here because
 		// the PR is still open).
 		r.prTracker.Clear(t.ID, github.PRIssueKind(kind))
+		status := task.StatusInReview
+		reason := "pr-fix cancelled: " + kind + " resolved"
+		if _, updErr := r.tasks.Update(t.ID, task.Update{
+			Status:       &status,
+			StatusReason: &reason,
+		}); updErr != nil {
+			r.logger.Error("pr-monitor.cancel-resolved.status", "task_id", t.ID, "kind", kind, "err", updErr)
+			continue
+		}
 		r.logger.Info("pr-monitor.cancel-resolved",
 			"task_id", t.ID, "kind", kind, "step", step, "pr", t.PRNumber)
 	}

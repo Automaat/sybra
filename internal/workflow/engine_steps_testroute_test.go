@@ -155,6 +155,57 @@ func TestContainsFixSuggestionsInCurrentTestReport_MissingBodyStartIgnoresStaleB
 	}
 }
 
+func TestClassifyTestOutcome_RecognizesParenthesizedFailureHeadingInBodyDelta(t *testing.T) {
+	t.Parallel()
+
+	initialBody := "## Problem\nExercise the testing gate."
+	body := initialBody + "\n\n## Test Failures (round 5)\n\n" +
+		"### Acceptance probe\n\n" +
+		"Classification: product_bug.\n\n" +
+		"Command run:\n```sh\nrg -n \"rawDate\" src/routes -g '*.svelte'\n```\n\n" +
+		"Output:\n```text\nsrc/routes/page.svelte:42:{rawDate}\n```\n\n" +
+		"Expected: task says dates render through the shared formatter.\n\n" +
+		"Code evidence:\n```text\nsrc/routes/page.svelte:42:{rawDate}\n```\n"
+	wf := &Execution{Variables: map[string]string{}}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+
+	got, fingerprint := classifyTestOutcome("completed", "TEST_VERDICT: FAIL", body, wf, testVerdictSourceStep)
+	if got != testOutcomeProductBug {
+		t.Fatalf("outcome = %q, want %q", got, testOutcomeProductBug)
+	}
+	if fingerprint == "" {
+		t.Fatal("fingerprint is empty")
+	}
+}
+
+func TestStructuredFailureOutcomeInsertedAfterParenthesizedHeading(t *testing.T) {
+	t.Parallel()
+
+	report := "## Test Failures (round 5)\n\n" +
+		"Command run:\n```sh\ncurl /status\n```\n\n" +
+		"Output:\n```text\nconnection refused\n```\n\n" +
+		"Expected: task says the service should be reachable.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"infra_failure","failures_markdown":` + strconv.Quote(report) + `}`
+
+	got, _ := classifyTestOutcome("completed", payload, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if got != testOutcomeInfraFailure {
+		t.Fatalf("outcome = %q, want %q", got, testOutcomeInfraFailure)
+	}
+	normalized := normalizeStructuredFailuresMarkdown(report, testOutcomeInfraFailure)
+	if !strings.Contains(normalized, "Classification: "+testOutcomeInfraFailure) {
+		t.Fatalf("normalized report missing inserted classification:\n%s", normalized)
+	}
+}
+
+func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
+	t.Parallel()
+
+	if got := testFailSectionOf("## Test Failures are stale\n\nnot current"); got != "" {
+		t.Fatalf("stale-looking heading produced section %q, want empty", got)
+	}
+}
+
 func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 	t.Parallel()
 
