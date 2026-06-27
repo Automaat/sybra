@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -61,7 +62,41 @@ func discoverCodexSkills() []string {
 	if err != nil {
 		return nil
 	}
-	return discoverCodexSkillsInHome(home)
+	now := time.Now()
+	codexSkillsCacheMu.Lock()
+	if home == codexSkillsCacheHome && now.Before(codexSkillsCacheExpires) {
+		out := cloneSkillNames(codexSkillsCacheNames)
+		codexSkillsCacheMu.Unlock()
+		return out
+	}
+	codexSkillsCacheMu.Unlock()
+
+	names := discoverCodexSkillsInHome(home)
+
+	codexSkillsCacheMu.Lock()
+	codexSkillsCacheHome = home
+	codexSkillsCacheNames = cloneSkillNames(names)
+	codexSkillsCacheExpires = now.Add(codexSkillsCacheTTL)
+	codexSkillsCacheMu.Unlock()
+	return names
+}
+
+const codexSkillsCacheTTL = 30 * time.Second
+
+var (
+	codexSkillsCacheMu      sync.Mutex
+	codexSkillsCacheHome    string
+	codexSkillsCacheNames   []string
+	codexSkillsCacheExpires time.Time
+)
+
+func cloneSkillNames(names []string) []string {
+	if names == nil {
+		return nil
+	}
+	out := make([]string, len(names))
+	copy(out, names)
+	return out
 }
 
 func discoverCodexSkillsInHome(home string) []string {
@@ -72,8 +107,11 @@ func discoverCodexSkillsInHome(home string) []string {
 	for _, name := range listSkillDirs(filepath.Join(home, ".claude", "skills")) {
 		seen[name] = struct{}{}
 	}
-	codexPluginSkills, fallbackPlugins, ok := listCodexPluginListSkills()
-	if !ok {
+	codexPluginSkills, fallbackPlugins, fallbackAll := listCodexPluginListSkills()
+	switch {
+	case fallbackAll:
+		codexPluginSkills = append(codexPluginSkills, listPluginSkillDirs(filepath.Join(home, ".codex", "plugins", "cache"))...)
+	case len(fallbackPlugins) > 0:
 		codexPluginSkills = append(codexPluginSkills, listPluginSkillDirsFiltered(filepath.Join(home, ".codex", "plugins", "cache"), fallbackPlugins)...)
 	}
 	for _, name := range codexPluginSkills {
@@ -93,10 +131,20 @@ func discoverCodexSkillsInHome(home string) []string {
 	return out
 }
 
-var runCodexPluginListJSON = func() ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return exec.CommandContext(ctx, "codex", "plugin", "list", "--json").Output()
+var (
+	codexPluginListRunnerMu sync.RWMutex
+	runCodexPluginListJSON  = func() ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return exec.CommandContext(ctx, "codex", "plugin", "list", "--json").Output()
+	}
+)
+
+func runCodexPluginListJSONSafe() ([]byte, error) {
+	codexPluginListRunnerMu.RLock()
+	runner := runCodexPluginListJSON
+	codexPluginListRunnerMu.RUnlock()
+	return runner()
 }
 
 type codexPluginList struct {
@@ -116,17 +164,16 @@ type codexPluginManifest struct {
 	Skills json.RawMessage `json:"skills"`
 }
 
-func listCodexPluginListSkills() (names, fallbackPlugins []string, ok bool) {
-	out, err := runCodexPluginListJSON()
+func listCodexPluginListSkills() (names, fallbackPlugins []string, fallbackAll bool) {
+	out, err := runCodexPluginListJSONSafe()
 	if err != nil && len(out) == 0 {
-		return nil, nil, false
+		return nil, nil, true
 	}
-	commandErr := err
 	names, fallbackPlugins, err = parseCodexPluginListSkills(out)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, true
 	}
-	return names, fallbackPlugins, commandErr == nil && len(fallbackPlugins) == 0
+	return names, fallbackPlugins, false
 }
 
 func parseCodexPluginListSkills(data []byte) (names, fallbackPlugins []string, err error) {

@@ -272,7 +272,7 @@ func TestDiscoverCodexSkillsKeepsStdoutFromNonzeroPluginList(t *testing.T) {
 	withCodexPluginListOutput(t, codexPluginListPayload(t, pluginRoot, true), errors.New("codex plugin list exited nonzero"))
 
 	got := discoverCodexSkillsInHome(home)
-	want := []string{"new-skill", "staff-code-review"}
+	want := []string{"new-skill"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -600,23 +600,41 @@ func writePluginManifestJSON(t *testing.T, path string, data []byte) {
 
 func withCodexPluginListJSON(t *testing.T, data []byte) {
 	t.Helper()
+	codexPluginListRunnerMu.Lock()
 	orig := runCodexPluginListJSON
 	runCodexPluginListJSON = func() ([]byte, error) { return data, nil }
-	t.Cleanup(func() { runCodexPluginListJSON = orig })
+	codexPluginListRunnerMu.Unlock()
+	t.Cleanup(func() {
+		codexPluginListRunnerMu.Lock()
+		runCodexPluginListJSON = orig
+		codexPluginListRunnerMu.Unlock()
+	})
 }
 
 func withCodexPluginListError(t *testing.T, err error) {
 	t.Helper()
+	codexPluginListRunnerMu.Lock()
 	orig := runCodexPluginListJSON
 	runCodexPluginListJSON = func() ([]byte, error) { return nil, err }
-	t.Cleanup(func() { runCodexPluginListJSON = orig })
+	codexPluginListRunnerMu.Unlock()
+	t.Cleanup(func() {
+		codexPluginListRunnerMu.Lock()
+		runCodexPluginListJSON = orig
+		codexPluginListRunnerMu.Unlock()
+	})
 }
 
 func withCodexPluginListOutput(t *testing.T, data []byte, err error) {
 	t.Helper()
+	codexPluginListRunnerMu.Lock()
 	orig := runCodexPluginListJSON
 	runCodexPluginListJSON = func() ([]byte, error) { return data, err }
-	t.Cleanup(func() { runCodexPluginListJSON = orig })
+	codexPluginListRunnerMu.Unlock()
+	t.Cleanup(func() {
+		codexPluginListRunnerMu.Lock()
+		runCodexPluginListJSON = orig
+		codexPluginListRunnerMu.Unlock()
+	})
 }
 
 func codexPluginListPayload(t *testing.T, pluginRoot string, enabled bool) []byte {
