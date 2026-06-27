@@ -100,7 +100,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T
 		_, err := env.tasks.CreateFull("child 5", "", task.AgentModeHeadless, task.Update{
 			Issue:         task.Ptr(subURL),
 			UmbrellaIssue: task.Ptr(issueURL),
-			Status:        task.Ptr(task.StatusBlocked),
+			Status:        task.Ptr(task.StatusTodo),
 			Tags:          task.Ptr([]string{umbrella.GatedTag}),
 		})
 		return umbrella.Result{Created: 1}, err
@@ -123,8 +123,8 @@ func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T
 	for i := range all {
 		if all[i].Issue == subURL {
 			matches++
-			if all[i].Status != task.StatusBlocked {
-				t.Fatalf("sub-issue task status = %q, want blocked (gated child)", all[i].Status)
+			if all[i].Status != task.StatusTodo {
+				t.Fatalf("sub-issue task status = %q, want todo (gated child)", all[i].Status)
 			}
 		}
 	}

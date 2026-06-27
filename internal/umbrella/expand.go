@@ -129,7 +129,7 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 	return refs, trackerExists, nil
 }
 
-// materialize creates the tracker (when absent) and one blocked child per spec.
+// materialize creates the tracker (when absent) and one gated todo child per spec.
 func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, maxParallel int) (int, error) {
 	if !trackerExists {
 		if _, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
@@ -150,7 +150,7 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 			UmbrellaIssue: task.Ptr(umb.URL),
 			DependsOn:     task.Ptr(canonicalizeDeps(spec.DependsOn, byRef)),
 			ProjectID:     task.Ptr(childProjectID(spec.Issue, byRef, umb.Repository)),
-			Status:        task.Ptr(task.StatusBlocked),
+			Status:        task.Ptr(task.StatusTodo),
 			Tags:          task.Ptr(childTags(spec.Issue, byRef)),
 		}); err != nil {
 			return created, fmt.Errorf("create child for %s: %w", spec.Issue, err)
