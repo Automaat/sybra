@@ -53,7 +53,7 @@ type UsageEvent struct {
 	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
 	TotalTokens              int       `json:"totalTokens,omitempty"`
-	PremiumRequests          int       `json:"premiumRequests,omitempty"`
+	PremiumRequests          float64   `json:"premiumRequests,omitempty"`
 	Timestamp                time.Time `json:"timestamp"`
 }
 
@@ -78,12 +78,12 @@ type ProviderSummary struct {
 	SessionOutputTokens         int       `json:"sessionOutputTokens,omitempty"`
 	SessionCacheReadTokens      int       `json:"sessionCacheReadTokens,omitempty"`
 	SessionReasoningTokens      int       `json:"sessionReasoningTokens,omitempty"`
-	SessionPremiumRequests      int       `json:"sessionPremiumRequests,omitempty"`
+	SessionPremiumRequests      float64   `json:"sessionPremiumRequests,omitempty"`
 	WeeklyInputTokens           int       `json:"weeklyInputTokens,omitempty"`
 	WeeklyOutputTokens          int       `json:"weeklyOutputTokens,omitempty"`
 	WeeklyCacheReadTokens       int       `json:"weeklyCacheReadTokens,omitempty"`
 	WeeklyReasoningTokens       int       `json:"weeklyReasoningTokens,omitempty"`
-	WeeklyPremiumRequests       int       `json:"weeklyPremiumRequests,omitempty"`
+	WeeklyPremiumRequests       float64   `json:"weeklyPremiumRequests,omitempty"`
 	MonthlySubscriptionUSD      float64   `json:"monthlySubscriptionUsd,omitempty"`
 	MonthlySubscriptionBurnRate float64   `json:"monthlySubscriptionBurnRate,omitempty"`
 	QuotaLimited                bool      `json:"quotaLimited,omitempty"`

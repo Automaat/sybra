@@ -21,7 +21,7 @@ type AgentCompletion struct {
 // workflow steps that expect a single turn — otherwise the agent sits paused
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
-	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (agentID string, err error)
+	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment AgentAssignment) (agentID string, err error)
 	HasRunningAgent(taskID string) bool
 	// HasOtherRunningAgentForTask reports whether an agent other than
 	// exceptAgentID is still running for the task. verify_commits uses it to
@@ -37,6 +37,17 @@ type AgentLauncher interface {
 	// it to wait out a transient throttle without also stalling auth failures,
 	// which must take the human-required path. Empty name = default provider.
 	ProviderRateLimited(provider string) bool
+}
+
+// AgentAssignment carries A/B experiment attribution selected before dispatch.
+type AgentAssignment struct {
+	ExperimentID    string
+	VariantID       string
+	Provider        string
+	Model           string
+	AssignmentUnit  string
+	AssignmentKey   string
+	ReasoningEffort string
 }
 
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared

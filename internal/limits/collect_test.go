@@ -198,7 +198,7 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 		t.Fatalf("spend = session %.2f weekly %.2f, want 1.25/1.25", codex.SessionSpendUSD, codex.WeeklySpendUSD)
 	}
 	if codex.SessionPremiumRequests != 2 || codex.WeeklyPremiumRequests != 2 {
-		t.Fatalf("premium requests = session %d weekly %d, want 2/2", codex.SessionPremiumRequests, codex.WeeklyPremiumRequests)
+		t.Fatalf("premium requests = session %v weekly %v, want 2/2", codex.SessionPremiumRequests, codex.WeeklyPremiumRequests)
 	}
 }
 

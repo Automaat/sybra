@@ -971,6 +971,27 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["log_file"].(string); ok {
 			t.AgentRuns[i].LogFile = v
 		}
+		if v, ok := updates["provider"].(string); ok {
+			t.AgentRuns[i].Provider = v
+		}
+		if v, ok := updates["model"].(string); ok {
+			t.AgentRuns[i].Model = v
+		}
+		if v, ok := updates["experiment_id"].(string); ok {
+			t.AgentRuns[i].ExperimentID = v
+		}
+		if v, ok := updates["variant_id"].(string); ok {
+			t.AgentRuns[i].VariantID = v
+		}
+		if v, ok := updates["assignment_unit"].(string); ok {
+			t.AgentRuns[i].AssignmentUnit = v
+		}
+		if v, ok := updates["assignment_key"].(string); ok {
+			t.AgentRuns[i].AssignmentKey = v
+		}
+		if v, ok := updates["reasoning_effort"].(string); ok {
+			t.AgentRuns[i].ReasoningEffort = v
+		}
 		if v, ok := updates["session_id"].(string); ok && v != "" {
 			t.AgentRuns[i].SessionID = v
 		}

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/abtest"
 )
 
 // --- Test helpers ---
@@ -244,6 +246,7 @@ type startCall struct {
 	NeedsWorktree                                    bool
 	OneShot                                          bool
 	OutputSchema                                     string
+	Assignment                                       AgentAssignment
 }
 
 type sentPrompt struct {
@@ -268,7 +271,7 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (string, error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment AgentAssignment) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -280,6 +283,7 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 		TaskID: taskID, Role: role, Mode: mode, Model: model, Provider: provider,
 		Prompt: prompt, Dir: dir, AllowedTools: allowedTools,
 		NeedsWorktree: needsWorktree, OneShot: oneShot, OutputSchema: outputSchema,
+		Assignment: assignment,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -940,7 +944,7 @@ func TestCancelWorkflow(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 
 	// Pretend an agent is running for "active" so we can verify it's stopped.
-	if _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, ""); err != nil {
+	if _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, "", AgentAssignment{}); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
 
@@ -1302,7 +1306,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "")
+	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "", AgentAssignment{})
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()
@@ -1540,6 +1544,48 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	}
 	if call.Model != "sonnet" {
 		t.Errorf("expected default model 'sonnet', got %q", call.Model)
+	}
+}
+
+func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{{
+				ID: "codex-gpt", Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "high", Weight: 1,
+			}},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Model:  "sonnet",
+			Prompt: "test prompt",
+		},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Provider != "codex" || call.Model != "gpt-5.5" {
+		t.Fatalf("provider/model = %q/%q, want codex/gpt-5.5", call.Provider, call.Model)
+	}
+	if call.Assignment.ExperimentID != "exp" || call.Assignment.VariantID != "codex-gpt" || call.Assignment.ReasoningEffort != "high" {
+		t.Fatalf("assignment = %+v", call.Assignment)
 	}
 }
 

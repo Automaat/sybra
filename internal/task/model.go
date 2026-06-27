@@ -173,15 +173,23 @@ func ValidateAgentProvider(s string) (string, error) {
 }
 
 type AgentRun struct {
-	AgentID   string    `yaml:"agent_id" json:"agentId"`
-	Role      string    `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
-	Mode      string    `yaml:"mode" json:"mode"`
-	Provider  string    `yaml:"provider,omitempty" json:"provider,omitempty"`
-	State     string    `yaml:"state" json:"state"`
-	StartedAt time.Time `yaml:"started_at" json:"startedAt"`
-	CostUSD   float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
-	Prompt    string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
-	Result    string    `yaml:"result,omitempty" json:"result"`
+	AgentID  string `yaml:"agent_id" json:"agentId"`
+	Role     string `yaml:"role,omitempty" json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
+	Mode     string `yaml:"mode" json:"mode"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model    string `yaml:"model,omitempty" json:"model,omitempty"`
+	// ExperimentID/VariantID capture deterministic A/B assignment selected
+	// before the run started.
+	ExperimentID    string    `yaml:"experiment_id,omitempty" json:"experimentId,omitempty"`
+	VariantID       string    `yaml:"variant_id,omitempty" json:"variantId,omitempty"`
+	AssignmentUnit  string    `yaml:"assignment_unit,omitempty" json:"assignmentUnit,omitempty"`
+	AssignmentKey   string    `yaml:"assignment_key,omitempty" json:"assignmentKey,omitempty"`
+	ReasoningEffort string    `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	State           string    `yaml:"state" json:"state"`
+	StartedAt       time.Time `yaml:"started_at" json:"startedAt"`
+	CostUSD         float64   `yaml:"cost_usd,omitempty" json:"costUsd"`
+	Prompt          string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+	Result          string    `yaml:"result,omitempty" json:"result"`
 	// Verdict holds the parsed decision for human-review runs ("human" or
 	// "sybra_bug"). Extracted from live agent output at completion time so
 	// it survives Result truncation.

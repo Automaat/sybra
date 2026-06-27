@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/abtest"
 )
 
 // importSidecarIfConfigured reads the file the agent produced (template
@@ -128,11 +130,27 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if model == "" {
 		model = "sonnet"
 	}
+	defaultModel := model
 
 	provider := resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), ctx.Task)
+	assignment := AgentAssignment{}
+	if step.Config.Provider == "" || step.Config.Provider == "ab" {
+		if selected, ok, aErr := e.selectABVariant(ctx.Task.ID, step.Config.Role, step.ID); aErr != nil {
+			return fmt.Errorf("select ab variant: %w", aErr)
+		} else if ok {
+			provider = selected.Provider
+			model = selected.Model
+			assignment = selected
+			if selected.ReasoningEffort != "" {
+				wfExec.SetVar("ab."+step.ID+".reasoning_effort", selected.ReasoningEffort)
+			}
+		}
+	}
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn("workflow.cross-provider.fallback", "wanted", provider, "reason", "CLI not found")
 		provider = ""
+		model = defaultModel
+		assignment = AgentAssignment{}
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
@@ -148,7 +166,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
-	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema)
+	agentID, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, assignment)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
 		// recovery loop won the race for this task). That agent will run and its
@@ -160,6 +178,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 			e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", step.ID)
 			return e.tasks.SetWorkflow(taskID, wfExec)
 		}
+
 		// Testing concurrency cap saturated — park and let ResumeStalled retry
 		// when a test-runner slot frees, same as dispatch-in-flight.
 		if errors.Is(err, ErrTestRunnerBusy) {
@@ -180,6 +199,22 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
 	return e.tasks.SetWorkflow(taskID, wfExec)
+}
+
+func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, bool, error) {
+	a, ok, err := abtest.SelectEligible(e.abTesting, taskID, role, stepID, providerAvailable)
+	if err != nil || !ok {
+		return AgentAssignment{}, ok, err
+	}
+	return AgentAssignment{
+		ExperimentID:    a.ExperimentID,
+		VariantID:       a.VariantID,
+		Provider:        a.Provider,
+		Model:           a.Model,
+		AssignmentUnit:  a.AssignmentUnit,
+		AssignmentKey:   a.AssignmentKey,
+		ReasoningEffort: a.ReasoningEffort,
+	}, true, nil
 }
 
 // resolveProvider resolves the step-level provider string.

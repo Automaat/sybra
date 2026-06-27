@@ -91,6 +91,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if !reflect.DeepEqual(old.SelfMonitor, next.SelfMonitor) {
 		restart = append(restart, "self_monitor")
 	}
+	if !reflect.DeepEqual(old.ABTesting, next.ABTesting) {
+		restart = append(restart, "ab_testing")
+	}
 	if !reflect.DeepEqual(old.Triage, next.Triage) {
 		restart = append(restart, "triage")
 	}

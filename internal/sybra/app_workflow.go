@@ -324,7 +324,7 @@ type agentAdapter struct {
 	sandboxes *sandbox.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (string, error) {
 	// (A pending watchdog headless-nudge steer is consumed upstream in
 	// execRunAgent, before the prompt reaches here.)
 
@@ -334,7 +334,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
-		ag, err := a.agentOrch.StartAgent(taskID, mode, prompt, false, oneShot)
+		ag, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, assignment)
 		if err != nil {
 			return "", err
 		}
@@ -365,19 +365,24 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	cfg := agent.RunConfig{
-		TaskID:                 taskID,
-		Name:                   r.AgentName(t.Title),
-		Mode:                   mode,
-		Prompt:                 prompt,
-		AllowedTools:           allowedTools,
-		Model:                  model,
-		Provider:               provider,
-		Dir:                    dir,
-		OneShot:                oneShot,
-		MaxTurns:               t.MaxTurns,
-		RequirePermissions:     resolvePermission(t, a.agentOrch.cfg),
-		HeadlessPermissionMode: posture,
-		ReasoningEffort:        t.ReasoningEffort,
+		TaskID:                  taskID,
+		Name:                    r.AgentName(t.Title),
+		Mode:                    mode,
+		Prompt:                  prompt,
+		AllowedTools:            allowedTools,
+		Model:                   model,
+		Provider:                provider,
+		ExperimentID:            assignment.ExperimentID,
+		VariantID:               assignment.VariantID,
+		AssignmentUnit:          assignment.AssignmentUnit,
+		AssignmentKey:           assignment.AssignmentKey,
+		DisableProviderFailover: assignment.ExperimentID != "",
+		Dir:                     dir,
+		OneShot:                 oneShot,
+		MaxTurns:                t.MaxTurns,
+		RequirePermissions:      resolvePermission(t, a.agentOrch.cfg),
+		HeadlessPermissionMode:  posture,
+		ReasoningEffort:         firstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
@@ -440,13 +445,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      role,
-		Mode:      mode,
-		Provider:  ag.Provider,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    cfg.Prompt,
+		AgentID:         ag.ID,
+		Role:            role,
+		Mode:            mode,
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		ReasoningEffort: ag.ReasoningEffort,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          cfg.Prompt,
 	}, nextStatus); addErr != nil {
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
@@ -488,4 +499,11 @@ func (a *agentAdapter) DefaultProvider() string {
 
 func (a *agentAdapter) ProviderRateLimited(provider string) bool {
 	return a.agents.ProviderRateLimited(provider)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

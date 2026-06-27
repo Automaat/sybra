@@ -203,6 +203,10 @@ func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 }
 
 func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
+	return o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, workflow.AgentAssignment{})
+}
+
+func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, assignment workflow.AgentAssignment) (*agent.Agent, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -271,21 +275,27 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 
 	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
-		TaskID:                 taskID,
-		Name:                   t.Title,
-		Mode:                   effMode,
-		Prompt:                 fullPrompt,
-		AllowedTools:           t.AllowedTools,
-		Dir:                    dir,
-		Model:                  "sonnet",
-		RequirePermissions:     requirePerm,
-		HeadlessPermissionMode: posture,
-		OneShot:                oneShot,
-		ResumeSessionID:        resumeSessionID,
-		ExtraEnv:               extraEnv,
-		MaxTurns:               t.MaxTurns,
-		ForkSubagent:           t.ForkSubagent,
-		ReasoningEffort:        t.ReasoningEffort,
+		TaskID:                  taskID,
+		Name:                    t.Title,
+		Mode:                    effMode,
+		Prompt:                  fullPrompt,
+		AllowedTools:            t.AllowedTools,
+		Dir:                     dir,
+		Provider:                assignment.Provider,
+		Model:                   firstNonEmpty(assignment.Model, "sonnet"),
+		ExperimentID:            assignment.ExperimentID,
+		VariantID:               assignment.VariantID,
+		AssignmentUnit:          assignment.AssignmentUnit,
+		AssignmentKey:           assignment.AssignmentKey,
+		DisableProviderFailover: assignment.ExperimentID != "",
+		RequirePermissions:      requirePerm,
+		HeadlessPermissionMode:  posture,
+		OneShot:                 oneShot,
+		ResumeSessionID:         resumeSessionID,
+		ExtraEnv:                extraEnv,
+		MaxTurns:                t.MaxTurns,
+		ForkSubagent:            t.ForkSubagent,
+		ReasoningEffort:         firstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
@@ -311,6 +321,7 @@ func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, t
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
 	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
+		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture,
 	})
@@ -319,13 +330,19 @@ func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, t
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
-		AgentID:   ag.ID,
-		Role:      string(agent.RoleImplementation),
-		Mode:      effMode,
-		Provider:  ag.Provider,
-		State:     string(agent.StateRunning),
-		StartedAt: ag.StartedAt,
-		Prompt:    fullPrompt,
+		AgentID:         ag.ID,
+		Role:            string(agent.RoleImplementation),
+		Mode:            effMode,
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		ExperimentID:    ag.ExperimentID,
+		VariantID:       ag.VariantID,
+		AssignmentUnit:  ag.AssignmentUnit,
+		AssignmentKey:   ag.AssignmentKey,
+		ReasoningEffort: ag.ReasoningEffort,
+		State:           string(agent.StateRunning),
+		StartedAt:       ag.StartedAt,
+		Prompt:          fullPrompt,
 	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
