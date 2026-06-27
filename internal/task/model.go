@@ -191,6 +191,7 @@ type AgentRun struct {
 	PremiumRequests float64   `yaml:"premium_requests,omitempty" json:"premiumRequests,omitempty"`
 	Prompt          string    `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Result          string    `yaml:"result,omitempty" json:"result"`
+	OneShot         bool      `yaml:"one_shot,omitempty" json:"oneShot,omitempty"`
 	// Verdict holds the parsed decision for human-review runs ("human" or
 	// "sybra_bug"). Extracted from live agent output at completion time so
 	// it survives Result truncation.

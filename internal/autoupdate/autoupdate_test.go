@@ -8,36 +8,31 @@ import (
 	"time"
 )
 
-func TestCheckAndApplyFastForwardsAndWritesMarker(t *testing.T) {
+func TestCheckAndApplyAutoModeDoesNotMerge(t *testing.T) {
 	ctx := t.Context()
 	upstream, work := seedRepos(t)
 	writeFile(t, upstream, "feature.txt", "new\n")
 	gitTest(t, upstream, "add", "feature.txt")
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
-	marker := filepath.Join(t.TempDir(), RestartMarker)
 	r := New(Config{
-		Enabled:           true,
-		RepoDir:           work,
-		Remote:            "origin",
-		Branch:            "main",
-		Mode:              ModeAuto,
-		PollInterval:      time.Hour,
-		RestartMarkerPath: marker,
-	}, nil, nil)
+		Enabled:      true,
+		RepoDir:      work,
+		Remote:       "origin",
+		Branch:       "main",
+		Mode:         ModeAuto,
+		PollInterval: time.Hour,
+	}, nil)
 
 	res, err := r.CheckAndApply(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "updated" {
-		t.Fatalf("status = %q, want updated (reason=%q)", res.Status, res.Reason)
+	if res.Status != "available" {
+		t.Fatalf("status = %q, want available (reason=%q)", res.Status, res.Reason)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("restart marker missing: %v", err)
-	}
-	if got := readFile(t, work, "feature.txt"); got != "new\n" {
-		t.Fatalf("feature.txt = %q, want new", got)
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after auto mode: %v", err)
 	}
 }
 
@@ -45,7 +40,7 @@ func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	_, work := seedRepos(t)
 	writeFile(t, work, "dirty.txt", "dirty\n")
 
-	r := New(Config{Enabled: true, RepoDir: work, Remote: "origin", Branch: "main"}, nil, nil)
+	r := New(Config{Enabled: true, RepoDir: work, Remote: "origin", Branch: "main"}, nil)
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -64,15 +59,13 @@ func TestCheckAndApplyNotifyDoesNotMerge(t *testing.T) {
 	gitTest(t, upstream, "add", "feature.txt")
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
-	marker := filepath.Join(t.TempDir(), RestartMarker)
 	r := New(Config{
-		Enabled:           true,
-		RepoDir:           work,
-		Remote:            "origin",
-		Branch:            "main",
-		Mode:              ModeNotify,
-		RestartMarkerPath: marker,
-	}, nil, nil)
+		Enabled: true,
+		RepoDir: work,
+		Remote:  "origin",
+		Branch:  "main",
+		Mode:    ModeNotify,
+	}, nil)
 
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
@@ -84,46 +77,30 @@ func TestCheckAndApplyNotifyDoesNotMerge(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
 		t.Fatalf("feature.txt exists after notify mode: %v", err)
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("restart marker exists in notify mode: %v", err)
-	}
 }
 
-func TestCheckAndApplyDoesNotMergeWhenMarkerFails(t *testing.T) {
+func TestCheckAndApplyDefaultModeDoesNotMerge(t *testing.T) {
 	upstream, work := seedRepos(t)
 	writeFile(t, upstream, "feature.txt", "new\n")
 	gitTest(t, upstream, "add", "feature.txt")
 	gitTest(t, upstream, "commit", "-m", "add feature")
 
-	blockingFile := filepath.Join(t.TempDir(), "not-a-dir")
-	writeFile(t, filepath.Dir(blockingFile), filepath.Base(blockingFile), "x")
-	marker := filepath.Join(blockingFile, RestartMarker)
-
 	r := New(Config{
-		Enabled:           true,
-		RepoDir:           work,
-		Remote:            "origin",
-		Branch:            "main",
-		RestartMarkerPath: marker,
-	}, nil, nil)
+		Enabled: true,
+		RepoDir: work,
+		Remote:  "origin",
+		Branch:  "main",
+	}, nil)
 
 	res, err := r.CheckAndApply(t.Context())
-	if err == nil {
-		t.Fatal("expected marker failure")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.Status != "" {
-		t.Fatalf("status = %q, want empty result on marker failure", res.Status)
+	if res.Status != "available" {
+		t.Fatalf("status = %q, want available (reason=%q)", res.Status, res.Reason)
 	}
-	if _, statErr := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(statErr) {
-		t.Fatalf("feature.txt exists despite marker failure: %v", statErr)
-	}
-}
-
-func TestWriteRestartMarkerRejectsEmptyAndRelativePath(t *testing.T) {
-	for _, path := range []string{"", "relative/restart-requested"} {
-		if err := WriteRestartMarker(path); err == nil {
-			t.Fatalf("WriteRestartMarker(%q) expected error", path)
-		}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists after default mode: %v", err)
 	}
 }
 
@@ -132,15 +109,6 @@ func writeFile(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func readFile(t *testing.T, dir, name string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
 }
 
 func gitTest(t *testing.T, dir string, args ...string) {

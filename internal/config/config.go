@@ -502,17 +502,17 @@ type MetricsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
-// AutoUpdateConfig controls the local source-checkout updater. It is intended
-// for development/runtime checkouts supervised by mise, not packaged app
-// updates.
+// AutoUpdateConfig controls source update checks. It reports newer remote
+// commits but does not merge or restart Sybra.
 type AutoUpdateConfig struct {
-	Enabled             bool   `yaml:"enabled" json:"enabled"`
-	RepoDir             string `yaml:"repo_dir" json:"repoDir"`
-	Remote              string `yaml:"remote" json:"remote"`
-	Branch              string `yaml:"branch" json:"branch"`
-	Mode                string `yaml:"mode" json:"mode"`
-	PollSeconds         int    `yaml:"poll_seconds" json:"pollSeconds"`
-	RestartDelaySeconds int    `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	RepoDir     string `yaml:"repo_dir" json:"repoDir"`
+	Remote      string `yaml:"remote" json:"remote"`
+	Branch      string `yaml:"branch" json:"branch"`
+	Mode        string `yaml:"mode" json:"mode"`
+	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
+	// Deprecated: ignored. Kept so existing config files continue to load.
+	RestartDelaySeconds int `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
 }
 
 func HomeDir() string {
@@ -565,7 +565,7 @@ func DefaultConfig() *Config {
 		AutoUpdate: AutoUpdateConfig{
 			Remote:              "origin",
 			Branch:              "main",
-			Mode:                "auto",
+			Mode:                "notify",
 			PollSeconds:         300,
 			RestartDelaySeconds: 2,
 		},
@@ -718,7 +718,7 @@ func applyAutoUpdateDefaults(cfg *Config) {
 		cfg.AutoUpdate.Branch = "main"
 	}
 	if cfg.AutoUpdate.Mode == "" {
-		cfg.AutoUpdate.Mode = "auto"
+		cfg.AutoUpdate.Mode = "notify"
 	}
 	if cfg.AutoUpdate.PollSeconds <= 0 {
 		cfg.AutoUpdate.PollSeconds = 300

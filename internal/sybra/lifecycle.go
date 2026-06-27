@@ -96,7 +96,6 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 	if repoDir == "" {
 		repoDir = a.repoDir
 	}
-	homeDir := config.HomeDir()
 	if repoDir == "" {
 		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is empty")
 		return
@@ -105,25 +104,14 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is not absolute", "repo", repoDir)
 		return
 	}
-	if !filepath.IsAbs(homeDir) {
-		a.logger.Error("autoupdate.disabled", "reason", "sybra home is not absolute", "home", homeDir)
-		return
-	}
 	runner := autoupdate.New(autoupdate.Config{
-		Enabled:           a.cfg.AutoUpdate.Enabled,
-		RepoDir:           repoDir,
-		Remote:            a.cfg.AutoUpdate.Remote,
-		Branch:            a.cfg.AutoUpdate.Branch,
-		Mode:              a.cfg.AutoUpdate.Mode,
-		PollInterval:      time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
-		RestartDelay:      time.Duration(a.cfg.AutoUpdate.RestartDelaySeconds) * time.Second,
-		RestartMarkerPath: autoupdate.RestartMarkerPath(homeDir),
-	}, a.logger, func() {
-		a.logger.Info("autoupdate.restart.requested")
-		if a.requestRestart != nil {
-			a.requestRestart()
-		}
-	})
+		Enabled:      a.cfg.AutoUpdate.Enabled,
+		RepoDir:      repoDir,
+		Remote:       a.cfg.AutoUpdate.Remote,
+		Branch:       a.cfg.AutoUpdate.Branch,
+		Mode:         a.cfg.AutoUpdate.Mode,
+		PollInterval: time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+	}, a.logger)
 	a.wg.Go(func() { runner.Run(ctx) })
 }
 

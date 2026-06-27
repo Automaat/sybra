@@ -274,6 +274,71 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 	}
 }
 
+func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("interactive one-shot", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-one-shot",
+		Mode:      "interactive",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-30 * time.Minute),
+		OneShot:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress()
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("dispatch count = %d, want 1", stub.startCalls)
+	}
+	if stub.lastMode != "interactive" {
+		t.Fatalf("mode = %q, want interactive", stub.lastMode)
+	}
+	if !stub.lastOneShot {
+		t.Fatal("interactive one-shot stale restart must preserve oneShot=true")
+	}
+}
+
 // stubWorkflowEngine implements recovery.WorkflowRestarter for tests that need
 // a non-nil engine without a real workflow store.
 type stubWorkflowEngine struct {
@@ -380,12 +445,16 @@ type stubOrchestrator struct {
 	startErr      error
 	prFixErr      error
 	startReturned *agent.Agent
+	lastMode      string
 	lastPrompt    string
+	lastOneShot   bool
 }
 
-func (s *stubOrchestrator) StartAgent(_, _, prompt string, _, _ bool) (*agent.Agent, error) {
+func (s *stubOrchestrator) StartAgent(_, mode, prompt string, _, oneShot bool) (*agent.Agent, error) {
 	s.startCalls++
+	s.lastMode = mode
 	s.lastPrompt = prompt
+	s.lastOneShot = oneShot
 	return s.startReturned, s.startErr
 }
 
