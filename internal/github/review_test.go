@@ -245,15 +245,10 @@ func TestFetchReviewSearchWith_queryRequestsActionableThreadSignals(t *testing.T
 	if query == "" {
 		t.Fatal("graphql query argument not captured")
 	}
-	for _, want := range []string{
-		"reviewThreads(first: 100)",
-		"id",
-		"comments(last: 1)",
-		"author { login }",
-	} {
-		if !strings.Contains(query, want) {
-			t.Errorf("query missing %q:\n%s", want, query)
-		}
+	normalized := strings.Join(strings.Fields(query), " ")
+	want := "reviewThreads(first: 100) { nodes { id isResolved comments(last: 1) { nodes { author { login } } } } }"
+	if !strings.Contains(normalized, want) {
+		t.Errorf("reviewThreads selection missing actionable thread signals\nwant fragment: %s\nquery: %s", want, normalized)
 	}
 }
 
