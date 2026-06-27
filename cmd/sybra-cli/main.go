@@ -1584,16 +1584,17 @@ func cmdHook(cfg *config.Config, args []string) int {
 		return 0
 	}
 	// Read the hook payload from stdin (codex pipes JSON here).
-	// Use a limit of 64 KiB; if exactly that many bytes are read the input
-	// exceeded the bound (LimitReader truncates silently) — reject it.
+	// Read up to 64 KiB + 1: if more than 64 KiB are available, the extra
+	// byte will be read and len(payload) > maxPayloadBytes, signalling
+	// overflow without silently truncating a valid exactly-64-KiB payload.
 	const maxPayloadBytes = 64 * 1024
-	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxPayloadBytes))
+	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxPayloadBytes+1))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook: read stdin: %v\n", err)
 		logHookFailure(cfg, *taskID, "read_error")
 		return 0
 	}
-	if len(payload) >= maxPayloadBytes {
+	if len(payload) > maxPayloadBytes {
 		fmt.Fprintln(os.Stderr, "hook: stdin payload exceeds size limit")
 		logHookFailure(cfg, *taskID, "oversized_payload")
 		return 0

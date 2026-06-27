@@ -1110,3 +1110,24 @@ func TestHookCmd_ValidPayloadExitsZero(t *testing.T) {
 		t.Errorf("hook must produce no stdout; got %q", out)
 	}
 }
+
+// TestHookCmd_ExactLimitAccepted verifies that a payload padded to exactly
+// 64 KiB (the inclusive upper bound) is accepted as a valid lifecycle event,
+// not rejected as oversized.
+func TestHookCmd_ExactLimitAccepted(t *testing.T) {
+	setupStore(t)
+	const maxPayloadBytes = 64 * 1024
+	base := `{"hook_event_name":"SessionStart","session_id":"s-exact"}`
+	pad := maxPayloadBytes - len(base)
+	payload := base + strings.Repeat(" ", pad)
+	if len(payload) != maxPayloadBytes {
+		t.Fatalf("test setup: payload length %d != %d", len(payload), maxPayloadBytes)
+	}
+	code, out := runHookWithStdin(t, payload, "hook", "SessionStart", "--task", "task-exact")
+	if code != 0 {
+		t.Errorf("exact-limit payload must exit 0; got %d", code)
+	}
+	if out != "" {
+		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
