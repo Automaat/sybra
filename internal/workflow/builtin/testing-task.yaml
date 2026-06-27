@@ -72,11 +72,19 @@ steps:
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.
 
+        Before looking for defects, derive a cheap acceptance probe from the
+        task when possible. For sweep/refactor wording like "everywhere",
+        "all", "single utility", "unified", or "no raw X remains", run a
+        repo-wide grep/test invariant that would catch missed call sites. Include
+        that command in the failure report when it fails.
+
         For each claimed defect you MUST have: (1) a real command you ran
         and its verbatim output, and (2) when claiming a specific code bug,
         a line quoted from the CURRENT file read with Read/cat/grep — not
         from diff memory. Exclude any claimed defect you cannot back with
-        both. An ungrounded claim is not a defect.
+        both. An ungrounded claim is not a defect. If the runner or provider
+        fails before you can gather this evidence, do not invent a product
+        failure; report the infrastructure failure plainly.
 
         When done:
           - If you found ANY deviation from the task's intent, append a
@@ -84,7 +92,9 @@ steps:
             `sybra-cli update {{.Task.ID}} --body "<full body>"` listing
             per-defect: the exact command run, verbatim output, expected
             behaviour (cite the task), and the quoted code line when
-            relevant. Do NOT suggest fixes — describe symptoms only.
+            relevant. Classify each defect as product_bug, infra_failure,
+            ambiguous_requirement, or missing_evidence in prose. Do NOT suggest
+            fixes — describe symptoms only.
           - Print the verdict as the FINAL line of your output, exactly:
             `TEST_VERDICT: PASS`  (only if you could not break it)
             or

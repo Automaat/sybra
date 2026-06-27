@@ -126,6 +126,14 @@ func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation s
 	return a.tasks.UpdateRun(taskID, agentID, map[string]any{"protocol_violation": violation})
 }
 
+func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error {
+	updates := map[string]any{"test_outcome": outcome}
+	if fingerprint != "" {
+		updates["test_failure_fingerprint"] = fingerprint
+	}
+	return a.tasks.UpdateRun(taskID, agentID, updates)
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
@@ -199,11 +207,14 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 	out := make([]workflow.AgentRunInfo, len(runs))
 	for i := range runs {
 		out[i] = workflow.AgentRunInfo{
-			AgentID:           runs[i].AgentID,
-			Role:              runs[i].Role,
-			Provider:          runs[i].Provider,
-			StartedAt:         runs[i].StartedAt,
-			ProtocolViolation: runs[i].ProtocolViolation,
+			AgentID:                runs[i].AgentID,
+			Role:                   runs[i].Role,
+			Provider:               runs[i].Provider,
+			StartedAt:              runs[i].StartedAt,
+			ProtocolViolation:      runs[i].ProtocolViolation,
+			TestOutcome:            runs[i].TestOutcome,
+			TestFailureFingerprint: runs[i].TestFailureFingerprint,
+			HeadSHA:                runs[i].HeadSHA,
 		}
 	}
 	return out

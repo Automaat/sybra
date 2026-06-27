@@ -96,6 +96,7 @@ func runExec() {
 		emitAgentMessage(`{"verdict":"PASS"}`)
 		emitTurnCompleted(100, 20)
 	case "test_verdict_fail":
+		writeTestFailureReport(taskID)
 		emitAgentMessage(`{"verdict":"FAIL"}`)
 		emitTurnCompleted(100, 20)
 	case "implement", "interactive_implement":
@@ -304,4 +305,15 @@ func runCLI(taskID, subcmd string, args ...string) {
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "sybra-cli failed: %v\n", err)
 	}
+}
+
+func writeTestFailureReport(taskID string) {
+	body := "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		"Requirement tested: the task says the happy path should render the expected output.\n\n" +
+		"Command run:\n```sh\ncurl /status\n```\n\n" +
+		"Actual output:\n```text\nwrong output\n```\n\n" +
+		"Expected output: expected output.\n\n" +
+		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
+	runCLI(taskID, "update", taskID, "--body", body)
 }

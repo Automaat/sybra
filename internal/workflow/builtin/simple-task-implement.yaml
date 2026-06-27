@@ -30,6 +30,12 @@ steps:
         testing — fix the root cause of every reported defect (not just the
         symptom); the feature will be re-tested after this run.
 
+        Before committing broad/sweep changes ("everywhere", "all", "single
+        utility", "unified", "no raw X remains"), derive and run a cheap
+        acceptance probe such as a repo-wide `rg` invariant that would catch
+        missed call sites. If the task has a plan, use its Verification probes
+        as part of your final checks.
+
         Never weaken, skip, delete, comment out, or hardcode tests, snapshots,
         or fixtures to make checks pass, and never edit CI config to neuter a
         gate. If an existing test is genuinely wrong, fix it correctly and

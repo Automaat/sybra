@@ -155,6 +155,145 @@ func TestContainsFixSuggestionsInCurrentTestReport_MissingBodyStartIgnoresStaleB
 	}
 }
 
+func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
+	t.Parallel()
+
+	initialBody := "## Problem\nExercise the testing gate."
+	groundedReport := "\n\n## Test Failures\n\n" +
+		"Requirement tested: the task says the status endpoint should return HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Actual output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	cases := []struct {
+		name       string
+		status     string
+		output     string
+		bodySuffix string
+		want       string
+		wantStatus string
+		wantTaint  string
+	}{
+		{
+			name:       "product_bug",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: groundedReport,
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			name:       "ambiguous_requirement",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "Requirement tested:", "Classification: ambiguous_requirement: task says two incompatible things\n\nRequirement tested:"),
+			want:       testOutcomeAmbiguousRequirement,
+			wantStatus: "completed",
+		},
+		{
+			name:       "actual_output_mentions_ambiguous_but_product_bug",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "HTTP/1.1 500 Internal Server Error", `{"error":"ambiguous requirement"}`),
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			name:       "explicit_infra_failure_with_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "Requirement tested:", "Classification: infra_failure, Docker daemon unavailable\n\nRequirement tested:"),
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "expected_output_counts_as_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "Expected:", "Expected output:"),
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			name:       "missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: "\n\n## Test Failures\n\nIt broke.\n",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "explicit_product_bug_still_requires_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: "\n\n## Test Failures\n\nClassification: product_bug\n\nCommand run: curl /status\nActual output: HTTP 500\nExpected: HTTP 200 with one line JSON response\n",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "expected_output_does_not_count_as_observed_output",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: "\n\n## Test Failures\n\nCommand run: curl /status\nExpected output: HTTP 200\nCode evidence: internal/server.go:42: return http.StatusInternalServerError\n",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "infra_failure",
+			status:     "completed",
+			output:     `{}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "failed_process_with_pass_verdict_is_infra",
+			status:     "failed",
+			output:     `{"verdict":"PASS"}`,
+			bodySuffix: "",
+			want:       testOutcomeInfraFailure,
+			wantStatus: "failed",
+		},
+		{
+			name:       "pass",
+			status:     "completed",
+			output:     `{"verdict":"PASS"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := initialBody + tc.bodySuffix
+			wf := &Execution{Variables: map[string]string{}}
+			prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+			out := StepOutput{StepID: testVerdictSourceStep, Status: tc.status, Output: tc.output}
+			violation, outcome, fingerprint := applyTestVerdictCompletion(wf, &out, body)
+			if outcome != tc.want {
+				t.Fatalf("outcome = %q, want %q", outcome, tc.want)
+			}
+			if out.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", out.Status, tc.wantStatus)
+			}
+			if got := wf.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]; got != tc.want {
+				t.Fatalf("workflow outcome = %q, want %q", got, tc.want)
+			}
+			if tc.wantTaint != "" && violation != tc.wantTaint {
+				t.Fatalf("violation = %q, want %q", violation, tc.wantTaint)
+			}
+			if (tc.want == testOutcomeProductBug || tc.want == testOutcomeAmbiguousRequirement) && fingerprint == "" {
+				t.Fatal("fingerprint is empty for evidenced failure")
+			}
+		})
+	}
+}
+
 // makeTestEngine builds a minimal Engine for route_test_result unit tests.
 func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 	t.Helper()
@@ -187,6 +326,15 @@ func runRouteTestResult(e *Engine, tasks *memTasks, taskID, verdict string, wfSt
 	}
 	ti, _ := tasks.GetTask(taskID)
 	return e.execRouteTestResult(taskID, step, wfExec, ti)
+}
+
+func mustGetTaskInfo(t *testing.T, tasks *memTasks, taskID string) TaskInfo {
+	t.Helper()
+	ti, err := tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ti
 }
 
 func makeTestingTaskEngine(t *testing.T) (*Engine, *memTasks, *mockAgents) {
@@ -380,6 +528,60 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 	}
 }
 
+func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T) {
+	t.Parallel()
+	engine, tasks, agents := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+		StepHistory: []StepRecord{{
+			StepID: testVerdictSourceStep,
+			Status: "failed",
+		}},
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-failed-pass",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-failed-pass", Role: testRunnerRole}},
+	})
+
+	err := engine.AdvanceStep("t-failed-pass", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "failed",
+		Output:  "runner crashed after printing\nTEST_VERDICT: PASS",
+		AgentID: "agent-failed-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("retry StartAgent calls = %d, want 0 after retry budget exhausted", got)
+	}
+	got, err := tasks.GetTask("t-failed-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t-failed-pass"); !strings.Contains(reason, "infrastructure failed") {
+		t.Errorf("status reason = %q, want infrastructure failure", reason)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeInfraFailure {
+		t.Errorf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeInfraFailure)
+	}
+}
+
 func TestRouteTestResult_Pass(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
@@ -453,6 +655,118 @@ func TestRouteTestResult_ProtocolViolationRunsDoNotCountTowardCap(t *testing.T) 
 		t.Errorf("output = %q, want reimplement", out.Output)
 	}
 	ti, _ := tasks.GetTask("t3-protocol")
+	if ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress", ti.Status)
+	}
+}
+
+func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		{AgentID: "valid-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug},
+		{AgentID: "infra", Role: testRunnerRole, StartedAt: now.Add(time.Minute), TestOutcome: testOutcomeInfraFailure},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t-infra",
+		Status:    "testing",
+		AgentRuns: runs,
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey: testOutcomeInfraFailure,
+		},
+	}
+	out, err := e.execRouteTestResult("t-infra", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-infra"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "infra failure" {
+		t.Errorf("output = %q, want infra failure", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-infra")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-infra"); !strings.Contains(reason, "no implementation attempt consumed") {
+		t.Errorf("reason = %q, want no implementation attempt consumed", reason)
+	}
+}
+
+func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	fp := "same-repro"
+	runs := []AgentRunInfo{
+		{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		{AgentID: "second", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t-dup",
+		Status:    "testing",
+		AgentRuns: runs,
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+		},
+	}
+	out, err := e.execRouteTestResult("t-dup", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "duplicate failure" {
+		t.Errorf("output = %q, want duplicate failure", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-dup")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-dup"); !strings.Contains(reason, "same grounded test failure") {
+		t.Errorf("reason = %q, want duplicate failure", reason)
+	}
+}
+
+func TestRouteTestResult_DuplicateFailureWithoutInterveningFixDoesNotEscalate(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	fp := "same-repro"
+	runs := []AgentRunInfo{
+		{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		{AgentID: "retry", Role: testRunnerRole, StartedAt: now.Add(time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+	}
+	tasks.Put(TaskInfo{
+		ID:        "t-dup-no-fix",
+		Status:    "testing",
+		AgentRuns: runs,
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+		},
+	}
+	out, err := e.execRouteTestResult("t-dup-no-fix", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-no-fix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Errorf("output = %q, want reimplement", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-dup-no-fix")
 	if ti.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress", ti.Status)
 	}
