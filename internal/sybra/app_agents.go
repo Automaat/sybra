@@ -301,6 +301,13 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 		}
 		return nil, err
 	}
+	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, fullPrompt)
+	return ag, nil
+}
+
+// recordImplAgentStart emits the agent.started audit event and persists the
+// initial AgentRun record for an implementation agent.
+func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm bool, fullPrompt string) {
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
 	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
@@ -322,7 +329,6 @@ func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskD
 	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
-	return ag, nil
 }
 
 func buildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription bool) string {
