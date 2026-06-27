@@ -177,9 +177,14 @@ func (a *App) initLimits() {
 	})
 	if policy.Enabled {
 		cutoff := time.Now().AddDate(0, 0, -a.cfg.Providers.Limits.BackfillDays)
-		if err := limitStore.BackfillLocalSessionFiles(cutoff); err != nil {
-			a.logger.Warn("limits.backfill", "err", err)
-		}
+		a.wg.Go(func() {
+			a.logger.Info("limits.backfill.start", "cutoff", cutoff)
+			if err := limitStore.BackfillLocalSessionFiles(cutoff); err != nil {
+				a.logger.Warn("limits.backfill", "err", err)
+				return
+			}
+			a.logger.Info("limits.backfill.done")
+		})
 	}
 }
 

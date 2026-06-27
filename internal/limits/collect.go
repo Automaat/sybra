@@ -203,16 +203,66 @@ func (s *Store) BackfillLocalSessionFiles(cutoff time.Time) error {
 	if !ok {
 		return nil
 	}
-	if err := s.backfillCodex(filepath.Join(home, ".codex", "sessions"), cutoff); err != nil {
+	batch := newSessionImport()
+	if err := batch.backfillCodex(filepath.Join(home, ".codex", "sessions"), cutoff); err != nil {
 		return err
 	}
-	if err := s.backfillClaude(filepath.Join(home, ".claude", "projects"), cutoff); err != nil {
+	if err := batch.backfillClaude(filepath.Join(home, ".claude", "projects"), cutoff); err != nil {
 		return err
 	}
-	return s.backfillCopilot(filepath.Join(home, ".copilot", "session-state"), cutoff)
+	if err := batch.backfillCopilot(filepath.Join(home, ".copilot", "session-state"), cutoff); err != nil {
+		return err
+	}
+	return s.Import(batch.events, batch.snapshotsList())
 }
 
-func (s *Store) backfillCodex(root string, cutoff time.Time) error {
+type sessionImport struct {
+	events    []UsageEvent
+	eventIDs  map[string]struct{}
+	snapshots map[string]Snapshot
+}
+
+func newSessionImport() *sessionImport {
+	return &sessionImport{
+		eventIDs:  map[string]struct{}{},
+		snapshots: map[string]Snapshot{},
+	}
+}
+
+func (b *sessionImport) addEvent(event UsageEvent) {
+	if event.ID == "" || event.Provider == "" {
+		return
+	}
+	if _, ok := b.eventIDs[event.ID]; ok {
+		return
+	}
+	b.eventIDs[event.ID] = struct{}{}
+	b.events = append(b.events, event)
+}
+
+func (b *sessionImport) addSnapshot(snapshot Snapshot) {
+	if snapshot.Provider == "" {
+		return
+	}
+	prev, ok := b.snapshots[snapshot.Provider]
+	if ok && snapshot.CapturedAt.Before(prev.CapturedAt) {
+		return
+	}
+	b.snapshots[snapshot.Provider] = snapshot
+}
+
+func (b *sessionImport) snapshotsList() []Snapshot {
+	if len(b.snapshots) == 0 {
+		return nil
+	}
+	out := make([]Snapshot, 0, len(b.snapshots))
+	for provider := range b.snapshots {
+		out = append(out, b.snapshots[provider])
+	}
+	return out
+}
+
+func (b *sessionImport) backfillCodex(root string, cutoff time.Time) error {
 	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
 		sessionID := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "rollout-"), ".jsonl")
 		snapshot, event, ok := ParseCodexLine(line, SourceSessionFiles, eventID(ProviderCodex, path, offset), sessionID)
@@ -220,35 +270,35 @@ func (s *Store) backfillCodex(root string, cutoff time.Time) error {
 			return nil
 		}
 		if snapshot.Provider != "" {
-			if err := s.UpdateSnapshot(snapshot); err != nil {
-				return err
-			}
+			b.addSnapshot(snapshot)
 		}
 		if event.ID != "" {
-			return s.RecordUsage(event)
+			b.addEvent(event)
 		}
 		return nil
 	})
 }
 
-func (s *Store) backfillClaude(root string, cutoff time.Time) error {
+func (b *sessionImport) backfillClaude(root string, cutoff time.Time) error {
 	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
 		event, ok := ParseClaudeLine(line, SourceSessionFiles, eventID(ProviderClaude, path, offset))
 		if !ok {
 			return nil
 		}
-		return s.RecordUsage(event)
+		b.addEvent(event)
+		return nil
 	})
 }
 
-func (s *Store) backfillCopilot(root string, cutoff time.Time) error {
+func (b *sessionImport) backfillCopilot(root string, cutoff time.Time) error {
 	return walkJSONL(root, cutoff, func(path string, offset int64, line []byte) error {
 		sessionID := filepath.Base(filepath.Dir(path))
 		event, ok := ParseCopilotLine(line, SourceSessionFiles, eventID(ProviderCopilot, path, offset), sessionID)
 		if !ok {
 			return nil
 		}
-		return s.RecordUsage(event)
+		b.addEvent(event)
+		return nil
 	})
 }
 
