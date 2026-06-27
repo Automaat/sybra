@@ -76,6 +76,8 @@ func run(args []string) int {
 		return cmdCreate(store, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
+	case "umbrella":
+		return cmdUmbrella(store, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, rest, jsonOut)
 	case "delete":
@@ -1463,6 +1465,10 @@ Commands:
            so review/testing/PR steps can run on a different provider.
            Required for --stage review|testing|pr; optional for implement/ready-pr.
            --status STATUS creates the task directly in that status without workflow dispatch
+  umbrella <issue-url> [--model M]
+           Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
+           plus one blocked child per sub-issue, with dependency edges extracted by an
+           LLM planner. Re-running only materializes sub-issues without an existing task.
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 

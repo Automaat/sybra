@@ -22,6 +22,9 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 			if a.workflowEngine != nil {
 				a.workflowEngine.ResumeStalled()
 			}
+			// Release umbrella child tasks whose dependencies have merged, so
+			// the normal dispatch picks them up like any todo task.
+			a.releaseUnblockedChildren()
 			// Recover in-progress tasks whose agent died — runs continuously,
 			// not just at startup, to catch agents that finished without
 			// advancing the workflow.

@@ -73,7 +73,7 @@ var FieldAllowedValues = map[string]map[string]bool{
 		"done": true, "cancelled": true,
 	},
 	"task.task_type": {
-		"normal": true, "debug": true, "research": true, "chat": true,
+		"normal": true, "debug": true, "research": true, "chat": true, "umbrella": true,
 	},
 	"pr.issue_kind": {
 		"conflict": true, "ci_failure": true, "comments": true, "ready_to_merge": true,
