@@ -53,8 +53,12 @@ const reviewSummaryQuery = `query($q: String!) {
             }
           }
         }
-        reviewThreads(first: 20) {
-          nodes { isResolved }
+        reviewThreads(first: 100) {
+          nodes {
+            id
+            isResolved
+            comments(last: 1) { nodes { author { login } } }
+          }
         }
         latestReviews(first: 10) {
           nodes { state author { login } }
