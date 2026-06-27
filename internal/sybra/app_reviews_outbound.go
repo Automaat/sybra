@@ -2,10 +2,14 @@ package sybra
 
 import (
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+const linkedPRDriftWindow = 10 * time.Minute
 
 // reconcilePRPhases recomputes the lifecycle phase of every outbound own-PR
 // task (status in-review/ready-review, not tag `review`) from the live
@@ -25,6 +29,10 @@ func (r *ReviewHandler) reconcilePRPhases(tasks []task.Task, monitoredPRs []gith
 
 	for i := range tasks {
 		t := &tasks[i]
+		if repaired := r.reactivateLinkedOwnPR(t, matchingPR(t, byNumber, byBranch) != nil); repaired != nil {
+			tasks[i] = *repaired
+			t = repaired
+		}
 		if !ownPRColumnTask(t) {
 			// Clear a stale phase left over from when the task was in review
 			// (e.g. it was moved back to in-progress or its PR closed) so the
@@ -35,10 +43,7 @@ func (r *ReviewHandler) reconcilePRPhases(tasks []task.Task, monitoredPRs []gith
 			continue
 		}
 
-		pr := byNumber[t.PRNumber]
-		if pr == nil {
-			pr = byBranch[t.Branch]
-		}
+		pr := matchingPR(t, byNumber, byBranch)
 		if pr == nil {
 			// PR not in the current summary yet (just opened / cache miss).
 			// Leave the existing phase untouched until it appears.
@@ -56,6 +61,53 @@ func (r *ReviewHandler) reconcilePRPhases(tasks []task.Task, monitoredPRs []gith
 			ActionableCount:  pr.ActionableCount,
 		}))
 	}
+}
+
+func matchingPR(t *task.Task, byNumber map[int]*github.PullRequest, byBranch map[string]*github.PullRequest) *github.PullRequest {
+	if t == nil {
+		return nil
+	}
+	pr := byNumber[t.PRNumber]
+	if pr == nil {
+		pr = byBranch[t.Branch]
+	}
+	return pr
+}
+
+func (r *ReviewHandler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
+	if !linkedOwnPRHumanRequiredDrift(t, livePR) {
+		return nil
+	}
+	updated, err := r.tasks.Update(t.ID, task.Update{
+		Status:       task.Ptr(task.StatusInReview),
+		StatusReason: task.Ptr(""),
+	})
+	if err != nil {
+		r.logger.Error("pr-monitor.reactivate-linked-pr", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+		return nil
+	}
+	r.logger.Info("pr-monitor.reactivate-linked-pr", "task_id", t.ID, "pr", t.PRNumber)
+	return &updated
+}
+
+func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
+	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+		return false
+	}
+	if !livePR || t.Status != task.StatusHumanRequired || t.PRNumber == 0 || strings.TrimSpace(t.StatusReason) != "" {
+		return false
+	}
+	if t.Workflow == nil {
+		return false
+	}
+	if t.Workflow.WorkflowID != "simple-task-pr" || string(t.Workflow.State) != "completed" || t.Workflow.CompletedAt == nil {
+		return false
+	}
+	completedAt := *t.Workflow.CompletedAt
+	if t.UpdatedAt.After(completedAt) {
+		return false
+	}
+	return completedAt.Sub(t.UpdatedAt) <= linkedPRDriftWindow
 }
 
 // ownPRColumnTask reports whether a task is one of the user's own PRs shown in

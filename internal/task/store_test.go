@@ -197,6 +197,9 @@ func TestStoreUpdate(t *testing.T) {
 	if updated.Body != "new body" {
 		t.Errorf("Body = %q, want %q", updated.Body, "new body")
 	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want after create time %v", updated.UpdatedAt, created.UpdatedAt)
+	}
 
 	// Verify persisted
 	reloaded, err := store.Get(created.ID)

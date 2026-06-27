@@ -4,10 +4,12 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // newOutboundTestHandler builds a ReviewHandler backed by a temp task store and
@@ -107,6 +109,161 @@ func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
 	}
 	if got.PRPhase != "" {
 		t.Errorf("stale PRPhase = %q, want cleared", got.PRPhase)
+	}
+}
+
+func TestLinkedOwnPRHumanRequiredDrift(t *testing.T) {
+	completedAt := time.Now().UTC()
+	ts := completedAt.Add(-time.Minute)
+	drifted := &task.Task{
+		Status:       task.StatusHumanRequired,
+		PRNumber:     42,
+		UpdatedAt:    ts,
+		StatusReason: "",
+		Workflow: &workflow.Execution{
+			WorkflowID:  "simple-task-pr",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &completedAt,
+		},
+	}
+	if !linkedOwnPRHumanRequiredDrift(drifted, true) {
+		t.Fatal("expected linked PR drift")
+	}
+}
+
+func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	completedAt := time.Now().UTC().Add(-500 * time.Millisecond)
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-pr",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &completedAt,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(""),
+		Workflow:     &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+}
+
+func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	reason := "testing infrastructure failed after retry"
+	now := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-pr",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &now,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: &reason,
+		Workflow:     &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+	if got.PRPhase != "" {
+		t.Errorf("phase = %q, want unchanged empty", got.PRPhase)
+	}
+}
+
+func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	completedAt := time.Now().UTC().Add(-5 * time.Minute)
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-pr",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &completedAt,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(""),
+		Workflow:     &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+}
+
+func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created := mkOwnPRTask(t, tasks, 42, nil)
+	now := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-pr",
+		State:       workflow.ExecCompleted,
+		CompletedAt: &now,
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(""),
+		Workflow:     &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcilePRPhases(all, nil)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
 	}
 }
 

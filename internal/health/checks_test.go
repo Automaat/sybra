@@ -231,6 +231,17 @@ func TestCheckStatusBounce(t *testing.T) {
 	}
 }
 
+func TestCheckStatusBounceSkipsExpectedHumanReviewHandoffs(t *testing.T) {
+	now := time.Now().UTC()
+	events := []audit.Event{
+		{Type: audit.EventTaskStatusChanged, TaskID: "t1", Timestamp: now, Data: map[string]any{"from": "todo", "to": "human-required", "human_kind": "review_manual"}},
+		{Type: audit.EventTaskStatusChanged, TaskID: "t1", Timestamp: now, Data: map[string]any{"from": "todo", "to": "human-required", "human_kind": "review_manual"}},
+	}
+	if got := checkStatusBounce(events, now); len(got) != 0 {
+		t.Fatalf("got %d findings, want 0", len(got))
+	}
+}
+
 func TestCheckCostDrift(t *testing.T) {
 	now := time.Now().UTC()
 

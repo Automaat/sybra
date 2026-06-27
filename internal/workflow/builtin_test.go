@@ -76,6 +76,41 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 }
 
+func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("require_plan_critique")
+	if step == nil {
+		t.Fatal("require_plan_critique step not found in simple-task-plan")
+	}
+	if !step.Config.AllowMissing {
+		t.Fatal("require_plan_critique must soft-fail when the critic produces no sidecar")
+	}
+	got, err := ResolveTransition(step.Next, map[string]string{
+		"vars.step.require_plan_critique.output": "plan critique missing — upstream agent step completed without writing its sidecar — skipped",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "review_plan" {
+		t.Fatalf("missing critique next = %q, want review_plan", got)
+	}
+}
+
 func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T) {
 	t.Parallel()
 
@@ -573,7 +608,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
 	}
-	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"}},"required":["verdict"],"additionalProperties":false}`
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"}},"required":["verdict","outcome","failures_markdown"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
 		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
 	}

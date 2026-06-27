@@ -623,19 +623,22 @@ func (a *Agent) isDetached() bool {
 	return a.detached
 }
 
-// hasTerminalResult reports whether the output buffer contains a
-// non-error result event — the signal that a headless run completed its
-// work. Used by reattach completion to distinguish a clean finish from a
-// process that vanished mid-run.
-func (a *Agent) hasTerminalResult() bool {
+// lastHeadlessResult reports whether the output buffer contains a terminal
+// result event and whether that result was a provider error. Used by reattach
+// completion to distinguish a clean finish from an error result or a process
+// that vanished mid-run.
+func (a *Agent) lastHeadlessResult() (found, isError bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	for i := range a.outputBuffer {
-		if a.outputBuffer[i].Type == "result" && a.outputBuffer[i].Subtype != "error" {
-			return true
-		}
+	return lastHeadlessResultEvent(a.outputBuffer)
+}
+
+func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
+	for i := range slices.Backward(events) {
+		e := events[i]
+		return e.Type == "result", e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
 	}
-	return false
+	return false, false
 }
 
 // lastConvoResult reports whether a terminal result event was observed in
