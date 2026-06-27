@@ -102,6 +102,56 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	}
 }
 
+func TestTrackerRollup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		st              umbrellaState
+		cyclic, settled bool
+		want            task.Status
+		wantClose       bool
+	}{
+		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
+		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
+		{"cancelled child", umbrellaState{total: 2, anyCancelled: true}, false, true, task.StatusHumanRequired, false},
+		{"all done", umbrellaState{total: 2, doneCount: 2}, false, true, task.StatusDone, true},
+		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
+		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},
+		{"zero children not settled holds", umbrellaState{total: 0}, false, false, task.StatusInProgress, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			st := tt.st
+			got, _, doClose := trackerRollup(&st, tt.cyclic, tt.settled)
+			if got != tt.want || doClose != tt.wantClose {
+				t.Fatalf("trackerRollup = (%q, close=%v), want (%q, close=%v)", got, doClose, tt.want, tt.wantClose)
+			}
+		})
+	}
+}
+
+func TestReleaseUnblockedChildren_EmptyTrackerHeldUntilSettled(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	closes := 0
+	app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	// Tracker with no children, created just now → not yet settled.
+	tracker := mkTracker(t, m, umb, 5)
+
+	app.releaseUnblockedChildren()
+
+	// A freshly-created childless tracker must not be closed — its children may
+	// still be materializing in the same expansion.
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress until settled", got)
+	}
+	if closes != 0 {
+		t.Fatalf("childless tracker closed %d times before settling", closes)
+	}
+}
+
 func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
