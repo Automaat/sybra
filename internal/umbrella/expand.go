@@ -20,6 +20,14 @@ const PlannerTimeout = 5 * time.Minute
 // wedge the caller (notably the issue poll loop).
 const FetchTimeout = 60 * time.Second
 
+// fetchUmbrellaBounded fetches the umbrella under FetchTimeout, releasing the
+// timer as soon as the fetch returns (defer right after WithTimeout).
+func fetchUmbrellaBounded(ctx context.Context, repo string, number int) (umbrella github.Issue, subs []github.Issue, err error) {
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	return github.FetchUmbrella(fctx, repo, number)
+}
+
 // Result summarizes an expansion.
 type Result struct {
 	UmbrellaURL string
@@ -39,9 +47,7 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
 	}
-	fctx, fcancel := context.WithTimeout(ctx, FetchTimeout)
-	umb, subs, err := github.FetchUmbrella(fctx, repo, number)
-	fcancel()
+	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch umbrella: %w", err)
 	}
