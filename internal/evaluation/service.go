@@ -153,26 +153,28 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		Overall:     Compute(recs, evts, since, now),
 		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
 		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
-		Notes:       deferredNotes,
+		ByAgentModel: CompareBy(recs, evts, since, now, 20, func(r stats.RunRecord) string {
+			if r.Provider == "" || r.Model == "" {
+				return ""
+			}
+			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
+		}),
+		ByVariant: CompareBy(recs, evts, since, now, 20, func(r stats.RunRecord) string {
+			if r.ExperimentID == "" || r.VariantID == "" {
+				return ""
+			}
+			return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+		}),
+		Notes: deferredNotes,
 	}
 	rep.Weaknesses = Weaknesses(rep)
 	return rep, nil
 }
 
-// reportCacheTTL bounds how stale an on-demand report may be. When the ticker
-// is disabled, nothing refreshes s.last, so GetEvaluationReport recomputes once
-// the cached report ages past this; when enabled, the ticker keeps it fresher.
-const reportCacheTTL = 5 * time.Minute
-
-// GetEvaluationReport returns the most recent report, recomputing on demand when
-// none exists or the cached one is stale. Bound over HTTP/Wails for the dashboard.
+// GetEvaluationReport computes a fresh report for the dashboard. Refresh must
+// reflect agent runs that just completed; returning the startup tick cache for a
+// TTL window makes manual checks and the Evaluation tab look empty/stale.
 func (s *Service) GetEvaluationReport() Report {
-	s.mu.RLock()
-	last := s.last
-	s.mu.RUnlock()
-	if last != nil && s.now().Sub(last.GeneratedAt) < reportCacheTTL {
-		return *last
-	}
 	rep, err := s.Scan(context.Background())
 	if err != nil {
 		s.logger.Warn("evaluation.ondemand.failed", "err", err)

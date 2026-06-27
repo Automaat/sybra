@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 	Watchdog      WatchdogConfig     `yaml:"watchdog" json:"watchdog"`
 	SelfMonitor   SelfMonitorConfig  `yaml:"self_monitor" json:"selfMonitor"`
 	Evaluation    EvaluationConfig   `yaml:"evaluation" json:"evaluation"`
+	ABTesting     abtest.Config      `yaml:"ab_testing" json:"abTesting"`
 	Providers     ProvidersConfig    `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig      `yaml:"metrics" json:"metrics"`
 	ProjectTypes  []string           `yaml:"project_types" json:"projectTypes"`
@@ -530,6 +532,7 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			LoopThreshold: 6,
 		},
+		ABTesting: abtest.DefaultConfig(),
 		Providers: ProvidersConfig{
 			HealthCheck: ProviderHealthCheckConfig{
 				Enabled:         true,
@@ -663,9 +666,26 @@ func Load() (*Config, error) {
 	applyWatchdogDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
+	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 
 	return cfg, nil
+}
+
+func applyABTestingDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	def := abtest.DefaultConfig()
+	if cfg.ABTesting.Enabled == nil {
+		cfg.ABTesting.Enabled = def.Enabled
+	}
+	if cfg.ABTesting.MinSamplesPerVariant <= 0 {
+		cfg.ABTesting.MinSamplesPerVariant = def.MinSamplesPerVariant
+	}
+	if len(cfg.ABTesting.Experiments) == 0 {
+		cfg.ABTesting.Experiments = def.Experiments
+	}
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and

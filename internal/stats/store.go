@@ -171,6 +171,7 @@ func summarize(runs []RunRecord) Summary {
 		s.TotalCacheCreationInputTokens += runs[i].CacheCreationInputTokens
 		s.TotalCacheReadInputTokens += runs[i].CacheReadInputTokens
 		s.TotalReasoningTokens += runs[i].ReasoningTokens
+		s.TotalPremiumRequests += runs[i].PremiumRequests
 	}
 	s.AvgCostPerRun = s.TotalCostUSD / float64(s.TotalRuns)
 	s.AvgDurationS = s.TotalDurationS / float64(s.TotalRuns)

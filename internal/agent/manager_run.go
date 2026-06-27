@@ -19,6 +19,13 @@ func (m *Manager) StartAgent(taskID, taskTitle, mode, prompt, dir string, allowe
 	return m.Run(RunConfig{TaskID: taskID, Name: taskTitle, Mode: mode, Prompt: prompt, AllowedTools: allowedTools, Dir: dir})
 }
 
+func (a *Agent) setAssignment(cfg RunConfig) {
+	a.ExperimentID = cfg.ExperimentID
+	a.VariantID = cfg.VariantID
+	a.AssignmentUnit = cfg.AssignmentUnit
+	a.AssignmentKey = cfg.AssignmentKey
+}
+
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	// Hard guard: every agent must run in an explicit, existing directory.
 	// An empty Dir means the spawned process inherits Sybra's cwd, which in
@@ -94,6 +101,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	if cfg.Mode == "headless" {
 		a.escalationCh = make(chan bool, 1)
 	}
+	a.setAssignment(cfg)
 	// Pre-mark detached so a shutdown racing the runner goroutine already
 	// knows to leave this agent's record alive. Headless and interactive
 	// Claude survive as detached processes; codex interactive has no
@@ -284,6 +292,14 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 		return g == nil || g.IsHealthy(p)
 	}
 	if g != nil && !g.IsHealthy(resolved) {
+		if cfg.DisableProviderFailover {
+			reason := g.Reason(resolved)
+			metrics.AgentGated(resolved, reason)
+			return "", &provider.UnhealthyError{
+				Provider: resolved,
+				Reason:   reason,
+			}
+		}
 		if alt := g.Failover(resolved); alt != "" {
 			metrics.AgentFailover(resolved, alt)
 			m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
@@ -301,7 +317,7 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 		return resolved, nil
 	}
 	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
-		if lp.PreferUnderused {
+		if lp.PreferUnderused && !cfg.DisableProviderFailover {
 			if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
 				metrics.AgentFailover(resolved, alt)
 				m.logger.Info("agent.run.limit_select", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", altReason)
@@ -309,10 +325,17 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 			}
 		}
 		return resolved, nil
-	} else if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
-		metrics.AgentFailover(resolved, alt)
-		m.logger.Warn("agent.run.limit_failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", reason, "alt_reason", altReason)
-		return alt, nil
+	} else if !cfg.DisableProviderFailover {
+		if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
+			metrics.AgentFailover(resolved, alt)
+			m.logger.Warn("agent.run.limit_failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", reason, "alt_reason", altReason)
+			return alt, nil
+		}
+		metrics.AgentGated(resolved, reason)
+		return "", &provider.UnhealthyError{
+			Provider: resolved,
+			Reason:   reason,
+		}
 	} else {
 		metrics.AgentGated(resolved, reason)
 		return "", &provider.UnhealthyError{
@@ -350,7 +373,7 @@ func normalizeProvider(name string) string {
 // in the installed Copilot binary's registry. If a user's Copilot plan lacks
 // this slug, `copilot --model` errors at exec time — pin a newer slug or
 // "auto" here when that happens.
-const copilotDefaultModel = "gpt-5.4"
+const copilotDefaultModel = "gpt-5.5"
 
 func normalizeModel(prov, model string) string {
 	switch normalizeProvider(prov) {
@@ -368,7 +391,7 @@ func normalizeModel(prov, model string) string {
 	case "copilot":
 		// The provider-agnostic short aliases (and the empty default the chat
 		// path passes) map to the latest GPT. Full Copilot slugs
-		// (claude-sonnet-4.6, gpt-5.3-codex, gemini-3-pro-preview, …) selected
+		// (claude-opus-4.6, gpt-5.5, gemini-3.1-pro-preview, …) selected
 		// in the model picker pass through untouched.
 		switch strings.TrimSpace(model) {
 		case "", "sonnet", "opus", "haiku", "fable":

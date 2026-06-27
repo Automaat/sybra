@@ -60,6 +60,11 @@ export class RunRecord {
     "role": string;
     "model"?: string;
     "provider"?: string;
+    "reasoningEffort"?: string;
+    "experimentId"?: string;
+    "variantId"?: string;
+    "assignmentUnit"?: string;
+    "assignmentKey"?: string;
     "costUsd": number;
     "durationS": number;
     "inputTokens"?: number;
@@ -67,6 +72,7 @@ export class RunRecord {
     "cacheCreationInputTokens"?: number;
     "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
+    "premiumRequests"?: number;
 
     /**
      * TurnCount and ToolCalls capture per-run effort so the evaluation
@@ -244,6 +250,7 @@ export class Summary {
     "totalCacheCreationInputTokens"?: number;
     "totalCacheReadInputTokens"?: number;
     "totalReasoningTokens"?: number;
+    "totalPremiumRequests"?: number;
 
     /** Creates a new Summary instance. */
     constructor($$source: Partial<Summary> = {}) {

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/abtest"
 )
 
 // TestParallelValidation_Rejects covers the model.Validate guard rails for
@@ -193,6 +195,52 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 			if c.AgentID == "" {
 				t.Errorf("child %q has empty AgentID", id)
 			}
+		}
+	}
+}
+
+func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	def := Definition{
+		ID:      "ab-parallel",
+		Trigger: Trigger{On: "manual"},
+		Steps: []Step{{
+			ID:   "implement_both",
+			Type: StepParallel,
+			Parallel: []Step{
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "a"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "b"}},
+			},
+		}},
+	}
+	if err := store.Save(def); err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+		ID:             "exp",
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Variants:       []abtest.Variant{{ID: "opus", Provider: "claude", Model: "opus", Weight: 1}},
+	}}})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+
+	if err := engine.StartWorkflow("t1", "ab-parallel"); err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	if got := agents.CallCount(); got != 2 {
+		t.Fatalf("StartAgent calls = %d, want 2", got)
+	}
+	for _, c := range agents.calls {
+		if c.Provider != "claude" || c.Model != "opus" || c.Assignment.ExperimentID != "exp" || c.Assignment.VariantID != "opus" {
+			t.Fatalf("parallel child call missing AB assignment: %+v", c)
 		}
 	}
 }

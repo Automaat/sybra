@@ -69,14 +69,15 @@ func fetchCodexModels() []CodexModel {
 // unavailable on the user's plan.
 func (s *InfoService) GetCopilotModels() []CopilotModel {
 	return []CopilotModel{
-		{Slug: "", DisplayName: "Default (GPT-5.4)"},
+		{Slug: "", DisplayName: "Default (GPT-5.5)"},
+		{Slug: "gpt-5.5", DisplayName: "GPT-5.5"},
 		{Slug: "gpt-5.4", DisplayName: "GPT-5.4"},
 		{Slug: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},
 		{Slug: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex"},
 		{Slug: "claude-opus-4.6", DisplayName: "Claude Opus 4.6"},
 		{Slug: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6"},
 		{Slug: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5"},
-		{Slug: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro"},
+		{Slug: "gemini-3.1-pro-preview", DisplayName: "Gemini 3.1 Pro"},
 		{Slug: "auto", DisplayName: "Auto"},
 	}
 }

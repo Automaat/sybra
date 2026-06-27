@@ -40,7 +40,7 @@ type ClaudeResult struct {
 	// PremiumRequests is Copilot's billing unit (AI credits), mapped from the
 	// result event's `usage.premiumRequests`. Copilot reports no USD cost.
 	// Always 0 for claude/codex.
-	PremiumRequests int
+	PremiumRequests float64
 }
 
 // ClaudeEvent is the shared envelope for all Claude stream-json events.
@@ -198,7 +198,7 @@ type copilotToolResult struct {
 }
 
 type copilotUsage struct {
-	PremiumRequests int `json:"premiumRequests"`
+	PremiumRequests float64 `json:"premiumRequests"`
 }
 
 // ParseCopilotLine parses one line of GitHub Copilot CLI stream-json output.

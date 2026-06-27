@@ -61,6 +61,125 @@ export class Breakdown {
 }
 
 /**
+ * ComparisonBreakdown compares agent/model or experiment variants on the
+ * speed, quality, and cost signals Sybra already records.
+ */
+export class ComparisonBreakdown {
+    "key": string;
+    "provider"?: string;
+    "model"?: string;
+    "role"?: string;
+    "reasoningEffort"?: string;
+    "experimentId"?: string;
+    "variantId"?: string;
+    "runs": number;
+    "failures": number;
+    "failureRate": number;
+    "landed": number;
+    "merged": number;
+    "mergedWithEdits": number;
+    "closed": number;
+    "mergeRate": number;
+    "mergedWithEditsRate": number;
+    "ciFirstPassRate": number;
+    "reworkRate": number;
+    "revertRate": number;
+    "durationP50S": number;
+    "durationP90S": number;
+    "totalCostUsd": number;
+    "costPerLanded": number;
+    "premiumRequests": number;
+    "premiumRequestsPerLanded": number;
+    "turnsPerLanded": number;
+    "toolsPerLanded": number;
+    "insufficientData": boolean;
+    "qualityAttributionLimited": boolean;
+
+    /** Creates a new ComparisonBreakdown instance. */
+    constructor($$source: Partial<ComparisonBreakdown> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("runs" in $$source)) {
+            this["runs"] = 0;
+        }
+        if (!("failures" in $$source)) {
+            this["failures"] = 0;
+        }
+        if (!("failureRate" in $$source)) {
+            this["failureRate"] = 0;
+        }
+        if (!("landed" in $$source)) {
+            this["landed"] = 0;
+        }
+        if (!("merged" in $$source)) {
+            this["merged"] = 0;
+        }
+        if (!("mergedWithEdits" in $$source)) {
+            this["mergedWithEdits"] = 0;
+        }
+        if (!("closed" in $$source)) {
+            this["closed"] = 0;
+        }
+        if (!("mergeRate" in $$source)) {
+            this["mergeRate"] = 0;
+        }
+        if (!("mergedWithEditsRate" in $$source)) {
+            this["mergedWithEditsRate"] = 0;
+        }
+        if (!("ciFirstPassRate" in $$source)) {
+            this["ciFirstPassRate"] = 0;
+        }
+        if (!("reworkRate" in $$source)) {
+            this["reworkRate"] = 0;
+        }
+        if (!("revertRate" in $$source)) {
+            this["revertRate"] = 0;
+        }
+        if (!("durationP50S" in $$source)) {
+            this["durationP50S"] = 0;
+        }
+        if (!("durationP90S" in $$source)) {
+            this["durationP90S"] = 0;
+        }
+        if (!("totalCostUsd" in $$source)) {
+            this["totalCostUsd"] = 0;
+        }
+        if (!("costPerLanded" in $$source)) {
+            this["costPerLanded"] = 0;
+        }
+        if (!("premiumRequests" in $$source)) {
+            this["premiumRequests"] = 0;
+        }
+        if (!("premiumRequestsPerLanded" in $$source)) {
+            this["premiumRequestsPerLanded"] = 0;
+        }
+        if (!("turnsPerLanded" in $$source)) {
+            this["turnsPerLanded"] = 0;
+        }
+        if (!("toolsPerLanded" in $$source)) {
+            this["toolsPerLanded"] = 0;
+        }
+        if (!("insufficientData" in $$source)) {
+            this["insufficientData"] = false;
+        }
+        if (!("qualityAttributionLimited" in $$source)) {
+            this["qualityAttributionLimited"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ComparisonBreakdown instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ComparisonBreakdown {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
+    }
+}
+
+/**
  * PhaseReport is the per-phase lifecycle-duration breakdown over a window.
  */
 export class PhaseReport {
@@ -166,6 +285,8 @@ export class Report {
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
+    "byAgentModel"?: ComparisonBreakdown[];
+    "byVariant"?: ComparisonBreakdown[];
     "weaknesses"?: Weakness[];
     "notes"?: string[];
 
@@ -195,7 +316,9 @@ export class Report {
         const $$createField4_0 = $$createType6;
         const $$createField5_0 = $$createType6;
         const $$createField6_0 = $$createType8;
-        const $$createField7_0 = $$createType9;
+        const $$createField7_0 = $$createType8;
+        const $$createField8_0 = $$createType10;
+        const $$createField9_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -206,11 +329,17 @@ export class Report {
         if ("byRole" in $$parsedSource) {
             $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
         }
+        if ("byAgentModel" in $$parsedSource) {
+            $$parsedSource["byAgentModel"] = $$createField6_0($$parsedSource["byAgentModel"]);
+        }
+        if ("byVariant" in $$parsedSource) {
+            $$parsedSource["byVariant"] = $$createField7_0($$parsedSource["byVariant"]);
+        }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField6_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField8_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField7_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField9_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -421,7 +550,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType10;
+        const $$createField2_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -478,7 +607,9 @@ const $$createType3 = $Create.Array($$createType2);
 const $$createType4 = Scorecard.createFrom;
 const $$createType5 = Breakdown.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = Weakness.createFrom;
+const $$createType7 = ComparisonBreakdown.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $Create.Array($Create.Any);
-const $$createType10 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = Weakness.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = $Create.Array($Create.Any);
+const $$createType12 = $Create.Map($Create.Any, $Create.Any);

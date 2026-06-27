@@ -21,6 +21,17 @@ export class AgentRun {
     "role": string;
     "mode": string;
     "provider"?: string;
+    "model"?: string;
+
+    /**
+     * ExperimentID/VariantID capture deterministic A/B assignment selected
+     * before the run started.
+     */
+    "experimentId"?: string;
+    "variantId"?: string;
+    "assignmentUnit"?: string;
+    "assignmentKey"?: string;
+    "reasoningEffort"?: string;
     "state": string;
     "startedAt": time$0.Time;
     "costUsd": number;

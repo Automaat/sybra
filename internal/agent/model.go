@@ -47,7 +47,7 @@ type Agent struct {
 	// PremiumRequests is Copilot's billing unit (AI credits). Copilot reports
 	// no USD cost, so this is the usage signal surfaced for copilot agents;
 	// always 0 for claude/codex.
-	PremiumRequests int       `json:"premiumRequests,omitempty"`
+	PremiumRequests float64   `json:"premiumRequests,omitempty"`
 	StartedAt       time.Time `json:"startedAt"`
 	LastEventAt     time.Time `json:"lastEventAt"`
 	LogPath         string    `json:"logPath,omitempty"`
@@ -58,6 +58,10 @@ type Agent struct {
 	Project         string    `json:"project,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
 	Model           string    `json:"model,omitempty"`
+	ExperimentID    string    `json:"experimentId,omitempty"`
+	VariantID       string    `json:"variantId,omitempty"`
+	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey   string    `json:"assignmentKey,omitempty"`
 	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
 	Prompt          string    `json:"prompt,omitempty"`
 
@@ -328,7 +332,7 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 // AddPremiumRequests merges Copilot premium-request usage into the totals.
 // Copilot reports usage in premium requests (AI credits) rather than USD;
 // claude/codex never call this (their result events carry no such field).
-func (a *Agent) AddPremiumRequests(n int) {
+func (a *Agent) AddPremiumRequests(n float64) {
 	a.mu.Lock()
 	a.PremiumRequests += n
 	a.mu.Unlock()
@@ -345,7 +349,7 @@ func (a *Agent) AddOutputTokens(n int) {
 }
 
 // GetPremiumRequests returns the cumulative Copilot premium-request count.
-func (a *Agent) GetPremiumRequests() int {
+func (a *Agent) GetPremiumRequests() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.PremiumRequests
@@ -684,6 +688,10 @@ type RunConfig struct {
 	Dir                string
 	Provider           string // "claude", "codex", or "copilot"
 	Model              string // "opus", "sonnet", or full model ID
+	ExperimentID       string
+	VariantID          string
+	AssignmentUnit     string
+	AssignmentKey      string
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
 	Effort             string // "low", "medium", "high", "max" (extended thinking)
@@ -701,6 +709,10 @@ type RunConfig struct {
 	// and system-critical sessions; user-initiated runs leave this false so
 	// they surface a clear error instead of wasting a hopeless request.
 	IgnoreHealthGate bool
+	// DisableProviderFailover keeps provider selection fixed for A/B variants:
+	// an unhealthy/limited provider fails the run instead of silently becoming a
+	// different provider while retaining stale variant attribution.
+	DisableProviderFailover bool
 	// ResumeSessionID, when set, passes --resume to the claude CLI so the
 	// agent continues a prior conversation instead of starting from scratch.
 	// Populated from the task's last AgentRun.SessionID on restart.
@@ -782,7 +794,7 @@ type StreamEvent struct {
 	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
 	// PremiumRequests is Copilot's per-result billing-unit count (result event)
 	// or 0 for claude/codex.
-	PremiumRequests int       `json:"premium_requests,omitempty"`
+	PremiumRequests float64   `json:"premium_requests,omitempty"`
 	Subtype         string    `json:"subtype,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
 	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
@@ -828,7 +840,7 @@ type ConvoEvent struct {
 	CacheCreationInputTokens int               `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int               `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int               `json:"reasoningTokens,omitempty"`
-	PremiumRequests          int               `json:"premiumRequests,omitempty"`
+	PremiumRequests          float64           `json:"premiumRequests,omitempty"`
 	LimitSnapshot            *limits.Snapshot  `json:"limitSnapshot,omitempty"`
 	IsPartial                bool              `json:"isPartial,omitempty"`
 	Timestamp                time.Time         `json:"timestamp"`

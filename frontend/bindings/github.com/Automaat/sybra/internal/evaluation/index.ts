@@ -3,6 +3,7 @@
 
 export {
     Breakdown,
+    ComparisonBreakdown,
     PhaseReport,
     PhaseStat,
     Report,

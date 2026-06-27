@@ -122,6 +122,7 @@ func TestParseCopilotLine_Result(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
 	}
+
 	if ev.Type != "result" {
 		t.Fatalf("Type = %q, want result", ev.Type)
 	}
@@ -130,6 +131,17 @@ func TestParseCopilotLine_Result(t *testing.T) {
 	}
 	if ev.Result == nil || ev.Result.PremiumRequests != 1 {
 		t.Errorf("PremiumRequests = %v, want 1", ev.Result)
+	}
+}
+
+func TestParseCopilotLine_ResultFractionalPremiumRequests(t *testing.T) {
+	line := []byte(`{"type":"result","sessionId":"s1","exitCode":0,"usage":{"premiumRequests":7.5}}`)
+	ev, err := ParseCopilotLine(line)
+	if err != nil {
+		t.Fatalf("ParseCopilotLine: %v", err)
+	}
+	if ev.Result == nil || ev.Result.PremiumRequests != 7.5 {
+		t.Fatalf("PremiumRequests = %+v, want 7.5", ev.Result)
 	}
 }
 
@@ -221,7 +233,7 @@ func TestCopilotEventToStreamEvent(t *testing.T) {
 					t.Errorf("SessionID = %q, want s1", ev.SessionID)
 				}
 				if ev.PremiumRequests != 2 {
-					t.Errorf("PremiumRequests = %d, want 2", ev.PremiumRequests)
+					t.Errorf("PremiumRequests = %v, want 2", ev.PremiumRequests)
 				}
 			},
 		},

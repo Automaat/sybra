@@ -145,6 +145,7 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.cfg.Triage = next.Triage
 	s.cfg.Monitor = next.Monitor
 	s.cfg.SelfMonitor = next.SelfMonitor
+	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
 	s.cfg.ProjectTypes = next.ProjectTypes
 
