@@ -501,7 +501,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 		return false
 	}()
 	if !panicked {
-		t.Log("no panic — agent manager must have been non-nil; check test setup")
+		t.Fatal("expected spawn attempt; gate must not block when Verdict is set but VerdictRendered is false (crash window)")
 	}
 }
 
@@ -584,9 +584,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 		return false
 	}()
 	if !panicked {
-		// If agents wasn't nil we'd check h.inflight; in tests it panics on
-		// agents.Run, confirming the gate let it through.
-		t.Log("no panic — agent manager must have been non-nil; check test setup")
+		t.Fatal("expected spawn attempt; gate must not block a run with no verdict (agent killed mid-run)")
 	}
 }
 

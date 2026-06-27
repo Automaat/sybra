@@ -288,7 +288,12 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	newTask, err := h.tasks.Create(title, body, task.AgentModeHeadless)
 	if err != nil {
 		h.logger.Error("human-review.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
-		h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", summary+"\n\nError: "+err.Error())
+		// The diagnosis note IS the durable artifact here; mark rendered so a
+		// restart does not re-spawn the reviewer and duplicate it (the local
+		// task creation failing does not undo the appended note).
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", summary+"\n\nError: "+err.Error()) {
+			h.markVerdictRendered(taskID, agentID)
+		}
 		return
 	}
 	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
