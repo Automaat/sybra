@@ -115,6 +115,7 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 		"--title", "compact task",
 		"--body", "body text",
 		"--plan", "# Execution Plan\n",
+		"--plan-contract", `{"task_id":"compact","verification":[{"command":"go test ./...","expected":"passes"}]}`,
 		"--plan-critique", "# Critique\n",
 		"--plan-research", "# Research\n",
 		"--plan-decisions", "# Decisions\n",
@@ -130,7 +131,7 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("get exit %d: %s", code, out)
 	}
-	for _, want := range []string{"## Plan", "## Plan Critique", "## Plan Research", "## Plan Decisions", "## Plan Brief"} {
+	for _, want := range []string{"## Plan", "## Plan Contract", "## Plan Critique", "## Plan Research", "## Plan Decisions", "## Plan Brief"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("full get missing %q in output:\n%s", want, out)
 		}
@@ -142,6 +143,9 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	}
 	if !strings.Contains(out, "## Plan") {
 		t.Fatalf("compact get missing execution plan:\n%s", out)
+	}
+	if !strings.Contains(out, "## Plan Contract") {
+		t.Fatalf("compact get missing executable plan contract:\n%s", out)
 	}
 	for _, forbidden := range []string{"## Plan Critique", "## Plan Research", "## Plan Decisions", "## Plan Brief"} {
 		if strings.Contains(out, forbidden) {
@@ -157,6 +161,9 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	mustUnmarshal(t, out, &got)
 	if got.Plan == "" {
 		t.Fatal("compact json get cleared execution plan")
+	}
+	if got.PlanContract == "" {
+		t.Fatal("compact json get cleared executable plan contract")
 	}
 	if got.PlanCritique != "" || got.PlanResearch != "" || got.PlanDecisions != "" || got.PlanBrief != "" {
 		t.Fatalf("compact json get leaked planning support: %+v", got)

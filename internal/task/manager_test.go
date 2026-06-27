@@ -1,6 +1,8 @@
 package task
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -161,6 +163,38 @@ func TestManagerAddRunEmitsUpdated(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 || got.AgentRuns[0].AgentID != "a1" {
 		t.Fatalf("AgentRuns = %+v", got.AgentRuns)
+	}
+}
+
+func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	created, err := m.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	contractPath := filepath.Join(m.store.dir, created.ID+".plan-contract.json")
+	contract := `{"task_id":"` + created.ID + `"}`
+	if err := os.WriteFile(contractPath, []byte(contract), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+
+	m.OnExternalUpdate(contractPath)
+
+	tasks, err := m.List()
+	if err != nil {
+		t.Fatalf("list after external update: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].PlanContract != contract {
+		t.Fatalf("PlanContract = %q, want %q", tasks[0].PlanContract, contract)
 	}
 }
 

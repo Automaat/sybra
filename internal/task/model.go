@@ -326,9 +326,11 @@ type Task struct {
 
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`
+	PlanContract string `yaml:"-" json:"planContract,omitempty"`
 	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
-	// Planning support sidecars. Plan remains the compact execution contract
-	// consumed by implementation agents; these hold review/evidence material.
+	// Planning sidecars. Plan is the human-readable compact plan; PlanContract
+	// is the machine-validated JSON contract consumed by implementation agents.
+	// The remaining sidecars hold review/evidence material.
 	PlanResearch  string `yaml:"-" json:"planResearch,omitempty"`
 	PlanDecisions string `yaml:"-" json:"planDecisions,omitempty"`
 	PlanBrief     string `yaml:"-" json:"planBrief,omitempty"`

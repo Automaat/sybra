@@ -999,6 +999,43 @@ func TestStoreListInvalidatePathRefreshesSidecar(t *testing.T) {
 	}
 }
 
+func TestStoreListInvalidatePathRefreshesJSONSidecar(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.List(); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	contractPath := filepath.Join(dir, created.ID+".plan-contract.json")
+	contract := `{"task_id":"` + created.ID + `"}`
+	if err := os.WriteFile(contractPath, []byte(contract), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+
+	store.InvalidatePath(contractPath)
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("list after invalidate: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].PlanContract != contract {
+		t.Fatalf("PlanContract = %q, want %q", tasks[0].PlanContract, contract)
+	}
+}
+
 func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())

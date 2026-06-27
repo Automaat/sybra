@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,32 @@ func TestImportSidecar_MissingFileIsLoggedNotFatal(t *testing.T) {
 	got, _ := tasks.GetTask("t1")
 	if got.CodeReview != "" {
 		t.Errorf("CodeReview = %q, want empty (require_sidecar should surface)", got.CodeReview)
+	}
+}
+
+func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar",
+			CurrentStep: "plan",
+			Variables:   map[string]string{"contract_path": filepath.Join(t.TempDir(), "missing.json")},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "plan", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "required plan contract sidecar missing after step plan") {
+		t.Fatalf("reason = %q, want required sidecar missing", reason)
 	}
 }
 
@@ -131,6 +158,7 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 	decisions := "# Decisions\n"
 	plan := "# Execution Plan\n"
 	brief := "# Final Brief\n"
+	contract := validPlanContract("t1")
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -143,6 +171,7 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 				"decisions_path": write("decisions.md", decisions),
 				"plan_path":      write("plan.md", plan),
 				"brief_path":     write("brief.md", brief),
+				"contract_path":  write("contract.json", contract),
 			},
 		},
 	})
@@ -163,5 +192,8 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 	}
 	if got.PlanBrief != brief {
 		t.Errorf("PlanBrief = %q, want %q", got.PlanBrief, brief)
+	}
+	if got.PlanContract != contract {
+		t.Errorf("PlanContract = %q, want %q", got.PlanContract, contract)
 	}
 }

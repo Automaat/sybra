@@ -248,6 +248,14 @@ export class ImportSidecar {
      */
     "from": string;
 
+    /**
+     * Required flips the task to human-required when the imported file is
+     * missing or empty. Existing optional sidecars keep the old log-only
+     * behavior; new mandatory artifacts can fail closed without blocking
+     * markdown-only migration tasks that never ran the producing step.
+     */
+    "required"?: boolean;
+
     /** Creates a new ImportSidecar instance. */
     constructor($$source: Partial<ImportSidecar> = {}) {
         if (!("kind" in $$source)) {
@@ -649,6 +657,7 @@ export enum StepType {
     StepEvaluate = "evaluate",
     StepRequireSidecar = "require_sidecar",
     StepValidatePlan = "validate_plan",
+    StepValidatePlanContract = "validate_plan_contract",
     StepTriageReview = "triage_review",
 
     /**

@@ -249,6 +249,8 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	switch kind {
 	case "plan":
 		t.Plan = content
+	case "plan_contract":
+		t.PlanContract = content
 	case "code_review":
 		t.CodeReview = content
 	case "plan_critique":

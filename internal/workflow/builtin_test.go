@@ -113,7 +113,8 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 		{"require_plan_decisions_after_address", "require_plan_brief_after_address"},
 		{"require_plan_brief_after_address", "require_plan_research_after_address"},
 		{"require_plan_research_after_address", "validate_plan_refs_after_address"},
-		{"validate_plan_refs_after_address", "review_plan"},
+		{"validate_plan_refs_after_address", "validate_plan_contract_after_address"},
+		{"validate_plan_contract_after_address", "review_plan"},
 	}
 	for _, c := range chain {
 		step := simple.StepByID(c.step)
