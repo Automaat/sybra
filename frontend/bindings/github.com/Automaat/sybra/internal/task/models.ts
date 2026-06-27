@@ -33,6 +33,14 @@ export class AgentRun {
      * it survives Result truncation.
      */
     "verdict"?: string;
+
+    /**
+     * VerdictRendered is set to true after onComplete has successfully applied
+     * all side-effects for this run (note appended, issue filed, local task
+     * created). Used by verdictAlreadyRendered as the durable rendered-marker
+     * instead of body-text patterns which can collide with user content.
+     */
+    "verdictRendered"?: boolean;
     "logFile": string;
     "sessionId"?: string;
 

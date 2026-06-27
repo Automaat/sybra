@@ -185,9 +185,14 @@ type AgentRun struct {
 	// Verdict holds the parsed decision for human-review runs ("human" or
 	// "sybra_bug"). Extracted from live agent output at completion time so
 	// it survives Result truncation.
-	Verdict   string `yaml:"verdict,omitempty" json:"verdict,omitempty"`
-	LogFile   string `yaml:"log_file,omitempty" json:"logFile"`
-	SessionID string `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
+	Verdict string `yaml:"verdict,omitempty" json:"verdict,omitempty"`
+	// VerdictRendered is set to true after onComplete has successfully applied
+	// all side-effects for this run (note appended, issue filed, local task
+	// created). Used by verdictAlreadyRendered as the durable rendered-marker
+	// instead of body-text patterns which can collide with user content.
+	VerdictRendered bool   `yaml:"verdict_rendered,omitempty" json:"verdictRendered,omitempty"`
+	LogFile         string `yaml:"log_file,omitempty" json:"logFile"`
+	SessionID       string `yaml:"session_id,omitempty" json:"sessionId,omitempty"`
 	// HeadSHA is the worktree HEAD commit at this run's completion — what the
 	// agent left on the branch. Compared against the merged PR head to detect
 	// human edits after the agent (merged_with_edits) and measure edit distance.

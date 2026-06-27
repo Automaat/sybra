@@ -142,6 +142,12 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return
 	}
+	// Idempotency gate: a prior run already produced a verdict — re-spawning
+	// on app restart or repeated status hooks would just duplicate the diagnosis.
+	if verdictAlreadyRendered(t) {
+		h.skip(taskID, "verdict_rendered")
+		return
+	}
 	// Work-Data Confidentiality: if the task's project is work-typed, the
 	// review still runs (we want the diagnosis) but the prompt is augmented
 	// with redaction instructions and the verdict is routed to a local
@@ -224,7 +230,9 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	v, parseErr := parseVerdict(final)
 	if parseErr != nil {
 		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
-		h.appendNote(taskID, "Auto-review (unparseable verdict)", final)
+		if h.appendNote(taskID, "Auto-review (unparseable verdict)", final) {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
 		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{"decision": "unparseable"})
 		return
 	}
@@ -234,7 +242,9 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 
 	switch v.Decision {
 	case "human":
-		h.appendNote(taskID, "Auto-review verdict: needs human", v.Summary)
+		if h.appendNote(taskID, "Auto-review verdict: needs human", v.Summary) {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
 	case "sybra_bug":
 		// Re-check work context at completion time so a project re-typed
 		// during the review run still routes correctly.
@@ -251,7 +261,9 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		}
 	default:
 		h.logger.Warn("human-review.verdict.unknown", "task_id", taskID, "decision", v.Decision)
-		h.appendNote(taskID, "Auto-review (unknown decision)", final)
+		if h.appendNote(taskID, "Auto-review (unknown decision)", final) {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
 	}
 }
 
@@ -264,7 +276,9 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdictDecision, wctx *WorkScrubContext) {
 	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
 		h.logger.Warn("human-review.local.empty", "task_id", taskID, "agent_id", agentID)
-		h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary)
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary) {
+			h.markVerdictRendered(taskID, agentID)
+		}
 		return
 	}
 	title, titleRed := scrub.Scrub(v.IssueTitle, wctx.Blocklist)
@@ -274,7 +288,12 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	newTask, err := h.tasks.Create(title, body, task.AgentModeHeadless)
 	if err != nil {
 		h.logger.Error("human-review.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
-		h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", summary+"\n\nError: "+err.Error())
+		// The diagnosis note IS the durable artifact here; mark rendered so a
+		// restart does not re-spawn the reviewer and duplicate it (the local
+		// task creation failing does not undo the appended note).
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", summary+"\n\nError: "+err.Error()) {
+			h.markVerdictRendered(taskID, agentID)
+		}
 		return
 	}
 	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
@@ -306,13 +325,17 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	}
 	if _, err := h.tasks.Update(taskID, upd); err != nil {
 		h.logger.Error("human-review.local.origin-update", "task_id", taskID, "err", err)
+		return
 	}
+	h.markVerdictRendered(taskID, agentID)
 }
 
 func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision) {
 	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
 		h.logger.Warn("human-review.issue.empty", "task_id", taskID, "agent_id", agentID)
-		h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary)
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary) {
+			h.markVerdictRendered(taskID, agentID)
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -322,7 +345,9 @@ func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision
 		h.logger.Error("human-review.issue.submit", "task_id", taskID, "agent_id", agentID, "err", err)
 		// On rate limit or transient failure, leave the task in human-required
 		// and append the verdict so the user has the diagnosis text.
-		h.appendNote(taskID, "Auto-review verdict: sybra_bug (issue submission failed)", v.Summary+"\n\nError: "+err.Error())
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (issue submission failed)", v.Summary+"\n\nError: "+err.Error()) {
+			h.markVerdictRendered(taskID, agentID)
+		}
 		return
 	}
 	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
@@ -348,21 +373,36 @@ func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision
 	}
 	if _, err := h.tasks.Update(taskID, upd); err != nil {
 		h.logger.Error("human-review.task.update", "task_id", taskID, "err", err)
+		return
 	}
+	h.markVerdictRendered(taskID, agentID)
 }
 
-func (h *humanReviewHandler) appendNote(taskID, header, body string) {
+// appendNote appends a section to the task body. Returns true if the update
+// succeeded so callers can conditionally mark the verdict as rendered.
+func (h *humanReviewHandler) appendNote(taskID, header, body string) bool {
 	if strings.TrimSpace(body) == "" {
-		return
+		return false
 	}
 	t, err := h.tasks.Get(taskID)
 	if err != nil {
 		h.logger.Error("human-review.append.task-get", "task_id", taskID, "err", err)
-		return
+		return false
 	}
 	newBody := appendSection(t.Body, header, body)
 	if _, err := h.tasks.Update(taskID, task.Update{Body: &newBody}); err != nil {
 		h.logger.Error("human-review.append.task-update", "task_id", taskID, "err", err)
+		return false
+	}
+	return true
+}
+
+// markVerdictRendered sets VerdictRendered on the matching AgentRun, proving
+// that onComplete applied all side-effects. verdictAlreadyRendered reads this
+// field as the durable rendered-marker.
+func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
+	if err := h.tasks.UpdateRun(taskID, agentID, map[string]any{"verdict_rendered": true}); err != nil {
+		h.logger.Warn("human-review.mark-rendered", "task_id", taskID, "agent_id", agentID, "err", err)
 	}
 }
 
@@ -571,6 +611,21 @@ func urlOrPlaceholder(url, title string) string {
 		return url
 	}
 	return "(issue: " + title + ")"
+}
+
+// verdictAlreadyRendered reports whether any completed human-review agent run
+// has VerdictRendered set, proving onComplete ran to completion and applied all
+// side-effects (note appended, issue filed, local task created). Verdict alone
+// is not sufficient — it is persisted before onComplete runs, so if the process
+// crashed between persisting the verdict and rendering the diagnosis, we allow a
+// re-spawn so the task is not permanently stranded in human-required.
+func verdictAlreadyRendered(t task.Task) bool {
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) && t.AgentRuns[i].VerdictRendered {
+			return true
+		}
+	}
+	return false
 }
 
 // tailFile reads the last n lines of path. Best-effort: returns "" on error
