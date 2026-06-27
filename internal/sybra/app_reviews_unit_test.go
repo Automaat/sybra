@@ -412,6 +412,12 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		ProjectID: task.Ptr("o/r"),
 		PRNumber:  task.Ptr(42),
 	})
+	// In-review with no PR → eligible: PR was opened manually but never linked.
+	inReviewOrphan := mk("in-review-orphan", task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		Branch:    task.Ptr("feat/in-review-orphan"),
+		ProjectID: task.Ptr("o/r"),
+	})
 
 	r := &ReviewHandler{
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
@@ -429,6 +435,7 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		{Number: 9, HeadRefName: "feat/cross", Repository: "o/other-repo"}, // wrong repo
 		{Number: 10, HeadRefName: "feat/wd", Repository: "o/r"},            // watchdog task's branch
 		{Number: 42, HeadRefName: "feat/healthy", Repository: "o/r"},
+		{Number: 1055, HeadRefName: "feat/in-review-orphan", Repository: "o/r"},
 	}
 
 	r.adoptOrphanPRs(all, prs)
@@ -486,6 +493,16 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		}
 	})
 
+	t.Run("in-review orphan linked without status change", func(t *testing.T) {
+		got, _ := tasks.Get(inReviewOrphan)
+		if got.Status != task.StatusInReview {
+			t.Errorf("status = %q, want in-review (must not change)", got.Status)
+		}
+		if got.PRNumber != 1055 {
+			t.Errorf("PRNumber = %d, want 1055", got.PRNumber)
+		}
+	})
+
 	t.Run("ineligible task untouched", func(t *testing.T) {
 		got, _ := tasks.Get(healthy)
 		if got.Status != task.StatusInReview || got.PRNumber != 42 {
@@ -501,16 +518,24 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 		t    task.Task
 		want bool
 	}{
+		// human-required cases (strand-reason gate applies)
 		{"stranded orphan (no-commits)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, true},
 		{"evaluate orphan (no PR)", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "commits pushed but no PR created"}, true},
 		{"has pr number", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", PRNumber: 5, StatusReason: orphanReason}, false},
 		{"no branch", task.Task{Status: task.StatusHumanRequired, ProjectID: "o/r", StatusReason: orphanReason}, false},
 		{"no project", task.Task{Status: task.StatusHumanRequired, Branch: "b", StatusReason: orphanReason}, false},
-		{"not human-required", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, false},
+		{"not human-required or in-review", task.Task{Status: task.StatusInProgress, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason}, false},
 		{"watchdog stop not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "watchdog: runaway loop"}, false},
 		{"unrelated reason not eligible", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: "needs design input"}, false},
 		{"review task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, Tags: []string{"review"}}, false},
 		{"chat task excluded", task.Task{Status: task.StatusHumanRequired, Branch: "b", ProjectID: "o/r", StatusReason: orphanReason, TaskType: task.TaskTypeChat}, false},
+		// in-review cases (no strand-reason gate: already in review with no PR is unambiguously an orphan)
+		{"in-review no PR — eligible", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r"}, true},
+		{"in-review with PR — not eligible (already linked)", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", PRNumber: 5}, false},
+		{"in-review no branch — not eligible", task.Task{Status: task.StatusInReview, ProjectID: "o/r"}, false},
+		{"in-review no project — not eligible", task.Task{Status: task.StatusInReview, Branch: "b"}, false},
+		{"in-review review tag excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", Tags: []string{"review"}}, false},
+		{"in-review chat task excluded", task.Task{Status: task.StatusInReview, Branch: "b", ProjectID: "o/r", TaskType: task.TaskTypeChat}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

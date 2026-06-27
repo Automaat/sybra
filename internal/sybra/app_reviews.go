@@ -653,20 +653,30 @@ func hasOrphanStrandReason(reason string) bool {
 }
 
 // orphanPRAdoptionEligible reports whether a task is a candidate for orphan-PR
-// adoption: parked in human-required with a branch but no linked PR, *and* with
-// a status_reason that marks it as stranded by the implement/verify/evaluate
-// path before a late-finishing agent opened the PR. The reason gate is what
-// keeps adoption from resurrecting a task a human or the watchdog deliberately
-// stopped. Chat tasks and inbound review tasks are never own-PR tasks.
+// adoption: a task with a branch but no linked PR that was either placed in
+// in-review without a PR being recorded, or stranded in human-required by the
+// implement/verify/evaluate path before a late-finishing agent opened the PR.
+// For human-required tasks the strand-reason gate prevents resurrecting a task
+// that a human or the watchdog deliberately stopped. For in-review tasks no
+// reason gate is needed — a task already in review with no PR is unambiguously
+// an orphan regardless of how it got there. Chat tasks and inbound review tasks
+// are never own-PR tasks.
 func orphanPRAdoptionEligible(t *task.Task) bool {
 	if t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
 		return false
 	}
-	return t.Status == task.StatusHumanRequired &&
-		t.PRNumber == 0 &&
-		t.Branch != "" &&
-		t.ProjectID != "" &&
-		hasOrphanStrandReason(t.StatusReason)
+	if t.PRNumber != 0 || t.Branch == "" || t.ProjectID == "" {
+		return false
+	}
+	// In-review tasks with no linked PR are always eligible: they've been placed
+	// in review state but the PR number was never recorded (e.g. PR opened
+	// manually without going through simple-task-pr).
+	if t.Status == task.StatusInReview {
+		return true
+	}
+	// Human-required tasks: only adopt if stranded by implement/verify/evaluate
+	// (never resurrect deliberate watchdog stops or dwell escalations).
+	return t.Status == task.StatusHumanRequired && hasOrphanStrandReason(t.StatusReason)
 }
 
 // adoptOrphanPRs re-links tasks stranded in human-required without a PR number
