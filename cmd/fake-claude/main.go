@@ -164,7 +164,7 @@ func runEvaluate(taskID string) {
 func runTestPass() {
 	emitSystem()
 	emitAssistant("Ran the app; every case matched the task.")
-	emitResult("Could not break it.\nTEST_VERDICT: PASS")
+	emitResult(testPassReport() + "\nTEST_VERDICT: PASS")
 }
 
 func runTestFail() {
@@ -183,6 +183,19 @@ func testFailureReport() string {
 		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
 }
 
+func testPassReport() string {
+	return "surface_kind: server\n" +
+		"app_started: true\n" +
+		"start_command: go run ./cmd/test-server\n" +
+		"readiness_probe: curl /status\n" +
+		"manual_probes:\n" +
+		"command: curl /status\n" +
+		"expected: expected output\n" +
+		"actual: expected output\n" +
+		"automated_checks: go test ./internal/sybra => ok\n" +
+		"unable_to_run_reason:"
+}
+
 // runTestPassVerbose emits a >2000-char summary BEFORE the final-line verdict,
 // reproducing a thorough tester's output. The step-output var is truncated to
 // 2000 bytes (prefix), so this guards that the engine extracts the verdict from
@@ -191,7 +204,7 @@ func runTestPassVerbose() {
 	emitSystem()
 	emitAssistant("Exercising every angle...")
 	long := strings.Repeat("Exercised an edge case and the feature held as the task requires. ", 50)
-	emitResult(long + "\nTEST_VERDICT: PASS")
+	emitResult(long + "\n" + testPassReport() + "\nTEST_VERDICT: PASS")
 }
 
 // runInteractiveImplement emits a full implement result then blocks on stdin

@@ -192,8 +192,8 @@ steps:
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr
-  # opens the PR only once tests pass. A task tagged `notest` short-circuits
-  # the testing-task workflow straight to ready-pr.
+  # opens the PR only once tests pass. A task tagged `notest` may skip app
+  # startup, but still needs CLI/test-harness evidence before PASS.
   - id: done_review
     name: Hand to Testing
     type: set_status

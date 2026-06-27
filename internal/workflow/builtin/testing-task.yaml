@@ -14,27 +14,13 @@ trigger:
       operator: equals
       value: testing
 steps:
-  # Escape hatch: a task tagged `notest` (docs, config-only, anything not
-  # runnable) skips testing and goes straight to ready-pr so the PR still opens.
+  # Every task reaches the tester. `notest`/docs/library scopes only exempt the
+  # app start; the test-runner still has to provide CLI/test-harness evidence.
   - id: maybe_test
     name: Testing Decision
     type: condition
     next:
-      - when:
-          field: task.tags
-          operator: contains
-          value: notest
-        goto: skip_testing
       - goto: run_test
-
-  - id: skip_testing
-    name: Skip Testing
-    type: set_status
-    config:
-      status: ready-pr
-      status_reason: testing skipped (notest) — opening PR
-    next:
-      - goto: ""
 
   # A single headless adversarial test-runner. Its sandbox (Docker compose
   # project / k3d cluster, keyed by task id) is started on demand by the agent
@@ -52,7 +38,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"}},"required":["verdict"],"additionalProperties":false}
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"string"},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"}},"required":["command","expected","actual"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"}},"required":["command","actual"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}
       prompt: >-
         Adversarially test task {{.Task.ID}} using the /sybra-test skill.
 
@@ -68,6 +54,14 @@ steps:
         and still emit FAIL (a human resolves the spec). You decide how to start
         and drive the real app/cluster (read the repo: README, .sybra.yaml, mise
         tasks, package.json, compose, Makefile).
+        {{if .Task.ManualTest.Kind}}This project's .sybra.yaml declares a manual_test surface:
+          - kind: {{.Task.ManualTest.Kind}}
+          - command: {{.Task.ManualTest.Command}}
+          - health_url: {{.Task.ManualTest.HealthURL}}
+          - probe_commands:
+        {{range .Task.ManualTest.ProbeCommands}}    - {{.}}
+        {{end}}Prefer this surface for black-box testing unless the task scope clearly makes it irrelevant.
+        {{end}}
         Existing `## Test Failures` sections in the task body are historical
         context only. Reproduce them against the CURRENT worktree before counting
         them; if the current code no longer exhibits that behavior, ignore the
@@ -75,6 +69,28 @@ steps:
         If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.
+
+        Manual testing is mandatory by default. Before PASS, run at least one
+        product-level probe that a user/operator would recognize: start the
+        web/server surface and hit it with curl/browser/devtools; run the real
+        CLI/workflow command in an isolated temp home/project; use kubectl
+        against the sandbox; or drive the desktop task's headless HTTP/server
+        equivalent. Automated tests, lint, builds, diff review, and grep are
+        support evidence only — they do NOT count as manual testing by
+        themselves.
+
+        Exception: for pure refactors, internal-library changes, docs-only work,
+        or changes with no runnable product surface, do not force an app start.
+        Instead, state the exception in your final PASS summary and run the
+        strongest behavioral regression evidence available: a CLI/test harness
+        probe (for example go test, package tests, npm run check, or the real
+        CLI command) plus grep/invariant probes when useful for sweep wording.
+        Static review or grep alone is not enough. If you cannot justify the
+        exception from task scope, missing manual testing is missing_evidence
+        -> FAIL.
+        If manual testing is impossible, say exactly why in your response. In
+        JSON output, put the reason in `unable_to_run_reason`; in plain text,
+        add `Unable to run manual test: <reason>`.
 
         Before looking for defects, derive a cheap acceptance probe from the
         task when possible. For sweep/refactor wording like "everywhere",
@@ -100,8 +116,15 @@ steps:
             product_bug, infra_failure, ambiguous_requirement, or
             missing_evidence in prose. Do NOT suggest fixes — describe
             symptoms only.
-          - If your provider returns JSON, set `verdict` and put that report in
-            `failures_markdown` (plus `outcome` when clear). Otherwise print
+          - Prefer a single JSON object as your final response. Set `verdict`,
+            `outcome`, and `failures_markdown`; use `outcome: "pass"` and an
+            empty `failures_markdown` on PASS. PASS is valid only with manual
+            testing evidence, or with a justified refactor/library/no-surface
+            exception plus regression evidence. If you cannot return JSON, your
+            plain-text PASS must include the same evidence labels:
+            `surface_kind`, `app_started`, `start_command`, `readiness_probe`,
+            `manual_probes`, `automated_checks`, and `unable_to_run_reason`;
+            otherwise it is a tester protocol failure. For plain text, print
             the report, then print the verdict as the FINAL line exactly:
             `TEST_VERDICT: PASS`  (only if you could not break it)
             or
