@@ -43,6 +43,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Renovate.Author = next.Renovate.Author
 	s.cfg.Providers = next.Providers
 	s.cfg.GitHub = next.GitHub
+	s.cfg.Umbrella = next.Umbrella
 	s.cfg.Triage = next.Triage
 	s.cfg.Monitor = next.Monitor
 	s.cfg.SelfMonitor = next.SelfMonitor

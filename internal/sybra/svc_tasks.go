@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -32,6 +33,10 @@ type TaskService struct {
 	fetchIssue          func(repo string, number int) (github.Issue, error)
 	fetchIssueLinkedPRs func(repo string, issueNumber int) ([]github.PullRequest, error)
 	viewerLogin         func() string
+	// umbrellaExpand expands a detected ☂️ umbrella issue into a gated child
+	// DAG instead of a flat task. Wired in wireServices; gated at call time on
+	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
+	umbrellaExpand func(issueURL string) (umbrella.Result, error)
 }
 
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
@@ -59,21 +64,32 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 // CreateTask creates a new task and starts a matching workflow.
 // If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
-	t, err := s.tasks.Create(title, body, mode)
+	prRepo, prNumber := github.ParsePRURL(title)
+	issueRepo, issueNumber := github.ParseIssueURL(title)
+	isURLStub := prRepo != "" || issueRepo != ""
+
+	// A URL stub is created with the enrich-pending marker so the emit-path
+	// task.created dispatch can't race async enrichment and start a flat
+	// workflow on the un-enriched stub (CreateFull persists the tag before
+	// emitting TaskCreated). Non-URL tasks take the plain create path.
+	var t task.Task
+	var err error
+	if isURLStub {
+		t, err = s.tasks.CreateFull(title, body, mode, task.Update{Tags: task.Ptr([]string{enrichPendingTag})})
+	} else {
+		t, err = s.tasks.Create(title, body, mode)
+	}
 	if err != nil {
 		return t, err
 	}
-	isIssueURL := false
-	// Enrich from GitHub PR URL if title looks like one.
-	if repo, number := github.ParsePRURL(title); repo != "" {
+
+	if prRepo != "" {
 		s.wg.Go(func() {
-			s.enrichFromPR(t.ID, repo, number)
+			s.enrichFromPR(t.ID, prRepo, prNumber)
 		})
-	} else if repo, number := github.ParseIssueURL(title); repo != "" {
-		isIssueURL = true
-		// Enrich from GitHub issue URL if title looks like one.
+	} else if issueRepo != "" {
 		s.wg.Go(func() {
-			s.enrichFromIssue(t.ID, repo, number)
+			s.enrichFromIssue(t.ID, issueRepo, issueNumber)
 		})
 	}
 	if s.audit != nil {
@@ -83,8 +99,9 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 			Data:   map[string]any{"title": title, "mode": mode},
 		})
 	}
-	// Match and start a workflow for the new task.
-	if !isIssueURL {
+	// A URL stub is dispatched by its enrich step (after the marker clears);
+	// only plain tasks start their workflow here.
+	if !isURLStub {
 		s.startCreatedWorkflow(t)
 	}
 	return t, nil
@@ -235,11 +252,10 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		Branch:    task.Ptr(pr.HeadRefName),
 		Slug:      task.Ptr(slug),
 	}
-	var labels []string
-	if len(pr.Labels) > 0 {
-		labels = pr.Labels
-		u.Tags = &labels
-	}
+	// Replace tags with the PR's labels (possibly empty), which also clears the
+	// enrich-pending marker set on the URL stub at creation.
+	labels := pr.Labels
+	u.Tags = &labels
 
 	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
@@ -325,6 +341,18 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.logger.Error("enrich-issue.fetch", "task_id", taskID, "repo", repo, "number", number, "err", err)
 		return
 	}
+
+	// An umbrella issue must not become a flat implementation task. Expand it
+	// into a gated child DAG (the expander builds its own tracker) and drop the
+	// stub. This mirrors the poll fetcher's pass-1 detection so manual "paste
+	// issue URL" creation and background polling converge on identical handling
+	// — previously a manually-added umbrella was triaged and implemented as one
+	// flat task, ignoring its sub-issues entirely.
+	if s.umbrellaExpansionEnabled() && umbrella.IsUmbrellaIssue(issue.Title, issue.Labels) {
+		s.expandUmbrellaStub(taskID, repo, issue)
+		return
+	}
+
 	slug := task.Slugify(issue.Title)
 	u := task.Update{
 		Title:     task.Ptr(issue.Title),
@@ -335,10 +363,10 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	if len(issue.Labels) > 0 {
-		labels := issue.Labels
-		u.Tags = &labels
-	}
+	// Replace tags with the issue's labels (possibly empty), which also clears
+	// the enrich-pending marker so startCreatedWorkflow below can dispatch.
+	labels := issue.Labels
+	u.Tags = &labels
 	linkedPRs, linkedErr := s.fetchIssueLinkedPRsFunc()(repo, number)
 	if linkedErr != nil {
 		s.logger.Warn("enrich-issue.linked-prs", "task_id", taskID, "repo", repo, "number", number, "err", linkedErr)
@@ -360,6 +388,68 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.startCreatedWorkflow(updated)
 	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
+}
+
+// umbrellaExpansionEnabled reports whether a detected umbrella issue should be
+// auto-expanded on the manual-create path. Read live (not wired-once) so a
+// config reload toggling umbrella.enabled takes effect without re-wiring.
+func (s *TaskService) umbrellaExpansionEnabled() bool {
+	return s.cfg != nil && s.cfg.Umbrella.Enabled && s.umbrellaExpand != nil
+}
+
+// expandUmbrellaStub expands a manually-created stub whose URL resolved to a
+// ☂️ umbrella issue into a gated child DAG, then deletes the stub — the
+// expander creates its own umbrella-typed tracker, so keeping the stub would
+// leave a duplicate flat task for the same issue. On expansion failure the stub
+// is enriched into an identifiable (but inert) task so the user is not left
+// empty-handed and can retry with `sybra-cli umbrella <url>`; crucially no flat
+// workflow is started on a known umbrella, which is the bug this path fixes.
+func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
+	res, err := s.umbrellaExpand(issue.URL)
+	if err != nil {
+		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
+		s.enrichInertUmbrellaStub(taskID, repo, issue,
+			"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
+		return
+	}
+	// Expand created the real tracker + children; the stub is now a duplicate.
+	// Use DeleteTask (not the raw store Delete) so any agent/sandbox/worktree
+	// that started on the stub — e.g. if a flat workflow won the create race
+	// before the enrich-pending marker took effect — is torn down, not leaked.
+	if delErr := s.DeleteTask(taskID); delErr != nil {
+		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", delErr)
+		// Cleanup failed: enrich the stub so it is an identifiable,
+		// user-deletable duplicate rather than a raw-URL task with no metadata.
+		s.enrichInertUmbrellaStub(taskID, repo, issue,
+			"umbrella expanded to a separate tracker; this duplicate can be deleted")
+		return
+	}
+	s.logger.Info("enrich-issue.umbrella-expanded", "issue", issue.URL, "created", res.Created, "stub", taskID)
+}
+
+// enrichInertUmbrellaStub turns the stub into an identifiable, inert task: real
+// title/body/issue plus the issue's labels as tags (mirroring the normal
+// enrichFromIssue path so tag-driven routing and the UI still recognize it),
+// and a StatusReason explaining why no workflow started. No flat workflow is
+// started — the task is a known umbrella.
+func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	u := task.Update{
+		Title:        task.Ptr(issue.Title),
+		Issue:        task.Ptr(issue.URL),
+		ProjectID:    task.Ptr(repo),
+		Slug:         task.Ptr(task.Slugify(issue.Title)),
+		StatusReason: task.Ptr(reason),
+	}
+	if issue.Body != "" {
+		u.Body = task.Ptr(issue.Body)
+	}
+	// Replace tags with the issue's labels (possibly empty), preserving them for
+	// identification/routing while clearing the enrich-pending marker.
+	labels := issue.Labels
+	u.Tags = &labels
+	if _, err := s.tasks.Update(taskID, u); err != nil {
+		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
+	}
 }
 
 func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {
