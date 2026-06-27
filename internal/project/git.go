@@ -207,9 +207,7 @@ func SyncLocalBranch(barePath, branch string) error {
 
 	// Fast-forward only: advance local if it is a strict ancestor of remote.
 	// merge-base --is-ancestor exits 0 when local IS an ancestor; exits 1 when not.
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", localSHA, remoteSHA)
-	cmd.Dir = barePath
-	if cmd.Run() == nil {
+	if runBare(barePath, "merge-base", "--is-ancestor", localSHA, remoteSHA) == nil {
 		return runBare(barePath, "update-ref", localRef, remoteSHA)
 	}
 	// local is not an ancestor (has local-only or diverged commits) — preserve
