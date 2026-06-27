@@ -184,6 +184,26 @@ func (s *Service) GetEvaluationReport() Report {
 	return rep
 }
 
+// PhaseReport decomposes the lead time of tasks that landed in the window into
+// per-phase durations (planning/implementing/testing/review/…), so callers can
+// see where end-to-end time is actually spent. Reads task.status_changed history
+// from a wider range than the cohort window so an in-window landing that started
+// earlier is fully reconstructed. Read-only.
+func (s *Service) PhaseReport(_ context.Context) (PhaseReport, error) {
+	now := s.now()
+	wd := s.windowDays()
+	since := now.AddDate(0, 0, -wd)
+	if s.audit == nil {
+		return PhaseReport{Since: since, Until: now}, nil
+	}
+	histSince := now.AddDate(0, 0, -3*wd)
+	evts, err := s.audit.Read(audit.Query{Since: histSince, Until: now})
+	if err != nil {
+		return PhaseReport{}, err
+	}
+	return ComputePhaseDurations(evts, since, now, 10), nil
+}
+
 // LastReport returns the cached report and whether one exists.
 func (s *Service) LastReport() (Report, bool) {
 	s.mu.RLock()

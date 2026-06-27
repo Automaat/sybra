@@ -89,8 +89,12 @@ type App struct {
 	emitFactory                   func(context.Context) func(string, any)
 	openBrowser                   func(string)
 	restartStaleErr               *logging.ErrorThrottle
-	recovery                      *recovery.Recovery
-	agentCompletion               *AgentCompletionHandler
+	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
+	// status change) so a freshly-ready task isn't left idle until the next
+	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
+	dispatchNudge   chan struct{}
+	recovery        *recovery.Recovery
+	agentCompletion *AgentCompletionHandler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -160,6 +164,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 		cfg:             cfg,
 		logLevel:        logLevel,
 		restartStaleErr: logging.NewErrorThrottle(),
+		dispatchNudge:   make(chan struct{}, 1),
 	}
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
@@ -313,6 +318,21 @@ func (a *App) GetEvaluationReport() evaluation.Report {
 		return evaluation.Report{}
 	}
 	return a.evaluationSvc.GetEvaluationReport()
+}
+
+// GetLifecyclePhases returns the per-phase lifecycle-duration breakdown for
+// tasks that landed in the evaluation window — where end-to-end time is spent
+// (planning vs implementing vs testing vs review vs waiting).
+func (a *App) GetLifecyclePhases() evaluation.PhaseReport {
+	if a.evaluationSvc == nil {
+		return evaluation.PhaseReport{}
+	}
+	rep, err := a.evaluationSvc.PhaseReport(context.Background())
+	if err != nil {
+		a.logger.Warn("evaluation.phases.failed", "err", err)
+		return evaluation.PhaseReport{}
+	}
+	return rep
 }
 
 func (a *App) Shutdown(_ context.Context) {

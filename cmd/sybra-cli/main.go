@@ -98,6 +98,8 @@ func run(args []string) int {
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
 	case "evaluation":
 		return cmdEvaluation(cfg, store, rest, jsonOut)
+	case "stats":
+		return cmdStats(cfg, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
@@ -1533,6 +1535,9 @@ Commands:
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
   evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
+  stats lifecycle [--since 30d] [--slowest N] [--json]
+           Per-phase lead-time breakdown (planning/implementing/testing/review/
+           waiting) for tasks that landed in the window — where time is spent.
   health   [--severity warning|critical] [--category CATEGORY]
 
   triage classify <id>         Classify a single task via claude -p and apply the verdict.
