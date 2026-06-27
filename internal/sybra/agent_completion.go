@@ -149,7 +149,10 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		"result":     truncated,
 		"log_file":   ag.LogPath,
 		"session_id": ag.GetSessionID(),
+		"model":      ag.Model,
+		"provider":   ag.Provider,
 	}
+	addRunMetadata(runUpdates, ag)
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
@@ -213,6 +216,18 @@ func (h *AgentCompletionHandler) emitPermissionDenialAudits(ag *agent.Agent) {
 			"reason":  d.Reason,
 			"posture": posture,
 		})
+	}
+}
+
+func addRunMetadata(updates map[string]any, ag *agent.Agent) {
+	if ag.ExperimentID != "" {
+		updates["experiment_id"] = ag.ExperimentID
+		updates["variant_id"] = ag.VariantID
+		updates["assignment_unit"] = ag.AssignmentUnit
+		updates["assignment_key"] = ag.AssignmentKey
+	}
+	if ag.ReasoningEffort != "" {
+		updates["reasoning_effort"] = ag.ReasoningEffort
 	}
 }
 
@@ -352,6 +367,11 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		Role:                     string(agent.RoleFromName(ag.Name)),
 		Model:                    ag.Model,
 		Provider:                 ag.Provider,
+		ReasoningEffort:          ag.ReasoningEffort,
+		ExperimentID:             ag.ExperimentID,
+		VariantID:                ag.VariantID,
+		AssignmentUnit:           ag.AssignmentUnit,
+		AssignmentKey:            ag.AssignmentKey,
 		CostUSD:                  agCost,
 		DurationS:                duration,
 		InputTokens:              in,
@@ -359,6 +379,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		CacheCreationInputTokens: cacheCreate,
 		CacheReadInputTokens:     cacheRead,
 		ReasoningTokens:          reasoning,
+		PremiumRequests:          ag.GetPremiumRequests(),
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
 		Outcome:                  outcome,

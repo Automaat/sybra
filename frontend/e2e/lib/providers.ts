@@ -17,17 +17,18 @@ export const providerMatrix: ProviderSpec[] = [
   },
   {
     provider: 'copilot',
-    modelLabel: 'Default (GPT-5.4)',
+    modelLabel: 'Default (GPT-5.5)',
     // Must match GetCopilotModels() / copilotFallbackModels exactly (9 entries).
     expectedOptions: [
-      'Default (GPT-5.4)',
+      'Default (GPT-5.5)',
+      'GPT-5.5',
       'GPT-5.4',
       'GPT-5.4 Mini',
       'GPT-5.3 Codex',
       'Claude Opus 4.6',
       'Claude Sonnet 4.6',
       'Claude Haiku 4.5',
-      'Gemini 3 Pro',
+      'Gemini 3.1 Pro',
       'Auto',
     ],
   },

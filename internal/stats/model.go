@@ -20,6 +20,11 @@ type RunRecord struct {
 	Role                     string  `json:"role"`
 	Model                    string  `json:"model,omitempty"`
 	Provider                 string  `json:"provider,omitempty"`
+	ReasoningEffort          string  `json:"reasoningEffort,omitempty"`
+	ExperimentID             string  `json:"experimentId,omitempty"`
+	VariantID                string  `json:"variantId,omitempty"`
+	AssignmentUnit           string  `json:"assignmentUnit,omitempty"`
+	AssignmentKey            string  `json:"assignmentKey,omitempty"`
 	CostUSD                  float64 `json:"costUsd"`
 	DurationS                float64 `json:"durationS"`
 	InputTokens              int     `json:"inputTokens,omitempty"`
@@ -27,6 +32,7 @@ type RunRecord struct {
 	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
 	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
+	PremiumRequests          float64 `json:"premiumRequests,omitempty"`
 	// TurnCount and ToolCalls capture per-run effort so the evaluation
 	// scorecard can measure convergence (turns per landed PR) and tool
 	// efficiency. Zero for runs recorded before these were tracked.
@@ -48,6 +54,7 @@ type Summary struct {
 	TotalCacheCreationInputTokens int     `json:"totalCacheCreationInputTokens,omitempty"`
 	TotalCacheReadInputTokens     int     `json:"totalCacheReadInputTokens,omitempty"`
 	TotalReasoningTokens          int     `json:"totalReasoningTokens,omitempty"`
+	TotalPremiumRequests          float64 `json:"totalPremiumRequests,omitempty"`
 }
 
 // GroupedStat is an aggregate keyed by a dimension (project, mode, etc).

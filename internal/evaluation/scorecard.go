@@ -68,16 +68,52 @@ type Breakdown struct {
 	Tools        int     `json:"tools"`
 }
 
+// ComparisonBreakdown compares agent/model or experiment variants on the
+// speed, quality, and cost signals Sybra already records.
+type ComparisonBreakdown struct {
+	Key                       string  `json:"key"`
+	Provider                  string  `json:"provider,omitempty"`
+	Model                     string  `json:"model,omitempty"`
+	Role                      string  `json:"role,omitempty"`
+	ReasoningEffort           string  `json:"reasoningEffort,omitempty"`
+	ExperimentID              string  `json:"experimentId,omitempty"`
+	VariantID                 string  `json:"variantId,omitempty"`
+	Runs                      int     `json:"runs"`
+	Failures                  int     `json:"failures"`
+	FailureRate               float64 `json:"failureRate"`
+	Landed                    int     `json:"landed"`
+	Merged                    int     `json:"merged"`
+	MergedWithEdits           int     `json:"mergedWithEdits"`
+	Closed                    int     `json:"closed"`
+	MergeRate                 float64 `json:"mergeRate"`
+	MergedWithEditsRate       float64 `json:"mergedWithEditsRate"`
+	CIFirstPassRate           float64 `json:"ciFirstPassRate"`
+	ReworkRate                float64 `json:"reworkRate"`
+	RevertRate                float64 `json:"revertRate"`
+	DurationP50S              float64 `json:"durationP50S"`
+	DurationP90S              float64 `json:"durationP90S"`
+	TotalCostUSD              float64 `json:"totalCostUsd"`
+	CostPerLanded             float64 `json:"costPerLanded"`
+	PremiumRequests           float64 `json:"premiumRequests"`
+	PremiumRequestsPerLanded  float64 `json:"premiumRequestsPerLanded"`
+	TurnsPerLanded            float64 `json:"turnsPerLanded"`
+	ToolsPerLanded            float64 `json:"toolsPerLanded"`
+	InsufficientData          bool    `json:"insufficientData"`
+	QualityAttributionLimited bool    `json:"qualityAttributionLimited"`
+}
+
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt time.Time   `json:"generatedAt"`
-	Since       time.Time   `json:"since"`
-	Until       time.Time   `json:"until"`
-	Overall     Scorecard   `json:"overall"`
-	ByProvider  []Breakdown `json:"byProvider,omitempty"`
-	ByRole      []Breakdown `json:"byRole,omitempty"`
-	Weaknesses  []Weakness  `json:"weaknesses,omitempty"`
-	Notes       []string    `json:"notes,omitempty"`
+	GeneratedAt  time.Time             `json:"generatedAt"`
+	Since        time.Time             `json:"since"`
+	Until        time.Time             `json:"until"`
+	Overall      Scorecard             `json:"overall"`
+	ByProvider   []Breakdown           `json:"byProvider,omitempty"`
+	ByRole       []Breakdown           `json:"byRole,omitempty"`
+	ByAgentModel []ComparisonBreakdown `json:"byAgentModel,omitempty"`
+	ByVariant    []ComparisonBreakdown `json:"byVariant,omitempty"`
+	Weaknesses   []Weakness            `json:"weaknesses,omitempty"`
+	Notes        []string              `json:"notes,omitempty"`
 }
 
 // deferredNotes documents metrics that need signals not yet captured, so the
@@ -340,6 +376,208 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+// CompareBy groups run records by key and attributes landed-task outcomes to
+// the latest code-author run for that task. minSamples controls the
+// InsufficientData flag only; rows are still emitted so users can see early data.
+type comparisonAcc struct {
+	row             ComparisonBreakdown
+	durations       []float64
+	turns, tools    int
+	ciClean, rework int
+	reverted        int
+}
+
+func CompareBy(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
+	groups := map[string]*comparisonAcc{}
+	ensure := func(r stats.RunRecord, k string) *comparisonAcc {
+		a := groups[k]
+		if a == nil {
+			a = &comparisonAcc{row: ComparisonBreakdown{
+				Key:             k,
+				Provider:        r.Provider,
+				Model:           r.Model,
+				Role:            normalizedRole(r.Role),
+				ReasoningEffort: r.ReasoningEffort,
+				ExperimentID:    r.ExperimentID,
+				VariantID:       r.VariantID,
+			}}
+			groups[k] = a
+		}
+		return a
+	}
+	for i := range records {
+		r := records[i]
+		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
+			continue
+		}
+		k := key(r)
+		if k == "" {
+			continue
+		}
+		a := ensure(r, k)
+		a.row.Runs++
+		if r.Outcome == "failed" {
+			a.row.Failures++
+		}
+		a.row.TotalCostUSD += r.CostUSD
+		a.row.PremiumRequests += r.PremiumRequests
+		a.durations = append(a.durations, r.DurationS)
+		a.turns += r.TurnCount
+		a.tools += r.ToolCalls
+	}
+
+	applyComparisonLandings(ensure, records, events, since, until, key)
+	return comparisonRows(groups, minSamples)
+}
+
+func applyComparisonLandings(ensure func(stats.RunRecord, string) *comparisonAcc, records []stats.RunRecord, events []audit.Event, since, until time.Time, key func(stats.RunRecord) string) {
+	landed := scanLandings(events, func(t time.Time) bool { return !t.Before(since) && !t.After(until) })
+	sigs := scanTaskSignals(events)
+	for taskID := range landed.tasks {
+		landedAt := landingTimestamp(events, taskID, since, until)
+		if landedAt.IsZero() {
+			continue
+		}
+		r, ok := latestAuthorRun(records, taskID, since, landedAt, key)
+		if !ok {
+			continue
+		}
+		k := key(r)
+		if k == "" {
+			continue
+		}
+		a := ensure(r, k)
+		a.row.Landed++
+		if landed.edited[taskID] {
+			a.row.MergedWithEdits++
+		} else {
+			// scanLandings tracks closed only as aggregate; read the per-task
+			// outcome directly so variant rows preserve merged vs closed.
+			switch landingOutcome(events, taskID, since, until) {
+			case "closed":
+				a.row.Closed++
+			default:
+				a.row.Merged++
+			}
+		}
+		if s := sigs[taskID]; s == nil || !s.ciFixNeeded {
+			a.ciClean++
+		}
+		if taskHasRework(sigs[taskID]) {
+			a.rework++
+		}
+	}
+	for i := range events {
+		e := events[i]
+		if e.Type != audit.EventPRReverted || e.TaskID == "" || e.Timestamp.Before(since) || e.Timestamp.After(until) {
+			continue
+		}
+		r, ok := latestAuthorRun(records, e.TaskID, since, e.Timestamp, key)
+		if !ok {
+			continue
+		}
+		if k := key(r); k != "" {
+			ensure(r, k).reverted++
+		}
+	}
+}
+
+func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []ComparisonBreakdown {
+	out := make([]ComparisonBreakdown, 0, len(groups))
+	for _, a := range groups {
+		row := a.row
+		if row.Runs > 0 {
+			row.FailureRate = float64(row.Failures) / float64(row.Runs)
+		}
+		if row.Landed > 0 {
+			row.MergeRate = float64(row.Merged) / float64(row.Landed)
+			row.MergedWithEditsRate = float64(row.MergedWithEdits) / float64(row.Landed)
+			row.CIFirstPassRate = float64(a.ciClean) / float64(row.Landed)
+			row.ReworkRate = float64(a.rework) / float64(row.Landed)
+			row.RevertRate = float64(a.reverted) / float64(row.Landed)
+			row.CostPerLanded = row.TotalCostUSD / float64(row.Landed)
+			row.PremiumRequestsPerLanded = row.PremiumRequests / float64(row.Landed)
+			row.TurnsPerLanded = float64(a.turns) / float64(row.Landed)
+			row.ToolsPerLanded = float64(a.tools) / float64(row.Landed)
+		}
+		row.DurationP50S = percentile(a.durations, 50)
+		row.DurationP90S = percentile(a.durations, 90)
+		row.InsufficientData = minSamples > 0 && row.Runs < minSamples
+		row.QualityAttributionLimited = row.Landed == 0 && row.Runs > 0
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+func latestAuthorRun(records []stats.RunRecord, taskID string, since, until time.Time, key func(stats.RunRecord) string) (stats.RunRecord, bool) {
+	var best stats.RunRecord
+	ok := false
+	for i := range records {
+		r := records[i]
+		if r.TaskID != taskID || r.Timestamp.Before(since) || r.Timestamp.After(until) || !isAuthorRole(r.Role) || key(r) == "" {
+			continue
+		}
+		if !ok || r.Timestamp.After(best.Timestamp) {
+			best = r
+			ok = true
+		}
+	}
+	return best, ok
+}
+
+func landingOutcome(events []audit.Event, taskID string, since, until time.Time) string {
+	for i := range events {
+		e := events[i]
+		if e.Type == audit.EventTaskLanded && e.TaskID == taskID && !e.Timestamp.Before(since) && !e.Timestamp.After(until) {
+			return strVal(e.Data, "outcome")
+		}
+	}
+	return ""
+}
+
+func landingTimestamp(events []audit.Event, taskID string, since, until time.Time) time.Time {
+	var out time.Time
+	for i := range events {
+		e := events[i]
+		if e.Type != audit.EventTaskLanded || e.TaskID != taskID || e.Timestamp.Before(since) || e.Timestamp.After(until) {
+			continue
+		}
+		if out.IsZero() || e.Timestamp.Before(out) {
+			out = e.Timestamp
+		}
+	}
+	return out
+}
+
+func taskHasRework(s *taskSignals) bool {
+	if s == nil {
+		return false
+	}
+	for _, c := range s.transitions {
+		if c >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func isAuthorRole(role string) bool {
+	switch normalizedRole(role) {
+	case "implementation", "fix-review", "pr-fix":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedRole(role string) string {
+	if role == "" {
+		return "implementation"
+	}
+	return role
 }
 
 // percentile returns the p-th percentile (0–100) using nearest-rank. Empty → 0.

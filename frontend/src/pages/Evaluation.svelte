@@ -51,6 +51,12 @@
   function hours(x: number | undefined): string {
     return x === undefined ? '—' : `${x.toFixed(1)}h`
   }
+  function seconds(x: number | undefined): string {
+    if (x === undefined) return '—'
+    if (x >= 3600) return `${(x / 3600).toFixed(1)}h`
+    if (x >= 60) return `${(x / 60).toFixed(1)}m`
+    return `${x.toFixed(0)}s`
+  }
   function num(x: number | undefined, digits = 1): string {
     return x === undefined ? '—' : x.toFixed(digits)
   }
@@ -267,6 +273,68 @@
                     <td class="py-1.5 text-right">${row.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.turns}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.tools}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:else}
+            <p class="text-xs text-surface-400">No data</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+
+    <!-- A/B testing and model comparisons -->
+    <div class="grid grid-cols-1 gap-6">
+      {#each [
+        { title: 'Agent / Model', data: report?.byAgentModel },
+        { title: 'A/B Experiments', data: report?.byVariant },
+      ] as section (section.title)}
+        <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+          <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
+          {#if section.data && section.data.length > 0}
+            <table class="w-full min-w-[980px] text-sm">
+              <thead>
+                <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                  <th class="pb-2">Variant</th>
+                  <th class="pb-2">Role</th>
+                  <th class="pb-2 text-right">Runs</th>
+                  <th class="pb-2 text-right">Landed</th>
+                  <th class="pb-2 text-right">Merge %</th>
+                  <th class="pb-2 text-right">CI 1st</th>
+                  <th class="pb-2 text-right">Edited</th>
+                  <th class="pb-2 text-right">Rework</th>
+                  <th class="pb-2 text-right">Revert</th>
+                  <th class="pb-2 text-right">Duration</th>
+                  <th class="pb-2 text-right">Cost</th>
+                  <th class="pb-2 text-right">Premium req</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each section.data as row (row.key)}
+                  <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                    <td class="py-1.5">
+                      <div class="font-mono text-xs">{row.variantId || row.key}</div>
+                      <div class="text-xs text-surface-400">
+                        {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
+                      </div>
+                    </td>
+                    <td class="py-1.5 text-xs">{row.role || '—'}</td>
+                    <td class="py-1.5 text-right">
+                      {row.runs}
+                      {#if row.insufficientData}
+                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                      {/if}
+                    </td>
+                    <td class="py-1.5 text-right">{row.landed}</td>
+                    <td class="py-1.5 text-right">{pct(row.mergeRate)}</td>
+                    <td class="py-1.5 text-right">{pct(row.ciFirstPassRate)}</td>
+                    <td class="py-1.5 text-right">{pct(row.mergedWithEditsRate)}</td>
+                    <td class="py-1.5 text-right">{pct(row.reworkRate)}</td>
+                    <td class="py-1.5 text-right">{pct(row.revertRate)}</td>
+                    <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
+                    <td class="py-1.5 text-right">${num(row.costPerLanded, 2)}/landed</td>
+                    <td class="py-1.5 text-right">{num(row.premiumRequestsPerLanded, 1)}/landed</td>
                   </tr>
                 {/each}
               </tbody>

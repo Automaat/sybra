@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/logging"
 )
 
@@ -180,6 +181,7 @@ type Engine struct {
 	resumeError     *logging.ErrorThrottle
 	maxTestAttempts int           // testing → re-implement loop cap (0 → defaultTestAttempts)
 	verifyTimeout   time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting       abtest.Config
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -246,3 +248,6 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // bounce back to in-progress before route_test_result escalates it to
 // human-required. Values <= 0 fall back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
+func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }

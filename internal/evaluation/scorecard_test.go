@@ -113,6 +113,55 @@ func TestBreakdownBy(t *testing.T) {
 	}
 }
 
+func TestCompareByVariant(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "copilot", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "gpt", DurationS: 120, PremiumRequests: 7.5, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "opus", DurationS: 60, CostUSD: 1.5, Outcome: "failed", Timestamp: in},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+	}
+	got := CompareBy(records, events, since, base, 20, func(r stats.RunRecord) string {
+		if r.ExperimentID == "" || r.VariantID == "" {
+			return ""
+		}
+		return r.ExperimentID + ":" + r.VariantID
+	})
+	if len(got) != 2 {
+		t.Fatalf("groups = %d, want 2: %+v", len(got), got)
+	}
+	gpt := got[0]
+	if gpt.Key != "exp:gpt" {
+		t.Fatalf("first key = %q, want exp:gpt (sorted): %+v", gpt.Key, got)
+	}
+	if gpt.Runs != 1 || gpt.Landed != 1 || gpt.MergeRate != 1 || gpt.PremiumRequests != 7.5 || gpt.PremiumRequestsPerLanded != 7.5 {
+		t.Fatalf("gpt row = %+v", gpt)
+	}
+	if !gpt.InsufficientData {
+		t.Fatalf("gpt row should be marked low sample: %+v", gpt)
+	}
+}
+
+func TestCompareByVariantDoesNotAttributePreWindowRun(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "opus", Outcome: "completed", Timestamp: since.Add(-1 * time.Hour)},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: base.Add(-1 * time.Hour), Data: map[string]any{"outcome": "merged"}},
+	}
+	got := CompareBy(records, events, since, base, 0, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID
+	})
+	if len(got) != 0 {
+		t.Fatalf("CompareBy attributed landing to pre-window run: %+v", got)
+	}
+}
+
 func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -30)

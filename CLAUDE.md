@@ -319,6 +319,10 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 - Go: `go test ./...`
 - Use table-driven tests for Go packages
 - Frontend: `cd frontend && npm run check` (svelte-check)
+- Manual runtime smoke tests: see `docs/manual-testing.md` for the isolated
+  `SYBRA_HOME` + fake-provider CLI harness that exercises the real HTTP server,
+  workflows, agent runners, stats, audit, and Evaluation report without
+  touching local user data or spending model credits.
 
 ## Quality Gates
 
