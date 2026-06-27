@@ -244,7 +244,7 @@ func hasGroundedFailureEvidence(report string) bool {
 	lower := strings.ToLower(report)
 	hasCommand := containsAny(lower,
 		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
-		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg -n ", "grep ")
+		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ")
 	hasObserved := containsAny(lower,
 		"actual output:", "actual:", "observed:", "stdout:", "stderr:",
 		"exit code", "printed:", "rendered:")
@@ -620,7 +620,7 @@ func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (i
 }
 
 func hasInterveningCodeAuthorRun(runs []AgentRunInfo, prev, current int) bool {
-	if prev < 0 || current <= prev || current > len(runs) {
+	if prev < 0 || current <= prev || current >= len(runs) {
 		return false
 	}
 	for i := prev + 1; i < current; i++ {

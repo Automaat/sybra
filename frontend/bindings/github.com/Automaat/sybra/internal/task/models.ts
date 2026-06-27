@@ -52,6 +52,20 @@ export class AgentRun {
     "protocolViolation"?: string;
 
     /**
+     * TestOutcome records the deterministic classification of a test-runner run
+     * (product_bug, infra_failure, ambiguous_requirement, etc.). The testing
+     * router counts only product_bug outcomes against the implementation budget.
+     */
+    "testOutcome"?: string;
+
+    /**
+     * TestFailureFingerprint is a stable hash of the grounded failure report.
+     * Repeated fingerprints mean the same repro survived a fix attempt and should
+     * get targeted human/local reproduction instead of another broad retry.
+     */
+    "testFailureFingerprint"?: string;
+
+    /**
      * HeadSHA is the worktree HEAD commit at this run's completion — what the
      * agent left on the branch. Compared against the merged PR head to detect
      * human edits after the agent (merged_with_edits) and measure edit distance.
