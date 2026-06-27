@@ -491,6 +491,9 @@ func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID 
 		return testOutcomeMissingEvidence, ""
 	}
 	if explicit := explicitTestOutcome(report); explicit != "" {
+		if explicit == testOutcomePass {
+			return testOutcomeMissingEvidence, ""
+		}
 		if explicit == testOutcomeProductBug || explicit == testOutcomeAmbiguousRequirement {
 			if !hasGroundedFailureEvidence(report) {
 				return testOutcomeMissingEvidence, ""

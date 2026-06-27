@@ -15,8 +15,8 @@ setup:
 # health, then drive at least one user/operator-facing probe.
 manual_test:
   kind: server
-  command: PORT=${SYBRA_MANUAL_TEST_PORT:-$((49152 + RANDOM % 10000))}; printf '%s\n' "$PORT" > .sybra-manual-test-port; SYBRA_PORT=$PORT go run ./cmd/sybra-server
-  health_url: http://127.0.0.1:<port from .sybra-manual-test-port>/health
+  command: export SYBRA_PORT=${SYBRA_MANUAL_TEST_PORT:-$((49152 + RANDOM % 10000))}; printf '%s\n' "$SYBRA_PORT" > .sybra-manual-test-port; go run ./cmd/sybra-server
+  health_url: http://127.0.0.1:$SYBRA_PORT/health
   probe_commands:
     - PORT=$(cat .sybra-manual-test-port); curl -fsS "http://127.0.0.1:${PORT}/health"
 

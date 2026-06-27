@@ -53,6 +53,52 @@ export class ChecksConfig {
     }
 }
 
+/**
+ * ManualTestConfig is repo-declared black-box testing guidance from .sybra.yaml.
+ * Commands execute in the worktree root when a test-runner chooses to use them.
+ */
+export class ManualTestConfig {
+    "kind"?: ManualTestKind;
+    "command"?: string;
+    "healthUrl"?: string;
+    "probeCommands"?: string[];
+
+    /** Creates a new ManualTestConfig instance. */
+    constructor($$source: Partial<ManualTestConfig> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ManualTestConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ManualTestConfig {
+        const $$createField3_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("probeCommands" in $$parsedSource) {
+            $$parsedSource["probeCommands"] = $$createField3_0($$parsedSource["probeCommands"]);
+        }
+        return new ManualTestConfig($$parsedSource as Partial<ManualTestConfig>);
+    }
+}
+
+/**
+ * ManualTestKind identifies the runnable surface a test-runner should drive.
+ */
+export enum ManualTestKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ManualTestKindWeb = "web",
+    ManualTestKindCLI = "cli",
+    ManualTestKindServer = "server",
+    ManualTestKindDesktop = "desktop",
+    ManualTestKindK8s = "k8s",
+    ManualTestKindLibrary = "library",
+};
+
 export class Project {
     "id": string;
     "name": string;
@@ -70,6 +116,7 @@ export class Project {
     "setupCommands"?: string[];
     "sandbox"?: SandboxConfig | null;
     "checks"?: ChecksConfig | null;
+    "manualTest"?: ManualTestConfig | null;
 
     /**
      * WorktreeBaseRef controls the starting point for new worktree branches.
@@ -123,6 +170,7 @@ export class Project {
         const $$createField8_0 = $$createType0;
         const $$createField9_0 = $$createType2;
         const $$createField10_0 = $$createType4;
+        const $$createField11_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("setupCommands" in $$parsedSource) {
             $$parsedSource["setupCommands"] = $$createField8_0($$parsedSource["setupCommands"]);
@@ -132,6 +180,9 @@ export class Project {
         }
         if ("checks" in $$parsedSource) {
             $$parsedSource["checks"] = $$createField10_0($$parsedSource["checks"]);
+        }
+        if ("manualTest" in $$parsedSource) {
+            $$parsedSource["manualTest"] = $$createField11_0($$parsedSource["manualTest"]);
         }
         return new Project($$parsedSource as Partial<Project>);
     }
@@ -217,7 +268,7 @@ export class SandboxConfig {
      */
     static createFrom($$source: any = {}): SandboxConfig {
         const $$createField2_0 = $$createType0;
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("with" in $$parsedSource) {
             $$parsedSource["with"] = $$createField2_0($$parsedSource["with"]);
@@ -268,4 +319,6 @@ const $$createType1 = SandboxConfig.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = ChecksConfig.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = ManualTestConfig.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = $Create.Map($Create.Any, $Create.Any);

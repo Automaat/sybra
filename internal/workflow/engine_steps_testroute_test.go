@@ -323,6 +323,15 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			name:       "fail_with_pass_outcome_is_missing_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL","outcome":"pass","failures_markdown":` + strconv.Quote(strings.TrimSpace(groundedReport)) + `}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "expected_output_does_not_count_as_observed_output",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,
