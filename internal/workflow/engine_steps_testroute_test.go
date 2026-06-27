@@ -206,6 +206,15 @@ func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	}
 }
 
+func TestHasReportLinePrefixNormalizesPrefixes(t *testing.T) {
+	t.Parallel()
+
+	report := "## Test Failures\n\nOutput:\n```text\nboom\n```\n"
+	if !hasReportLinePrefix(report, " Output: ") {
+		t.Fatal("expected normalized prefix to match Output line")
+	}
+}
+
 func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 	t.Parallel()
 

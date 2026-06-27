@@ -414,9 +414,15 @@ func containsAny(s string, needles ...string) bool {
 }
 
 func hasReportLinePrefix(report string, prefixes ...string) bool {
+	normalizedPrefixes := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		if prefix = strings.ToLower(strings.TrimSpace(prefix)); prefix != "" {
+			normalizedPrefixes = append(normalizedPrefixes, prefix)
+		}
+	}
 	for _, line := range reportScanLines(report) {
 		lower := strings.ToLower(strings.TrimSpace(line))
-		for _, prefix := range prefixes {
+		for _, prefix := range normalizedPrefixes {
 			if strings.HasPrefix(lower, prefix) {
 				return true
 			}

@@ -211,6 +211,7 @@ func (r *Recovery) recoverCancelledPRFix(t *task.Task) bool {
 		StatusReason: &reason,
 	}); updErr != nil {
 		r.Logger.Error("restart-stale.revert-cancelled-pr-fix.failed", "task_id", t.ID, "err", updErr)
+		return false
 	}
 	return true
 }
