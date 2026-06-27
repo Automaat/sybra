@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -80,6 +81,8 @@ func run(args []string) int {
 		return cmdUmbrella(store, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, rest, jsonOut)
+	case "link-pr":
+		return cmdLinkPR(store, rest, jsonOut)
 	case "delete":
 		return cmdDelete(store, rest, jsonOut)
 	case "project":
@@ -943,6 +946,47 @@ func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
+// cmdLinkPR links a GitHub PR number to a task and advances non-terminal tasks
+// to in-review so the PR monitor loop can take over (auto-merge / done on
+// merge). Use when a PR was opened outside of Sybra (manually or by an external
+// tool) and the task's pr_number is still 0.
+func cmdLinkPR(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 2 {
+		return fatal(jsonOut, "usage: link-pr <task-id> <pr-number>")
+	}
+	id := args[0]
+	prNum, err := strconv.Atoi(args[1])
+	if err != nil || prNum <= 0 {
+		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
+	}
+
+	t, err := s.Get(id)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+
+	u := task.Update{PRNumber: task.Ptr(prNum)}
+	if !task.IsTerminalStatus(t.Status) && t.Status != task.StatusInReview {
+		u.Status = task.Ptr(task.StatusInReview)
+		u.StatusReason = task.Ptr("")
+	}
+
+	t, err = s.Update(id, u)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+
+	if jsonOut {
+		return printJSON(t)
+	}
+	if u.Status != nil {
+		fmt.Printf("linked PR #%d to task %s → in-review\n", prNum, t.ID)
+	} else {
+		fmt.Printf("linked PR #%d to task %s (status: %s)\n", prNum, t.ID, t.Status)
+	}
+	return 0
+}
+
 // applyFileOrStringUpdate populates an updates map from a paired
 // `--<flag>` / `--<flag>-file` flag pair. File takes precedence; an
 // explicitly empty string flag clears the value (matches the existing
@@ -1523,6 +1567,10 @@ Commands:
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  link-pr  <id> <pr-number>
+           Link a PR number to a task and advance it to in-review. Use when a PR
+           was opened outside of Sybra; the PR monitor will then auto-merge or
+           advance the task to done once the PR lands.
   delete   <id>
 
   project list
