@@ -167,8 +167,11 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		}
 		// A tracker is "settled" once it has outlived the creation window, so a
 		// childless tally that just reflects children still being materialized
-		// is not mistaken for a completed umbrella.
-		settled := time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
+		// is not mistaken for a completed umbrella. A zero CreatedAt (e.g. a
+		// task file missing created_at) is treated as not settled rather than
+		// infinitely old, so it never bypasses the guard.
+		settled := !st.tracker.CreatedAt.IsZero() &&
+			time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
 		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
 		if desired == st.tracker.Status {
 			continue
