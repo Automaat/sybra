@@ -1589,16 +1589,19 @@ func cmdHook(cfg *config.Config, args []string) int {
 	payload, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook: read stdin: %v\n", err)
+		logHookFailure(cfg, *taskID, "read_error")
 		return 0
 	}
 	if len(bytes.TrimSpace(payload)) == 0 {
 		fmt.Fprintln(os.Stderr, "hook: empty stdin payload")
+		logHookFailure(cfg, *taskID, "empty_payload")
 		return 0
 	}
 
 	auditEvent, err := codexhook.Map(payload, *taskID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook: map payload: %v\n", err)
+		logHookFailure(cfg, *taskID, "map_error")
 		return 0
 	}
 
@@ -1611,8 +1614,32 @@ func cmdHook(cfg *config.Config, args []string) int {
 
 	if err := logger.Log(auditEvent); err != nil {
 		fmt.Fprintf(os.Stderr, "hook: log: %v\n", err)
+		_ = logger.Log(audit.Event{
+			Timestamp: time.Now().UTC(),
+			Type:      audit.EventCodexHookFailed,
+			TaskID:    *taskID,
+			Data:      map[string]any{"reason": "log_error"},
+		})
 	}
 	return 0
+}
+
+// logHookFailure writes a diagnostic audit event for hook receiver errors.
+// It is best-effort: all errors are silently discarded so the caller always
+// exits 0 and the hook stays fail-open. The reason field is a categorical
+// label — never the raw error message — so no sensitive content is persisted.
+func logHookFailure(cfg *config.Config, taskID, reason string) {
+	logger, err := audit.NewLogger(cfg.AuditDir())
+	if err != nil {
+		return
+	}
+	defer func() { _ = logger.Close() }()
+	_ = logger.Log(audit.Event{
+		Timestamp: time.Now().UTC(),
+		Type:      audit.EventCodexHookFailed,
+		TaskID:    taskID,
+		Data:      map[string]any{"reason": reason},
+	})
 }
 
 func usage() {
