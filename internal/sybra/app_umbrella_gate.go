@@ -69,7 +69,7 @@ func (a *App) releaseUnblockedChildren() {
 		}
 		if t.UmbrellaIssue != "" {
 			hasUmbrella = true
-			accumulateChild(stateFor(t.UmbrellaIssue), t.Status)
+			accumulateChild(stateFor(t.UmbrellaIssue), t.Status, t.Tags)
 		}
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
@@ -77,9 +77,12 @@ func (a *App) releaseUnblockedChildren() {
 			Umbrella:  t.UmbrellaIssue,
 			DependsOn: t.DependsOn,
 			Done:      t.Status == task.StatusDone,
-			// Only a task the gate itself blocked is eligible for release —
-			// never one parked in `blocked` for a contained Sybra bug.
-			Awaiting: t.UmbrellaIssue != "" && t.Status == task.StatusBlocked &&
+			// Gate-marked todo children (current model) and legacy
+			// blocked+gated children (tasks created before this change)
+			// are both eligible for release. Never release a task that is
+			// blocked without the gating tag (contained Sybra bug).
+			Awaiting: t.UmbrellaIssue != "" &&
+				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
 	}
@@ -98,7 +101,9 @@ func (a *App) releaseUnblockedChildren() {
 }
 
 // accumulateChild folds one child task's status into its umbrella's tally.
-func accumulateChild(st *umbrellaState, status task.Status) {
+// A todo child carrying the gating tag is still waiting for deps — it must not
+// count as active or it would consume a parallelism slot before being released.
+func accumulateChild(st *umbrellaState, status task.Status, tags []string) {
 	st.total++
 	switch status {
 	case task.StatusDone:
@@ -112,7 +117,7 @@ func accumulateChild(st *umbrellaState, status task.Status) {
 		st.anyHR = true
 		st.active++ // a stuck child still occupies a slot until resolved
 	default:
-		if isRunningChild(status) {
+		if isRunningChild(status) && !slices.Contains(tags, umbrellaGatedTag) {
 			st.active++
 		}
 	}

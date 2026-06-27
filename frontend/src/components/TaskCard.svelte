@@ -65,6 +65,8 @@
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? '')) ?? PRIORITY_OPTIONS[0]
   }
 
+  const visibleTags = $derived((t.tags ?? []).filter((tag) => tag !== 'umbrella-gated'))
+
 </script>
 
 <div
@@ -164,6 +166,11 @@
       <Pill role="attention" class="bg-error-200 text-error-800 dark:bg-error-700 dark:text-error-200">
         {awaitsHumanLabel(t.status)}
       </Pill>
+    {:else if t.tags?.includes('umbrella-gated') && !isReviewTask && !ownPRPhase}
+      <span class="inline-flex items-center gap-1 rounded bg-surface-200 px-1.5 py-0.5 text-surface-600 dark:bg-surface-700 dark:text-surface-300">
+        <Hourglass size={11} class="shrink-0" />
+        Waiting
+      </span>
     {:else if subStateLabel && !isReviewTask && !ownPRPhase}
       <span class="inline-flex items-center rounded-full bg-surface-200 px-2 py-0.5 text-surface-600 dark:bg-surface-700 dark:text-surface-300">
         {subStateLabel}
@@ -243,10 +250,10 @@
       </Pill>
     {/if}
 
-    {#if t.tags?.length}
-      <Pill role="tag">{t.tags[0]}</Pill>
-      {#if t.tags.length > 1}
-        <span class="text-surface-400" title={t.tags.join(', ')}>+{t.tags.length - 1}</span>
+    {#if visibleTags.length}
+      <Pill role="tag">{visibleTags[0]}</Pill>
+      {#if visibleTags.length > 1}
+        <span class="text-surface-400" title={visibleTags.join(', ')}>+{visibleTags.length - 1}</span>
       {/if}
     {/if}
 

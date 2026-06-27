@@ -158,11 +158,11 @@ export interface BoardColumn {
   includes: TaskStatus[]
   /**
    * Column kind. 'status' (default) groups tasks by status; 'review' is the
-   * tag-based To Review lane that collects inbound review tasks across every
-   * phase, independent of their status. `status` is a sentinel for review
-   * lanes — never a real task status.
+   * tag-based To Review lane; 'umbrella' is the task_type-based lane for
+   * umbrella tracker tasks. Both 'review' and 'umbrella' use sentinel values
+   * for `status` that are never real task statuses.
    */
-  kind?: 'status' | 'review'
+  kind?: 'status' | 'review' | 'umbrella'
 }
 
 /** Kanban board columns — active work only; terminal tasks live in Logbook */
@@ -175,6 +175,19 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review', 'ready-pr'] },
   { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
 ]
+
+/**
+ * The Umbrella lane: a task_type-based column for umbrella tracker tasks.
+ * `status: 'umbrella'` is a sentinel used only as the column key — it is never
+ * a real task status, so it stays out of BOARD_COLUMNS / CORE_STATUSES.
+ */
+export const UMBRELLA_LANE: BoardColumn = {
+  status: 'umbrella' as TaskStatus,
+  kind: 'umbrella',
+  label: 'Umbrella',
+  border: 'border-t-tertiary-400 dark:border-t-tertiary-500',
+  includes: [],
+}
 
 /**
  * The To Review lane: a tag-based column (not status-based) that collects
@@ -191,13 +204,15 @@ export const REVIEW_LANE: BoardColumn = {
 }
 
 /**
- * Board column order including the To Review lane (inserted before Human
- * Required). The board renders these; BOARD_COLUMNS stays the pure status set
- * that drives CORE_STATUSES, the status picker, and per-project boards.
+ * Board column order: Umbrella first, then the status columns with To Review
+ * inserted before Human Required. The board renders these; BOARD_COLUMNS stays
+ * the pure status set that drives CORE_STATUSES, the status picker, and
+ * per-project boards.
  */
-export const BOARD_LANES: BoardColumn[] = BOARD_COLUMNS.flatMap((c) =>
-  c.status === 'human-required' ? [REVIEW_LANE, c] : [c],
-)
+export const BOARD_LANES: BoardColumn[] = [
+  UMBRELLA_LANE,
+  ...BOARD_COLUMNS.flatMap((c) => (c.status === 'human-required' ? [REVIEW_LANE, c] : [c])),
+]
 
 /**
  * Core user-facing status set: the active board columns plus the terminal

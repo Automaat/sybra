@@ -47,9 +47,8 @@
   }
 
   async function moveTask(taskId: string, status: string) {
-    // The PR Reviews lane key is a sentinel, not a real status — dropping onto
-    // it must not write an invalid status.
-    if (status === 'reviews') return
+    // Sentinel lanes are not real statuses — dropping onto them must not write.
+    if (status === 'reviews' || status === 'umbrella') return
     const existing = taskStore.tasks.get(taskId)
     if (!existing || existing.status === status) return
     try {
@@ -70,6 +69,7 @@
 
   function columnTasks(col: BoardColumn): Task[] {
     if (col.kind === 'review') return reviewLaneTasks()
+    if (col.kind === 'umbrella') return umbrellaLaneTasks()
     const statuses = col.includes.length > 0 ? col.includes : [col.status]
     // Inbound reviews live in the To Review lane, never their status column.
     // Self-authored handoff PR reviews are NOT inbound — they stay here so a
@@ -81,6 +81,18 @@
       return [...tasks].sort((a, b) => prPhaseRank(a) - prPhaseRank(b))
     }
     return tasks
+  }
+
+  function umbrellaLaneTasks(): Task[] {
+    return taskStore.list.filter((t: Task) => {
+      if (t.taskType !== 'umbrella') return false
+      if (t.status === 'done' || t.status === 'cancelled') return false
+      if (!matchesQuery(t, searchQuery)) return false
+      if (!matchesProject(t, selectedProjectId)) return false
+      if (!matchesTags(t, selectedTags)) return false
+      if (!matchesAgentMode(t, selectedAgentMode)) return false
+      return true
+    })
   }
 
   // The To Review lane: every active inbound review task, sorted so the
@@ -252,6 +264,7 @@
   function filteredByStatuses(statuses: string[]): Task[] {
     return taskStore.list.filter((t: Task) => {
       if (!statuses.includes(t.status)) return false
+      if (t.taskType === 'umbrella') return false // umbrella trackers go to the Umbrella lane
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false

@@ -10,7 +10,7 @@ import {
   reviewPhaseRank,
   type ReviewPhase,
 } from './review-phase.js'
-import { BOARD_COLUMNS, BOARD_LANES, REVIEW_LANE, CORE_STATUSES } from './statuses.js'
+import { BOARD_COLUMNS, BOARD_LANES, REVIEW_LANE, UMBRELLA_LANE, CORE_STATUSES } from './statuses.js'
 
 describe('isReviewTask', () => {
   it('is true only when the review tag is present', () => {
@@ -119,13 +119,19 @@ describe('BOARD_LANES', () => {
     expect(BOARD_LANES[idx + 1].status).toBe('human-required')
   })
 
-  it('keeps every status column from BOARD_COLUMNS plus the one lane', () => {
-    expect(BOARD_LANES.length).toBe(BOARD_COLUMNS.length + 1)
+  it('keeps every status column from BOARD_COLUMNS plus the two sentinel lanes', () => {
+    expect(BOARD_LANES.length).toBe(BOARD_COLUMNS.length + 2)
     for (const c of BOARD_COLUMNS) expect(BOARD_LANES).toContain(c)
   })
 
-  it('keeps the review sentinel out of the pickable status set', () => {
+  it('keeps both sentinels out of the pickable status set', () => {
     expect(CORE_STATUSES).not.toContain('reviews')
+    expect(CORE_STATUSES).not.toContain('umbrella')
     expect(REVIEW_LANE.kind).toBe('review')
+    expect(UMBRELLA_LANE.kind).toBe('umbrella')
+  })
+
+  it('places the umbrella lane first', () => {
+    expect(BOARD_LANES[0]).toBe(UMBRELLA_LANE)
   })
 })

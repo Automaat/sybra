@@ -33,20 +33,22 @@ func TestReleaseUnblockedChildren_RespectsMaxParallel(t *testing.T) {
 	const umb = "https://github.com/Automaat/sybra/issues/100"
 	mkTracker(t, m, umb, 2)
 
-	c1 := mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
-	c2 := mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
-	c3 := mkChild(t, m, "c3", "Automaat/sybra#3", umb, nil, task.StatusBlocked)
+	c1 := mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+	c2 := mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusTodo)
+	c3 := mkChild(t, m, "c3", "Automaat/sybra#3", umb, nil, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
 
 	released, held := 0, 0
 	for _, id := range []string{c1.ID, c2.ID, c3.ID} {
-		switch mustStatus(t, m, id) {
-		case task.StatusTodo:
-			released++
-		case task.StatusBlocked:
+		tk := mustTask(t, m, id)
+		if tk.Status != task.StatusTodo {
+			continue
+		}
+		if slices.Contains(tk.Tags, umbrellaGatedTag) {
 			held++
-		default:
+		} else {
+			released++
 		}
 	}
 	if released != 2 || held != 1 {
@@ -62,7 +64,7 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 
 	// One child is stuck needing a human; an unrelated child is ready.
 	stuck := mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
-	indep := mkChild(t, m, "indep", "Automaat/sybra#2", umb, nil, task.StatusBlocked)
+	indep := mkChild(t, m, "indep", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
 
@@ -221,11 +223,16 @@ func mkChild(t *testing.T, m *task.Manager, title, issue, umb string, deps []str
 
 func mustStatus(t *testing.T, m *task.Manager, id string) task.Status {
 	t.Helper()
+	return mustTask(t, m, id).Status
+}
+
+func mustTask(t *testing.T, m *task.Manager, id string) task.Task {
+	t.Helper()
 	tk, err := m.Get(id)
 	if err != nil {
 		t.Fatalf("Get(%s): %v", id, err)
 	}
-	return tk.Status
+	return tk
 }
 
 func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
@@ -233,7 +240,7 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	app, m := newUmbrellaGateApp(t)
 	const umb = "https://github.com/Automaat/sybra/issues/100"
 
-	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusBlocked)
+	root := mkChild(t, m, "root", "Automaat/sybra#1", umb, nil, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
 
@@ -286,11 +293,12 @@ func TestReleaseUnblockedChildren_HoldsThenReleasesChain(t *testing.T) {
 
 	// dep is still in progress; child depends on it.
 	dep := mkChild(t, m, "dep", "Automaat/sybra#1", umb, nil, task.StatusInProgress)
-	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
+	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
-	if got := mustStatus(t, m, child.ID); got != task.StatusBlocked {
-		t.Fatalf("child released early: status = %q, want %q", got, task.StatusBlocked)
+	childTask := mustTask(t, m, child.ID)
+	if childTask.Status != task.StatusTodo || !slices.Contains(childTask.Tags, umbrellaGatedTag) {
+		t.Fatalf("child released early: status = %q tags = %v, want todo+%s", childTask.Status, childTask.Tags, umbrellaGatedTag)
 	}
 
 	// Finish the dependency, then the child must release.
@@ -310,7 +318,7 @@ func TestReleaseUnblockedChildren_CrossFormDependencyResolves(t *testing.T) {
 
 	// Dependency recorded as a full URL; the child references it in shorthand.
 	mkChild(t, m, "dep", "https://github.com/Automaat/sybra/issues/1", umb, nil, task.StatusDone)
-	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
+	child := mkChild(t, m, "child", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
 	if got := mustStatus(t, m, child.ID); got != task.StatusTodo {
@@ -334,20 +342,20 @@ func TestReleaseUnblockedChildren_CycleFlagsTracker(t *testing.T) {
 	}
 
 	// x <-> y mutual dependency.
-	x := mkChild(t, m, "x", "Automaat/sybra#1", umb, []string{"Automaat/sybra#2"}, task.StatusBlocked)
-	y := mkChild(t, m, "y", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
+	x := mkChild(t, m, "x", "Automaat/sybra#1", umb, []string{"Automaat/sybra#2"}, task.StatusTodo)
+	y := mkChild(t, m, "y", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusTodo)
 
 	app.releaseUnblockedChildren()
 
 	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
 		t.Fatalf("tracker status = %q, want %q on cycle", got, task.StatusHumanRequired)
 	}
-	// Cyclic children must stay blocked.
-	if got := mustStatus(t, m, x.ID); got != task.StatusBlocked {
-		t.Fatalf("x status = %q, want blocked", got)
+	// Cyclic children stay held (todo + gated tag, not released).
+	if got := mustStatus(t, m, x.ID); got != task.StatusTodo {
+		t.Fatalf("x status = %q, want todo (held gated)", got)
 	}
-	if got := mustStatus(t, m, y.ID); got != task.StatusBlocked {
-		t.Fatalf("y status = %q, want blocked", got)
+	if got := mustStatus(t, m, y.ID); got != task.StatusTodo {
+		t.Fatalf("y status = %q, want todo (held gated)", got)
 	}
 }
 

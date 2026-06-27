@@ -193,7 +193,7 @@
               Nothing to review.
             </p>
           {/if}
-        {:else}
+        {:else if col.kind !== 'umbrella'}
           <div class="px-2 pb-2">
             <InlineTaskAdd status={col.status} />
           </div>
