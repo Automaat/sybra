@@ -2,6 +2,8 @@ package sybra
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -124,5 +126,81 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 				return // success — workflow advanced
 			}
 		}
+	}
+}
+
+// TestApp_StatusHook_ReadyReview_DispatchesReviewWorkflow verifies that
+// initStatusHook dispatches simple-task-review when a task is manually
+// moved to ready-review. Before this fix the ready-review case was absent
+// from the switch, so the hook silently no-opped and simple-task-review
+// never ran on manual re-entry.
+func TestApp_StatusHook_ReadyReview_DispatchesReviewWorkflow(t *testing.T) {
+	a := setupApp(t)
+
+	// Build a custom workflow store containing only a lightweight version of
+	// simple-task-review that completes without spawning agents. The real
+	// builtin has run_agent steps that require a live claude binary.
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const testReviewWF = `id: simple-task-review
+name: Test Review
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-review
+steps:
+  - id: mark_testing
+    name: Hand to Testing
+    type: set_status
+    config:
+      status: testing
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-review.yaml"), []byte(testReviewWF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("ready-review dispatch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act — move to ready-review, mirroring a manual sybra-cli update.
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusReadyReview),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert — the hook must have dispatched simple-task-review, which runs
+	// synchronously (single set_status step, no agents) and completes before
+	// UpdateMap returns.
+	tk, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow attached — initStatusHook did not dispatch simple-task-review on ready-review")
+	}
+	if tk.Workflow.WorkflowID != "simple-task-review" {
+		t.Errorf("workflow.id = %q, want simple-task-review", tk.Workflow.WorkflowID)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Errorf("workflow.state = %q, want ExecCompleted", tk.Workflow.State)
+	}
+	// The test workflow's single step flips status to testing.
+	if tk.Status != task.StatusTesting {
+		t.Errorf("task status = %q, want testing (set_status step in test workflow)", tk.Status)
 	}
 }

@@ -196,6 +196,22 @@ func (a *App) initStatusHook() {
 			if a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
+		case string(task.StatusReadyReview):
+			if a.workflowEngine != nil {
+				// ErrWorkflowAlreadyActive is benign: when the cascade flips to
+				// ready-review (simple-task-implement ending), this hook fires
+				// while the implement workflow is still active; OnWorkflowComplete
+				// drives the cascade instead. Only real errors are surfaced —
+				// this also enables the manual "move card to Ready Review" path.
+				if _, err := a.workflowEngine.DispatchEvent(
+					taskID,
+					"task.status_changed",
+					map[string]string{"task.status": string(task.StatusReadyReview)},
+					nil,
+				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+					a.logger.Error("workflow.dispatch.ready-review", "task_id", taskID, "err", err)
+				}
+			}
 		case string(task.StatusTesting):
 			if a.workflowEngine != nil {
 				// ErrWorkflowAlreadyActive is benign and the COMMON case: when
