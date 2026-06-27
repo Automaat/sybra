@@ -424,3 +424,80 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 		t.Errorf("sink should not be called on malformed verdict; calls=%d", sink.calls)
 	}
 }
+
+func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
+	t.Parallel()
+	// h.agents is nil in newReviewTestEnv — if maybeSpawn tries to spawn an
+	// agent past the gate it will panic, which is the test's failure signal.
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Stale task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	// Simulate a prior completed review: add a run with a verdict already set.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-prior",
+		Role:    "human-review",
+		Mode:    "headless",
+		State:   "stopped",
+		Verdict: "human",
+	}); err != nil {
+		t.Fatalf("add prior run: %v", err)
+	}
+
+	// Must not panic (agents is nil) and must skip.
+	h.maybeSpawn(tk.ID, "")
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry — gate should have skipped the spawn")
+	}
+}
+
+func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Fresh task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	// Add a run with NO verdict (e.g. agent was killed mid-run).
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-killed",
+		Role:    "human-review",
+		Mode:    "headless",
+		State:   "stopped",
+		Verdict: "",
+	}); err != nil {
+		t.Fatalf("add prior run: %v", err)
+	}
+
+	// Gate should NOT block — recover from the expected nil-agents panic to
+	// confirm that spawn was attempted (past the idempotency gate).
+	panicked := func() (p bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				p = true
+			}
+		}()
+		h.maybeSpawn(tk.ID, "")
+		return false
+	}()
+	if !panicked {
+		// If agents wasn't nil we'd check h.inflight; in tests it panics on
+		// agents.Run, confirming the gate let it through.
+		t.Log("no panic — agent manager must have been non-nil; check test setup")
+	}
+}

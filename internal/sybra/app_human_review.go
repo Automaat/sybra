@@ -142,6 +142,12 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.logger.Error("human-review.task.get", "task_id", taskID, "err", err)
 		return
 	}
+	// Idempotency gate: a prior run already produced a verdict — re-spawning
+	// on app restart or repeated status hooks would just duplicate the diagnosis.
+	if verdictAlreadyRendered(t) {
+		h.skip(taskID, "verdict_rendered")
+		return
+	}
 	// Work-Data Confidentiality: if the task's project is work-typed, the
 	// review still runs (we want the diagnosis) but the prompt is augmented
 	// with redaction instructions and the verdict is routed to a local
@@ -571,6 +577,20 @@ func urlOrPlaceholder(url, title string) string {
 		return url
 	}
 	return "(issue: " + title + ")"
+}
+
+// verdictAlreadyRendered reports whether any completed human-review agent run
+// already recorded a parsed verdict on t. A non-empty Verdict field means the
+// prior run finished cleanly enough for the handler to act on the diagnosis —
+// re-spawning on app restart or a repeated status-hook fire would only
+// duplicate the work.
+func verdictAlreadyRendered(t task.Task) bool {
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) && t.AgentRuns[i].Verdict != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // tailFile reads the last n lines of path. Best-effort: returns "" on error
