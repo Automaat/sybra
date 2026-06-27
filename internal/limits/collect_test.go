@@ -1,0 +1,200 @@
+package limits
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestParseCodexLine_RateLimitsAndUsage(t *testing.T) {
+	line := []byte(`{"timestamp":"2026-06-19T12:40:08.052Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":23846,"cached_input_tokens":8576,"output_tokens":438,"reasoning_output_tokens":213,"total_tokens":24284},"last_token_usage":{"input_tokens":23846,"cached_input_tokens":8576,"output_tokens":438,"reasoning_output_tokens":213,"total_tokens":24284},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":81.5,"window_minutes":300,"resets_at":1781877547},"secondary":{"used_percent":64.0,"window_minutes":10080,"resets_at":1782380122},"credits":null,"individual_limit":null,"plan_type":"prolite","rate_limit_reached_type":null}}}`)
+
+	snapshot, event, ok := ParseCodexLine(line, SourceSessionFiles, "id1", "sess1")
+	if !ok {
+		t.Fatal("ParseCodexLine returned ok=false")
+	}
+	if snapshot.Provider != ProviderCodex || snapshot.Confidence != ConfidenceExact {
+		t.Fatalf("snapshot provider/confidence = %q/%q", snapshot.Provider, snapshot.Confidence)
+	}
+	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 81.5 || snapshot.Primary.WindowMinutes != 300 {
+		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+	}
+	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 64.0 || snapshot.Secondary.WindowMinutes != 10080 {
+		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+	}
+	if event.ID != "id1" || event.SessionID != "sess1" || event.InputTokens != 23846 || event.CacheReadInputTokens != 8576 {
+		t.Fatalf("usage event mismatch: %+v", event)
+	}
+}
+
+func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	policy := DefaultPolicy()
+
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderCodex,
+		Source:     SourceStream,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 91, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+		Secondary:  &CycleSnapshot{UsedPercent: 50, WindowMinutes: 10080, ResetsAt: now.AddDate(0, 0, 3)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceRunStats,
+		Confidence: ConfidenceEstimated,
+		CapturedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, reason := s.ProviderAvailable(ProviderCodex, policy)
+	if ok || reason == "" {
+		t.Fatalf("codex available = %v, reason=%q; want limited", ok, reason)
+	}
+	alt, _ := s.ChooseProvider(ProviderCodex, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool { return true }, policy)
+	if alt != ProviderClaude {
+		t.Fatalf("alternative = %q, want claude", alt)
+	}
+}
+
+func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderCodex,
+		Source:     SourceStream,
+		Confidence: ConfidenceExact,
+		CapturedAt: now.Add(-6 * time.Hour),
+		Primary:    &CycleSnapshot{UsedPercent: 99, WindowMinutes: 300, ResetsAt: now.Add(-time.Minute)},
+		Secondary:  &CycleSnapshot{UsedPercent: 10, WindowMinutes: 10080, ResetsAt: now.AddDate(0, 0, 3)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary := s.Summary(DefaultPolicy())
+	var codex ProviderSummary
+	for _, p := range summary.Providers {
+		if p.Provider == ProviderCodex {
+			codex = p
+			break
+		}
+	}
+	if codex.SessionUsedPercent != 0 || codex.SessionResetsAt != (time.Time{}) {
+		t.Fatalf("expired session cycle still surfaced: %+v", codex)
+	}
+	if codex.QuotaLimited {
+		t.Fatalf("expired session cycle still limits provider: %+v", codex)
+	}
+	if ok, reason := s.ProviderAvailable(ProviderCodex, DefaultPolicy()); !ok {
+		t.Fatalf("ProviderAvailable = false, reason=%q; want available after reset", reason)
+	}
+}
+
+func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceStream,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 95, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policy := DefaultPolicy()
+	policy.ProviderEnabled[ProviderCodex] = false
+
+	alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+		return true
+	}, policy)
+	if alt == ProviderCodex {
+		t.Fatalf("ChooseProvider selected disabled provider %q", alt)
+	}
+	if alt != ProviderCopilot {
+		t.Fatalf("alternative = %q, want copilot as only enabled candidate", alt)
+	}
+}
+
+func TestChooseProvider_NoDataDoesNotStealRequested(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex}, func(string) bool { return true }, DefaultPolicy())
+	if alt != "" {
+		t.Fatalf("alternative = %q, want none without quota pressure", alt)
+	}
+}
+
+func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	if err := s.RecordUsage(UsageEvent{
+		ID:                   "session-file",
+		Provider:             ProviderCodex,
+		Source:               SourceSessionFiles,
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 40,
+		ReasoningTokens:      5,
+		Timestamp:            now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUsage(UsageEvent{
+		ID:                   "sybra-run",
+		Provider:             ProviderCodex,
+		Source:               SourceRunStats,
+		CostUSD:              1.25,
+		InputTokens:          100,
+		OutputTokens:         20,
+		CacheReadInputTokens: 40,
+		ReasoningTokens:      5,
+		PremiumRequests:      2,
+		Timestamp:            now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := s.Summary(DefaultPolicy())
+	var codex ProviderSummary
+	for _, p := range summary.Providers {
+		if p.Provider == ProviderCodex {
+			codex = p
+			break
+		}
+	}
+	if codex.SessionInputTokens != 100 || codex.WeeklyInputTokens != 100 {
+		t.Fatalf("input tokens = session %d weekly %d, want 100/100", codex.SessionInputTokens, codex.WeeklyInputTokens)
+	}
+	if codex.SessionOutputTokens != 20 || codex.SessionCacheReadTokens != 40 || codex.SessionReasoningTokens != 5 {
+		t.Fatalf("session counters double counted: %+v", codex)
+	}
+	if codex.SessionSpendUSD != 1.25 || codex.WeeklySpendUSD != 1.25 {
+		t.Fatalf("spend = session %.2f weekly %.2f, want 1.25/1.25", codex.SessionSpendUSD, codex.WeeklySpendUSD)
+	}
+	if codex.SessionPremiumRequests != 2 || codex.WeeklyPremiumRequests != 2 {
+		t.Fatalf("premium requests = session %d weekly %d, want 2/2", codex.SessionPremiumRequests, codex.WeeklyPremiumRequests)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -43,6 +44,7 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		sandboxes:      a.sandboxes,
 		workflowEngine: a.workflowEngine,
 		stats:          a.stats,
+		limits:         a.limits,
 		loopSched:      a.loopSched,
 		humanReview:    a.humanReview,
 		prTracker:      a.prTracker,
@@ -66,6 +68,7 @@ type AgentCompletionHandler struct {
 	sandboxes      *sandbox.Manager
 	workflowEngine *workflow.Engine
 	stats          *stats.Store
+	limits         *limits.Store
 	loopSched      *loopagent.Scheduler
 	humanReview    *humanReviewHandler
 	prTracker      *github.IssueTracker
@@ -361,6 +364,25 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})
+	if h.limits != nil {
+		_ = h.limits.RecordUsage(limits.UsageEvent{
+			ID:                       "sybra-run:" + ag.ID,
+			Provider:                 ag.Provider,
+			Source:                   limits.SourceRunStats,
+			TaskID:                   ag.TaskID,
+			AgentID:                  ag.ID,
+			SessionID:                ag.GetSessionID(),
+			Model:                    ag.Model,
+			CostUSD:                  agCost,
+			InputTokens:              in,
+			OutputTokens:             out,
+			CacheCreationInputTokens: cacheCreate,
+			CacheReadInputTokens:     cacheRead,
+			ReasoningTokens:          reasoning,
+			PremiumRequests:          ag.GetPremiumRequests(),
+			Timestamp:                time.Now(),
+		})
+	}
 }
 
 // isRateLimitedRun reports whether a failed run was rejected by a transient

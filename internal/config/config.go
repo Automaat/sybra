@@ -455,6 +455,7 @@ type ProvidersConfig struct {
 	Claude       ProviderEntryConfig       `yaml:"claude" json:"claude"`
 	Codex        ProviderEntryConfig       `yaml:"codex" json:"codex"`
 	Copilot      ProviderEntryConfig       `yaml:"copilot" json:"copilot"`
+	Limits       ProviderLimitsConfig      `yaml:"limits" json:"limits"`
 	AutoFailover bool                      `yaml:"auto_failover" json:"autoFailover"`
 }
 
@@ -466,6 +467,17 @@ type ProviderHealthCheckConfig struct {
 type ProviderEntryConfig struct {
 	Enabled                  bool `yaml:"enabled" json:"enabled"`
 	RateLimitCooldownSeconds int  `yaml:"rate_limit_cooldown_seconds" json:"rateLimitCooldownSeconds"`
+	// MonthlySubscriptionUSD is optional and used only for Stats value
+	// comparison. Zero means "not configured".
+	MonthlySubscriptionUSD float64 `yaml:"monthly_subscription_usd" json:"monthlySubscriptionUsd"`
+}
+
+type ProviderLimitsConfig struct {
+	Enabled                 bool    `yaml:"enabled" json:"enabled"`
+	SessionThresholdPercent float64 `yaml:"session_threshold_percent" json:"sessionThresholdPercent"`
+	WeeklyThresholdPercent  float64 `yaml:"weekly_threshold_percent" json:"weeklyThresholdPercent"`
+	PreferUnderused         bool    `yaml:"prefer_underused" json:"preferUnderused"`
+	BackfillDays            int     `yaml:"backfill_days" json:"backfillDays"`
 }
 
 // MetricsConfig controls the OpenTelemetry metrics pipeline. When Enabled is
@@ -523,9 +535,16 @@ func DefaultConfig() *Config {
 				Enabled:         true,
 				IntervalSeconds: 300,
 			},
-			Claude:       ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Codex:        ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Copilot:      ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Claude:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Codex:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Copilot: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Limits: ProviderLimitsConfig{
+				Enabled:                 true,
+				SessionThresholdPercent: 85,
+				WeeklyThresholdPercent:  90,
+				PreferUnderused:         true,
+				BackfillDays:            14,
+			},
 			AutoFailover: true,
 		},
 		TasksDir: defaultTasksDir(),
@@ -812,6 +831,15 @@ func applyProvidersDefaults(cfg *Config) {
 	if cfg.Providers.Copilot.RateLimitCooldownSeconds <= 0 {
 		cfg.Providers.Copilot.RateLimitCooldownSeconds = 900
 	}
+	if cfg.Providers.Limits.SessionThresholdPercent <= 0 {
+		cfg.Providers.Limits.SessionThresholdPercent = 85
+	}
+	if cfg.Providers.Limits.WeeklyThresholdPercent <= 0 {
+		cfg.Providers.Limits.WeeklyThresholdPercent = 90
+	}
+	if cfg.Providers.Limits.BackfillDays <= 0 {
+		cfg.Providers.Limits.BackfillDays = 14
+	}
 }
 
 func (c *LoggingConfig) SlogLevel() slog.Level {
@@ -879,6 +907,10 @@ func AgentsDir() string {
 
 func StatsFile() string {
 	return filepath.Join(HomeDir(), "stats.json")
+}
+
+func LimitsFile() string {
+	return filepath.Join(HomeDir(), "limits.json")
 }
 
 // ArtifactsDir is the directory under ~/.sybra that holds per-task harness

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 )
 
@@ -23,7 +24,9 @@ type ConfigService struct {
 	logLevel   *slog.LevelVar
 	notifier   *notification.Emitter
 	agents     *agent.Manager
+	limits     *limits.Store
 	logger     *slog.Logger
+	policy     func() limits.Policy
 	reloadHook func() // called after todoist config changes
 }
 
@@ -155,12 +158,24 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 		MaxCostUSD: next.Agent.MaxCostUSD,
 		MaxTurns:   next.Agent.MaxTurns,
 	})
+	s.refreshLimitGate()
 	if s.logLevel != nil {
 		s.logLevel.Set(s.cfg.Logging.SlogLevel())
 	}
 	if s.reloadHook != nil {
 		s.reloadHook()
 	}
+}
+
+func (s *ConfigService) refreshLimitGate() {
+	if s.agents == nil || s.limits == nil {
+		return
+	}
+	policy := limits.DefaultPolicy()
+	if s.policy != nil {
+		policy = s.policy()
+	}
+	s.agents.SetLimitGate(s.limits, policy)
 }
 
 // settingsToConfig converts AppSettings into a config.Config overlay, filling

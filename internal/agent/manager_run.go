@@ -277,23 +277,48 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 	}
 	m.mu.RLock()
 	g := m.gate
+	lg := m.limitGate
+	lp := m.limitPolicy
 	m.mu.RUnlock()
-	if g == nil {
+	healthy := func(p string) bool {
+		return g == nil || g.IsHealthy(p)
+	}
+	if g != nil && !g.IsHealthy(resolved) {
+		if alt := g.Failover(resolved); alt != "" {
+			metrics.AgentFailover(resolved, alt)
+			m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
+			resolved = alt
+		} else {
+			reason := g.Reason(resolved)
+			metrics.AgentGated(resolved, reason)
+			return "", &provider.UnhealthyError{
+				Provider: resolved,
+				Reason:   reason,
+			}
+		}
+	}
+	if lg == nil {
 		return resolved, nil
 	}
-	if g.IsHealthy(resolved) {
+	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
+		if lp.PreferUnderused {
+			if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
+				metrics.AgentFailover(resolved, alt)
+				m.logger.Info("agent.run.limit_select", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", altReason)
+				return alt, nil
+			}
+		}
 		return resolved, nil
-	}
-	if alt := g.Failover(resolved); alt != "" {
+	} else if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
 		metrics.AgentFailover(resolved, alt)
-		m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
+		m.logger.Warn("agent.run.limit_failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", reason, "alt_reason", altReason)
 		return alt, nil
-	}
-	reason := g.Reason(resolved)
-	metrics.AgentGated(resolved, reason)
-	return "", &provider.UnhealthyError{
-		Provider: resolved,
-		Reason:   reason,
+	} else {
+		metrics.AgentGated(resolved, reason)
+		return "", &provider.UnhealthyError{
+			Provider: resolved,
+			Reason:   reason,
+		}
 	}
 }
 

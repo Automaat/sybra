@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as limits$0 from "../limits/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
 /**
@@ -129,6 +132,7 @@ export class StatsResponse {
     "byModel": GroupedStat[];
     "byProvider": GroupedStat[];
     "recentRuns": RunRecord[];
+    "limits"?: limits$0.Summary | null;
 
     /** Creates a new StatsResponse instance. */
     constructor($$source: Partial<StatsResponse> = {}) {
@@ -184,6 +188,7 @@ export class StatsResponse {
         const $$createField8_0 = $$createType2;
         const $$createField9_0 = $$createType2;
         const $$createField10_0 = $$createType4;
+        const $$createField11_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("today" in $$parsedSource) {
             $$parsedSource["today"] = $$createField0_0($$parsedSource["today"]);
@@ -217,6 +222,9 @@ export class StatsResponse {
         }
         if ("recentRuns" in $$parsedSource) {
             $$parsedSource["recentRuns"] = $$createField10_0($$parsedSource["recentRuns"]);
+        }
+        if ("limits" in $$parsedSource) {
+            $$parsedSource["limits"] = $$createField11_0($$parsedSource["limits"]);
         }
         return new StatsResponse($$parsedSource as Partial<StatsResponse>);
     }
@@ -279,3 +287,5 @@ const $$createType1 = GroupedStat.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = RunRecord.createFrom;
 const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = limits$0.Summary.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);

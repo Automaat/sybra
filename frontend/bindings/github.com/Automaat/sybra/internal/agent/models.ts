@@ -10,6 +10,9 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as json$0 from "../../../../../encoding/json/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as limits$0 from "../limits/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
 export class Agent {
@@ -137,6 +140,7 @@ export class ConvoEvent {
     "cacheReadInputTokens"?: number;
     "reasoningTokens"?: number;
     "premiumRequests"?: number;
+    "limitSnapshot"?: limits$0.Snapshot | null;
     "isPartial"?: boolean;
     "timestamp": time$0.Time;
     "raw"?: json$0.RawMessage;
@@ -166,12 +170,16 @@ export class ConvoEvent {
     static createFrom($$source: any = {}): ConvoEvent {
         const $$createField4_0 = $$createType2;
         const $$createField5_0 = $$createType4;
+        const $$createField13_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("toolUses" in $$parsedSource) {
             $$parsedSource["toolUses"] = $$createField4_0($$parsedSource["toolUses"]);
         }
         if ("toolResults" in $$parsedSource) {
             $$parsedSource["toolResults"] = $$createField5_0($$parsedSource["toolResults"]);
+        }
+        if ("limitSnapshot" in $$parsedSource) {
+            $$parsedSource["limitSnapshot"] = $$createField13_0($$parsedSource["limitSnapshot"]);
         }
         return new ConvoEvent($$parsedSource as Partial<ConvoEvent>);
     }
@@ -265,6 +273,13 @@ export class StreamEvent {
      */
     "tool_calls"?: number;
 
+    /**
+     * LimitSnapshot carries provider quota status emitted by CLIs such as
+     * Codex. It is forwarded to the limits ledger and not rendered as normal
+     * assistant output.
+     */
+    "limit_snapshot"?: limits$0.Snapshot | null;
+
     /** Creates a new StreamEvent instance. */
     constructor($$source: Partial<StreamEvent> = {}) {
         if (!("type" in $$source)) {
@@ -281,14 +296,18 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField14_0 = $$createType6;
+        const $$createField14_0 = $$createType8;
         const $$createField15_0 = $$createType0;
+        const $$createField17_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
             $$parsedSource["plan_steps"] = $$createField14_0($$parsedSource["plan_steps"]);
         }
         if ("plugin_errors" in $$parsedSource) {
             $$parsedSource["plugin_errors"] = $$createField15_0($$parsedSource["plugin_errors"]);
+        }
+        if ("limit_snapshot" in $$parsedSource) {
+            $$parsedSource["limit_snapshot"] = $$createField17_0($$parsedSource["limit_snapshot"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }
@@ -350,7 +369,7 @@ export class ToolUseBlock {
      * Creates a new ToolUseBlock instance from a string or object.
      */
     static createFrom($$source: any = {}): ToolUseBlock {
-        const $$createField2_0 = $$createType7;
+        const $$createField2_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("input" in $$parsedSource) {
             $$parsedSource["input"] = $$createField2_0($$parsedSource["input"]);
@@ -365,6 +384,8 @@ const $$createType1 = ToolUseBlock.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = ToolResultBlock.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = PlanStep.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = limits$0.Snapshot.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = PlanStep.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);

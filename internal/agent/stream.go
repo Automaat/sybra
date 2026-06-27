@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 // ClaudeMessage holds parsed content blocks from assistant or user messages.
@@ -60,6 +62,7 @@ type CodexEvent struct {
 	Raw       json.RawMessage
 	Message   *ClaudeMessage // reuses ClaudeMessage for shared content structure
 	Result    *ClaudeResult
+	Limits    *limits.Snapshot
 }
 
 // CopilotEvent is the shared envelope for all GitHub Copilot CLI stream-json
@@ -407,6 +410,9 @@ func ParseCodexLine(line []byte) (CodexEvent, error) {
 	}
 
 	rawCopy := copyRaw(line)
+	if snapshot, ok := limits.SnapshotFromCodexRaw(line, limits.SourceStream); ok && snapshot.Provider != "" {
+		return CodexEvent{Type: "usage", Raw: rawCopy, Limits: &snapshot}, nil
+	}
 
 	switch raw.Type {
 	case "thread.started":

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
@@ -89,6 +90,35 @@ func TestGateProvider_IgnoreHealthGateBypasses(t *testing.T) {
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude", got)
+	}
+}
+
+func TestLimitPolicy_DefensiveCopiesMaps(t *testing.T) {
+	m, _ := newTestManager(t)
+	policy := limits.DefaultPolicy()
+	policy.ProviderEnabled[limits.ProviderCodex] = true
+	policy.SubscriptionMonthlyUSD[limits.ProviderCodex] = 200
+
+	m.SetLimitGate(nil, policy)
+	policy.ProviderEnabled[limits.ProviderCodex] = false
+	policy.SubscriptionMonthlyUSD[limits.ProviderCodex] = 0
+
+	got := m.LimitPolicy()
+	if !got.ProviderEnabled[limits.ProviderCodex] {
+		t.Fatal("SetLimitGate retained caller-owned ProviderEnabled map")
+	}
+	if got.SubscriptionMonthlyUSD[limits.ProviderCodex] != 200 {
+		t.Fatalf("SetLimitGate retained caller-owned SubscriptionMonthlyUSD map: %+v", got.SubscriptionMonthlyUSD)
+	}
+
+	got.ProviderEnabled[limits.ProviderCodex] = false
+	got.SubscriptionMonthlyUSD[limits.ProviderCodex] = 0
+	again := m.LimitPolicy()
+	if !again.ProviderEnabled[limits.ProviderCodex] {
+		t.Fatal("LimitPolicy returned manager-owned ProviderEnabled map")
+	}
+	if again.SubscriptionMonthlyUSD[limits.ProviderCodex] != 200 {
+		t.Fatalf("LimitPolicy returned manager-owned SubscriptionMonthlyUSD map: %+v", again.SubscriptionMonthlyUSD)
 	}
 }
 

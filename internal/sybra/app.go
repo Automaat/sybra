@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -59,6 +60,7 @@ type App struct {
 	audit                         *audit.Logger
 	artifacts                     *artifact.Store
 	stats                         *stats.Store
+	limits                        *limits.Store
 	tasksDir                      string
 	skillsDir                     string
 	repoDir                       string
@@ -255,6 +257,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)
 	a.agents.SetDefaultProvider(a.cfg.Agent.Provider)
+	a.initLimits()
 	a.initProviderHealth(ctx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)

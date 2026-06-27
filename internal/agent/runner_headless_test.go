@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 // newParseTestManager returns a Manager suitable for unit-testing
@@ -89,6 +92,39 @@ func TestParseCodexStreamEvent_TurnCompleted(t *testing.T) {
 	}
 }
 
+func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
+	m := newParseTestManager(t)
+	var snapshots []limits.Snapshot
+	var emitted []any
+	m.emit = func(event string, data any) {
+		if event == events.AgentOutput("limit1") {
+			emitted = append(emitted, data)
+		}
+	}
+	m.SetLimitSink(func(snapshot limits.Snapshot) {
+		snapshots = append(snapshots, snapshot)
+	})
+	a := &Agent{ID: "limit1", TaskID: "t", Mode: "headless", Provider: "codex", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"timestamp":"2026-06-19T12:40:08.052Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":12,"window_minutes":300,"resets_at":1781877547},"plan_type":"pro"}}}`)
+
+	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, "codex"); stop {
+		t.Fatal("limit snapshot event must not stop the stream")
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("limit snapshots = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Provider != limits.ProviderCodex {
+		t.Fatalf("snapshot provider = %q, want codex", snapshots[0].Provider)
+	}
+	if out := a.Output(); len(out) != 0 {
+		t.Fatalf("agent output = %+v, want no rendered usage event", out)
+	}
+	if len(emitted) != 0 {
+		t.Fatalf("emitted output events = %d, want none", len(emitted))
+	}
+}
+
 func TestParseCodexStreamEvent_Error_SubstringFallback(t *testing.T) {
 	line := []byte(`{"type":"error","message":"Service overloaded (529)"}`)
 
@@ -162,8 +198,8 @@ func TestShouldRetry_Stderr529(t *testing.T) {
 }
 
 func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
-	events := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
-	if shouldRetry("", events, nil) {
+	streamEvents := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
+	if shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = true on non-transient error, want false")
 	}
 }

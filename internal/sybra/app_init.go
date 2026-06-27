@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
@@ -158,6 +159,47 @@ func (a *App) initStats() {
 	if err := statsStore.Backfill(a.auditDir); err != nil {
 		a.logger.Warn("stats.backfill", "err", err)
 	}
+}
+
+func (a *App) initLimits() {
+	limitStore, err := limits.NewStore(config.LimitsFile())
+	if err != nil {
+		a.logger.Warn("limits.init.degraded", "err", err)
+		return
+	}
+	a.limits = limitStore
+	policy := a.limitPolicy()
+	a.agents.SetLimitGate(limitStore, policy)
+	a.agents.SetLimitSink(func(snapshot limits.Snapshot) {
+		if err := limitStore.UpdateSnapshot(snapshot); err != nil {
+			a.logger.Warn("limits.snapshot", "provider", snapshot.Provider, "err", err)
+		}
+	})
+	if policy.Enabled {
+		cutoff := time.Now().AddDate(0, 0, -a.cfg.Providers.Limits.BackfillDays)
+		if err := limitStore.BackfillLocalSessionFiles(cutoff); err != nil {
+			a.logger.Warn("limits.backfill", "err", err)
+		}
+	}
+}
+
+func (a *App) limitPolicy() limits.Policy {
+	p := limits.DefaultPolicy()
+	p.Enabled = a.cfg.Providers.Limits.Enabled
+	p.SessionThresholdPercent = a.cfg.Providers.Limits.SessionThresholdPercent
+	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
+	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
+	p.SubscriptionMonthlyUSD = map[string]float64{
+		"claude":  a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		"codex":   a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		"copilot": a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+	}
+	p.ProviderEnabled = map[string]bool{
+		"claude":  a.cfg.Providers.Claude.Enabled,
+		"codex":   a.cfg.Providers.Codex.Enabled,
+		"copilot": a.cfg.Providers.Copilot.Enabled,
+	}
+	return p
 }
 
 func (a *App) initStatusHook() {
