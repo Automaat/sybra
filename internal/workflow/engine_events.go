@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -331,6 +332,11 @@ func (e *Engine) ResumeStalled() {
 		if step.Type != StepRunAgent {
 			continue
 		}
+		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
+			e.logger.Debug("workflow.resume-stalled.skip",
+				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAt.Format(time.RFC3339), "step", step.ID)
+			continue
+		}
 		// A task in human-required was halted by a competing path (e.g. the
 		// inline review triage deciding the PR is too small). Do not resume its
 		// workflow: that would override the triage verdict and re-dispatch an
@@ -382,6 +388,7 @@ func (e *Engine) ResumeStalled() {
 				break
 			}
 		}
+
 		if !advancing && !dispatching && !hasOutstandingAgent {
 			e.dispatching[t.ID] = struct{}{}
 		}
@@ -425,6 +432,18 @@ func (e *Engine) ResumeStalled() {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
 		}
 	}
+}
+
+func workflowRetryAfter(wf *Execution) (time.Time, bool) {
+	if wf == nil || wf.Variables == nil {
+		return time.Time{}, false
+	}
+	raw := wf.Variables[workflowRetryAfterVar]
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	return t, err == nil
 }
 
 // surfaceStartFailure writes a human-readable reason to task.StatusReason
