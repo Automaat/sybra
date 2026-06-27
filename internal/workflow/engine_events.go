@@ -26,6 +26,10 @@ func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string
 	if err != nil {
 		return err
 	}
+	t, err = e.advanceSatisfiedWaitForStatus(taskID, t)
+	if err != nil {
+		return err
+	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
 		return fmt.Errorf("task %s is not waiting for human action", taskID)
 	}
@@ -59,6 +63,42 @@ func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string
 		Status: "completed",
 		Output: action,
 	})
+}
+
+// advanceSatisfiedWaitForStatus repairs the common "missed watcher event"
+// state where a run_agent step is waiting for a status that the task already
+// has. This lets human approve/reject clicks reconcile the workflow before
+// validating that the current step is wait_human.
+func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskInfo, error) {
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return t, nil
+	}
+	if t.Workflow.State != ExecWaiting && t.Workflow.State != ExecRunning {
+		return t, nil
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return t, err
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		return t, fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
+	}
+	if step.Type != StepRunAgent || step.Config.WaitForStatus == "" || step.Config.WaitForStatus != t.Status {
+		return t, nil
+	}
+
+	e.logger.Info("workflow.wait-for-status.reconcile",
+		"task_id", taskID, "step", step.ID, "status", t.Status)
+	if err := e.AdvanceStep(taskID, StepOutput{
+		StepID: step.ID,
+		Status: "completed",
+		Output: "status:" + t.Status,
+	}); err != nil {
+		return TaskInfo{}, err
+	}
+	return e.tasks.GetTask(taskID)
 }
 
 // HandleStatusChange is called when a task's status transitions. If the
