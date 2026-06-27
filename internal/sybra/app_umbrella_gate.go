@@ -77,9 +77,12 @@ func (a *App) releaseUnblockedChildren() {
 			Umbrella:  t.UmbrellaIssue,
 			DependsOn: t.DependsOn,
 			Done:      t.Status == task.StatusDone,
-			// Only a gate-marked todo child is eligible for release —
-			// never one parked in `blocked` for a contained Sybra bug.
-			Awaiting: t.UmbrellaIssue != "" && t.Status == task.StatusTodo &&
+			// Gate-marked todo children (current model) and legacy
+			// blocked+gated children (tasks created before this change)
+			// are both eligible for release. Never release a task that is
+			// blocked without the gating tag (contained Sybra bug).
+			Awaiting: t.UmbrellaIssue != "" &&
+				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
 	}
@@ -148,6 +151,7 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 			return s == umbrellaGatedTag
 		})
 		if _, err := a.tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusTodo),
 			Tags:         &newTags,
 			StatusReason: task.Ptr("umbrella dependencies satisfied"),
 		}); err != nil {
