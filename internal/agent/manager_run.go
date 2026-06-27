@@ -89,6 +89,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cancel:                 cancel,
 		sessionCWD:             cfg.Dir,
 		MaxTurns:               cfg.MaxTurns,
+		oneShot:                cfg.OneShot,
 		requirePermissions:     cfg.RequirePermissions,
 		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}

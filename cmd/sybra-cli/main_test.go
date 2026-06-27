@@ -457,7 +457,7 @@ func TestHandoffPersistsSourceProviderAtomically(t *testing.T) {
 		t.Fatalf("mkdir clone parent: %v", err)
 	}
 	runGit(t, "", "init", "--bare", proj.ClonePath)
-	runGit(t, proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, "", "--git-dir="+proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	worktree := filepath.Join(t.TempDir(), "repo")
 	runGit(t, "", "init", worktree)
