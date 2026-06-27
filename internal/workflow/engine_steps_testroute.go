@@ -576,6 +576,10 @@ var fixSuggestionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\buse\s+\S+\s+instead\s+of\s+\S+`),
 }
 
+// fixSuggestionPhrases are case-insensitive substrings that signal the test
+// runner prescribed a code change rather than described observed behavior.
+// False positives are acceptable — the taint is advisory and never changes the
+// FAIL verdict or adds an extra re-implementation loop.
 var fixSuggestionPhrases = []string{
 	"you should fix",
 	"you should change",
