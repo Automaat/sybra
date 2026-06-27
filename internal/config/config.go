@@ -505,13 +505,14 @@ type MetricsConfig struct {
 // AutoUpdateConfig controls source update checks. It reports newer remote
 // commits but does not merge or restart Sybra.
 type AutoUpdateConfig struct {
-	Enabled             bool   `yaml:"enabled" json:"enabled"`
-	RepoDir             string `yaml:"repo_dir" json:"repoDir"`
-	Remote              string `yaml:"remote" json:"remote"`
-	Branch              string `yaml:"branch" json:"branch"`
-	Mode                string `yaml:"mode" json:"mode"`
-	PollSeconds         int    `yaml:"poll_seconds" json:"pollSeconds"`
-	RestartDelaySeconds int    `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	RepoDir     string `yaml:"repo_dir" json:"repoDir"`
+	Remote      string `yaml:"remote" json:"remote"`
+	Branch      string `yaml:"branch" json:"branch"`
+	Mode        string `yaml:"mode" json:"mode"`
+	PollSeconds int    `yaml:"poll_seconds" json:"pollSeconds"`
+	// Deprecated: ignored. Kept so existing config files continue to load.
+	RestartDelaySeconds int `yaml:"restart_delay_seconds" json:"restartDelaySeconds"`
 }
 
 func HomeDir() string {

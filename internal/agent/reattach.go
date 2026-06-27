@@ -183,6 +183,7 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 	oneShot := r.OneShot || r.StdinPath == ""
 
 	a := agentFromRecord(r)
+	a.oneShot = oneShot
 	var startOffset int64
 	if r.LogPath != "" {
 		startOffset = rehydrateConvoFromLog(a, r.LogPath)

@@ -38,6 +38,7 @@ export class AgentRun {
     "premiumRequests"?: number;
     "prompt"?: string;
     "result": string;
+    "oneShot"?: boolean;
 
     /**
      * Verdict holds the parsed decision for human-review runs ("human" or
