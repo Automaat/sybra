@@ -54,6 +54,6 @@
     "snarkdown": "^2.0.0"
   },
   "overrides": {
-    "esrap": "2.2.12"
+    "esrap": "2.2.11"
   }
 }
