@@ -252,7 +252,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 }
 
 func traceID(taskID, stepID, agentID string) string {
-	sum := sha256.Sum256([]byte(taskID + "|" + stepID + "|" + agentID))
+	sum := sha256.Sum256([]byte(taskID + "|" + stepID + "|" + agentID + "|"))
 	return "trace-" + hex.EncodeToString(sum[:])[:12]
 }
 
