@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"slices"
+	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -12,6 +13,12 @@ import (
 // gate requires it to release and strips it on release. Aliased from the
 // umbrella package so the CLI expander and this gate cannot drift.
 const umbrellaGatedTag = umbrella.GatedTag
+
+// umbrellaSettleDelay is how long after creation a childless umbrella tracker
+// must persist before the gate treats it as complete. Comfortably exceeds the
+// 1-minute orchestrator tick so a tracker whose children are still being
+// materialized in the same expansion is never closed prematurely.
+const umbrellaSettleDelay = 2 * time.Minute
 
 // umbrellaState aggregates one umbrella's tracker and children for a gate tick.
 type umbrellaState struct {
@@ -158,7 +165,11 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if st.tracker == nil {
 			continue
 		}
-		desired, reason, doClose := trackerRollup(st, cyclic[key])
+		// A tracker is "settled" once it has outlived the creation window, so a
+		// childless tally that just reflects children still being materialized
+		// is not mistaken for a completed umbrella.
+		settled := time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
+		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
 		if desired == st.tracker.Status {
 			continue
 		}
@@ -181,8 +192,11 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 
 // trackerRollup decides an umbrella tracker's status from its children. A
 // cycle, a stuck (human-required) child, or a cancelled child surfaces as
-// human-required (halting only that chain); all-done closes the umbrella.
-func trackerRollup(st *umbrellaState, cyclic bool) (status task.Status, reason string, doClose bool) {
+// human-required (halting only that chain); all-done closes the umbrella. A
+// tracker with no children (every sub-issue was already closed at expansion)
+// is vacuously complete, but only once `settled` so a tracker observed while
+// its children are still being materialized is not closed prematurely.
+func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
@@ -192,6 +206,8 @@ func trackerRollup(st *umbrellaState, cyclic bool) (status task.Status, reason s
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
+	case st.total == 0 && settled:
+		return task.StatusDone, "umbrella has no open sub-issues", true
 	default:
 		return task.StatusInProgress, "umbrella in progress", false
 	}
