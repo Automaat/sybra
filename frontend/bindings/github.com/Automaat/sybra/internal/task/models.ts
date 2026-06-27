@@ -357,11 +357,13 @@ export class Task {
     "updatedAt": time$0.Time;
     "body": string;
     "plan"?: string;
+    "planContract"?: string;
     "planCritique"?: string;
 
     /**
-     * Planning support sidecars. Plan remains the compact execution contract
-     * consumed by implementation agents; these hold review/evidence material.
+     * Planning sidecars. Plan is the human-readable compact plan; PlanContract
+     * is the machine-validated JSON contract consumed by implementation agents.
+     * The remaining sidecars hold review/evidence material.
      */
     "planResearch"?: string;
     "planDecisions"?: string;
@@ -459,7 +461,7 @@ export class Task {
         const $$createField17_0 = $$createType0;
         const $$createField35_0 = $$createType2;
         const $$createField36_0 = $$createType4;
-        const $$createField46_0 = $$createType5;
+        const $$createField47_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -477,7 +479,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField36_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField46_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField47_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

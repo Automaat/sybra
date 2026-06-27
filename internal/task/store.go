@@ -21,6 +21,7 @@ type Store struct {
 	dir           string
 	comments      *CommentStore
 	plans         *PlanStore
+	planContracts *PlanningSidecarStore
 	planDrafts    *PlanDraftStore
 	planCritiques *PlanCritiqueStore
 	planResearch  *PlanningSidecarStore
@@ -40,6 +41,7 @@ func NewStore(dir string) (*Store, error) {
 		dir:           dir,
 		comments:      NewCommentStore(dir),
 		plans:         NewPlanStore(dir),
+		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
 		planDrafts:    NewPlanDraftStore(dir),
 		planCritiques: NewPlanCritiqueStore(dir),
 		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
@@ -55,6 +57,10 @@ func (s *Store) Comments() *CommentStore {
 
 func (s *Store) Plans() *PlanStore {
 	return s.plans
+}
+
+func (s *Store) PlanContracts() *PlanningSidecarStore {
+	return s.planContracts
 }
 
 func (s *Store) PlanDrafts() *PlanDraftStore {
@@ -89,6 +95,7 @@ func IsSidecarFile(base string) bool {
 		return true
 	}
 	return strings.HasSuffix(base, ".plan.md") ||
+		strings.HasSuffix(base, ".plan-contract.json") ||
 		strings.HasSuffix(base, ".plan-critique.md") ||
 		strings.HasSuffix(base, ".plan-research.md") ||
 		strings.HasSuffix(base, ".plan-decisions.md") ||
@@ -132,6 +139,7 @@ func (s *Store) List() ([]Task, error) {
 			continue
 		}
 		t.Plan = sidecars.plans[t.ID]
+		t.PlanContract = sidecars.contracts[t.ID]
 		t.PlanCritique = sidecars.critiques[t.ID]
 		t.PlanResearch = sidecars.research[t.ID]
 		t.PlanDecisions = sidecars.decisions[t.ID]
@@ -163,6 +171,7 @@ func (s *Store) List() ([]Task, error) {
 // indexed by task ID. Used by List to amortize sidecar I/O.
 type sidecarIndex struct {
 	plans     map[string]string
+	contracts map[string]string
 	critiques map[string]string
 	research  map[string]string
 	decisions map[string]string
@@ -179,6 +188,7 @@ type sidecarIndex struct {
 func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 	idx := &sidecarIndex{
 		plans:     map[string]string{},
+		contracts: map[string]string{},
 		critiques: map[string]string{},
 		research:  map[string]string{},
 		decisions: map[string]string{},
@@ -191,7 +201,7 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 			continue
 		}
 		base := e.Name()
-		if !strings.HasSuffix(base, ".md") {
+		if !strings.HasSuffix(base, ".md") && !strings.HasSuffix(base, ".json") {
 			continue
 		}
 		// Order matters: plan-draft and plan-critique both have
@@ -223,6 +233,14 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 				continue
 			}
 			idx.critiques[id] = string(data)
+		case strings.HasSuffix(base, ".plan-contract.json"):
+			id := strings.TrimSuffix(base, ".plan-contract.json")
+			data, err := os.ReadFile(filepath.Join(dir, base))
+			if err != nil {
+				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+				continue
+			}
+			idx.contracts[id] = string(data)
 		case strings.HasSuffix(base, ".plan-research.md"):
 			id := strings.TrimSuffix(base, ".plan-research.md")
 			data, err := os.ReadFile(filepath.Join(dir, base))
@@ -274,6 +292,7 @@ func (s *Store) Get(id string) (Task, error) {
 		return Task{}, err
 	}
 	t.Plan, _ = s.plans.Read(t.ID)
+	t.PlanContract, _ = s.planContracts.Read(t.ID)
 	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
 	t.PlanResearch, _ = s.planResearch.Read(t.ID)
 	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
@@ -489,6 +508,7 @@ func (s *Store) Delete(id string) error {
 	}
 	_ = s.comments.DeleteAll(id)
 	_ = s.plans.Delete(id)
+	_ = s.planContracts.Delete(id)
 	_ = s.planCritiques.Delete(id)
 	_ = s.planResearch.Delete(id)
 	_ = s.planDecisions.Delete(id)
@@ -504,6 +524,12 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 			return fmt.Errorf("write plan: %w", err)
 		}
 		t.Plan = *u.Plan
+	}
+	if u.PlanContract != nil {
+		if err := s.planContracts.Write(id, *u.PlanContract); err != nil {
+			return fmt.Errorf("write plan contract: %w", err)
+		}
+		t.PlanContract = *u.PlanContract
 	}
 	if u.PlanCritique != nil {
 		if err := s.planCritiques.Write(id, *u.PlanCritique); err != nil {
@@ -725,9 +751,6 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 // InvalidatePath clears any cached task/list state for the given task file.
 // Non-task files are ignored.
 func (s *Store) InvalidatePath(path string) {
-	if !strings.HasSuffix(path, ".md") {
-		return
-	}
 	base := filepath.Base(path)
 	if IsSidecarFile(base) {
 		// An external plan-draft write/delete must drop the draft index so a
@@ -737,6 +760,9 @@ func (s *Store) InvalidatePath(path string) {
 			s.planDrafts.invalidateIndex()
 		}
 		s.invalidateListCache()
+		return
+	}
+	if !strings.HasSuffix(base, ".md") {
 		return
 	}
 	id := strings.TrimSuffix(base, ".md")

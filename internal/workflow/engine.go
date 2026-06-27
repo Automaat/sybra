@@ -30,6 +30,7 @@ type TaskInfo struct {
 	Branch                string
 	Body                  string
 	Plan                  string
+	PlanContract          string
 	PlanCritique          string
 	PlanResearch          string
 	PlanDecisions         string
@@ -83,6 +84,7 @@ type TaskProvider interface {
 	// ingest the agent's output file without depending on the agent's
 	// sandbox being able to write to ~/.sybra/tasks/. Recognized kinds:
 	//   "plan"          — final implementation plan
+	//   "plan_contract" — executable JSON plan contract
 	//   "plan_critique" — plan-critic report
 	//   "plan_research" — raw planning research/evidence
 	//   "plan_decisions" — human decision brief

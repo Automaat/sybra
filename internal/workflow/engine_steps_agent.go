@@ -59,6 +59,13 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
 		e.logger.Warn("workflow.import-sidecar.read", "task_id", taskID, "step", stepID, "path", path, "err", readErr)
+		if cfg.Required {
+			e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+		}
+		return
+	}
+	if cfg.Required && strings.TrimSpace(string(content)) == "" {
+		e.failRequiredImport(taskID, stepID, cfg.Kind, "empty")
 		return
 	}
 	// Convention: a bare "plan_draft" kind is auto-namespaced by the step
@@ -81,6 +88,22 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 		if recErr := e.recorder.PutPlanSnapshot(taskID, step.Config.Role, stepID, path, string(content)); recErr != nil {
 			e.logger.Warn("artifact.record.failed", "kind", "plan", "task_id", taskID, "step", stepID, "err", recErr)
 		}
+	}
+	if cfg.Kind == "plan_contract" && e.recorder != nil {
+		name := "plan-contract.json"
+		if stepID != "" {
+			name = "plan-contract-" + stepID + ".json"
+		}
+		if recErr := e.recorder.PutGeneric(taskID, name, stepID, string(content)); recErr != nil {
+			e.logger.Warn("artifact.record.failed", "kind", "plan_contract", "task_id", taskID, "step", stepID, "err", recErr)
+		}
+	}
+}
+
+func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
+	reason := fmt.Sprintf("required %s sidecar %s after step %s", kind, state, stepID)
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}
 }
 

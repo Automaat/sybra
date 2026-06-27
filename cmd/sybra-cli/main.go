@@ -235,6 +235,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.Plan != "" {
 		fmt.Printf("\n## Plan\n\n%s\n", t.Plan)
 	}
+	if t.PlanContract != "" {
+		fmt.Printf("\n## Plan Contract\n\n```json\n%s\n```\n", t.PlanContract)
+	}
 	if t.PlanCritique != "" {
 		fmt.Printf("\n## Plan Critique\n\n%s\n", t.PlanCritique)
 	}
@@ -265,6 +268,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
 	plan := fs.String("plan", "", "plan content markdown")
+	planContract := fs.String("plan-contract", "", "executable plan contract JSON")
 	planCritique := fs.String("plan-critique", "", "plan critique markdown")
 	planResearch := fs.String("plan-research", "", "plan research markdown")
 	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
@@ -331,6 +335,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *plan != "" {
 		updates["plan"] = *plan
+	}
+	if *planContract != "" {
+		updates["plan_contract"] = *planContract
 	}
 	if *planCritique != "" {
 		updates["plan_critique"] = *planCritique
@@ -813,6 +820,8 @@ type updateFlags struct {
 	body              *string
 	plan              *string
 	planFile          *string
+	planContract      *string
+	planContractFile  *string
 	planCritique      *string
 	planCritiqueFile  *string
 	planResearch      *string
@@ -843,6 +852,8 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		body:              fs.String("body", "", "new body"),
 		plan:              fs.String("plan", "", "plan content markdown (empty string clears plan)"),
 		planFile:          fs.String("plan-file", "", "path to file with plan content"),
+		planContract:      fs.String("plan-contract", "", "executable plan contract JSON (empty string clears contract)"),
+		planContractFile:  fs.String("plan-contract-file", "", "path to file with executable plan contract JSON"),
 		planCritique:      fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)"),
 		planCritiqueFile:  fs.String("plan-critique-file", "", "path to file with plan critique content"),
 		planResearch:      fs.String("plan-research", "", "plan research markdown (empty string clears research)"),
@@ -915,6 +926,7 @@ func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
 func applySidecarUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
 	for _, fu := range []struct{ flag, key, str, file string }{
 		{"plan", "plan", *f.plan, *f.planFile},
+		{"plan-contract", "plan_contract", *f.planContract, *f.planContractFile},
 		{"plan-critique", "plan_critique", *f.planCritique, *f.planCritiqueFile},
 		{"plan-research", "plan_research", *f.planResearch, *f.planResearchFile},
 		{"plan-decisions", "plan_decisions", *f.planDecisions, *f.planDecisionsFile},
@@ -1665,7 +1677,7 @@ Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|ready-pr|human-required|done|cancelled
   get      [--compact] <id>
-  create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
+  create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
@@ -1684,7 +1696,7 @@ Commands:
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
   link-pr  <id> <pr-number>
            Link a PR number to a task and advance it to in-review. Use when a PR
            was opened outside of Sybra; the PR monitor will then auto-merge or
