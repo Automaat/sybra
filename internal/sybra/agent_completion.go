@@ -134,6 +134,8 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
+	h.emitPermissionDenialAudits(ag)
+
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
@@ -189,6 +191,25 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		if h.sandboxes != nil {
 			go h.sandboxes.Stop(ag.TaskID)
 		}
+	}
+}
+
+// emitPermissionDenialAudits emits one agent.permission_denied audit event per
+// auto-mode denial recorded during the run. Batched at completion time so the
+// audit log is not spammed mid-run; a killed run may drop its denial events —
+// the permission_posture on agent.started is the durable observability signal.
+func (h *AgentCompletionHandler) emitPermissionDenialAudits(ag *agent.Agent) {
+	posture := ag.GetHeadlessPermissionMode()
+	for _, d := range ag.GetPermissionDenials() {
+		toolID := d.ToolUseID
+		if toolID == "" {
+			toolID = "unknown"
+		}
+		h.logAudit(audit.EventAgentPermissionDenied, ag.TaskID, ag.ID, map[string]any{
+			"tool":    toolID,
+			"reason":  d.Reason,
+			"posture": posture,
+		})
 	}
 }
 

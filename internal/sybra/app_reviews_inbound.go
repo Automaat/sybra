@@ -87,6 +87,11 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
 
+	posture, postureErr := resolveHeadlessPermissionMode(t, r.cfg)
+	if postureErr != nil {
+		return postureErr
+	}
+
 	dir, err := r.worktrees.PrepareForFix(t, t.PRNumber)
 	if err != nil {
 		return fmt.Errorf("prepare worktree: %w", err)
@@ -101,12 +106,13 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 	)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID: t.ID,
-		Name:   agent.RoleFixReview.AgentName(t.Title),
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    dir,
-		Model:  "opus",
+		TaskID:                 t.ID,
+		Name:                   agent.RoleFixReview.AgentName(t.Title),
+		Mode:                   "headless",
+		Prompt:                 prompt,
+		Dir:                    dir,
+		Model:                  "opus",
+		HeadlessPermissionMode: posture,
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
 	})
@@ -151,6 +157,11 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 		return nil
 	}
 
+	posture, postureErr := resolveHeadlessPermissionMode(current, r.cfg)
+	if postureErr != nil {
+		return postureErr
+	}
+
 	dir := config.HomeDir()
 	if current.ProjectID != "" {
 		d, err := r.worktrees.PrepareForReview(current)
@@ -164,12 +175,13 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID: current.ID,
-		Name:   agent.RoleReview.AgentName(current.Title),
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    dir,
-		Model:  "opus",
+		TaskID:                 current.ID,
+		Name:                   agent.RoleReview.AgentName(current.Title),
+		Mode:                   "headless",
+		Prompt:                 prompt,
+		Dir:                    dir,
+		Model:                  "opus",
+		HeadlessPermissionMode: posture,
 		// MaxTurns intentionally not inherited: review agents need
 		// enough turns to fetch the PR, run the skill, and write findings.
 	})

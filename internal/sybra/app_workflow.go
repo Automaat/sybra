@@ -348,19 +348,25 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 
+	posture, postureErr := resolveHeadlessPermissionMode(t, a.agentOrch.cfg)
+	if postureErr != nil {
+		return "", postureErr
+	}
+
 	cfg := agent.RunConfig{
-		TaskID:             taskID,
-		Name:               r.AgentName(t.Title),
-		Mode:               mode,
-		Prompt:             prompt,
-		AllowedTools:       allowedTools,
-		Model:              model,
-		Provider:           provider,
-		Dir:                dir,
-		OneShot:            oneShot,
-		MaxTurns:           t.MaxTurns,
-		RequirePermissions: resolvePermission(t, a.agentOrch.cfg),
-		ReasoningEffort:    t.ReasoningEffort,
+		TaskID:                 taskID,
+		Name:                   r.AgentName(t.Title),
+		Mode:                   mode,
+		Prompt:                 prompt,
+		AllowedTools:           allowedTools,
+		Model:                  model,
+		Provider:               provider,
+		Dir:                    dir,
+		OneShot:                oneShot,
+		MaxTurns:               t.MaxTurns,
+		RequirePermissions:     resolvePermission(t, a.agentOrch.cfg),
+		HeadlessPermissionMode: posture,
+		ReasoningEffort:        t.ReasoningEffort,
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.

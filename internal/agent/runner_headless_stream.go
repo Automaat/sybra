@@ -56,6 +56,14 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 	case "user":
 		if e.Message != nil {
 			ev.Content = formatHeadlessToolResults(e.Message.ToolResults)
+			for _, tr := range e.Message.ToolResults {
+				if classifyAutoModeDenial(tr) {
+					ev.permissionDenials = append(ev.permissionDenials, PermissionDenial{
+						ToolUseID: tr.ToolUseID,
+						Reason:    tr.Content,
+					})
+				}
+			}
 		}
 	case "result":
 		if e.Result != nil {

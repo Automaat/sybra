@@ -745,3 +745,16 @@ func strVal(m map[string]any, key string) string {
 	v, _ := m[key].(string)
 	return v
 }
+
+// autoModeDenialMarker is the substring Claude Code embeds in tool_result error
+// content when the auto-mode classifier blocks a tool call. Matched
+// case-insensitively so a minor wording change doesn't silently break detection.
+const autoModeDenialMarker = "denied by the claude code auto mode classifier"
+
+// classifyAutoModeDenial reports whether tr is an auto-mode classifier denial.
+// True when tr.IsError is set and tr.Content (case-insensitive) contains the
+// denial marker, regardless of how Content was assembled (plain string or
+// array-joined text blocks).
+func classifyAutoModeDenial(tr ToolResultBlock) bool {
+	return tr.IsError && strings.Contains(strings.ToLower(tr.Content), autoModeDenialMarker)
+}

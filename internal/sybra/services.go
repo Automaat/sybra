@@ -20,6 +20,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.taskSvc.wg = &a.wg
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
+	a.taskSvc.cfg = a.cfg
 	a.planSvc.engine = a.workflowEngine
 	a.planSvc.tasks = a.tasks
 	a.planSvc.agents = a.agents

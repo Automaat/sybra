@@ -89,6 +89,15 @@ export class AgentDefaults {
      */
     "approvalPort": number;
 
+    /**
+     * HeadlessPermissionMode sets the default permission posture for unattended
+     * headless claude runs. "bypass" (default) keeps the current
+     * --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto
+     * which activates the Claude Code auto-mode classifier (blocks destructive ops
+     * such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass".
+     */
+    "headlessPermissionMode": string;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -141,6 +150,9 @@ export class AgentDefaults {
         }
         if (!("approvalPort" in $$source)) {
             this["approvalPort"] = 0;
+        }
+        if (!("headlessPermissionMode" in $$source)) {
+            this["headlessPermissionMode"] = "";
         }
 
         Object.assign(this, $$source);

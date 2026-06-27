@@ -1,10 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -112,6 +114,12 @@ type AgentDefaults struct {
 	// requests still resolve after a restart. 0 (default) binds a random
 	// port (no cross-restart approval survival).
 	ApprovalPort int `yaml:"approval_port" json:"approvalPort"`
+	// HeadlessPermissionMode sets the default permission posture for unattended
+	// headless claude runs. "bypass" (default) keeps the current
+	// --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto
+	// which activates the Claude Code auto-mode classifier (blocks destructive ops
+	// such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass".
+	HeadlessPermissionMode string `yaml:"headless_permission_mode" json:"headlessPermissionMode"`
 }
 
 // DefaultBashTimeoutSeconds is the per-bash-tool-call timeout used when
@@ -174,6 +182,38 @@ func (c *Config) DefaultRequirePermissions() bool {
 		return *c.Agent.RequirePermissions
 	}
 	return true
+}
+
+// NormalizeHeadlessPermissionMode canonicalizes a headless permission mode value.
+// Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
+// Any other value is rejected with an error.
+func NormalizeHeadlessPermissionMode(s string) (string, error) {
+	// Trim + lowercase first: a formatting slip (`auto `, `Auto`) must not
+	// silently fall through to the permissive bypass default and disable the
+	// guardrail this feature exists to provide.
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "bypass":
+		return "bypass", nil
+	case "auto":
+		return "auto", nil
+	default:
+		return "", fmt.Errorf("invalid headless_permission_mode %q (valid: bypass, auto)", s)
+	}
+}
+
+// DefaultHeadlessPermissionMode returns the configured default headless permission
+// mode, or "bypass" if unset. An invalid config value is logged and treated as
+// "bypass" so a misconfigured server never silently switches posture.
+func (c *Config) DefaultHeadlessPermissionMode() string {
+	if c == nil || c.Agent.HeadlessPermissionMode == "" {
+		return "bypass"
+	}
+	mode, err := NormalizeHeadlessPermissionMode(c.Agent.HeadlessPermissionMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.headless_permission_mode; falling back to bypass", "value", c.Agent.HeadlessPermissionMode)
+		return "bypass"
+	}
+	return mode
 }
 
 // SurviveRestartEnabled reports whether agent subprocesses should be

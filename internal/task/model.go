@@ -279,6 +279,10 @@ type Task struct {
 	// RequirePermissions overrides the system default when set.
 	// nil = use system default (true). false = opt out (--dangerously-skip-permissions).
 	RequirePermissions *bool `yaml:"require_permissions,omitempty" json:"requirePermissions,omitempty"`
+	// HeadlessPermissionMode overrides the permission posture for headless claude
+	// runs on this task. "auto" emits --permission-mode auto; "bypass" keeps
+	// --dangerously-skip-permissions. Empty = use config default.
+	HeadlessPermissionMode string `yaml:"headless_permission_mode,omitempty" json:"headlessPermissionMode,omitempty"`
 	// ForkSubagent enables CLAUDE_CODE_FORK_SUBAGENT=1 for this task's headless
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.

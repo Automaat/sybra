@@ -271,7 +271,7 @@ func (a *App) Startup(ctx context.Context) error {
 	})
 	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor)
+	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg)
 
 	a.initWorkflowEngine()
 
