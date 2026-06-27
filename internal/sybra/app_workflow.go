@@ -313,7 +313,7 @@ type agentAdapter struct {
 	sandboxes *sandbox.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (string, error) {
 	// (A pending watchdog headless-nudge steer is consumed upstream in
 	// execRunAgent, before the prompt reaches here.)
 
@@ -361,6 +361,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		MaxTurns:           t.MaxTurns,
 		RequirePermissions: resolvePermission(t, a.agentOrch.cfg),
 		ReasoningEffort:    t.ReasoningEffort,
+		// Code-author roles (implementation/fix-review/pr-fix) are primed with
+		// NOTES.md; verifier roles (review/test-runner/eval) share the same
+		// worktree but must stay independent of the implementer's scratchpad.
+		SeedWorkingMemory: r.AuthorsCode(),
+		OutputSchema:      outputSchema,
 	}
 
 	// Caller-provided dir takes precedence (e.g. pr-fix flow pre-stages a

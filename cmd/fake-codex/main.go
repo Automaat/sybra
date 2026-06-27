@@ -92,6 +92,12 @@ func runExec() {
 			"code":    529,
 		})
 		os.Exit(1)
+	case "test_verdict_pass":
+		emitAgentMessage(`{"verdict":"PASS"}`)
+		emitTurnCompleted(100, 20)
+	case "test_verdict_fail":
+		emitAgentMessage(`{"verdict":"FAIL"}`)
+		emitTurnCompleted(100, 20)
 	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)

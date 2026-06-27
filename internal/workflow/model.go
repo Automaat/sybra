@@ -184,6 +184,11 @@ type StepConfig struct {
 	// planning artifacts in one agent run. ImportSidecar remains supported for
 	// existing workflows and editor compatibility.
 	ImportSidecars []ImportSidecar `yaml:"import_sidecars,omitempty" json:"importSidecars"`
+
+	// run_agent (codex only): inline JSON Schema enforced on the model's final
+	// message via `codex exec --output-schema`. Ignored by claude/copilot, which
+	// use prompt-driven structured output. Empty = no enforcement.
+	OutputSchema string `yaml:"output_schema,omitempty" json:"outputSchema,omitempty"`
 }
 
 // ImportSidecar describes a sidecar file the engine should ingest after a

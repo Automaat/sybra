@@ -22,6 +22,22 @@ const (
 // (e.g. "triage:My Task Title").
 func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 
+// AuthorsCode reports whether the role produces code commits and may therefore
+// be primed with the task's NOTES.md working memory. Only these roles inherit
+// the scratchpad: independent verifier roles (review, test-runner, eval) must
+// NOT, or the implementer's notes could bias an adversarial check — and because
+// NOTES.md is git-excluded, that bias is invisible to the diff-based
+// reward-hacking gates (detect_tampering / verify_checks). Empty name maps to
+// implementation, matching RoleFromName.
+func (r Role) AuthorsCode() bool {
+	switch r {
+	case RoleImplementation, RoleFixReview, RolePRFix, "":
+		return true
+	default:
+		return false
+	}
+}
+
 // IsSystem returns true for roles whose agents should not trigger
 // user-facing notifications (triage, eval, plan-critic, human-review).
 func (r Role) IsSystem() bool {

@@ -111,6 +111,27 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if outFile == nil {
 		return false, nil
 	}
+
+	// Materialize the output schema to a temp file for codex so
+	// buildHeadlessInvocation can pass --output-schema <path>. The file is
+	// removed after cmd.Wait() returns (subprocess has exited), so there is no
+	// read-after-delete risk. os.CreateTemp gives a unique name per attempt so
+	// concurrent agents or retries never collide.
+	if normalizeProvider(a.Provider) == "codex" && cfg.OutputSchema != "" {
+		f, schemaErr := os.CreateTemp("", "sybra-codex-schema-*.json")
+		if schemaErr != nil {
+			return false, fmt.Errorf("create codex output schema: %w", schemaErr)
+		}
+		if _, wErr := f.WriteString(cfg.OutputSchema); wErr != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return false, fmt.Errorf("write codex output schema: %w", wErr)
+		}
+		_ = f.Close()
+		cfg.outputSchemaPath = f.Name()
+		defer os.Remove(cfg.outputSchemaPath)
+	}
+
 	name, args, invokeEnv, command, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
 		return false, err

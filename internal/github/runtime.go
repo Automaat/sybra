@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +253,13 @@ func isRateLimitedMessage(msg string) bool {
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {
+	return runGHAPICtxWith(context.Background(), e, cacheTTL, args...)
+}
+
+// runGHAPICtxWith is runGHAPIWith with a context: a cancelled/expired context
+// kills the in-flight gh process (when e supports it) and aborts the retry
+// loop, so a stalled call cannot wedge the caller (e.g. the poll loop).
+func runGHAPICtxWith(ctx context.Context, e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {
 	cmdArgs := make([]string, 0, len(args)+4)
 	cmdArgs = append(cmdArgs, "api")
 	if cacheTTL != "" {
@@ -269,10 +277,14 @@ func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, er
 	var err error
 	for attempt := 0; ; attempt++ {
 		var out []byte
-		out, err = e.run(cmdArgs...)
+		out, err = runE(ctx, e, cmdArgs...)
 		resp = parseGHHTTPResponse(out)
 		ghGate.observe(resp, err)
 		if err == nil || write || attempt >= ghMaxRetries || !isTransientGHError(out, err) {
+			break
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
 			break
 		}
 		ghRetrySleep(attempt)

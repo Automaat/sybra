@@ -227,6 +227,7 @@ type startCall struct {
 	AllowedTools                                     []string
 	NeedsWorktree                                    bool
 	OneShot                                          bool
+	OutputSchema                                     string
 }
 
 type sentPrompt struct {
@@ -251,7 +252,7 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool) (string, error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -262,7 +263,7 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 	m.calls = append(m.calls, startCall{
 		TaskID: taskID, Role: role, Mode: mode, Model: model, Provider: provider,
 		Prompt: prompt, Dir: dir, AllowedTools: allowedTools,
-		NeedsWorktree: needsWorktree, OneShot: oneShot,
+		NeedsWorktree: needsWorktree, OneShot: oneShot, OutputSchema: outputSchema,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -923,7 +924,7 @@ func TestCancelWorkflow(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 
 	// Pretend an agent is running for "active" so we can verify it's stopped.
-	if _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false); err != nil {
+	if _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, ""); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
 
@@ -1251,7 +1252,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false)
+	_, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "")
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()

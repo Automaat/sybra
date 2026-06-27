@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -74,7 +75,7 @@ func TestFetchUmbrellaWith(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fe := &fakeExecer{output: []byte(tt.output), err: tt.execErr}
-			umb, subs, err := fetchUmbrellaWith(fe, "o/r", 100)
+			umb, subs, err := fetchUmbrellaWith(context.Background(), fe, "o/r", 100)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -97,6 +98,51 @@ func TestFetchUmbrellaWith(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ctxFakeExecer records whether the context-aware path was taken and honors
+// context cancellation, so tests can assert FetchUmbrella threads its context.
+type ctxFakeExecer struct {
+	output  []byte
+	usedCtx bool
+}
+
+func (c *ctxFakeExecer) run(_ ...string) ([]byte, error) { return c.output, nil }
+
+func (c *ctxFakeExecer) runCtx(ctx context.Context, _ ...string) ([]byte, error) {
+	c.usedCtx = true
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.output, nil
+}
+
+func TestFetchUmbrellaWith_UsesContext(t *testing.T) {
+	t.Parallel()
+	valid := umbrellaResponse(
+		`"number":100,"title":"u","body":"","url":"https://github.com/o/r/issues/100","state":"OPEN","repository":{"name":"r","nameWithOwner":"o/r"}`,
+		`[]`)
+
+	t.Run("context-aware execer is used", func(t *testing.T) {
+		t.Parallel()
+		fe := &ctxFakeExecer{output: []byte(valid)}
+		if _, _, err := fetchUmbrellaWith(context.Background(), fe, "o/r", 100); err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+		if !fe.usedCtx {
+			t.Fatal("expected the context-aware runCtx path to be used")
+		}
+	})
+
+	t.Run("cancelled context aborts the fetch", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		fe := &ctxFakeExecer{output: []byte(valid)}
+		if _, _, err := fetchUmbrellaWith(ctx, fe, "o/r", 100); err == nil {
+			t.Fatal("expected an error from a cancelled context")
+		}
+	})
 }
 
 func TestSplitOwnerRepo(t *testing.T) {

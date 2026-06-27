@@ -37,6 +37,31 @@ func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
 	})
 }
 
+// runCtx lets ghExecer satisfy the optional ctxRunner interface, so callers
+// that thread a context (e.g. the umbrella fetch from the poll loop) get a
+// cancellable gh invocation instead of one bounded only by the kernel TCP
+// timeout.
+func (ghExecer) runCtx(ctx context.Context, args ...string) ([]byte, error) {
+	return ghRunCtx(ctx, args...)
+}
+
+// ctxRunner is the optional context-aware extension of execer. The real
+// ghExecer implements it; test fakes need not — runE falls back to run.
+type ctxRunner interface {
+	runCtx(ctx context.Context, args ...string) ([]byte, error)
+}
+
+// runE executes args on e, using the context-aware path when ctx is non-nil
+// and e supports it; otherwise it falls back to the plain (uncancellable) run.
+func runE(ctx context.Context, e execer, args ...string) ([]byte, error) {
+	if ctx != nil {
+		if cr, ok := e.(ctxRunner); ok {
+			return cr.runCtx(ctx, args...)
+		}
+	}
+	return e.run(args...)
+}
+
 var defaultExecer execer = ghExecer{}
 
 var (

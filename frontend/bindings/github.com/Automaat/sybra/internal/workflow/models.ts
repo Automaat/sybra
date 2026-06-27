@@ -483,6 +483,13 @@ export class StepConfig {
      */
     "importSidecars": ImportSidecar[];
 
+    /**
+     * run_agent (codex only): inline JSON Schema enforced on the model's final
+     * message via `codex exec --output-schema`. Ignored by claude/copilot, which
+     * use prompt-driven structured output. Empty = no enforcement.
+     */
+    "outputSchema"?: string;
+
     /** Creates a new StepConfig instance. */
     constructor($$source: Partial<StepConfig> = {}) {
         if (!("role" in $$source)) {

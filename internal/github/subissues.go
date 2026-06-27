@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -52,17 +53,18 @@ type gqlUmbrellaIssue struct {
 }
 
 // FetchUmbrella returns an umbrella issue and its GitHub sub-issues. repo is
-// "owner/name". Sub-issues come back in the order GitHub lists them.
-func FetchUmbrella(repo string, number int) (umbrella Issue, subs []Issue, err error) {
-	return fetchUmbrellaWith(defaultExecer, repo, number)
+// "owner/name". The context bounds the gh call so a stalled fetch cannot wedge
+// the caller. Sub-issues come back in the order GitHub lists them.
+func FetchUmbrella(ctx context.Context, repo string, number int) (umbrella Issue, subs []Issue, err error) {
+	return fetchUmbrellaWith(ctx, defaultExecer, repo, number)
 }
 
-func fetchUmbrellaWith(e execer, repo string, number int) (umbrella Issue, subs []Issue, err error) {
+func fetchUmbrellaWith(ctx context.Context, e execer, repo string, number int) (umbrella Issue, subs []Issue, err error) {
 	owner, name, ok := splitOwnerRepo(repo)
 	if !ok {
 		return Issue{}, nil, fmt.Errorf("invalid repo %q (want owner/name)", repo)
 	}
-	httpResp, err := runGHAPIWith(e, "", "graphql",
+	httpResp, err := runGHAPICtxWith(ctx, e, "", "graphql",
 		"-H", "GraphQL-Features: sub_issues",
 		"-f", "query="+umbrellaQuery,
 		"-f", "owner="+owner,
