@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -107,7 +108,15 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 		a.logger.Info("github.disabled")
 		return nil
 	}
-	return poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
+	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
+	if a.cfg.Umbrella.Enabled {
+		model := a.cfg.Umbrella.Model
+		f.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+			return umbrella.Expand(context.Background(), a.tasks, umbrella.ClaudePlannerRunner(model), issueURL)
+		})
+		a.logger.Info("umbrella.autodetect.enabled")
+	}
+	return f
 }
 
 // logAutomationsSummary logs a one-line snapshot of which automations this

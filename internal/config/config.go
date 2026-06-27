@@ -19,6 +19,7 @@ type Config struct {
 	Todoist       TodoistConfig      `yaml:"todoist" json:"todoist"`
 	Renovate      RenovateConfig     `yaml:"renovate" json:"renovate"`
 	GitHub        GitHubConfig       `yaml:"github" json:"github"`
+	Umbrella      UmbrellaConfig     `yaml:"umbrella" json:"umbrella"`
 	Triage        TriageConfig       `yaml:"triage" json:"triage"`
 	HumanReview   HumanReviewConfig  `yaml:"human_review" json:"humanReview"`
 	Monitor       MonitorConfig      `yaml:"monitor" json:"monitor"`
@@ -249,6 +250,15 @@ type RenovateConfig struct {
 
 type GitHubConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// UmbrellaConfig governs auto-expansion of ☂️ umbrella issues by the GitHub
+// issue fetcher. Disabled by default; project-scoped via the top-level
+// project_types allowlist so only one machine expands a given umbrella.
+type UmbrellaConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Model overrides the planner model (empty = claude default).
+	Model string `yaml:"model" json:"model"`
 }
 
 // TriageConfig controls the background auto-triage worker. When Enabled,

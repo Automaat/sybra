@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 // issuesFetcherEnv holds the fully-wired dependencies for a single-machine
@@ -60,6 +61,111 @@ func newIssuesFetcherForTest(
 		tasks:       taskMgr,
 		projects:    projStore,
 		projectsDir: projectsDir,
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_AutoExpandsUmbrella(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	var expanded []string
+	env.fetcher.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+		expanded = append(expanded, issueURL)
+		return umbrella.Result{Created: 2}, nil
+	})
+
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: "https://github.com/acme/pet1/issues/1", Repository: "acme/pet1"},
+		{Number: 2, Title: "normal issue", URL: "https://github.com/acme/pet1/issues/2", Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	// The umbrella was expanded, not turned into a flat task.
+	if len(expanded) != 1 || expanded[0] != "https://github.com/acme/pet1/issues/1" {
+		t.Fatalf("expander calls = %v, want [issue 1]", expanded)
+	}
+	// Only the normal issue produced a flat task.
+	assertStringSetEqual(t, taskIssueURLs(t, env.tasks), []string{"https://github.com/acme/pet1/issues/2"})
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	const subURL = "https://github.com/acme/pet1/issues/5"
+	// Simulate Expand creating a gated child task for sub-issue #5.
+	env.fetcher.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+		_, err := env.tasks.CreateFull("child 5", "", task.AgentModeHeadless, task.Update{
+			Issue:         task.Ptr(subURL),
+			UmbrellaIssue: task.Ptr(issueURL),
+			Status:        task.Ptr(task.StatusBlocked),
+			Tags:          task.Ptr([]string{umbrella.GatedTag}),
+		})
+		return umbrella.Result{Created: 1}, err
+	})
+
+	// Umbrella and its sub-issue arrive in the SAME batch.
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: "https://github.com/acme/pet1/issues/1", Repository: "acme/pet1"},
+		{Number: 5, Title: "sub issue 5", URL: subURL, Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	// Sub-issue #5 must have exactly one task — the gated child — not a second
+	// ungated flat todo task that would bypass the dependency DAG.
+	all, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	matches := 0
+	for i := range all {
+		if all[i].Issue == subURL {
+			matches++
+			if all[i].Status != task.StatusBlocked {
+				t.Fatalf("sub-issue task status = %q, want blocked (gated child)", all[i].Status)
+			}
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("sub-issue #5 has %d tasks, want 1 (no duplicate flat task)", matches)
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaDisabledIsFlat(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+	// No expander set → feature disabled → umbrella becomes an ordinary task.
+
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: "https://github.com/acme/pet1/issues/1", Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	assertStringSetEqual(t, taskIssueURLs(t, env.tasks), []string{"https://github.com/acme/pet1/issues/1"})
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaRespectsProjectType(t *testing.T) {
+	t.Parallel()
+	// pet-only machine must not expand an umbrella in a work repo.
+	env := newIssuesFetcherForTest(t, func(pt project.ProjectType) bool { return pt == project.ProjectTypePet }, nil)
+	writeProject(t, env.projectsDir, "bigco--work1.yaml", "bigco/work1", "bigco", "work1", project.ProjectTypeWork)
+
+	called := false
+	env.fetcher.SetUmbrellaExpander(func(string) (umbrella.Result, error) {
+		called = true
+		return umbrella.Result{}, nil
+	})
+
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ work umbrella", URL: "https://github.com/bigco/work1/issues/1", Repository: "bigco/work1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	if called {
+		t.Fatal("expander ran for a work umbrella on a pet-only machine")
 	}
 }
 

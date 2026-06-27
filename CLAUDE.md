@@ -219,6 +219,7 @@ Sybra can run on multiple machines (e.g. laptop + remote server). Each instance 
 **1. Per-feature `enabled` toggle** (kill-switch per machine):
 - `todoist.enabled` — Todoist polling (`internal/sybra/app_todoist.go`)
 - `github.enabled` — GitHub Issues fetcher (`internal/sybra/app.go`)
+- `umbrella.enabled` — auto-expand ☂️ umbrella issues into a gated task DAG (`internal/sybra/app_init.go` wires `umbrella.Expand` onto the issues fetcher)
 - `renovate.enabled` — Renovate CI fixer (`internal/sybra/app_renovate.go`)
 - Loop agents are stored per-machine in `~/.sybra/loop-agents/<id>.yaml` with their own `enabled` field — already independent.
 

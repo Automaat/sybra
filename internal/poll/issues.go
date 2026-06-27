@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 const IssuesPollInterval = 5 * time.Minute
@@ -33,6 +34,24 @@ type IssuesFetcher struct {
 	viewerLogin           func() string
 	transientFetchFails   int
 	transientLabeledFails int
+	// umbrellaExpand, when set, auto-expands a detected ☂️ umbrella issue into a
+	// gated task DAG instead of creating a flat task. nil = feature disabled.
+	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	// umbrellaCooldown holds the earliest next-attempt time per umbrella URL
+	// after an expansion failure, so a broken umbrella does not re-run the
+	// planner every poll.
+	umbrellaCooldown map[string]time.Time
+}
+
+// umbrellaRetryCooldown is how long to wait before re-attempting an umbrella
+// whose expansion failed.
+const umbrellaRetryCooldown = time.Hour
+
+// SetUmbrellaExpander enables auto-expansion of umbrella issues. fn typically
+// wraps umbrella.Expand bound to the task store and a planner runner. A nil fn
+// leaves the feature disabled.
+func (f *IssuesFetcher) SetUmbrellaExpander(fn func(issueURL string) (umbrella.Result, error)) {
+	f.umbrellaExpand = fn
 }
 
 // NewIssuesFetcher creates an IssuesFetcher. allowsType filters issues whose
@@ -59,6 +78,7 @@ func NewIssuesFetcher(
 		fetchSnapshot:       github.FetchIssueSnapshot,
 		fetchIssueLinkedPRs: github.FetchIssueLinkedPRs,
 		viewerLogin:         github.ViewerLogin,
+		umbrellaCooldown:    map[string]time.Time{},
 	}
 }
 
@@ -178,15 +198,32 @@ func (f *IssuesFetcher) allowedReposFrom(projects []project.Project) []string {
 }
 
 func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
+	// Pass 1: expand umbrella issues first. Each creates gated child tasks, so
+	// they must be persisted before the flat-task dedup snapshot is taken —
+	// otherwise a sub-issue sharing this batch with its umbrella would slip
+	// past dedup and get a duplicate, ungated flat task.
+	flat := make([]github.Issue, 0, len(issues))
+	for i := range issues {
+		issue := &issues[i]
+		if f.umbrellaExpand != nil && umbrella.IsUmbrellaIssue(issue.Title, issue.Labels) {
+			f.expandUmbrellaIssue(issue)
+			continue
+		}
+		flat = append(flat, *issue)
+	}
+	if len(flat) == 0 {
+		return
+	}
+
+	// Pass 2: flat tasks, with a dedup snapshot taken AFTER expansion so the
+	// children created above are visible.
 	tasks, err := f.tasks.List()
 	if err != nil {
 		f.logger.Error("issue-sync.list-tasks", "err", err)
 		return
 	}
-
 	issueURLs := make(map[string]struct{})
-	// Map URL-titled tasks so we can enrich them instead of creating duplicates.
-	urlTitleTasks := make(map[string]string) // issue URL → task ID
+	urlTitleTasks := make(map[string]string) // issue URL → task ID for URL-titled stubs
 	for i := range tasks {
 		if tasks[i].Issue != "" {
 			issueURLs[tasks[i].Issue] = struct{}{}
@@ -195,68 +232,89 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 			urlTitleTasks[tasks[i].Title] = tasks[i].ID
 		}
 	}
+	for i := range flat {
+		f.syncFlatIssue(&flat[i], issueURLs, urlTitleTasks)
+	}
+}
 
-	for i := range issues {
-		issue := &issues[i]
-		if _, exists := issueURLs[issue.URL]; exists {
-			continue
-		}
+// expandUmbrellaIssue auto-expands a detected umbrella issue, gated by the
+// project-type allowlist and a per-umbrella failure cooldown so a broken
+// umbrella does not re-run the planner every poll.
+func (f *IssuesFetcher) expandUmbrellaIssue(issue *github.Issue) {
+	proj, err := f.projects.Get(issue.Repository)
+	if err != nil || !f.allowsType(proj.Type) {
+		return
+	}
+	if until, ok := f.umbrellaCooldown[issue.URL]; ok && time.Now().Before(until) {
+		return
+	}
+	res, err := f.umbrellaExpand(issue.URL)
+	if err != nil {
+		f.umbrellaCooldown[issue.URL] = time.Now().Add(umbrellaRetryCooldown)
+		f.logger.Error("issue-sync.umbrella-expand", "issue", issue.URL, "err", err)
+		return
+	}
+	delete(f.umbrellaCooldown, issue.URL)
+	if res.Created > 0 {
+		f.logger.Info("issue-sync.umbrella-expanded", "issue", issue.URL, "created", res.Created)
+	}
+}
 
-		// Require the issue's repo to be a registered project. Issues from
-		// unregistered repos are dropped entirely — sybra only tracks work
-		// for repos the user has explicitly added as projects.
-		proj, err := f.projects.Get(issue.Repository)
-		if err != nil {
-			continue
-		}
-		if !f.allowsType(proj.Type) {
-			continue
-		}
+// syncFlatIssue creates or enriches a single non-umbrella issue task, honoring
+// the dedup snapshot and project-type filter.
+func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]struct{}, urlTitleTasks map[string]string) {
+	if _, exists := issueURLs[issue.URL]; exists {
+		return
+	}
 
-		// Task already exists with the issue URL as title (manually created).
-		// Enrich it with the real title and link instead of creating a duplicate.
-		if taskID, exists := urlTitleTasks[issue.URL]; exists {
-			u := task.Update{
-				Title:     task.Ptr(issue.Title),
-				Issue:     task.Ptr(issue.URL),
-				ProjectID: task.Ptr(issue.Repository),
-			}
-			f.enrichLinkedViewerPR(issue, &u)
-			if issue.Body != "" {
-				u.Body = task.Ptr(issue.Body)
-			}
-			if _, err := f.tasks.Update(taskID, u); err != nil {
-				f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
-			} else {
-				f.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
-			}
-			continue
-		}
+	// Require the issue's repo to be a registered project. Issues from
+	// unregistered repos are dropped entirely — sybra only tracks work
+	// for repos the user has explicitly added as projects.
+	proj, err := f.projects.Get(issue.Repository)
+	if err != nil || !f.allowsType(proj.Type) {
+		return
+	}
 
-		t, err := f.tasks.Create(issue.Title, issue.Body, "headless")
-		if err != nil {
-			f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
-			continue
-		}
-
+	// Task already exists with the issue URL as title (manually created).
+	// Enrich it with the real title and link instead of creating a duplicate.
+	if taskID, exists := urlTitleTasks[issue.URL]; exists {
 		u := task.Update{
+			Title:     task.Ptr(issue.Title),
 			Issue:     task.Ptr(issue.URL),
-			Status:    task.Ptr(task.StatusTodo),
 			ProjectID: task.Ptr(issue.Repository),
 		}
 		f.enrichLinkedViewerPR(issue, &u)
-
-		if len(issue.Labels) > 0 {
-			labels := issue.Labels
-			u.Tags = &labels
+		if issue.Body != "" {
+			u.Body = task.Ptr(issue.Body)
 		}
-
-		if _, err := f.tasks.Update(t.ID, u); err != nil {
-			f.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
+		if _, err := f.tasks.Update(taskID, u); err != nil {
+			f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)
+		} else {
+			f.logger.Info("issue-sync.enriched", "task_id", taskID, "issue", issue.URL, "title", issue.Title)
 		}
-
-		f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
+		return
 	}
+
+	t, err := f.tasks.Create(issue.Title, issue.Body, "headless")
+	if err != nil {
+		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
+		return
+	}
+
+	u := task.Update{
+		Issue:     task.Ptr(issue.URL),
+		Status:    task.Ptr(task.StatusTodo),
+		ProjectID: task.Ptr(issue.Repository),
+	}
+	f.enrichLinkedViewerPR(issue, &u)
+	if len(issue.Labels) > 0 {
+		labels := issue.Labels
+		u.Tags = &labels
+	}
+	if _, err := f.tasks.Update(t.ID, u); err != nil {
+		f.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
+	}
+	f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
 }
 
 func (f *IssuesFetcher) enrichLinkedViewerPR(issue *github.Issue, u *task.Update) {
