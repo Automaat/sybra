@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 )
 
 // TestConcurrentAppend_LineIntegrity verifies that simultaneous writes from
@@ -49,10 +48,25 @@ func TestConcurrentAppend_LineIntegrity(t *testing.T) {
 	}
 	wg.Wait()
 
-	day := time.Now().UTC().Format(time.DateOnly)
-	raw, err := os.ReadFile(filepath.Join(dir, day+".ndjson"))
+	// Read all .ndjson files in the temp dir to avoid time-boundary flake when
+	// the test spans a UTC midnight and goroutines write to two daily log files.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var raw []byte
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".ndjson" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", e.Name(), err)
+		}
+		raw = append(raw, b...)
+	}
+	if len(raw) == 0 {
+		t.Fatal("no .ndjson files written")
 	}
 
 	lines := bytes.Split(bytes.TrimRight(raw, "\n"), []byte("\n"))

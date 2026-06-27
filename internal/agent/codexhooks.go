@@ -32,7 +32,7 @@ func resolveCodexHookBin() (string, bool) {
 		return "", false
 	}
 	adjacent := filepath.Join(filepath.Dir(self), "sybra-cli")
-	if _, err := os.Stat(adjacent); err != nil {
+	if _, err := exec.LookPath(adjacent); err != nil {
 		return "", false
 	}
 	// Reject paths with characters that require shell quoting — the hook
