@@ -204,6 +204,30 @@ func TestDetect(t *testing.T) {
 			want: []AnomalyKind{KindLostAgent},
 		},
 		{
+			name: "lost_agent suppressed for umbrella tracker (rollup status, no agent)",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					t.TaskType = task.TaskTypeUmbrella
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "stuck_human_blocked still fires for a stalled umbrella tracker",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+					t.TaskType = task.TaskTypeUmbrella
+					t.UpdatedAt = now.Add(-24 * time.Hour)
+				})},
+				Cfg: cfg,
+			},
+			want: []AnomalyKind{KindStuckHumanBlocked},
+		},
+		{
 			name: "lost_agent suppressed by recent agent.* event",
 			in: DetectInput{
 				Now:   now,

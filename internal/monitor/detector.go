@@ -241,7 +241,12 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if t.Status != task.StatusInProgress {
 			continue
 		}
-		if t.TaskType == task.TaskTypeChat {
+		// Chat sessions and umbrella trackers run no agent of their own: a
+		// chat is synthetic and an umbrella's in-progress is a rollup of its
+		// children (app_umbrella_gate.go). Flagging either as a lost agent
+		// would loop — reset→todo fights the rollup→in-progress and re-files a
+		// failing GH issue every cycle. Mirrors recovery's RestartStaleInProgress.
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
 		if !projectAllowed(in.AllowsProject, t.ProjectID) {
