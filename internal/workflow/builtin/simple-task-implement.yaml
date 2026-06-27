@@ -25,7 +25,7 @@ steps:
         review and manual testing pass, so fixes land in the same branch before
         it is opened.
 
-        First run `sybra-cli get {{.Task.ID}}` and check for a "## Test Failures"
+        First run `sybra-cli get --compact {{.Task.ID}}` and check for a "## Test Failures"
         section. If present, a prior implementation FAILED adversarial manual
         testing — fix the root cause of every reported defect (not just the
         symptom); the feature will be re-tested after this run.

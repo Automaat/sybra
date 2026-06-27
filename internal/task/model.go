@@ -252,7 +252,12 @@ type Task struct {
 	Body         string `yaml:"-" json:"body"`
 	Plan         string `yaml:"-" json:"plan,omitempty"`
 	PlanCritique string `yaml:"-" json:"planCritique,omitempty"`
-	CodeReview   string `yaml:"-" json:"codeReview,omitempty"`
+	// Planning support sidecars. Plan remains the compact execution contract
+	// consumed by implementation agents; these hold review/evidence material.
+	PlanResearch  string `yaml:"-" json:"planResearch,omitempty"`
+	PlanDecisions string `yaml:"-" json:"planDecisions,omitempty"`
+	PlanBrief     string `yaml:"-" json:"planBrief,omitempty"`
+	CodeReview    string `yaml:"-" json:"codeReview,omitempty"`
 	// PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
 	// provider planning. Keys are typically the parallel child step ID
 	// (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on

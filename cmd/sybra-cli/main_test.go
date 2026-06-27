@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -88,6 +89,61 @@ func TestCreateAndGet(t *testing.T) {
 	}
 	if got.ID != created.ID {
 		t.Errorf("get returned id %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create",
+		"--title", "compact task",
+		"--body", "body text",
+		"--plan", "# Execution Plan\n",
+		"--plan-critique", "# Critique\n",
+		"--plan-research", "# Research\n",
+		"--plan-decisions", "# Decisions\n",
+		"--plan-brief", "# Brief\n",
+	)
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, out = runCLI(t, "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	for _, want := range []string{"## Plan", "## Plan Critique", "## Plan Research", "## Plan Decisions", "## Plan Brief"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("full get missing %q in output:\n%s", want, out)
+		}
+	}
+
+	code, out = runCLI(t, "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("compact get exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "## Plan") {
+		t.Fatalf("compact get missing execution plan:\n%s", out)
+	}
+	for _, forbidden := range []string{"## Plan Critique", "## Plan Research", "## Plan Decisions", "## Plan Brief"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("compact get leaked %q in output:\n%s", forbidden, out)
+		}
+	}
+
+	code, out = runCLI(t, "--json", "get", "--compact", created.ID)
+	if code != 0 {
+		t.Fatalf("compact json get exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.Plan == "" {
+		t.Fatal("compact json get cleared execution plan")
+	}
+	if got.PlanCritique != "" || got.PlanResearch != "" || got.PlanDecisions != "" || got.PlanBrief != "" {
+		t.Fatalf("compact json get leaked planning support: %+v", got)
 	}
 }
 

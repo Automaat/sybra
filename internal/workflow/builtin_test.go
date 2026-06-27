@@ -76,6 +76,86 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 }
 
+func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("address_critique")
+	if step == nil {
+		t.Fatal("address_critique step not found in simple-task-plan")
+	}
+	got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "require_plan_after_address" {
+		t.Fatalf("address_critique next = %q, want require_plan_after_address", got)
+	}
+
+	chain := []struct {
+		step string
+		want string
+	}{
+		{"require_plan_after_address", "require_plan_decisions_after_address"},
+		{"require_plan_decisions_after_address", "require_plan_brief_after_address"},
+		{"require_plan_brief_after_address", "require_plan_research_after_address"},
+		{"require_plan_research_after_address", "validate_plan_refs_after_address"},
+		{"validate_plan_refs_after_address", "review_plan"},
+	}
+	for _, c := range chain {
+		step := simple.StepByID(c.step)
+		if step == nil {
+			t.Fatalf("%s step not found in simple-task-plan", c.step)
+		}
+		got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
+		if err != nil {
+			t.Fatalf("ResolveTransition(%s): %v", c.step, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s next = %q, want %q", c.step, got, c.want)
+		}
+	}
+}
+
+func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var impl *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-implement" {
+			impl = &defs[i]
+			break
+		}
+	}
+	if impl == nil {
+		t.Fatal("simple-task-implement builtin definition not found")
+	}
+	step := impl.StepByID("implement")
+	if step == nil {
+		t.Fatal("implement step not found in simple-task-implement")
+	}
+	if !strings.Contains(step.Config.Prompt, "sybra-cli get --compact {{.Task.ID}}") {
+		t.Fatalf("implement prompt must use compact task view, got:\n%s", step.Config.Prompt)
+	}
+}
+
 // TestBuiltinSimpleTaskImplement_VerifyCommitsRouting pins the verify_commits
 // transition table: human-required and done end the run, everything else flows
 // into the detect_tampering gate before review. (The sibling-still-running case

@@ -10,6 +10,12 @@ allowed-tools: Read, Grep, Bash, Write, Edit, Agent
 
 Review an implementation plan before code is written. Reject plans that are vague, ungrounded, risky, or missing verification.
 
+Sybra planning stores research/council evidence separately from the canonical
+plan. Treat the canonical plan as an execution contract: compact is good when it
+names the decision, scope, files, ordered steps, verification, and stop
+conditions. Do not require council synthesis, critique history, persona names,
+or long rationale inside the execution contract.
+
 ## Inputs
 
 - File path: read the markdown file.
@@ -40,6 +46,8 @@ If the input is ambiguous, ask for the plan source.
    - `REFINE`: plan is sound but needs specific edits.
    - `REJECT`: plan is wrong, vague, or ungrounded.
 7. For `REFINE`, if reviewing a file and edits are allowed, update the plan file directly. Otherwise include a refined plan section.
+   - Keep refinements as targeted edits to the execution contract.
+   - Do not paste the review's forensic evidence or critique history into the plan.
 8. Save the review when possible:
 
 ```bash

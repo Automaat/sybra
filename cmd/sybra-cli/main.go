@@ -149,13 +149,21 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 }
 
 func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
-	if len(args) < 1 {
-		return fatal(jsonOut, "usage: get <id>")
+	fs := flag.NewFlagSet("get", flag.ContinueOnError)
+	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if fs.NArg() < 1 {
+		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := s.Get(args[0])
+	t, err := s.Get(fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
+	}
+	if *compact {
+		stripPlanningSupport(&t)
 	}
 
 	if jsonOut {
@@ -195,10 +203,26 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.PlanCritique != "" {
 		fmt.Printf("\n## Plan Critique\n\n%s\n", t.PlanCritique)
 	}
+	if t.PlanBrief != "" {
+		fmt.Printf("\n## Plan Brief\n\n%s\n", t.PlanBrief)
+	}
+	if t.PlanDecisions != "" {
+		fmt.Printf("\n## Plan Decisions\n\n%s\n", t.PlanDecisions)
+	}
+	if t.PlanResearch != "" {
+		fmt.Printf("\n## Plan Research\n\n%s\n", t.PlanResearch)
+	}
 	if t.CodeReview != "" {
 		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
 	}
 	return 0
+}
+
+func stripPlanningSupport(t *task.Task) {
+	t.PlanCritique = ""
+	t.PlanResearch = ""
+	t.PlanDecisions = ""
+	t.PlanBrief = ""
 }
 
 func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
@@ -207,6 +231,9 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	body := fs.String("body", "", "task body markdown")
 	plan := fs.String("plan", "", "plan content markdown")
 	planCritique := fs.String("plan-critique", "", "plan critique markdown")
+	planResearch := fs.String("plan-research", "", "plan research markdown")
+	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown")
+	planBrief := fs.String("plan-brief", "", "plan brief markdown")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	ttype := fs.String("type", "normal", "task type: normal|debug|research")
 	tags := fs.String("tags", "", "comma-separated tags")
@@ -272,6 +299,15 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	if *planCritique != "" {
 		updates["plan_critique"] = *planCritique
+	}
+	if *planResearch != "" {
+		updates["plan_research"] = *planResearch
+	}
+	if *planDecisions != "" {
+		updates["plan_decisions"] = *planDecisions
+	}
+	if *planBrief != "" {
+		updates["plan_brief"] = *planBrief
 	}
 	if len(updates) > 0 {
 		t, err = s.UpdateMap(t.ID, updates)
@@ -682,6 +718,12 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	planFile := fs.String("plan-file", "", "path to file with plan content")
 	planCritique := fs.String("plan-critique", "", "plan critique markdown (empty string clears critique)")
 	planCritiqueFile := fs.String("plan-critique-file", "", "path to file with plan critique content")
+	planResearch := fs.String("plan-research", "", "plan research markdown (empty string clears research)")
+	planResearchFile := fs.String("plan-research-file", "", "path to file with plan research content")
+	planDecisions := fs.String("plan-decisions", "", "plan decisions markdown (empty string clears decisions)")
+	planDecisionsFile := fs.String("plan-decisions-file", "", "path to file with plan decisions content")
+	planBrief := fs.String("plan-brief", "", "plan brief markdown (empty string clears brief)")
+	planBriefFile := fs.String("plan-brief-file", "", "path to file with plan brief content")
 	codeReview := fs.String("code-review", "", "code review markdown (empty string clears review)")
 	codeReviewFile := fs.String("code-review-file", "", "path to file with code review content")
 	mode := fs.String("mode", "", "new agent mode")
@@ -714,6 +756,9 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 	for _, fu := range []struct{ flag, key, str, file string }{
 		{"plan", "plan", *plan, *planFile},
 		{"plan-critique", "plan_critique", *planCritique, *planCritiqueFile},
+		{"plan-research", "plan_research", *planResearch, *planResearchFile},
+		{"plan-decisions", "plan_decisions", *planDecisions, *planDecisionsFile},
+		{"plan-brief", "plan_brief", *planBrief, *planBriefFile},
 		{"code-review", "code_review", *codeReview, *codeReviewFile},
 	} {
 		if err := applyFileOrStringUpdate(fs, updates, fu.flag, fu.key, fu.str, fu.file); err != nil {
@@ -1337,7 +1382,7 @@ func usage() {
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
            STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|ready-pr|human-required|done|cancelled
-  get      <id>
+  get      [--compact] <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
   handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--pr N] [--mode MODE] [--tags t1,t2]
@@ -1350,7 +1395,7 @@ Commands:
              ready-pr       tested locally -> Sybra opens or updates the PR
              pr|in-review   existing PR (--pr N) -> Sybra reviews the PR
            --status STATUS creates the task directly in that status without workflow dispatch
-  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
+  update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--max-turns N] [--reasoning-effort E]
   delete   <id>
 
   project list
