@@ -3,10 +3,12 @@ package sybra
 import (
 	"cmp"
 	"slices"
+	"time"
 
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // StatsService exposes statistics as Wails-bound methods.
@@ -14,6 +16,7 @@ type StatsService struct {
 	stats    *stats.Store
 	limits   *limits.Store
 	projects *project.Store
+	tasks    *task.Manager
 	policy   func() limits.Policy
 }
 
@@ -24,6 +27,31 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 	}
 	resp := s.stats.Query()
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
+
+	if s.tasks != nil {
+		if list, err := s.tasks.List(); err == nil {
+			now := time.Now()
+			todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
+			monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+			for i := range list {
+				if list[i].Status == task.StatusDone {
+					resp.AllTime.TasksDone++
+					if !list[i].UpdatedAt.Before(todayStart) {
+						resp.Today.TasksDone++
+					}
+					if !list[i].UpdatedAt.Before(weekStart) {
+						resp.ThisWeek.TasksDone++
+					}
+					if !list[i].UpdatedAt.Before(monthStart) {
+						resp.ThisMonth.TasksDone++
+					}
+				}
+			}
+		}
+	}
+
 	if s.limits != nil {
 		policy := limits.DefaultPolicy()
 		if s.policy != nil {

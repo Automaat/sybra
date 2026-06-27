@@ -136,7 +136,11 @@
 
   <!-- Summary cards -->
   {#if summary}
-    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <span class="text-xs font-medium text-surface-500">Tasks Done</span>
+        <p class="mt-1 text-2xl font-bold">{summary.tasksDone}</p>
+      </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Total Cost</span>
         <p class="mt-1 text-2xl font-bold">${summary.totalCostUsd.toFixed(2)}</p>
