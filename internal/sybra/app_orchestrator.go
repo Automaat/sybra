@@ -8,30 +8,79 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// orchestratorLoop runs two cadences. The cheap, latency-sensitive dispatch pass
+// (start the orchestrator, release unblocked children) fires on a fast ticker and
+// on demand via dispatchNudge, so a freshly-ready task isn't left idle. The
+// expensive recovery/cleanup pass (resume stalled workflows, restart stale
+// agents, prune orphan worktrees) — which hits git and may spawn agents — fires
+// on a slower ticker so it never runs hot.
 func (a *App) orchestratorLoop(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+	dispatch := time.NewTicker(a.dispatchInterval())
+	defer dispatch.Stop()
+	maintenance := time.NewTicker(a.maintenanceInterval())
+	defer maintenance.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			metrics.OrchestratorTick()
-			a.maybeStartOrchestrator()
-			if a.workflowEngine != nil {
-				a.workflowEngine.ResumeStalled()
-			}
-			// Release umbrella child tasks whose dependencies have merged, so
-			// the normal dispatch picks them up like any todo task.
-			a.releaseUnblockedChildren()
-			// Recover in-progress tasks whose agent died — runs continuously,
-			// not just at startup, to catch agents that finished without
-			// advancing the workflow.
-			a.recovery.RestartStaleInProgress()
-			a.worktrees.CleanupOrphaned()
+		case <-a.dispatchNudge:
+			a.dispatchPass()
+		case <-dispatch.C:
+			a.dispatchPass()
+		case <-maintenance.C:
+			a.maintenancePass()
 		}
 	}
+}
+
+// dispatchPass runs the cheap scheduling actions that gate a ready task. Safe to
+// run often: maybeStartOrchestrator no-ops when already running, and
+// releaseUnblockedChildren only acts on tasks whose dependencies merged.
+func (a *App) dispatchPass() {
+	a.maybeStartOrchestrator()
+	a.releaseUnblockedChildren()
+}
+
+// maintenancePass runs the expensive, git/agent-touching recovery and cleanup.
+func (a *App) maintenancePass() {
+	metrics.OrchestratorTick()
+	if a.workflowEngine != nil {
+		a.workflowEngine.ResumeStalled()
+	}
+	// Recover in-progress tasks whose agent died — runs continuously, not just at
+	// startup, to catch agents that finished without advancing the workflow.
+	a.recovery.RestartStaleInProgress()
+	a.worktrees.CleanupOrphaned()
+}
+
+// nudgeDispatch asks the orchestrator loop to run a dispatch pass promptly
+// instead of waiting for the next fast tick. Non-blocking and coalescing: a full
+// buffer means a pass is already pending. No-op if the loop hasn't started.
+func (a *App) nudgeDispatch() {
+	if a.dispatchNudge == nil {
+		return
+	}
+	select {
+	case a.dispatchNudge <- struct{}{}:
+	default:
+	}
+}
+
+func (a *App) dispatchInterval() time.Duration {
+	s := a.cfg.Orchestrator.DispatchIntervalSeconds
+	if s <= 0 {
+		s = 10
+	}
+	return time.Duration(s) * time.Second
+}
+
+func (a *App) maintenanceInterval() time.Duration {
+	s := a.cfg.Orchestrator.MaintenanceIntervalSeconds
+	if s <= 0 {
+		s = 60
+	}
+	return time.Duration(s) * time.Second
 }
 
 func (a *App) maybeStartOrchestrator() {

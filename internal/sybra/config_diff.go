@@ -60,9 +60,16 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 		hot = append(hot, "agent.other")
 	}
 
-	// Orchestrator and audit are live-effective via pointer read; no setter needed
-	if !reflect.DeepEqual(old.Orchestrator, next.Orchestrator) {
+	// Orchestrator AutoTriage/AutoPlan are live-effective via pointer read; the
+	// dispatch/maintenance intervals are sampled once at loop start (NewTicker),
+	// so changing them needs a restart to take effect.
+	if old.Orchestrator.AutoTriage != next.Orchestrator.AutoTriage ||
+		old.Orchestrator.AutoPlan != next.Orchestrator.AutoPlan {
 		hot = append(hot, "orchestrator")
+	}
+	if old.Orchestrator.DispatchIntervalSeconds != next.Orchestrator.DispatchIntervalSeconds ||
+		old.Orchestrator.MaintenanceIntervalSeconds != next.Orchestrator.MaintenanceIntervalSeconds {
+		restart = append(restart, "orchestrator.intervals")
 	}
 	if !reflect.DeepEqual(old.Audit, next.Audit) {
 		hot = append(hot, "audit")
