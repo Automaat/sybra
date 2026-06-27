@@ -645,9 +645,11 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 
 	err = store.UpdateRun(created.ID, "agent-upd", map[string]any{
-		"state":    "done",
-		"cost_usd": 0.42,
-		"result":   "success",
+		"state":                    "done",
+		"cost_usd":                 0.42,
+		"result":                   "success",
+		"test_outcome":             "product_bug",
+		"test_failure_fingerprint": "abc123",
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
@@ -669,6 +671,12 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 	if r.Result != "success" {
 		t.Errorf("Result = %q, want %q", r.Result, "success")
+	}
+	if r.TestOutcome != "product_bug" {
+		t.Errorf("TestOutcome = %q, want product_bug", r.TestOutcome)
+	}
+	if r.TestFailureFingerprint != "abc123" {
+		t.Errorf("TestFailureFingerprint = %q, want abc123", r.TestFailureFingerprint)
 	}
 }
 

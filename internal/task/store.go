@@ -977,6 +977,12 @@ func (s *Store) UpdateRun(taskID, agentID string, updates map[string]any) error 
 		if v, ok := updates["protocol_violation"].(string); ok && v != "" {
 			t.AgentRuns[i].ProtocolViolation = v
 		}
+		if v, ok := updates["test_outcome"].(string); ok && v != "" {
+			t.AgentRuns[i].TestOutcome = v
+		}
+		if v, ok := updates["test_failure_fingerprint"].(string); ok && v != "" {
+			t.AgentRuns[i].TestFailureFingerprint = v
+		}
 		if v, ok := updates["head_sha"].(string); ok && v != "" {
 			t.AgentRuns[i].HeadSHA = v
 		}

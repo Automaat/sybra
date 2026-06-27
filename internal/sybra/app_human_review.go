@@ -343,8 +343,11 @@ func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision
 	created, url, err := h.sink.SubmitIssue(ctx, v.IssueTitle, v.IssueBody, v.IssueLabels)
 	if err != nil {
 		h.logger.Error("human-review.issue.submit", "task_id", taskID, "agent_id", agentID, "err", err)
-		// On rate limit or transient failure, leave the task in human-required
-		// and append the verdict so the user has the diagnosis text.
+		// On rate limit or transient failure, keep the diagnosis actionable by
+		// falling back to a local Sybra bug task and blocking the origin on it.
+		if h.fileLocalIssueFallback(taskID, agentID, v, err) {
+			return
+		}
 		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (issue submission failed)", v.Summary+"\n\nError: "+err.Error()) {
 			h.markVerdictRendered(taskID, agentID)
 		}
@@ -376,6 +379,54 @@ func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision
 		return
 	}
 	h.markVerdictRendered(taskID, agentID)
+}
+
+func (h *humanReviewHandler) fileLocalIssueFallback(taskID, agentID string, v verdictDecision, submitErr error) bool {
+	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
+		return false
+	}
+	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing failure\n\nGitHub issue filing failed, so Sybra created this local fallback task instead.\n\nError: " + submitErr.Error()
+	newTask, err := h.tasks.Create(v.IssueTitle, body, task.AgentModeHeadless)
+	if err != nil {
+		h.logger.Error("human-review.issue.local-fallback.create", "task_id", taskID, "agent_id", agentID, "err", err)
+		return false
+	}
+	tags := append([]string{"sybra-bug", "issue-filing-failed"}, v.IssueLabels...)
+	update := task.Update{Tags: &tags}
+	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
+		update.ProjectID = &projectID
+	}
+	if _, err := h.tasks.Update(newTask.ID, update); err != nil {
+		h.logger.Warn("human-review.issue.local-fallback.tag", "new_task_id", newTask.ID, "err", err)
+	}
+	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+		"created":       true,
+		"url":           "",
+		"title":         v.IssueTitle,
+		"local_task_id": newTask.ID,
+		"fallback":      true,
+		"err":           submitErr.Error(),
+	})
+
+	origin, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.issue.local-fallback.origin-get", "task_id", taskID, "err", err)
+		return false
+	}
+	noteBody := fmt.Sprintf("**Linked local Sybra bug:** %s\n\n%s\n\nGitHub issue filing failed: %s", newTask.ID, v.Summary, submitErr.Error())
+	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (local fallback)", noteBody)
+	statusReason := fmt.Sprintf("auto-review: %s (local task %s; issue filing failed)", v.Summary, newTask.ID)
+	upd := task.Update{
+		Body:         &newBody,
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(statusReason),
+	}
+	if _, err := h.tasks.Update(taskID, upd); err != nil {
+		h.logger.Error("human-review.issue.local-fallback.origin-update", "task_id", taskID, "err", err)
+		return false
+	}
+	h.markVerdictRendered(taskID, agentID)
+	return true
 }
 
 // appendNote appends a section to the task body. Returns true if the update
@@ -489,8 +540,13 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	} else {
 		for i := range runs {
 			r := runs[i]
-			fmt.Fprintf(&b, "\n### Run %d — role=%s mode=%s state=%s started=%s\n",
-				i+1, defaultStr(r.Role, "implementation"), r.Mode, r.State, r.StartedAt.Format(time.RFC3339))
+			fmt.Fprintf(&b, "\n### Run %d — role=%s mode=%s provider=%s state=%s started=%s cost=%.4f session=%s\n",
+				i+1, defaultStr(r.Role, "implementation"), r.Mode, defaultStr(r.Provider, "default"),
+				r.State, r.StartedAt.Format(time.RFC3339), r.CostUSD, defaultStr(r.SessionID, "(empty)"))
+			if r.ProtocolViolation != "" || r.TestOutcome != "" || r.TestFailureFingerprint != "" {
+				fmt.Fprintf(&b, "Deterministic test metadata: protocol_violation=%s test_outcome=%s fingerprint=%s\n",
+					defaultStr(r.ProtocolViolation, "(none)"), defaultStr(r.TestOutcome, "(none)"), defaultStr(r.TestFailureFingerprint, "(none)"))
+			}
 			if r.Result != "" {
 				res := r.Result
 				if len(res) > humanReviewMaxAgentResult {
@@ -524,6 +580,8 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	b.WriteString("- Working directory is the Sybra source tree. Use Grep/Read/Glob to inspect Go code under internal/ when a stack trace or error message points there.\n")
 	fmt.Fprintf(&b, "- Audit events live under %s (newest file is today's). Run `gh issue list --repo %s --label %s` first to avoid duplicate filings.\n",
 		filepath.Join(h.homeDir, "audit"), h.cfg.HumanReviewRepo(), h.cfg.HumanReviewIssueLabel())
+	b.WriteString("- Trust deterministic workflow signals before inferring from weak provider metadata: status history, exit state, parsed verdict, protocol_violation, test_outcome, failure fingerprint, task body delta, and log tail. Do NOT classify a Codex run as crashed solely because cost=0 or session is empty; confirm from log contents or exit failure.\n")
+	b.WriteString("- For test escalations, separate product_bug, test_protocol_violation, infra_failure, ambiguous_requirement, and missing_evidence. Only grounded product_bug failures should be described as implementation misses.\n")
 	b.WriteString("- A genuine human-required reason looks like: scope question, creative decision, missing credentials, ambiguous requirement, or an external system the agent legitimately cannot reach.\n")
 	b.WriteString("- A Sybra bug looks like: workflow step never ran the agent, agent started in the wrong dir, status flipped despite a successful PR, sidecar required but never written, repeated provider gate blocks, panics in logs, mis-routed completions.\n\n")
 

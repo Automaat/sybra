@@ -170,7 +170,17 @@ func runTestPass() {
 func runTestFail() {
 	emitSystem()
 	emitAssistant("Found a defect against the task.")
-	emitResult("Observed wrong output on the happy path.\nTEST_VERDICT: FAIL")
+	emitResult(testFailureReport() + "\nTEST_VERDICT: FAIL")
+}
+
+func testFailureReport() string {
+	return "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		"Requirement tested: the task says the happy path should render the expected output.\n\n" +
+		"Command run:\n```sh\ncurl /status\n```\n\n" +
+		"Actual output:\n```text\nwrong output\n```\n\n" +
+		"Expected output: expected output.\n\n" +
+		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
 }
 
 // runTestPassVerbose emits a >2000-char summary BEFORE the final-line verdict,

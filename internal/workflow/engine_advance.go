@@ -53,7 +53,15 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return pErr
 	}
 
-	if violation := applyTestVerdictCompletion(wfExec, &output, ctx.Task.Body); violation != "" && output.AgentID != "" {
+	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, &output, ctx.Task.Body)
+	if output.AgentID != "" {
+		if outcome != "" {
+			if err := e.tasks.MarkAgentRunTestOutcome(taskID, output.AgentID, outcome, fingerprint); err != nil {
+				return fmt.Errorf("mark test outcome: %w", err)
+			}
+		}
+	}
+	if violation != "" && output.AgentID != "" {
 		if err := e.tasks.MarkAgentRunProtocolViolation(taskID, output.AgentID, violation); err != nil {
 			return fmt.Errorf("mark test protocol violation: %w", err)
 		}
@@ -77,8 +85,10 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		// line and would otherwise be lost to the 2000-byte prefix truncation
 		// above whenever a thorough test-runner writes a long summary. No-op
 		// (empty) for every non-test step. See route_test_result.
-		if v := extractTestVerdict(output.Output); v != "" {
-			wfExec.SetVar("step."+output.StepID+".verdict", v)
+		if output.Status == "completed" {
+			if v := extractTestVerdict(output.Output); v != "" {
+				wfExec.SetVar("step."+output.StepID+".verdict", v)
+			}
 		}
 	}
 

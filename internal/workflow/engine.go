@@ -52,11 +52,14 @@ type TaskInfo struct {
 
 // AgentRunInfo is the engine-visible subset of a task's agent run.
 type AgentRunInfo struct {
-	AgentID           string
-	Role              string
-	Provider          string
-	StartedAt         time.Time
-	ProtocolViolation string
+	AgentID                string
+	Role                   string
+	Provider               string
+	StartedAt              time.Time
+	ProtocolViolation      string
+	TestOutcome            string
+	TestFailureFingerprint string
+	HeadSHA                string
 }
 
 // TaskProvider reads and updates tasks.
@@ -67,6 +70,7 @@ type TaskProvider interface {
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
+	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	SetWorkflow(id string, wf *Execution) error
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
