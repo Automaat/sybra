@@ -43,6 +43,59 @@ func orchestratorReplaceable(a *agent.Agent) bool {
 	}
 }
 
+func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepID string, stopIDs []string) {
+	var keep *agent.Agent
+	stopSeen := map[string]struct{}{}
+	addStop := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, seen := stopSeen[id]; seen {
+			return
+		}
+		stopSeen[id] = struct{}{}
+		stopIDs = append(stopIDs, id)
+	}
+
+	for _, a := range agents {
+		if a == nil || a.ID == "" {
+			continue
+		}
+		if a.Name != orchestratorAgentName {
+			if a.ID == currentID && orchestratorReplaceable(a) {
+				addStop(a.ID)
+			}
+			continue
+		}
+		if orchestratorReplaceable(a) {
+			addStop(a.ID)
+			continue
+		}
+		if keep == nil {
+			keep = a
+			continue
+		}
+
+		switch {
+		case keep.ID == currentID:
+			addStop(a.ID)
+		case a.ID == currentID:
+			addStop(keep.ID)
+			keep = a
+		case a.StartedAt.After(keep.StartedAt):
+			addStop(keep.ID)
+			keep = a
+		default:
+			addStop(a.ID)
+		}
+	}
+
+	if keep == nil {
+		return "", stopIDs
+	}
+	return keep.ID, stopIDs
+}
+
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
 	agents *agent.Manager
@@ -52,6 +105,27 @@ type OrchestratorService struct {
 
 	mu      sync.Mutex
 	agentID string
+}
+
+func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
+	if s.agents == nil {
+		s.agentID = ""
+		return ""
+	}
+	keepID, stopIDs := selectOrchestratorSingleton(s.agentID, s.agents.ListAgents())
+	s.agentID = keepID
+	for _, id := range stopIDs {
+		if id == keepID {
+			continue
+		}
+		if err := s.agents.StopAgent(id); err != nil && s.logger != nil {
+			s.logger.Warn("orchestrator.reconcile.stop", "agent_id", id, "err", err)
+		}
+	}
+	if len(stopIDs) > 0 && s.logger != nil {
+		s.logger.Info("orchestrator.reconciled", "agent_id", keepID, "stopped", len(stopIDs))
+	}
+	return keepID
 }
 
 // StartOrchestrator launches the orchestrator as an in-app conversational
@@ -68,15 +142,8 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if id := s.agentID; id != "" {
-		if a, err := s.agents.GetAgent(id); err == nil && !orchestratorReplaceable(a) {
-			return conflictError("orchestrator already running")
-		}
-		// Existing agent is stopped, or wedged-paused with no session — reap
-		// it so a freshly kicked-off orchestrator can replace it. StopAgent is
-		// idempotent on an already-terminal agent.
-		_ = s.agents.StopAgent(id)
-		s.agentID = ""
+	if id := s.reconcileOrchestratorsLocked(); id != "" {
+		return conflictError("orchestrator already running")
 	}
 
 	a, err := s.agents.Run(agent.RunConfig{
@@ -104,7 +171,7 @@ func (s *OrchestratorService) StartOrchestrator() error {
 // the conversational runner and closes the child claude process.
 func (s *OrchestratorService) StopOrchestrator() error {
 	s.mu.Lock()
-	id := s.agentID
+	id := s.reconcileOrchestratorsLocked()
 	s.agentID = ""
 	s.mu.Unlock()
 
@@ -125,19 +192,9 @@ func (s *OrchestratorService) StopOrchestrator() error {
 // IsOrchestratorRunning reports whether an orchestrator agent is currently alive.
 func (s *OrchestratorService) IsOrchestratorRunning() bool {
 	s.mu.Lock()
-	id := s.agentID
+	id := s.reconcileOrchestratorsLocked()
 	s.mu.Unlock()
-	if id == "" {
-		return false
-	}
-	a, err := s.agents.GetAgent(id)
-	if err != nil {
-		return false
-	}
-	// A wedged-paused or stopped orchestrator is not actually doing work, so
-	// it does not count as running — this lets maybeStartOrchestrator replace
-	// it instead of trusting a stale in-memory state forever.
-	return !orchestratorReplaceable(a)
+	return id != ""
 }
 
 // GetOrchestratorAgentID returns the current orchestrator agent id, or empty
@@ -146,5 +203,5 @@ func (s *OrchestratorService) IsOrchestratorRunning() bool {
 func (s *OrchestratorService) GetOrchestratorAgentID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.agentID
+	return s.reconcileOrchestratorsLocked()
 }
