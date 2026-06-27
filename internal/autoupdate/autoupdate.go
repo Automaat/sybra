@@ -53,12 +53,18 @@ func New(cfg Config, logger *slog.Logger, onRestart func()) *Runner {
 }
 
 func RestartMarkerPath(homeDir string) string {
+	if homeDir == "" {
+		return ""
+	}
 	return filepath.Join(homeDir, RestartMarker)
 }
 
 func WriteRestartMarker(path string) error {
 	if path == "" {
-		return nil
+		return errors.New("restart marker path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("restart marker path is not absolute: %s", path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

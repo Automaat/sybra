@@ -119,6 +119,14 @@ func TestCheckAndApplyDoesNotMergeWhenMarkerFails(t *testing.T) {
 	}
 }
 
+func TestWriteRestartMarkerRejectsEmptyAndRelativePath(t *testing.T) {
+	for _, path := range []string{"", "relative/restart-requested"} {
+		if err := WriteRestartMarker(path); err == nil {
+			t.Fatalf("WriteRestartMarker(%q) expected error", path)
+		}
+	}
+}
+
 func writeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {

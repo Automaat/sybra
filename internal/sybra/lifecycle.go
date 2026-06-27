@@ -96,6 +96,19 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 	if repoDir == "" {
 		repoDir = a.repoDir
 	}
+	homeDir := config.HomeDir()
+	if repoDir == "" {
+		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is empty")
+		return
+	}
+	if !filepath.IsAbs(repoDir) {
+		a.logger.Error("autoupdate.disabled", "reason", "repo_dir is not absolute", "repo", repoDir)
+		return
+	}
+	if !filepath.IsAbs(homeDir) {
+		a.logger.Error("autoupdate.disabled", "reason", "sybra home is not absolute", "home", homeDir)
+		return
+	}
 	runner := autoupdate.New(autoupdate.Config{
 		Enabled:           a.cfg.AutoUpdate.Enabled,
 		RepoDir:           repoDir,
@@ -104,7 +117,7 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		Mode:              a.cfg.AutoUpdate.Mode,
 		PollInterval:      time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
 		RestartDelay:      time.Duration(a.cfg.AutoUpdate.RestartDelaySeconds) * time.Second,
-		RestartMarkerPath: autoupdate.RestartMarkerPath(config.HomeDir()),
+		RestartMarkerPath: autoupdate.RestartMarkerPath(homeDir),
 	}, a.logger, func() {
 		a.logger.Info("autoupdate.restart.requested")
 		if a.requestRestart != nil {
