@@ -139,6 +139,11 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		return res, nil
 	}
 
+	if reason := restartBlockReason(cfg); reason != "" {
+		res.Status = "blocked"
+		res.Reason = reason
+		return res, nil
+	}
 	if err := WriteRestartMarker(cfg.RestartMarkerPath); err != nil {
 		return Result{}, fmt.Errorf("write restart marker: %w", err)
 	}
@@ -177,6 +182,18 @@ func (r *Runner) check(ctx context.Context) {
 		case <-time.After(r.cfg.RestartDelay):
 		}
 	}
+	for {
+		if reason := restartBlockReason(r.cfg.withDefaults()); reason == "" {
+			break
+		} else {
+			r.logger.Info("autoupdate.restart.blocked", "reason", reason)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(r.cfg.withDefaults().PollInterval):
+		}
+	}
 	if r.onRestart != nil {
 		r.onRestart()
 	}
@@ -213,6 +230,10 @@ func repoBlockReason(ctx context.Context, cfg Config) string {
 	if err := validateRepoState(ctx, cfg); err != nil {
 		return err.Error()
 	}
+	return ""
+}
+
+func restartBlockReason(cfg Config) string {
 	if cfg.BlockRestart != nil {
 		if reason := cfg.BlockRestart(); reason != "" {
 			return reason

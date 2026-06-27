@@ -96,12 +96,14 @@ func (r *Recovery) RestartStaleInProgress() {
 		// Interactive: drive the workflow engine to advance the current
 		// step using the stored agent run result — same mechanism as
 		// onAgentComplete.
+		oneShot := false
 		if t.AgentMode != "headless" {
 			lr := lastAgentRun(&t)
 			if lr == nil || !lr.OneShot {
 				r.recoverStaleInteractive(&t)
 				continue
 			}
+			oneShot = true
 			r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 		}
 		if t.ProjectID == "" {
@@ -136,10 +138,7 @@ func (r *Recovery) RestartStaleInProgress() {
 		prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
 		currentStatus := t.Status
 		r.WG.Go(func() {
-			// Restart-stale only ever reaches this branch for headless
-			// mode (interactive tasks are handled by recoverStaleInteractive
-			// above), so OneShot is irrelevant — pass false.
-			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, false)
+			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
 			metrics.OrchestratorStaleRestart(err == nil)
 			r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			if err != nil {

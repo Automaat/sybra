@@ -178,9 +178,9 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 		return nil
 	}
 
-	// A record with no FIFO path is a one-shot survival agent (prompt passed
-	// as an argument, no stdin): reattach tail-only, no FIFO to reopen.
-	oneShot := r.StdinPath == ""
+	// Older records did not persist OneShot; retain the no-FIFO inference for
+	// compatibility, but prefer the explicit flag for current records.
+	oneShot := r.OneShot || r.StdinPath == ""
 
 	a := agentFromRecord(r)
 	var startOffset int64

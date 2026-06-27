@@ -89,6 +89,111 @@ func TestCheckAndApplyNotifyDoesNotMerge(t *testing.T) {
 	}
 }
 
+func TestCheckAndApplyNotifyIgnoresRestartBlock(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	calls := 0
+	r := New(Config{
+		Enabled: true,
+		RepoDir: work,
+		Remote:  "origin",
+		Branch:  "main",
+		Mode:    ModeNotify,
+		BlockRestart: func() string {
+			calls++
+			return "active agents running"
+		},
+	}, nil, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "available" {
+		t.Fatalf("status = %q, want available (reason=%q)", res.Status, res.Reason)
+	}
+	if calls != 0 {
+		t.Fatalf("BlockRestart called %d times in notify mode; want 0", calls)
+	}
+}
+
+func TestCheckAndApplyAutoBlocksBeforeMerge(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	marker := filepath.Join(t.TempDir(), RestartMarker)
+	r := New(Config{
+		Enabled:           true,
+		RepoDir:           work,
+		Remote:            "origin",
+		Branch:            "main",
+		Mode:              ModeAuto,
+		RestartMarkerPath: marker,
+		BlockRestart: func() string {
+			return "active agents running"
+		},
+	}, nil, nil)
+
+	res, err := r.CheckAndApply(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", res.Status)
+	}
+	if res.Reason != "active agents running" {
+		t.Fatalf("reason = %q, want active agents running", res.Reason)
+	}
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatalf("feature.txt exists despite restart block: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("restart marker exists despite restart block: %v", err)
+	}
+}
+
+func TestCheckDefersRestartUntilBlockClears(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	calls := 0
+	restarted := false
+	r := New(Config{
+		Enabled:           true,
+		RepoDir:           work,
+		Remote:            "origin",
+		Branch:            "main",
+		Mode:              ModeAuto,
+		PollInterval:      time.Millisecond,
+		RestartMarkerPath: filepath.Join(t.TempDir(), RestartMarker),
+		BlockRestart: func() string {
+			calls++
+			if calls == 1 {
+				return ""
+			}
+			if calls < 4 {
+				return "active agents running"
+			}
+			return ""
+		},
+	}, nil, func() { restarted = true })
+
+	r.check(t.Context())
+	if !restarted {
+		t.Fatal("restart callback was not called after block cleared")
+	}
+	if calls != 4 {
+		t.Fatalf("BlockRestart calls = %d, want 4", calls)
+	}
+}
+
 func TestCheckAndApplyDoesNotMergeWhenMarkerFails(t *testing.T) {
 	upstream, work := seedRepos(t)
 	writeFile(t, upstream, "feature.txt", "new\n")
