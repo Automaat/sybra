@@ -102,7 +102,7 @@ func TestAgentToolLoopAcknowledge(t *testing.T) {
 
 	t.Run("ack on no signature is not acknowledged", func(t *testing.T) {
 		a := &Agent{}
-		a.AckToolLoop() // lastToolSig is "" — must not count as acknowledged
+		a.AckToolLoop() // no current signature must not count as acknowledged
 		if a.ToolLoopAcknowledged() {
 			t.Fatal("empty signature must never read as acknowledged")
 		}
