@@ -65,7 +65,9 @@ function localDaySpan(startKey: string, endKey: string): number {
   const start = parseLocalDayKey(startKey)
   const end = parseLocalDayKey(endKey)
   if (!start || !end) return 0
-  return Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1
+  const startUTC = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())
+  const endUTC = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate())
+  return Math.floor((endUTC - startUTC) / 86_400_000) + 1
 }
 
 function capTimeSeries(points: TimeSeriesPoint[], maxPoints = MAX_TIME_SERIES_POINTS): TimeSeriesPoint[] {

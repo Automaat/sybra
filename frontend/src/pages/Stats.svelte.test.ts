@@ -56,6 +56,7 @@ describe('Stats', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     cleanup()
   })
 
@@ -298,6 +299,8 @@ describe('Stats', () => {
   })
 
   it('renders cost-over-time and cost-by-project charts', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-03T12:00:00Z'))
     const s = makeSummary()
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
@@ -330,6 +333,8 @@ describe('Stats', () => {
   })
 
   it('closed-task chart follows period switching', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-03T12:00:00Z'))
     const s = makeSummary()
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
@@ -340,9 +345,7 @@ describe('Stats', () => {
     render(Stats, { props: {} })
     expect(screen.getByRole('img', { name: 'Closed tasks over time' })).toBeDefined()
     await fireEvent.click(screen.getByText('Today'))
-    await vi.waitFor(() => {
-      expect(screen.getByText('No closed tasks in this range')).toBeDefined()
-    })
+    expect(screen.getByText('No closed tasks in this range')).toBeDefined()
   })
 
   it('flags the sample cap on the charts when there are more than 50 runs', () => {
