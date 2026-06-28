@@ -208,7 +208,8 @@ steps:
                   ],
                   "steps": ["ordered implementation step"],
                   "verification": [
-                    {"command": "go test ./...", "expected": "tests pass"}
+                    {"command": "go test ./...", "expected": "tests pass"},
+                    {"manual": "manual inspection or smoke test", "expected": "observable result"}
                   ],
                   "acceptance_criteria": ["observable criterion"],
                   "risk_tier": "low|medium|high",
@@ -218,7 +219,10 @@ steps:
 
                 File paths MUST be repository-relative clean paths, not absolute
                 paths and not ../ escapes. Verification and acceptance arrays
-                must be non-empty. If the task body has a "## Acceptance
+                must be non-empty. Each verification item needs either command
+                or manual plus expected. Supplemental fields are allowed, but
+                implementation agents consume only the core fields above. If
+                the task body has a "## Acceptance
                 Criteria" section, copy every criterion from that section into
                 acceptance_criteria verbatim (wrapped lines joined). Do not
                 silently drop, narrow, defer, or mark any source criterion out

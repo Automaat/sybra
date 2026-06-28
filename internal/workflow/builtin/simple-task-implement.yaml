@@ -34,8 +34,8 @@ steps:
         utility", "unified", "no raw X remains"), derive and run a cheap
         acceptance probe such as a repo-wide `rg` invariant that would catch
         missed call sites. If the task has a plan contract, follow its files,
-        steps, verification commands, and acceptance criteria as the primary
-        implementation contract.
+        steps, verification commands/manual checks, and acceptance criteria as
+        the primary implementation contract.
 
         Never weaken, skip, delete, comment out, or hardcode tests, snapshots,
         or fixtures to make checks pass, and never edit CI config to neuter a

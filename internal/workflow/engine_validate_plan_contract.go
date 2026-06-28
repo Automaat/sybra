@@ -30,6 +30,7 @@ type PlanContractFile struct {
 
 type PlanContractCommand struct {
 	Command  string `json:"command"`
+	Manual   string `json:"manual,omitempty"`
 	Expected string `json:"expected"`
 }
 
@@ -60,7 +61,6 @@ func ValidatePlanContract(raw, taskID string) []string {
 func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 	var contract PlanContract
 	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&contract); err != nil {
 		return []string{"malformed JSON: " + err.Error()}
 	}
@@ -93,11 +93,11 @@ func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 		problems = append(problems, "steps must include at least one implementation step")
 	}
 	if len(contract.Verification) == 0 {
-		problems = append(problems, "verification must include at least one command")
+		problems = append(problems, "verification must include at least one command or manual check")
 	}
 	for i, v := range contract.Verification {
-		if strings.TrimSpace(v.Command) == "" {
-			problems = append(problems, fmt.Sprintf("verification[%d].command is required", i))
+		if strings.TrimSpace(v.Command) == "" && strings.TrimSpace(v.Manual) == "" {
+			problems = append(problems, fmt.Sprintf("verification[%d].command or manual is required", i))
 		}
 		if strings.TrimSpace(v.Expected) == "" {
 			problems = append(problems, fmt.Sprintf("verification[%d].expected is required", i))
