@@ -35,7 +35,10 @@ steps:
         acceptance probe such as a repo-wide `rg` invariant that would catch
         missed call sites. If the task has a plan contract, follow its files,
         steps, verification commands/manual checks, and acceptance criteria as
-        the primary implementation contract.
+        the primary implementation contract. For every manual verification
+        item, perform the check and include the observed evidence in your final
+        response; if you cannot perform it, stop and mark the task
+        human-required with the blocker.
 
         Never weaken, skip, delete, comment out, or hardcode tests, snapshots,
         or fixtures to make checks pass, and never edit CI config to neuter a
@@ -47,7 +50,7 @@ steps:
         ## Executable Plan Contract
 
         ```json
-        {{.Task.PlanContract}}
+        {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
         {{- else if .Task.Plan}}
 

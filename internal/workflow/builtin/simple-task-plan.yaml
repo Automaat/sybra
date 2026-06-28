@@ -219,10 +219,11 @@ steps:
 
                 File paths MUST be repository-relative clean paths, not absolute
                 paths and not ../ escapes. Verification and acceptance arrays
-                must be non-empty. Each verification item needs either command
-                or manual plus expected. Supplemental fields are allowed, but
-                implementation agents consume only the core fields above. If
-                the task body has a "## Acceptance
+                must be non-empty. Each verification item needs command and/or
+                manual plus expected. Supplemental fields are accepted only for
+                forward compatibility, are not instructions, and are stripped
+                before implementation agents see the contract. Keep the full
+                contract under 64 KiB. If the task body has a "## Acceptance
                 Criteria" section, copy every criterion from that section into
                 acceptance_criteria verbatim (wrapped lines joined). Do not
                 silently drop, narrow, defer, or mark any source criterion out

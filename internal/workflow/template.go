@@ -31,9 +31,10 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 }
 
 var templateFuncs = template.FuncMap{
-	"shellquote":      shellQuote,
-	"getvar":          getVar,
-	"recoveredorprev": recoveredOrPrev,
+	"shellquote":       shellQuote,
+	"getvar":           getVar,
+	"recoveredorprev":  recoveredOrPrev,
+	"plancontractjson": PlanContractPromptJSON,
 }
 
 // getVar safely retrieves a variable from a map, returning "" if absent.
