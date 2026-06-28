@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { periodCutoff, dailyCost, costByProject } from './stats-charts.js'
-import type { RunRecord } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
+import { periodCutoff, dailyCost, costByProject, closedTasksSeries } from './stats-charts.js'
+import type { RunRecord, TaskSeriesPoint } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 
 function run(timestamp: string, costUsd: number, projectId = ''): RunRecord {
   return { timestamp, costUsd, projectId } as unknown as RunRecord
@@ -68,6 +68,43 @@ describe('dailyCost', () => {
 
   it('returns empty (no fill) when there are no runs in range', () => {
     expect(dailyCost([], new Date(2026, 5, 22), new Date(2026, 5, 24))).toEqual([])
+  })
+})
+
+describe('closedTasksSeries', () => {
+  function taskPoint(date: string, count: number): TaskSeriesPoint {
+    return { date, count } as TaskSeriesPoint
+  }
+
+  it('sorts ascending and fills zero-count days through end', () => {
+    const out = closedTasksSeries(
+      [taskPoint('2026-06-24', 2), taskPoint('2026-06-22', 1)],
+      new Date(2026, 5, 22),
+      new Date(2026, 5, 24, 15),
+    )
+    expect(out).toEqual([
+      { date: '2026-06-22', value: 1 },
+      { date: '2026-06-23', value: 0 },
+      { date: '2026-06-24', value: 2 },
+    ])
+  })
+
+  it('filters by cutoff and returns empty when no points remain in range', () => {
+    expect(closedTasksSeries([taskPoint('2026-06-20', 5)], new Date(2026, 5, 23), new Date(2026, 5, 24))).toEqual([])
+  })
+
+  it('returns empty for nil or empty input', () => {
+    expect(closedTasksSeries(null, null, new Date(2026, 5, 24))).toEqual([])
+    expect(closedTasksSeries([], null, new Date(2026, 5, 24))).toEqual([])
+  })
+
+  it('parses YYYY-MM-DD as local dates instead of UTC dates', () => {
+    const out = closedTasksSeries([taskPoint('2026-06-24', 1)], new Date(2026, 5, 24), new Date(2026, 5, 24, 15))
+    expect(out).toEqual([{ date: '2026-06-24', value: 1 }])
+  })
+
+  it('skips invalid date keys', () => {
+    expect(closedTasksSeries([taskPoint('2026-02-31', 1), taskPoint('bad', 2)], null, new Date(2026, 5, 24))).toEqual([])
   })
 })
 

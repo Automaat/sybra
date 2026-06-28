@@ -1,6 +1,12 @@
 <script lang="ts">
   import { statsStore } from '../stores/stats.svelte.js'
-  import { periodCutoff, dailyCost, costByProject, type StatsPeriod } from '$lib/stats-charts.js'
+  import {
+    periodCutoff,
+    dailyCost,
+    costByProject,
+    closedTasksSeries,
+    type StatsPeriod,
+  } from '$lib/stats-charts.js'
   import StatsLineChart from '../components/stats/StatsLineChart.svelte'
   import StatsBarChart from '../components/stats/StatsBarChart.svelte'
 
@@ -32,7 +38,8 @@
   // The backend only caps recentRuns once there are MORE than 50 total runs.
   const sampleCapped = $derived((statsStore.data?.allTime?.totalRuns ?? 0) > 50)
   const cutoff = $derived(periodCutoff(period, now))
-  const costSeries = $derived(dailyCost(recentRuns, cutoff, now))
+  const costSeries = $derived(dailyCost(recentRuns, cutoff, now).map((p) => ({ date: p.date, value: p.cost })))
+  const taskSeries = $derived(closedTasksSeries(statsStore.data?.closedTasksDaily ?? [], cutoff, now))
   const projectCosts = $derived(costByProject(recentRuns, cutoff))
 
   $effect(() => {
@@ -240,7 +247,7 @@
           <h3 class="text-sm font-semibold text-surface-500">Cost over time</h3>
           <span class="text-[10px] text-surface-400">{periodLabel}{#if sampleCapped} · recent 50 runs{/if}</span>
         </div>
-        <StatsLineChart points={costSeries} />
+        <StatsLineChart points={costSeries} ariaLabel="Cost over time" emptyLabel="No cost in this range" />
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <div class="mb-3 flex items-baseline justify-between gap-2">
@@ -248,6 +255,13 @@
           <span class="text-[10px] text-surface-400">{periodLabel}{#if sampleCapped} · recent 50 runs{/if}</span>
         </div>
         <StatsBarChart bars={projectCosts} />
+      </div>
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <div class="mb-3 flex items-baseline justify-between gap-2">
+          <h3 class="text-sm font-semibold text-surface-500">Closed tasks over time</h3>
+          <span class="text-[10px] text-surface-400">{periodLabel}</span>
+        </div>
+        <StatsLineChart points={taskSeries} ariaLabel="Closed tasks over time" emptyLabel="No closed tasks in this range" />
       </div>
     </div>
   {/if}

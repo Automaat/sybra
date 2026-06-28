@@ -1,4 +1,4 @@
-import type { RunRecord } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
+import type { RunRecord, TaskSeriesPoint } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 
 export type StatsPeriod = 'today' | 'thisWeek' | 'thisMonth' | 'allTime'
 
@@ -40,8 +40,23 @@ export interface DailyCost {
   cost: number
 }
 
+export interface TimeSeriesPoint {
+  date: string
+  value: number
+}
+
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function parseDayKey(key: string): Date | null {
+  const parts = key.split('-')
+  if (parts.length !== 3) return null
+  const [year, month, day] = parts.map((p) => Number(p))
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
+  const d = new Date(year, month - 1, day)
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null
+  return d
 }
 
 /**
@@ -75,6 +90,43 @@ export function dailyCost(runs: RunRecord[], cutoff: Date | null, end?: Date): D
   while (cursor <= last) {
     const key = dayKey(cursor)
     out.push({ date: key, cost: buckets.get(key) ?? 0 })
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return out
+}
+
+export function closedTasksSeries(
+  points: TaskSeriesPoint[] | null | undefined,
+  cutoff: Date | null,
+  end?: Date,
+): TimeSeriesPoint[] {
+  if (!points || points.length === 0) return []
+
+  const buckets = new Map<string, number>()
+  let earliest: Date | null = null
+  for (const p of points) {
+    const day = parseDayKey(p.date)
+    if (!day) continue
+    if (cutoff && day < cutoff) continue
+    const key = dayKey(day)
+    buckets.set(key, (buckets.get(key) ?? 0) + (p.count ?? 0))
+    if (!earliest || day < earliest) earliest = day
+  }
+
+  if (!end) {
+    return [...buckets.entries()]
+      .map(([date, value]) => ({ date, value }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }
+
+  if (buckets.size === 0) return []
+  const startSrc = cutoff ?? earliest ?? end
+  const out: TimeSeriesPoint[] = []
+  const cursor = new Date(startSrc.getFullYear(), startSrc.getMonth(), startSrc.getDate())
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate())
+  while (cursor <= last) {
+    const key = dayKey(cursor)
+    out.push({ date: key, value: buckets.get(key) ?? 0 })
     cursor.setDate(cursor.getDate() + 1)
   }
   return out

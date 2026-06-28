@@ -42,6 +42,7 @@ function makeStatsData(): StatsResponse {
     byRole: [],
     byMode: [],
     byModel: [],
+    closedTasksDaily: [],
     recentRuns: [],
   })
 }
@@ -155,6 +156,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -166,6 +168,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -177,6 +180,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -188,6 +192,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -199,6 +204,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -211,6 +217,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today, thisWeek: allTime, thisMonth: allTime, allTime,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -240,6 +247,7 @@ describe('Stats', () => {
       ],
       byMode: [],
       byModel: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -252,6 +260,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [
         {
           id: 'r1',
@@ -293,6 +302,10 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [
+        { date: '2026-05-01', count: 1 },
+        { date: '2026-05-02', count: 2 },
+      ],
       recentRuns: [
         { id: 'r1', taskId: 't1', projectId: 'org/repo', role: 'plan', mode: 'headless', model: 'm', costUsd: 1.5, durationS: 1, reasoningTokens: 0, timestamp: '2026-05-01T10:00:00Z', outcome: 'completed' },
         { id: 'r2', taskId: 't2', projectId: 'org/other', role: 'plan', mode: 'headless', model: 'm', costUsd: 0.5, durationS: 1, reasoningTokens: 0, timestamp: '2026-05-01T11:00:00Z', outcome: 'completed' },
@@ -301,9 +314,35 @@ describe('Stats', () => {
     render(Stats, { props: {} })
     expect(screen.getByText('Cost over time')).toBeDefined()
     expect(screen.getByText('Cost by project')).toBeDefined()
+    expect(screen.getByText('Closed tasks over time')).toBeDefined()
+    expect(screen.getByRole('img', { name: 'Cost over time' })).toBeDefined()
+    expect(screen.getByRole('img', { name: 'Closed tasks over time' })).toBeDefined()
     // Bar chart renders both project labels (default period is All Time).
     expect(screen.getByText('org/repo')).toBeDefined()
     expect(screen.getByText('org/other')).toBeDefined()
+  })
+
+  it('uses task-specific empty labels', () => {
+    mockStatsStore.data = makeStatsData()
+    render(Stats, { props: {} })
+    expect(screen.getAllByText('No cost in this range').length).toBeGreaterThan(0)
+    expect(screen.getByText('No closed tasks in this range')).toBeDefined()
+  })
+
+  it('closed-task chart follows period switching', async () => {
+    const s = makeSummary()
+    mockStatsStore.data = StatsResponse.createFrom({
+      today: s, thisWeek: s, thisMonth: s, allTime: s,
+      byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [{ date: '2026-05-01', count: 1 }],
+      recentRuns: [],
+    })
+    render(Stats, { props: {} })
+    expect(screen.getByRole('img', { name: 'Closed tasks over time' })).toBeDefined()
+    await fireEvent.click(screen.getByText('Today'))
+    await vi.waitFor(() => {
+      expect(screen.getByText('No closed tasks in this range')).toBeDefined()
+    })
   })
 
   it('flags the sample cap on the charts when there are more than 50 runs', () => {
@@ -317,11 +356,11 @@ describe('Stats', () => {
       // The backend caps recentRuns only when total runs exceeds 50.
       today: s, thisWeek: s, thisMonth: s, allTime: makeSummary({ totalRuns: 60 }),
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [{ date: '2026-05-01', count: 1 }],
       recentRuns: runs,
     })
     render(Stats, { props: {} })
-    // Both chart captions disclose the cap so the numbers aren't read as authoritative.
-    expect(screen.getAllByText(/recent 50 runs/).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText(/recent 50 runs/)).toHaveLength(2)
   })
 
   it('shows dash for missing model in recent runs', () => {
@@ -329,6 +368,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
       recentRuns: [
         {
           id: 'r1',

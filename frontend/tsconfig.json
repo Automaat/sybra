@@ -16,6 +16,7 @@
     "skipLibCheck": true
   },
   "include": [
+    "bindings/**/*.ts",
     "src/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.js",
