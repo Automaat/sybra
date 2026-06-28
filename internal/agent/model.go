@@ -22,7 +22,10 @@ import (
 //     goroutine may hold it for the duration of a blocking Write, and
 //     we do not want to starve other consumers that only need to read
 //     State or append an event.
-//   - loops owns its own lock for loop-detection state.
+//   - loops owns its own lock for loop-detection state. Runner write paths and
+//     watchdog read/ack paths intentionally observe loop state independently
+//     from Agent.mu-protected fields; do not assume atomic snapshots across
+//     those lock domains.
 
 type State string
 
@@ -413,27 +416,27 @@ func (a *Agent) GetToolCalls() int {
 // reasoning between identical calls does not reset a genuine loop. A new
 // signature resets the streak to 1.
 func (a *Agent) NoteToolSignature(sig string) int {
-	return a.loops.NoteSignature(sig)
+	return a.loops.noteSignature(sig)
 }
 
 // ToolLoopStreak returns the current count of consecutive identical tool-call
 // signatures. A high value means the agent is repeating the same call.
 func (a *Agent) ToolLoopStreak() int {
-	return a.loops.Streak()
+	return a.loops.currentStreak()
 }
 
 // AckToolLoop records the current loop signature as already inspected, so the
 // watchdog does not re-trigger on the same unchanged loop. Called after a
 // loop-triggered inspection whose verdict left the agent running.
 func (a *Agent) AckToolLoop() {
-	a.loops.Ack()
+	a.loops.ack()
 }
 
 // ToolLoopAcknowledged reports whether the current loop signature has already
 // been inspected (and the agent left running). True suppresses the loop
 // trigger until the signature changes.
 func (a *Agent) ToolLoopAcknowledged() bool {
-	return a.loops.Acknowledged()
+	return a.loops.acknowledged()
 }
 
 // SetEscalationReason updates the escalation reason string.

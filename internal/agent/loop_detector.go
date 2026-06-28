@@ -5,14 +5,16 @@ import "sync"
 type loopDetector struct {
 	mu sync.RWMutex
 
+	// Empty signatures preserve streaks. Ack suppresses only the current
+	// non-empty signature; a different signature re-arms loop detection.
 	lastSig string
 	streak  int
 	ackSig  string
 }
 
-func (d *loopDetector) NoteSignature(sig string) int {
+func (d *loopDetector) noteSignature(sig string) int {
 	if sig == "" {
-		return d.Streak()
+		return d.currentStreak()
 	}
 
 	d.mu.Lock()
@@ -27,19 +29,19 @@ func (d *loopDetector) NoteSignature(sig string) int {
 	return d.streak
 }
 
-func (d *loopDetector) Streak() int {
+func (d *loopDetector) currentStreak() int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.streak
 }
 
-func (d *loopDetector) Ack() {
+func (d *loopDetector) ack() {
 	d.mu.Lock()
 	d.ackSig = d.lastSig
 	d.mu.Unlock()
 }
 
-func (d *loopDetector) Acknowledged() bool {
+func (d *loopDetector) acknowledged() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.ackSig != "" && d.ackSig == d.lastSig
