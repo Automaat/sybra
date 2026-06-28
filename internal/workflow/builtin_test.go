@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -590,26 +591,61 @@ func TestSyncBuiltins_IdempotentOnClean(t *testing.T) {
 func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	t.Parallel()
 
-	defs, err := BuiltinDefinitions()
-	if err != nil {
-		t.Fatalf("BuiltinDefinitions: %v", err)
-	}
-	var testingDef *Definition
-	for i := range defs {
-		if defs[i].ID == "testing-task" {
-			testingDef = &defs[i]
-			break
-		}
-	}
-	if testingDef == nil {
-		t.Fatal("testing-task builtin definition not found")
-	}
+	testingDef := mustBuiltinDefinition(t, "testing-task")
 	step := testingDef.StepByID("run_test")
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
 	}
-	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"}},"required":["verdict","outcome","failures_markdown"],"additionalProperties":false}`
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"string"},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"}},"required":["command","expected","actual"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"}},"required":["command","actual"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
 		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
 	}
+
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Required   []string                   `json:"required"`
+	}
+	if err := json.Unmarshal([]byte(step.Config.OutputSchema), &schema); err != nil {
+		t.Fatalf("unmarshal output schema: %v", err)
+	}
+	required := map[string]bool{}
+	for _, field := range schema.Required {
+		required[field] = true
+	}
+	for field := range schema.Properties {
+		if !required[field] {
+			t.Fatalf("codex strict output schema requires every property; %q missing from required", field)
+		}
+	}
+}
+
+func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	if testingDef.StepByID("skip_testing") != nil {
+		t.Fatal("testing-task must not bypass test-runner for notest tasks")
+	}
+	maybe := testingDef.StepByID("maybe_test")
+	if maybe == nil {
+		t.Fatal("maybe_test step not found in testing-task")
+	}
+	if len(maybe.Next) != 1 || maybe.Next[0].GoTo != "run_test" {
+		t.Fatalf("maybe_test next = %+v, want unconditional run_test", maybe.Next)
+	}
+}
+
+func mustBuiltinDefinition(t *testing.T, id string) *Definition {
+	t.Helper()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	for i := range defs {
+		if defs[i].ID == id {
+			return &defs[i]
+		}
+	}
+	t.Fatalf("%s builtin definition not found", id)
+	return nil
 }

@@ -686,6 +686,7 @@ func TestLoadRepoConfig_SetupBlock(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	cfg, err := LoadRepoConfig(dir)
 	if err != nil {
 		t.Fatalf("LoadRepoConfig: %v", err)
@@ -702,6 +703,38 @@ func TestLoadRepoConfig_SetupBlock(t *testing.T) {
 	// Sanity: checks block still parses when setup is present.
 	if cfg.Checks == nil || len(cfg.Checks.PreCommit) != 1 {
 		t.Errorf("checks dropped when setup added: %+v", cfg.Checks)
+	}
+}
+
+func TestLoadRepoConfig_ManualTestBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `manual_test:
+  kind: server
+  command: SYBRA_PORT=0 go run ./cmd/sybra-server
+  health_url: http://127.0.0.1:$SYBRA_PORT/health
+  probe_commands:
+    - curl -fsS http://127.0.0.1:$SYBRA_PORT/api/tasks
+    - sybra-cli --json list
+`
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadRepoConfig: %v", err)
+	}
+	if cfg.ManualTest == nil {
+		t.Fatal("ManualTest is nil")
+	}
+	if cfg.ManualTest.Kind != ManualTestKindServer {
+		t.Errorf("ManualTest.Kind = %q, want %q", cfg.ManualTest.Kind, ManualTestKindServer)
+	}
+	if cfg.ManualTest.Command == "" || cfg.ManualTest.HealthURL == "" {
+		t.Fatalf("ManualTest command/health missing: %+v", cfg.ManualTest)
+	}
+	if len(cfg.ManualTest.ProbeCommands) != 2 {
+		t.Fatalf("ProbeCommands len = %d, want 2", len(cfg.ManualTest.ProbeCommands))
 	}
 }
 
@@ -737,6 +770,18 @@ func TestMergeSetup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMergeManualTest(t *testing.T) {
+	t.Parallel()
+	app := &ManualTestConfig{Kind: ManualTestKindCLI, Command: "sybra-cli list"}
+	repo := &ManualTestConfig{Kind: ManualTestKindServer, Command: "go run ./cmd/sybra-server"}
+	if got := MergeManualTest(nil, app); got != app {
+		t.Fatalf("MergeManualTest(nil, app) = %+v, want app", got)
+	}
+	if got := MergeManualTest(repo, app); got != repo {
+		t.Fatalf("MergeManualTest(repo, app) = %+v, want repo", got)
 	}
 }
 

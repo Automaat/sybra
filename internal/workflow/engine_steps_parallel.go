@@ -207,6 +207,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		if gErr != nil {
 			return nil, gErr
 		}
+		t = e.withManualTestConfig(t)
 		dir := wfExec.Variables[WorkflowVarDir]
 		ctx := TemplateContext{
 			Task:     t,

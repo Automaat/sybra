@@ -53,7 +53,8 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return pErr
 	}
 
-	if err := e.prepareTestStepCompletion(taskID, &output, wfExec, &ctx.Task.Body); err != nil {
+	ctx.Task = e.withManualTestConfig(ctx.Task)
+	if err := e.prepareTestStepCompletion(taskID, ctx.Task, &output, wfExec, &ctx.Task.Body); err != nil {
 		return err
 	}
 
@@ -118,6 +119,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	if err != nil {
 		return err
 	}
+	t = e.withManualTestConfig(t)
 	t.Workflow = wfExec
 
 	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
@@ -201,6 +203,7 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 	if err != nil {
 		return advanceContext{}, false, err
 	}
+	t = e.withManualTestConfig(t)
 	if t.Workflow == nil {
 		return advanceContext{}, false, fmt.Errorf("task %s has no active workflow", taskID)
 	}
@@ -311,6 +314,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		if err != nil {
 			return nil, err
 		}
+		t = e.withManualTestConfig(t)
 
 		// Snapshot the execution for the template context so that clearing
 		// the Recovered flag below doesn't affect what the template sees.

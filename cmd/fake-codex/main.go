@@ -98,12 +98,9 @@ func runExec() {
 		})
 		os.Exit(1)
 	case "test_verdict_pass":
-		emitAgentMessage(`{"verdict":"PASS"}`)
-		emitTurnCompleted(100, 20)
+		runCodexTestVerdictPass()
 	case "test_verdict_fail":
-		writeTestFailureReport(taskID)
-		emitAgentMessage(`{"verdict":"FAIL"}`)
-		emitTurnCompleted(100, 20)
+		runCodexTestVerdictFail()
 	case "implement", "interactive_implement":
 		emitAgentMessage("Implementing...")
 		emitTurnCompleted(100, 20)
@@ -123,6 +120,46 @@ func runExec() {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
+}
+
+func runCodexTestVerdictPass() {
+	emitAgentMessage(mustJSON(map[string]any{
+		"verdict":           "PASS",
+		"outcome":           "pass",
+		"failures_markdown": "",
+		"surface_kind":      "cli",
+		"app_started":       true,
+		"start_command":     "sybra-cli --json list",
+		"readiness_probe":   "sybra-cli --json list",
+		"manual_probes": []map[string]string{{
+			"command":  "sybra-cli --json list",
+			"expected": "returns JSON task list",
+			"actual":   "[]",
+		}},
+		"automated_checks":     []map[string]string{},
+		"unable_to_run_reason": "",
+	}))
+	emitTurnCompleted(100, 20)
+}
+
+func runCodexTestVerdictFail() {
+	emitAgentMessage(mustJSON(map[string]any{
+		"verdict":           "FAIL",
+		"outcome":           "product_bug",
+		"failures_markdown": testFailureReport(),
+		"surface_kind":      "server",
+		"app_started":       true,
+		"start_command":     "go run ./cmd/test-server",
+		"readiness_probe":   "curl /status",
+		"manual_probes": []map[string]string{{
+			"command":  "curl /status",
+			"expected": "expected output",
+			"actual":   "wrong output",
+		}},
+		"automated_checks":     []map[string]string{},
+		"unable_to_run_reason": "",
+	}))
+	emitTurnCompleted(100, 20)
 }
 
 func runCodexMalformedPR() {
@@ -337,13 +374,20 @@ func runCLI(taskID, subcmd string, args ...string) {
 	}
 }
 
-func writeTestFailureReport(taskID string) {
-	body := "## Test Failures\n\n" +
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func testFailureReport() string {
+	return "## Test Failures\n\n" +
 		"Classification: product_bug\n\n" +
 		"Requirement tested: the task says the happy path should render the expected output.\n\n" +
 		"Command run:\n```sh\ncurl /status\n```\n\n" +
 		"Actual output:\n```text\nwrong output\n```\n\n" +
 		"Expected output: expected output.\n\n" +
 		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
-	runCLI(taskID, "update", taskID, "--body", body)
 }

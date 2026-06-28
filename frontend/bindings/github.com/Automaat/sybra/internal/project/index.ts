@@ -3,6 +3,8 @@
 
 export {
     ChecksConfig,
+    ManualTestConfig,
+    ManualTestKind,
     Project,
     ProjectStatus,
     ProjectType,
