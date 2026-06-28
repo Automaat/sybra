@@ -202,7 +202,7 @@ func TestBuiltinHandoffReview_DoesNotEnterPRReview(t *testing.T) {
 	}
 }
 
-func TestBuiltinHandoffPR_EntersPRReview(t *testing.T) {
+func TestBuiltinHandoffPR_DoesNotEnterPRReview(t *testing.T) {
 	t.Parallel()
 
 	fields := map[string]string{
@@ -210,8 +210,8 @@ func TestBuiltinHandoffPR_EntersPRReview(t *testing.T) {
 	}
 
 	pr := defByID(t, "pr-review")
-	if !EvalConditions(pr.Trigger.Conditions, fields) {
-		t.Fatalf("pr-review should match handoff-pr tags %q; conditions=%+v", fields["task.tags"], pr.Trigger.Conditions)
+	if EvalConditions(pr.Trigger.Conditions, fields) {
+		t.Fatalf("pr-review must not match handoff-pr tags %q; conditions=%+v", fields["task.tags"], pr.Trigger.Conditions)
 	}
 
 	plan := defByID(t, "simple-task-plan")

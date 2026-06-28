@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -500,6 +501,63 @@ func TestHandoffPersistsSourceProviderAtomically(t *testing.T) {
 	}
 }
 
+func TestHandoffReadyPRLinksExistingPRAsInternalTask(t *testing.T) {
+	setupStore(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	ps, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	proj, err := ps.CreateMeta("https://github.com/acme/repo.git", project.ProjectTypePet)
+	if err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(proj.ClonePath), 0o755); err != nil {
+		t.Fatalf("mkdir clone parent: %v", err)
+	}
+	runGit(t, "", "init", "--bare", proj.ClonePath)
+	runGit(t, "", "--git-dir="+proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	worktree := filepath.Join(t.TempDir(), "repo")
+	runGit(t, "", "init", worktree)
+	runGit(t, worktree, "checkout", "-b", "feature/handoff")
+	runGit(t, worktree, "remote", "add", "origin", "https://github.com/acme/repo.git")
+
+	code, out := runCLI(t,
+		"--json", "handoff",
+		"--title", "fix(test): ready pr",
+		"--project", "acme/repo",
+		"--worktree-dir", worktree,
+		"--stage", "ready-pr",
+		"--pr", "123",
+		"--source-provider", "copilot",
+	)
+	if code != 0 {
+		t.Fatalf("handoff exit %d: %s", code, out)
+	}
+
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+	if created.PRNumber != 123 {
+		t.Fatalf("PRNumber = %d, want 123", created.PRNumber)
+	}
+	if created.WorktreeDir != worktree {
+		t.Fatalf("WorktreeDir = %q, want %q", created.WorktreeDir, worktree)
+	}
+	if slices.Contains(created.Tags, "review") || slices.Contains(created.Tags, "handoff-pr") {
+		t.Fatalf("Tags = %v, want internal handoff tags only", created.Tags)
+	}
+	wantTags := []string{"handoff", "handoff-ready-pr"}
+	for i := range wantTags {
+		if i >= len(created.Tags) || created.Tags[i] != wantTags[i] {
+			t.Fatalf("Tags = %v, want prefix %v", created.Tags, wantTags)
+		}
+	}
+}
+
 func TestHandoffReviewRequiresSourceProvider(t *testing.T) {
 	setupStore(t)
 
@@ -510,6 +568,36 @@ func TestHandoffReviewRequiresSourceProvider(t *testing.T) {
 	)
 	if code == 0 {
 		t.Fatal("handoff review without source provider succeeded, want failure")
+	}
+}
+
+func TestHandoffRejectsExternalPRStage(t *testing.T) {
+	setupStore(t)
+
+	code, _ := runCLI(t,
+		"--json", "handoff",
+		"--title", "fix(test): review pr",
+		"--stage", "pr",
+		"--pr", "123",
+		"--source-provider", "copilot",
+	)
+	if code == 0 {
+		t.Fatal("handoff --stage pr succeeded, want failure")
+	}
+}
+
+func TestHandoffPrNumberRequiresReadyPrStage(t *testing.T) {
+	setupStore(t)
+
+	code, _ := runCLI(t,
+		"--json", "handoff",
+		"--title", "fix(test): link pr",
+		"--stage", "review",
+		"--pr", "123",
+		"--source-provider", "copilot",
+	)
+	if code == 0 {
+		t.Fatal("handoff --stage review --pr succeeded, want failure")
 	}
 }
 

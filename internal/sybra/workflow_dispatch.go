@@ -8,7 +8,6 @@ import (
 
 const (
 	handoffManualTag = "handoff-manual"
-	handoffPRTag     = "handoff-pr"
 	// enrichPendingTag marks a stub created from a raw GitHub issue/PR URL
 	// whose real title/body/labels are still being fetched asynchronously
 	// (TaskService.enrichFromIssue/enrichFromPR). It is set atomically at
@@ -45,5 +44,5 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 }
 
 func allowsTaskCreatedWorkflowWithPR(t task.Task) bool {
-	return slices.Contains(t.Tags, "handoff") || slices.Contains(t.Tags, handoffPRTag)
+	return slices.Contains(t.Tags, "handoff")
 }
