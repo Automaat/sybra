@@ -623,6 +623,16 @@ func TestClaudeEventToStreamEvent(t *testing.T) {
 			want: StreamEvent{Type: "result", Content: "done", SessionID: "sess-456", CostUSD: 0.05},
 		},
 		{
+			name: "result api error",
+			line: `{"type":"result","result":"You've hit your weekly limit","is_error":true,"api_error_status":429,"error":"rate_limit"}`,
+			want: StreamEvent{Type: "result", Content: "You've hit your weekly limit", ErrorType: "rate_limit", ErrorStatus: 429},
+		},
+		{
+			name: "result is error without envelope",
+			line: `{"type":"result","result":"API Error: 529 overloaded","is_error":true}`,
+			want: StreamEvent{Type: "result", Content: "API Error: 529 overloaded", ErrorType: "provider_error"},
+		},
+		{
 			name: "unknown type preserved",
 			line: `{"type":"rate_limit_event","subtype":"throttle"}`,
 			want: StreamEvent{Type: "rate_limit_event", Subtype: "throttle"},
@@ -675,6 +685,12 @@ func TestClaudeEventToStreamEvent(t *testing.T) {
 			}
 			if got.Subtype != tt.want.Subtype {
 				t.Errorf("Subtype = %q, want %q", got.Subtype, tt.want.Subtype)
+			}
+			if got.ErrorType != tt.want.ErrorType {
+				t.Errorf("ErrorType = %q, want %q", got.ErrorType, tt.want.ErrorType)
+			}
+			if got.ErrorStatus != tt.want.ErrorStatus {
+				t.Errorf("ErrorStatus = %d, want %d", got.ErrorStatus, tt.want.ErrorStatus)
 			}
 		})
 	}

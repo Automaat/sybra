@@ -229,6 +229,12 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	final := finalAssistantText(ag)
 	v, parseErr := parseVerdict(final)
 	if parseErr != nil {
+		if ag.GetErrorKind() == "rate_limit" {
+			h.logger.Warn("human-review.verdict.deferred",
+				"task_id", taskID, "agent_id", ag.ID, "reason", "provider_rate_limited")
+			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
+			return
+		}
 		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
 		if h.appendNote(taskID, "Auto-review (unparseable verdict)", final) {
 			h.markVerdictRendered(taskID, ag.ID)

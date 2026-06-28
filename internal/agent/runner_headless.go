@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -193,18 +194,19 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if stderrOut != "" {
 		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
 	}
+	if streamErr := resultStreamError(attemptEventsFrom(a, prevLen)); waitErr == nil && streamErr != nil {
+		waitErr = streamErr
+	}
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+	} else {
+		a.SetExitErr(nil)
 	}
 
 	if waitErr != nil {
 		// Only inspect the events produced during this attempt.
-		all := a.Output()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		attemptEvents := all[prevLen:]
+		attemptEvents := attemptEventsFrom(a, prevLen)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
@@ -295,23 +297,57 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if stderrOut != "" {
 		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
 	}
+	if streamErr := resultStreamError(attemptEventsFrom(a, prevLen)); waitErr == nil && streamErr != nil {
+		waitErr = streamErr
+	}
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+	} else {
+		a.SetExitErr(nil)
+	}
+	if waitErr != nil {
 		// Only inspect events from this attempt, mirroring the legacy path —
 		// otherwise a transient 529 from an earlier attempt makes every later
 		// attempt retry regardless of its real failure.
-		all := a.Output()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		attemptEvents := all[prevLen:]
+		attemptEvents := attemptEventsFrom(a, prevLen)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
 	}
 	return false, nil
+}
+
+func attemptEventsFrom(a *Agent, prevLen int) []StreamEvent {
+	all := a.Output()
+	if prevLen > len(all) {
+		prevLen = len(all)
+	}
+	return all[prevLen:]
+}
+
+func resultStreamError(streamEvents []StreamEvent) error {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		if e.ErrorStatus != 0 || e.ErrorType != "" || resultSubtypeIsError(e.Subtype) {
+			if e.ErrorStatus != 0 && e.ErrorType != "" {
+				return fmt.Errorf("provider result error %s (%d)", e.ErrorType, e.ErrorStatus)
+			}
+			if e.ErrorStatus != 0 {
+				return fmt.Errorf("provider result error status %d", e.ErrorStatus)
+			}
+			if e.ErrorType == "" {
+				return fmt.Errorf("provider result error")
+			}
+			return fmt.Errorf("provider result error %s", e.ErrorType)
+		}
+		return nil
+	}
+	return nil
 }
 
 // drainTimeout bounds how long the tailer waits for a process it just

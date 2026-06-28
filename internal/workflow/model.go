@@ -174,6 +174,9 @@ type StepConfig struct {
 	// Valid values: "plan", "plan_critique", "plan_research",
 	// "plan_decisions", "plan_brief", "code_review", or "plan_draft.<name>".
 	Sidecar string `yaml:"sidecar,omitempty" json:"sidecar"`
+	// AllowMissing turns require_sidecar into a soft gate: the step records a
+	// warning output instead of flipping the task to human-required.
+	AllowMissing bool `yaml:"allow_missing,omitempty" json:"allowMissing"`
 
 	// run_agent: when set, the engine ingests a file produced by the agent
 	// (typically under /tmp) and stores its content as the named task

@@ -381,8 +381,12 @@ steps:
              weak verification, acceptance gaps, risk, permission posture, and
              rollback/recovery coverage.
           4. Invoke: /plan-critic /tmp/sybra-plan-contract-review-{{.Task.ID}}.md
-          5. Capture the full markdown Plan Review report you produce and
-             write it to /tmp/sybra-critique-{{.Task.ID}}.md
+          5. As soon as each persona/result is available, append a concise
+             grounded finding summary to /tmp/sybra-critique-{{.Task.ID}}.md.
+             Do not wait for the final synthesis before writing the first
+             useful content.
+          6. Capture the final markdown Plan Review report you produce and
+             overwrite /tmp/sybra-critique-{{.Task.ID}}.md with it.
 
         Do NOT modify the plan. Do NOT change the task status. Sybra
         will ingest /tmp/sybra-critique-{{.Task.ID}}.md as the task's
@@ -406,14 +410,20 @@ steps:
   # produced its output file (e.g. shell blocked by a sandbox). Without
   # this check the workflow silently advances to address_critique with
   # an empty sidecar, and the human sees only the plan — no critique —
-  # in the review UI. Flips task to human-required when the sidecar is
-  # empty so the failure is visible.
+  # in the review UI. This gate soft-skips missing critique output so planning
+  # can still reach human review instead of getting stranded.
   - id: require_plan_critique
     name: Require Plan Critique
     type: require_sidecar
     config:
       sidecar: plan_critique
+      allow_missing: true
     next:
+      - when:
+          field: vars.step.require_plan_critique.output
+          operator: contains
+          value: skipped
+        goto: review_plan
       - when:
           field: task.status
           operator: equals

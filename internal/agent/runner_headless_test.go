@@ -191,6 +191,29 @@ func TestParseCodexStreamEvent_Error_StructuredErrorType(t *testing.T) {
 	}
 }
 
+func TestShouldRetry_ResultErrorWithoutSubtype(t *testing.T) {
+	streamEvents := []StreamEvent{{
+		Type:        "result",
+		Content:     "Overloaded",
+		ErrorType:   "overloaded_error",
+		ErrorStatus: 529,
+	}}
+	if !shouldRetry("", streamEvents, nil) {
+		t.Fatal("shouldRetry = false, want true for structured overloaded result without subtype")
+	}
+}
+
+func TestShouldRetry_ResultErrorDuringExecutionSubtype(t *testing.T) {
+	streamEvents := []StreamEvent{{
+		Type:    "result",
+		Subtype: "error_during_execution",
+		Content: "API Error: 529 overloaded",
+	}}
+	if !shouldRetry("", streamEvents, nil) {
+		t.Fatal("shouldRetry = false, want true for 529 in error_during_execution result")
+	}
+}
+
 func TestShouldRetry_Stderr529(t *testing.T) {
 	if !shouldRetry("error: 529 overloaded", nil, nil) {
 		t.Fatal("shouldRetry = false on stderr containing 529")
@@ -201,6 +224,72 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	streamEvents := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
 	if shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = true on non-transient error, want false")
+	}
+}
+
+func TestResultStreamError(t *testing.T) {
+	t.Parallel()
+
+	err := resultStreamError([]StreamEvent{
+		{Type: "assistant", Content: "working"},
+		{Type: "result", Content: "You've hit your weekly limit", ErrorType: "rate_limit", ErrorStatus: 429},
+	})
+	if err == nil {
+		t.Fatal("resultStreamError = nil, want error")
+	}
+	if got := err.Error(); got != "provider result error rate_limit (429)" {
+		t.Fatalf("error = %q, want provider result error rate_limit (429)", got)
+	}
+
+	if err := resultStreamError([]StreamEvent{{Type: "result", Content: "ok"}}); err != nil {
+		t.Fatalf("resultStreamError(success) = %v, want nil", err)
+	}
+
+	err = resultStreamError([]StreamEvent{{Type: "result", Subtype: "error", Content: "You've hit your weekly limit"}})
+	if err == nil {
+		t.Fatal("resultStreamError(subtype error) = nil, want error")
+	}
+
+	err = resultStreamError([]StreamEvent{{Type: "result", Subtype: "error_during_execution", Content: "No conversation found"}})
+	if err == nil {
+		t.Fatal("resultStreamError(error_during_execution) = nil, want error")
+	}
+}
+
+func TestLastHeadlessResultMarksStructuredError(t *testing.T) {
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "result", Content: "You've hit your weekly limit", ErrorType: "rate_limit", ErrorStatus: 429})
+
+	found, isError := a.lastHeadlessResult()
+	if !found {
+		t.Fatal("lastHeadlessResult found = false, want true")
+	}
+	if !isError {
+		t.Fatal("lastHeadlessResult isError = false, want true")
+	}
+}
+
+func TestLastHeadlessResultMarksErrorSubtype(t *testing.T) {
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "result", Subtype: "error_during_execution", Content: "No conversation found"})
+
+	found, isError := a.lastHeadlessResult()
+	if !found {
+		t.Fatal("lastHeadlessResult found = false, want true")
+	}
+	if !isError {
+		t.Fatal("lastHeadlessResult isError = false, want true")
+	}
+}
+
+func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "result", Content: "overloaded", ErrorType: "overloaded_error", ErrorStatus: 529})
+	a.AppendOutput(StreamEvent{Type: "system", Content: "new attempt"})
+
+	found, isError := a.lastHeadlessResult()
+	if found || isError {
+		t.Fatalf("lastHeadlessResult = (%v, %v), want no terminal result", found, isError)
 	}
 }
 

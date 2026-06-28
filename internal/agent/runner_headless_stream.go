@@ -75,6 +75,8 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.CacheCreationInputTokens = e.Result.CacheCreationInputTokens
 			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
 			ev.ReasoningTokens = e.Result.ReasoningTokens
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
 		}
 
 	}

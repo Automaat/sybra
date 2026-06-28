@@ -131,12 +131,22 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	}
 	a := agentFromRecord(r)
 	rehydrateFromLog(a, r.LogPath)
-	if !a.hasTerminalResult() {
+	found, isError := a.lastHeadlessResult()
+	if !found {
 		return false
+	}
+	if isError {
+		outputs := a.Output()
+		if err := resultStreamError(outputs); err != nil {
+			a.SetExitErr(err)
+			m.reportProviderHealthSignal(a, "", outputs)
+		} else {
+			a.SetExitErr(errReattachedResultError)
+		}
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.recovered-complete", "id", a.ID, "task", a.TaskID)
-	m.fireComplete(a, true)
+	m.fireComplete(a, a.GetExitErr() == nil)
 	return true
 }
 
@@ -311,8 +321,16 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 		return
 	}
 
-	if !a.hasTerminalResult() {
+	outputs := a.Output()
+	if found, isError := lastHeadlessResultEvent(outputs); !found {
 		a.SetExitErr(errReattachedGone)
+	} else if isError {
+		if err := resultStreamError(outputs); err != nil {
+			a.SetExitErr(err)
+			m.reportProviderHealthSignal(a, "", outputs)
+		} else {
+			a.SetExitErr(errReattachedResultError)
+		}
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.done", "id", a.ID, "cost", a.GetCostUSD())

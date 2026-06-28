@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -216,7 +217,15 @@ func (a *App) limitPolicy() limits.Policy {
 
 func (a *App) initStatusHook() {
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
-		a.logAudit(audit.EventTaskStatusChanged, taskID, "", map[string]any{"from": from, "to": to})
+		data := map[string]any{"from": from, "to": to}
+		if to == string(task.StatusHumanRequired) {
+			if t, err := a.tasks.Get(taskID); err == nil {
+				if kind := expectedHumanKind(t); kind != "" {
+					data["human_kind"] = kind
+				}
+			}
+		}
+		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
 		// Wake the dispatch pass immediately so a task that just became ready
 		// (e.g. a dependency completing, a stage advancing) is picked up now
@@ -285,6 +294,22 @@ func (a *App) initStatusHook() {
 			}
 		}
 	})
+}
+
+func expectedHumanKind(t task.Task) string {
+	if !slices.Contains(t.Tags, "review") {
+		return ""
+	}
+	switch {
+	case t.ReviewPhase == ReviewPhaseDrafted ||
+		strings.HasPrefix(t.StatusReason, "Draft review ready"):
+		return "review_draft"
+	case t.ReviewPhase == ReviewPhaseManual ||
+		strings.HasPrefix(t.StatusReason, "PR too small for agent review"):
+		return "review_manual"
+	default:
+		return ""
+	}
 }
 
 // maybeStartWorkflowForExternalTask starts the matching task.created workflow

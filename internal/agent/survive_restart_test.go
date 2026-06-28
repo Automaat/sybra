@@ -189,7 +189,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	if a.GetExitErr() != nil {
 		t.Fatalf("expected clean completion (terminal result seen), got err: %v", a.GetExitErr())
 	}
-	if !a.hasTerminalResult() {
+	if found, isError := a.lastHeadlessResult(); !found || isError {
 		t.Fatal("expected terminal result in buffer")
 	}
 	// Registry record is removed on completion.

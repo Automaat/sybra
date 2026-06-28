@@ -112,6 +112,22 @@ func TestCheckTriageMismatch(t *testing.T) {
 			},
 			0,
 		},
+		{
+			"headless expected manual review handoff",
+			[]audit.Event{
+				{Type: audit.EventTriageClassified, TaskID: "t1", Data: map[string]any{"mode": "headless"}},
+				{Type: audit.EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "todo", "to": "human-required", "human_kind": "review_manual"}},
+			},
+			0,
+		},
+		{
+			"headless expected draft review handoff",
+			[]audit.Event{
+				{Type: audit.EventTriageClassified, TaskID: "t1", Data: map[string]any{"mode": "headless"}},
+				{Type: audit.EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "in-review", "to": "human-required", "human_kind": "review_draft"}},
+			},
+			0,
+		},
 	}
 
 	for _, tt := range tests {
