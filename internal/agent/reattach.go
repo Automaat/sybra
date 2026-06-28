@@ -93,7 +93,7 @@ func (m *Manager) ReattachAll() []*Agent {
 			continue
 		}
 
-		a := agentFromRecord(r)
+		a := fromRecord(r)
 		// Rehydrate the buffer and capture the exact byte offset consumed, so
 		// the tailer resumes from there with no gap (a line appended between
 		// rehydration and the tail's first read is not lost) and no
@@ -135,7 +135,7 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	if r.LogPath == "" || r.Mode != "headless" {
 		return false
 	}
-	a := agentFromRecord(r)
+	a := fromRecord(r)
 	rehydrateFromLog(a, r.LogPath)
 	found, isError := a.lastHeadlessResult()
 	if !found {
@@ -200,7 +200,7 @@ func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
 	// compatibility, but prefer the explicit flag for current records.
 	oneShot := r.OneShot || r.StdinPath == ""
 
-	a := agentFromRecord(r)
+	a := fromRecord(r)
 	a.oneShot = oneShot
 	var startOffset int64
 	if r.LogPath != "" {
@@ -266,7 +266,7 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 		}
 	}
 
-	a := agentFromRecord(r)
+	a := fromRecord(r)
 	if r.LogPath != "" {
 		rehydratePerTurnConvoFromLog(a, r.LogPath)
 	}
@@ -456,34 +456,6 @@ func reattachAlive(r Record) bool {
 		}
 	}
 	return true
-}
-
-func agentFromRecord(r Record) *Agent {
-	return &Agent{
-		ID:                 r.ID,
-		TaskID:             r.TaskID,
-		Name:               r.Name,
-		Mode:               r.Mode,
-		Provider:           r.Provider,
-		Model:              r.Model,
-		ExperimentID:       r.ExperimentID,
-		VariantID:          r.VariantID,
-		AssignmentUnit:     r.AssignmentUnit,
-		AssignmentKey:      r.AssignmentKey,
-		PID:                r.PID,
-		SessionID:          r.SessionID,
-		LogPath:            r.LogPath,
-		sessionCWD:         r.CWD,
-		StartedAt:          r.StartedAt,
-		LastEventAt:        time.Now().UTC(),
-		State:              StateRunning,
-		MaxTurns:           r.MaxTurns,
-		oneShot:            r.OneShot,
-		stdinPath:          r.StdinPath,
-		requirePermissions: r.RequirePermissions,
-		ReasoningEffort:    r.ReasoningEffort,
-		detached:           true,
-	}
 }
 
 // processStartString returns the OS-reported start time of a process as an

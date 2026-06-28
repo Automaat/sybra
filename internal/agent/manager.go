@@ -206,33 +206,18 @@ func (m *Manager) saveRegistry(a *Agent) {
 	if reg == nil || a == nil {
 		return
 	}
-	a.mu.RLock()
-	rec := Record{
-		ID:                 a.ID,
-		TaskID:             a.TaskID,
-		Name:               a.Name,
-		Mode:               a.Mode,
-		Provider:           a.Provider,
-		Model:              a.Model,
-		ExperimentID:       a.ExperimentID,
-		VariantID:          a.VariantID,
-		AssignmentUnit:     a.AssignmentUnit,
-		AssignmentKey:      a.AssignmentKey,
-		PID:                a.PID,
-		SessionID:          a.SessionID,
-		LogPath:            a.LogPath,
-		CWD:                a.sessionCWD,
-		StartedAt:          a.StartedAt,
-		StdinPath:          a.stdinPath,
-		OneShot:            a.oneShot,
-		MaxTurns:           a.MaxTurns,
-		RequirePermissions: a.requirePermissions,
-		ReasoningEffort:    a.ReasoningEffort,
-	}
-	a.mu.RUnlock()
+	rec := a.toRecord()
 	rec.ProcStartedAt = processStartString(rec.PID)
 	if err := reg.Save(rec); err != nil {
-		m.logger.Warn("agent.registry.save", "id", a.ID, "err", err)
+		m.logger.Warn(
+			"agent.registry.save",
+			"id", rec.ID,
+			"task_id", rec.TaskID,
+			"mode", rec.Mode,
+			"pid", rec.PID,
+			"log_path", rec.LogPath,
+			"err", err,
+		)
 	}
 }
 
