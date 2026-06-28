@@ -453,6 +453,12 @@ func experienceBlocklist(proj project.Project) []string {
 }
 
 func scrubExperienceRecord(rec *experience.Record, blocklist []string) {
+	rawTaskID := rec.TaskID
+	if scrubbed, redactions := scrub.Scrub(rec.TaskID, blocklist); redactions > 0 {
+		rec.TaskID = experience.WorkRecordID(rawTaskID)
+	} else {
+		rec.TaskID = scrubbed
+	}
 	rec.ProjectID, _ = scrub.Scrub(rec.ProjectID, blocklist)
 	rec.ProjectType, _ = scrub.Scrub(rec.ProjectType, blocklist)
 	rec.Title, _ = scrub.Scrub(rec.Title, blocklist)

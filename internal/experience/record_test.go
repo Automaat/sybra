@@ -126,3 +126,18 @@ func TestProjectKeyWorkIsOpaqueAndStable(t *testing.T) {
 		t.Fatalf("pet ProjectKey = %q, want owner/repo", pet)
 	}
 }
+
+func TestWorkRecordIDIsOpaqueAndStable(t *testing.T) {
+	got := WorkRecordID("workco")
+	if got != WorkRecordID("workco") {
+		t.Fatal("WorkRecordID is not stable")
+	}
+	for _, forbidden := range []string{"workco", "private", "https://github.com/workco/private", "/"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("WorkRecordID contains %q: %s", forbidden, got)
+		}
+	}
+	if got == WorkRecordID("private") {
+		t.Fatal("different task IDs produced the same WorkRecordID")
+	}
+}

@@ -14,6 +14,7 @@ import (
 
 const (
 	projectKeySalt      = "sybra-experience-v1"
+	recordIDKeySalt     = "sybra-experience-record-v1"
 	promptBudgetBytes   = 6000
 	promptFieldMaxRunes = 600
 	storedTextMaxRunes  = 2000
@@ -33,6 +34,11 @@ func ProjectKey(proj project.Project) string {
 		proj.URL,
 	}, "\x00")))
 	return "work-" + hex.EncodeToString(sum[:])
+}
+
+func WorkRecordID(taskID string) string {
+	sum := sha256.Sum256([]byte(recordIDKeySalt + "\x00" + strings.TrimSpace(taskID)))
+	return "work-task-" + hex.EncodeToString(sum[:])
 }
 
 func FromTask(t task.Task, proj project.Project) Record {
