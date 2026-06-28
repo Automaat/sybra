@@ -2,8 +2,10 @@ package llmexec
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +29,32 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	}
 	if res.Text != `{"ok":true}` {
 		t.Fatalf("text = %q", res.Text)
+	}
+}
+
+func TestParseCodexTextAllowsLargeStreamLine(t *testing.T) {
+	text := strings.Repeat("x", 2*1024*1024)
+	raw := fmt.Appendf(nil, `{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}`, text)
+
+	got, err := parseCodexText(raw)
+	if err != nil {
+		t.Fatalf("parseCodexText: %v", err)
+	}
+	if got != text {
+		t.Fatalf("text length = %d, want %d", len(got), len(text))
+	}
+}
+
+func TestParseCopilotTextAllowsLargeStreamLine(t *testing.T) {
+	text := strings.Repeat("x", 2*1024*1024)
+	raw := fmt.Appendf(nil, `{"type":"assistant.message","data":{"content":"%s"}}`, text)
+
+	got, err := parseCopilotText(raw)
+	if err != nil {
+		t.Fatalf("parseCopilotText: %v", err)
+	}
+	if got != text {
+		t.Fatalf("text length = %d, want %d", len(got), len(text))
 	}
 }
 

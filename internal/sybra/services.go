@@ -28,7 +28,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	// cfg.Umbrella.Enabled so a config reload toggles it without re-wiring.
 	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
 	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
-		return umbrella.Expand(context.Background(), a.tasks, umbrella.ClaudePlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL)
+		return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL)
 	}
 	a.planSvc.engine = a.workflowEngine
 	a.planSvc.tasks = a.tasks

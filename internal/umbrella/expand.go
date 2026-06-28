@@ -204,9 +204,9 @@ func childTags(ref string, byRef map[string]github.Issue) []string {
 	return tags
 }
 
-// ClaudePlannerRunner returns a planner Runner that prefers Claude and falls
+// FallbackPlannerRunner returns a planner Runner that prefers Claude and falls
 // back to another CLI provider when the preferred provider is unavailable.
-func ClaudePlannerRunner(model string, gates ...provider.HealthGate) Runner {
+func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	var gate provider.HealthGate
 	if len(gates) > 0 {
 		gate = gates[0]

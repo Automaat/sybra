@@ -116,7 +116,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
 		f.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
-			return umbrella.Expand(context.Background(), a.tasks, umbrella.ClaudePlannerRunner(model, a.providerHealth), issueURL)
+			return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL)
 		})
 		a.logger.Info("umbrella.autodetect.enabled")
 	}

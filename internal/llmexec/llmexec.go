@@ -21,6 +21,8 @@ import (
 
 var providerOrder = []string{"claude", "codex", "copilot"}
 
+const streamScannerBuffer = 4 * 1024 * 1024
+
 // Options configures a one-shot provider invocation.
 type Options struct {
 	// Provider is the preferred provider. Empty means claude first, then peers.
@@ -185,7 +187,7 @@ func parseClaudeText(raw []byte) (string, error) {
 func parseCodexText(raw []byte) (string, error) {
 	var final string
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, streamScannerBuffer), streamScannerBuffer)
 	for scanner.Scan() {
 		var ev struct {
 			Type      string `json:"type"`
@@ -219,7 +221,7 @@ func parseCodexText(raw []byte) (string, error) {
 func parseCopilotText(raw []byte) (string, error) {
 	var final string
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, streamScannerBuffer), streamScannerBuffer)
 	for scanner.Scan() {
 		var ev struct {
 			Type      string `json:"type"`

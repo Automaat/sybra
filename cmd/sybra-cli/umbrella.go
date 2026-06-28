@@ -29,7 +29,7 @@ func cmdUmbrella(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "umbrella: an issue URL is required")
 	}
 
-	res, err := umbrella.Expand(context.Background(), s, umbrella.ClaudePlannerRunner(*model), issueURL)
+	res, err := umbrella.Expand(context.Background(), s, umbrella.FallbackPlannerRunner(*model), issueURL)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
