@@ -37,6 +37,9 @@ type AgentLauncher interface {
 	// it to wait out a transient throttle without also stalling auth failures,
 	// which must take the human-required path. Empty name = default provider.
 	ProviderRateLimited(provider string) bool
+	// ProviderCanFailover reports whether a currently blocked provider has a
+	// healthy peer available for this run.
+	ProviderCanFailover(provider string) bool
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.

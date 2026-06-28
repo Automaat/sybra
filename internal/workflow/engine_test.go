@@ -300,6 +300,7 @@ type mockAgents struct {
 	counter           int
 	failSpawn         error // when non-nil, StartAgent returns this error and records nothing
 	providerRateLimit bool  // when true, ProviderRateLimited reports true
+	providerFailover  bool  // when true, ProviderCanFailover reports true
 }
 
 func newMockAgents() *mockAgents {
@@ -357,10 +358,22 @@ func (m *mockAgents) ProviderRateLimited(string) bool {
 	return m.providerRateLimit
 }
 
+func (m *mockAgents) ProviderCanFailover(string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.providerFailover
+}
+
 func (m *mockAgents) SetProviderRateLimited(v bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.providerRateLimit = v
+}
+
+func (m *mockAgents) SetProviderFailover(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.providerFailover = v
 }
 
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
@@ -1142,6 +1155,33 @@ func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
 	engine.ResumeStalled()
 	if agents.CallCount() != 1 {
 		t.Fatalf("expected 1 agent start after rate limit cleared, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_FailoversRateLimitedProvider(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	agents.SetProviderFailover(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent start when failover is available, got %d", agents.CallCount())
 	}
 }
 

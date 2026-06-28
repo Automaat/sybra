@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // defaultJudgeModel is a capable model for nuanced code-quality judgment.
@@ -69,6 +71,7 @@ type ClaudeQualityJudge struct {
 	Model   string
 	DimSeed int64
 	Logger  *slog.Logger
+	Gate    provider.HealthGate
 }
 
 // Judge shells out to claude -p and returns a validated verdict.
@@ -78,19 +81,13 @@ func (j *ClaudeQualityJudge) Judge(ctx context.Context, req JudgeRequest) (Quali
 		model = defaultJudgeModel
 	}
 	prompt := buildQualityPrompt(req, shuffledRubric(j.DimSeed))
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return QualityVerdict{}, fmt.Errorf("claude -p: %w", err)
-	}
-	v, err := parseQualityVerdict(out)
+	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
 		return QualityVerdict{}, err
+	}
+	v, err := parseQualityVerdict([]byte(res.Text))
+	if err != nil {
+		return QualityVerdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
 	}
 	v.TaskID = req.TaskID
 	return v, nil
@@ -156,18 +153,19 @@ func buildQualityPrompt(req JudgeRequest, dims []RubricDimension) string {
 // stdout, clamps each dimension score to [0,10], and fills Overall from the mean
 // when the model omitted or mis-scored it.
 func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
+	text := string(raw)
 	var envelope struct {
-		Result string `json:"result"`
+		Result *string `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return QualityVerdict{}, fmt.Errorf("unmarshal envelope: %w", err)
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
+		if *envelope.Result == "" {
+			return QualityVerdict{}, fmt.Errorf("empty result field")
+		}
+		text = *envelope.Result
 	}
-	if envelope.Result == "" {
-		return QualityVerdict{}, fmt.Errorf("empty result field")
-	}
-	jsonStr := judgeExtractLastJSON(envelope.Result)
+	jsonStr := judgeExtractLastJSON(text)
 	if jsonStr == "" {
-		return QualityVerdict{}, fmt.Errorf("no JSON object in result: %q", envelope.Result)
+		return QualityVerdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
 	var v QualityVerdict
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
