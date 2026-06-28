@@ -138,10 +138,7 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
-	if err := a.convo.installStdinPipe(stdinPipe); err != nil {
-		_ = stdinPipe.Close()
-		return nil, nil, nil, fmt.Errorf("install stdin pipe: %w", err)
-	}
+	a.convo.replaceStdinPipe(stdinPipe)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -3,7 +3,11 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -70,4 +74,43 @@ func TestParseClaudeLine_ConvoRawIsIndependentOfScannerBuffer(t *testing.T) {
 			t.Errorf("event[%d].Raw = %s\nwant %s", i, got, want)
 		}
 	}
+}
+
+func TestStartConvoProcessReplacesStalePipeOnRetry(t *testing.T) {
+	dir := t.TempDir()
+	fakeClaude := filepath.Join(dir, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "retry-convo", Mode: "interactive"}
+	cfg := RunConfig{Prompt: "hello"}
+
+	cmd, stdout, _, err := m.startConvoProcess(context.Background(), a, cfg)
+	if err != nil {
+		t.Fatalf("first startConvoProcess: %v", err)
+	}
+	if _, err := io.ReadAll(stdout); err != nil {
+		t.Fatalf("read first stdout: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("first wait: %v", err)
+	}
+	if !a.convo.hasStdinPipe() {
+		t.Fatal("stale stdin pipe was not retained for retry setup")
+	}
+
+	cmd, stdout, _, err = m.startConvoProcess(context.Background(), a, cfg)
+	if err != nil {
+		t.Fatalf("retry startConvoProcess: %v", err)
+	}
+	if _, err := io.ReadAll(stdout); err != nil {
+		t.Fatalf("read retry stdout: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("retry wait: %v", err)
+	}
+	a.convo.closeStdinPipe()
 }
