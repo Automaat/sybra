@@ -634,11 +634,15 @@ func (a *Agent) lastHeadlessResult() (found, isError bool) {
 }
 
 func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
-	for i := range slices.Backward(events) {
-		e := events[i]
-		return e.Type == "result", e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
+	if len(events) == 0 {
+		return false, false
 	}
-	return false, false
+	last := events[len(events)-1]
+	found = last.Type == "result"
+	if !found {
+		return false, false
+	}
+	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
 }
 
 // lastConvoResult reports whether a terminal result event was observed in
