@@ -80,7 +80,9 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 	if err := s.validateSettings(settings); err != nil {
 		return err
 	}
-	s.applyFromConfig(settingsToConfig(s.cfg, settings))
+	if err := s.applyFromConfig(settingsToConfig(s.cfg, settings)); err != nil {
+		return err
+	}
 	return s.cfg.Save()
 }
 
@@ -128,7 +130,7 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 // applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
 // pushes the manager settings that are intentionally live. s.mu must be held by the caller.
 // This never writes to disk — callers that need persistence must call s.cfg.Save().
-func (s *ConfigService) applyFromConfig(next config.Config) {
+func (s *ConfigService) applyFromConfig(next config.Config) error {
 	s.cfg.Agent = next.Agent
 	s.cfg.Notification = next.Notification
 	s.cfg.Orchestrator = next.Orchestrator
@@ -149,8 +151,9 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.cfg.Metrics = next.Metrics
 	s.cfg.ProjectTypes = next.ProjectTypes
 	s.notifier.SetDesktop(next.Notification.Desktop)
-	s.notifier.SetDesktop(next.Notification.Desktop)
-	s.refreshAgentRuntimeConfig(next)
+	if err := s.refreshAgentRuntimeConfig(next); err != nil {
+		return err
+	}
 	if s.agents != nil {
 		s.agents.SetGuardrails(agent.Guardrails{
 			MaxCostUSD:       next.Agent.MaxCostUSD,
@@ -165,13 +168,14 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	if s.reloadHook != nil {
 		s.reloadHook()
 	}
+	return nil
 }
 
-func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) {
+func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
 	if s.agents == nil {
-		return
+		return nil
 	}
-	s.agents.UpdateRuntimeConfig(s.managerRuntimeConfig(next))
+	return s.agents.ReplaceRuntimeConfig(s.managerRuntimeConfig(next))
 }
 
 func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRuntimeConfig {

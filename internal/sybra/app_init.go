@@ -34,6 +34,11 @@ import (
 
 const liveLimitPollInterval = 15 * time.Minute
 
+type startupDegradedEvent struct {
+	Subsystem string `json:"subsystem"`
+	Reason    string `json:"reason"`
+}
+
 func (a *App) initBgops(emit func(string, any)) {
 	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
 	a.bgops.LoadFromDisk()
@@ -218,8 +223,12 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	agentCfg := a.agentManagerConfig(approvalAddr)
 	var err error
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
-	if err != nil && agentCfg.SurviveRestartDir != "" {
+	if err != nil && agentCfg.SurviveRestartDir != "" && errors.Is(err, agent.ErrSurvivalRegistry) {
 		a.logger.Error("agent.survive-restart.init", "err", err)
+		emit(events.StartupDegraded, startupDegradedEvent{
+			Subsystem: "agents",
+			Reason:    "agent survival registry failed to initialize; detached agents will not reconnect",
+		})
 		agentCfg.SurviveRestartDir = ""
 		a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	}
@@ -549,15 +558,11 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 // emitDegradedWarnings fires startup:degraded for any subsystem that failed
 // to initialize. Called after emit is configured so the frontend receives the events.
 func (a *App) emitDegradedWarnings(emit func(string, any)) {
-	type degraded struct {
-		Subsystem string `json:"subsystem"`
-		Reason    string `json:"reason"`
-	}
 	if a.audit == nil {
-		emit(events.StartupDegraded, degraded{"audit", "audit logger failed to initialize; audit trail unavailable"})
+		emit(events.StartupDegraded, startupDegradedEvent{"audit", "audit logger failed to initialize; audit trail unavailable"})
 	}
 	if a.stats == nil {
-		emit(events.StartupDegraded, degraded{"stats", "stats store failed to initialize; metrics unavailable"})
+		emit(events.StartupDegraded, startupDegradedEvent{"stats", "stats store failed to initialize; metrics unavailable"})
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -14,6 +15,9 @@ import (
 )
 
 type EmitFunc func(event string, data any)
+
+// ErrSurvivalRegistry marks failures initializing restart-survival persistence.
+var ErrSurvivalRegistry = errors.New("agent survival registry")
 
 // Guardrails defines per-agent execution limits.
 type Guardrails struct {
@@ -83,7 +87,7 @@ type LimitGate interface {
 }
 
 // ManagerConfig contains startup-only wiring. Values that are intentionally
-// live-editable are grouped in Runtime and updated via UpdateRuntimeConfig.
+// live-editable are grouped in Runtime and updated via ReplaceRuntimeConfig.
 type ManagerConfig struct {
 	Runtime ManagerRuntimeConfig
 
@@ -108,6 +112,10 @@ type ManagerRuntimeConfig struct {
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
+	defaultProv, err := normalizeProviderName(cfg.Runtime.DefaultProvider)
+	if err != nil {
+		return nil, fmt.Errorf("default provider: %w", err)
+	}
 	m := &Manager{
 		agents:         make(map[string]*Agent),
 		dispatchClaims: make(map[string]struct{}),
@@ -117,7 +125,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		logger:         logger,
 		logDir:         logDir,
 		approvalAddr:   cfg.ApprovalAddr,
-		defaultProv:    normalizeProvider(cfg.Runtime.DefaultProvider),
+		defaultProv:    defaultProv,
 		maxConcurrent:  cfg.Runtime.MaxConcurrent,
 		bashTimeoutMs:  cfg.Runtime.BashTimeoutMs,
 		retryWatchdog:  cfg.Runtime.RetryWatchdog,
@@ -131,7 +139,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 	if cfg.SurviveRestartDir != "" {
 		s, err := newRegistryStore(cfg.SurviveRestartDir)
 		if err != nil {
-			return nil, fmt.Errorf("agent survival registry: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrSurvivalRegistry, err)
 		}
 		m.reg = s
 		m.surviveRestart = true
@@ -166,18 +174,23 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Unlock()
 }
 
-// UpdateRuntimeConfig updates settings that are intentionally live: they affect
-// future Run calls and config reloads without mutating startup-only callbacks.
-func (m *Manager) UpdateRuntimeConfig(cfg ManagerRuntimeConfig) {
+// ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
+// affect future Run calls and config reloads without mutating startup-only callbacks.
+func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
+	defaultProv, err := normalizeProviderName(cfg.DefaultProvider)
+	if err != nil {
+		return fmt.Errorf("default provider: %w", err)
+	}
 	m.mu.Lock()
 	m.maxConcurrent = cfg.MaxConcurrent
-	m.defaultProv = normalizeProvider(cfg.DefaultProvider)
+	m.defaultProv = defaultProv
 	m.bashTimeoutMs = cfg.BashTimeoutMs
 	m.retryWatchdog = cfg.RetryWatchdog
 	m.fallbackModel = cfg.FallbackModel
 	m.limitGate = cfg.LimitGate
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error {

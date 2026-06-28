@@ -52,7 +52,9 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Metrics = next.Metrics
 	s.cfg.AutoUpdate = next.AutoUpdate
 	s.cfg.ProjectTypes = next.ProjectTypes
-	s.refreshAgentRuntimeConfig(*next)
+	if err := s.refreshAgentRuntimeConfig(*next); err != nil {
+		return nil, err
+	}
 
 	// Selectively call live setters only for fields that actually changed.
 	// This avoids restarting Todoist or other services on every config write

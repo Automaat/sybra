@@ -4750,7 +4750,9 @@ func TestE2E_StartWorkflowWithMalformedVars_NoPanic(t *testing.T) {
 func TestE2E_CrossDefaultEmptyProvider_ResolvesDeterministically(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success"})
 	writeWorkflowFixture(t, env, "test-cross-default", testCrossDefaultWorkflowYAML)
-	env.agents.UpdateRuntimeConfig(agent.ManagerRuntimeConfig{DefaultProvider: ""})
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{DefaultProvider: ""}); err != nil {
+		t.Fatal(err)
+	}
 
 	created, err := env.tasks.Create("cross default empty", "", "headless")
 	if err != nil {

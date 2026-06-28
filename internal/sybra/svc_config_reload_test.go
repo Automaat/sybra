@@ -313,7 +313,9 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 		}
 		return p
 	}
-	svc.refreshAgentRuntimeConfig(*svc.cfg)
+	if err := svc.refreshAgentRuntimeConfig(*svc.cfg); err != nil {
+		t.Fatal(err)
+	}
 	if !svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
 		t.Fatal("initial manager limit policy did not enable codex")
 	}

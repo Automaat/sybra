@@ -113,6 +113,41 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
+func TestNewManagerRejectsInvalidDefaultProvider(t *testing.T) {
+	_, err := NewManager(t.Context(), func(string, any) {}, discardLogger(), t.TempDir(), ManagerConfig{
+		Runtime: ManagerRuntimeConfig{DefaultProvider: "bogus"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid provider error")
+	}
+	if !strings.Contains(err.Error(), "unknown agent provider") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReplaceRuntimeConfigRejectsInvalidProvider(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			DefaultProvider: "codex",
+			MaxConcurrent:   7,
+		},
+	})
+
+	err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "bogus",
+		MaxConcurrent:   3,
+	})
+	if err == nil {
+		t.Fatal("expected invalid provider error")
+	}
+	if got := m.DefaultProvider(); got != "codex" {
+		t.Fatalf("DefaultProvider = %q, want codex", got)
+	}
+	if m.maxConcurrent != 7 {
+		t.Fatalf("maxConcurrent = %d, want 7", m.maxConcurrent)
+	}
+}
+
 func TestStartAgentUnknownMode(t *testing.T) {
 	m, _ := newTestManager(t)
 	_, err := startTestAgent(t, m, "task-1", "Test Task", "invalid", "prompt", nil)

@@ -1,10 +1,12 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 
@@ -59,6 +62,42 @@ func setupApp(t *testing.T) *App {
 		logger:    logger,
 		worktrees: wm,
 		agentOrch: agentOrch,
+	}
+}
+
+func TestInitAgentManagerEmitsDegradedWhenSurvivalDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "agents"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.Provider = "claude"
+	a := &App{
+		cfg:      cfg,
+		logger:   discardLogger(),
+		logDir:   t.TempDir(),
+		agentSvc: &AgentService{},
+	}
+	var emitted []string
+	err := a.initAgentManager(t.Context(), func(event string, _ any) {
+		emitted = append(emitted, event)
+	})
+	if err != nil {
+		t.Fatalf("initAgentManager: %v", err)
+	}
+	if a.agentSvc.approval != nil {
+		t.Cleanup(func() { _ = a.agentSvc.approval.Shutdown(context.Background()) })
+	}
+	if a.agents == nil {
+		t.Fatal("manager was not initialized")
+	}
+	if a.agents.DefaultProvider() != "claude" {
+		t.Fatalf("DefaultProvider = %q, want claude", a.agents.DefaultProvider())
+	}
+	if !slices.Contains(emitted, eventnames.StartupDegraded) {
+		t.Fatalf("expected %s event, got %v", eventnames.StartupDegraded, emitted)
 	}
 }
 
