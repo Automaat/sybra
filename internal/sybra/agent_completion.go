@@ -238,15 +238,16 @@ func addRunMetadata(updates map[string]any, ag *agent.Agent) {
 }
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
-// Returns false if the caller should return immediately (agent was stalled).
-// Stall conditions: signal kill, Sybra-initiated stop, or transient rate limit.
-// Auth failures fall through (need human login) — they take the normal failed path.
+// Returns false if the caller should return immediately. Signal kills and
+// Sybra-initiated stops stall for recovery; rate limits immediately re-drive
+// the same step so provider failover can choose a healthy peer. Auth failures
+// fall through (need human login) — they take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
 // isSignalKill alone misses Sybra-initiated stops — the failure mode from #641.
-// Rate limits stall rather than marking failed to avoid stranding tasks in
-// human-required while the provider's window clears.
+// Rate limits reschedule rather than marking failed to avoid stranding tasks in
+// human-required while a healthy peer is available.
 func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
 	if h.workflowEngine == nil {
 		return true
@@ -257,7 +258,11 @@ func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultCon
 			"task_id", ag.TaskID, "agent_id", ag.ID,
 			"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
 			"rate_limited", rateLimited)
-		h.workflowEngine.ClearAgentStep(ag.ID)
+		if rateLimited {
+			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
+		} else {
+			h.workflowEngine.ClearAgentStep(ag.ID)
+		}
 		return false
 	}
 	h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
@@ -426,13 +431,11 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 	return 0
 }
 
-// isRateLimitedRun reports whether a failed run was rejected by a transient
-// provider limit (rate/session/usage limit) rather than crashing. Such runs are
-// stalled for retry instead of being marked failed (which would strand the task
-// in human-required). Auth failures are intentionally NOT included — they need
-// a human to log in, so they take the normal failed path.
+// isRateLimitedRun reports whether a run was rejected by a transient provider
+// limit (rate/session/usage limit) rather than crashing. Some CLIs report this
+// as an exit-0 result, so the agent error kind is authoritative.
 func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
-	return exitErr != nil && ag.GetErrorKind() == "rate_limit"
+	return ag.GetErrorKind() == "rate_limit"
 }
 
 // isSignalKill reports whether err represents a process killed by an OS signal.

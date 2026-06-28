@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for
@@ -264,19 +265,21 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
+	all := a.ConvoOutput()
+	if prevLen > len(all) {
+		prevLen = len(all)
+	}
+	attemptEvents := all[prevLen:]
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
 
-		all := a.ConvoOutput()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		attemptEvents := all[prevLen:]
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
 }

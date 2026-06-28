@@ -144,3 +144,45 @@ func TestReportProviderSignal_NilGateSafe(t *testing.T) {
 	// Do not call SetHealthGate.
 	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "", 0)
 }
+
+func TestReportProviderHealthSignal_CleanLimitResultMarksRateLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+	fg := &fakeGate{healthy: map[string]bool{"claude": true}}
+	m.SetHealthGate(fg)
+	ag := &Agent{Provider: "claude"}
+
+	sig := m.reportCleanProviderHealthSignal(ag, "", []StreamEvent{
+		{Type: "result", Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
+	})
+
+	if sig != provider.SignalRateLimit {
+		t.Fatalf("signal = %v, want rate limit", sig)
+	}
+	if ag.GetErrorKind() != "rate_limit" {
+		t.Fatalf("agent error kind = %q, want rate_limit", ag.GetErrorKind())
+	}
+	if len(fg.reportedRLName) != 1 || fg.reportedRLName[0] != "claude" {
+		t.Fatalf("rate-limit report missing: %+v", fg.reportedRLName)
+	}
+}
+
+func TestReportProviderHealthSignal_CleanSuccessMentioningRateLimitDoesNotMarkRateLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+	fg := &fakeGate{healthy: map[string]bool{"claude": true}}
+	m.SetHealthGate(fg)
+	ag := &Agent{Provider: "claude"}
+
+	sig := m.reportCleanProviderHealthSignal(ag, "", []StreamEvent{
+		{Type: "result", Content: "Fixed rate limit handling and added tests."},
+	})
+
+	if sig != provider.SignalNone {
+		t.Fatalf("signal = %v, want none", sig)
+	}
+	if ag.GetErrorKind() != "" {
+		t.Fatalf("agent error kind = %q, want empty", ag.GetErrorKind())
+	}
+	if len(fg.reportedRLName) != 0 {
+		t.Fatalf("unexpected rate-limit report: %+v", fg.reportedRLName)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // startReasonMaxLen caps the human-facing reason written to task.StatusReason.
@@ -49,10 +50,18 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
+	case errors.Is(err, provider.ErrProviderUnhealthy):
+		reason = "agent start blocked: " + err.Error()
 	default:
 		reason = "agent start failed: " + err.Error()
 	}
 	return truncateReason(reason), permanent
+}
+
+func transientAgentStartError(err error) bool {
+	return errors.Is(err, ErrDispatchInFlight) ||
+		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 
 // truncateReason caps a status_reason to startReasonMaxLen bytes with an

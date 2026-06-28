@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // errReattachedGone marks a reattached agent whose process exited without
@@ -143,6 +144,8 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 		} else {
 			a.SetExitErr(errReattachedResultError)
 		}
+	} else if m.reportCleanProviderHealthSignal(a, "", a.Output()) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.recovered-complete", "id", a.ID, "task", a.TaskID)
@@ -297,6 +300,9 @@ func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg *registryStore)
 		a.SetExitErr(errReattachedGone)
 	} else if isError {
 		a.SetExitErr(errReattachedResultError)
+		m.reportProviderHealthSignalConvo(a, "", a.ConvoOutput())
+	} else if m.reportCleanProviderHealthSignalConvo(a, "", a.ConvoOutput()) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.per-turn-oneshot.done", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
@@ -331,6 +337,8 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 		} else {
 			a.SetExitErr(errReattachedResultError)
 		}
+	} else if m.reportCleanProviderHealthSignal(a, "", outputs) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.done", "id", a.ID, "cost", a.GetCostUSD())

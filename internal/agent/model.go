@@ -905,9 +905,9 @@ func (a *Agent) SetError(kind, msg string) {
 }
 
 // GetErrorKind returns the classified error kind recorded on the agent
-// ("rate_limit", "auth", or ""). The runner sets it when a failed run is
-// classified against the provider health gate, letting the completion handler
-// tell a transient provider limit apart from a real crash.
+// ("rate_limit", "auth", or ""). The runner sets it when a run is classified
+// against the provider health gate, letting the completion handler tell a
+// transient provider limit apart from a real crash.
 func (a *Agent) GetErrorKind() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // makeFIFO creates (or recreates) a named pipe at path. A stale pipe from a
@@ -164,18 +165,20 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
+	all := a.ConvoOutput()
+	if prevLen > len(all) {
+		prevLen = len(all)
+	}
+	attemptEvents := all[prevLen:]
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
-		all := a.ConvoOutput()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		attemptEvents := all[prevLen:]
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
 }
@@ -260,18 +263,20 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
+	all := a.ConvoOutput()
+	if prevLen > len(all) {
+		prevLen = len(all)
+	}
+	attemptEvents := all[prevLen:]
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
-		all := a.ConvoOutput()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		attemptEvents := all[prevLen:]
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
 }
@@ -425,6 +430,9 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 		a.SetExitErr(errReattachedGone)
 	} else if isError {
 		a.SetExitErr(errReattachedResultError)
+		m.reportProviderHealthSignalConvo(a, "", a.ConvoOutput())
+	} else if m.reportCleanProviderHealthSignalConvo(a, "", a.ConvoOutput()) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())

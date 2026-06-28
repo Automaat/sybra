@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // codexEventToConvoEvent converts a shared CodexEvent into a ConvoEvent for
@@ -257,14 +258,17 @@ func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 	waitErr := cmd.Wait()
 	stderrOut := stderrBuf.String()
+	all := a.ConvoOutput()
+	if prevLen > len(all) {
+		prevLen = len(all)
+	}
+	attemptEvents := all[prevLen:]
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "provider", a.Provider, "err", waitErr)
 		a.SetExitErr(waitErr)
-		all := a.ConvoOutput()
-		if prevLen > len(all) {
-			prevLen = len(all)
-		}
-		m.reportProviderHealthSignalConvo(a, stderrOut, all[prevLen:])
+		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "provider", a.Provider, "stderr", stderrOut)

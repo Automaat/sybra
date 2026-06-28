@@ -24,7 +24,7 @@ func TestIsRateLimitedRun(t *testing.T) {
 		want    bool
 	}{
 		{"rate limit with exit error", rateLimited, errors.New("exit status 1"), true},
-		{"rate limit but clean exit", rateLimited, nil, false},
+		{"rate limit but clean exit", rateLimited, nil, true},
 		{"auth failure is not retried", authFailed, errors.New("exit status 1"), false},
 		{"plain crash", &agent.Agent{}, errors.New("exit status 1"), false},
 	}
