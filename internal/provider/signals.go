@@ -20,10 +20,11 @@ const (
 // agent.StreamEvent directly) prevents an import cycle between internal/agent
 // and internal/provider.
 type ErrorSample struct {
-	Stderr      string
-	ErrorType   string
-	ErrorStatus int
-	Content     string
+	Stderr               string
+	ErrorType            string
+	ErrorStatus          int
+	Content              string
+	ContentIsCleanResult bool
 }
 
 // ClassifyClaudeError decides whether a failed claude run should mark the
@@ -48,7 +49,8 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 		return SignalAuthFailure, "logged_out", 0
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
-		containsAny(content, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
+		containsRateLimitContent(content, s.ContentIsCleanResult,
+			"rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
@@ -72,7 +74,8 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 		return SignalAuthFailure, "logged_out", 0
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded") ||
-		containsAny(content, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded") {
+		containsRateLimitContent(content, s.ContentIsCleanResult,
+			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded") {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
@@ -100,10 +103,47 @@ func ClassifyCopilotError(s ErrorSample) (Signal, string, time.Duration) {
 	// Copilot meters usage in "premium requests"; an exhausted allowance is the
 	// copilot analogue of a rate limit.
 	quotaNeedles := []string{"rate_limit", "rate limit", "quota", "premium request", "usage limit", "monthly limit"}
-	if containsAny(stderr, quotaNeedles...) || containsAny(content, quotaNeedles...) {
+	if containsAny(stderr, quotaNeedles...) || containsRateLimitContent(content, s.ContentIsCleanResult, quotaNeedles...) {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
+}
+
+func containsRateLimitContent(content string, cleanResult bool, broadNeedles ...string) bool {
+	if !cleanResult {
+		return containsAny(content, broadNeedles...)
+	}
+	return containsAny(content,
+		"you've hit your session limit",
+		"you have hit your session limit",
+		"hit your session limit",
+		"session limit reached",
+		"reached your session limit",
+		"you've hit your usage limit",
+		"you have hit your usage limit",
+		"hit your usage limit",
+		"usage limit reached",
+		"reached your usage limit",
+		"you've hit your weekly limit",
+		"you have hit your weekly limit",
+		"hit your weekly limit",
+		"weekly limit reached",
+		"reached your weekly limit",
+		"you've hit your rate limit",
+		"you have hit your rate limit",
+		"hit your rate limit",
+		"rate limit reached",
+		"reached your rate limit",
+		"rate limit exceeded",
+		"exceeded your rate limit",
+		"insufficient_quota",
+		"quota exceeded",
+		"exceeded your current quota",
+		"credit balance too low",
+		"premium request allowance",
+		"exceeded your premium request",
+		"monthly limit reached",
+	)
 }
 
 func reasonFromType(errType, fallback string) string {

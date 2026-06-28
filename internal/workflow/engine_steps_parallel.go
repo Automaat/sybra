@@ -70,6 +70,12 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		}
 		if err := e.spawnParallelChild(taskID, step, child, wfExec, ctx, dir, status); err != nil {
 			e.logger.Error("workflow.parallel.spawn", "task_id", taskID, "parent", step.ID, "child", child.ID, "err", err)
+			if transientAgentStartError(err) {
+				status.Status = "pending"
+				status.Output = "spawn blocked: " + err.Error()
+				e.surfaceStartFailure(taskID, ctx.Task.Status, err)
+				continue
+			}
 			// Mark this child failed up front; AdvanceStep treats failed
 			// children consistently with the retry path.
 			status.Status = "failed"

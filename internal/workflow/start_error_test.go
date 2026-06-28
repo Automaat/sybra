@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 func TestClassifyAgentStartError(t *testing.T) {
@@ -30,6 +31,11 @@ func TestClassifyAgentStartError(t *testing.T) {
 			name:         "generic error is transient",
 			err:          errors.New("fetch origin: connection refused"),
 			wantContains: "agent start failed: fetch origin: connection refused",
+		},
+		{
+			name:         "provider unhealthy is transient",
+			err:          &provider.UnhealthyError{Provider: "codex", Reason: "rate_limited"},
+			wantContains: "agent start blocked: provider codex unhealthy (rate_limited)",
 		},
 		{
 			name:         "long error gets truncated",

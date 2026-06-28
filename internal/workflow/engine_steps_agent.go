@@ -211,7 +211,10 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 }
 
 func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, bool, error) {
-	a, ok, err := abtest.SelectEligible(e.abTesting, taskID, role, stepID, providerAvailable)
+	providerAllowed := func(provider string) bool {
+		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
+	}
+	a, ok, err := abtest.SelectEligible(e.abTesting, taskID, role, stepID, providerAllowed)
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}
