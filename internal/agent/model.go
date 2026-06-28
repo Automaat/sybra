@@ -37,20 +37,12 @@ const (
 )
 
 type Agent struct {
-	ID                       string  `json:"id"`
-	TaskID                   string  `json:"taskId"`
-	Mode                     string  `json:"mode"`
-	State                    State   `json:"state"`
-	SessionID                string  `json:"sessionId"`
-	CostUSD                  float64 `json:"costUsd"`
-	InputTokens              int     `json:"inputTokens,omitempty"`
-	OutputTokens             int     `json:"outputTokens,omitempty"`
-	CacheCreationInputTokens int     `json:"cacheCreationInputTokens,omitempty"`
-	CacheReadInputTokens     int     `json:"cacheReadInputTokens,omitempty"`
-	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
-	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
-	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests float64   `json:"premiumRequests,omitempty"`
+	ID        string `json:"id"`
+	TaskID    string `json:"taskId"`
+	Mode      string `json:"mode"`
+	State     State  `json:"state"`
+	SessionID string `json:"sessionId"`
+	Usage
 	StartedAt       time.Time `json:"startedAt"`
 	LastEventAt     time.Time `json:"lastEventAt"`
 	LogPath         string    `json:"logPath,omitempty"`
@@ -304,10 +296,13 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 	if sessionID != "" {
 		a.SessionID = sessionID
 	}
-	a.CostUSD += cost
-	a.InputTokens += in
-	a.OutputTokens += out
-	a.ReasoningTokens += reasoning
+	usage := a.Usage
+	a.Usage = usage.Add(Usage{
+		CostUSD:         cost,
+		InputTokens:     in,
+		OutputTokens:    out,
+		ReasoningTokens: reasoning,
+	})
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
@@ -318,8 +313,11 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 // stable across runners.
 func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.mu.Lock()
-	a.CacheCreationInputTokens += cacheCreate
-	a.CacheReadInputTokens += cacheRead
+	usage := a.Usage
+	a.Usage = usage.Add(Usage{
+		CacheCreationInputTokens: cacheCreate,
+		CacheReadInputTokens:     cacheRead,
+	})
 	a.mu.Unlock()
 }
 
@@ -328,7 +326,8 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 // claude/codex never call this (their result events carry no such field).
 func (a *Agent) AddPremiumRequests(n float64) {
 	a.mu.Lock()
-	a.PremiumRequests += n
+	usage := a.Usage
+	a.Usage = usage.Add(Usage{PremiumRequests: n})
 	a.mu.Unlock()
 }
 
@@ -338,7 +337,8 @@ func (a *Agent) AddPremiumRequests(n float64) {
 // stream. No-op-equivalent for claude/codex, whose assistant events carry 0.
 func (a *Agent) AddOutputTokens(n int) {
 	a.mu.Lock()
-	a.OutputTokens += n
+	usage := a.Usage
+	a.Usage = usage.Add(Usage{OutputTokens: n})
 	a.mu.Unlock()
 }
 
@@ -808,6 +808,19 @@ type StreamEvent struct {
 	permissionDenials []PermissionDenial
 }
 
+// Usage returns this stream event's cost and token consumption.
+func (ev StreamEvent) Usage() Usage {
+	return Usage{
+		CostUSD:                  ev.CostUSD,
+		InputTokens:              ev.InputTokens,
+		OutputTokens:             ev.OutputTokens,
+		CacheCreationInputTokens: ev.CacheCreationInputTokens,
+		CacheReadInputTokens:     ev.CacheReadInputTokens,
+		ReasoningTokens:          ev.ReasoningTokens,
+		PremiumRequests:          ev.PremiumRequests,
+	}
+}
+
 // ConvoEvent is a rich event for conversational mode, preserving full tool
 // call structure for the chat UI.
 type ConvoEvent struct {
@@ -832,6 +845,19 @@ type ConvoEvent struct {
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"errorType,omitempty"`
 	ErrorStatus int    `json:"errorStatus,omitempty"`
+}
+
+// Usage returns this conversational event's cost and token consumption.
+func (ev ConvoEvent) Usage() Usage {
+	return Usage{
+		CostUSD:                  ev.CostUSD,
+		InputTokens:              ev.InputTokens,
+		OutputTokens:             ev.OutputTokens,
+		CacheCreationInputTokens: ev.CacheCreationInputTokens,
+		CacheReadInputTokens:     ev.CacheReadInputTokens,
+		ReasoningTokens:          ev.ReasoningTokens,
+		PremiumRequests:          ev.PremiumRequests,
+	}
 }
 
 // ToolUseBlock represents a single tool call from the assistant.

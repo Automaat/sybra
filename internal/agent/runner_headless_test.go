@@ -875,7 +875,7 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 20})
 
 	_, cancel := context.WithCancel(context.Background())
-	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 5, CostUSD: 9.0, escalationCh: make(chan bool, 1), cancel: cancel}
+	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 5, Usage: Usage{CostUSD: 9.0}, escalationCh: make(chan bool, 1), cancel: cancel}
 	// Pre-fill the escalation channel so the runner doesn't block.
 	a.escalationCh <- false
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
