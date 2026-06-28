@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // --- Test helpers ---
@@ -298,8 +299,9 @@ type mockAgents struct {
 	running           map[string]string // taskID -> agentID
 	roles             map[string]string // taskID+"/"+role -> agentID
 	counter           int
-	failSpawn         error // when non-nil, StartAgent returns this error and records nothing
-	providerRateLimit bool  // when true, ProviderRateLimited reports true
+	failSpawn         error           // when non-nil, StartAgent returns this error and records nothing
+	providerRateLimit bool            // when true, ProviderRateLimited reports true for every provider
+	rateLimited       map[string]bool // provider -> rate-limited
 }
 
 func newMockAgents() *mockAgents {
@@ -351,9 +353,12 @@ func (m *mockAgents) HasOtherRunningAgentForTask(taskID, exceptAgentID string) b
 	return ok && id != exceptAgentID
 }
 
-func (m *mockAgents) ProviderRateLimited(string) bool {
+func (m *mockAgents) ProviderRateLimited(provider string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.rateLimited != nil {
+		return m.rateLimited[provider]
+	}
 	return m.providerRateLimit
 }
 
@@ -361,6 +366,15 @@ func (m *mockAgents) SetProviderRateLimited(v bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.providerRateLimit = v
+}
+
+func (m *mockAgents) SetProviderRateLimitedFor(provider string, v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rateLimited == nil {
+		m.rateLimited = make(map[string]bool)
+	}
+	m.rateLimited[provider] = v
 }
 
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
@@ -1112,7 +1126,7 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 }
 
-func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
+func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1133,15 +1147,136 @@ func TestResumeStalled_SkipsRateLimitedProvider(t *testing.T) {
 
 	engine.ResumeStalled()
 
-	if agents.CallCount() != 0 {
-		t.Fatalf("expected 0 agent starts while provider rate-limited, got %d", agents.CallCount())
-	}
-
-	// Once the cooldown clears, the next sweep resumes the step.
-	agents.SetProviderRateLimited(false)
-	engine.ResumeStalled()
 	if agents.CallCount() != 1 {
-		t.Fatalf("expected 1 agent start after rate limit cleared, got %d", agents.CallCount())
+		t.Fatalf("expected workflow to dispatch so agent manager can fail over, got %d starts", agents.CallCount())
+	}
+}
+
+func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected replacement agent start, got %d", agents.CallCount())
+	}
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("rate-limited agent step mapping was not cleared")
+	}
+}
+
+func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
+	store := newTestStoreWith(t, "test-parallel.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-parallel",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+			ParallelInflight: map[string]*ParallelChildren{
+				"plan": {
+					ParentStepID: "plan",
+					Children: map[string]*ChildStatus{
+						"plan_a": {Status: "pending", AgentID: "limited-agent", Provider: "claude"},
+						"plan_b": {Status: "pending", AgentID: "other-agent", Provider: "codex"},
+					},
+				},
+			},
+		},
+	})
+	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected replacement parallel child start, got %d", agents.CallCount())
+	}
+	if got := agents.LastCall(); got.Provider != "claude" || got.Prompt != "Plan A t1" {
+		t.Fatalf("unexpected replacement call: %+v", got)
+	}
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("rate-limited child step mapping was not cleared")
+	}
+	if spawnedStep, tracked := engine.lookupAgentStep("agent-1"); !tracked || spawnedStep != "plan_a" {
+		t.Fatalf("replacement child mapping = (%q, %v), want plan_a/true", spawnedStep, tracked)
+	}
+	updated, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := updated.Workflow.ParallelInflight["plan"].Children["plan_a"]
+	if child.AgentID != "agent-1" || child.Status != "pending" {
+		t.Fatalf("child status = %+v, want pending agent-1", child)
+	}
+}
+
+func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T) {
+	store := newTestStoreWith(t, "test-parallel.yaml")
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(&providerpkg.UnhealthyError{Provider: "claude", Reason: "rate_limited"})
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-parallel",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+			ParallelInflight: map[string]*ParallelChildren{
+				"plan": {
+					ParentStepID: "plan",
+					Children: map[string]*ChildStatus{
+						"plan_a": {Status: "pending"},
+						"plan_b": {Status: "pending"},
+					},
+				},
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	updated, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, child := range updated.Workflow.ParallelInflight["plan"].Children {
+		if child.Status != "pending" {
+			t.Fatalf("child %s status = %q, want pending after transient provider block", id, child.Status)
+		}
+	}
+	if updated.Status != "in-progress" {
+		t.Fatalf("task status = %q, want in-progress", updated.Status)
+	}
+	if got := tasks.Reason("t1"); !strings.Contains(got, "provider claude unhealthy") {
+		t.Fatalf("reason = %q, want provider unhealthy reason", got)
 	}
 }
 
@@ -1668,6 +1803,53 @@ func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	}
 	if call.Assignment.ExperimentID != "exp" || call.Assignment.VariantID != "codex-gpt" || call.Assignment.ReasoningEffort != "high" {
 		t.Fatalf("assignment = %+v", call.Assignment)
+	}
+}
+
+func TestExecRunAgent_ABTestingSkipsRateLimitedProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-gpt", Provider: "codex", Model: "gpt-5.5", Weight: 1},
+				{ID: "claude-opus", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Prompt: "test prompt",
+		},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Provider == "codex" {
+		t.Fatalf("rate-limited provider was selected: %+v", call)
+	}
+	if call.Provider != "claude" || call.Assignment.VariantID != "claude-opus" {
+		t.Fatalf("provider/assignment = %q/%q, want claude/claude-opus", call.Provider, call.Assignment.VariantID)
 	}
 }
 

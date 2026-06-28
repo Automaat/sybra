@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -9,11 +10,23 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 )
 
+var errProviderRateLimited = errors.New("provider rate-limited")
+
 // reportProviderHealthSignal classifies the final error surface of a failed
 // run and forwards rate-limit / auth failures to the provider health gate so
 // the next scheduling attempt can fail over to a peer.
-func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) {
+func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) provider.Signal {
 	sample := buildErrorSample(stderrOut, attemptEvents)
+	return m.reportProviderHealthSample(a, sample)
+}
+
+func (m *Manager) reportCleanProviderHealthSignal(a *Agent, stderrOut string, attemptEvents []StreamEvent) provider.Signal {
+	sample := buildErrorSample(stderrOut, attemptEvents)
+	sample.ContentIsCleanResult = true
+	return m.reportProviderHealthSample(a, sample)
+}
+
+func (m *Manager) reportProviderHealthSample(a *Agent, sample provider.ErrorSample) provider.Signal {
 	sig, reason, retryAfter := classifyProviderError(a.Provider, sample)
 	if sig == provider.SignalNone {
 		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
@@ -22,13 +35,14 @@ func (m *Manager) reportProviderHealthSignal(a *Agent, stderrOut string, attempt
 				"errorType", sample.ErrorType,
 				"errorStatus", sample.ErrorStatus)
 		}
-		return
+		return sig
 	}
 	// Record the classification on the agent so the completion handler can tell
 	// a transient provider limit apart from a real crash and retry instead of
 	// stranding the task in human-required.
 	a.SetError(signalErrorKind(sig), reason)
 	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+	return sig
 }
 
 // signalErrorKind maps a provider health signal to the short error-kind tag
@@ -65,20 +79,15 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 
 // reportProviderHealthSignalConvo mirrors reportProviderHealthSignal for the
 // ConvoEvent stream used by conversational runners.
-func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) {
+func (m *Manager) reportProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) provider.Signal {
 	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
-	sig, reason, retryAfter := classifyProviderError(a.Provider, sample)
-	if sig == provider.SignalNone {
-		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
-			m.logger.Info("agent.provider.signal.unknown",
-				"provider", a.Provider,
-				"errorType", sample.ErrorType,
-				"errorStatus", sample.ErrorStatus)
-		}
-		return
-	}
-	a.SetError(signalErrorKind(sig), reason)
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+	return m.reportProviderHealthSample(a, sample)
+}
+
+func (m *Manager) reportCleanProviderHealthSignalConvo(a *Agent, stderrOut string, attemptEvents []ConvoEvent) provider.Signal {
+	sample := buildErrorSampleConvo(stderrOut, attemptEvents)
+	sample.ContentIsCleanResult = true
+	return m.reportProviderHealthSample(a, sample)
 }
 
 // classifyProviderError routes an error sample to the provider-appropriate

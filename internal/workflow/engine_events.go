@@ -298,6 +298,142 @@ func (e *Engine) ClearAgentStep(agentID string) {
 	e.clearAgentStep(agentID)
 }
 
+// RescheduleRateLimitedAgent immediately re-drives the run_agent step that a
+// rate-limited agent was executing. It excludes the completing agent from the
+// running-agent check because headless done closes only after onComplete returns.
+func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
+	if taskID == "" {
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		e.clearAgentStep(agentID)
+		return
+	}
+	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || t.Status == "human-required" {
+		e.clearAgentStep(agentID)
+		return
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		e.clearAgentStep(agentID)
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		e.clearAgentStep(agentID)
+		return
+	}
+	spawnedStep, tracked := e.lookupAgentStep(agentID)
+	if step.Type == StepParallel {
+		if !tracked || !parallelHasChild(step, spawnedStep) {
+			e.clearAgentStep(agentID)
+			return
+		}
+		child := def.StepByID(spawnedStep)
+		if child == nil || child.Type != StepRunAgent {
+			e.clearAgentStep(agentID)
+			return
+		}
+		e.rescheduleRateLimitedParallelChild(taskID, agentID, step, child, t)
+		return
+	}
+	if step.Type != StepRunAgent {
+		e.clearAgentStep(agentID)
+		return
+	}
+	if tracked && spawnedStep != step.ID {
+		e.clearAgentStep(agentID)
+		return
+	}
+	e.clearAgentStep(agentID)
+	if e.agents.HasOtherRunningAgentForTask(taskID, agentID) {
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
+		return
+	}
+
+	mu := e.taskInflightMutex(taskID)
+	if !mu.TryLock() {
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "inflight", "step", step.ID)
+		return
+	}
+	mu.Unlock()
+
+	e.mu.Lock()
+	if _, dispatching := e.dispatching[taskID]; dispatching {
+		e.mu.Unlock()
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "dispatching", "step", step.ID)
+		return
+	}
+	e.dispatching[taskID] = struct{}{}
+	e.mu.Unlock()
+
+	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
+	comp, rErr := e.executeSteps(taskID, &def, step, t.Workflow)
+	e.mu.Lock()
+	delete(e.dispatching, taskID)
+	e.mu.Unlock()
+	e.fireComplete(comp)
+	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
+	if rErr != nil {
+		e.surfaceStartFailure(taskID, t.Status, rErr)
+	}
+}
+
+func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
+	e.acquireInflight(taskID)
+	defer e.releaseInflight(taskID)
+
+	fresh, err := e.tasks.GetTask(taskID)
+	if err != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != parent.ID || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || fresh.Status == "human-required" {
+		e.clearAgentStep(agentID)
+		return
+	}
+	wfExec := fresh.Workflow
+	rec := wfExec.ParallelInflight[parent.ID]
+	if rec == nil {
+		e.clearAgentStep(agentID)
+		return
+	}
+	status := rec.Children[child.ID]
+	if status == nil || status.AgentID != agentID {
+		e.clearAgentStep(agentID)
+		return
+	}
+	e.clearAgentStep(agentID)
+
+	status.Status = "pending"
+	status.Output = "rate-limited: rescheduled"
+	status.AgentID = ""
+
+	fresh = e.withManualTestConfig(fresh)
+	ctx := TemplateContext{
+		Task:     fresh,
+		Step:     *parent,
+		Vars:     wfExec.Variables,
+		Workflow: wfExec,
+	}
+	dir := wfExec.Variables[WorkflowVarDir]
+	e.logger.Info("workflow.rate-limit-reschedule.parallel",
+		"task_id", taskID, "parent", parent.ID, "child", child.ID)
+	spawnErr := e.spawnParallelChild(taskID, parent, child, wfExec, ctx, dir, status)
+	if spawnErr != nil {
+		status.Status = "pending"
+		status.Output = "reschedule failed: " + spawnErr.Error()
+		status.AgentID = ""
+	}
+	if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+		e.logger.Error("workflow.rate-limit-reschedule.parallel.set", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", setErr)
+	}
+	if spawnErr != nil {
+		e.surfaceStartFailure(taskID, fresh.Status, spawnErr)
+	}
+}
+
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
@@ -328,8 +464,8 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		// Only resume run_agent steps where no agent is running.
-		if step.Type != StepRunAgent {
+		// Only resume async agent steps where no agent is running.
+		if step.Type != StepRunAgent && step.Type != StepParallel {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
@@ -349,15 +485,9 @@ func (e *Engine) ResumeStalled() {
 		if e.agents.HasRunningAgent(t.ID) {
 			continue
 		}
-		// Don't re-dispatch while the step's provider is rate-limited — it would
-		// just hit the limit again. The cooldown clears on its own and a later
-		// sweep resumes the step. Auth failures are NOT skipped here: those need
-		// a human to log in and take the human-required path instead.
-		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t); e.agents.ProviderRateLimited(prov) {
-			e.logger.Debug("workflow.resume-stalled.skip",
-				"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
-			continue
-		}
+		// Do not pre-skip rate-limited providers here. StartAgent owns provider
+		// gating and can fail over to a healthy peer; skipping at workflow level
+		// would strand the step on the limited provider until cooldown.
 		// Skip tasks whose step is currently being dispatched. Interactive
 		// spawns (worktree creation, rebase, agent process start) take
 		// several seconds during which no agent is yet registered — without
@@ -383,7 +513,7 @@ func (e *Engine) ResumeStalled() {
 		// Without this check a tight ResumeStalled loop dispatches a duplicate.
 		hasOutstandingAgent := false
 		for _, entry := range e.agentSteps {
-			if entry.taskID == t.ID && entry.stepID == step.ID {
+			if entry.taskID == t.ID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID)) {
 				hasOutstandingAgent = true
 				break
 			}

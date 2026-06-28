@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
+	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // errSurviveShutdown is returned by a detached headless attempt when the
@@ -204,13 +205,17 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		a.SetExitErr(nil)
 	}
 
+	// Only inspect the events produced during this attempt. Some CLIs report
+	// quota exhaustion as an exit-0 result event, so classify provider health
+	// even when the process itself looked successful.
+	attemptEvents := attemptEventsFrom(a, prevLen)
 	if waitErr != nil {
-		// Only inspect the events produced during this attempt.
-		attemptEvents := attemptEventsFrom(a, prevLen)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
 }
@@ -306,15 +311,17 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	} else {
 		a.SetExitErr(nil)
 	}
+	// Only inspect events from this attempt, mirroring the legacy path —
+	// otherwise a transient 529 from an earlier attempt makes every later
+	// attempt retry regardless of its real failure.
+	attemptEvents := attemptEventsFrom(a, prevLen)
 	if waitErr != nil {
-		// Only inspect events from this attempt, mirroring the legacy path —
-		// otherwise a transient 529 from an earlier attempt makes every later
-		// attempt retry regardless of its real failure.
-		attemptEvents := attemptEventsFrom(a, prevLen)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
+	} else if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
 }
