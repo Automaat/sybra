@@ -88,6 +88,10 @@ type automatedCheckEvidence struct {
 type evidenceText string
 
 func (l *manualProbeEvidenceList) UnmarshalJSON(data []byte) error {
+	*l = nil
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
 	raw, ok, err := unmarshalEvidenceString(data)
 	if err != nil || ok {
 		if raw != "" {
@@ -124,6 +128,10 @@ func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 }
 
 func (l *automatedCheckEvidenceList) UnmarshalJSON(data []byte) error {
+	*l = nil
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
 	raw, ok, err := unmarshalEvidenceString(data)
 	if err != nil || ok {
 		if raw != "" {

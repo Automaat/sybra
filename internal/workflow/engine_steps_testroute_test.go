@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,6 +234,24 @@ func TestHasReportLinePrefixNormalizesPrefixes(t *testing.T) {
 	report := "## Test Failures\n\nOutput:\n```text\nboom\n```\n"
 	if !hasReportLinePrefix(report, " Output: ") {
 		t.Fatal("expected normalized prefix to match Output line")
+	}
+}
+
+func TestStructuredTestOutputEvidenceListsUnmarshalNull(t *testing.T) {
+	t.Parallel()
+
+	out := structuredTestOutput{
+		ManualProbes:    manualProbeEvidenceList{{Command: "stale manual probe"}},
+		AutomatedChecks: automatedCheckEvidenceList{{Command: "stale automated check"}},
+	}
+	if err := json.Unmarshal([]byte(`{"manual_probes":null,"automated_checks":null}`), &out); err != nil {
+		t.Fatalf("unmarshal structured output: %v", err)
+	}
+	if len(out.ManualProbes) != 0 {
+		t.Fatalf("manual probes len = %d, want 0", len(out.ManualProbes))
+	}
+	if len(out.AutomatedChecks) != 0 {
+		t.Fatalf("automated checks len = %d, want 0", len(out.AutomatedChecks))
 	}
 }
 
