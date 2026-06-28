@@ -386,6 +386,7 @@ type agentAdapter struct {
 	agents     *agent.Manager
 	agentOrch  *AgentOrchestrator
 	tasks      *task.Manager
+	projects   *project.Store
 	sandboxes  *sandbox.Manager
 	experience *experience.Store
 }
@@ -538,7 +539,19 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	if role != agent.RolePlan || !a.agentOrch.cfg.Experience.Enabled || t.ProjectID == "" {
 		return
 	}
-	records, err := a.experience.Query(t.ProjectID, a.agentOrch.cfg.Experience.MaxRecords)
+	projStore := a.projects
+	if projStore == nil {
+		projStore = a.agentOrch.projects
+	}
+	if projStore == nil {
+		return
+	}
+	proj, err := projStore.Get(t.ProjectID)
+	if err != nil || proj.ID == "" || !a.agentOrch.cfg.AllowsProjectType(string(proj.Type)) {
+		return
+	}
+	projectKey := experience.ProjectKey(proj)
+	records, err := a.experience.Query(projectKey, a.agentOrch.cfg.Experience.MaxRecords)
 	if err != nil || len(records) == 0 {
 		return
 	}
@@ -551,10 +564,13 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	for i := range records {
 		ids = append(ids, records[i].TaskID)
 	}
-	a.agentOrch.logAudit(audit.EventExperienceInjected, t.ID, "", map[string]any{
-		"project_id": t.ProjectID,
-		"record_ids": ids,
-	})
+	data := map[string]any{"record_ids": ids}
+	if proj.Type == project.ProjectTypeWork {
+		data["project_key"] = projectKey
+	} else {
+		data["project_id"] = t.ProjectID
+	}
+	a.agentOrch.logAudit(audit.EventExperienceInjected, t.ID, "", data)
 }
 
 func (a *agentAdapter) ensureTestRunnerCapacity(role agent.Role) error {
