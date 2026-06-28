@@ -24,6 +24,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -2032,33 +2033,44 @@ func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 func testingTaskWithOutputSchemaYAML(t *testing.T) string {
 	t.Helper()
 
-	return `id: testing-task
-name: Test Manual Testing (with schema)
-trigger:
-  on: task.status_changed
-  conditions:
-    - field: task.status
-      operator: equals
-      value: testing
-steps:
-  - id: run_test
-    name: Adversarial Testing
-    type: run_agent
-    config:
-      role: test-runner
-      mode: headless
-      model: sonnet
-      output_schema: '` + testingTaskOutputSchema(t) + `'
-      prompt: 'Test {{.Task.ID}}'
-    next:
-      - goto: route_test
-
-  - id: route_test
-    name: Route Test Result
-    type: route_test_result
-    next:
-      - goto: ""
-`
+	def := workflow.Definition{
+		ID:   "testing-task",
+		Name: "Test Manual Testing (with schema)",
+		Trigger: workflow.Trigger{
+			On: "task.status_changed",
+			Conditions: []workflow.Condition{{
+				Field:    "task.status",
+				Operator: "equals",
+				Value:    "testing",
+			}},
+		},
+		Steps: []workflow.Step{
+			{
+				ID:   "run_test",
+				Name: "Adversarial Testing",
+				Type: workflow.StepRunAgent,
+				Config: workflow.StepConfig{
+					Role:         "test-runner",
+					Mode:         "headless",
+					Model:        "sonnet",
+					OutputSchema: testingTaskOutputSchema(t),
+					Prompt:       "Test {{.Task.ID}}",
+				},
+				Next: []workflow.Transition{{GoTo: "route_test"}},
+			},
+			{
+				ID:   "route_test",
+				Name: "Route Test Result",
+				Type: workflow.StepRouteTestResult,
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}
+	data, err := yaml.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal testing-task fixture: %v", err)
+	}
+	return string(data)
 }
 
 func testingTaskOutputSchema(t *testing.T) string {
