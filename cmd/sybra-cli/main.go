@@ -385,7 +385,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	stage := fs.String("stage", "implement", "workflow entry stage: implement|in-progress|review|ready-review|agentic-review|testing|ready-pr")
+	stage := fs.String("stage", "implement", "workflow entry stage: implement|review|testing|ready-pr")
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
 	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot")
 	pr := fs.Int("pr", 0, "existing PR number to link when using --stage ready-pr")
@@ -492,7 +492,7 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (hand
 		if isExternalPRHandoffStage(stage) {
 			return handoffStageConfig{}, "", false, fmt.Errorf("--stage %s is not supported by handoff: handoff only creates internal Sybra tasks; use --stage ready-pr --pr N to link an existing PR from this worktree", stage)
 		}
-		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, in-progress, review, ready-review, agentic-review, testing, ready-pr)", stage)
+		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, review, testing, ready-pr; aliases: in-progress, ready-review, agentic-review, test, open-pr, create-pr)", stage)
 	}
 	if pr > 0 && stageCfg.name != "ready-pr" {
 		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
@@ -1684,8 +1684,8 @@ Commands:
              implement      have a plan -> Sybra implements, reviews, tests, opens the PR
              review         implemented locally -> Sybra enters agentic review
              testing        reviewed locally -> Sybra tests, then opens the PR
-             ready-pr       tested locally -> Sybra opens or updates the PR
-                            pass --pr N only to link an existing same-branch PR
+             ready-pr       tested locally -> Sybra opens or updates the PR; pass --pr N
+                            only to link an existing same-branch PR
            --source-provider records which local agent produced handed-off work
            so review/testing/PR steps can run on a different provider.
            Required for --stage review|testing; optional for implement/ready-pr.

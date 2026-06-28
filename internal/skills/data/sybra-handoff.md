@@ -46,8 +46,10 @@ rebase, no force-push, and Sybra never deletes it.
 
 Handoff only creates **internal Sybra tasks**. It must not route work into the
 inbound/external PR-review lane (the lane for reviewing someone else's PR). Do
-not use `--stage pr`, `--stage in-review`, `pull-request`, or tags like
-`review`/`handoff-pr`; the CLI rejects those stages.
+not use external PR stages such as `--stage pr`, `--stage in-review`, or
+`--stage pull-request`; the CLI rejects those stages. Extra tags such as
+`review`/`handoff-pr` are legacy external-lane markers and should not be passed
+with handoffs.
 
 `sybra-cli handoff --status <status>` creates the task directly in that status
 with a `handoff-manual` tag and does **not** start any workflow. This is for
