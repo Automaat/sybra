@@ -86,7 +86,7 @@ func TestGHRequestGate_ObservesGraphQLRateLimitBody(t *testing.T) {
 	g := newGHRequestGate()
 
 	g.observe(ghHTTPResponse{
-		body: []byte(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}`),
+		body: []byte(`{"errors":[{"type":"RATE_LIMITED","message":"quota exhausted"}]}`),
 	}, nil)
 
 	if !g.shouldSkipOptional("graphql") {

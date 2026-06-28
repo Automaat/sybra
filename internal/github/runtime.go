@@ -249,6 +249,7 @@ func isRateLimitedMessage(msg string) bool {
 	return strings.Contains(lower, "secondary rate limit") ||
 		strings.Contains(lower, "api rate limit exceeded") ||
 		strings.Contains(lower, "rate limit exceeded") ||
+		strings.Contains(lower, "rate_limit") ||
 		strings.Contains(lower, "retry after")
 }
 
