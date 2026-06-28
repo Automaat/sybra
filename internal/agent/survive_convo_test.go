@@ -123,10 +123,7 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 	}
 	// The recreated agent is sendable: it has a live prompt channel. (Don't
 	// actually send — that would spawn a real codex process.)
-	a.mu.RLock()
-	hasPromptCh := a.promptCh != nil
-	a.mu.RUnlock()
-	if !hasPromptCh {
+	if !a.hasPromptChannel() {
 		t.Fatal("recreated codex agent should have a prompt channel")
 	}
 

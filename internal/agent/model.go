@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"os/exec"
 	"slices"
 	"sync"
@@ -14,14 +13,13 @@ import (
 
 // NOTE on concurrency: Agent has distinct mutexes.
 //   - mu: guards all mutable scalar and slice fields (State, outputBuffer,
-//     convoBuffer, LastEventAt, CostUSD, TurnCount, SessionID, ExitErr,
-//     cmd, PID, LogPath, EscalationReason). Use the helper methods
-//     defined on Agent rather than touching the fields directly from
-//     concurrent code paths.
-//   - stdinMu: guards stdinPipe only. Kept separate because the runner
-//     goroutine may hold it for the duration of a blocking Write, and
-//     we do not want to starve other consumers that only need to read
-//     State or append an event.
+//     cmd, PID, LogPath, EscalationReason, and the non-stdin fields in
+//     convoIO). Use the helper methods defined on Agent rather than touching
+//     the fields directly from concurrent code paths.
+//   - convo.stdinMu: guards convo.stdinPipe only. Kept separate because the
+//     runner goroutine may hold it for the duration of a blocking Write, and
+//     we do not want to starve other consumers that only need to read State or
+//     append an event.
 //   - loops owns its own lock for loop-detection state. Runner write paths and
 //     watchdog read/ack paths intentionally observe loop state independently
 //     from Agent.mu-protected fields; do not assume atomic snapshots across
@@ -113,25 +111,7 @@ type Agent struct {
 	// true = continue, false = kill.
 	escalationCh chan bool
 
-	// Conversational mode fields
-	stdinPipe  io.WriteCloser
-	stdinMu    sync.Mutex
-	approvalCh chan ApprovalResponse
-
-	// stdinPath is the FIFO backing a detached conversational agent's stdin,
-	// reopened on reattach so follow-up messages survive a restart. Empty for
-	// pipe-backed (non-survival) agents. Guarded by mu.
-	stdinPath string
-
-	// pendingPrompts queues follow-up user messages that arrive while a turn
-	// is mid-flight. Drained after each "result" event so the next turn fires
-	// without waiting on the user. Guarded by mu.
-	pendingPrompts []string
-
-	// promptCh delivers follow-up prompts to Codex conversational agents.
-	// Each turn spawns a new codex exec process; promptCh signals the next
-	// prompt without a stdin pipe. Guarded by mu.
-	promptCh chan string
+	convo convoIO
 
 	// stopped is set by StopAgent before cancelling the context so
 	// OnComplete can distinguish an intentional user stop (SIGTERM via
@@ -187,7 +167,7 @@ func (a *Agent) toRecord() Record {
 		LogPath:            a.LogPath,
 		CWD:                a.sessionCWD,
 		StartedAt:          a.StartedAt,
-		StdinPath:          a.stdinPath,
+		StdinPath:          a.convo.stdinPath,
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
@@ -218,7 +198,7 @@ func fromRecord(r Record) *Agent {
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
 		oneShot:            r.OneShot,
-		stdinPath:          r.StdinPath,
+		convo:              convoIO{stdinPath: r.StdinPath},
 		requirePermissions: r.RequirePermissions,
 		ReasoningEffort:    r.ReasoningEffort,
 		detached:           true,
@@ -412,7 +392,7 @@ func (a *Agent) GetPremiumRequests() float64 {
 // EnqueuePrompt appends a follow-up prompt to the pending queue.
 func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Lock()
-	a.pendingPrompts = append(a.pendingPrompts, text)
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
 	a.mu.Unlock()
 }
 
@@ -421,11 +401,11 @@ func (a *Agent) EnqueuePrompt(text string) {
 func (a *Agent) PopPendingPrompt() (string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.pendingPrompts) == 0 {
+	if len(a.convo.pendingPrompts) == 0 {
 		return "", false
 	}
-	next := a.pendingPrompts[0]
-	a.pendingPrompts = a.pendingPrompts[1:]
+	next := a.convo.pendingPrompts[0]
+	a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
 	return next, true
 }
 
@@ -433,7 +413,7 @@ func (a *Agent) PopPendingPrompt() (string, bool) {
 func (a *Agent) PendingPromptCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return len(a.pendingPrompts)
+	return len(a.convo.pendingPrompts)
 }
 
 // IncTurnCount increments the turn counter and returns the new value.
@@ -628,7 +608,7 @@ func (a *Agent) GetPID() int {
 // agent's stdin.
 func (a *Agent) setStdinPath(p string) {
 	a.mu.Lock()
-	a.stdinPath = p
+	a.convo.stdinPath = p
 	a.mu.Unlock()
 }
 
@@ -637,7 +617,31 @@ func (a *Agent) setStdinPath(p string) {
 func (a *Agent) GetStdinPath() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.stdinPath
+	return a.convo.stdinPath
+}
+
+func (a *Agent) setPromptChannel(ch chan string) {
+	a.mu.Lock()
+	a.convo.promptCh = ch
+	a.mu.Unlock()
+}
+
+func (a *Agent) promptChannel() chan string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.convo.promptCh
+}
+
+func (a *Agent) hasPromptChannel() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.convo.promptCh != nil
+}
+
+func (a *Agent) setApprovalChannel(ch chan ApprovalResponse) {
+	a.mu.Lock()
+	a.convo.approvalCh = ch
+	a.mu.Unlock()
 }
 
 // setDetached marks whether the agent's subprocess is detached for

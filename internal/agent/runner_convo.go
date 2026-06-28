@@ -138,9 +138,7 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
-	a.stdinMu.Lock()
-	a.stdinPipe = stdinPipe
-	a.stdinMu.Unlock()
+	a.convo.setStdinPipe(stdinPipe)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -386,12 +384,7 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 		// One-shot runs close stdin so the claude process sees EOF and exits.
 		if oneShot {
 			m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
-			a.stdinMu.Lock()
-			if a.stdinPipe != nil {
-				_ = a.stdinPipe.Close()
-				a.stdinPipe = nil
-			}
-			a.stdinMu.Unlock()
+			a.convo.closeStdinPipe()
 		}
 	}
 }
@@ -420,17 +413,17 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 		return err
 	}
 
-	a.stdinMu.Lock()
-	defer a.stdinMu.Unlock()
+	a.convo.stdinMu.Lock()
+	defer a.convo.stdinMu.Unlock()
 
-	if a.stdinPipe == nil {
+	if a.convo.stdinPipe == nil {
 		return fmt.Errorf("stdin pipe closed")
 	}
 	// Note: a message larger than the pipe buffer (~64KB) written while the
-	// child is not draining stdin blocks here under stdinMu until the child
-	// reads. In practice messages are far smaller and the child consumes
+	// child is not draining stdin blocks here under convo.stdinMu until the
+	// child reads. In practice messages are far smaller and the child consumes
 	// stdin promptly; very large pastes are the only way to stall this.
-	if _, err := a.stdinPipe.Write(data); err != nil {
+	if _, err := a.convo.stdinPipe.Write(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
 	return nil
@@ -448,10 +441,7 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if a.Mode != "interactive" {
 		return fmt.Errorf("agent %s is not in interactive/conversational mode", agentID)
 	}
-	a.stdinMu.Lock()
-	hasPipe := a.stdinPipe != nil
-	a.stdinMu.Unlock()
-	if !hasPipe {
+	if !a.convo.hasStdinPipe() {
 		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
 	}
 

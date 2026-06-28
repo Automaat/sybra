@@ -56,13 +56,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 		return nil, fmt.Errorf("open fifo: %w", err)
 	}
 	cmd.Stdin = fifo
-	a.stdinMu.Lock()
-	if a.stdinPipe != nil {
-		// Close a prior attempt's FIFO writer before replacing it.
-		_ = a.stdinPipe.Close()
-	}
-	a.stdinPipe = fifo
-	a.stdinMu.Unlock()
+	a.convo.replaceStdinPipe(fifo)
 	a.setStdinPath(fifoPath)
 
 	// Log file is the child's stdout, so it must exist before Start. Opened
@@ -405,9 +399,7 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	if !oneShot {
 		if sp := a.GetStdinPath(); sp != "" {
 			if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
-				a.stdinMu.Lock()
-				a.stdinPipe = fifo
-				a.stdinMu.Unlock()
+				a.convo.setStdinPipe(fifo)
 			} else {
 				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
 			}

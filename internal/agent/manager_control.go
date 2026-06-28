@@ -18,18 +18,12 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 	}
 
 	// Conversational agents: write to stdin via SendMessage.
-	a.stdinMu.Lock()
-	hasStdin := a.stdinPipe != nil
-	a.stdinMu.Unlock()
-	if hasStdin {
+	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
 
 	// Per-turn conversational agents (codex/copilot): deliver via promptCh.
-	a.mu.RLock()
-	hasCh := a.promptCh != nil
-	a.mu.RUnlock()
-	if hasCh {
+	if a.hasPromptChannel() {
 		return m.sendConvoPrompt(agentID, text)
 	}
 
@@ -123,12 +117,7 @@ func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
 			a.cancel()
 		}
 		a.SetState(StateStopped)
-		a.stdinMu.Lock()
-		if a.stdinPipe != nil {
-			_ = a.stdinPipe.Close()
-			a.stdinPipe = nil
-		}
-		a.stdinMu.Unlock()
+		a.convo.closeStdinPipe()
 		m.emit(events.AgentState(a.ID), a)
 	}
 
@@ -170,12 +159,7 @@ func (m *Manager) StopAgent(agentID string) error {
 	}
 	a.SetState(StateStopped)
 	// Close stdin to signal the claude process to exit.
-	a.stdinMu.Lock()
-	if a.stdinPipe != nil {
-		_ = a.stdinPipe.Close()
-		a.stdinPipe = nil
-	}
-	a.stdinMu.Unlock()
+	a.convo.closeStdinPipe()
 	m.emit(events.AgentState(agentID), a)
 	return nil
 }

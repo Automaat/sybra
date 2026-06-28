@@ -985,12 +985,12 @@ func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, 
 	t.Helper()
 	r, w := io.Pipe()
 	a := &Agent{
-		ID:        id,
-		TaskID:    taskID,
-		Name:      "plan:Test",
-		Mode:      "interactive",
-		State:     StatePaused,
-		stdinPipe: w,
+		ID:     id,
+		TaskID: taskID,
+		Name:   "plan:Test",
+		Mode:   "interactive",
+		State:  StatePaused,
+		convo:  convoIO{stdinPipe: w},
 	}
 	putAgent(t, m, a)
 

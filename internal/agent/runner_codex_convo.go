@@ -204,9 +204,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		}
 		resumeWait = false
 
-		a.mu.RLock()
-		ch := a.promptCh
-		a.mu.RUnlock()
+		ch := a.promptChannel()
 
 		select {
 		case <-ctx.Done():
@@ -510,9 +508,7 @@ func (m *Manager) sendConvoPrompt(agentID, text string) error {
 		return err
 	}
 
-	a.mu.RLock()
-	ch := a.promptCh
-	a.mu.RUnlock()
+	ch := a.promptChannel()
 	if ch == nil {
 		return fmt.Errorf("agent %s has no prompt channel", agentID)
 	}
