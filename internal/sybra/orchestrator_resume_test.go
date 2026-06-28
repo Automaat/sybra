@@ -116,8 +116,9 @@ updated_at: 2025-01-01T00:00:00Z
 	logDir := filepath.Join(home, "logs")
 	_ = os.MkdirAll(logDir, 0o755)
 
-	agentMgr := agent.NewManager(t.Context(), func(string, any) {}, logger, logDir)
-	agentMgr.SetDefaultProvider("claude")
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
 
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: filepath.Join(home, "worktrees"),

@@ -52,7 +52,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Metrics = next.Metrics
 	s.cfg.AutoUpdate = next.AutoUpdate
 	s.cfg.ProjectTypes = next.ProjectTypes
-	s.refreshLimitGate()
+	s.refreshAgentRuntimeConfig(*next)
 
 	// Selectively call live setters only for fields that actually changed.
 	// This avoids restarting Todoist or other services on every config write
@@ -61,10 +61,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		switch k {
 		case "notification.desktop":
 			s.notifier.SetDesktop(next.Notification.Desktop)
-		case "agent.max_concurrent":
-			s.agents.SetMaxConcurrent(next.Agent.MaxConcurrent)
-		case "agent.provider":
-			s.agents.SetDefaultProvider(next.Agent.Provider)
 		case "logging.level":
 			if s.logLevel != nil {
 				s.logLevel.Set(next.Logging.SlogLevel())
@@ -85,16 +81,6 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 			TurnMultiplier:   next.Agent.TurnMultiplier,
 		})
 	}
-	if slices.Contains(hot, "agent.bash_timeout_seconds") {
-		s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
-	}
-	if slices.Contains(hot, "agent.retry_watchdog") {
-		s.agents.SetRetryWatchdog(next.RetryWatchdog())
-	}
-	if slices.Contains(hot, "agent.fallback_model") {
-		s.agents.SetFallbackModel(next.Agent.FallbackModel)
-	}
-
 	if s.logger != nil {
 		for _, k := range restart {
 			s.logger.Warn("config.reload.restart_required", "field", k)

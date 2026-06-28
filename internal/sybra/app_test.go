@@ -42,7 +42,7 @@ func setupApp(t *testing.T) *App {
 	logger := discardLogger()
 	emit := func(string, any) {}
 	logDir := filepath.Join(os.TempDir(), "sybra-test-logs")
-	mgr := agent.NewManager(t.Context(), emit, logger, logDir)
+	mgr := newTestAgentManager(t, t.Context(), emit, logger, logDir)
 
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),

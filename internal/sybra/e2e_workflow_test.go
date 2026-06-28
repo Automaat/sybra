@@ -99,6 +99,7 @@ type e2eEnv struct {
 	// gap between markAgentDone (which flips HasRunningAgentForTask to false)
 	// and HandleAgentComplete finishing its AdvanceStep/executeSteps chain.
 	pendingCompletions atomic.Int64
+	onAgentComplete    func(*agent.Agent)
 }
 
 // startWorkflow seeds the reserved _dir variable so that run_agent steps have
@@ -190,8 +191,16 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
 
-	agentMgr := agent.NewManager(ctx, func(string, any) {}, logger, logDir)
-	agentMgr.SetDefaultProvider(provider)
+	var env *e2eEnv
+	var engine *workflow.Engine
+	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		OnComplete: func(ag *agent.Agent) {
+			env.pendingCompletions.Add(1)
+			defer env.pendingCompletions.Add(-1)
+			env.onAgentComplete(ag)
+		},
+	})
 
 	wfDir, err := os.MkdirTemp("", "sybra-e2e-wf-*")
 	if err != nil {
@@ -226,7 +235,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine := workflow.NewEngine(wfStore, ta, aa, logger)
+	engine = workflow.NewEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 
 	// Pre-create a working directory so run_agent steps can satisfy the
@@ -237,7 +246,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
 
-	env := &e2eEnv{
+	env = &e2eEnv{
 		tasks:        taskMgr,
 		agents:       agentMgr,
 		engine:       engine,
@@ -248,10 +257,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		provider:     provider,
 		cancel:       cancel,
 	}
-
-	agentMgr.SetOnComplete(func(ag *agent.Agent) {
-		env.pendingCompletions.Add(1)
-		defer env.pendingCompletions.Add(-1)
+	env.onAgentComplete = func(ag *agent.Agent) {
 		var result string
 		var hasResult bool
 		output := ag.Output()
@@ -274,9 +280,9 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 			Success:  ag.GetExitErr() == nil,
 			Provider: ag.Provider,
 		})
-	})
+	}
 
-	// Mirror production cascade wiring (sybra/services.go: SetOnComplete →
+	// Mirror production cascade wiring (sybra/services.go →
 	// AgentCompletionHandler.OnWorkflowComplete) so tests that span multiple
 	// chained workflows (simple-task-plan → simple-task-implement →
 	// simple-task-review) advance through the cascade exactly like the
@@ -541,11 +547,7 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
 		workflowEngine: env.engine,
 	}
-	env.agents.SetOnComplete(func(ag *agent.Agent) {
-		env.pendingCompletions.Add(1)
-		defer env.pendingCompletions.Add(-1)
-		h.OnComplete(ag)
-	})
+	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("signal kill task", "", "headless")
 	if err != nil {
@@ -604,11 +606,7 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
 		workflowEngine: env.engine,
 	}
-	env.agents.SetOnComplete(func(ag *agent.Agent) {
-		env.pendingCompletions.Add(1)
-		defer env.pendingCompletions.Add(-1)
-		h.OnComplete(ag)
-	})
+	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("stop agent task", "", "headless")
 	if err != nil {
@@ -3151,8 +3149,25 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	t.Cleanup(cancel)
 
 	logDir := t.TempDir()
-	agentMgr := agent.NewManager(ctx, func(string, any) {}, e2eLogger(), logDir)
-	agentMgr.SetDefaultProvider(env.provider)
+	var engine *workflow.Engine
+	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		OnComplete: func(ag *agent.Agent) {
+			var result string
+			output := ag.Output()
+			for i := range output {
+				if output[i].Type == "result" {
+					result = output[i].Content
+				}
+			}
+			engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
+				AgentID:  ag.ID,
+				Result:   result,
+				Success:  ag.GetExitErr() == nil,
+				Provider: ag.Provider,
+			})
+		},
+	})
 
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
@@ -3164,25 +3179,10 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine := workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
+	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
 
-	agentMgr.SetOnComplete(func(ag *agent.Agent) {
-		var result string
-		output := ag.Output()
-		for i := range output {
-			if output[i].Type == "result" {
-				result = output[i].Content
-			}
-		}
-		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-			AgentID:  ag.ID,
-			Result:   result,
-			Success:  ag.GetExitErr() == nil,
-			Provider: ag.Provider,
-		})
-	})
 	return engine
 }
 
@@ -4750,7 +4750,7 @@ func TestE2E_StartWorkflowWithMalformedVars_NoPanic(t *testing.T) {
 func TestE2E_CrossDefaultEmptyProvider_ResolvesDeterministically(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success"})
 	writeWorkflowFixture(t, env, "test-cross-default", testCrossDefaultWorkflowYAML)
-	env.agents.SetDefaultProvider("")
+	env.agents.UpdateRuntimeConfig(agent.ManagerRuntimeConfig{DefaultProvider: ""})
 
 	created, err := env.tasks.Create("cross default empty", "", "headless")
 	if err != nil {

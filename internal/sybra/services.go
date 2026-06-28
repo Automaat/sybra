@@ -73,11 +73,10 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.workflowSvc.store = a.workflowStore
 	a.browserSvc.open = a.openBrowser
 
-	// Subscribe handlers to manager callbacks last — by this point every
-	// dependency the handler reads is wired up, so the closures can't
-	// observe a partially-constructed App.
+	// Build completion handlers last — by this point every dependency they
+	// read is wired up, and the manager's construction-time callback delegates
+	// to a.agentCompletion once it is populated here.
 	a.agentCompletion = a.newAgentCompletionHandler(emit)
-	a.agents.SetOnComplete(a.agentCompletion.OnComplete)
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetOnComplete(a.agentCompletion.OnWorkflowComplete)
 	}

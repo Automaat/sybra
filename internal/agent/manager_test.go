@@ -48,7 +48,7 @@ func (r *eventRecorder) Snapshot() []string {
 	return out
 }
 
-func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
+func newTestManager(t *testing.T, cfgs ...ManagerConfig) (mgr *Manager, emitted *eventRecorder) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -57,7 +57,7 @@ func newTestManager(t *testing.T) (mgr *Manager, emitted *eventRecorder) {
 		emitted.add(event)
 	}
 
-	m := NewManager(ctx, emit, discardLogger(), t.TempDir())
+	m := mustNewManager(t, ctx, emit, discardLogger(), t.TempDir(), cfgs...)
 	return m, emitted
 }
 
@@ -248,16 +248,16 @@ func TestStopAgent(t *testing.T) {
 // exactly once.
 func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
 	t.Parallel()
-	m, _ := newTestManager(t)
-
 	var (
 		mu    sync.Mutex
 		count int
 	)
-	m.SetOnComplete(func(_ *Agent) {
-		mu.Lock()
-		count++
-		mu.Unlock()
+	m, _ := newTestManager(t, ManagerConfig{
+		OnComplete: func(_ *Agent) {
+			mu.Lock()
+			count++
+			mu.Unlock()
+		},
 	})
 
 	a := &Agent{
@@ -290,8 +290,6 @@ func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
 // agent does not call onComplete immediately — only the goroutine may call it
 // after the process exits, preventing premature worktree cleanup.
 func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
-	m, _ := newTestManager(t)
-
 	// Counter is written from the runner goroutine (onComplete path) and
 	// read from the test goroutine after StopAgent returns — protect
 	// with a mutex for the race detector.
@@ -309,11 +307,13 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	holdOpen := make(chan struct{})
 	defer close(holdOpen)
 
-	m.SetOnComplete(func(_ *Agent) {
-		<-holdOpen
-		mu.Lock()
-		completeCalls++
-		mu.Unlock()
+	m, _ := newTestManager(t, ManagerConfig{
+		OnComplete: func(_ *Agent) {
+			<-holdOpen
+			mu.Lock()
+			completeCalls++
+			mu.Unlock()
+		},
 	})
 
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)

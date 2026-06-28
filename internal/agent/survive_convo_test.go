@@ -40,7 +40,7 @@ func TestWillDetach(t *testing.T) {
 // stream-json from a pipe, not a regular file, so one-shot survival must
 // feed the prompt via argv, not stdin.
 func TestBuildOneShotConvoArgs(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 	a := &Agent{ID: "x", Provider: "claude", Model: "sonnet"}
 	args := m.buildOneShotConvoArgs(a, RunConfig{Prompt: "do the thing", RequirePermissions: false})
 
@@ -97,10 +97,7 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{SurviveRestartDir: regDir})
 	// Codex record: PID 0 (no live process between turns).
 	rec := Record{ID: "cx9", TaskID: "t-cx", Mode: "interactive", Provider: "codex", PID: 0, LogPath: logPath, SessionID: "cx-9", StartedAt: time.Now().UTC()}
 	if err := m.reg.Save(rec); err != nil {
@@ -145,10 +142,7 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 }
 
 func TestSaveRegistry_PreservesOneShot(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: t.TempDir()})
 	m.saveRegistry(&Agent{
 		ID:        "cx-one",
 		TaskID:    "t-cx",
@@ -186,15 +180,14 @@ func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var completed atomic.Bool
 	var failed atomic.Bool
-	m.SetOnComplete(func(a *Agent) {
-		completed.Store(true)
-		failed.Store(a.GetExitErr() != nil)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete: func(a *Agent) {
+			completed.Store(true)
+			failed.Store(a.GetExitErr() != nil)
+		},
 	})
 
 	rec := Record{
@@ -235,11 +228,10 @@ func TestReattachCodexConvo_SkipsDeletedTask(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
-	m.SetTaskExists(func(string) bool { return false }) // task is gone
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		TaskExists:        func(string) bool { return false }, // task is gone
+	})
 
 	if err := m.reg.Save(Record{ID: "gone1", TaskID: "deleted", Mode: "interactive", Provider: "codex", LogPath: logPath, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("save: %v", err)
@@ -316,10 +308,7 @@ func TestRehydrateConvoFromLog(t *testing.T) {
 // non-detached (one-shot/legacy) interactive agent must not, while still
 // capturing the session id.
 func TestProcessConvoLine_RegistryGatedByDetached(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: t.TempDir()})
 	st := &convoEmitState{}
 
 	// Non-detached one-shot: session captured, NO registry record.
@@ -399,12 +388,11 @@ func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var completed atomic.Bool
-	m.SetOnComplete(func(*Agent) { completed.Store(true) })
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) { completed.Store(true) },
+	})
 
 	result := `{"type":"result","result":"done","session_id":"sess-os","total_cost_usd":0.1}`
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 0.3; printf '%%s\\n' '%s' >> %q", result, logPath))
@@ -464,12 +452,11 @@ func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var completed atomic.Bool
-	m.SetOnComplete(func(*Agent) { completed.Store(true) })
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) { completed.Store(true) },
+	})
 
 	// FIFO must exist for the reopen to succeed.
 	fifoPath := m.reg.fifoPath("ic1")

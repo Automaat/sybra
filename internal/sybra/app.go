@@ -3,7 +3,7 @@ package sybra
 // Dependency graph (startup order):
 //
 //	config → audit/stats → task.Store → project.Store → loopagent.Store
-//	→ emit/bgops → task.Manager → agent.Manager → providerHealth
+//	→ emit/bgops → task.Manager → limits/approval → agent.Manager → providerHealth
 //	→ worktrees → sandboxes → agentOrch → reviewer → workflowEngine
 //	→ wireServices → [LifecycleManager: StartManagers → StartPollers → StartWatchers]
 
@@ -262,9 +262,10 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initArtifacts()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
-	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)
-	a.agents.SetDefaultProvider(a.cfg.Agent.Provider)
 	a.initLimits()
+	if err := a.initAgentManager(ctx, emit); err != nil {
+		return err
+	}
 	a.initProviderHealth(ctx, emit)
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
@@ -286,7 +287,6 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initWorkflowEngine()
 
 	a.initAgentConfig()
-	a.initApprovalServer(emit)
 
 	a.initLoopScheduler(ctx, emit)
 	a.initFileWatcher(ctx, emit)

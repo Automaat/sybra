@@ -91,8 +91,15 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			t.Cleanup(cancel)
 
 			logger := e2eLogger()
-			agentMgr := agent.NewManager(ctx, func(string, any) {}, logger, logDir)
-			agentMgr.SetDefaultProvider(tc.provider)
+			done := make(chan struct{})
+			var h *AgentCompletionHandler
+			agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
+				Runtime: agent.ManagerRuntimeConfig{DefaultProvider: tc.provider},
+				OnComplete: func(ag *agent.Agent) {
+					h.OnComplete(ag)
+					close(done)
+				},
+			})
 
 			wtDir := t.TempDir()
 			wm := worktree.New(worktree.Config{
@@ -101,17 +108,12 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 				Logger:       logger,
 				AgentChecker: agentMgr.HasRunningAgentForTask,
 			})
-			h := &AgentCompletionHandler{
+			h = &AgentCompletionHandler{
 				DomainHandler: DomainHandler{logger: logger},
 				tasks:         taskMgr,
 				worktrees:     wm,
 				stats:         statsStore,
 			}
-			done := make(chan struct{})
-			agentMgr.SetOnComplete(func(ag *agent.Agent) {
-				h.OnComplete(ag)
-				close(done)
-			})
 
 			tk, err := taskMgr.Create("stats e2e", "", "headless")
 			if err != nil {
