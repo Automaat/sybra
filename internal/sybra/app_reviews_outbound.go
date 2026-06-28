@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 const linkedPRDriftWindow = 10 * time.Minute
@@ -100,7 +101,7 @@ func linkedOwnPRHumanRequiredDrift(t *task.Task, livePR bool) bool {
 	if t.Workflow == nil {
 		return false
 	}
-	if t.Workflow.WorkflowID != "simple-task-pr" || string(t.Workflow.State) != "completed" || t.Workflow.CompletedAt == nil {
+	if t.Workflow.WorkflowID != "simple-task-pr" || t.Workflow.State != workflow.ExecCompleted || t.Workflow.CompletedAt == nil {
 		return false
 	}
 	completedAt := *t.Workflow.CompletedAt

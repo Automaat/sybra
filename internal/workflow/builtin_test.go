@@ -102,7 +102,7 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 		t.Fatal("require_plan_critique must soft-fail when the critic produces no sidecar")
 	}
 	got, err := ResolveTransition(step.Next, map[string]string{
-		"vars.step.require_plan_critique.output": "plan critique missing — upstream agent step completed without writing its sidecar — skipped",
+		"vars.step.require_plan_critique.output": "plan critique missing — upstream agent step completed without writing its sidecar — skipped (non-fatal)",
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
