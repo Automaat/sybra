@@ -60,6 +60,17 @@ func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
 	}
 }
 
+func TestWriteRestartMarkerCreatesMarker(t *testing.T) {
+	homeDir := filepath.Join(t.TempDir(), "nested", "sybra-home")
+
+	if err := WriteRestartMarker(homeDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(RestartMarkerPath(homeDir)); err != nil {
+		t.Fatalf("restart marker missing: %v", err)
+	}
+}
+
 func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	_, work := seedRepos(t)
 	writeFile(t, work, "dirty.txt", "dirty\n")

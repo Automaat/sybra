@@ -79,6 +79,12 @@ func run() (int, error) {
 		}),
 		sybra.WithBrowserOpener(func(url string) { v3openBrowser(url) }),
 		sybra.WithRestartRequest(func() {
+			homeDir := config.HomeDir()
+			if err := autoupdate.WriteRestartMarker(homeDir); err != nil {
+				logger.Error("autoupdate.restart.marker.failed", "err", err)
+			} else {
+				logger.Info("autoupdate.restart.marker.written", "path", autoupdate.RestartMarkerPath(homeDir))
+			}
 			restartRequested.Store(true)
 			if v3app != nil {
 				v3app.Quit()

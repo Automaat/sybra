@@ -15,6 +15,7 @@ import (
 const (
 	ModeAuto        = "auto"
 	ModeNotify      = "notify"
+	RestartMarker   = "restart-requested"
 	RestartExitCode = 42
 )
 
@@ -46,6 +47,23 @@ func New(cfg Config, logger *slog.Logger) *Runner {
 		logger = slog.Default()
 	}
 	return &Runner{cfg: cfg.withDefaults(), logger: logger}
+}
+
+func RestartMarkerPath(homeDir string) string {
+	return filepath.Join(homeDir, RestartMarker)
+}
+
+func WriteRestartMarker(homeDir string) error {
+	if homeDir == "" {
+		return errors.New("home dir is empty")
+	}
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		return fmt.Errorf("create sybra home: %w", err)
+	}
+	if err := os.WriteFile(RestartMarkerPath(homeDir), []byte(time.Now().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write restart marker: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) Run(ctx context.Context) {
