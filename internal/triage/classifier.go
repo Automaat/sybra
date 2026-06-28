@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -23,6 +25,13 @@ type Classifier interface {
 type ClaudeClassifier struct {
 	Model  string       // default: "sonnet"
 	Logger *slog.Logger // required
+}
+
+// FallbackClassifier runs triage through the shared provider-fallback executor.
+type FallbackClassifier struct {
+	Model  string
+	Logger *slog.Logger
+	Gate   provider.HealthGate
 }
 
 // Classify shells out to claude -p and returns a validated verdict.
@@ -48,6 +57,31 @@ func (c *ClaudeClassifier) Classify(ctx context.Context, t task.Task, projects [
 	v, err := parseVerdict(out)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("parse verdict: %w", err)
+	}
+	if err := ValidateVerdict(&v); err != nil {
+		return Verdict{}, fmt.Errorf("validate verdict: %w", err)
+	}
+	return v, nil
+}
+
+// Classify shells out to the first available provider and falls back when it is
+// rate-limited/logged-out/unavailable.
+func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
+	model := c.Model
+	if model == "" {
+		model = "sonnet"
+	}
+	res, err := llmexec.RunJSON(ctx, buildPrompt(t, projects), llmexec.Options{
+		Model:  model,
+		Logger: c.Logger,
+		Gate:   c.Gate,
+	})
+	if err != nil {
+		return Verdict{}, err
+	}
+	v, err := parseVerdict([]byte(res.Text))
+	if err != nil {
+		return Verdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
 	}
 	if err := ValidateVerdict(&v); err != nil {
 		return Verdict{}, fmt.Errorf("validate verdict: %w", err)
@@ -137,18 +171,19 @@ Output schema (single JSON object):
 // The top-level response has a `result` string field containing the model's
 // final message, from which we extract the last JSON object.
 func parseVerdict(raw []byte) (Verdict, error) {
+	text := string(raw)
 	var envelope struct {
-		Result string `json:"result"`
+		Result *string `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return Verdict{}, fmt.Errorf("unmarshal envelope: %w", err)
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
+		if *envelope.Result == "" {
+			return Verdict{}, fmt.Errorf("empty result field")
+		}
+		text = *envelope.Result
 	}
-	if envelope.Result == "" {
-		return Verdict{}, fmt.Errorf("empty result field")
-	}
-	jsonStr := extractLastJSONObject(envelope.Result)
+	jsonStr := extractLastJSONObject(text)
 	if jsonStr == "" {
-		return Verdict{}, fmt.Errorf("no JSON object in result: %q", envelope.Result)
+		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
 	var v Verdict
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {

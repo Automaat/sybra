@@ -331,6 +331,31 @@ func (m *Manager) ProviderRateLimited(name string) bool {
 	return g.RateLimited(name)
 }
 
+// ProviderCanFailover reports whether the health/limit gates can route work
+// away from the named provider right now.
+func (m *Manager) ProviderCanFailover(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	lg := m.limitGate
+	lp := m.limitPolicy
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	resolved := normalizeProvider(name)
+	healthy := func(p string) bool {
+		return g == nil || g.IsHealthy(p)
+	}
+	if g != nil && g.Failover(resolved) != "" {
+		return true
+	}
+	if lg == nil {
+		return false
+	}
+	alt, _ := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp)
+	return alt != ""
+}
+
 // ReportProviderSignal forwards a runner-side passive signal (rate-limit or
 // auth failure) to the health gate. Safe to call with a nil gate.
 func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration) {

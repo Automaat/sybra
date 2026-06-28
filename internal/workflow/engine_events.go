@@ -349,11 +349,11 @@ func (e *Engine) ResumeStalled() {
 		if e.agents.HasRunningAgent(t.ID) {
 			continue
 		}
-		// Don't re-dispatch while the step's provider is rate-limited — it would
-		// just hit the limit again. The cooldown clears on its own and a later
-		// sweep resumes the step. Auth failures are NOT skipped here: those need
-		// a human to log in and take the human-required path instead.
-		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t); e.agents.ProviderRateLimited(prov) {
+		// Don't re-dispatch to the same provider while it is rate-limited; do
+		// continue when failover can route this run to a healthy peer.
+		// Auth failures are NOT skipped here: those need a human to log in and
+		// take the human-required path instead.
+		if prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t); e.agents.ProviderRateLimited(prov) && !e.agents.ProviderCanFailover(prov) {
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
 			continue
