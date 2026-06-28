@@ -227,7 +227,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 
 // runConvoTurn runs one per-turn provider process (`codex exec --json` or
 // `copilot -p --output-format json`) and streams output as ConvoEvents.
-// Returns true when the turn's terminal result was observed.
+// Returns true only when the turn produced a terminal result and exited cleanly.
 func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
 	bin, args := buildPerTurnConvoArgs(a, cfg, prompt)
 	cmd := exec.CommandContext(ctx, bin, args...)
