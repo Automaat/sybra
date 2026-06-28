@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -547,6 +549,83 @@ func TestSyncBuiltins_OverwriteStaleBuiltin(t *testing.T) {
 	if got.Name != defs[0].Name {
 		t.Errorf("SyncBuiltins did not repair stale builtin: got %q, want %q",
 			got.Name, defs[0].Name)
+	}
+}
+
+func TestSyncBuiltins_PrunesObsoleteBuiltin(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	obsolete := newTestDef("obsolete-builtin-sync-test")
+	obsolete.Builtin = true
+	if err := store.Save(obsolete); err != nil {
+		t.Fatalf("Save obsolete: %v", err)
+	}
+
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if _, err := store.Get(obsolete.ID); err == nil {
+		t.Fatalf("obsolete builtin %q still exists", obsolete.ID)
+	}
+}
+
+func TestSyncBuiltins_PreservesObsoleteUserWorkflow(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	custom := newTestDef("obsolete-custom-workflow-sync-test")
+	custom.Builtin = false
+	if err := store.Save(custom); err != nil {
+		t.Fatalf("Save custom: %v", err)
+	}
+
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if _, err := store.Get(custom.ID); err != nil {
+		t.Fatalf("custom workflow was pruned: %v", err)
+	}
+}
+
+func TestSyncBuiltins_PruneFailureDoesNotBlockRefresh(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	bad := []byte(`id: ../obsolete-builtin-sync-test
+name: Bad Builtin
+trigger:
+  on: task.created
+steps:
+  - id: s
+    type: set_status
+    config:
+      status: todo
+builtin: true
+`)
+	if err := os.WriteFile(filepath.Join(store.Dir(), "bad.yaml"), bad, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = SyncBuiltins(store)
+	if err == nil {
+		t.Fatal("SyncBuiltins succeeded, want prune error")
+	}
+	defs, defsErr := BuiltinDefinitions()
+	if defsErr != nil || len(defs) == 0 {
+		t.Fatalf("BuiltinDefinitions: %v (len=%d)", defsErr, len(defs))
+	}
+	if _, getErr := store.Get(defs[0].ID); getErr != nil {
+		t.Fatalf("current builtin was not refreshed after prune failure: %v", getErr)
 	}
 }
 
