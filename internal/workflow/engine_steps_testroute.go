@@ -62,6 +62,49 @@ type structuredTestOutput struct {
 	UnableToRunReason string                   `json:"unable_to_run_reason,omitempty"`
 }
 
+func (o *structuredTestOutput) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Verdict           string          `json:"verdict"`
+		Outcome           string          `json:"outcome"`
+		FailuresMarkdown  string          `json:"failures_markdown"`
+		SurfaceKind       string          `json:"surface_kind"`
+		AppStarted        bool            `json:"app_started"`
+		StartCommand      string          `json:"start_command"`
+		ReadinessProbe    json.RawMessage `json:"readiness_probe"`
+		ManualProbes      json.RawMessage `json:"manual_probes"`
+		AutomatedChecks   json.RawMessage `json:"automated_checks"`
+		UnableToRunReason string          `json:"unable_to_run_reason"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	readinessProbe, err := unmarshalFlexibleEvidenceText(raw.ReadinessProbe)
+	if err != nil {
+		return fmt.Errorf("readiness_probe: %w", err)
+	}
+	manualProbes, err := unmarshalManualProbeEvidenceList(raw.ManualProbes)
+	if err != nil {
+		return fmt.Errorf("manual_probes: %w", err)
+	}
+	automatedChecks, err := unmarshalAutomatedCheckEvidenceList(raw.AutomatedChecks)
+	if err != nil {
+		return fmt.Errorf("automated_checks: %w", err)
+	}
+	*o = structuredTestOutput{
+		Verdict:           raw.Verdict,
+		Outcome:           raw.Outcome,
+		FailuresMarkdown:  raw.FailuresMarkdown,
+		SurfaceKind:       raw.SurfaceKind,
+		AppStarted:        raw.AppStarted,
+		StartCommand:      raw.StartCommand,
+		ReadinessProbe:    readinessProbe,
+		ManualProbes:      manualProbes,
+		AutomatedChecks:   automatedChecks,
+		UnableToRunReason: raw.UnableToRunReason,
+	}
+	return nil
+}
+
 type manualProbeEvidence struct {
 	Command  string `json:"command"`
 	Expected string `json:"expected"`
@@ -80,8 +123,14 @@ func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 		e.Raw = raw
 		return err
 	}
-	type alias manualProbeEvidence
-	return json.Unmarshal(data, (*alias)(e))
+	fields, err := unmarshalEvidenceObject(data)
+	if err != nil {
+		return err
+	}
+	e.Command = firstJSONFieldText(fields, "command", "cmd")
+	e.Expected = firstJSONFieldText(fields, "expected", "want")
+	e.Actual = firstJSONFieldText(fields, "actual", "output", "observed", "observed_output", "result", "stdout", "stderr")
+	return nil
 }
 
 func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
@@ -89,8 +138,13 @@ func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
 		e.Raw = raw
 		return err
 	}
-	type alias automatedCheckEvidence
-	return json.Unmarshal(data, (*alias)(e))
+	fields, err := unmarshalEvidenceObject(data)
+	if err != nil {
+		return err
+	}
+	e.Command = firstJSONFieldText(fields, "command", "cmd")
+	e.Actual = firstJSONFieldText(fields, "actual", "output", "observed", "observed_output", "result", "stdout", "stderr")
+	return nil
 }
 
 func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
@@ -101,6 +155,118 @@ func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
 		return "", true, err
 	}
 	return "", false, nil
+}
+
+func unmarshalManualProbeEvidenceList(data []byte) ([]manualProbeEvidence, error) {
+	trimmed := bytesTrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var probes []manualProbeEvidence
+		if err := json.Unmarshal(data, &probes); err != nil {
+			return nil, err
+		}
+		return probes, nil
+	}
+	var probe manualProbeEvidence
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, err
+	}
+	return []manualProbeEvidence{probe}, nil
+}
+
+func unmarshalAutomatedCheckEvidenceList(data []byte) ([]automatedCheckEvidence, error) {
+	trimmed := bytesTrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var checks []automatedCheckEvidence
+		if err := json.Unmarshal(data, &checks); err != nil {
+			return nil, err
+		}
+		return checks, nil
+	}
+	var check automatedCheckEvidence
+	if err := json.Unmarshal(data, &check); err != nil {
+		return nil, err
+	}
+	return []automatedCheckEvidence{check}, nil
+}
+
+func unmarshalFlexibleEvidenceText(data []byte) (string, error) {
+	if len(data) == 0 || string(bytesTrimSpace(data)) == "null" {
+		return "", nil
+	}
+	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+		return raw, err
+	}
+	fields, err := unmarshalEvidenceObject(data)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{
+		firstJSONFieldText(fields, "command", "cmd"),
+		firstJSONFieldText(fields, "expected", "want"),
+		firstJSONFieldText(fields, "actual", "output", "observed", "observed_output", "result", "stdout", "stderr", "status"),
+	}
+	return strings.TrimSpace(strings.Join(compactNonEmpty(parts...), " -> ")), nil
+}
+
+func unmarshalEvidenceObject(data []byte) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func firstJSONFieldText(fields map[string]json.RawMessage, names ...string) string {
+	for _, name := range names {
+		raw, ok := fields[name]
+		if !ok {
+			continue
+		}
+		if text := jsonEvidenceText(raw); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func jsonEvidenceText(raw json.RawMessage) string {
+	trimmed := bytesTrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var v any
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return ""
+	}
+	compact, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(compact)
+}
+
+func bytesTrimSpace(data []byte) []byte {
+	return []byte(strings.TrimSpace(string(data)))
+}
+
+func compactNonEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -356,7 +522,6 @@ func taskHasAnyTag(t TaskInfo, tags ...string) bool {
 func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 	for _, p := range probes {
 		if strings.TrimSpace(p.Command) != "" &&
-			strings.TrimSpace(p.Expected) != "" &&
 			strings.TrimSpace(p.Actual) != "" {
 			return true
 		}
