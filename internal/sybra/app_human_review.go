@@ -275,10 +275,29 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 				wctx = h.workCtx(t.ProjectID)
 			}
 		}
-		if wctx != nil {
-			h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
-		} else {
-			h.fileIssue(taskID, ag.ID, v)
+		switch h.cfg.HumanReviewSybraBugAction() {
+		case config.HumanReviewSybraBugActionNoteOnly:
+			if wctx != nil {
+				v = scrubVerdict(v, wctx)
+			}
+			h.noteSybraBugOnly(taskID, ag.ID, v)
+		case config.HumanReviewSybraBugActionBlockOnly:
+			if wctx != nil {
+				v = scrubVerdict(v, wctx)
+			}
+			h.blockSybraBugOnly(taskID, ag.ID, v)
+		case config.HumanReviewSybraBugActionLocalTask:
+			if wctx != nil {
+				h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
+			} else {
+				h.fileLocalConfigured(taskID, ag.ID, v)
+			}
+		default:
+			if wctx != nil {
+				h.fileLocalScrubbed(taskID, ag.ID, v, wctx)
+			} else {
+				h.fileIssue(taskID, ag.ID, v)
+			}
 		}
 	default:
 		h.logger.Warn("human-review.verdict.unknown", "task_id", taskID, "decision", v.Decision)
@@ -286,6 +305,114 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	}
+}
+
+func (h *humanReviewHandler) noteSybraBugOnly(taskID, agentID string, v verdictDecision) {
+	if h.appendNote(taskID, "Auto-review verdict: Sybra bug (note only)", sybraBugNoteBody(v, "")) {
+		h.markVerdictRendered(taskID, agentID)
+	}
+}
+
+func (h *humanReviewHandler) blockSybraBugOnly(taskID, agentID string, v verdictDecision) {
+	t, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.block-only.get", "task_id", taskID, "err", err)
+		return
+	}
+	newBody := appendSection(t.Body, "Auto-review verdict: blocked by Sybra bug (issue filing disabled)", sybraBugNoteBody(v, ""))
+	upd := task.Update{
+		Body:         &newBody,
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("auto-review: " + strings.TrimSpace(v.Summary)),
+	}
+	if _, err := h.tasks.Update(taskID, upd); err != nil {
+		h.logger.Error("human-review.block-only.update", "task_id", taskID, "err", err)
+		return
+	}
+	h.markVerdictRendered(taskID, agentID)
+}
+
+func (h *humanReviewHandler) fileLocalConfigured(taskID, agentID string, v verdictDecision) {
+	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
+		h.logger.Warn("human-review.local-configured.empty", "task_id", taskID, "agent_id", agentID)
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (no issue payload)", v.Summary) {
+			h.markVerdictRendered(taskID, agentID)
+		}
+		return
+	}
+	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing route\n\nGitHub issue filing disabled by `human_review.sybra_bug_action: local_task`; Sybra created this local task instead."
+	tags := append([]string{"sybra-bug", "local"}, v.IssueLabels...)
+	init := task.Update{Tags: &tags}
+	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
+		init.ProjectID = &projectID
+	}
+	newTask, err := h.tasks.CreateFull(v.IssueTitle, body, task.AgentModeHeadless, init)
+	if err != nil {
+		h.logger.Error("human-review.local-configured.create", "task_id", taskID, "agent_id", agentID, "err", err)
+		if h.appendNote(taskID, "Auto-review verdict: sybra_bug (local task creation failed)", sybraBugNoteBody(v, err.Error())) {
+			h.markVerdictRendered(taskID, agentID)
+		}
+		return
+	}
+	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+		"created": true, "url": "", "title": v.IssueTitle, "local_task_id": newTask.ID,
+	})
+
+	origin, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.local-configured.origin-get", "task_id", taskID, "err", err)
+		return
+	}
+	noteBody := fmt.Sprintf("**Linked local Sybra bug:** %s\n\n%s", newTask.ID, v.Summary)
+	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (local task)", noteBody)
+	upd := task.Update{
+		Body:         &newBody,
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(fmt.Sprintf("auto-review: %s (local task %s)", v.Summary, newTask.ID)),
+	}
+	if _, err := h.tasks.Update(taskID, upd); err != nil {
+		h.logger.Error("human-review.local-configured.origin-update", "task_id", taskID, "err", err)
+		return
+	}
+	h.markVerdictRendered(taskID, agentID)
+}
+
+func sybraBugNoteBody(v verdictDecision, extra string) string {
+	var b strings.Builder
+	if summary := strings.TrimSpace(v.Summary); summary != "" {
+		b.WriteString(summary)
+	}
+	if title := strings.TrimSpace(v.IssueTitle); title != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Suggested issue title: ")
+		b.WriteString(title)
+	}
+	if body := strings.TrimSpace(v.IssueBody); body != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(body)
+	}
+	if extra = strings.TrimSpace(extra); extra != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Error: ")
+		b.WriteString(extra)
+	}
+	return b.String()
+}
+
+func scrubVerdict(v verdictDecision, wctx *WorkScrubContext) verdictDecision {
+	if wctx == nil {
+		return v
+	}
+	v.Summary, _ = scrub.Scrub(v.Summary, wctx.Blocklist)
+	v.IssueTitle, _ = scrub.Scrub(v.IssueTitle, wctx.Blocklist)
+	v.IssueBody, _ = scrub.Scrub(v.IssueBody, wctx.Blocklist)
+	return v
 }
 
 // fileLocalScrubbed is the work-project fallback for the sybra_bug verdict.

@@ -56,28 +56,32 @@ type structuredTestOutput struct {
 	SurfaceKind       string                   `json:"surface_kind,omitempty"`
 	AppStarted        bool                     `json:"app_started,omitempty"`
 	StartCommand      string                   `json:"start_command,omitempty"`
-	ReadinessProbe    string                   `json:"readiness_probe,omitempty"`
+	ReadinessProbe    evidenceText             `json:"readiness_probe,omitempty"`
 	ManualProbes      []manualProbeEvidence    `json:"manual_probes,omitempty"`
 	AutomatedChecks   []automatedCheckEvidence `json:"automated_checks,omitempty"`
 	UnableToRunReason string                   `json:"unable_to_run_reason,omitempty"`
 }
 
 type manualProbeEvidence struct {
-	Command  string `json:"command"`
-	Expected string `json:"expected"`
-	Actual   string `json:"actual"`
-	Output   string `json:"output"`
-	Observed string `json:"observed"`
-	Raw      string `json:"-"`
+	Command  string       `json:"command"`
+	Expected evidenceText `json:"expected"`
+	Actual   evidenceText `json:"actual"`
+	Output   evidenceText `json:"output"`
+	Observed evidenceText `json:"observed"`
+	Status   evidenceText `json:"status"`
+	Raw      string       `json:"-"`
 }
 
 type automatedCheckEvidence struct {
-	Command  string `json:"command"`
-	Actual   string `json:"actual"`
-	Output   string `json:"output"`
-	Observed string `json:"observed"`
-	Raw      string `json:"-"`
+	Command  string       `json:"command"`
+	Actual   evidenceText `json:"actual"`
+	Output   evidenceText `json:"output"`
+	Observed evidenceText `json:"observed"`
+	Status   evidenceText `json:"status"`
+	Raw      string       `json:"-"`
 }
+
+type evidenceText string
 
 func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
@@ -85,7 +89,11 @@ func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	type alias manualProbeEvidence
-	return json.Unmarshal(data, (*alias)(e))
+	if err := json.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+	e.fillAliases()
+	return nil
 }
 
 func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
@@ -94,7 +102,36 @@ func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	type alias automatedCheckEvidence
-	return json.Unmarshal(data, (*alias)(e))
+	if err := json.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+	e.fillAliases()
+	return nil
+}
+
+func (e *manualProbeEvidence) fillAliases() {
+	if strings.TrimSpace(string(e.Actual)) == "" {
+		e.Actual = firstNonEmptyText(e.Observed, e.Output, e.Status)
+	}
+}
+
+func (e *automatedCheckEvidence) fillAliases() {
+	if strings.TrimSpace(string(e.Actual)) == "" {
+		e.Actual = firstNonEmptyText(e.Observed, e.Output, e.Status)
+	}
+}
+
+func (e *evidenceText) UnmarshalJSON(data []byte) error {
+	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+		*e = evidenceText(raw)
+		return err
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*e = evidenceText(strings.Join(collectEvidenceStrings(value), "\n"))
+	return nil
 }
 
 func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
@@ -105,6 +142,38 @@ func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
 		return "", true, err
 	}
 	return "", false, nil
+}
+
+func collectEvidenceStrings(v any) []string {
+	var out []string
+	switch x := v.(type) {
+	case map[string]any:
+		for _, key := range []string{"command", "expected", "actual", "observed", "output", "status", "url"} {
+			if value, ok := x[key]; ok {
+				out = append(out, collectEvidenceStrings(value)...)
+			}
+		}
+	case []any:
+		for _, item := range x {
+			out = append(out, collectEvidenceStrings(item)...)
+		}
+	case string:
+		if strings.TrimSpace(x) != "" {
+			out = append(out, strings.TrimSpace(x))
+		}
+	case float64, bool:
+		out = append(out, fmt.Sprint(x))
+	}
+	return out
+}
+
+func firstNonEmptyText(values ...evidenceText) evidenceText {
+	for _, value := range values {
+		if strings.TrimSpace(string(value)) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -247,7 +316,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if strings.TrimSpace(parsed.StartCommand) == "" {
 		return false, "PASS report omitted start_command"
 	}
-	if strings.TrimSpace(parsed.ReadinessProbe) == "" {
+	if strings.TrimSpace(string(parsed.ReadinessProbe)) == "" {
 		return false, "PASS report omitted readiness_probe"
 	}
 	if !hasManualProbeEvidence(parsed.ManualProbes) {
@@ -257,12 +326,30 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 }
 
 func normalizeSurfaceKind(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	switch lower {
 	case "web", "cli", "server", "desktop", "k8s", "library", "docs", "none":
-		return strings.ToLower(strings.TrimSpace(s))
-	default:
-		return ""
+		return lower
 	}
+	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		switch token {
+		case "web", "ui", "browser", "sveltekit", "frontend":
+			return "web"
+		case "cli", "server", "desktop", "k8s":
+			return token
+		}
+	}
+	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		switch token {
+		case "library", "docs", "none":
+			return token
+		}
+	}
+	return ""
 }
 
 func isManualTestExemption(surface string, t TaskInfo) bool {
@@ -343,7 +430,8 @@ func hasPlainTextRegressionCheckEvidence(output string) bool {
 		containsAny(lower,
 			"go test", "npm test", "npm run test", "npm run check",
 			"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
-			"sybra-cli", "go run", "curl ", "kubectl ")
+			"sybra-cli", "go run", "curl ", "kubectl ") &&
+		hasSuccessfulCheckResult(evidenceText(output))
 }
 
 func taskHasAnyTag(t TaskInfo, tags ...string) bool {
@@ -360,7 +448,10 @@ func taskHasAnyTag(t TaskInfo, tags ...string) bool {
 func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 	for _, p := range probes {
 		if strings.TrimSpace(p.Command) != "" &&
-			observedEvidenceText(p.Actual, p.Output, p.Observed) != "" {
+			(strings.TrimSpace(string(p.Actual)) != "" ||
+				strings.TrimSpace(string(p.Observed)) != "" ||
+				strings.TrimSpace(string(p.Output)) != "" ||
+				strings.TrimSpace(string(p.Status)) != "") {
 			return true
 		}
 		if hasRawManualProbeEvidence(p.Raw) {
@@ -373,7 +464,10 @@ func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 	for _, c := range checks {
 		cmd := strings.ToLower(strings.TrimSpace(c.Command))
-		if cmd == "" || observedEvidenceText(c.Actual, c.Output, c.Observed) == "" {
+		if cmd == "" || (strings.TrimSpace(string(c.Actual)) == "" &&
+			strings.TrimSpace(string(c.Output)) == "" &&
+			strings.TrimSpace(string(c.Observed)) == "" &&
+			strings.TrimSpace(string(c.Status)) == "") {
 			if hasRawRegressionCheckEvidence(c.Raw) {
 				return true
 			}
@@ -383,19 +477,81 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 			"go test", "npm test", "npm run test", "npm run check",
 			"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
 			"sybra-cli", "go run", "curl ", "kubectl ") {
-			return true
+			return hasSuccessfulCheckResult(c.Actual, c.Output, c.Observed, c.Status)
 		}
 	}
 	return false
 }
 
-func observedEvidenceText(values ...string) string {
+func hasSuccessfulCheckResult(values ...evidenceText) bool {
+	var parts []string
+	hasNumericSuccess := false
 	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
+		if s := strings.TrimSpace(string(value)); s != "" {
+			if hasFailureCheckResult(s) {
+				return false
+			}
+			hasNumericSuccess = hasNumericSuccess || isNumericSuccessResult(s)
+			parts = append(parts, s)
 		}
 	}
-	return ""
+	result := strings.ToLower(strings.Join(parts, " "))
+	if result == "" {
+		return false
+	}
+	if hasFailureCheckResult(result) {
+		return false
+	}
+	if hasNumericSuccess || isNumericSuccessResult(result) {
+		return true
+	}
+	return containsAny(result,
+		"pass", "passed", "success", "true", "exit code 0",
+		"exit status 0", "exit 0", "no matches", "200", "201", "202", "204", "created", "returned") ||
+		checkOKPattern.MatchString(result)
+}
+
+var (
+	checkFailureStatusPattern = regexp.MustCompile(`\b(exit (code|status)?|status)\s*:?\s*([1-9]\d*|[45]\d\d)\b`)
+	checkFailureHTTPPattern   = regexp.MustCompile(`\b(?:http(?:/[0-9.]+)?\s*)?[45]\d\d\b`)
+	checkFailureWordPattern   = regexp.MustCompile(`\b([1-9]\d*\s+(failed|failures?|failing|errors?)|(test|tests|command|check|checks)\s+(failed|failing|errored)|error:|failed:)\b`)
+	checkOKPattern            = regexp.MustCompile(`\bok\b`)
+)
+
+func hasFailureCheckResult(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if lower == "" {
+		return false
+	}
+	switch lower {
+	case "false", "fail", "failed", "failure", "error", "not ok":
+		return true
+	}
+	if isNumericFailureResult(lower) {
+		return true
+	}
+	if containsAny(lower, "not ok", "panic:", "assertion failed") {
+		return true
+	}
+	return checkFailureWordPattern.MatchString(lower) ||
+		checkFailureStatusPattern.MatchString(lower) ||
+		checkFailureHTTPPattern.MatchString(lower)
+}
+
+func isNumericFailureResult(result string) bool {
+	n, err := strconv.ParseFloat(strings.TrimSpace(result), 64)
+	if err != nil {
+		return false
+	}
+	return n >= 400 || (n > 0 && n < 100)
+}
+
+func isNumericSuccessResult(result string) bool {
+	n, err := strconv.ParseFloat(strings.TrimSpace(result), 64)
+	if err != nil {
+		return false
+	}
+	return n == 0 || (n >= 200 && n < 300)
 }
 
 func hasRawManualProbeEvidence(raw string) bool {
@@ -403,8 +559,13 @@ func hasRawManualProbeEvidence(raw string) bool {
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower, "curl ", "http://", "https://", "get ", "post ", "put ", "patch ", "delete ", "head ", "options ", "sybra-cli", "kubectl ", "go run ", "npm run ") &&
-		containsAny(lower, "->", "=>", "returned", "created", "observed", "actual")
+	return containsAny(lower,
+		"curl ", "http://", "https://", "get ", "post ", "put ", "patch ", "delete ", "head ", "options ",
+		"sybra-cli", "kubectl ", "go run ", "npm run ", "click", "opened", "selected", "typed") &&
+		containsAny(lower,
+			"->", "=>", "returned", "created", "observed", "actual",
+			"showed", "visible", "absent", "present", "loaded", "closed",
+			"exposes", "computed", "became", "changed")
 }
 
 func hasRawRegressionCheckEvidence(raw string) bool {
@@ -416,7 +577,7 @@ func hasRawRegressionCheckEvidence(raw string) bool {
 		"go test", "npm test", "npm run test", "npm run check",
 		"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
 		"sybra-cli", "go run", "curl ", "kubectl ") &&
-		containsAny(lower, "pass", "ok", "success", "no matches", "->", "=>")
+		hasSuccessfulCheckResult(evidenceText(raw))
 }
 
 func insertClassificationAfterFailuresHeading(report, outcome string) string {
