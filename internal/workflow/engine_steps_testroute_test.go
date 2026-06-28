@@ -296,6 +296,16 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 		},
 		{
+			name:   "structured_failure_with_flexible_evidence_objects",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(strings.TrimSpace(groundedReport)) + `,` +
+				`"surface_kind":"web/server","readiness_probe":{"command":"curl /status","output":"HTTP 500"},` +
+				`"manual_probes":[{"command":"curl /status","status":"HTTP 500"}],"automated_checks":[{"command":"go test ./internal/workflow","output":"PASS"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:   "structured_json_ignores_fenced_heading",
 			status: "completed",
 			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
@@ -422,6 +432,72 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_flexible_object_evidence",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"SvelteKit web UI with isolated mock API","app_started":true,` +
+				`"start_command":"npm run dev -- --host 127.0.0.1",` +
+				`"readiness_probe":{"command":"curl http://127.0.0.1:5173","output":"HTTP 200"},` +
+				`"manual_probes":[{"command":"curl -s http://127.0.0.1:5173/tasks","output":"task list loaded"},{"command":"POST /api/tasks","observed":"created task visible in list"}],` +
+				`"automated_checks":[{"command":"npm test -- --run workflow","output":"12 tests passed"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_status_alias_and_surface_alias",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web/server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":{"command":"curl http://127.0.0.1:8080/health","status":"HTTP 200"},` +
+				`"manual_probes":[{"command":"GET /api/tasks","status":"returned task list"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","status":"PASS"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_numeric_readiness_status",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev",` +
+				`"readiness_probe":{"command":"curl http://127.0.0.1:5173/health","status":200},` +
+				`"manual_probes":[{"command":"GET /api/tasks","status":200}],` +
+				`"automated_checks":[{"command":"npm test","status":true}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_ui_string_probe",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"UI","app_started":true,` +
+				`"start_command":"npm run dev",` +
+				`"readiness_probe":"browser opened app -> loaded",` +
+				`"manual_probes":["clicked New Task -> form became visible"],` +
+				`"automated_checks":["npm test -> pass"],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_weak_raw_ui_status_rejected",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,"start_command":"npm run dev","readiness_probe":"curl /health -> ok","manual_probes":["UI status: not tested"],"automated_checks":["npm test -> pass"],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_mixed_library_web_surface_requires_manual_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library web UI","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"ok"}],"unable_to_run_reason":"pure library check"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:   "plain_text_pass_with_manual_evidence",
 			status: "completed",
 			output: "surface_kind: server\n" +
@@ -476,6 +552,76 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_library_exemption_rejects_static_only_check",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"rg -n rawThing internal","actual":"no matches"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_failed_check_status",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","status":false}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_mixed_failed_check_output",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm test","output":"not ok 1","status":false}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_mixed_failed_passed_summary",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"pytest","output":"1 failed, 2 passed"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_numeric_failure_status",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"curl /health","output":"returned HTTP 500","status":500}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_raw_failed_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":["go test ./internal/foo -> exit status 1"],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "plain_text_pass_with_exemption_rejects_failed_check",
+			status: "completed",
+			output: "surface_kind: library\n" +
+				"app_started: false\n" +
+				"start_command:\n" +
+				"readiness_probe:\n" +
+				"manual_probes: []\n" +
+				"automated_checks: go test ./internal/workflow -> exit status 1\n" +
+				"unable_to_run_reason: pure internal-library refactor\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:       "pass_with_weak_browser_raw_probe_rejected",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,"start_command":"npm run dev","readiness_probe":"curl /health -> ok","manual_probes":["browser visible"],"automated_checks":["npm test -> pass"],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
