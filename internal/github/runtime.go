@@ -215,7 +215,7 @@ func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
 		}
 	}
 
-	if err != nil && isRateLimitedMessage(string(resp.body)) {
+	if (err != nil || isGraphQLRateLimitBody(resp.body)) && isRateLimitedMessage(string(resp.body)) {
 		g.bumpLocked(now.Add(ghFallbackRateBackoff))
 	}
 }
@@ -249,7 +249,13 @@ func isRateLimitedMessage(msg string) bool {
 	return strings.Contains(lower, "secondary rate limit") ||
 		strings.Contains(lower, "api rate limit exceeded") ||
 		strings.Contains(lower, "rate limit exceeded") ||
+		strings.Contains(lower, "rate_limit") ||
 		strings.Contains(lower, "retry after")
+}
+
+func isGraphQLRateLimitBody(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, `"errors"`) && strings.Contains(lower, "rate")
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {
