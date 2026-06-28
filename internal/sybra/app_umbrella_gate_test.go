@@ -85,7 +85,13 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 	app, m := newUmbrellaGateApp(t)
 	const umb = "https://github.com/Automaat/sybra/issues/100"
 	tracker := mkTracker(t, m, umb, 5)
-	reason := "auto-review: Sybra bug isolated (local task abc123; issue filing failed)"
+	localBug, err := m.CreateFull("Sybra bug", "", task.AgentModeHeadless, task.Update{
+		Tags: task.Ptr([]string{"sybra-bug"}),
+	})
+	if err != nil {
+		t.Fatalf("create local bug: %v", err)
+	}
+	reason := "auto-review: Sybra bug isolated (local task " + localBug.ID + "; issue filing failed)"
 	if _, err := m.Update(tracker.ID, task.Update{
 		Status:       task.Ptr(task.StatusBlocked),
 		StatusReason: task.Ptr(reason),
