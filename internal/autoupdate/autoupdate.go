@@ -19,12 +19,13 @@ const (
 )
 
 type Config struct {
-	Enabled      bool
-	RepoDir      string
-	Remote       string
-	Branch       string
-	Mode         string
-	PollInterval time.Duration
+	Enabled        bool
+	RepoDir        string
+	Remote         string
+	Branch         string
+	Mode           string
+	PollInterval   time.Duration
+	RequestRestart func()
 }
 
 type Result struct {
@@ -109,6 +110,13 @@ func (r *Runner) CheckAndApply(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	res := Result{Status: "available", OldSHA: head, NewSHA: remoteSHA, ChangedFiles: changed}
+	if cfg.Mode != ModeAuto {
+		return res, nil
+	}
+	if _, err := git(ctx, cfg.RepoDir, "merge", "--ff-only", remoteRef); err != nil {
+		return Result{}, fmt.Errorf("fast-forward %s: %w", remoteRef, err)
+	}
+	res.Status = "applied"
 	return res, nil
 }
 
@@ -129,6 +137,10 @@ func (r *Runner) check(ctx context.Context) {
 		attrs = append(attrs, "changed", res.ChangedFiles)
 	}
 	r.logger.Info("autoupdate.check", attrs...)
+	if res.Status == "applied" && r.cfg.RequestRestart != nil {
+		r.logger.Info("autoupdate.restart.requested")
+		r.cfg.RequestRestart()
+	}
 }
 
 func validateRepoState(ctx context.Context, cfg Config) error {

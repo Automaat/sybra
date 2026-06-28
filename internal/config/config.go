@@ -502,8 +502,8 @@ type MetricsConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
-// AutoUpdateConfig controls source update checks. It reports newer remote
-// commits but does not merge or restart Sybra.
+// AutoUpdateConfig controls source update checks. In "auto" mode a clean
+// fast-forward update is applied and Sybra requests a supervisor restart.
 type AutoUpdateConfig struct {
 	Enabled     bool   `yaml:"enabled" json:"enabled"`
 	RepoDir     string `yaml:"repo_dir" json:"repoDir"`
