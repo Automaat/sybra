@@ -903,7 +903,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
-	agentMgr := agent.NewManager(t.Context(), func(string, any) {}, logger, t.TempDir())
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
@@ -1443,7 +1443,7 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			agentMgr := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+			agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 
 			r := &ReviewHandler{
 				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
@@ -1522,7 +1522,7 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 			}
 
 			reconcileCalled := false
-			agentMgr := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+			agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 			r := &ReviewHandler{
 				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
 				tasks:         tasks,

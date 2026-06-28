@@ -47,9 +47,12 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	emit := func(string, any) {}
 	logger := slog.New(slog.DiscardHandler)
 	logDir := filepath.Join(home, "logs")
-	mgr := agent.NewManager(context.Background(), emit, logger, logDir)
-	mgr.SetMaxConcurrent(cfg.Agent.MaxConcurrent)
-	mgr.SetDefaultProvider(cfg.Agent.Provider)
+	mgr := newTestAgentManager(t, context.Background(), emit, logger, logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{
+			MaxConcurrent:   cfg.Agent.MaxConcurrent,
+			DefaultProvider: cfg.Agent.Provider,
+		},
+	})
 	mgr.SetGuardrails(agent.Guardrails{MaxCostUSD: cfg.Agent.MaxCostUSD, MaxTurns: cfg.Agent.MaxTurns})
 
 	notifier := notification.New(emit)
@@ -226,9 +229,12 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	logLevel := new(slog.LevelVar)
 	logLevel.Set(slog.LevelInfo)
 	logDir := filepath.Join(home, "logs")
-	mgr := agent.NewManager(context.Background(), emit, logger, logDir)
-	mgr.SetMaxConcurrent(cfg.Agent.MaxConcurrent)
-	mgr.SetDefaultProvider(cfg.Agent.Provider)
+	mgr := newTestAgentManager(t, context.Background(), emit, logger, logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{
+			MaxConcurrent:   cfg.Agent.MaxConcurrent,
+			DefaultProvider: cfg.Agent.Provider,
+		},
+	})
 	mgr.SetGuardrails(agent.Guardrails{MaxCostUSD: cfg.Agent.MaxCostUSD, MaxTurns: cfg.Agent.MaxTurns})
 	notifier := notification.New(emit)
 
@@ -307,7 +313,9 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 		}
 		return p
 	}
-	svc.refreshLimitGate()
+	if err := svc.refreshAgentRuntimeConfig(*svc.cfg); err != nil {
+		t.Fatal(err)
+	}
 	if !svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
 		t.Fatal("initial manager limit policy did not enable codex")
 	}

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -22,7 +21,7 @@ func newOutboundTestHandler(t *testing.T) (*ReviewHandler, *task.Manager) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
-	agents := agent.NewManager(t.Context(), func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	r := &ReviewHandler{
 		DomainHandler: DomainHandler{logger: logger},
 		tasks:         tasks,

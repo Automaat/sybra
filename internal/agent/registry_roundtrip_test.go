@@ -11,10 +11,8 @@ import (
 
 func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	startedAt := time.Date(2026, 6, 28, 20, 40, 0, 0, time.UTC)
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	regDir := t.TempDir()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: regDir})
 
 	original := &Agent{
 		ID:                       "agent-1",

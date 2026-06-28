@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -262,7 +261,7 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 		{ID: "T6", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "Copilot"},
 	}
 	var resolvedIDs []string
-	agents := agent.NewManager(t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 	r := &ReviewHandler{
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		tasks:         tasks,

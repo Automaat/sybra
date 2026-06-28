@@ -86,6 +86,14 @@ func normalizeProvider(name string) string {
 	return providerByName(name).Name()
 }
 
+func normalizeProviderName(name string) (string, error) {
+	p, err := lookupProvider(name)
+	if err != nil {
+		return "", err
+	}
+	return p.Name(), nil
+}
+
 func normalizeModel(prov, model string) string {
 	return providerByName(prov).NormalizeModel(model)
 }

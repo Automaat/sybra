@@ -18,11 +18,11 @@ import (
 // newParseTestManager returns a Manager suitable for unit-testing
 // streamHeadlessOutput: discard logs, no emit, no log dir. The health gate
 // and guardrails are left zero so no turn/cost limits fire.
-func newParseTestManager(t *testing.T) *Manager {
+func newParseTestManager(t *testing.T, cfgs ...ManagerConfig) *Manager {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	emit := func(string, any) {}
-	return NewManager(context.Background(), emit, logger, t.TempDir())
+	return mustNewManager(t, context.Background(), emit, logger, t.TempDir(), cfgs...)
 }
 
 // lastResult returns the last result event from the agent's output buffer,
@@ -93,17 +93,18 @@ func TestParseCodexStreamEvent_TurnCompleted(t *testing.T) {
 }
 
 func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
-	m := newParseTestManager(t)
 	var snapshots []limits.Snapshot
 	var emitted []any
+	m := newParseTestManager(t, ManagerConfig{
+		LimitSink: func(snapshot limits.Snapshot) {
+			snapshots = append(snapshots, snapshot)
+		},
+	})
 	m.emit = func(event string, data any) {
 		if event == events.AgentOutput("limit1") {
 			emitted = append(emitted, data)
 		}
 	}
-	m.SetLimitSink(func(snapshot limits.Snapshot) {
-		snapshots = append(snapshots, snapshot)
-	})
 	a := &Agent{ID: "limit1", TaskID: "t", Mode: "headless", Provider: "codex", StartedAt: time.Now().UTC()}
 	lastEmit := time.Now().Add(-time.Minute)
 	line := []byte(`{"timestamp":"2026-06-19T12:40:08.052Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":12,"window_minutes":300,"resets_at":1781877547},"plan_type":"pro"}}}`)
@@ -356,7 +357,7 @@ func TestStreamHeadlessOutput_OversizedLineLogsError(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	m := NewManager(context.Background(), func(string, any) {}, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
 
 	a := &Agent{ID: "t", Provider: "claude"}
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
@@ -529,7 +530,7 @@ func TestGuardrails_MaxCostZeroMeansUnlimited(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0, MaxTurns: 0})
 
 	a := &Agent{ID: "t", Provider: "claude"}
@@ -564,7 +565,7 @@ func TestGuardrails_MaxTurnsZeroMeansUnlimited(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxTurns: 0})
 
 	a := &Agent{ID: "t", Provider: "claude"}
@@ -607,7 +608,7 @@ func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	// Cost cap set, but agent has spent $0 — well below 80% of $10.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
 
@@ -659,7 +660,7 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	// Cost cap $10, agent already spent $9 — above 80% threshold.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 3})
 
@@ -712,7 +713,7 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	managerRef = m
 	// Start unlimited so result #1 doesn't escalate.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0})
@@ -837,7 +838,7 @@ func TestGuardrails_PerAgentOverrideWins(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxTurns: 5})
 
 	a := &Agent{ID: "t", Provider: "claude", MaxTurns: 20}
@@ -870,7 +871,7 @@ func TestGuardrails_PerAgentOverrideLower(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.DiscardHandler)
-	m := NewManager(context.Background(), emit, logger, t.TempDir())
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	// MaxCostUSD set; agent cost seeded above 80% threshold so auto-continue is suppressed.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0, MaxTurns: 20})
 

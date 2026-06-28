@@ -74,7 +74,7 @@ type AgentCompletionHandler struct {
 	prTracker      *github.IssueTracker
 }
 
-// OnComplete is the callback installed via agents.SetOnComplete. Called
+// OnComplete is called by the manager's construction-time completion callback.
 // once per terminal agent state transition.
 func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	var resultContent string
