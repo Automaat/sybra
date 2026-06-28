@@ -82,6 +82,18 @@ func TestRunGHAPIWith_NoRetryOnRateLimit(t *testing.T) {
 	}
 }
 
+func TestGHRequestGate_ObservesGraphQLRateLimitBody(t *testing.T) {
+	g := newGHRequestGate()
+
+	g.observe(ghHTTPResponse{
+		body: []byte(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}`),
+	}, nil)
+
+	if !g.shouldSkipOptional("graphql") {
+		t.Fatal("want optional GraphQL calls skipped after rate-limit body")
+	}
+}
+
 func TestRunGHAPIWith_NoRetryOnWrite(t *testing.T) {
 	stubRetrySleep(t)
 

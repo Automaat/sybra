@@ -124,7 +124,7 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 		ReviewedByMe:    approvedOnly(reviewed),
 	}
 	if runtimeCacheEnabled(e) {
-		reviewSummaryCache.Set(cacheKey, summary, 20*time.Second)
+		reviewSummaryCache.Set(cacheKey, summary, 2*time.Minute)
 	}
 
 	return summary, nil
