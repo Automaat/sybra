@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
 )
+
+const exactSnapshotMaxAge = 30 * time.Minute
 
 type persisted struct {
 	Snapshots map[string]Snapshot `json:"snapshots"`
@@ -159,16 +162,21 @@ func (s *Store) Summary(policy Policy) Summary {
 	out := make([]ProviderSummary, 0, len(providers))
 	for _, provider := range providers {
 		snap := s.snapshots[provider]
+		snapshotFresh := freshExactSnapshot(snap, now)
+		confidence := snap.Confidence
+		if snap.Confidence == ConfidenceExact && !snapshotFresh {
+			confidence = ConfidenceEstimated
+		}
 		ps := ProviderSummary{
 			Provider:               provider,
 			PlanType:               snap.PlanType,
 			LimitID:                snap.LimitID,
 			Source:                 snap.Source,
-			Confidence:             snap.Confidence,
+			Confidence:             confidence,
 			MonthlySubscriptionUSD: policy.SubscriptionMonthlyUSD[provider],
 		}
 		sessionStart, weeklyStart := fallbackWindows(now)
-		if activeCycle(snap.Primary, now) {
+		if snapshotFresh && activeCycle(snap.Primary, now) {
 			primary := snap.Primary
 			ps.SessionUsedPercent = primary.UsedPercent
 			ps.SessionWindowMinutes = primary.WindowMinutes
@@ -177,7 +185,7 @@ func (s *Store) Summary(policy Policy) Summary {
 				sessionStart = primary.ResetsAt.Add(-time.Duration(primary.WindowMinutes) * time.Minute)
 			}
 		}
-		if activeCycle(snap.Secondary, now) {
+		if snapshotFresh && activeCycle(snap.Secondary, now) {
 			secondary := snap.Secondary
 			ps.WeeklyUsedPercent = secondary.UsedPercent
 			ps.WeeklyWindowMinutes = secondary.WindowMinutes
@@ -200,7 +208,7 @@ func (s *Store) Summary(policy Policy) Summary {
 				addEventToProviderSummary(e, &ps, false, e.Source == weeklyUsageSource)
 			}
 		}
-		ps.QuotaLimited, ps.QuotaReason = quotaLimited(ps, policy)
+		ps.QuotaLimited, ps.QuotaReason = quotaLimited(ps, snap, policy)
 		if ps.MonthlySubscriptionUSD > 0 {
 			ps.MonthlySubscriptionBurnRate = ps.WeeklySpendUSD / ps.MonthlySubscriptionUSD
 		}
@@ -309,6 +317,13 @@ func activeCycle(c *CycleSnapshot, now time.Time) bool {
 	return c != nil && (c.ResetsAt.IsZero() || c.ResetsAt.After(now))
 }
 
+func freshExactSnapshot(snap Snapshot, now time.Time) bool {
+	if snap.Confidence != ConfidenceExact || snap.CapturedAt.IsZero() {
+		return false
+	}
+	return !snap.CapturedAt.Before(now.Add(-exactSnapshotMaxAge))
+}
+
 func providerEnabled(policy Policy, provider string) bool {
 	if len(policy.ProviderEnabled) == 0 {
 		return true
@@ -351,9 +366,12 @@ func addEventToProviderSummary(e *UsageEvent, ps *ProviderSummary, session, addC
 	ps.WeeklyReasoningTokens += e.ReasoningTokens
 }
 
-func quotaLimited(ps ProviderSummary, policy Policy) (limited bool, reason string) {
+func quotaLimited(ps ProviderSummary, snap Snapshot, policy Policy) (limited bool, reason string) {
 	if ps.Confidence != ConfidenceExact {
 		return false, ""
+	}
+	if strings.TrimSpace(snap.RateLimitReachedType) != "" {
+		return true, "provider reports rate limit reached"
 	}
 	if ps.SessionUsedPercent > 0 && ps.SessionUsedPercent >= policy.SessionThresholdPercent {
 		return true, "session limit near threshold"

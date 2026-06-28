@@ -30,6 +30,56 @@ func TestParseCodexLine_RateLimitsAndUsage(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsageSnapshot(t *testing.T) {
+	now := time.Date(2026, 6, 28, 8, 45, 0, 0, time.UTC)
+	line := []byte(`{"five_hour":{"utilization":0.0,"resets_at":null},"seven_day":{"utilization":100.0,"resets_at":"2026-07-01T14:59:59.747459+00:00"}}`)
+
+	snapshot, ok, err := parseClaudeUsageSnapshot(line, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("parseClaudeUsageSnapshot returned ok=false")
+	}
+	if snapshot.Provider != ProviderClaude || snapshot.Source != SourceLivePoll || snapshot.Confidence != ConfidenceExact {
+		t.Fatalf("snapshot provider/source/confidence mismatch: %+v", snapshot)
+	}
+	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 0 || snapshot.Primary.WindowMinutes != 300 {
+		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+	}
+	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 100 || snapshot.Secondary.WindowMinutes != 10080 {
+		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+	}
+	if snapshot.Secondary.ResetsAt.IsZero() {
+		t.Fatalf("secondary reset was not parsed: %+v", snapshot.Secondary)
+	}
+}
+
+func TestParseCodexAppServerSnapshot(t *testing.T) {
+	now := time.Date(2026, 6, 28, 8, 45, 0, 0, time.UTC)
+	line := []byte(`{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":9,"windowDurationMins":300,"resetsAt":1782652179},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1782989755},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"planType":"prolite","rateLimitReachedType":"rate_limit_reached"}}`)
+
+	snapshot, ok, err := parseCodexAppServerSnapshot(line, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("parseCodexAppServerSnapshot returned ok=false")
+	}
+	if snapshot.Provider != ProviderCodex || snapshot.Source != SourceLivePoll || snapshot.Confidence != ConfidenceExact {
+		t.Fatalf("snapshot provider/source/confidence mismatch: %+v", snapshot)
+	}
+	if snapshot.PlanType != "prolite" || snapshot.RateLimitReachedType != "rate_limit_reached" {
+		t.Fatalf("metadata mismatch: %+v", snapshot)
+	}
+	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 9 || snapshot.Primary.WindowMinutes != 300 {
+		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+	}
+	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 100 || snapshot.Secondary.WindowMinutes != 10080 {
+		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+	}
+}
+
 func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
@@ -65,6 +115,68 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	alt, _ := s.ChooseProvider(ProviderCodex, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool { return true }, policy)
 	if alt != ProviderClaude {
 		t.Fatalf("alternative = %q, want claude", alt)
+	}
+}
+
+func TestSummary_DowngradesStaleExactSnapshot(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderCodex,
+		Source:     SourceSessionFiles,
+		Confidence: ConfidenceExact,
+		CapturedAt: now.Add(-2 * time.Hour),
+		Primary:    &CycleSnapshot{UsedPercent: 10, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+		Secondary:  &CycleSnapshot{UsedPercent: 68, WindowMinutes: 10080, ResetsAt: now.AddDate(0, 0, 4)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary := s.Summary(DefaultPolicy())
+	var codex ProviderSummary
+	for _, p := range summary.Providers {
+		if p.Provider == ProviderCodex {
+			codex = p
+			break
+		}
+	}
+	if codex.Confidence != ConfidenceEstimated {
+		t.Fatalf("confidence = %q, want estimated for stale snapshot", codex.Confidence)
+	}
+	if codex.SessionUsedPercent != 0 || codex.WeeklyUsedPercent != 0 {
+		t.Fatalf("stale exact percentages surfaced: %+v", codex)
+	}
+	if codex.QuotaLimited {
+		t.Fatalf("stale exact snapshot limited provider: %+v", codex)
+	}
+}
+
+func TestSummary_RateLimitReachedTypeLimitsProvider(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:             ProviderCodex,
+		Source:               SourceLivePoll,
+		Confidence:           ConfidenceExact,
+		CapturedAt:           now,
+		RateLimitReachedType: "rate_limit_reached",
+		Primary:              &CycleSnapshot{UsedPercent: 9, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+		Secondary:            &CycleSnapshot{UsedPercent: 100, WindowMinutes: 10080, ResetsAt: now.AddDate(0, 0, 4)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, reason := s.ProviderAvailable(ProviderCodex, DefaultPolicy())
+	if ok || reason != "provider reports rate limit reached" {
+		t.Fatalf("ProviderAvailable = %v, reason=%q; want provider-reported limit", ok, reason)
 	}
 }
 
