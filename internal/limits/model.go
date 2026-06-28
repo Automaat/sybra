@@ -10,6 +10,7 @@ const (
 	SourceStream       = "stream"
 	SourceSessionFiles = "session-files"
 	SourceRunStats     = "run-stats"
+	SourceLivePoll     = "live-poll"
 
 	ConfidenceExact     = "exact"
 	ConfidenceEstimated = "estimated"
