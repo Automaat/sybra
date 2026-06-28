@@ -262,6 +262,162 @@ func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
 	}
 }
 
+func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionNoteOnly
+
+	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Diagnosis.\n\n```sybra-verdict\n" + `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits never re-checked the branch",
+  "issue_title": "fix(workflow): verify_commits race",
+  "issue_body": "## What\nrace condition",
+  "issue_labels": ["workflow", "regression"]
+}` + "\n```\n",
+	})
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required", got.Status)
+	}
+	if got.BlockedByIssue != "" {
+		t.Errorf("BlockedByIssue: got %q want empty", got.BlockedByIssue)
+	}
+	if !strings.Contains(got.Body, "Auto-review verdict: Sybra bug (note only)") ||
+		!strings.Contains(got.Body, "fix(workflow): verify_commits race") {
+		t.Errorf("expected note-only diagnosis in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called in note_only mode; calls=%d", sink.calls)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("note_only should not create tasks; got %d tasks", len(all))
+	}
+}
+
+func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionBlockOnly
+
+	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Diagnosis.\n\n```sybra-verdict\n" + `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits never re-checked the branch",
+  "issue_title": "fix(workflow): verify_commits race",
+  "issue_body": "## What\nrace condition"
+}` + "\n```\n",
+	})
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusBlocked {
+		t.Errorf("status: got %q want blocked", got.Status)
+	}
+	if got.BlockedByIssue != "" {
+		t.Errorf("BlockedByIssue: got %q want empty", got.BlockedByIssue)
+	}
+	if !strings.Contains(got.Body, "issue filing disabled") {
+		t.Errorf("expected block-only note in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called in block_only mode; calls=%d", sink.calls)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("block_only should not create tasks; got %d tasks", len(all))
+	}
+}
+
+func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	h.cfg.HumanReview.SybraBugAction = config.HumanReviewSybraBugActionNoteOnly
+
+	const workProject = "work-owner/work-repo"
+	h.workCtx = func(projectID string) *WorkScrubContext {
+		if projectID != workProject {
+			return nil
+		}
+		return &WorkScrubContext{
+			ProjectID: workProject,
+			Blocklist: []string{workProject, "work-owner", "work-repo"},
+		}
+	}
+	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr(workProject),
+		Status:    task.Ptr(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Diagnosis.\n\n```sybra-verdict\n" + `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits failed for work-owner/work-repo",
+  "issue_title": "fix(workflow): verify_commits race in work-owner/work-repo",
+  "issue_body": "## What\nwork-owner/work-repo leaked"
+}` + "\n```\n",
+	})
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	for _, leak := range []string{workProject, "work-owner", "work-repo"} {
+		if strings.Contains(got.Body, leak) {
+			t.Fatalf("note_only body leaks %q:\n%s", leak, got.Body)
+		}
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called in note_only mode; calls=%d", sink.calls)
+	}
+}
+
 func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)

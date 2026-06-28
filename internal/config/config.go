@@ -347,11 +347,21 @@ type HumanReviewConfig struct {
 	// IssueLabel is the label applied to filed issues (in addition to
 	// "bug"). Defaults to "sybra-bug".
 	IssueLabel string `yaml:"issue_label" json:"issueLabel"`
+	// SybraBugAction controls the side-effect for sybra_bug verdicts:
+	// file_issue (default), local_task, block_only, or note_only.
+	SybraBugAction string `yaml:"sybra_bug_action" json:"sybraBugAction"`
 }
 
 // DefaultHumanReviewMaxPerHour is the fallback rate-limit cap used when
 // HumanReviewConfig.MaxPerHour is zero.
 const DefaultHumanReviewMaxPerHour = 6
+
+const (
+	HumanReviewSybraBugActionFileIssue = "file_issue"
+	HumanReviewSybraBugActionLocalTask = "local_task"
+	HumanReviewSybraBugActionBlockOnly = "block_only"
+	HumanReviewSybraBugActionNoteOnly  = "note_only"
+)
 
 // HumanReviewMaxPerHour returns the configured cap or the package default.
 func (c *Config) HumanReviewMaxPerHour() int {
@@ -383,6 +393,25 @@ func (c *Config) HumanReviewIssueLabel() string {
 		return c.HumanReview.IssueLabel
 	}
 	return "sybra-bug"
+}
+
+func (c *Config) HumanReviewSybraBugAction() string {
+	if c == nil {
+		return HumanReviewSybraBugActionFileIssue
+	}
+	switch strings.ToLower(strings.TrimSpace(c.HumanReview.SybraBugAction)) {
+	case "", HumanReviewSybraBugActionFileIssue:
+		return HumanReviewSybraBugActionFileIssue
+	case HumanReviewSybraBugActionLocalTask:
+		return HumanReviewSybraBugActionLocalTask
+	case HumanReviewSybraBugActionBlockOnly:
+		return HumanReviewSybraBugActionBlockOnly
+	case HumanReviewSybraBugActionNoteOnly:
+		return HumanReviewSybraBugActionNoteOnly
+	default:
+		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to file_issue", "value", c.HumanReview.SybraBugAction)
+		return HumanReviewSybraBugActionFileIssue
+	}
 }
 
 // SelfMonitorConfig controls the in-process selfmonitor service that
