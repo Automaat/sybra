@@ -30,8 +30,8 @@ export function IsOrchestratorRunning(): $CancellablePromise<boolean> {
  * StartOrchestrator launches the orchestrator as an in-app conversational
  * Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
  * The orchestrator bootstraps its own monitor loop via CronCreate on first
- * turn, as instructed by orchestrator/CLAUDE.md. Provider is pinned to claude
- * because /sybra-monitor is a Claude-only skill.
+ * turn, as instructed by orchestrator/CLAUDE.md, so this run stays pinned to
+ * Claude even when generic task agents can fail over to another provider.
  */
 export function StartOrchestrator(): $CancellablePromise<void> {
     return $Call.ByID(4069016469);
