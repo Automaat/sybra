@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -63,6 +64,7 @@ func SyncBuiltins(store *Store) error {
 	if err != nil {
 		return fmt.Errorf("list workflows for builtin sync: %w", err)
 	}
+	var pruneErr error
 	for i := range stored {
 		if !stored[i].Builtin {
 			continue
@@ -71,7 +73,7 @@ func SyncBuiltins(store *Store) error {
 			continue
 		}
 		if dErr := store.Delete(stored[i].ID); dErr != nil {
-			return fmt.Errorf("prune obsolete builtin %s: %w", stored[i].ID, dErr)
+			pruneErr = errors.Join(pruneErr, fmt.Errorf("prune obsolete builtin %s: %w", stored[i].ID, dErr))
 		}
 	}
 	for i := range defs {
@@ -95,7 +97,7 @@ func SyncBuiltins(store *Store) error {
 			return fmt.Errorf("sync builtin %s: %w", defs[i].ID, sErr)
 		}
 	}
-	return nil
+	return pruneErr
 }
 
 // builtinsEqual compares two definitions ignoring timestamps. Timestamps are
