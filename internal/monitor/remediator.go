@@ -53,7 +53,7 @@ func (r *remediator) resetLostAgent(a Anomaly) (string, error) {
 		return "", fmt.Errorf("lost_agent without task id")
 	}
 	// Best-effort: mark the last running agent run as stopped so the UI does
-	// not continue to display it as active after the task is reset.
+	// not continue to display it as active after recovery takes over.
 	if t, err := r.tasks.Get(a.TaskID); err == nil {
 		for i := range slices.Backward(t.AgentRuns) {
 			if t.AgentRuns[i].State == "running" {
@@ -63,11 +63,10 @@ func (r *remediator) resetLostAgent(a Anomaly) (string, error) {
 		}
 	}
 	upd := task.Update{
-		Status:       task.Ptr(task.StatusTodo),
-		StatusReason: task.Ptr("monitor: agent lost, resetting"),
+		StatusReason: task.Ptr("monitor: agent lost; recovery will resume"),
 	}
 	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
-		return "", fmt.Errorf("reset lost_agent task %s: %w", a.TaskID, err)
+		return "", fmt.Errorf("mark lost_agent task %s for recovery: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
 }
