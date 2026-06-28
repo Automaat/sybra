@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -26,6 +27,7 @@ type Judge interface {
 type ClaudeJudge struct {
 	Model  string // default: claude-haiku-4-5-20251001
 	Logger *slog.Logger
+	Gate   provider.HealthGate
 }
 
 // Judge shells out to claude -p and returns a validated Verdict.
@@ -37,20 +39,14 @@ func (j *ClaudeJudge) Judge(ctx context.Context, f health.Finding, ls *LogSummar
 
 	prompt := buildJudgePrompt(f, ls, t)
 
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	)
-	out, err := cmd.Output()
+	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
-		return Verdict{Classification: VerdictPending}, fmt.Errorf("claude -p: %w", err)
+		return Verdict{Classification: VerdictPending}, err
 	}
 
-	v, err := parseJudgeVerdict(out)
+	v, err := parseJudgeVerdict([]byte(res.Text))
 	if err != nil {
-		return Verdict{Classification: VerdictPending}, fmt.Errorf("parse verdict: %w", err)
+		return Verdict{Classification: VerdictPending}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
 	}
 	return v, nil
 }
@@ -120,18 +116,19 @@ Rules:
 // stdout. The envelope has a `result` string field; we extract the last JSON
 // object from it.
 func parseJudgeVerdict(raw []byte) (Verdict, error) {
+	text := string(raw)
 	var envelope struct {
-		Result string `json:"result"`
+		Result *string `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return Verdict{}, fmt.Errorf("unmarshal envelope: %w", err)
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
+		if *envelope.Result == "" {
+			return Verdict{}, fmt.Errorf("empty result field")
+		}
+		text = *envelope.Result
 	}
-	if envelope.Result == "" {
-		return Verdict{}, fmt.Errorf("empty result field")
-	}
-	jsonStr := judgeExtractLastJSON(envelope.Result)
+	jsonStr := judgeExtractLastJSON(text)
 	if jsonStr == "" {
-		return Verdict{}, fmt.Errorf("no JSON object in result: %q", envelope.Result)
+		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
 	var v Verdict
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {

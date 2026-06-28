@@ -306,6 +306,7 @@ func (lm *LifecycleManager) startSelfMonitorService(ctx context.Context, emit fu
 		Judge: &selfmonitor.ClaudeJudge{
 			Model:  a.cfg.SelfMonitor.JudgeModel,
 			Logger: a.logger,
+			Gate:   a.providerHealth,
 		},
 		Actor: &selfmonitor.Actor{
 			Tasks:  a.tasks,

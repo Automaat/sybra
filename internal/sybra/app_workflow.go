@@ -560,6 +560,10 @@ func (a *agentAdapter) ProviderRateLimited(provider string) bool {
 	return a.agents.ProviderRateLimited(provider)
 }
 
+func (a *agentAdapter) ProviderCanFailover(provider string) bool {
+	return a.agents.ProviderCanFailover(provider)
+}
+
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a

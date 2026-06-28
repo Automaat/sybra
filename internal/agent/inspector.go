@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/llmexec"
 )
 
 // InspectorVerdict is the structured judgment returned by the inspector agent.
@@ -49,17 +50,15 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 	if model == "" {
 		model = "sonnet"
 	}
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	)
-	out, err := cmd.Output()
+	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: logger})
 	if err != nil {
-		return InspectorVerdict{}, fmt.Errorf("inspector claude: %w", err)
+		return InspectorVerdict{}, fmt.Errorf("inspector: %w", err)
 	}
-	return parseInspectorOutput(out)
+	v, err := parseInspectorOutput([]byte(res.Text))
+	if err != nil {
+		return InspectorVerdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
+	}
+	return v, nil
 }
 
 func buildInspectorPrompt(in InspectInput) string {
@@ -99,18 +98,19 @@ Recommendations:
 // The top-level response has a `result` string field containing the model's final message,
 // from which we extract the last JSON object.
 func parseInspectorOutput(raw []byte) (InspectorVerdict, error) {
+	text := string(raw)
 	var envelope struct {
-		Result string `json:"result"`
+		Result *string `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return InspectorVerdict{}, fmt.Errorf("unmarshal envelope: %w", err)
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
+		if *envelope.Result == "" {
+			return InspectorVerdict{}, fmt.Errorf("empty result field")
+		}
+		text = *envelope.Result
 	}
-	if envelope.Result == "" {
-		return InspectorVerdict{}, fmt.Errorf("empty result field")
-	}
-	jsonStr := extractLastJSONObject(envelope.Result)
+	jsonStr := extractLastJSONObject(text)
 	if jsonStr == "" {
-		return InspectorVerdict{}, fmt.Errorf("no JSON object in result: %q", envelope.Result)
+		return InspectorVerdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
 	var v InspectorVerdict
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {

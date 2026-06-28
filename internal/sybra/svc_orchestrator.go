@@ -131,8 +131,8 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 // StartOrchestrator launches the orchestrator as an in-app conversational
 // Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
 // The orchestrator bootstraps its own monitor loop via CronCreate on first
-// turn, as instructed by orchestrator/CLAUDE.md. Provider is pinned to claude
-// because /sybra-monitor is a Claude-only skill.
+// turn, as instructed by orchestrator/CLAUDE.md, so this run stays pinned to
+// Claude even when generic task agents can fail over to another provider.
 func (s *OrchestratorService) StartOrchestrator() error {
 	// Hold the lock across agents.Run so two concurrent callers (the 1-minute
 	// auto-start loop and the UI Start button) cannot both pass the replaceable
@@ -147,12 +147,13 @@ func (s *OrchestratorService) StartOrchestrator() error {
 	}
 
 	a, err := s.agents.Run(agent.RunConfig{
-		Name:                   orchestratorAgentName,
-		Mode:                   "interactive",
-		Dir:                    config.HomeDir(),
-		Provider:               "claude",
-		Prompt:                 orchestratorKickoffPrompt,
-		IgnoreConcurrencyLimit: true,
+		Name:                    orchestratorAgentName,
+		Mode:                    "interactive",
+		Dir:                     config.HomeDir(),
+		Provider:                "claude",
+		Prompt:                  orchestratorKickoffPrompt,
+		IgnoreConcurrencyLimit:  true,
+		DisableProviderFailover: true,
 	})
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)

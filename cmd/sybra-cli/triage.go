@@ -61,7 +61,7 @@ func cmdTriageClassify(
 	}
 
 	logger := slog.New(slog.DiscardHandler)
-	classifier := &triage.ClaudeClassifier{Model: *model, Logger: logger}
+	classifier := &triage.FallbackClassifier{Model: *model, Logger: logger}
 	al, _ := audit.NewLogger(cfg.AuditDir())
 
 	var targets []task.Task

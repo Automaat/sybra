@@ -301,6 +301,7 @@ type mockAgents struct {
 	counter           int
 	failSpawn         error           // when non-nil, StartAgent returns this error and records nothing
 	providerRateLimit bool            // when true, ProviderRateLimited reports true for every provider
+	providerFailover  bool            // when true, ProviderCanFailover reports true
 	rateLimited       map[string]bool // provider -> rate-limited
 }
 
@@ -362,6 +363,12 @@ func (m *mockAgents) ProviderRateLimited(provider string) bool {
 	return m.providerRateLimit
 }
 
+func (m *mockAgents) ProviderCanFailover(string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.providerFailover
+}
+
 func (m *mockAgents) SetProviderRateLimited(v bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -375,6 +382,12 @@ func (m *mockAgents) SetProviderRateLimitedFor(provider string, v bool) {
 		m.rateLimited = make(map[string]bool)
 	}
 	m.rateLimited[provider] = v
+}
+
+func (m *mockAgents) SetProviderFailover(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.providerFailover = v
 }
 
 func (m *mockAgents) FindRunningAgentForRole(taskID, role string) (string, bool) {
@@ -1131,6 +1144,7 @@ func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetProviderRateLimited(true)
+	agents.SetProviderFailover(true)
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
@@ -1297,6 +1311,33 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	}
 	if got := tasks.Reason("t1"); !strings.Contains(got, "provider claude unhealthy") {
 		t.Fatalf("reason = %q, want provider unhealthy reason", got)
+	}
+}
+
+func TestResumeStalled_FailoversRateLimitedProvider(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	agents.SetProviderFailover(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 1 {
+		t.Fatalf("expected 1 agent start when failover is available, got %d", agents.CallCount())
 	}
 }
 

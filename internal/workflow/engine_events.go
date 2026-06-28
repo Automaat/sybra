@@ -485,9 +485,9 @@ func (e *Engine) ResumeStalled() {
 		if e.agents.HasRunningAgent(t.ID) {
 			continue
 		}
-		// Do not pre-skip rate-limited providers here. StartAgent owns provider
-		// gating and can fail over to a healthy peer; skipping at workflow level
-		// would strand the step on the limited provider until cooldown.
+		if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+			continue
+		}
 		// Skip tasks whose step is currently being dispatched. Interactive
 		// spawns (worktree creation, rebase, agent process start) take
 		// several seconds during which no agent is yet registered — without
@@ -562,6 +562,23 @@ func (e *Engine) ResumeStalled() {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
 		}
 	}
+}
+
+func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step) bool {
+	// Don't re-dispatch a single-agent step to the same provider while it is
+	// rate-limited; do continue when failover can route this run to a healthy
+	// peer. Parallel children are checked at child spawn time because each child
+	// can use a different provider.
+	if step.Type != StepRunAgent {
+		return false
+	}
+	prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t)
+	if !e.agents.ProviderRateLimited(prov) || e.agents.ProviderCanFailover(prov) {
+		return false
+	}
+	e.logger.Debug("workflow.resume-stalled.skip",
+		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
+	return true
 }
 
 func workflowRetryAfter(wf *Execution) (time.Time, bool) {

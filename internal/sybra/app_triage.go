@@ -10,5 +10,6 @@ func (a *App) initTriage() {
 		return
 	}
 	a.triageHandler = poll.NewTriageHandler(a.tasks, a.projects, a.audit, a.logger, &a.cfg.Triage)
+	a.triageHandler.SetProviderGate(a.providerHealth)
 	a.logger.Info("triage.enabled", "poll_seconds", a.cfg.Triage.PollSeconds, "model", a.cfg.Triage.Model)
 }
