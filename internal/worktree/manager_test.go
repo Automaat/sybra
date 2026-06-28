@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -783,6 +784,50 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != wantSHA {
 		t.Errorf("worktree does not contain upstream commit %s; merge-base=%s", wantSHA, got)
+	}
+}
+
+func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("conflicting task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	gotPath, err := h.m.PrepareForTask(tk, nil)
+	if !errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
+	}
+	if gotPath != "" {
+		t.Fatalf("PrepareForTask path = %q, want empty path on rebase failure", gotPath)
 	}
 }
 

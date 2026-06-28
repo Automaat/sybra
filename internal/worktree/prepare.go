@@ -9,6 +9,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// ErrRebaseFailed indicates a reused task worktree could not be rebased onto
+// the project base ref and must be repaired before another agent run.
 var ErrRebaseFailed = errors.New("worktree rebase failed")
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.

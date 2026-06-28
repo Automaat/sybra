@@ -138,6 +138,11 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules: nil, // bare require is an import, not an assertion
 		},
 		{
+			name:      "fmt_errorf_is_not_an_assertion",
+			patch:     "@@ @@\n-\treturn fmt.Errorf(\"bad: %w\", err)\n",
+			wantRules: nil,
+		},
+		{
 			name:      "ci_removed_test_step",
 			cat:       tamperCatCI,
 			patch:     "@@ @@\n       - run: go vet ./...\n-      - run: go test ./...\n",

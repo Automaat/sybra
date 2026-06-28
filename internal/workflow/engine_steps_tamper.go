@@ -147,7 +147,7 @@ var (
 	// only `require.` (testify-style assertions) counts.
 	tamperAssertionRe = regexp.MustCompile(
 		`\bassert\b|\brequire\.|\bexpect\s*\(|` +
-			`\b\w+\.(Error|Errorf|Fatal|Fatalf)\b|\bEXPECT_|\bASSERT_|\.should\b|\bshould\.`)
+			`\b(?:t|tb)\.(Error|Errorf|Fatal|Fatalf)\b|\bEXPECT_|\bASSERT_|\.should\b|\bshould\.`)
 	// tamperTestDeclRe matches a test-case declaration. Net removal flags
 	// deleted test cases.
 	tamperTestDeclRe = regexp.MustCompile(
