@@ -134,29 +134,32 @@ func binaryName(p string) string {
 }
 
 func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, stderrOut string, err error) {
-	name, args := invocation(p, prompt, model)
+	name, args, stdin := invocation(p, prompt, model)
 	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	return out, stderr.String(), err
 }
 
-func invocation(p, prompt, model string) (name string, args []string) {
+func invocation(p, prompt, model string) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
 		return "codex", []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
-			"--dangerously-bypass-approvals-and-sandbox", prompt,
-		}
+			"--dangerously-bypass-approvals-and-sandbox", "-",
+		}, prompt
 	case "copilot":
-		return "copilot", []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+		return "copilot", []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		return "claude", args
+		return "claude", args, ""
 	}
 }
 

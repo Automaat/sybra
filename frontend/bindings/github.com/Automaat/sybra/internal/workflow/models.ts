@@ -244,7 +244,7 @@ export class ImportSidecar {
 
     /**
      * From is a Go template path the engine renders against the run's
-     * TemplateContext (e.g. /tmp/sybra-review-{{.Task.ID}}.md).
+     * TemplateContext (e.g. {{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md).
      */
     "from": string;
 

@@ -130,12 +130,12 @@ steps:
              environment, plan directly using the same multi-lens scrutiny.
           4. Write these FIVE files:
 
-             A. /tmp/sybra-plan-research-{{.Task.ID}}.md
+             A. .sybra-plan-research-{{.Task.ID}}.md
                 Raw research/evidence. Put file/symbol notes, council synthesis,
                 rejected alternatives, assumptions, and detailed rationale here.
                 This can be long. It is for audit/debug, not implementation.
 
-             B. /tmp/sybra-plan-decisions-{{.Task.ID}}.md
+             B. .sybra-plan-decisions-{{.Task.ID}}.md
                 Human decision brief. Keep it short. Use this exact shape for
                 each decision that needs or may benefit from human choice:
 
@@ -155,7 +155,7 @@ steps:
                 No open decisions. The recommended execution contract is fully
                 specified.
 
-             C. /tmp/sybra-plan-{{.Task.ID}}.md
+             C. .sybra-plan-{{.Task.ID}}.md
                 The human-readable compact execution plan. Target 60-120 lines, hard
                 max 180 lines unless the task truly cannot fit. Use only:
 
@@ -190,12 +190,12 @@ steps:
                 persona names, disagreement logs, acceptance traceability tables,
                 or long risk matrices in this file.
 
-             D. /tmp/sybra-plan-brief-{{.Task.ID}}.md
+             D. .sybra-plan-brief-{{.Task.ID}}.md
                 Human approval brief. Keep it under ~40 lines. Summarize final
                 shape, important decisions, unresolved choices (if any), and why
                 the execution contract is safe to approve.
 
-             E. /tmp/sybra-plan-contract-{{.Task.ID}}.json
+             E. .sybra-plan-contract-{{.Task.ID}}.json
                 Executable plan contract consumed by implementation agents and
                 validated mechanically. Write valid JSON with exactly this shape:
 
@@ -233,15 +233,15 @@ steps:
         - Agent
       import_sidecars:
         - kind: plan_research
-          from: /tmp/sybra-plan-research-{{.Task.ID}}.md
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-research-{{.Task.ID}}.md'
         - kind: plan_decisions
-          from: /tmp/sybra-plan-decisions-{{.Task.ID}}.md
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-decisions-{{.Task.ID}}.md'
         - kind: plan
-          from: /tmp/sybra-plan-{{.Task.ID}}.md
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
         - kind: plan_brief
-          from: /tmp/sybra-plan-brief-{{.Task.ID}}.md
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-brief-{{.Task.ID}}.md'
         - kind: plan_contract
-          from: /tmp/sybra-plan-contract-{{.Task.ID}}.json
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-contract-{{.Task.ID}}.json'
           required: true
     next:
       - goto: require_plan
@@ -374,22 +374,22 @@ steps:
         Steps:
           1. Run: sybra-cli --json get {{.Task.ID}}
           2. Read .planContract, .plan, .planResearch, .planDecisions, and .planBrief.
-          3. Write /tmp/sybra-plan-contract-review-{{.Task.ID}}.md with the
+          3. Write .sybra-plan-contract-review-{{.Task.ID}}.md with the
              executable JSON contract FIRST, followed by the human-readable
              .plan as secondary context. The contract is the artifact
              implementation consumes, so critique it directly for missing files,
              weak verification, acceptance gaps, risk, permission posture, and
              rollback/recovery coverage.
-          4. Invoke: /plan-critic /tmp/sybra-plan-contract-review-{{.Task.ID}}.md
+          4. Invoke: /plan-critic .sybra-plan-contract-review-{{.Task.ID}}.md
           5. As soon as each persona/result is available, append a concise
-             grounded finding summary to /tmp/sybra-critique-{{.Task.ID}}.md.
+             grounded finding summary to .sybra-critique-{{.Task.ID}}.md.
              Do not wait for the final synthesis before writing the first
              useful content.
           6. Capture the final markdown Plan Review report you produce and
-             overwrite /tmp/sybra-critique-{{.Task.ID}}.md with it.
+             overwrite .sybra-critique-{{.Task.ID}}.md with it.
 
         Do NOT modify the plan. Do NOT change the task status. Sybra
-        will ingest /tmp/sybra-critique-{{.Task.ID}}.md as the task's
+        will ingest .sybra-critique-{{.Task.ID}}.md as the task's
         plan_critique sidecar after you exit — you do not need to call
         sybra-cli yourself.
       allowed_tools:
@@ -402,7 +402,7 @@ steps:
         - Agent
       import_sidecar:
         kind: plan_critique
-        from: /tmp/sybra-critique-{{.Task.ID}}.md
+        from: '{{getvar .Vars "_dir"}}/.sybra-critique-{{.Task.ID}}.md'
     next:
       - goto: require_plan_critique
 
@@ -459,18 +459,18 @@ steps:
              executable JSON contract. Do NOT
              paste critique history, council synthesis, or "refinements applied"
              into the plan.
-          3. Write revised files under /tmp:
-             - /tmp/sybra-plan-research-{{.Task.ID}}.md
-             - /tmp/sybra-plan-decisions-{{.Task.ID}}.md
-             - /tmp/sybra-plan-{{.Task.ID}}.md
-             - /tmp/sybra-plan-brief-{{.Task.ID}}.md
-             - /tmp/sybra-plan-contract-{{.Task.ID}}.json
+          3. Write revised files in the worktree:
+             - .sybra-plan-research-{{.Task.ID}}.md
+             - .sybra-plan-decisions-{{.Task.ID}}.md
+             - .sybra-plan-{{.Task.ID}}.md
+             - .sybra-plan-brief-{{.Task.ID}}.md
+             - .sybra-plan-contract-{{.Task.ID}}.json
           4. sybra-cli update {{.Task.ID}} \
-               --plan-file /tmp/sybra-plan-{{.Task.ID}}.md \
-               --plan-contract-file /tmp/sybra-plan-contract-{{.Task.ID}}.json \
-               --plan-research-file /tmp/sybra-plan-research-{{.Task.ID}}.md \
-               --plan-decisions-file /tmp/sybra-plan-decisions-{{.Task.ID}}.md \
-               --plan-brief-file /tmp/sybra-plan-brief-{{.Task.ID}}.md
+               --plan-file .sybra-plan-{{.Task.ID}}.md \
+               --plan-contract-file .sybra-plan-contract-{{.Task.ID}}.json \
+               --plan-research-file .sybra-plan-research-{{.Task.ID}}.md \
+               --plan-decisions-file .sybra-plan-decisions-{{.Task.ID}}.md \
+               --plan-brief-file .sybra-plan-brief-{{.Task.ID}}.md
           5. sybra-cli update {{.Task.ID}} --status plan-review
 
         Then STOP and wait. Do NOT implement.

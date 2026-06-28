@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const triageRetryableStatusReasonPrefix = "triage retryable: "
+
 // AdvanceStep is called when an async step completes. It records the result,
 // evaluates transitions, and executes the next step.
 //
@@ -57,6 +59,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	if err := e.prepareTestStepCompletion(taskID, ctx.Task, &output, wfExec, &ctx.Task.Body); err != nil {
 		return err
 	}
+	coerceRetryableTriageCompletion(currentStep, ctx.Task, &output)
 
 	// Record step completion.
 	now := time.Now().UTC()
@@ -104,6 +107,9 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 			"attempts", retries)
+		if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
+			return bErr
+		}
 	}
 
 	// Mark task reviewed after a review-role step succeeds.
@@ -551,6 +557,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.id":                      t.ID,
 		"task.title":                   t.Title,
 		"task.status":                  t.Status,
+		"task.status_reason":           t.StatusReason,
 		"task.tags":                    strings.Join(t.Tags, ","),
 		"task.agent_mode":              t.AgentMode,
 		"task.project_id":              t.ProjectID,
@@ -562,6 +569,42 @@ func taskFields(t TaskInfo) map[string]string {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)
 	}
 	return fields
+}
+
+func retryableTriageReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if !strings.HasPrefix(reason, triageRetryableStatusReasonPrefix) {
+		return ""
+	}
+	return reason
+}
+
+func coerceRetryableTriageCompletion(step *Step, t TaskInfo, output *StepOutput) {
+	if output.Status != "completed" || step.Config.Role != "triage" {
+		return
+	}
+	if reason := retryableTriageReason(t.StatusReason); reason != "" {
+		output.Status = "failed"
+		output.Output = reason
+	}
+}
+
+func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wfExec *Execution, output string) (bool, error) {
+	if step.Config.Role != "triage" {
+		return false, nil
+	}
+	reason := retryableTriageReason(output)
+	if reason == "" {
+		return false, nil
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); err != nil {
+		return true, err
+	}
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetWorkflow(taskID, wfExec)
 }
 
 func truncate(s string, limit int) string {

@@ -23,7 +23,7 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
    sybra-cli --json triage classify <id>
    ```
 
-   This makes a single `claude -p` call that:
+   This makes a single provider-fallback classifier call that:
    - Rewrites the title into a clean imperative conventional-commit form (always, even if the input already looked fine)
    - Preserves the original title in the body
    - Assigns tags from the controlled vocabulary (backend, frontend, infra, docs, ci, auth, db, test + size + type), plus `noplan` when the task is small and trivially mechanical (dep bumps, CI fixes, typo/docs) so it skips planning
@@ -44,5 +44,5 @@ Classify pending tasks via the Go classifier. Go owns routing rules, tag validat
 
 - Do NOT call `sybra-cli update` directly during triage — the Go classifier owns every field change. Manual updates will race the classifier and break audit trails.
 - Do NOT explore the codebase or read source files — the classifier sees only `{title, body, registered projects}`. Codebase exploration belongs in planning/implementation.
-- If `classify` returns an error, flag the task with `sybra-cli update <id> --status human-required --status-reason "triage failed"` and move on.
+- If `classify` returns an error, do **not** call `sybra-cli update` and do **not** move the task to `human-required`. The CLI preserves the existing title/tags and records a retryable `status_reason`; leave the non-zero result visible so the workflow can retry or block as infrastructure failure.
 - Ignore tasks with `role` field set (triage, plan, eval, pr-fix) — those are system agents, not implementation work.

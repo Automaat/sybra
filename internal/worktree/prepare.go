@@ -139,6 +139,9 @@ func (m *Manager) seedWorktree(t task.Task, wtPath, branch string) {
 	if err := ensureNotesFile(wtPath); err != nil {
 		m.logger.Warn("worktree.notes-file", "task_id", t.ID, "err", err)
 	}
+	if err := excludeWorkflowScratchFiles(wtPath); err != nil {
+		m.logger.Warn("worktree.workflow-scratch-exclude", "task_id", t.ID, "err", err)
+	}
 }
 
 // adoptWorktree wires Sybra to run a task inside a pre-existing, externally

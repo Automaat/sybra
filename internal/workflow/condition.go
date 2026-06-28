@@ -20,6 +20,7 @@ var KnownTriggerFields = map[string]bool{
 	"task.id":                      true,
 	"task.title":                   true,
 	"task.status":                  true,
+	"task.status_reason":           true,
 	"task.tags":                    true,
 	"task.agent_mode":              true,
 	"task.project_id":              true,
