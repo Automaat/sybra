@@ -105,12 +105,13 @@ func (lm *LifecycleManager) startAutoUpdate(ctx context.Context) {
 		return
 	}
 	runner := autoupdate.New(autoupdate.Config{
-		Enabled:      a.cfg.AutoUpdate.Enabled,
-		RepoDir:      repoDir,
-		Remote:       a.cfg.AutoUpdate.Remote,
-		Branch:       a.cfg.AutoUpdate.Branch,
-		Mode:         a.cfg.AutoUpdate.Mode,
-		PollInterval: time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		Enabled:        a.cfg.AutoUpdate.Enabled,
+		RepoDir:        repoDir,
+		Remote:         a.cfg.AutoUpdate.Remote,
+		Branch:         a.cfg.AutoUpdate.Branch,
+		Mode:           a.cfg.AutoUpdate.Mode,
+		PollInterval:   time.Duration(a.cfg.AutoUpdate.PollSeconds) * time.Second,
+		RequestRestart: a.requestRestart,
 	}, a.logger)
 	a.wg.Go(func() { runner.Run(ctx) })
 }

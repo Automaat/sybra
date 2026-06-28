@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestCheckAndApplyAutoModeDoesNotMerge(t *testing.T) {
+func TestCheckAndApplyAutoModeFastForwards(t *testing.T) {
 	ctx := t.Context()
 	upstream, work := seedRepos(t)
 	writeFile(t, upstream, "feature.txt", "new\n")
@@ -28,11 +28,35 @@ func TestCheckAndApplyAutoModeDoesNotMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "available" {
-		t.Fatalf("status = %q, want available (reason=%q)", res.Status, res.Reason)
+	if res.Status != "applied" {
+		t.Fatalf("status = %q, want applied (reason=%q)", res.Status, res.Reason)
 	}
-	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
-		t.Fatalf("feature.txt exists after auto mode: %v", err)
+	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
+		t.Fatalf("feature.txt missing after auto mode: %v", err)
+	}
+}
+
+func TestRunRequestsRestartAfterAutoApply(t *testing.T) {
+	upstream, work := seedRepos(t)
+	writeFile(t, upstream, "feature.txt", "new\n")
+	gitTest(t, upstream, "add", "feature.txt")
+	gitTest(t, upstream, "commit", "-m", "add feature")
+
+	restarted := false
+	r := New(Config{
+		Enabled: true,
+		RepoDir: work,
+		Remote:  "origin",
+		Branch:  "main",
+		Mode:    ModeAuto,
+		RequestRestart: func() {
+			restarted = true
+		},
+	}, nil)
+
+	r.check(t.Context())
+	if !restarted {
+		t.Fatal("restart was not requested after auto apply")
 	}
 }
 
