@@ -306,6 +306,23 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "structured_json_product_bug_with_scalar_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
+				"## Test Failures\n\n"+
+					"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n"+
+					"Verbatim output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n"+
+					"Expected behavior: the task says the status endpoint should return HTTP 200.\n\n"+
+					"Actual behavior: the endpoint returned HTTP 500.\n\n"+
+					"Current source quote:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n",
+			) + `,"surface_kind":"web","app_started":true,"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"curl /health -> ok","manual_probes":"browser observed the status failure",` +
+				`"automated_checks":"go test ./internal/server -> fail","unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:   "structured_json_ignores_fenced_heading",
 			status: "completed",
 			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
@@ -444,6 +461,18 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_scalar_string_evidence",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev -- --host 127.0.0.1",` +
+				`"readiness_probe":"opened http://127.0.0.1:5173 and app shell rendered",` +
+				`"manual_probes":"Browser UI: opened the task board, clicked the accept action, and observed the task card show accepted.",` +
+				`"automated_checks":"frontend type-check passed; lint passed; unit tests passed; acceptance invariant rg found no raw rejection path","unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:   "pass_with_status_alias_and_surface_alias",
 			status: "completed",
 			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web/server","app_started":true,` +
@@ -463,6 +492,18 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				`"readiness_probe":{"command":"curl http://127.0.0.1:5173/health","status":200},` +
 				`"manual_probes":[{"command":"GET /api/tasks","status":200}],` +
 				`"automated_checks":[{"command":"npm test","status":true}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_browser_ui_string_probe",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev",` +
+				`"readiness_probe":"browser loaded the UI and displayed the board",` +
+				`"manual_probes":["Using browser devtools, opened the workflow page, clicked retry, and observed the retry banner become visible."],` +
+				`"automated_checks":["npm run check -> pass"],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
