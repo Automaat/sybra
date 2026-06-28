@@ -139,6 +139,24 @@ func TestValidatePlanContractForTask_AcceptsCopiedSourceAcceptanceCriteria(t *te
 	}
 }
 
+func TestValidatePlanContractForTask_RequiresVerbatimSourceAcceptanceCriteria(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"- Preserve Case exactly.\n"
+	for _, replacement := range []string{
+		`"acceptance_criteria": ["preserve case exactly."]`,
+		`"acceptance_criteria": ["Preserve Case exactly, unless the plan decides otherwise."]`,
+	} {
+		contract := strings.Replace(validPlanContract("fa6919fc"),
+			`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+			replacement, 1)
+
+		problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody)
+		if joined := strings.Join(problems, "\n"); !strings.Contains(joined, "acceptance_criteria missing source criterion") {
+			t.Fatalf("problems = %v, want missing source criterion", problems)
+		}
+	}
+}
+
 func TestExecValidatePlanContract_RejectsMalformedFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

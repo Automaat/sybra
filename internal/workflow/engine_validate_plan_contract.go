@@ -195,21 +195,20 @@ func listItemText(line string) (string, bool) {
 }
 
 func criterionCovered(source string, contractCriteria []string) bool {
-	source = normalizeCriterion(source)
+	source = normalizeCriterionWhitespace(source)
 	if source == "" {
 		return true
 	}
 	for _, criterion := range contractCriteria {
-		normalized := normalizeCriterion(criterion)
-		if normalized == source || strings.Contains(normalized, source) {
+		if normalizeCriterionWhitespace(criterion) == source {
 			return true
 		}
 	}
 	return false
 }
 
-func normalizeCriterion(s string) string {
-	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(s))), " ")
+func normalizeCriterionWhitespace(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 }
 
 func quoteProblem(s string) string {
