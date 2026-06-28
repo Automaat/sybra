@@ -1,0 +1,21 @@
+id: a-map
+task_id: task-map
+name: mapper
+mode: interactive
+provider: codex
+model: gpt-5.3-codex
+experiment_id: exp-1
+variant_id: variant-a
+assignment_unit: task
+assignment_key: task-map
+pid: 12345
+session_id: sess-map
+log_path: /tmp/sybra/agents/a-map.ndjson
+cwd: /tmp/sybra/worktrees/task-map
+started_at: 2026-06-28T20:30:00Z
+proc_started_at: Mon Jun 28 20:30:00 2026
+stdin_path: /tmp/sybra/agents/a-map.stdin
+one_shot: true
+max_turns: 7
+require_permissions: true
+reasoning_effort: high

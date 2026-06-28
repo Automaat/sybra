@@ -1,0 +1,10 @@
+id: legacy-agent
+task_id: legacy-task
+mode: headless
+provider: claude
+pid: 23456
+session_id: legacy-session
+log_path: /tmp/sybra/agents/legacy-agent.ndjson
+cwd: /tmp/sybra/worktrees/legacy-task
+started_at: 2026-06-28T20:30:00Z
+proc_started_at: Mon Jun 28 20:30:00 2026

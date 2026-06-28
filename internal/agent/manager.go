@@ -209,7 +209,15 @@ func (m *Manager) saveRegistry(a *Agent) {
 	rec := a.toRecord()
 	rec.ProcStartedAt = processStartString(rec.PID)
 	if err := reg.Save(rec); err != nil {
-		m.logger.Warn("agent.registry.save", "id", rec.ID, "err", err)
+		m.logger.Warn(
+			"agent.registry.save",
+			"id", rec.ID,
+			"task_id", rec.TaskID,
+			"mode", rec.Mode,
+			"pid", rec.PID,
+			"log_path", rec.LogPath,
+			"err", err,
+		)
 	}
 }
 

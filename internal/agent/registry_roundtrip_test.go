@@ -62,7 +62,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	}
 
 	beforeRehydrate := time.Now().UTC()
-	rehydrated := agentFromRecord(records[0])
+	rehydrated := fromRecord(records[0])
 	afterRehydrate := time.Now().UTC()
 
 	got := persistedAgentFields{

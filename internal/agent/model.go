@@ -165,6 +165,9 @@ type Agent struct {
 	mu sync.RWMutex
 }
 
+// toRecord snapshots only the fields persisted for restart survival.
+// Callers that write a live process record must fill ProcStartedAt after the
+// snapshot so the PID-reuse guard reflects the current process state.
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -192,6 +195,8 @@ func (a *Agent) toRecord() Record {
 	}
 }
 
+// fromRecord builds a detached reattach skeleton, not a general Agent factory.
+// Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
 	return &Agent{
 		ID:                 r.ID,

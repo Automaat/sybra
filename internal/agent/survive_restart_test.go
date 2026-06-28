@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestRegistryStore_RoundTrip(t *testing.T) {
@@ -60,52 +63,14 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 }
 
 func TestAgentRecordMappingRoundTrip(t *testing.T) {
-	started := time.Date(2026, 6, 28, 20, 30, 0, 0, time.UTC)
-	a := &Agent{
-		ID:              "a-map",
-		TaskID:          "task-map",
-		Name:            "mapper",
-		Mode:            "interactive",
-		Provider:        "codex",
-		Model:           "gpt-5.3-codex",
-		ExperimentID:    "exp-1",
-		VariantID:       "variant-a",
-		AssignmentUnit:  "task",
-		AssignmentKey:   "task-map",
-		PID:             12345,
-		SessionID:       "sess-map",
-		LogPath:         "/tmp/sybra/agents/a-map.ndjson",
-		StartedAt:       started,
-		MaxTurns:        7,
-		ReasoningEffort: "high",
-	}
+	started := recordMappingStartedAt()
+	a := recordMappingAgent(started)
 	a.sessionCWD = "/tmp/sybra/worktrees/task-map"
 	a.stdinPath = "/tmp/sybra/agents/a-map.stdin"
 	a.oneShot = true
 	a.requirePermissions = true
 
-	want := Record{
-		ID:                 "a-map",
-		TaskID:             "task-map",
-		Name:               "mapper",
-		Mode:               "interactive",
-		Provider:           "codex",
-		Model:              "gpt-5.3-codex",
-		ExperimentID:       "exp-1",
-		VariantID:          "variant-a",
-		AssignmentUnit:     "task",
-		AssignmentKey:      "task-map",
-		PID:                12345,
-		SessionID:          "sess-map",
-		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
-		CWD:                "/tmp/sybra/worktrees/task-map",
-		StartedAt:          started,
-		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
-		OneShot:            true,
-		MaxTurns:           7,
-		RequirePermissions: true,
-		ReasoningEffort:    "high",
-	}
+	want := recordMappingRecord(started)
 	assertRecordFixtureCoversFields(t, want, "ProcStartedAt")
 
 	if got := a.toRecord(); !reflect.DeepEqual(got, want) {
@@ -137,6 +102,119 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	if got := fromRecord(withProcStart).toRecord(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ProcStartedAt must stay caller-owned:\n got: %+v\nwant: %+v", got, want)
 	}
+}
+
+func TestRegistryStore_CurrentYAMLFixture(t *testing.T) {
+	want := recordMappingRecord(recordMappingStartedAt())
+	want.ProcStartedAt = "Mon Jun 28 20:30:00 2026"
+
+	var got Record
+	raw := readRegistryFixture(t, "registry_current.yaml")
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal current registry fixture: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("current registry fixture mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+
+	marshaled, err := yaml.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal current registry fixture: %v", err)
+	}
+	if strings.TrimSpace(string(marshaled)) != strings.TrimSpace(string(raw)) {
+		t.Fatalf("current registry YAML drift:\n got:\n%s\nwant:\n%s", marshaled, raw)
+	}
+}
+
+func TestRegistryStore_LegacyYAMLFixture(t *testing.T) {
+	wantStartedAt := recordMappingStartedAt()
+	want := Record{
+		ID:            "legacy-agent",
+		TaskID:        "legacy-task",
+		Mode:          "headless",
+		Provider:      "claude",
+		PID:           23456,
+		SessionID:     "legacy-session",
+		LogPath:       "/tmp/sybra/agents/legacy-agent.ndjson",
+		CWD:           "/tmp/sybra/worktrees/legacy-task",
+		StartedAt:     wantStartedAt,
+		ProcStartedAt: "Mon Jun 28 20:30:00 2026",
+	}
+
+	var got Record
+	if err := yaml.Unmarshal(readRegistryFixture(t, "registry_legacy.yaml"), &got); err != nil {
+		t.Fatalf("unmarshal legacy registry fixture: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy registry fixture mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+
+	restored := fromRecord(got)
+	if restored.ID != want.ID || restored.TaskID != want.TaskID || restored.Mode != want.Mode ||
+		restored.Provider != want.Provider || restored.PID != want.PID ||
+		restored.SessionID != want.SessionID || restored.LogPath != want.LogPath ||
+		restored.sessionCWD != want.CWD || !restored.StartedAt.Equal(wantStartedAt) {
+		t.Fatalf("legacy registry reattach skeleton mismatch: %+v", restored)
+	}
+}
+
+func recordMappingStartedAt() time.Time {
+	return time.Date(2026, 6, 28, 20, 30, 0, 0, time.UTC)
+}
+
+func recordMappingAgent(started time.Time) *Agent {
+	return &Agent{
+		ID:              "a-map",
+		TaskID:          "task-map",
+		Name:            "mapper",
+		Mode:            "interactive",
+		Provider:        "codex",
+		Model:           "gpt-5.3-codex",
+		ExperimentID:    "exp-1",
+		VariantID:       "variant-a",
+		AssignmentUnit:  "task",
+		AssignmentKey:   "task-map",
+		PID:             12345,
+		SessionID:       "sess-map",
+		LogPath:         "/tmp/sybra/agents/a-map.ndjson",
+		StartedAt:       started,
+		MaxTurns:        7,
+		ReasoningEffort: "high",
+	}
+}
+
+func recordMappingRecord(started time.Time) Record {
+	return Record{
+		ID:                 "a-map",
+		TaskID:             "task-map",
+		Name:               "mapper",
+		Mode:               "interactive",
+		Provider:           "codex",
+		Model:              "gpt-5.3-codex",
+		ExperimentID:       "exp-1",
+		VariantID:          "variant-a",
+		AssignmentUnit:     "task",
+		AssignmentKey:      "task-map",
+		PID:                12345,
+		SessionID:          "sess-map",
+		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
+		CWD:                "/tmp/sybra/worktrees/task-map",
+		StartedAt:          started,
+		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
+		OneShot:            true,
+		MaxTurns:           7,
+		RequirePermissions: true,
+		ReasoningEffort:    "high",
+	}
+}
+
+func readRegistryFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read registry fixture %s: %v", name, err)
+	}
+	return raw
 }
 
 func assertRecordFixtureCoversFields(t *testing.T, rec Record, ignore ...string) {
