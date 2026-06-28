@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		StartedAt:                startedAt,
 		LastEventAt:              startedAt.Add(time.Hour),
 		LogPath:                  "/tmp/sybra-agent.ndjson",
-		PID:                      424242,
+		PID:                      os.Getpid(),
 		Provider:                 "codex",
 		Model:                    "gpt-5",
 		ExperimentID:             "experiment-1",
@@ -55,6 +56,9 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("record count = %d, want 1", len(records))
+	}
+	if wantProcStartedAt := processStartString(original.PID); wantProcStartedAt != "" && records[0].ProcStartedAt != wantProcStartedAt {
+		t.Fatalf("ProcStartedAt = %q, want %q", records[0].ProcStartedAt, wantProcStartedAt)
 	}
 
 	beforeRehydrate := time.Now().UTC()
@@ -117,6 +121,15 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	}
 	if !rehydrated.detached {
 		t.Fatal("detached = false, want true")
+	}
+	if rehydrated.CostUSD != 0 ||
+		rehydrated.InputTokens != 0 ||
+		rehydrated.OutputTokens != 0 ||
+		rehydrated.CacheCreationInputTokens != 0 ||
+		rehydrated.CacheReadInputTokens != 0 ||
+		rehydrated.ReasoningTokens != 0 ||
+		rehydrated.PremiumRequests != 0 {
+		t.Fatalf("usage fields rehydrated from registry, want zero: %#v", rehydrated)
 	}
 }
 

@@ -91,6 +91,20 @@ func TestAgentJSONKeySet(t *testing.T) {
 	})
 }
 
+func TestAgentJSONZeroValueKeySet(t *testing.T) {
+	assertJSONKeys(t, Agent{}, []string{
+		"costUsd",
+		"external",
+		"id",
+		"lastEventAt",
+		"mode",
+		"sessionId",
+		"startedAt",
+		"state",
+		"taskId",
+	})
+}
+
 func TestStreamEventJSONKeySet(t *testing.T) {
 	ts := time.Date(2026, 6, 28, 20, 31, 0, 0, time.UTC)
 
@@ -136,6 +150,13 @@ func TestStreamEventJSONKeySet(t *testing.T) {
 		"subtype",
 		"timestamp",
 		"tool_calls",
+		"type",
+	})
+}
+
+func TestStreamEventJSONZeroValueKeySet(t *testing.T) {
+	assertJSONKeys(t, StreamEvent{}, []string{
+		"timestamp",
 		"type",
 	})
 }
@@ -187,6 +208,13 @@ func TestConvoEventJSONKeySet(t *testing.T) {
 		"timestamp",
 		"toolResults",
 		"toolUses",
+		"type",
+	})
+}
+
+func TestConvoEventJSONZeroValueKeySet(t *testing.T) {
+	assertJSONKeys(t, ConvoEvent{}, []string{
+		"timestamp",
 		"type",
 	})
 }
