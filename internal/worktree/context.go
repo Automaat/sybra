@@ -108,7 +108,7 @@ func addToInfoExclude(wtPath, entry string) error {
 
 func excludeWorkflowScratchFiles(wtPath string) error {
 	var errs []error
-	for _, entry := range []string{".sybra-review-*.md", ".sybra-diff-*.patch"} {
+	for _, entry := range []string{".sybra-review-*.md", ".sybra-diff-*.patch", ".sybra-plan-*.md", ".sybra-plan-*.json", ".sybra-critique-*.md"} {
 		if err := addToInfoExclude(wtPath, entry); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", entry, err))
 		}

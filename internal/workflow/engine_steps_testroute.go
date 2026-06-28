@@ -66,11 +66,41 @@ type manualProbeEvidence struct {
 	Command  string `json:"command"`
 	Expected string `json:"expected"`
 	Actual   string `json:"actual"`
+	Raw      string `json:"-"`
 }
 
 type automatedCheckEvidence struct {
 	Command string `json:"command"`
 	Actual  string `json:"actual"`
+	Raw     string `json:"-"`
+}
+
+func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
+	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+		e.Raw = raw
+		return err
+	}
+	type alias manualProbeEvidence
+	return json.Unmarshal(data, (*alias)(e))
+}
+
+func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
+	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+		e.Raw = raw
+		return err
+	}
+	type alias automatedCheckEvidence
+	return json.Unmarshal(data, (*alias)(e))
+}
+
+func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		return s, true, nil
+	} else if strings.HasPrefix(strings.TrimSpace(string(data)), `"`) {
+		return "", true, err
+	}
+	return "", false, nil
 }
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -330,6 +360,9 @@ func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 			strings.TrimSpace(p.Actual) != "" {
 			return true
 		}
+		if hasRawManualProbeEvidence(p.Raw) {
+			return true
+		}
 	}
 	return false
 }
@@ -338,6 +371,9 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 	for _, c := range checks {
 		cmd := strings.ToLower(strings.TrimSpace(c.Command))
 		if cmd == "" || strings.TrimSpace(c.Actual) == "" {
+			if hasRawRegressionCheckEvidence(c.Raw) {
+				return true
+			}
 			continue
 		}
 		if containsAny(cmd,
@@ -348,6 +384,27 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 		}
 	}
 	return false
+}
+
+func hasRawManualProbeEvidence(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower, "curl ", "http://", "https://", "get ", "post ", "put ", "patch ", "delete ", "head ", "options ", "sybra-cli", "kubectl ", "go run ", "npm run ") &&
+		containsAny(lower, "->", "=>", "returned", "created", "observed", "actual")
+}
+
+func hasRawRegressionCheckEvidence(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"go test", "npm test", "npm run test", "npm run check",
+		"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
+		"sybra-cli", "go run", "curl ", "kubectl ") &&
+		containsAny(lower, "pass", "ok", "success", "no matches", "->", "=>")
 }
 
 func insertClassificationAfterFailuresHeading(report, outcome string) string {

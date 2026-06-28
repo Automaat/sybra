@@ -105,7 +105,13 @@ func TestExcludeWorkflowScratchFiles(t *testing.T) {
 	if err := excludeWorkflowScratchFiles(wt); err != nil {
 		t.Fatalf("excludeWorkflowScratchFiles: %v", err)
 	}
-	for _, file := range []string{".sybra-review-task.md", ".sybra-diff-task.patch"} {
+	for _, file := range []string{
+		".sybra-review-task.md",
+		".sybra-diff-task.patch",
+		".sybra-plan-task.md",
+		".sybra-plan-contract-task.json",
+		".sybra-critique-task.md",
+	} {
 		if err := os.WriteFile(filepath.Join(wt, file), []byte("scratch"), 0o644); err != nil {
 			t.Fatalf("write scratch file: %v", err)
 		}
