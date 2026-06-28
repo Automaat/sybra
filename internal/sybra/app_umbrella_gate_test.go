@@ -80,6 +80,31 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	}
 }
 
+func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	reason := "auto-review: Sybra bug isolated (local task abc123; issue filing failed)"
+	if _, err := m.Update(tracker.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		t.Fatalf("block tracker: %v", err)
+	}
+	mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
+
+	app.releaseUnblockedChildren()
+
+	got := mustTask(t, m, tracker.ID)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("tracker status = %q, want blocked", got.Status)
+	}
+	if got.StatusReason != reason {
+		t.Fatalf("tracker status_reason = %q, want %q", got.StatusReason, reason)
+	}
+}
+
 func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
