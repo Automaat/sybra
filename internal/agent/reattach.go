@@ -58,7 +58,7 @@ func (m *Manager) ReattachAll() []*Agent {
 		if r.Mode == "interactive" {
 			// codex and copilot are per-turn conversational agents recreated
 			// on restart; claude interactive reattaches to its live process.
-			if p := normalizeProvider(r.Provider); p == "codex" || p == "copilot" {
+			if providerByName(r.Provider).UsesPerTurnConvo() {
 				if a := m.reattachPerTurnConvo(r, reg); a != nil {
 					out = append(out, a)
 				}
@@ -396,7 +396,7 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		return 0
 	}
 
-	provider := normalizeProvider(a.Provider)
+	provider := providerByName(a.Provider)
 	var offset int64
 	start := 0
 	for i := range data {

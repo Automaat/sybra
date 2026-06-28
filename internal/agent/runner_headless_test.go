@@ -108,7 +108,7 @@ func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
 	lastEmit := time.Now().Add(-time.Minute)
 	line := []byte(`{"timestamp":"2026-06-19T12:40:08.052Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":12,"window_minutes":300,"resets_at":1781877547},"plan_type":"pro"}}}`)
 
-	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, "codex"); stop {
+	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("codex")); stop {
 		t.Fatal("limit snapshot event must not stop the stream")
 	}
 	if len(snapshots) != 1 {

@@ -28,7 +28,7 @@ func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, e
 	}
 	defer func() { _ = f.Close() }()
 
-	prov := normalizeProvider(provider)
+	prov := providerByName(provider)
 	var events []StreamEvent
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)

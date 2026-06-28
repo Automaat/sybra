@@ -749,6 +749,10 @@ type RunConfig struct {
 	// Only effective for claude headless runs when AllowedTools is empty and
 	// RequirePermissions is false.
 	HeadlessPermissionMode string
+	// provider is the implementation selected once at run start after health
+	// gates and failover. Replay paths that do not have RunConfig resolve from
+	// the persisted provider string instead.
+	provider Provider
 }
 
 // PermissionDenial records a single auto-mode classifier denial observed during

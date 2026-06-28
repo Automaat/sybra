@@ -309,17 +309,19 @@ func resultConvoStreamError(streamEvents []ConvoEvent) error {
 // buildPerTurnConvoArgs returns the binary name and argv for one per-turn
 // conversational turn, dispatching on the agent's provider.
 func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string) {
-	if normalizeProvider(a.Provider) == "copilot" {
-		return "copilot", buildCopilotConvoArgs(a, prompt)
-	}
-	return "codex", buildCodexConvoArgs(a, cfg, prompt)
+	inv := providerForInvocation(a, cfg).BuildPerTurnConvoInvocation(a, cfg, prompt)
+	return inv.bin, inv.args
 }
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
+	return buildCodexConvoArgsWithProvider(a, cfg, prompt, providerByName("codex"))
+}
+
+func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, provider Provider) []string {
 	args := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	// headless=false: interactive (conversational) mode has a human present
 	// who can approve sandbox prompts via the UI.
-	args = append(args, codexSandboxArgs(cfg.RequirePermissions, false)...)
+	args = append(args, provider.SandboxArgs(cfg.RequirePermissions, false)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -443,21 +445,10 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 }
 
 // parseConvoEvent parses one per-turn NDJSON line into a ConvoEvent using the
-// provider-appropriate parser. Only codex/copilot use the per-turn path
-// (claude conversational is handled in runner_convo.go), so the default is codex.
+// provider-appropriate parser. Only codex/copilot use the per-turn path;
+// claude conversational is handled in runner_convo.go.
 func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
-	if normalizeProvider(provider) == "copilot" {
-		ce, err := ParseCopilotLine(line)
-		if err != nil {
-			return ConvoEvent{}, err
-		}
-		return copilotEventToConvoEvent(ce), nil
-	}
-	ce, err := ParseCodexLine(line)
-	if err != nil {
-		return ConvoEvent{}, err
-	}
-	return codexEventToConvoEvent(ce), nil
+	return providerByName(provider).ParseConvoLine(line)
 }
 
 // rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
