@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -45,12 +46,35 @@ func BuiltinDefinitions() ([]Definition, error) {
 //   - If a stored version exists with Builtin=true and its semantic content
 //     differs from the embedded version, it is overwritten. This repairs
 //     drift from older app versions that seeded now-broken definitions.
+//   - If a stored version is Builtin=true but no longer exists in the embedded
+//     set, it is deleted. This prevents retired built-ins from continuing to
+//     match triggers with stale prompts or sidecar contracts.
 //   - If a stored version exists with Builtin=false (user cleared the flag
 //     to opt out of sync), it is preserved.
 func SyncBuiltins(store *Store) error {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		return err
+	}
+	current := make(map[string]struct{}, len(defs))
+	for i := range defs {
+		current[defs[i].ID] = struct{}{}
+	}
+	stored, err := store.List()
+	if err != nil {
+		return fmt.Errorf("list workflows for builtin sync: %w", err)
+	}
+	var pruneErr error
+	for i := range stored {
+		if !stored[i].Builtin {
+			continue
+		}
+		if _, ok := current[stored[i].ID]; ok {
+			continue
+		}
+		if dErr := store.Delete(stored[i].ID); dErr != nil {
+			pruneErr = errors.Join(pruneErr, fmt.Errorf("prune obsolete builtin %s: %w", stored[i].ID, dErr))
+		}
 	}
 	for i := range defs {
 		existing, getErr := store.Get(defs[i].ID)
@@ -73,7 +97,7 @@ func SyncBuiltins(store *Store) error {
 			return fmt.Errorf("sync builtin %s: %w", defs[i].ID, sErr)
 		}
 	}
-	return nil
+	return pruneErr
 }
 
 // builtinsEqual compares two definitions ignoring timestamps. Timestamps are
