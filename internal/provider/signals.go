@@ -73,9 +73,9 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 		containsAny(content, "not logged in", "please run: codex login") {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded") ||
+	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
-			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded") {
+			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0

@@ -133,6 +133,7 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Status = status
+	t.StatusReason = reason
 	m.reasons[id] = reason
 	return nil
 }
@@ -775,6 +776,87 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	}
 }
 
+func TestTriageRetryableReasonTreatsCompletedRunAsFailed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ti.StatusReason = triageRetryableStatusReasonPrefix + "classifier failed: exit status 1"
+	tasks.Put(ti)
+
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	triageCalls := 0
+	for _, c := range agents.calls {
+		if c.Role == "triage" {
+			triageCalls++
+		}
+	}
+	if triageCalls != 2 {
+		t.Fatalf("triage calls = %d, want retry to start a second triage agent", triageCalls)
+	}
+	ti, _ = tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Fatal("retryable classifier failure escalated to human-required")
+	}
+	if ti.Workflow.CurrentStep != "triage" {
+		t.Fatalf("current step = %q, want retrying triage", ti.Workflow.CurrentStep)
+	}
+}
+
+func TestTriageRetryableExhaustionBlocksNonHuman(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	reason := triageRetryableStatusReasonPrefix + "classifier failed: provider unavailable"
+	for range 4 {
+		ti, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ti.StatusReason = reason
+		tasks.Put(ti)
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked after retry exhaustion", ti.Status)
+	}
+	if ti.Status == "human-required" {
+		t.Fatal("retryable classifier exhaustion escalated to human-required")
+	}
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want failed", ti.Workflow.State)
+	}
+	if got := tasks.Reason("t1"); got != reason {
+		t.Fatalf("reason = %q, want %q", got, reason)
+	}
+}
+
 func TestMatchWorkflow_ReviewTag(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -960,14 +1042,22 @@ func TestHasActiveWorkflow(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
-	tasks.Put(TaskInfo{ID: "running", Status: "in-progress",
-		Workflow: &Execution{WorkflowID: "x", State: ExecRunning}})
-	tasks.Put(TaskInfo{ID: "waiting", Status: "in-progress",
-		Workflow: &Execution{WorkflowID: "x", State: ExecWaiting}})
-	tasks.Put(TaskInfo{ID: "completed", Status: "done",
-		Workflow: &Execution{WorkflowID: "x", State: ExecCompleted}})
-	tasks.Put(TaskInfo{ID: "failed", Status: "human-required",
-		Workflow: &Execution{WorkflowID: "x", State: ExecFailed}})
+	tasks.Put(TaskInfo{
+		ID: "running", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", State: ExecRunning},
+	})
+	tasks.Put(TaskInfo{
+		ID: "waiting", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", State: ExecWaiting},
+	})
+	tasks.Put(TaskInfo{
+		ID: "completed", Status: "done",
+		Workflow: &Execution{WorkflowID: "x", State: ExecCompleted},
+	})
+	tasks.Put(TaskInfo{
+		ID: "failed", Status: "human-required",
+		Workflow: &Execution{WorkflowID: "x", State: ExecFailed},
+	})
 
 	cases := []struct {
 		id   string
@@ -997,15 +1087,19 @@ func TestCancelWorkflow(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "active", Status: "in-progress",
+	tasks.Put(TaskInfo{
+		ID: "active", Status: "in-progress",
 		Workflow: &Execution{
 			WorkflowID:  "pr-fix",
 			CurrentStep: "fix",
 			State:       ExecWaiting,
 			Variables:   map[string]string{"pr_issue_kind": "ci_failure"},
-		}})
-	tasks.Put(TaskInfo{ID: "completed", Status: "done",
-		Workflow: &Execution{WorkflowID: "pr-fix", State: ExecCompleted}})
+		},
+	})
+	tasks.Put(TaskInfo{
+		ID: "completed", Status: "done",
+		Workflow: &Execution{WorkflowID: "pr-fix", State: ExecCompleted},
+	})
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 
 	// Pretend an agent is running for "active" so we can verify it's stopped.
@@ -3267,8 +3361,10 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 func TestExecVerifyCommits_ParksWhileSiblingRunning(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
-		Workflow: &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}})
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning},
+	})
 	agents := newMockAgents()
 	agents.mu.Lock()
 	agents.running["t1"] = "sibling" // a different agent than the completer
@@ -3351,8 +3447,10 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress",
-		Workflow: &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}})
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress",
+		Workflow: &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning},
+	})
 	agents := newMockAgents()
 	agents.mu.Lock()
 	agents.running["t1"] = "sibling"
@@ -4106,8 +4204,10 @@ func TestExecLinkPRAndReview_FullURLInAgentOutput(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 	wfExec := &Execution{
 		StepHistory: []StepRecord{
-			{StepID: "implement", Status: "completed", AgentID: "a1",
-				Output: "PR created: https://github.com/owner/repo/pull/123"},
+			{
+				StepID: "implement", Status: "completed", AgentID: "a1",
+				Output: "PR created: https://github.com/owner/repo/pull/123",
+			},
 		},
 	}
 
@@ -4135,8 +4235,10 @@ func TestExecLinkPRAndReview_ShortRefInAgentOutput(t *testing.T) {
 	engine := newEngineForEval(t, tasks)
 	wfExec := &Execution{
 		StepHistory: []StepRecord{
-			{StepID: "implement", Status: "completed", AgentID: "a1",
-				Output: "PR created: Automaat/sybra#444\n\nChanges applied."},
+			{
+				StepID: "implement", Status: "completed", AgentID: "a1",
+				Output: "PR created: Automaat/sybra#444\n\nChanges applied.",
+			},
 		},
 	}
 
