@@ -1,15 +1,16 @@
 package agent
 
 import (
+	"fmt"
 	"io"
 	"sync"
 )
 
+// convoIO owns the conversational agent transport plus the existing
+// prompt/restart bookkeeping mechanically extracted from Agent.
 type convoIO struct {
 	stdinPipe io.WriteCloser
 	stdinMu   sync.Mutex
-
-	approvalCh chan ApprovalResponse
 
 	// stdinPath is the FIFO backing a detached conversational agent's stdin,
 	// reopened on reattach so follow-up messages survive a restart. Empty for
@@ -27,10 +28,15 @@ type convoIO struct {
 	promptCh chan string
 }
 
-func (c *convoIO) setStdinPipe(pipe io.WriteCloser) {
+func (c *convoIO) installStdinPipe(pipe io.WriteCloser) error {
 	c.stdinMu.Lock()
+	defer c.stdinMu.Unlock()
+
+	if c.stdinPipe != nil {
+		return fmt.Errorf("stdin pipe already installed")
+	}
 	c.stdinPipe = pipe
-	c.stdinMu.Unlock()
+	return nil
 }
 
 func (c *convoIO) replaceStdinPipe(pipe io.WriteCloser) {
@@ -40,6 +46,21 @@ func (c *convoIO) replaceStdinPipe(pipe io.WriteCloser) {
 	}
 	c.stdinPipe = pipe
 	c.stdinMu.Unlock()
+}
+
+func (c *convoIO) writeStdin(data []byte) error {
+	c.stdinMu.Lock()
+	defer c.stdinMu.Unlock()
+
+	if c.stdinPipe == nil {
+		return fmt.Errorf("stdin pipe closed")
+	}
+	// A write larger than the pipe buffer can block under stdinMu until the
+	// child drains stdin; keep stdinPipe ownership here so callers cannot race.
+	if _, err := c.stdinPipe.Write(data); err != nil {
+		return fmt.Errorf("write stdin: %w", err)
+	}
+	return nil
 }
 
 func (c *convoIO) closeStdinPipe() {

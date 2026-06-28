@@ -990,7 +990,9 @@ func captureStdinAgent(t *testing.T, m *Manager, id, taskID string) (ag *Agent, 
 		Name:   "plan:Test",
 		Mode:   "interactive",
 		State:  StatePaused,
-		convo:  convoIO{stdinPipe: w},
+	}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
 	}
 	putAgent(t, m, a)
 

@@ -64,7 +64,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 	if *outFile == nil {
 		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
 		if fileErr != nil {
-			_ = fifo.Close()
+			a.convo.closeStdinPipe()
 			return nil, fmt.Errorf("open agent log: %w", fileErr)
 		}
 		a.SetLogPath(f.Name())
@@ -79,7 +79,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 	}
 
 	if startErr := cmd.Start(); startErr != nil {
-		_ = fifo.Close()
+		a.convo.closeStdinPipe()
 		if stderrF != nil {
 			_ = stderrF.Close()
 		}
@@ -399,7 +399,10 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	if !oneShot {
 		if sp := a.GetStdinPath(); sp != "" {
 			if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
-				a.convo.setStdinPipe(fifo)
+				if installErr := a.convo.installStdinPipe(fifo); installErr != nil {
+					_ = fifo.Close()
+					m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", installErr)
+				}
 			} else {
 				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
 			}

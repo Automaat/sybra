@@ -638,12 +638,6 @@ func (a *Agent) hasPromptChannel() bool {
 	return a.convo.promptCh != nil
 }
 
-func (a *Agent) setApprovalChannel(ch chan ApprovalResponse) {
-	a.mu.Lock()
-	a.convo.approvalCh = ch
-	a.mu.Unlock()
-}
-
 // setDetached marks whether the agent's subprocess is detached for
 // restart survival.
 func (a *Agent) setDetached(v bool) {

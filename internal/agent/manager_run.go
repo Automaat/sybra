@@ -160,7 +160,6 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 			a.setPromptChannel(make(chan string, 1))
 			go m.runPerTurnConversational(ctx, a, cfg, false)
 		} else {
-			a.setApprovalChannel(make(chan ApprovalResponse, 1))
 			go m.runConversational(ctx, a, cfg)
 		}
 	default:
