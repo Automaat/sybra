@@ -66,13 +66,17 @@ type manualProbeEvidence struct {
 	Command  string `json:"command"`
 	Expected string `json:"expected"`
 	Actual   string `json:"actual"`
+	Output   string `json:"output"`
+	Observed string `json:"observed"`
 	Raw      string `json:"-"`
 }
 
 type automatedCheckEvidence struct {
-	Command string `json:"command"`
-	Actual  string `json:"actual"`
-	Raw     string `json:"-"`
+	Command  string `json:"command"`
+	Actual   string `json:"actual"`
+	Output   string `json:"output"`
+	Observed string `json:"observed"`
+	Raw      string `json:"-"`
 }
 
 func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
@@ -356,8 +360,7 @@ func taskHasAnyTag(t TaskInfo, tags ...string) bool {
 func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 	for _, p := range probes {
 		if strings.TrimSpace(p.Command) != "" &&
-			strings.TrimSpace(p.Expected) != "" &&
-			strings.TrimSpace(p.Actual) != "" {
+			observedEvidenceText(p.Actual, p.Output, p.Observed) != "" {
 			return true
 		}
 		if hasRawManualProbeEvidence(p.Raw) {
@@ -370,7 +373,7 @@ func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 	for _, c := range checks {
 		cmd := strings.ToLower(strings.TrimSpace(c.Command))
-		if cmd == "" || strings.TrimSpace(c.Actual) == "" {
+		if cmd == "" || observedEvidenceText(c.Actual, c.Output, c.Observed) == "" {
 			if hasRawRegressionCheckEvidence(c.Raw) {
 				return true
 			}
@@ -384,6 +387,15 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 		}
 	}
 	return false
+}
+
+func observedEvidenceText(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func hasRawManualProbeEvidence(raw string) bool {

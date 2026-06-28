@@ -422,6 +422,30 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_object_output_aliases",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","output":"HTTP 200 ok"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_object_observed_aliases",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","expected":"HTTP 200","observed":"HTTP 200 ok"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","observed":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:   "plain_text_pass_with_manual_evidence",
 			status: "completed",
 			output: "surface_kind: server\n" +
