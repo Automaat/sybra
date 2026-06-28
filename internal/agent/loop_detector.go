@@ -3,7 +3,7 @@ package agent
 import "sync"
 
 type loopDetector struct {
-	mu sync.RWMutex
+	mu sync.Mutex
 
 	// Empty signatures preserve streaks. Ack suppresses only the current
 	// non-empty signature; a different signature re-arms loop detection.
@@ -30,8 +30,8 @@ func (d *loopDetector) noteSignature(sig string) int {
 }
 
 func (d *loopDetector) currentStreak() int {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.streak
 }
 
@@ -42,7 +42,7 @@ func (d *loopDetector) ack() {
 }
 
 func (d *loopDetector) acknowledged() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.ackSig != "" && d.ackSig == d.lastSig
 }
