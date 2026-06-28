@@ -657,7 +657,7 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasObserved := containsAny(lower,
 		"actual output:", "actual:", "observed:", "observed output:",
 		"command output:", "stdout:", "stderr:", "exit code",
-		"printed:", "rendered:") || hasReportLinePrefix(report, "output:")
+		"verbatim output:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
 	hasExpected := containsAny(lower,
 		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
 		"violates", "should render", "should not")

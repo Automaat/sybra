@@ -198,6 +198,27 @@ func TestStructuredFailureOutcomeInsertedAfterParenthesizedHeading(t *testing.T)
 	}
 }
 
+func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
+	t.Parallel()
+
+	report := "## Test Failures\n\n" +
+		"### product_bug: parser rejects valid evidence\n\n" +
+		"**Command run:**\n\n```bash\ngo test ./internal/workflow\n```\n\n" +
+		"**Verbatim output:**\n\n```text\n--- FAIL: TestEvidence\n```\n\n" +
+		"**Expected behaviour:** The task says grounded product defects route back to implementation.\n\n" +
+		"**Actual behaviour:** The task escalated to human-required.\n\n" +
+		"**Code evidence:**\n\n```text\ninternal/workflow/engine_steps_testroute.go:659\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	got, fingerprint := classifyTestOutcome("completed", payload, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if got != testOutcomeProductBug {
+		t.Fatalf("outcome = %q, want %q", got, testOutcomeProductBug)
+	}
+	if fingerprint == "" {
+		t.Fatal("fingerprint is empty")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 
