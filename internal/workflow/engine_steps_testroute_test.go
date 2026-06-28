@@ -497,6 +497,19 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_rejects_vague_browser_scalar_probe",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev -- --host 127.0.0.1",` +
+				`"readiness_probe":"opened http://127.0.0.1:5173 and app shell rendered",` +
+				`"manual_probes":"browser saw nothing",` +
+				`"automated_checks":"npm run check -> pass","unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:   "pass_with_browser_ui_string_probe",
 			status: "completed",
 			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
@@ -533,6 +546,17 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_mixed_library_web_surface_requires_manual_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library web UI","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"ok"}],"unable_to_run_reason":"pure library check"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "pass_with_library_exemption_rejects_negated_scalar_check",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,` +
+				`"start_command":"","readiness_probe":"","manual_probes":[],` +
+				`"automated_checks":"unit tests were not run; pass assumed","unable_to_run_reason":"pure internal-library refactor"}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
