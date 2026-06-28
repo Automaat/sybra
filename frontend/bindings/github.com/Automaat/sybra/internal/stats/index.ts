@@ -5,5 +5,6 @@ export {
     GroupedStat,
     RunRecord,
     StatsResponse,
-    Summary
+    Summary,
+    TaskSeriesPoint
 } from "./models.js";

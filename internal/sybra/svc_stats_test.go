@@ -1,7 +1,12 @@
 package sybra
 
 import (
+	"encoding/json"
 	"math"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +57,125 @@ func TestAggregateTasksDone(t *testing.T) {
 	// ThisMonth (since June 1): t1, t2, t3
 	if resp.ThisMonth.TasksDone != 3 {
 		t.Errorf("ThisMonth: got %d, want 3", resp.ThisMonth.TasksDone)
+	}
+}
+
+func TestClosedTasksDaily(t *testing.T) {
+	loc := time.FixedZone("app", 2*60*60)
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, loc)
+	closedMorning := time.Date(2026, 6, 14, 8, 0, 0, 0, time.UTC)
+	closedEvening := time.Date(2026, 6, 14, 18, 0, 0, 0, time.UTC)
+	updatedFallback := time.Date(2026, 6, 13, 10, 0, 0, 0, time.UTC)
+	oldUpdated := time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC)
+	preferredClosed := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
+
+	list := []task.Task{
+		{Status: task.StatusDone, UpdatedAt: closedMorning},
+		{Status: task.StatusDone, UpdatedAt: closedEvening},
+		{Status: task.StatusDone, UpdatedAt: updatedFallback},
+		{Status: task.StatusDone, UpdatedAt: oldUpdated, ClosedAt: &preferredClosed},
+		{Status: task.StatusInProgress, UpdatedAt: now},
+	}
+
+	got := closedTasksDaily(list, now)
+	want := []stats.TaskSeriesPoint{
+		{Date: "2026-06-13", Count: 1},
+		{Date: "2026-06-14", Count: 2},
+		{Date: "2026-06-15", Count: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("closedTasksDaily() = %+v, want %+v", got, want)
+	}
+}
+
+func TestClosedTasksDailyEmpty(t *testing.T) {
+	got := closedTasksDaily(nil, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("closedTasksDaily(nil) = %+v, want empty", got)
+	}
+}
+
+func TestClosedTasksDailyUsesBackendLocalDateKeys(t *testing.T) {
+	loc := time.FixedZone("app", 2*60*60)
+	now := time.Date(2026, 6, 2, 12, 0, 0, 0, loc)
+	closed := time.Date(2026, 6, 1, 22, 30, 0, 0, time.UTC)
+	list := []task.Task{{Status: task.StatusDone, UpdatedAt: time.Date(2026, 6, 1, 1, 0, 0, 0, time.UTC), ClosedAt: &closed}}
+
+	got := closedTasksDaily(list, now)
+	want := []stats.TaskSeriesPoint{{Date: "2026-06-02", Count: 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("closedTasksDaily() = %+v, want %+v", got, want)
+	}
+}
+
+func TestStatsServiceGetStatsAssignsClosedTasksDaily(t *testing.T) {
+	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := t.TempDir()
+	taskStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+
+	closed := time.Now().Add(-1 * time.Hour)
+	writeStatsTask(t, tasksDir, task.Task{
+		ID:        "done",
+		Title:     "done task",
+		Status:    task.StatusDone,
+		TaskType:  task.TaskTypeNormal,
+		AgentMode: task.AgentModeHeadless,
+		CreatedAt: closed.Add(-1 * time.Hour),
+		UpdatedAt: closed.Add(-30 * time.Minute),
+		ClosedAt:  &closed,
+	})
+	writeStatsTask(t, tasksDir, task.Task{
+		ID:        "todo",
+		Title:     "todo task",
+		Status:    task.StatusTodo,
+		TaskType:  task.TaskTypeNormal,
+		AgentMode: task.AgentModeHeadless,
+		CreatedAt: closed,
+		UpdatedAt: closed,
+	})
+
+	resp := (&StatsService{stats: statsStore, tasks: taskMgr}).GetStats()
+	want := []stats.TaskSeriesPoint{{Date: closed.In(time.Now().Location()).Format(time.DateOnly), Count: 1}}
+	if !reflect.DeepEqual(resp.ClosedTasksDaily, want) {
+		t.Fatalf("ClosedTasksDaily = %+v, want %+v", resp.ClosedTasksDaily, want)
+	}
+	if resp.AllTime.TasksDone != 1 {
+		t.Fatalf("AllTime.TasksDone = %d, want 1", resp.AllTime.TasksDone)
+	}
+}
+
+func TestStatsServiceGetStatsKeepsClosedTasksDailyArrayWhenTaskListFails(t *testing.T) {
+	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := t.TempDir()
+	taskStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+	if err := os.RemoveAll(tasksDir); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := (&StatsService{stats: statsStore, tasks: taskMgr}).GetStats()
+	if resp.ClosedTasksDaily == nil {
+		t.Fatal("ClosedTasksDaily is nil, want empty slice")
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"closedTasksDaily":[]`) {
+		t.Fatalf("marshaled response = %s, want closedTasksDaily array", data)
 	}
 }
 
@@ -146,6 +270,17 @@ func find(t *testing.T, gs []stats.GroupedStat, key string) stats.Summary {
 	}
 	t.Fatalf("no bucket with key %q in %+v", key, gs)
 	return stats.Summary{}
+}
+
+func writeStatsTask(t *testing.T, dir string, tk task.Task) {
+	t.Helper()
+	data, err := task.Marshal(tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, tk.ID+".md"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func nearly(a, b float64) bool { return math.Abs(a-b) < 1e-9 }

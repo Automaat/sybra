@@ -64,18 +64,25 @@ type GroupedStat struct {
 	Stats Summary `json:"stats"`
 }
 
+// TaskSeriesPoint is a daily task-count bucket for time-series charts.
+type TaskSeriesPoint struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
 // StatsResponse is the full analytics payload returned to the frontend.
 type StatsResponse struct {
-	Today         Summary         `json:"today"`
-	ThisWeek      Summary         `json:"thisWeek"`
-	ThisMonth     Summary         `json:"thisMonth"`
-	AllTime       Summary         `json:"allTime"`
-	ByProject     []GroupedStat   `json:"byProject"`
-	ByProjectType []GroupedStat   `json:"byProjectType"`
-	ByMode        []GroupedStat   `json:"byMode"`
-	ByRole        []GroupedStat   `json:"byRole"`
-	ByModel       []GroupedStat   `json:"byModel"`
-	ByProvider    []GroupedStat   `json:"byProvider"`
-	RecentRuns    []RunRecord     `json:"recentRuns"`
-	Limits        *limits.Summary `json:"limits,omitempty"`
+	Today            Summary           `json:"today"`
+	ThisWeek         Summary           `json:"thisWeek"`
+	ThisMonth        Summary           `json:"thisMonth"`
+	AllTime          Summary           `json:"allTime"`
+	ByProject        []GroupedStat     `json:"byProject"`
+	ByProjectType    []GroupedStat     `json:"byProjectType"`
+	ByMode           []GroupedStat     `json:"byMode"`
+	ByRole           []GroupedStat     `json:"byRole"`
+	ByModel          []GroupedStat     `json:"byModel"`
+	ByProvider       []GroupedStat     `json:"byProvider"`
+	RecentRuns       []RunRecord       `json:"recentRuns"`
+	ClosedTasksDaily []TaskSeriesPoint `json:"closedTasksDaily"`
+	Limits           *limits.Summary   `json:"limits,omitempty"`
 }
