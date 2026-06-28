@@ -654,7 +654,8 @@ func (a *Agent) lastConvoResult() (found, isError bool) {
 	defer a.mu.RUnlock()
 	for i := range slices.Backward(a.convoBuffer) {
 		if a.convoBuffer[i].Type == "result" {
-			return true, a.convoBuffer[i].Subtype == "error"
+			e := a.convoBuffer[i]
+			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
 		}
 	}
 	return false, false

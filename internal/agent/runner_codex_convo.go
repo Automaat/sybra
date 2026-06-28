@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -263,17 +264,46 @@ func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 		prevLen = len(all)
 	}
 	attemptEvents := all[prevLen:]
+	if streamErr := resultConvoStreamError(attemptEvents); waitErr == nil && streamErr != nil {
+		waitErr = streamErr
+	}
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "provider", a.Provider, "err", waitErr)
 		a.SetExitErr(waitErr)
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "provider", a.Provider, "stderr", stderrOut)
 	}
-	return gotResult
+	return gotResult && a.GetExitErr() == nil
+}
+
+func resultConvoStreamError(streamEvents []ConvoEvent) error {
+	for i := range slices.Backward(streamEvents) {
+		e := streamEvents[i]
+		if e.Type != "result" {
+			continue
+		}
+		if e.ErrorStatus != 0 || e.ErrorType != "" || resultSubtypeIsError(e.Subtype) {
+			if e.ErrorStatus != 0 && e.ErrorType != "" {
+				return fmt.Errorf("provider result error %s (%d)", e.ErrorType, e.ErrorStatus)
+			}
+			if e.ErrorStatus != 0 {
+				return fmt.Errorf("provider result error status %d", e.ErrorStatus)
+			}
+			if e.ErrorType == "" {
+				return fmt.Errorf("provider result error")
+			}
+			return fmt.Errorf("provider result error %s", e.ErrorType)
+		}
+		return nil
+	}
+	return nil
 }
 
 // buildPerTurnConvoArgs returns the binary name and argv for one per-turn
