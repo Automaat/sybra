@@ -9,7 +9,11 @@ import (
 // merge into cmd.Env (Bash tool timeout for claude is delivered this way —
 // claude has no CLI flag for it).
 func buildHeadlessInvocation(a *Agent, cfg RunConfig) (name string, args, env []string, command string, err error) {
-	prov := providerForInvocation(a, cfg)
+	prov, providerErr := providerForInvocation(a, cfg)
+	if providerErr != nil {
+		err = providerErr
+		return
+	}
 	for _, tool := range cfg.AllowedTools {
 		if !safeArgRe.MatchString(tool) {
 			err = fmt.Errorf("invalid tool %q: must match %s", tool, safeArgRe)

@@ -261,8 +261,15 @@ func (m *Manager) SetMaxConcurrent(n int) {
 }
 
 func (m *Manager) SetDefaultProvider(name string) {
+	prov, err := lookupProvider(name)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("agent.default_provider.invalid", "provider", name, "err", err)
+		}
+		return
+	}
 	m.mu.Lock()
-	m.defaultProv = normalizeProvider(name)
+	m.defaultProv = prov.Name()
 	m.mu.Unlock()
 }
 
@@ -342,7 +349,14 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 		name = m.defaultProv
 	}
 	m.mu.RUnlock()
-	resolved := normalizeProvider(name)
+	prov, err := lookupProvider(name)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("agent.failover.provider", "provider", name, "err", err)
+		}
+		return false
+	}
+	resolved := prov.Name()
 	healthy := func(p string) bool {
 		return g == nil || g.IsHealthy(p)
 	}

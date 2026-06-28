@@ -119,7 +119,11 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	// removed after cmd.Wait() returns (subprocess has exited), so there is no
 	// read-after-delete risk. os.CreateTemp gives a unique name per attempt so
 	// concurrent agents or retries never collide.
-	if providerForInvocation(a, cfg).SupportsOutputSchema() && cfg.OutputSchema != "" {
+	prov, err := providerForInvocation(a, cfg)
+	if err != nil {
+		return false, err
+	}
+	if prov.SupportsOutputSchema() && cfg.OutputSchema != "" {
 		f, schemaErr := os.CreateTemp("", "sybra-codex-schema-*.json")
 		if schemaErr != nil {
 			return false, fmt.Errorf("create codex output schema: %w", schemaErr)
@@ -389,7 +393,12 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 
 	var buf []byte
 	var lastEmit time.Time
-	prov := providerByName(a.Provider)
+	prov, providerErr := lookupProvider(a.Provider)
+	if providerErr != nil {
+		m.logger.Error("agent.headless.tail.provider", "id", a.ID, "provider", a.Provider, "err", providerErr)
+		a.SetError("provider", providerErr.Error())
+		return true, offset
+	}
 
 	// end is the byte position after the last complete line consumed: total
 	// bytes read minus any trailing partial line still buffered. Resuming a
@@ -488,7 +497,12 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 	scanner := bufio.NewScanner(tracked)
 	scanner.Buffer(make([]byte, 0, headlessScannerBuffer), headlessScannerBuffer)
 	var lastEmit time.Time
-	prov := providerByName(a.Provider)
+	prov, providerErr := lookupProvider(a.Provider)
+	if providerErr != nil {
+		m.logger.Error("agent.headless.stream.provider", "id", a.ID, "provider", a.Provider, "err", providerErr)
+		a.SetError("provider", providerErr.Error())
+		return
+	}
 	for scanner.Scan() {
 		line := scanner.Bytes()
 

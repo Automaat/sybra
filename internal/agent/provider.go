@@ -44,7 +44,11 @@ func (baseProvider) SupportsOutputSchema() bool { return false }
 func (baseProvider) UsesPerTurnConvo() bool { return false }
 
 func (baseProvider) BuildPerTurnConvoInvocation(a *Agent, _ RunConfig, _ string) perTurnConvoInvocation {
-	return perTurnConvoInvocation{bin: providerByName(a.Provider).Name()}
+	bin := strings.ToLower(strings.TrimSpace(a.Provider))
+	if bin == "" {
+		bin = "claude"
+	}
+	return perTurnConvoInvocation{bin: bin}
 }
 
 func (baseProvider) ParseConvoLine([]byte) (ConvoEvent, error) {
@@ -59,15 +63,23 @@ func registerAgentProvider(p Provider) {
 	agentProviders[p.Name()] = p
 }
 
-func providerByName(name string) Provider {
+func lookupProvider(name string) (Provider, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		key = "claude"
+	}
 	if p, ok := agentProviders[key]; ok {
-		return p
+		return p, nil
 	}
-	if p, ok := agentProviders["claude"]; ok {
-		return p
+	return nil, fmt.Errorf("unknown agent provider %q", name)
+}
+
+func providerByName(name string) Provider {
+	p, err := lookupProvider(name)
+	if err != nil {
+		panic(err)
 	}
-	panic("agent: claude provider not registered")
+	return p
 }
 
 func normalizeProvider(name string) string {
@@ -78,12 +90,12 @@ func normalizeModel(prov, model string) string {
 	return providerByName(prov).NormalizeModel(model)
 }
 
-func providerForInvocation(a *Agent, cfg RunConfig) Provider {
+func providerForInvocation(a *Agent, cfg RunConfig) (Provider, error) {
 	if cfg.provider != nil {
-		return cfg.provider
+		return cfg.provider, nil
 	}
 	if a != nil && a.Provider != "" {
-		return providerByName(a.Provider)
+		return lookupProvider(a.Provider)
 	}
-	return providerByName(cfg.Provider)
+	return lookupProvider(cfg.Provider)
 }

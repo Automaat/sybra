@@ -57,7 +57,10 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 	if gateErr != nil {
 		return nil, gateErr
 	}
-	prov := providerByName(resolvedProvider)
+	prov, providerErr := lookupProvider(resolvedProvider)
+	if providerErr != nil {
+		return nil, providerErr
+	}
 	cfg.provider = prov
 
 	m.mu.RLock()
@@ -179,7 +182,14 @@ func (m *Manager) markAgentDone(a *Agent) {
 }
 
 func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
-	prov := providerByName(m.providerForRun(cfg.Provider))
+	resolved, err := m.providerForRun(cfg.Provider)
+	if err != nil {
+		return "", err
+	}
+	prov, err := lookupProvider(resolved)
+	if err != nil {
+		return "", err
+	}
 	model := prov.NormalizeModel(cfg.Model)
 	if model != "" && !safeArgRe.MatchString(model) {
 		return "", fmt.Errorf("invalid model %q: must match %s", cfg.Model, safeArgRe)
@@ -197,7 +207,10 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 // peer, the peer is returned. Otherwise returns a typed UnhealthyError so
 // callers can detect via errors.Is(err, provider.ErrProviderUnhealthy).
 func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
-	resolved := m.providerForRun(cfg.Provider)
+	resolved, err := m.providerForRun(cfg.Provider)
+	if err != nil {
+		return "", err
+	}
 	if cfg.IgnoreHealthGate {
 		return resolved, nil
 	}
@@ -219,9 +232,13 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 			}
 		}
 		if alt := g.Failover(resolved); alt != "" {
-			metrics.AgentFailover(resolved, alt)
-			m.logger.Warn("agent.run.failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", g.Reason(resolved))
-			resolved = alt
+			altProv, err := lookupProvider(alt)
+			if err != nil {
+				return "", err
+			}
+			metrics.AgentFailover(resolved, altProv.Name())
+			m.logger.Warn("agent.run.failover", "from", resolved, "to", altProv.Name(), "task", cfg.TaskID, "reason", g.Reason(resolved))
+			resolved = altProv.Name()
 		} else {
 			reason := g.Reason(resolved)
 			metrics.AgentGated(resolved, reason)
@@ -263,14 +280,18 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 	}
 }
 
-func (m *Manager) providerForRun(name string) string {
+func (m *Manager) providerForRun(name string) (string, error) {
 	m.mu.RLock()
 	def := m.defaultProv
 	m.mu.RUnlock()
 	if name == "" {
 		name = def
 	}
-	return normalizeProvider(name)
+	prov, err := lookupProvider(name)
+	if err != nil {
+		return "", err
+	}
+	return prov.Name(), nil
 }
 
 // safeArgRe matches only characters safe to embed in a shell command

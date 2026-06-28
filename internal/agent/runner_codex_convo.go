@@ -229,7 +229,12 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 // `copilot -p --output-format json`) and streams output as ConvoEvents.
 // Returns true only when the turn produced a terminal result and exited cleanly.
 func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
-	bin, args := buildPerTurnConvoArgs(a, cfg, prompt)
+	bin, args, err := buildPerTurnConvoArgs(a, cfg, prompt)
+	if err != nil {
+		m.logger.Error("agent.convo.provider", "id", a.ID, "provider", a.Provider, "err", err)
+		a.SetError("provider", err.Error())
+		return false
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
@@ -308,9 +313,13 @@ func resultConvoStreamError(streamEvents []ConvoEvent) error {
 
 // buildPerTurnConvoArgs returns the binary name and argv for one per-turn
 // conversational turn, dispatching on the agent's provider.
-func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string) {
-	inv := providerForInvocation(a, cfg).BuildPerTurnConvoInvocation(a, cfg, prompt)
-	return inv.bin, inv.args
+func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string, err error) {
+	prov, err := providerForInvocation(a, cfg)
+	if err != nil {
+		return "", nil, err
+	}
+	inv := prov.BuildPerTurnConvoInvocation(a, cfg, prompt)
+	return inv.bin, inv.args, nil
 }
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
@@ -448,7 +457,11 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 // provider-appropriate parser. Only codex/copilot use the per-turn path;
 // claude conversational is handled in runner_convo.go.
 func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
-	return providerByName(provider).ParseConvoLine(line)
+	prov, err := lookupProvider(provider)
+	if err != nil {
+		return ConvoEvent{}, err
+	}
+	return prov.ParseConvoLine(line)
 }
 
 // rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
