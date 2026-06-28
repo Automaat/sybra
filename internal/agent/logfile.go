@@ -16,9 +16,8 @@ import (
 // `message.content[]` and the rendered UI shows labeled bubbles with empty
 // text (the bug fixed alongside the interactive history rewrite).
 //
-// `provider` selects the parser ("codex" → ParseCodexLine, "copilot" →
-// ParseCopilotLine, anything else → ParseClaudeLine). Pass the value from
-// AgentRun.Provider.
+// `provider` selects the parser ("claude", "codex", or "copilot"). Empty
+// means the default Claude parser. Pass the value from AgentRun.Provider.
 //
 // Malformed lines are skipped silently.
 func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, error) {
@@ -28,7 +27,10 @@ func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, e
 	}
 	defer func() { _ = f.Close() }()
 
-	prov := normalizeProvider(provider)
+	prov, providerErr := lookupProvider(provider)
+	if providerErr != nil {
+		return nil, providerErr
+	}
 	var events []StreamEvent
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)

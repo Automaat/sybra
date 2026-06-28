@@ -94,14 +94,11 @@ func (m *Manager) reportCleanProviderHealthSignalConvo(a *Agent, stderrOut strin
 // classifier. Without a copilot branch a logged-out / quota-exhausted copilot
 // would never be flagged, leaving the health gate routing failover work to it.
 func classifyProviderError(prov string, sample provider.ErrorSample) (provider.Signal, string, time.Duration) {
-	switch normalizeProvider(prov) {
-	case "codex":
-		return provider.ClassifyCodexError(sample)
-	case "copilot":
-		return provider.ClassifyCopilotError(sample)
-	default:
-		return provider.ClassifyClaudeError(sample)
+	p, err := lookupProvider(prov)
+	if err != nil {
+		return provider.SignalNone, "", 0
 	}
+	return p.ClassifyError(sample)
 }
 
 func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provider.ErrorSample {

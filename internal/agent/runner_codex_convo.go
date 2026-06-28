@@ -229,7 +229,12 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 // `copilot -p --output-format json`) and streams output as ConvoEvents.
 // Returns true only when the turn produced a terminal result and exited cleanly.
 func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
-	bin, args := buildPerTurnConvoArgs(a, cfg, prompt)
+	bin, args, err := buildPerTurnConvoArgs(a, cfg, prompt)
+	if err != nil {
+		m.logger.Error("agent.convo.provider", "id", a.ID, "provider", a.Provider, "err", err)
+		a.SetError("provider", err.Error())
+		return false
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
@@ -308,18 +313,24 @@ func resultConvoStreamError(streamEvents []ConvoEvent) error {
 
 // buildPerTurnConvoArgs returns the binary name and argv for one per-turn
 // conversational turn, dispatching on the agent's provider.
-func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string) {
-	if normalizeProvider(a.Provider) == "copilot" {
-		return "copilot", buildCopilotConvoArgs(a, prompt)
+func buildPerTurnConvoArgs(a *Agent, cfg RunConfig, prompt string) (bin string, args []string, err error) {
+	prov, err := providerForInvocation(a, cfg)
+	if err != nil {
+		return "", nil, err
 	}
-	return "codex", buildCodexConvoArgs(a, cfg, prompt)
+	inv := prov.BuildPerTurnConvoInvocation(a, cfg, prompt)
+	return inv.bin, inv.args, nil
 }
 
 func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
+	return buildCodexConvoArgsWithProvider(a, cfg, prompt, providerByName("codex"))
+}
+
+func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, provider Provider) []string {
 	args := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	// headless=false: interactive (conversational) mode has a human present
 	// who can approve sandbox prompts via the UI.
-	args = append(args, codexSandboxArgs(cfg.RequirePermissions, false)...)
+	args = append(args, provider.SandboxArgs(cfg.RequirePermissions, false)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -443,21 +454,14 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 }
 
 // parseConvoEvent parses one per-turn NDJSON line into a ConvoEvent using the
-// provider-appropriate parser. Only codex/copilot use the per-turn path
-// (claude conversational is handled in runner_convo.go), so the default is codex.
+// provider-appropriate parser. Only codex/copilot use the per-turn path;
+// claude conversational is handled in runner_convo.go.
 func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
-	if normalizeProvider(provider) == "copilot" {
-		ce, err := ParseCopilotLine(line)
-		if err != nil {
-			return ConvoEvent{}, err
-		}
-		return copilotEventToConvoEvent(ce), nil
-	}
-	ce, err := ParseCodexLine(line)
+	prov, err := lookupProvider(provider)
 	if err != nil {
 		return ConvoEvent{}, err
 	}
-	return codexEventToConvoEvent(ce), nil
+	return prov.ParseConvoLine(line)
 }
 
 // rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
