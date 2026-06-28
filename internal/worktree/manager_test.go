@@ -810,6 +810,8 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
 
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
