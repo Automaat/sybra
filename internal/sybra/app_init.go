@@ -219,7 +219,7 @@ func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Stor
 
 func (a *App) refreshLiveLimits(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
 	if err := limitStore.RefreshLiveSnapshots(ctx, policy); err != nil {
-		if errors.Is(err, context.Canceled) {
+		if ctx.Err() != nil {
 			return
 		}
 		a.logger.Warn("limits.live_poll", "err", err)

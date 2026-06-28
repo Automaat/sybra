@@ -76,15 +76,15 @@ type codexAppServerLimitWindow struct {
 // snapshots they expose. Missing credentials/CLIs are non-fatal for the other
 // provider; callers can log the returned joined error for diagnostics.
 func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy) error {
-	ctx, cancel := context.WithTimeout(ctx, liveFetchTimeout)
-	defer cancel()
-
 	now := s.now().UTC()
 	var snapshots []Snapshot
 	var errs []error
 
 	if providerEnabled(policy, ProviderClaude) {
-		if snapshot, ok, err := fetchClaudeLiveSnapshot(ctx, now); err != nil {
+		providerCtx, cancel := context.WithTimeout(ctx, liveFetchTimeout)
+		snapshot, ok, err := fetchClaudeLiveSnapshot(providerCtx, now)
+		cancel()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("claude: %w", err))
 		} else if ok {
 			snapshots = append(snapshots, snapshot)
@@ -92,7 +92,10 @@ func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy) error {
 	}
 
 	if providerEnabled(policy, ProviderCodex) {
-		if snapshot, ok, err := fetchCodexLiveSnapshot(ctx, now); err != nil {
+		providerCtx, cancel := context.WithTimeout(ctx, liveFetchTimeout)
+		snapshot, ok, err := fetchCodexLiveSnapshot(providerCtx, now)
+		cancel()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("codex: %w", err))
 		} else if ok {
 			snapshots = append(snapshots, snapshot)
