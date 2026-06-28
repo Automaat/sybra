@@ -24,6 +24,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -2026,36 +2027,72 @@ func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 	}
 }
 
-// testTestingTaskWithOutputSchemaYAML mirrors testTestingTaskWorkflowYAML but
-// includes output_schema on the run_test step so --output-schema is passed to
-// codex and the JSON agent_message is captured via the B3 fallback.
-const testTestingTaskWithOutputSchemaYAML = `id: testing-task
-name: Test Manual Testing (with schema)
-trigger:
-  on: task.status_changed
-  conditions:
-    - field: task.status
-      operator: equals
-      value: testing
-steps:
-  - id: run_test
-    name: Adversarial Testing
-    type: run_agent
-    config:
-      role: test-runner
-      mode: headless
-      model: sonnet
-      output_schema: '{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"string"},"manual_probes":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"output":{"type":"string"},"observed":{"type":"string"}},"required":["command"],"anyOf":[{"required":["actual"]},{"required":["output"]},{"required":["observed"]}],"additionalProperties":false}]}},"automated_checks":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"output":{"type":"string"},"observed":{"type":"string"}},"required":["command"],"anyOf":[{"required":["actual"]},{"required":["output"]},{"required":["observed"]}],"additionalProperties":false}]}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}'
-      prompt: 'Test {{.Task.ID}}'
-    next:
-      - goto: route_test
+// testingTaskWithOutputSchemaYAML mirrors testTestingTaskWorkflowYAML but uses
+// the real builtin test-runner schema so e2e coverage cannot drift from the
+// production structured evidence contract.
+func testingTaskWithOutputSchemaYAML(t *testing.T) string {
+	t.Helper()
 
-  - id: route_test
-    name: Route Test Result
-    type: route_test_result
-    next:
-      - goto: ""
-`
+	def := workflow.Definition{
+		ID:   "testing-task",
+		Name: "Test Manual Testing (with schema)",
+		Trigger: workflow.Trigger{
+			On: "task.status_changed",
+			Conditions: []workflow.Condition{{
+				Field:    "task.status",
+				Operator: "equals",
+				Value:    "testing",
+			}},
+		},
+		Steps: []workflow.Step{
+			{
+				ID:   "run_test",
+				Name: "Adversarial Testing",
+				Type: workflow.StepRunAgent,
+				Config: workflow.StepConfig{
+					Role:         "test-runner",
+					Mode:         "headless",
+					Model:        "sonnet",
+					OutputSchema: testingTaskOutputSchema(t),
+					Prompt:       "Test {{.Task.ID}}",
+				},
+				Next: []workflow.Transition{{GoTo: "route_test"}},
+			},
+			{
+				ID:   "route_test",
+				Name: "Route Test Result",
+				Type: workflow.StepRouteTestResult,
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}
+	data, err := yaml.Marshal(def)
+	if err != nil {
+		t.Fatalf("marshal testing-task fixture: %v", err)
+	}
+	return string(data)
+}
+
+func testingTaskOutputSchema(t *testing.T) string {
+	t.Helper()
+
+	defs, err := workflow.BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("load builtin definitions: %v", err)
+	}
+	for _, def := range defs {
+		if def.ID != "testing-task" {
+			continue
+		}
+		step := def.StepByID("run_test")
+		if step == nil {
+			t.Fatal("run_test step not found in testing-task")
+		}
+		return step.Config.OutputSchema
+	}
+	t.Fatal("testing-task builtin not found")
+	return ""
+}
 
 // installTestingTaskWithOutputSchemaWorkflow writes the fixture with
 // output_schema into the engine's workflow store.
@@ -2063,7 +2100,7 @@ func installTestingTaskWithOutputSchemaWorkflow(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	if err := os.WriteFile(
 		filepath.Join(env.wfStore.Dir(), "testing-task.yaml"),
-		[]byte(testTestingTaskWithOutputSchemaYAML), 0o644,
+		[]byte(testingTaskWithOutputSchemaYAML(t)), 0o644,
 	); err != nil {
 		t.Fatalf("write testing-task.yaml: %v", err)
 	}
