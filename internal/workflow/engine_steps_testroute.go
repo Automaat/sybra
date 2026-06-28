@@ -485,11 +485,13 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 
 func hasSuccessfulCheckResult(values ...evidenceText) bool {
 	var parts []string
+	hasNumericSuccess := false
 	for _, value := range values {
 		if s := strings.TrimSpace(string(value)); s != "" {
 			if hasFailureCheckResult(s) {
 				return false
 			}
+			hasNumericSuccess = hasNumericSuccess || isNumericSuccessResult(s)
 			parts = append(parts, s)
 		}
 	}
@@ -500,15 +502,19 @@ func hasSuccessfulCheckResult(values ...evidenceText) bool {
 	if hasFailureCheckResult(result) {
 		return false
 	}
+	if hasNumericSuccess || isNumericSuccessResult(result) {
+		return true
+	}
 	return containsAny(result,
 		"pass", "passed", "success", "true", "exit code 0",
-		"exit status 0", "exit 0", "no matches", "200", "204", "created", "returned") ||
+		"exit status 0", "exit 0", "no matches", "200", "201", "202", "204", "created", "returned") ||
 		checkOKPattern.MatchString(result)
 }
 
 var (
 	checkFailureStatusPattern = regexp.MustCompile(`\b(exit (code|status)?|status)\s*:?\s*([1-9]\d*|[45]\d\d)\b`)
-	checkFailureWordPattern   = regexp.MustCompile(`\b([1-9]\d*\s+(failed|failures?|failing|errors?)|(test|tests|command|check|checks)\s+(failed|failing|errored)|fail(?:ed|ing|ure)?|error|errored)\b`)
+	checkFailureHTTPPattern   = regexp.MustCompile(`\b(?:http(?:/[0-9.]+)?\s*)?[45]\d\d\b`)
+	checkFailureWordPattern   = regexp.MustCompile(`\b([1-9]\d*\s+(failed|failures?|failing|errors?)|(test|tests|command|check|checks)\s+(failed|failing|errored)|error:|failed:)\b`)
 	checkOKPattern            = regexp.MustCompile(`\bok\b`)
 )
 
@@ -527,7 +533,9 @@ func hasFailureCheckResult(result string) bool {
 	if containsAny(lower, "not ok", "panic:", "assertion failed") {
 		return true
 	}
-	return checkFailureWordPattern.MatchString(lower) || checkFailureStatusPattern.MatchString(lower)
+	return checkFailureWordPattern.MatchString(lower) ||
+		checkFailureStatusPattern.MatchString(lower) ||
+		checkFailureHTTPPattern.MatchString(lower)
 }
 
 func isNumericFailureResult(result string) bool {
@@ -536,6 +544,14 @@ func isNumericFailureResult(result string) bool {
 		return false
 	}
 	return n >= 400 || (n > 0 && n < 100)
+}
+
+func isNumericSuccessResult(result string) bool {
+	n, err := strconv.ParseFloat(strings.TrimSpace(result), 64)
+	if err != nil {
+		return false
+	}
+	return n == 0 || (n >= 200 && n < 300)
 }
 
 func hasRawManualProbeEvidence(raw string) bool {
