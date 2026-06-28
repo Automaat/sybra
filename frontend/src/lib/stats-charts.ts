@@ -45,18 +45,63 @@ export interface TimeSeriesPoint {
   value: number
 }
 
+export const MAX_TIME_SERIES_POINTS = 366
+
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-function parseDayKey(key: string): Date | null {
+export function utcDayKey(d: Date): string {
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+}
+
+function parseUTCDayKey(key: string): Date | null {
   const parts = key.split('-')
   if (parts.length !== 3) return null
   const [year, month, day] = parts.map((p) => Number(p))
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
-  const d = new Date(year, month - 1, day)
-  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null
+  const d = new Date(Date.UTC(year, month - 1, day))
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null
   return d
+}
+
+export function periodCutoffDayKey(period: StatsPeriod, now: Date): string | null {
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  switch (period) {
+    case 'today':
+      return utcDayKey(todayStart)
+    case 'thisWeek': {
+      const d = new Date(todayStart)
+      d.setUTCDate(d.getUTCDate() - todayStart.getUTCDay())
+      return utcDayKey(d)
+    }
+    case 'thisMonth':
+      return utcDayKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)))
+    default:
+      return null
+  }
+}
+
+function utcDaySpan(startKey: string, endKey: string): number {
+  const start = parseUTCDayKey(startKey)
+  const end = parseUTCDayKey(endKey)
+  if (!start || !end) return 0
+  return Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1
+}
+
+function capTimeSeries(points: TimeSeriesPoint[], maxPoints = MAX_TIME_SERIES_POINTS): TimeSeriesPoint[] {
+  if (points.length <= maxPoints) return points
+  const out: TimeSeriesPoint[] = []
+  const lastIndex = points.length - 1
+  let prevIndex = -1
+  for (let i = 0; i < maxPoints; i += 1) {
+    const index = Math.round((i * lastIndex) / (maxPoints - 1))
+    if (index !== prevIndex) {
+      out.push(points[index])
+      prevIndex = index
+    }
+  }
+  return out
 }
 
 /**
@@ -95,41 +140,50 @@ export function dailyCost(runs: RunRecord[], cutoff: Date | null, end?: Date): D
   return out
 }
 
-export function closedTasksSeries(
+export function tasksDoneSeries(
   points: TaskSeriesPoint[] | null | undefined,
-  cutoff: Date | null,
-  end?: Date,
+  cutoffKey: string | null,
+  endKey?: string,
 ): TimeSeriesPoint[] {
   if (!points || points.length === 0) return []
 
   const buckets = new Map<string, number>()
-  let earliest: Date | null = null
+  const cutoffDay = cutoffKey ? parseUTCDayKey(cutoffKey) : null
+  const cutoff = cutoffDay ? utcDayKey(cutoffDay) : null
   for (const p of points) {
-    const day = parseDayKey(p.date)
+    const day = parseUTCDayKey(p.date)
     if (!day) continue
-    if (cutoff && day < cutoff) continue
-    const key = dayKey(day)
+    const key = utcDayKey(day)
+    if (cutoff && key < cutoff) continue
     buckets.set(key, (buckets.get(key) ?? 0) + (p.count ?? 0))
-    if (!earliest || day < earliest) earliest = day
   }
 
-  if (!end) {
-    return [...buckets.entries()]
-      .map(([date, value]) => ({ date, value }))
-      .sort((a, b) => a.date.localeCompare(b.date))
-  }
+  const entries = [...buckets.entries()]
+    .map(([date, value]) => ({ date, value }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  if (!endKey) return capTimeSeries(entries)
 
   if (buckets.size === 0) return []
-  const startSrc = cutoff ?? earliest ?? end
-  const out: TimeSeriesPoint[] = []
-  const cursor = new Date(startSrc.getFullYear(), startSrc.getMonth(), startSrc.getDate())
-  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate())
-  while (cursor <= last) {
-    const key = dayKey(cursor)
-    out.push({ date: key, value: buckets.get(key) ?? 0 })
-    cursor.setDate(cursor.getDate() + 1)
+  const end = parseUTCDayKey(endKey)
+  if (!end) return capTimeSeries(entries)
+  const normalizedEndKey = utcDayKey(end)
+  const startKey = cutoff ?? entries[0].date
+  if (startKey > normalizedEndKey) return []
+  if (!cutoff && utcDaySpan(startKey, normalizedEndKey) > MAX_TIME_SERIES_POINTS) {
+    return capTimeSeries(entries)
   }
-  return out
+
+  const out: TimeSeriesPoint[] = []
+  const cursor = parseUTCDayKey(startKey)
+  const last = parseUTCDayKey(normalizedEndKey)
+  if (!cursor || !last) return capTimeSeries(entries)
+  while (cursor <= last) {
+    const key = utcDayKey(cursor)
+    out.push({ date: key, value: buckets.get(key) ?? 0 })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return capTimeSeries(out)
 }
 
 export interface ProjectCost {

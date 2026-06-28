@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { periodCutoff, dailyCost, costByProject, closedTasksSeries } from './stats-charts.js'
+import {
+  periodCutoff,
+  periodCutoffDayKey,
+  utcDayKey,
+  dailyCost,
+  costByProject,
+  tasksDoneSeries,
+  MAX_TIME_SERIES_POINTS,
+} from './stats-charts.js'
 import type { RunRecord, TaskSeriesPoint } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 
 function run(timestamp: string, costUsd: number, projectId = ''): RunRecord {
@@ -12,6 +20,20 @@ describe('periodCutoff', () => {
 
   it('today is local midnight', () => {
     expect(periodCutoff('today', now)).toEqual(new Date(2026, 5, 24))
+  })
+
+  describe('periodCutoffDayKey', () => {
+    const now = new Date('2026-06-24T23:30:00-07:00')
+
+    it('uses UTC day boundaries for backend date keys', () => {
+      expect(periodCutoffDayKey('today', now)).toBe('2026-06-25')
+      expect(periodCutoffDayKey('thisMonth', now)).toBe('2026-06-01')
+      expect(periodCutoffDayKey('allTime', now)).toBeNull()
+    })
+
+    it('formats UTC date keys', () => {
+      expect(utcDayKey(now)).toBe('2026-06-25')
+    })
   })
 
   it('thisWeek is the most recent Sunday, on or before today', () => {
@@ -71,16 +93,16 @@ describe('dailyCost', () => {
   })
 })
 
-describe('closedTasksSeries', () => {
+describe('tasksDoneSeries', () => {
   function taskPoint(date: string, count: number): TaskSeriesPoint {
     return { date, count } as TaskSeriesPoint
   }
 
   it('sorts ascending and fills zero-count days through end', () => {
-    const out = closedTasksSeries(
+    const out = tasksDoneSeries(
       [taskPoint('2026-06-24', 2), taskPoint('2026-06-22', 1)],
-      new Date(2026, 5, 22),
-      new Date(2026, 5, 24, 15),
+      '2026-06-22',
+      '2026-06-24',
     )
     expect(out).toEqual([
       { date: '2026-06-22', value: 1 },
@@ -90,21 +112,47 @@ describe('closedTasksSeries', () => {
   })
 
   it('filters by cutoff and returns empty when no points remain in range', () => {
-    expect(closedTasksSeries([taskPoint('2026-06-20', 5)], new Date(2026, 5, 23), new Date(2026, 5, 24))).toEqual([])
+    expect(tasksDoneSeries([taskPoint('2026-06-20', 5)], '2026-06-23', '2026-06-24')).toEqual([])
   })
 
   it('returns empty for nil or empty input', () => {
-    expect(closedTasksSeries(null, null, new Date(2026, 5, 24))).toEqual([])
-    expect(closedTasksSeries([], null, new Date(2026, 5, 24))).toEqual([])
+    expect(tasksDoneSeries(null, null, '2026-06-24')).toEqual([])
+    expect(tasksDoneSeries([], null, '2026-06-24')).toEqual([])
   })
 
-  it('parses YYYY-MM-DD as local dates instead of UTC dates', () => {
-    const out = closedTasksSeries([taskPoint('2026-06-24', 1)], new Date(2026, 5, 24), new Date(2026, 5, 24, 15))
+  it('parses YYYY-MM-DD using the backend UTC date-key contract', () => {
+    const out = tasksDoneSeries([taskPoint('2026-06-24', 1)], '2026-06-24', '2026-06-24')
     expect(out).toEqual([{ date: '2026-06-24', value: 1 }])
   })
 
   it('skips invalid date keys', () => {
-    expect(closedTasksSeries([taskPoint('2026-02-31', 1), taskPoint('bad', 2)], null, new Date(2026, 5, 24))).toEqual([])
+    expect(tasksDoneSeries([taskPoint('2026-02-31', 1), taskPoint('bad', 2)], null, '2026-06-24')).toEqual([])
+  })
+
+  it('does not zero-fill all-time ranges past the chart cap', () => {
+    const out = tasksDoneSeries(
+      [taskPoint('2024-01-01', 1), taskPoint('2026-06-24', 2)],
+      null,
+      '2026-06-24',
+    )
+    expect(out).toEqual([
+      { date: '2024-01-01', value: 1 },
+      { date: '2026-06-24', value: 2 },
+    ])
+  })
+
+  it('caps dense all-time series while preserving endpoints', () => {
+    const first = new Date(Date.UTC(2026, 0, 1))
+    const points = Array.from({ length: MAX_TIME_SERIES_POINTS + 20 }, (_, i) => {
+      const d = new Date(first)
+      d.setUTCDate(d.getUTCDate() + i)
+      return taskPoint(utcDayKey(d), 1)
+    })
+    const out = tasksDoneSeries(points, null)
+    const last = utcDayKey(new Date(Date.UTC(2026, 0, MAX_TIME_SERIES_POINTS + 20)))
+    expect(out).toHaveLength(MAX_TIME_SERIES_POINTS)
+    expect(out[0]).toEqual({ date: '2026-01-01', value: 1 })
+    expect(out[out.length - 1]).toEqual({ date: last, value: 1 })
   })
 })
 
