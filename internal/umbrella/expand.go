@@ -3,12 +3,13 @@ package umbrella
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -203,28 +204,19 @@ func childTags(ref string, byRef map[string]github.Issue) []string {
 	return tags
 }
 
-// ClaudePlannerRunner returns a planner Runner that shells out to the claude
-// CLI for a single structured-output completion. The planner reasons over text
-// in the prompt and needs no tools.
-func ClaudePlannerRunner(model string) Runner {
+// ClaudePlannerRunner returns a planner Runner that prefers Claude and falls
+// back to another CLI provider when the preferred provider is unavailable.
+func ClaudePlannerRunner(model string, gates ...provider.HealthGate) Runner {
+	var gate provider.HealthGate
+	if len(gates) > 0 {
+		gate = gates[0]
+	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		cmdArgs := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
-		if model != "" {
-			cmdArgs = append(cmdArgs, "--model", model)
-		}
-		cmd := exec.CommandContext(ctx, "claude", cmdArgs...)
-		// Keep stdout clean for JSON parsing, but capture stderr so a planner
-		// failure (or timeout-killed process) surfaces the real CLI message.
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		out, err := cmd.Output()
+		res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Gate: gate})
 		if err != nil {
-			if msg := strings.TrimSpace(stderr.String()); msg != "" {
-				return "", fmt.Errorf("run claude: %w: %s", err, msg)
-			}
-			return "", fmt.Errorf("run claude: %w", err)
+			return "", err
 		}
-		return string(out), nil
+		return res.Text, nil
 	}
 }
 

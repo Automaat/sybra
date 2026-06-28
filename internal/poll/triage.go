@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
 )
@@ -29,6 +30,7 @@ type TriageHandler struct {
 	cfg        *config.TriageConfig
 	logger     *slog.Logger
 	audit      *audit.Logger
+	gate       provider.HealthGate
 	factory    classifierFactory
 	perTaskTTL time.Duration
 }
@@ -53,6 +55,12 @@ func NewTriageHandler(
 
 // Name implements poll.Fetcher.
 func (h *TriageHandler) Name() string { return "triage" }
+
+// SetProviderGate lets auto-triage skip/fallback from providers already known
+// to be rate-limited or logged out.
+func (h *TriageHandler) SetProviderGate(g provider.HealthGate) {
+	h.gate = g
+}
 
 // Poll implements poll.Fetcher. Returns the next poll interval.
 func (h *TriageHandler) Poll(ctx context.Context) time.Duration {
@@ -101,7 +109,7 @@ func (h *TriageHandler) buildClassifier() triage.Classifier {
 	if h.factory != nil {
 		return h.factory(h.cfg.Model, h.logger)
 	}
-	return &triage.ClaudeClassifier{Model: h.cfg.Model, Logger: h.logger}
+	return &triage.FallbackClassifier{Model: h.cfg.Model, Logger: h.logger, Gate: h.gate}
 }
 
 func (h *TriageHandler) classifyOne(
