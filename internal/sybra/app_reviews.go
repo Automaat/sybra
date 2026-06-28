@@ -424,20 +424,24 @@ func (r *ReviewHandler) recordExperienceOnLanding(t task.Task) {
 	}
 
 	rec := experience.FromTask(t, proj)
+	projectKey := experience.ProjectKey(proj)
 	if proj.Type == project.ProjectTypeWork {
 		scrubExperienceRecord(&rec, experienceBlocklist(proj))
 	}
-	if err := r.experience.Put(t.ProjectID, rec); err != nil {
+	if err := r.experience.Put(projectKey, rec); err != nil {
 		r.logAudit(audit.EventExperienceSkipped, t.ID, "", map[string]any{
 			"reason": "write_failed",
 		})
 		r.logger.Warn("experience.record.write", "task_id", t.ID, "err", err)
 		return
 	}
-	r.logAudit(audit.EventExperienceRecorded, t.ID, "", map[string]any{
-		"project_id": t.ProjectID,
-		"record_id":  rec.TaskID,
-	})
+	data := map[string]any{"record_id": rec.TaskID}
+	if proj.Type == project.ProjectTypeWork {
+		data["project_key"] = projectKey
+	} else {
+		data["project_id"] = t.ProjectID
+	}
+	r.logAudit(audit.EventExperienceRecorded, t.ID, "", data)
 }
 
 func experienceBlocklist(proj project.Project) []string {

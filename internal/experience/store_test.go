@@ -87,7 +87,7 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"", "../repo", "owner/../repo", "owner/repo/extra", "owner\\repo"} {
+	for _, id := range []string{"", "../repo", "owner/../repo", "owner/repo/extra", "owner\\repo", "work-zzzz"} {
 		if _, err := sanitizeProjectID(id); err == nil {
 			t.Fatalf("sanitizeProjectID(%q) succeeded, want error", id)
 		}
@@ -95,7 +95,14 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 	if got, err := sanitizeProjectID("owner/repo"); err != nil || got != "owner--repo" {
 		t.Fatalf("sanitizeProjectID(owner/repo) = %q, %v; want owner--repo", got, err)
 	}
+	opaqueKey := "work-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if got, err := sanitizeProjectID(opaqueKey); err != nil || got != opaqueKey {
+		t.Fatalf("sanitizeProjectID(opaque work key) = %q, %v; want same key", got, err)
+	}
 	if err := store.Put("owner/repo", Record{TaskID: "task-1", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(opaqueKey, Record{TaskID: "task-2", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Delete("owner/repo"); err != nil {

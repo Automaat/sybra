@@ -749,43 +749,62 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	auditLog, err := audit.NewLogger(filepath.Join(tmp, "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
 	workProject := project.Project{
-		ID:    "konghq/private",
-		Owner: "konghq",
+		ID:    "workco/private",
+		Owner: "workco",
 		Repo:  "private",
-		URL:   "https://github.com/konghq/private",
+		URL:   "https://github.com/workco/private",
 		Type:  project.ProjectTypeWork,
 		Checks: &project.ChecksConfig{
-			Verify: []string{"go test ./konghq/private/..."},
+			Verify: []string{"go test ./workco/private/..."},
 		},
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
 	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
 		projects:      projects,
 		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
 		experience:    store,
 	}
 	r.recordExperienceOnLanding(task.Task{
 		ID:        "work",
-		ProjectID: "konghq/private",
+		ProjectID: "workco/private",
 		Outcome:   "merged",
-		Title:     "Fix konghq/private from https://github.com/konghq/private",
-		Tags:      []string{"konghq"},
+		Title:     "Fix workco/private from https://github.com/workco/private",
+		Tags:      []string{"workco"},
 		PlanBrief: "Touch private repo",
 		AgentRuns: []task.AgentRun{{
-			ProtocolViolation: "konghq/private appeared",
-			TestOutcome:       "KAG-1234",
+			ProtocolViolation: "workco/private appeared",
+			TestOutcome:       "workco/private retry",
 		}},
 	})
 
-	data, err := os.ReadFile(filepath.Join(tmp, "experience", "konghq--private", "work.json"))
+	rawDir := filepath.Join(tmp, "experience", "workco--private")
+	if _, err := os.Stat(rawDir); !os.IsNotExist(err) {
+		t.Fatalf("raw work experience dir exists or stat failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "experience", experience.ProjectKey(workProject), "work.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"konghq/private", "konghq", "private", "https://github.com/konghq/private", "KAG-1234"} {
+	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("persisted work record contains %q:\n%s", forbidden, data)
+		}
+	}
+	events := readExperienceAuditEvents(t, filepath.Join(tmp, "audit"))
+	auditJSON, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
+		if strings.Contains(string(auditJSON), forbidden) {
+			t.Fatalf("work experience audit contains %q:\n%s", forbidden, auditJSON)
 		}
 	}
 }

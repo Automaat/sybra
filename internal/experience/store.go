@@ -183,6 +183,9 @@ func sanitizeProjectID(projectID string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("project id is empty")
 	}
+	if isOpaqueWorkProjectKey(id) {
+		return id, nil
+	}
 	if filepath.Clean(id) != id || strings.Contains(id, `\`) {
 		return "", fmt.Errorf("invalid project id %q", projectID)
 	}
@@ -194,6 +197,19 @@ func sanitizeProjectID(projectID string) (string, error) {
 		return "", fmt.Errorf("invalid project id %q", projectID)
 	}
 	return owner + "--" + repo, nil
+}
+
+func isOpaqueWorkProjectKey(id string) bool {
+	const prefix = "work-"
+	if !strings.HasPrefix(id, prefix) || len(id) != len(prefix)+64 {
+		return false
+	}
+	for _, r := range id[len(prefix):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func sanitizeRecordID(recordID string) (string, error) {

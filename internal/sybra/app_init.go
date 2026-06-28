@@ -518,7 +518,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, sandboxes: a.sandboxes, experience: a.experience},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience},
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
