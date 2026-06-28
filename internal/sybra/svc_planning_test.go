@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -107,6 +108,149 @@ func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	}
 }
 
+func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("approve stale plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		Variables: map[string]string{
+			"human_action":               "reject",
+			"human.feedback":             "stale feedback",
+			"step.review_plan.output":    "reject",
+			"step.address_critique.note": "keep",
+		},
+		StepHistory: []workflow.StepRecord{{
+			StepID: "validate_plan_contract_after_address",
+			Status: "completed",
+		}},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := validPlanningContract(created.ID)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := planSvc.ApprovePlan(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
+	}
+	if updated.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty after approval", updated.Workflow.CurrentStep)
+	}
+	if _, ok := updated.Workflow.Variables["human.feedback"]; ok {
+		t.Fatal("stale human.feedback should be cleared during recovery")
+	}
+	if got := updated.Workflow.Variables["step.address_critique.note"]; got != "keep" {
+		t.Fatalf("step variable = %q, want preserved", got)
+	}
+}
+
+func TestPlanningService_ApprovePlan_DoesNotRecoverWithoutValidatedPlan(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("approve invalid stale plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	if _, err := a.tasks.Update(created.ID, task.Update{Status: &status, Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := planSvc.ApprovePlan(created.ID); err == nil {
+		t.Fatal("expected error when recovering without validated plan artifacts")
+	}
+	updated, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusPlanReview {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusPlanReview)
+	}
+	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
+	}
+}
+
+func TestPlanningService_ApprovePlan_RecoversMarkdownOnlyMigrationPlan(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("approve markdown-only stale plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{{
+			StepID: "validate_plan_contract",
+			Status: "completed",
+		}},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := planSvc.ApprovePlan(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+}
+
 func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 
@@ -118,6 +262,25 @@ func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 	if _, err := planSvc.RejectPlan(created.ID, "bad plan"); err == nil {
 		t.Fatal("expected error when rejecting task without active workflow")
 	}
+}
+
+func validPlanningContract(taskID string) string {
+	return fmt.Sprintf(`{
+  "task_id": %q,
+  "branch": "example-%s",
+  "worktree": "/tmp/sybra-%s",
+  "files": [
+    {"path": "internal/sybra/svc_planning.go", "purpose": "edit", "symbols": ["PlanningService"]}
+  ],
+  "steps": ["Recover stale plan-review wait state"],
+  "verification": [
+    {"command": "go test ./internal/sybra", "expected": "tests pass"}
+  ],
+  "acceptance_criteria": ["Accept Plan works for stale completed plan-review workflows"],
+  "risk_tier": "low",
+  "permission_tier": "repo-write",
+  "rollback": "revert the planning service recovery change"
+}`, taskID, taskID, taskID)
 }
 
 func TestPlanningService_SendPlanMessage_EmptyMessage(t *testing.T) {

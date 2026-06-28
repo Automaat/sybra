@@ -74,10 +74,80 @@ func (s *PlanningService) HasLivePlanAgent(id string) bool {
 }
 
 func (s *PlanningService) approve(id string) (task.Task, error) {
-	if err := s.engine.HandleHumanAction(id, "approve", nil); err != nil {
+	if err := s.handlePlanReviewAction(id, "approve", nil); err != nil {
 		return task.Task{}, err
 	}
 	return s.tasks.Get(id)
+}
+
+func (s *PlanningService) handlePlanReviewAction(id, action string, data map[string]string) error {
+	return s.engine.HandleHumanActionRecovering(id, action, data, recoverCompletedPlanReview)
+}
+
+func recoverCompletedPlanReview(t workflow.TaskInfo) (*workflow.Execution, bool, error) {
+	if t.Status != string(task.StatusPlanReview) || t.Workflow == nil ||
+		t.Workflow.WorkflowID != "simple-task-plan" ||
+		t.Workflow.CurrentStep != "" ||
+		t.Workflow.State != workflow.ExecCompleted {
+		return nil, false, nil
+	}
+	if problems := completedPlanReviewRecoveryProblems(t); len(problems) > 0 {
+		return nil, false, fmt.Errorf("cannot recover plan review workflow for task %s: %s", t.ID, strings.Join(problems, "; "))
+	}
+
+	wf := *t.Workflow
+	wf.CurrentStep = "review_plan"
+	wf.State = workflow.ExecWaiting
+	wf.CompletedAt = nil
+	wf.Variables = clearHumanActionVars(t.Workflow.Variables)
+	return &wf, true, nil
+}
+
+func clearHumanActionVars(vars map[string]string) map[string]string {
+	if len(vars) == 0 {
+		return vars
+	}
+	cleared := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if k == "human_action" || strings.HasPrefix(k, "human.") {
+			continue
+		}
+		cleared[k] = v
+	}
+	return cleared
+}
+
+func completedPlanReviewRecoveryProblems(t workflow.TaskInfo) []string {
+	var problems []string
+	required := map[string]string{
+		"plan":           t.Plan,
+		"plan_research":  t.PlanResearch,
+		"plan_decisions": t.PlanDecisions,
+		"plan_brief":     t.PlanBrief,
+	}
+	for name, content := range required {
+		if strings.TrimSpace(content) == "" {
+			problems = append(problems, name+" is required")
+		}
+	}
+	if strings.TrimSpace(t.PlanContract) != "" {
+		for _, problem := range workflow.ValidatePlanContract(t.PlanContract, t.ID) {
+			problems = append(problems, "plan_contract "+problem)
+		}
+	}
+	if !hasCompletedStep(t.Workflow, "validate_plan_contract") &&
+		!hasCompletedStep(t.Workflow, "validate_plan_contract_after_address") {
+		problems = append(problems, "plan validation step did not complete")
+	}
+	return problems
+}
+
+func hasCompletedStep(wf *workflow.Execution, stepID string) bool {
+	if wf == nil {
+		return false
+	}
+	rec := wf.RecordForStep(stepID)
+	return rec != nil && rec.Status == "completed"
 }
 
 // reject forwards an optional human-typed feedback plus any unresolved
@@ -90,7 +160,7 @@ func (s *PlanningService) reject(id, feedback string) (task.Task, error) {
 		data["feedback"] = combined
 	}
 
-	if err := s.engine.HandleHumanAction(id, "reject", data); err != nil {
+	if err := s.handlePlanReviewAction(id, "reject", data); err != nil {
 		return task.Task{}, err
 	}
 	_ = s.tasks.Comments().ResolveAll(id)
