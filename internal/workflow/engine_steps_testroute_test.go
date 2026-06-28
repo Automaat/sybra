@@ -305,6 +305,14 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:       "verbatim_output_counts_as_evidence",
+			status:     "completed",
+			output:     `{"verdict":"FAIL"}`,
+			bodySuffix: strings.ReplaceAll(groundedReport, "Actual output:", "Verbatim output:"),
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:       "missing_evidence",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,
@@ -707,6 +715,66 @@ func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T)
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_StructuredProductBugWithVerbatimOutputRoutesToImplementation(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate."
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-verbatim-output",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-verbatim-output", Role: testRunnerRole}},
+	})
+
+	report := "Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Verbatim output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected behaviour: HTTP 200.\n\n" +
+		"Actual behaviour: the endpoint returns HTTP 500.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	err := engine.AdvanceStep("t-verbatim-output", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-verbatim-output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-verbatim-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.AgentRuns[0].ProtocolViolation != "" {
+		t.Fatalf("protocol violation = %q, want empty", got.AgentRuns[0].ProtocolViolation)
+	}
+	if got.AgentRuns[0].TestFailureFingerprint == "" {
+		t.Fatal("test failure fingerprint is empty")
+	}
+	if !strings.Contains(got.Body, "Verbatim output:") {
+		t.Fatalf("task body missing verbatim output report:\n%s", got.Body)
 	}
 }
 

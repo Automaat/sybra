@@ -657,9 +657,11 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasObserved := containsAny(lower,
 		"actual output:", "actual:", "observed:", "observed output:",
 		"command output:", "stdout:", "stderr:", "exit code",
-		"printed:", "rendered:") || hasReportLinePrefix(report, "output:")
+		"printed:", "rendered:", "verbatim output:", "actual behavior:", "actual behaviour:") ||
+		hasReportLinePrefix(report, "output:")
 	hasExpected := containsAny(lower,
-		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
+		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
+		"requirement tested:", "task says", "from the task",
 		"violates", "should render", "should not")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
@@ -879,11 +881,15 @@ var fixSuggestionEvidencePrefixes = []string{
 	"command run:",
 	"actual:",
 	"actual output:",
+	"actual behavior:",
+	"actual behaviour:",
 	"output:",
 	"stdout:",
 	"stderr:",
 	"expected:",
 	"expected output:",
+	"expected behavior:",
+	"expected behaviour:",
 	"verbatim output:",
 	"cleanup / control command:",
 	"cleanup / control output:",
