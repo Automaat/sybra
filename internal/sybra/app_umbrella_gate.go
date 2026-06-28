@@ -96,6 +96,8 @@ func (a *App) releaseUnblockedChildren() {
 		cyclic[umbrella.NormalizeIssueRef(umb)] = true
 	}
 
+	// A blocked tracker pauses only tracker rollup/issue close; dependency-ready
+	// children still release so independent work under the umbrella can proceed.
 	a.releaseCapped(g.ReadyToRelease(), byID, states)
 	a.rollupTrackers(states, cyclic)
 }

@@ -248,6 +248,41 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 	}
 }
 
+func TestReleaseUnblockedChildren_BlockedTrackerStillReleasesReadyChildren(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	const reason = "blocked awaiting operator action"
+	if _, err := m.Update(tracker.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		t.Fatalf("block tracker: %v", err)
+	}
+	child := mkChild(t, m, "ready", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren()
+
+	gotTracker := mustTask(t, m, tracker.ID)
+	if gotTracker.Status != task.StatusBlocked {
+		t.Fatalf("tracker = %q, want blocked", gotTracker.Status)
+	}
+	if gotTracker.StatusReason != reason {
+		t.Fatalf("tracker reason = %q, want %q", gotTracker.StatusReason, reason)
+	}
+	gotChild := mustTask(t, m, child.ID)
+	if gotChild.Status != task.StatusTodo {
+		t.Fatalf("child = %q, want todo", gotChild.Status)
+	}
+	if slices.Contains(gotChild.Tags, umbrellaGatedTag) {
+		t.Fatalf("ready child still gated under blocked tracker: tags=%v", gotChild.Tags)
+	}
+	if gotChild.StatusReason != "umbrella dependencies satisfied" {
+		t.Fatalf("child reason = %q, want release reason", gotChild.StatusReason)
+	}
+}
+
 func TestReleaseUnblockedChildren_CloseFailureDefersDone(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
