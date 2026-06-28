@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +35,51 @@ func TestBuildCodexConvoArgs_ReasoningEffort(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunConvoTurn_NonZeroExitAfterResultFailsTurn(t *testing.T) {
+	dir := t.TempDir()
+	fakeCodex := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"cx-fake"}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+printf '%s\n' 'Reading additional input from stdin...' >&2
+exit 1
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "cx", Provider: "codex", sessionCWD: t.TempDir()}
+
+	if got := m.runConvoTurn(t.Context(), a, RunConfig{}, "prompt", nil); got {
+		t.Fatal("runConvoTurn returned true; non-zero exit after result must fail the turn")
+	}
+	if a.GetExitErr() == nil {
+		t.Fatal("expected exit error recorded")
+	}
+	found, isError := a.lastConvoResult()
+	if !found {
+		t.Fatal("expected terminal result to remain in convo history")
+	}
+	if isError {
+		t.Fatal("clean result plus non-zero process exit should fail via ExitErr, not rewrite result as error")
+	}
+}
+
+func TestLastConvoResult_TreatsStructuredResultErrorsAsError(t *testing.T) {
+	a := &Agent{ID: "cx", Provider: "codex"}
+	a.AppendConvo(ConvoEvent{Type: "result", ErrorType: "rate_limit", ErrorStatus: 429})
+
+	found, isError := a.lastConvoResult()
+	if !found {
+		t.Fatal("expected result event")
+	}
+	if !isError {
+		t.Fatal("expected structured result error to be classified as error")
+	}
 }
 
 func TestCodexReasoningArgs(t *testing.T) {
