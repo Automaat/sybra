@@ -66,7 +66,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	started := recordMappingStartedAt()
 	a := recordMappingAgent(started)
 	a.sessionCWD = "/tmp/sybra/worktrees/task-map"
-	a.stdinPath = "/tmp/sybra/agents/a-map.stdin"
+	a.setStdinPath("/tmp/sybra/agents/a-map.stdin")
 	a.oneShot = true
 	a.requirePermissions = true
 
@@ -93,7 +93,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	if !restored.isDetached() {
 		t.Fatal("fromRecord must mark the skeleton agent detached")
 	}
-	if restored.cancel != nil || restored.done != nil || restored.promptCh != nil || restored.GetCmd() != nil {
+	if restored.cancel != nil || restored.done != nil || restored.hasPromptChannel() || restored.GetCmd() != nil {
 		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
 	}
 

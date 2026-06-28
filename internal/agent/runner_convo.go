@@ -138,12 +138,11 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
-	a.stdinMu.Lock()
-	a.stdinPipe = stdinPipe
-	a.stdinMu.Unlock()
+	a.convo.replaceStdinPipe(stdinPipe)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		a.convo.closeStdinPipe()
 		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
@@ -151,6 +150,7 @@ func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
+		a.convo.closeStdinPipe()
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
 	return cmd, stdout, stderrBuf, nil
@@ -386,12 +386,7 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 		// One-shot runs close stdin so the claude process sees EOF and exits.
 		if oneShot {
 			m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
-			a.stdinMu.Lock()
-			if a.stdinPipe != nil {
-				_ = a.stdinPipe.Close()
-				a.stdinPipe = nil
-			}
-			a.stdinMu.Unlock()
+			a.convo.closeStdinPipe()
 		}
 	}
 }
@@ -420,20 +415,7 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 		return err
 	}
 
-	a.stdinMu.Lock()
-	defer a.stdinMu.Unlock()
-
-	if a.stdinPipe == nil {
-		return fmt.Errorf("stdin pipe closed")
-	}
-	// Note: a message larger than the pipe buffer (~64KB) written while the
-	// child is not draining stdin blocks here under stdinMu until the child
-	// reads. In practice messages are far smaller and the child consumes
-	// stdin promptly; very large pastes are the only way to stall this.
-	if _, err := a.stdinPipe.Write(data); err != nil {
-		return fmt.Errorf("write stdin: %w", err)
-	}
-	return nil
+	return a.convo.writeStdin(data)
 }
 
 // SendMessage sends a follow-up user message to a conversational agent.
@@ -448,10 +430,7 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if a.Mode != "interactive" {
 		return fmt.Errorf("agent %s is not in interactive/conversational mode", agentID)
 	}
-	a.stdinMu.Lock()
-	hasPipe := a.stdinPipe != nil
-	a.stdinMu.Unlock()
-	if !hasPipe {
+	if !a.convo.hasStdinPipe() {
 		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
 	}
 

@@ -157,10 +157,9 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 		// runner. Copilot's permission model is CLI-flag based (no HTTP
 		// approval hook), so the per-turn shape fits it like codex.
 		if prov.UsesPerTurnConvo() {
-			a.promptCh = make(chan string, 1)
+			a.setPromptChannel(make(chan string, 1))
 			go m.runPerTurnConversational(ctx, a, cfg, false)
 		} else {
-			a.approvalCh = make(chan ApprovalResponse, 1)
 			go m.runConversational(ctx, a, cfg)
 		}
 	default:
@@ -178,12 +177,7 @@ func (m *Manager) markAgentDone(a *Agent) {
 		close(a.done)
 		// Close the stdin pipe/FIFO and drop the registry record + FIFO file
 		// so a completed agent leaks neither an fd nor an on-disk pipe.
-		a.stdinMu.Lock()
-		if a.stdinPipe != nil {
-			_ = a.stdinPipe.Close()
-			a.stdinPipe = nil
-		}
-		a.stdinMu.Unlock()
+		a.convo.closeStdinPipe()
 		if reg := m.registry(); reg != nil {
 			_ = reg.Delete(a.ID)
 		}

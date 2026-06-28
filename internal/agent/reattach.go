@@ -279,7 +279,7 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	ctx, cancel := context.WithCancel(m.ctx)
 	a.cancel = cancel
 	a.done = make(chan struct{})
-	a.promptCh = make(chan string, 1)
+	a.setPromptChannel(make(chan string, 1))
 
 	m.mu.Lock()
 	if _, exists := m.agents[a.ID]; exists {
