@@ -31,6 +31,8 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+const liveLimitPollInterval = 15 * time.Minute
+
 func (a *App) initBgops(emit func(string, any)) {
 	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
 	a.bgops.LoadFromDisk()
@@ -193,6 +195,34 @@ func (a *App) initLimits() {
 			}
 			a.logger.Info("limits.backfill.done")
 		})
+		if a.ctx != nil {
+			a.startLiveLimitPolling(a.ctx, limitStore, policy)
+		}
+	}
+}
+
+func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
+	a.wg.Go(func() {
+		a.refreshLiveLimits(ctx, limitStore, policy)
+		ticker := time.NewTicker(liveLimitPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.refreshLiveLimits(ctx, limitStore, policy)
+			}
+		}
+	})
+}
+
+func (a *App) refreshLiveLimits(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
+	if err := limitStore.RefreshLiveSnapshots(ctx, policy); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		a.logger.Warn("limits.live_poll", "err", err)
 	}
 }
 
