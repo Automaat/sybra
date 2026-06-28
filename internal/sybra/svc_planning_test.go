@@ -251,6 +251,59 @@ func TestPlanningService_ApprovePlan_RecoversMarkdownOnlyMigrationPlan(t *testin
 	}
 }
 
+func TestPlanningService_ApprovePlan_RecoversManualVerificationContract(t *testing.T) {
+	planSvc, _, a := setupPlanningService(t)
+
+	created, err := a.tasks.Create("approve manual verification plan", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{{
+			StepID: "validate_plan_contract_after_address",
+			Status: "completed",
+		}},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := strings.Replace(validPlanningContract(created.ID),
+		`{"command": "go test ./internal/sybra", "expected": "tests pass"}`,
+		`{"manual": "Inspect the rendered UI.", "expected": "The expected controls are visible."}`, 1)
+	planContract = strings.Replace(planContract,
+		`  "risk_tier": "low",`,
+		`  "ui_constraints": {"preserve_raw_columns": true},
+  "stop_conditions": ["Generated bindings require manual edits."],
+  "risk_tier": "low",`, 1)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := planSvc.ApprovePlan(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+}
+
 func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 	planSvc, taskSvc, _ := setupPlanningService(t)
 

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,17 +10,19 @@ import (
 	"strings"
 )
 
+const maxPlanContractBytes = 64 * 1024
+
 type PlanContract struct {
-	TaskID             string                `json:"task_id"`
-	Branch             string                `json:"branch"`
-	Worktree           string                `json:"worktree"`
-	Files              []PlanContractFile    `json:"files"`
-	Steps              []string              `json:"steps"`
-	Verification       []PlanContractCommand `json:"verification"`
-	AcceptanceCriteria []string              `json:"acceptance_criteria"`
-	RiskTier           string                `json:"risk_tier"`
-	PermissionTier     string                `json:"permission_tier"`
-	Rollback           string                `json:"rollback"`
+	TaskID             string                     `json:"task_id"`
+	Branch             string                     `json:"branch"`
+	Worktree           string                     `json:"worktree"`
+	Files              []PlanContractFile         `json:"files"`
+	Steps              []string                   `json:"steps"`
+	Verification       []PlanContractVerification `json:"verification"`
+	AcceptanceCriteria []string                   `json:"acceptance_criteria"`
+	RiskTier           string                     `json:"risk_tier"`
+	PermissionTier     string                     `json:"permission_tier"`
+	Rollback           string                     `json:"rollback"`
 }
 
 type PlanContractFile struct {
@@ -28,8 +31,9 @@ type PlanContractFile struct {
 	Symbols []string `json:"symbols,omitempty"`
 }
 
-type PlanContractCommand struct {
-	Command  string `json:"command"`
+type PlanContractVerification struct {
+	Command  string `json:"command,omitempty"`
+	Manual   string `json:"manual,omitempty"`
 	Expected string `json:"expected"`
 }
 
@@ -58,15 +62,12 @@ func ValidatePlanContract(raw, taskID string) []string {
 // contract, including source acceptance criteria coverage when the task body has
 // an "Acceptance Criteria" section.
 func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
-	var contract PlanContract
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&contract); err != nil {
-		return []string{"malformed JSON: " + err.Error()}
+	if len(raw) > maxPlanContractBytes {
+		return []string{fmt.Sprintf("plan contract exceeds %d byte limit", maxPlanContractBytes)}
 	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return []string{"malformed JSON: multiple top-level values"}
+	contract, err := parsePlanContract(raw)
+	if err != nil {
+		return []string{"malformed JSON: " + err.Error()}
 	}
 
 	var problems []string
@@ -93,11 +94,11 @@ func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 		problems = append(problems, "steps must include at least one implementation step")
 	}
 	if len(contract.Verification) == 0 {
-		problems = append(problems, "verification must include at least one command")
+		problems = append(problems, "verification must include at least one command or manual check")
 	}
 	for i, v := range contract.Verification {
-		if strings.TrimSpace(v.Command) == "" {
-			problems = append(problems, fmt.Sprintf("verification[%d].command is required", i))
+		if strings.TrimSpace(v.Command) == "" && strings.TrimSpace(v.Manual) == "" {
+			problems = append(problems, fmt.Sprintf("verification[%d].command or manual is required", i))
 		}
 		if strings.TrimSpace(v.Expected) == "" {
 			problems = append(problems, fmt.Sprintf("verification[%d].expected is required", i))
@@ -125,6 +126,40 @@ func ValidatePlanContractForTask(raw, taskID, taskBody string) []string {
 	}
 	sort.Strings(problems)
 	return problems
+}
+
+// PlanContractPromptJSON re-emits only validated core plan-contract fields for
+// model prompts, dropping supplemental fields that may contain agent-authored
+// instructions.
+func PlanContractPromptJSON(raw, taskID string) (string, error) {
+	if problems := ValidatePlanContract(raw, taskID); len(problems) > 0 {
+		return "", fmt.Errorf("invalid plan contract: %s", strings.Join(problems, "; "))
+	}
+	contract, err := parsePlanContract(raw)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(contract); err != nil {
+		return "", fmt.Errorf("marshal plan contract: %w", err)
+	}
+	return strings.TrimSpace(buf.String()), nil
+}
+
+func parsePlanContract(raw string) (PlanContract, error) {
+	var contract PlanContract
+	dec := json.NewDecoder(strings.NewReader(raw))
+	if err := dec.Decode(&contract); err != nil {
+		return PlanContract{}, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return PlanContract{}, fmt.Errorf("multiple top-level values")
+	}
+	return contract, nil
 }
 
 func extractAcceptanceCriteria(body string) []string {

@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // hookTaskIDRe mirrors agent.safeArgRe: alphanumerics, dot, underscore,
@@ -203,7 +204,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 	if *compact {
-		stripPlanningSupport(&t)
+		if err := stripPlanningSupport(&t); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
 	}
 
 	if jsonOut {
@@ -264,11 +267,19 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-func stripPlanningSupport(t *task.Task) {
+func stripPlanningSupport(t *task.Task) error {
+	if t.PlanContract != "" {
+		if sanitized, err := workflow.PlanContractPromptJSON(t.PlanContract, t.ID); err == nil {
+			t.PlanContract = sanitized
+		} else {
+			return fmt.Errorf("sanitize plan contract for compact output: %w", err)
+		}
+	}
 	t.PlanCritique = ""
 	t.PlanResearch = ""
 	t.PlanDecisions = ""
 	t.PlanBrief = ""
+	return nil
 }
 
 func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
