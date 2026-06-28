@@ -67,7 +67,11 @@ func TestStoreLimitAndCorruptSkip(t *testing.T) {
 	if err := store.Put("owner/repo", Record{TaskID: "a", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(store.dir, "owner--repo", "bad.json"), []byte("{"), 0o644); err != nil {
+	projectDir, err := store.projectDir("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "bad.json"), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := store.Query("owner/repo", 0); err != nil || len(got) != 0 {
@@ -92,8 +96,8 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 			t.Fatalf("sanitizeProjectID(%q) succeeded, want error", id)
 		}
 	}
-	if got, err := sanitizeProjectID("owner/repo"); err != nil || got != "owner--repo" {
-		t.Fatalf("sanitizeProjectID(owner/repo) = %q, %v; want owner--repo", got, err)
+	if got, err := sanitizeProjectID("owner/repo"); err != nil || got != "gh-6f776e6572-7265706f" {
+		t.Fatalf("sanitizeProjectID(owner/repo) = %q, %v; want encoded key", got, err)
 	}
 	opaqueKey := "work-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	if got, err := sanitizeProjectID(opaqueKey); err != nil || got != opaqueKey {
@@ -114,5 +118,38 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("Query after Delete = %+v, want empty", got)
+	}
+}
+
+func TestStoreProjectIDEncodingDoesNotCollide(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range []struct {
+		projectID string
+		taskID    string
+	}{
+		{projectID: "a--b/c", taskID: "first"},
+		{projectID: "a/b--c", taskID: "second"},
+	} {
+		if err := store.Put(rec.projectID, Record{TaskID: rec.taskID, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := store.Query("a--b/c", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Query("a/b--c", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].TaskID != "first" {
+		t.Fatalf("Query(a--b/c) = %+v, want only first", first)
+	}
+	if len(second) != 1 || second[0].TaskID != "second" {
+		t.Fatalf("Query(a/b--c) = %+v, want only second", second)
 	}
 }

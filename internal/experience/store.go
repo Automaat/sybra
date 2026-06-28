@@ -1,6 +1,7 @@
 package experience
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -196,7 +197,7 @@ func sanitizeProjectID(projectID string) (string, error) {
 	if owner == "." || owner == ".." || repo == "." || repo == ".." {
 		return "", fmt.Errorf("invalid project id %q", projectID)
 	}
-	return owner + "--" + repo, nil
+	return "gh-" + hex.EncodeToString([]byte(owner)) + "-" + hex.EncodeToString([]byte(repo)), nil
 }
 
 func isOpaqueWorkProjectKey(id string) bool {
