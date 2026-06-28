@@ -3464,6 +3464,13 @@ func newRequireSidecarStep(kind string) *Step {
 	}
 }
 
+func newRequireSidecarAllowMissingStep(kind string) *Step {
+	step := newRequireSidecarStep(kind)
+	step.ID = "require_plan_critique"
+	step.Config.AllowMissing = true
+	return step
+}
+
 func TestExecRequireSidecar_PlanCritiquePresent(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# critique\n"})
@@ -3503,6 +3510,40 @@ func TestExecRequireSidecar_PlanCritiqueMissingFlipsHumanRequired(t *testing.T) 
 	}
 	if !strings.Contains(tasks.Reason("t1"), "plan critique") {
 		t.Errorf("reason = %q, want substring 'plan critique'", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRequireSidecar_AllowMissingDoesNotFlipHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	out, err := engine.execRequireSidecar("t1", newRequireSidecarAllowMissingStep("plan_critique"), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "skipped") {
+		t.Errorf("Output = %q, want skipped warning", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Fatal("allow_missing should not flip task to human-required")
+	}
+}
+
+func TestExecRequireSidecar_AllowMissingRejectedOutsidePlanCritique(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning"})
+	engine := newEngineForEval(t, tasks)
+
+	step := newRequireSidecarStep("code_review")
+	step.Config.AllowMissing = true
+	_, err := engine.execRequireSidecar("t1", step, TaskInfo{ID: "t1"})
+	if err == nil {
+		t.Fatal("expected allow_missing validation error")
+	}
+	if !strings.Contains(err.Error(), "allow_missing is only supported") {
+		t.Fatalf("error = %v, want allow_missing validation", err)
 	}
 }
 

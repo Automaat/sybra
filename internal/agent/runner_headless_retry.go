@@ -118,49 +118,59 @@ func buildErrorSampleConvo(stderrOut string, attemptEvents []ConvoEvent) provide
 // Substring matching is used as a fallback and triggers a Warn log so format
 // regressions surface in logs without silently breaking retries.
 func shouldRetry(stderrOut string, streamEvents []StreamEvent, logger *slog.Logger) bool {
-	for i := range streamEvents {
-		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" {
-			if streamEvents[i].ErrorType == "overloaded_error" || streamEvents[i].ErrorStatus == 529 {
-				return true
-			}
-		}
+	if slices.ContainsFunc(streamEvents, retryableResultEvent) {
+		return true
 	}
 	// Substring fallback: keeps working if Anthropic changes the error envelope.
 	if substringMatch529(stderrOut) {
 		warnSubstringFallback(logger)
 		return true
 	}
-	for i := range streamEvents {
-		if streamEvents[i].Type == "result" && streamEvents[i].Subtype == "error" && substringMatch529(streamEvents[i].Content) {
-			warnSubstringFallback(logger)
-			return true
-		}
+	if slices.ContainsFunc(streamEvents, func(e StreamEvent) bool {
+		return resultEventCanCarryError(e) && substringMatch529(e.Content)
+	}) {
+		warnSubstringFallback(logger)
+		return true
 	}
 	return false
 }
 
 // shouldRetryConvo is the ConvoEvent variant of shouldRetry.
 func shouldRetryConvo(stderrOut string, convoEvents []ConvoEvent, logger *slog.Logger) bool {
-	for i := range convoEvents {
-		e := &convoEvents[i]
-		if e.Type == "result" && e.Subtype == "error" {
-			if e.ErrorType == "overloaded_error" || e.ErrorStatus == 529 {
-				return true
-			}
-		}
+	if slices.ContainsFunc(convoEvents, retryableConvoResultEvent) {
+		return true
 	}
 	if substringMatch529(stderrOut) {
 		warnSubstringFallback(logger)
 		return true
 	}
-	for i := range convoEvents {
-		e := &convoEvents[i]
-		if e.Type == "result" && e.Subtype == "error" && substringMatch529(e.Text) {
-			warnSubstringFallback(logger)
-			return true
-		}
+	if slices.ContainsFunc(convoEvents, func(e ConvoEvent) bool {
+		return convoResultEventCanCarryError(e) && substringMatch529(e.Text)
+	}) {
+		warnSubstringFallback(logger)
+		return true
 	}
 	return false
+}
+
+func retryableResultEvent(e StreamEvent) bool {
+	return e.Type == "result" && (e.ErrorType == "overloaded_error" || e.ErrorStatus == 529)
+}
+
+func resultEventCanCarryError(e StreamEvent) bool {
+	return e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
+}
+
+func retryableConvoResultEvent(e ConvoEvent) bool {
+	return e.Type == "result" && (e.ErrorType == "overloaded_error" || e.ErrorStatus == 529)
+}
+
+func convoResultEventCanCarryError(e ConvoEvent) bool {
+	return e.Type == "result" && (resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0)
+}
+
+func resultSubtypeIsError(subtype string) bool {
+	return subtype != "" && subtype != "success"
 }
 
 func substringMatch529(s string) bool {

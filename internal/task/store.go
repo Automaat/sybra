@@ -719,12 +719,13 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	// stamp TestingCycleStartedAt so route_test_result only counts runs from
 	// this new cycle, not from prior ones. Skipped when the caller already
 	// supplied an explicit value (u.TestingCycleStartedAt != nil).
+	now := time.Now().UTC()
 	if prevStatus == StatusHumanRequired &&
 		t.Status != StatusHumanRequired &&
 		u.TestingCycleStartedAt == nil {
-		now := time.Now().UTC()
 		t.TestingCycleStartedAt = &now
 	}
+	t.UpdatedAt = now
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}

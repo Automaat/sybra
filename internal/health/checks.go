@@ -210,6 +210,9 @@ func checkStatusBounce(events []audit.Event, now time.Time) []Finding {
 		if from == "" || to == "" {
 			continue
 		}
+		if to == "human-required" && isExpectedHumanRequired(e) {
+			continue
+		}
 
 		key := from + "→" + to
 		if transitions[e.TaskID] == nil {

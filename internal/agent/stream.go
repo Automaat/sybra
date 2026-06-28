@@ -33,8 +33,9 @@ type ClaudeResult struct {
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
 	ReasoningTokens          int
-	// ErrorType and ErrorStatus carry structured error info when Subtype == "error".
-	// Codex: mapped from the "code" field. Claude: reserved for future extraction.
+	// ErrorType and ErrorStatus carry structured error info when available.
+	// Codex maps these from its error envelope; Claude maps `error` and
+	// `api_error_status` from result events that set `is_error`.
 	ErrorType   string
 	ErrorStatus int
 	// PremiumRequests is Copilot's billing unit (AI credits), mapped from the
@@ -88,6 +89,9 @@ type claudeEnvelope struct {
 	Message      *claudeMessagePayload `json:"message"`
 	Result       string                `json:"result"`
 	TotalCostUSD float64               `json:"total_cost_usd"`
+	IsError      bool                  `json:"is_error"`
+	APIStatus    int                   `json:"api_error_status"`
+	Error        string                `json:"error"`
 	// Real Claude Code result events nest token counts under `usage` (per
 	// platform.claude.com/docs/en/agent-sdk/headless and verified against
 	// captured agent NDJSON). Earlier root-level `total_*_tokens` fields are
@@ -730,6 +734,13 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		}
 		r.CacheCreationInputTokens = raw.Usage.CacheCreationInputTokens
 		r.CacheReadInputTokens = raw.Usage.CacheReadInputTokens
+	}
+	if raw.IsError || raw.APIStatus != 0 || raw.Error != "" {
+		r.ErrorType = raw.Error
+		if r.ErrorType == "" && raw.IsError {
+			r.ErrorType = "provider_error"
+		}
+		r.ErrorStatus = raw.APIStatus
 	}
 	return r
 }

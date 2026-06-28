@@ -2595,18 +2595,17 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	}
 }
 
-// TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired covers the
+// TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview covers the
 // failure mode that motivated the require_sidecar guard: the critic agent
 // exits cleanly (no process error) but never ran `sybra-cli update
 // --plan-critique-file` — e.g. because its shell was sandboxed away inside
-// a Docker container. Without the guard the workflow would silently advance
-// to address_critique with nothing to address and the human review page
-// would render only the plan. The guard must flip the task to human-required
-// and halt the workflow.
-func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
+// a Docker container. The guard records a non-fatal skip and routes straight
+// to the existing human plan review instead of parking the task in
+// human-required.
+func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	// Single-opus plan flow: triage → plan → require_plan → validate_plan_refs
-	// → maybe_critique → critique_plan (no_save) → require_plan_critique guard
-	// fires.
+	// → maybe_critique → critique_plan (no_save) → require_plan_critique
+	// (soft skip) → review_plan.
 	env := setupE2EMulti(t, []string{
 		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
@@ -2623,13 +2622,15 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for ExecCompleted, not just status: execRequireSidecar updates status before the engine records the step, so a status-only poll races the history append.
-	waitFor(t, 30*time.Second, "workflow completes via require_plan_critique guard", func() bool {
+	waitFor(t, 30*time.Second, "workflow reaches review_plan after missing critique soft skip", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil {
 			return false
 		}
-		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusHumanRequired
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting &&
+			tk.Status == task.StatusPlanReview
 	})
 
 	tk, err := env.tasks.Get(created.ID)
@@ -2645,13 +2646,20 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueFlipsHumanRequired(t *testing.T) {
 		t.Errorf("require_plan_critique guard did not execute\nhistory: %v", stepIDs)
 	}
 	if slices.Contains(stepIDs, "address_critique") {
-		t.Errorf("address_critique ran despite missing critique — guard failed to halt\nhistory: %v", stepIDs)
+		t.Errorf("address_critique ran despite missing critique — guard failed to soft-skip\nhistory: %v", stepIDs)
 	}
 	if tk.PlanCritique != "" {
 		t.Errorf("PlanCritique unexpectedly non-empty after no_save scenario: %q", tk.PlanCritique)
 	}
-	if !strings.Contains(strings.ToLower(tk.StatusReason), "plan critique") {
-		t.Errorf("status reason does not mention plan critique: %q", tk.StatusReason)
+	var requireOutput string
+	for _, rec := range tk.Workflow.StepHistory {
+		if rec.StepID == "require_plan_critique" {
+			requireOutput = rec.Output
+			break
+		}
+	}
+	if !strings.Contains(strings.ToLower(requireOutput), "skipped") {
+		t.Errorf("require_plan_critique output = %q, want skipped", requireOutput)
 	}
 }
 

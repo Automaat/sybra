@@ -99,6 +99,9 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 		}
 		to, _ := e.Data["to"].(string)
 		if to == "human-required" && classifiedHeadless[e.TaskID] {
+			if isExpectedHumanRequired(e) {
+				continue
+			}
 			escalated[e.TaskID] = true
 		}
 	}
@@ -118,7 +121,13 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 			DetectedAt: now,
 		})
 	}
+
 	return findings
+}
+
+func isExpectedHumanRequired(e audit.Event) bool {
+	kind, _ := e.Data["human_kind"].(string)
+	return kind == "review_manual" || kind == "review_draft"
 }
 
 // checkStatusBottleneck flags statuses where the average dwell time exceeds a

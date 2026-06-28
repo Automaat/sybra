@@ -426,6 +426,44 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	}
 }
 
+func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Quota limited", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr1", Role: string(agent.RoleHumanReview)}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "hr1", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.SetError("rate_limit", "weekly limit")
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "You've hit your weekly limit"})
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if strings.Contains(got.Body, "unparseable verdict") {
+		t.Errorf("rate-limited human-review should not append unparseable verdict noise; got:\n%s", got.Body)
+	}
+	for _, run := range got.AgentRuns {
+		if run.AgentID == "hr1" && run.VerdictRendered {
+			t.Fatal("rate-limited human-review must not mark verdict_rendered")
+		}
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called on quota failure; calls=%d", sink.calls)
+	}
+}
+
 func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	t.Parallel()
 	// h.agents is nil in newReviewTestEnv — if maybeSpawn tries to spawn an

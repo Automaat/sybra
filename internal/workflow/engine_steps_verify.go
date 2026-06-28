@@ -136,7 +136,8 @@ func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (Ste
 // exits cleanly without producing its expected output file.
 func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	var content, label string
-	switch sk := step.Config.Sidecar; {
+	sk := step.Config.Sidecar
+	switch {
 	case sk == "plan_contract":
 		content = t.PlanContract
 		label = "plan contract"
@@ -167,8 +168,15 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 	default:
 		return StepOutput{}, fmt.Errorf("require_sidecar: unknown sidecar %q (want plan|plan_contract|plan_critique|plan_research|plan_decisions|plan_brief|code_review|plan_draft.<name>)", sk)
 	}
+	if step.Config.AllowMissing && (step.ID != "require_plan_critique" || sk != "plan_critique") {
+		return StepOutput{}, fmt.Errorf("require_sidecar: allow_missing is only supported for require_plan_critique plan_critique")
+	}
 	if strings.TrimSpace(content) == "" {
 		reason := label + " missing — upstream agent step completed without writing its sidecar"
+		if step.Config.AllowMissing {
+			e.logger.Warn("workflow.require-sidecar.missing-soft", "task_id", taskID, "sidecar", step.Config.Sidecar)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: reason + " — skipped"}, nil
+		}
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)
 		}
