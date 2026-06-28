@@ -809,6 +809,59 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 	}
 }
 
+func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workProject := project.Project{
+		ID:    "workco/private",
+		Owner: "workco",
+		Repo:  "private",
+		URL:   "https://github.com/workco/private",
+		Type:  project.ProjectTypeWork,
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+
+	r.recordExperienceOnLanding(task.Task{ID: "workco", ProjectID: "workco/private", Outcome: "merged", Title: "safe title"})
+	r.recordExperienceOnLanding(task.Task{ID: "workco", ProjectID: "workco/private", Outcome: "merged", Title: "updated"})
+
+	records, err := store.Query(experience.ProjectKey(workProject), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want one idempotent record", records)
+	}
+	if records[0].TaskID == "workco" || !strings.HasPrefix(records[0].TaskID, "work-task-") {
+		t.Fatalf("TaskID = %q, want opaque work task id", records[0].TaskID)
+	}
+	if records[0].Title != "updated" {
+		t.Fatalf("idempotent update title = %q, want updated", records[0].Title)
+	}
+	recordJSON, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := experience.FormatForPrompt(records)
+	for _, forbidden := range []string{"workco", "private", "https://github.com/workco/private"} {
+		if strings.Contains(string(recordJSON), forbidden) {
+			t.Fatalf("persisted work record contains %q:\n%s", forbidden, recordJSON)
+		}
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("work identifier reused in planning prompt:\n%s", prompt)
+		}
+	}
+}
+
 func TestRecordExperienceOnLandingWriteErrorIsNonBlocking(t *testing.T) {
 	tmp := t.TempDir()
 	projects := newExperienceProjectStore(t, tmp)
