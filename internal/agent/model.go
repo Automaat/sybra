@@ -43,22 +43,23 @@ type Agent struct {
 	State     State  `json:"state"`
 	SessionID string `json:"sessionId"`
 	Usage
-	StartedAt       time.Time `json:"startedAt"`
-	LastEventAt     time.Time `json:"lastEventAt"`
-	LogPath         string    `json:"logPath,omitempty"`
-	External        bool      `json:"external"`
-	PID             int       `json:"pid,omitempty"`
-	Command         string    `json:"command,omitempty"`
-	Name            string    `json:"name,omitempty"`
-	Project         string    `json:"project,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	ExperimentID    string    `json:"experimentId,omitempty"`
-	VariantID       string    `json:"variantId,omitempty"`
-	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey   string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
+	UsageAddPromotionBlocker `json:"-"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	ExperimentID             string    `json:"experimentId,omitempty"`
+	VariantID                string    `json:"variantId,omitempty"`
+	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -307,7 +308,7 @@ func (a *Agent) AddUsage(sessionID string, usage Usage) float64 {
 	if sessionID != "" {
 		a.SessionID = sessionID
 	}
-	a.Usage = addUsage(a.Usage, usage)
+	a.Usage = a.Usage.Add(usage)
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
@@ -318,7 +319,7 @@ func (a *Agent) AddUsage(sessionID string, usage Usage) float64 {
 // stable across runners.
 func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.mu.Lock()
-	a.Usage = addUsage(a.Usage, Usage{
+	a.Usage = a.Usage.Add(Usage{
 		CacheCreationInputTokens: cacheCreate,
 		CacheReadInputTokens:     cacheRead,
 	})
@@ -330,7 +331,7 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 // claude/codex never call this (their result events carry no such field).
 func (a *Agent) AddPremiumRequests(n float64) {
 	a.mu.Lock()
-	a.Usage = addUsage(a.Usage, Usage{PremiumRequests: n})
+	a.Usage = a.Usage.Add(Usage{PremiumRequests: n})
 	a.mu.Unlock()
 }
 
@@ -340,7 +341,7 @@ func (a *Agent) AddPremiumRequests(n float64) {
 // stream. No-op-equivalent for claude/codex, whose assistant events carry 0.
 func (a *Agent) AddOutputTokens(n int) {
 	a.mu.Lock()
-	a.Usage = addUsage(a.Usage, Usage{OutputTokens: n})
+	a.Usage = a.Usage.Add(Usage{OutputTokens: n})
 	a.mu.Unlock()
 }
 

@@ -13,7 +13,8 @@ type Usage struct {
 	PremiumRequests float64 `json:"premiumRequests,omitempty"`
 }
 
-func addUsage(left, right Usage) Usage {
+// Add returns the sum of two usage values.
+func (left Usage) Add(right Usage) Usage {
 	return Usage{
 		CostUSD:                  left.CostUSD + right.CostUSD,
 		InputTokens:              left.InputTokens + right.InputTokens,
@@ -23,4 +24,12 @@ func addUsage(left, right Usage) Usage {
 		ReasoningTokens:          left.ReasoningTokens + right.ReasoningTokens,
 		PremiumRequests:          left.PremiumRequests + right.PremiumRequests,
 	}
+}
+
+// UsageAddPromotionBlocker prevents Agent from promoting Usage.Add as a
+// mutating-looking method while keeping Usage embedded for flat JSON.
+type UsageAddPromotionBlocker struct{}
+
+func (UsageAddPromotionBlocker) Add(Usage) Usage {
+	panic("UsageAddPromotionBlocker.Add is only embedded to keep Agent from promoting Usage.Add")
 }

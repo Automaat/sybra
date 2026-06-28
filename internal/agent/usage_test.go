@@ -6,7 +6,7 @@ import (
 )
 
 func TestAddUsage(t *testing.T) {
-	got := addUsage(Usage{
+	got := Usage{
 		CostUSD:                  1.5,
 		InputTokens:              10,
 		OutputTokens:             20,
@@ -14,7 +14,7 @@ func TestAddUsage(t *testing.T) {
 		CacheReadInputTokens:     40,
 		ReasoningTokens:          50,
 		PremiumRequests:          2.5,
-	}, Usage{
+	}.Add(Usage{
 		CostUSD:                  2.25,
 		InputTokens:              1,
 		OutputTokens:             2,
@@ -34,7 +34,7 @@ func TestAddUsage(t *testing.T) {
 		PremiumRequests:          3,
 	}
 	if got != want {
-		t.Fatalf("addUsage() = %+v, want %+v", got, want)
+		t.Fatalf("Usage.Add() = %+v, want %+v", got, want)
 	}
 }
 
