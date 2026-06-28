@@ -54,13 +54,13 @@ func taskCloseTime(t task.Task) time.Time {
 	return t.UpdatedAt
 }
 
-func tasksDoneDaily(list []task.Task) []stats.TaskSeriesPoint {
+func closedTasksDaily(list []task.Task, now time.Time) []stats.TaskSeriesPoint {
 	buckets := map[string]int{}
 	for i := range list {
 		if list[i].Status != task.StatusDone {
 			continue
 		}
-		key := taskCloseTime(list[i]).UTC().Format(time.DateOnly)
+		key := taskCloseTime(list[i]).In(now.Location()).Format(time.DateOnly)
 		buckets[key]++
 	}
 
@@ -80,17 +80,17 @@ func tasksDoneDaily(list []task.Task) []stats.TaskSeriesPoint {
 // GetStats returns aggregated agent run statistics.
 func (s *StatsService) GetStats() stats.StatsResponse {
 	if s.stats == nil {
-		return stats.StatsResponse{TasksDoneDaily: []stats.TaskSeriesPoint{}}
+		return stats.StatsResponse{ClosedTasksDaily: []stats.TaskSeriesPoint{}}
 	}
 	now := time.Now()
 	resp := s.stats.QueryAt(now)
-	resp.TasksDoneDaily = []stats.TaskSeriesPoint{}
+	resp.ClosedTasksDaily = []stats.TaskSeriesPoint{}
 	resp.ByProjectType = aggregateByProjectType(resp.ByProject, s.projectTypes())
 
 	if s.tasks != nil {
 		if list, err := s.tasks.List(); err == nil {
 			aggregateTasksDone(&resp, list, now)
-			resp.TasksDoneDaily = tasksDoneDaily(list)
+			resp.ClosedTasksDaily = closedTasksDaily(list, now)
 		} else {
 			slog.Warn("stats: failed to list tasks", "err", err)
 		}

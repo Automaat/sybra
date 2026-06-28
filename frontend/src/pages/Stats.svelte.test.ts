@@ -42,7 +42,7 @@ function makeStatsData(): StatsResponse {
     byRole: [],
     byMode: [],
     byModel: [],
-    tasksDoneDaily: [],
+    closedTasksDaily: [],
     recentRuns: [],
   })
 }
@@ -156,7 +156,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -168,7 +168,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -180,7 +180,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -192,7 +192,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -204,7 +204,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -217,7 +217,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today, thisWeek: allTime, thisMonth: allTime, allTime,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -247,7 +247,7 @@ describe('Stats', () => {
       ],
       byMode: [],
       byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
@@ -260,7 +260,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [
         {
           id: 'r1',
@@ -302,7 +302,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [
+      closedTasksDaily: [
         { date: '2026-05-01', count: 1 },
         { date: '2026-05-02', count: 2 },
       ],
@@ -314,9 +314,9 @@ describe('Stats', () => {
     render(Stats, { props: {} })
     expect(screen.getByText('Cost over time')).toBeDefined()
     expect(screen.getByText('Cost by project')).toBeDefined()
-    expect(screen.getByText('Tasks done over time')).toBeDefined()
+    expect(screen.getByText('Closed tasks over time')).toBeDefined()
     expect(screen.getByRole('img', { name: 'Cost over time' })).toBeDefined()
-    expect(screen.getByRole('img', { name: 'Tasks done over time' })).toBeDefined()
+    expect(screen.getByRole('img', { name: 'Closed tasks over time' })).toBeDefined()
     // Bar chart renders both project labels (default period is All Time).
     expect(screen.getByText('org/repo')).toBeDefined()
     expect(screen.getByText('org/other')).toBeDefined()
@@ -326,22 +326,22 @@ describe('Stats', () => {
     mockStatsStore.data = makeStatsData()
     render(Stats, { props: {} })
     expect(screen.getAllByText('No cost in this range').length).toBeGreaterThan(0)
-    expect(screen.getByText('No tasks done in this range')).toBeDefined()
+    expect(screen.getByText('No closed tasks in this range')).toBeDefined()
   })
 
-  it('tasks-done chart follows period switching', async () => {
+  it('closed-task chart follows period switching', async () => {
     const s = makeSummary()
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [{ date: '2026-05-01', count: 1 }],
+      closedTasksDaily: [{ date: '2026-05-01', count: 1 }],
       recentRuns: [],
     })
     render(Stats, { props: {} })
-    expect(screen.getByRole('img', { name: 'Tasks done over time' })).toBeDefined()
+    expect(screen.getByRole('img', { name: 'Closed tasks over time' })).toBeDefined()
     await fireEvent.click(screen.getByText('Today'))
     await vi.waitFor(() => {
-      expect(screen.getByText('No tasks done in this range')).toBeDefined()
+      expect(screen.getByText('No closed tasks in this range')).toBeDefined()
     })
   })
 
@@ -356,7 +356,7 @@ describe('Stats', () => {
       // The backend caps recentRuns only when total runs exceeds 50.
       today: s, thisWeek: s, thisMonth: s, allTime: makeSummary({ totalRuns: 60 }),
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [{ date: '2026-05-01', count: 1 }],
+      closedTasksDaily: [{ date: '2026-05-01', count: 1 }],
       recentRuns: runs,
     })
     render(Stats, { props: {} })
@@ -368,7 +368,7 @@ describe('Stats', () => {
     mockStatsStore.data = StatsResponse.createFrom({
       today: s, thisWeek: s, thisMonth: s, allTime: s,
       byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
-      tasksDoneDaily: [],
+      closedTasksDaily: [],
       recentRuns: [
         {
           id: 'r1',

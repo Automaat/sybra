@@ -138,7 +138,7 @@ export class StatsResponse {
     "byModel": GroupedStat[];
     "byProvider": GroupedStat[];
     "recentRuns": RunRecord[];
-    "tasksDoneDaily": TaskSeriesPoint[];
+    "closedTasksDaily": TaskSeriesPoint[];
     "limits"?: limits$0.Summary | null;
 
     /** Creates a new StatsResponse instance. */
@@ -176,8 +176,8 @@ export class StatsResponse {
         if (!("recentRuns" in $$source)) {
             this["recentRuns"] = [];
         }
-        if (!("tasksDoneDaily" in $$source)) {
-            this["tasksDoneDaily"] = [];
+        if (!("closedTasksDaily" in $$source)) {
+            this["closedTasksDaily"] = [];
         }
 
         Object.assign(this, $$source);
@@ -234,8 +234,8 @@ export class StatsResponse {
         if ("recentRuns" in $$parsedSource) {
             $$parsedSource["recentRuns"] = $$createField10_0($$parsedSource["recentRuns"]);
         }
-        if ("tasksDoneDaily" in $$parsedSource) {
-            $$parsedSource["tasksDoneDaily"] = $$createField11_0($$parsedSource["tasksDoneDaily"]);
+        if ("closedTasksDaily" in $$parsedSource) {
+            $$parsedSource["closedTasksDaily"] = $$createField11_0($$parsedSource["closedTasksDaily"]);
         }
         if ("limits" in $$parsedSource) {
             $$parsedSource["limits"] = $$createField12_0($$parsedSource["limits"]);
@@ -301,7 +301,7 @@ export class Summary {
 }
 
 /**
- * TaskSeriesPoint is a UTC daily task-count bucket for time-series charts.
+ * TaskSeriesPoint is a daily task-count bucket for time-series charts.
  */
 export class TaskSeriesPoint {
     "date": string;

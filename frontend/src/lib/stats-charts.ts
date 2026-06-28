@@ -51,40 +51,19 @@ function dayKey(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-export function utcDayKey(d: Date): string {
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
-}
-
-function parseUTCDayKey(key: string): Date | null {
+function parseLocalDayKey(key: string): Date | null {
   const parts = key.split('-')
   if (parts.length !== 3) return null
   const [year, month, day] = parts.map((p) => Number(p))
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null
-  const d = new Date(Date.UTC(year, month - 1, day))
-  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null
+  const d = new Date(year, month - 1, day)
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null
   return d
 }
 
-export function periodCutoffDayKey(period: StatsPeriod, now: Date): string | null {
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  switch (period) {
-    case 'today':
-      return utcDayKey(todayStart)
-    case 'thisWeek': {
-      const d = new Date(todayStart)
-      d.setUTCDate(d.getUTCDate() - todayStart.getUTCDay())
-      return utcDayKey(d)
-    }
-    case 'thisMonth':
-      return utcDayKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)))
-    default:
-      return null
-  }
-}
-
-function utcDaySpan(startKey: string, endKey: string): number {
-  const start = parseUTCDayKey(startKey)
-  const end = parseUTCDayKey(endKey)
+function localDaySpan(startKey: string, endKey: string): number {
+  const start = parseLocalDayKey(startKey)
+  const end = parseLocalDayKey(endKey)
   if (!start || !end) return 0
   return Math.floor((end.getTime() - start.getTime()) / 86_400_000) + 1
 }
@@ -140,21 +119,20 @@ export function dailyCost(runs: RunRecord[], cutoff: Date | null, end?: Date): D
   return out
 }
 
-export function tasksDoneSeries(
+export function closedTasksSeries(
   points: TaskSeriesPoint[] | null | undefined,
-  cutoffKey: string | null,
-  endKey?: string,
+  cutoff: Date | null,
+  end?: Date,
 ): TimeSeriesPoint[] {
   if (!points || points.length === 0) return []
 
   const buckets = new Map<string, number>()
-  const cutoffDay = cutoffKey ? parseUTCDayKey(cutoffKey) : null
-  const cutoff = cutoffDay ? utcDayKey(cutoffDay) : null
+  const cutoffKey = cutoff ? dayKey(cutoff) : null
   for (const p of points) {
-    const day = parseUTCDayKey(p.date)
+    const day = parseLocalDayKey(p.date)
     if (!day) continue
-    const key = utcDayKey(day)
-    if (cutoff && key < cutoff) continue
+    const key = dayKey(day)
+    if (cutoffKey && key < cutoffKey) continue
     buckets.set(key, (buckets.get(key) ?? 0) + (p.count ?? 0))
   }
 
@@ -162,26 +140,24 @@ export function tasksDoneSeries(
     .map(([date, value]) => ({ date, value }))
     .sort((a, b) => a.date.localeCompare(b.date))
 
-  if (!endKey) return capTimeSeries(entries)
+  if (!end) return capTimeSeries(entries)
 
   if (buckets.size === 0) return []
-  const end = parseUTCDayKey(endKey)
-  if (!end) return capTimeSeries(entries)
-  const normalizedEndKey = utcDayKey(end)
-  const startKey = cutoff ?? entries[0].date
+  const normalizedEndKey = dayKey(end)
+  const startKey = cutoffKey ?? entries[0].date
   if (startKey > normalizedEndKey) return []
-  if (!cutoff && utcDaySpan(startKey, normalizedEndKey) > MAX_TIME_SERIES_POINTS) {
+  if (!cutoffKey && localDaySpan(startKey, normalizedEndKey) > MAX_TIME_SERIES_POINTS) {
     return capTimeSeries(entries)
   }
 
   const out: TimeSeriesPoint[] = []
-  const cursor = parseUTCDayKey(startKey)
-  const last = parseUTCDayKey(normalizedEndKey)
+  const cursor = parseLocalDayKey(startKey)
+  const last = parseLocalDayKey(normalizedEndKey)
   if (!cursor || !last) return capTimeSeries(entries)
   while (cursor <= last) {
-    const key = utcDayKey(cursor)
+    const key = dayKey(cursor)
     out.push({ date: key, value: buckets.get(key) ?? 0 })
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
+    cursor.setDate(cursor.getDate() + 1)
   }
   return capTimeSeries(out)
 }
