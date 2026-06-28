@@ -167,6 +167,24 @@ describe('TaskBoardView', () => {
     expect(screen.getByText('Second')).toBeDefined()
   })
 
+  it('passes umbrella progress into task cards', () => {
+    const cols = [{ status: 'umbrella', label: 'Umbrella', border: '', includes: [], kind: 'umbrella' }]
+    const tracker = { id: 'u1', title: 'Umbrella', status: 'in-progress', taskType: 'umbrella', tags: [], agentMode: 'headless' }
+    render(TaskBoardView, {
+      props: {
+        visibleColumns: cols as never,
+        columnTasks: (() => [tracker]) as never,
+        umbrellaProgress: (() => ({ done: 2, total: 5 })) as never,
+        focusedTaskId: null,
+        collapsedColumns: new Set<string>(),
+        onselect: vi.fn(),
+        onmove: vi.fn(),
+        ontogglecolumn: vi.fn(),
+      },
+    })
+    expect(screen.getByText('2/5')).toBeDefined()
+  })
+
   it('column header click fires ontogglecolumn with the status', async () => {
     const ontogglecolumn = vi.fn()
     render(TaskBoardView, {

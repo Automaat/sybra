@@ -1,17 +1,19 @@
 <script lang="ts">
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import StatusBadge from './StatusBadge.svelte'
   import { formatShortDate } from '../lib/dates.js'
 
   interface Props {
     tasks: Task[]
     focusedTaskId: string | null
+    umbrellaProgress?: (task: Task) => UmbrellaProgress | null
     onselect: (id: string) => void
     onhover: (rowIdx: number) => void
   }
 
-  const { tasks, focusedTaskId, onselect, onhover }: Props = $props()
+  const { tasks, focusedTaskId, umbrellaProgress = () => null, onselect, onhover }: Props = $props()
 
   function priorityIcon(p: string | undefined): string {
     return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
@@ -50,6 +52,7 @@
     <tbody>
       {#each tasks as t, rowIdx (t.id)}
         {@const isFocused = focusedTaskId === t.id}
+        {@const progress = umbrellaProgress(t)}
         <tr
           data-focused-task={isFocused ? '' : undefined}
           class="cursor-pointer border-b border-surface-100 transition-colors dark:border-surface-800 {isFocused ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
@@ -61,7 +64,19 @@
               <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
             </td>
           {/if}
-          <td class="px-4 py-2 font-medium">{t.title}</td>
+          <td class="px-4 py-2 font-medium">
+            <div class="flex items-center gap-2">
+              <span>{t.title}</span>
+              {#if t.taskType === 'umbrella' && progress && progress.total > 0}
+                <span
+                  class="inline-flex shrink-0 items-center rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                  title="{progress.done}/{progress.total} subissues complete"
+                >
+                  {progress.done}/{progress.total}
+                </span>
+              {/if}
+            </div>
+          </td>
           <td class="whitespace-nowrap px-4 py-2">
             <StatusBadge status={t.status} />
           </td>

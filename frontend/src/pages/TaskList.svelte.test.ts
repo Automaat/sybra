@@ -99,6 +99,29 @@ describe('TaskList', () => {
     expect(screen.getByText('Second Task')).toBeDefined()
   })
 
+  it('renders umbrella progress from task store data', () => {
+    Object.assign(taskStore, {
+      list: [
+        {
+          ...mockTask('u1', 'Tracker', 'in-progress'),
+          taskType: 'umbrella',
+          issue: 'https://github.com/Automaat/sybra/issues/1213',
+        },
+        {
+          ...mockTask('c1', 'Done child', 'done'),
+          umbrellaIssue: 'Automaat/sybra#1213',
+        },
+        {
+          ...mockTask('c2', 'Active child', 'in-progress'),
+          umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213',
+        },
+      ],
+    })
+    render(TaskList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('Tracker')).toBeDefined()
+    expect(screen.getByText('1/2')).toBeDefined()
+  })
+
   describe('submitInlineAdd error handling', () => {
     it('shows notification when task creation fails', async () => {
       vi.mocked(taskStore.create).mockRejectedValueOnce(new Error('Network error'))
