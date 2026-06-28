@@ -113,6 +113,23 @@ func TestPopScenario_FileMissingFallsBack(t *testing.T) {
 	}
 }
 
+func TestWriteArgsLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude-args.log")
+
+	if err := writeArgsLog(path, []byte("-p\nhello")); err != nil {
+		t.Fatalf("writeArgsLog: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "-p\nhello" {
+		t.Fatalf("args log = %q, want %q", string(got), "-p\nhello")
+	}
+}
+
 func TestEnvInt(t *testing.T) {
 	tests := []struct {
 		name string

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -236,6 +237,24 @@ func TestHasReportLinePrefixNormalizesPrefixes(t *testing.T) {
 	}
 }
 
+func TestStructuredTestOutputEvidenceListsUnmarshalNull(t *testing.T) {
+	t.Parallel()
+
+	out := structuredTestOutput{
+		ManualProbes:    manualProbeEvidenceList{{Command: "stale manual probe"}},
+		AutomatedChecks: automatedCheckEvidenceList{{Command: "stale automated check"}},
+	}
+	if err := json.Unmarshal([]byte(`{"manual_probes":null,"automated_checks":null}`), &out); err != nil {
+		t.Fatalf("unmarshal structured output: %v", err)
+	}
+	if len(out.ManualProbes) != 0 {
+		t.Fatalf("manual probes len = %d, want 0", len(out.ManualProbes))
+	}
+	if len(out.AutomatedChecks) != 0 {
+		t.Fatalf("automated checks len = %d, want 0", len(out.AutomatedChecks))
+	}
+}
+
 func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 	t.Parallel()
 
@@ -301,6 +320,23 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(strings.TrimSpace(groundedReport)) + `,` +
 				`"surface_kind":"web/server","readiness_probe":{"command":"curl /status","output":"HTTP 500"},` +
 				`"manual_probes":[{"command":"curl /status","status":"HTTP 500"}],"automated_checks":[{"command":"go test ./internal/workflow","output":"PASS"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			name:   "structured_json_product_bug_with_scalar_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
+				"## Test Failures\n\n"+
+					"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n"+
+					"Verbatim output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n"+
+					"Expected behavior: the task says the status endpoint should return HTTP 200.\n\n"+
+					"Actual behavior: the endpoint returned HTTP 500.\n\n"+
+					"Current source quote:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n",
+			) + `,"surface_kind":"web","app_started":true,"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"curl /health -> ok","manual_probes":"browser observed the status failure",` +
+				`"automated_checks":"go test ./internal/server -> fail","unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomeProductBug,
 			wantStatus: "completed",
@@ -444,6 +480,18 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_scalar_string_evidence",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev -- --host 127.0.0.1",` +
+				`"readiness_probe":"opened http://127.0.0.1:5173 and app shell rendered",` +
+				`"manual_probes":"Browser UI: opened the task board, clicked the accept action, and observed the task card show accepted.",` +
+				`"automated_checks":"frontend type-check passed; lint passed; unit tests passed; acceptance invariant rg found no raw rejection path","unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:   "pass_with_status_alias_and_surface_alias",
 			status: "completed",
 			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web/server","app_started":true,` +
@@ -463,6 +511,31 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				`"readiness_probe":{"command":"curl http://127.0.0.1:5173/health","status":200},` +
 				`"manual_probes":[{"command":"GET /api/tasks","status":200}],` +
 				`"automated_checks":[{"command":"npm test","status":true}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_rejects_vague_browser_scalar_probe",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev -- --host 127.0.0.1",` +
+				`"readiness_probe":"opened http://127.0.0.1:5173 and app shell rendered",` +
+				`"manual_probes":"browser saw nothing",` +
+				`"automated_checks":"npm run check -> pass","unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "pass_with_browser_ui_string_probe",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,` +
+				`"start_command":"npm run dev",` +
+				`"readiness_probe":"browser loaded the UI and displayed the board",` +
+				`"manual_probes":["Using browser devtools, opened the workflow page, clicked retry, and observed the retry banner become visible."],` +
+				`"automated_checks":["npm run check -> pass"],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
@@ -492,6 +565,17 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_mixed_library_web_surface_requires_manual_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library web UI","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./...","actual":"ok"}],"unable_to_run_reason":"pure library check"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "pass_with_library_exemption_rejects_negated_scalar_check",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,` +
+				`"start_command":"","readiness_probe":"","manual_probes":[],` +
+				`"automated_checks":"unit tests were not run; pass assumed","unable_to_run_reason":"pure internal-library refactor"}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",

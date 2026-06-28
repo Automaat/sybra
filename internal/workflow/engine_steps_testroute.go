@@ -50,17 +50,19 @@ const (
 )
 
 type structuredTestOutput struct {
-	Verdict           string                   `json:"verdict"`
-	Outcome           string                   `json:"outcome,omitempty"`
-	FailuresMarkdown  string                   `json:"failures_markdown,omitempty"`
-	SurfaceKind       string                   `json:"surface_kind,omitempty"`
-	AppStarted        bool                     `json:"app_started,omitempty"`
-	StartCommand      string                   `json:"start_command,omitempty"`
-	ReadinessProbe    evidenceText             `json:"readiness_probe,omitempty"`
-	ManualProbes      []manualProbeEvidence    `json:"manual_probes,omitempty"`
-	AutomatedChecks   []automatedCheckEvidence `json:"automated_checks,omitempty"`
-	UnableToRunReason string                   `json:"unable_to_run_reason,omitempty"`
+	Verdict           string                     `json:"verdict"`
+	Outcome           string                     `json:"outcome,omitempty"`
+	FailuresMarkdown  string                     `json:"failures_markdown,omitempty"`
+	SurfaceKind       string                     `json:"surface_kind,omitempty"`
+	AppStarted        bool                       `json:"app_started,omitempty"`
+	StartCommand      string                     `json:"start_command,omitempty"`
+	ReadinessProbe    evidenceText               `json:"readiness_probe,omitempty"`
+	ManualProbes      manualProbeEvidenceList    `json:"manual_probes,omitempty"`
+	AutomatedChecks   automatedCheckEvidenceList `json:"automated_checks,omitempty"`
+	UnableToRunReason string                     `json:"unable_to_run_reason,omitempty"`
 }
+
+type manualProbeEvidenceList []manualProbeEvidence
 
 type manualProbeEvidence struct {
 	Command  string       `json:"command"`
@@ -71,6 +73,8 @@ type manualProbeEvidence struct {
 	Status   evidenceText `json:"status"`
 	Raw      string       `json:"-"`
 }
+
+type automatedCheckEvidenceList []automatedCheckEvidence
 
 type automatedCheckEvidence struct {
 	Command  string       `json:"command"`
@@ -83,6 +87,33 @@ type automatedCheckEvidence struct {
 
 type evidenceText string
 
+func (l *manualProbeEvidenceList) UnmarshalJSON(data []byte) error {
+	*l = nil
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
+	raw, ok, err := unmarshalEvidenceString(data)
+	if err != nil || ok {
+		if raw != "" {
+			*l = manualProbeEvidenceList{{Raw: raw}}
+		}
+		return err
+	}
+	var one manualProbeEvidence
+	if err := json.Unmarshal(data, &one); err == nil {
+		*l = manualProbeEvidenceList{one}
+		return nil
+	} else if strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		return err
+	}
+	var many []manualProbeEvidence
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*l = many
+	return nil
+}
+
 func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
 		e.Raw = raw
@@ -93,6 +124,33 @@ func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	e.fillAliases()
+	return nil
+}
+
+func (l *automatedCheckEvidenceList) UnmarshalJSON(data []byte) error {
+	*l = nil
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil
+	}
+	raw, ok, err := unmarshalEvidenceString(data)
+	if err != nil || ok {
+		if raw != "" {
+			*l = automatedCheckEvidenceList{{Raw: raw}}
+		}
+		return err
+	}
+	var one automatedCheckEvidence
+	if err := json.Unmarshal(data, &one); err == nil {
+		*l = automatedCheckEvidenceList{one}
+		return nil
+	} else if strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		return err
+	}
+	var many []automatedCheckEvidence
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*l = many
 	return nil
 }
 
@@ -445,7 +503,7 @@ func taskHasAnyTag(t TaskInfo, tags ...string) bool {
 	return false
 }
 
-func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
+func hasManualProbeEvidence(probes manualProbeEvidenceList) bool {
 	for _, p := range probes {
 		if strings.TrimSpace(p.Command) != "" &&
 			(strings.TrimSpace(string(p.Actual)) != "" ||
@@ -461,7 +519,7 @@ func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 	return false
 }
 
-func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
+func hasRegressionCheckEvidence(checks automatedCheckEvidenceList) bool {
 	for _, c := range checks {
 		cmd := strings.ToLower(strings.TrimSpace(c.Command))
 		if cmd == "" || (strings.TrimSpace(string(c.Actual)) == "" &&
@@ -473,10 +531,7 @@ func hasRegressionCheckEvidence(checks []automatedCheckEvidence) bool {
 			}
 			continue
 		}
-		if containsAny(cmd,
-			"go test", "npm test", "npm run test", "npm run check",
-			"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
-			"sybra-cli", "go run", "curl ", "kubectl ") {
+		if hasRegressionCheckCommandEvidence(cmd) {
 			return hasSuccessfulCheckResult(c.Actual, c.Output, c.Observed, c.Status)
 		}
 	}
@@ -559,13 +614,10 @@ func hasRawManualProbeEvidence(raw string) bool {
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower,
-		"curl ", "http://", "https://", "get ", "post ", "put ", "patch ", "delete ", "head ", "options ",
-		"sybra-cli", "kubectl ", "go run ", "npm run ", "click", "opened", "selected", "typed") &&
-		containsAny(lower,
-			"->", "=>", "returned", "created", "observed", "actual",
-			"showed", "visible", "absent", "present", "loaded", "closed",
-			"exposes", "computed", "became", "changed")
+	if hasManualNegativeEvidence(lower) {
+		return false
+	}
+	return hasManualActionEvidence(lower) && hasManualObservationEvidence(lower)
 }
 
 func hasRawRegressionCheckEvidence(raw string) bool {
@@ -573,11 +625,56 @@ func hasRawRegressionCheckEvidence(raw string) bool {
 	if lower == "" {
 		return false
 	}
+	return hasRegressionCheckCommandEvidence(lower) && hasPositiveRegressionEvidence(lower)
+}
+
+func hasManualActionEvidence(lower string) bool {
+	return containsAny(lower,
+		"curl ", "sybra-cli", "kubectl ", "go run ", "npm run ",
+		"get ", "post ", "put ", "patch ", "delete ", "head ", "options ",
+		"http://", "https://") ||
+		containsAny(lower, "click", "clicked", "opened", "visited", "navigated", "typed", "selected", "pressed", "submitted") &&
+			containsAny(lower,
+				" app", " ui", " page", " screen", " board", " card", " button", " action",
+				" banner", " form", " field", " link", " menu", " route", " endpoint",
+				" dialog", " modal", " row", " list", " panel", " tab", " workflow", " task")
+}
+
+func hasManualObservationEvidence(lower string) bool {
+	return containsAny(lower,
+		"->", "=>", "returned", "created", "observed", "actual",
+		"showed", "visible", "absent", "present", "loaded", "closed",
+		"exposes", "computed", "became", "changed",
+		"verified", "displayed", "rendered", "confirmed")
+}
+
+func hasManualNegativeEvidence(lower string) bool {
+	return containsAny(lower,
+		"saw nothing", "nothing changed", "not visible", "not displayed", "not rendered",
+		"did not", "does not", "could not", "failed to")
+}
+
+func hasRegressionCheckCommandEvidence(lower string) bool {
 	return containsAny(lower,
 		"go test", "npm test", "npm run test", "npm run check",
 		"pnpm test", "pnpm run test", "yarn test", "pytest", "cargo test",
-		"sybra-cli", "go run", "curl ", "kubectl ") &&
-		hasSuccessfulCheckResult(evidenceText(raw))
+		"sybra-cli", "go run", "curl ", "kubectl ",
+		"type-check", "typecheck", "lint", "unit test", "unit tests", "acceptance invariant")
+}
+
+func hasPositiveRegressionEvidence(lower string) bool {
+	if hasRegressionNegativeEvidence(lower) {
+		return false
+	}
+	return hasSuccessfulCheckResult(evidenceText(lower))
+}
+
+func hasRegressionNegativeEvidence(lower string) bool {
+	return containsAny(lower,
+		"not run", "not executed", "never ran", "never run", "did not run", "didn't run",
+		"was not run", "were not run", "wasn't run", "weren't run", "could not run",
+		"cannot run", "skipped", "without running", "pass assumed", "assumed pass",
+		"did not pass", "-> fail", "=> fail", " failed", " failure")
 }
 
 func insertClassificationAfterFailuresHeading(report, outcome string) string {
@@ -830,13 +927,14 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasObserved := containsAny(lower,
 		"actual output:", "actual:", "observed:", "observed output:",
 		"command output:", "stdout:", "stderr:", "exit code",
-		"verbatim output:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
+		"verbatim output:", "actual behavior:", "actual behaviour:",
+		"observed behavior:", "observed behaviour:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
 	hasExpected := containsAny(lower,
-		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
-		"violates", "should render", "should not")
+		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
+		"requirement tested:", "task says", "from the task", "violates", "should render", "should not")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
-		".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
+		"current file", "source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
