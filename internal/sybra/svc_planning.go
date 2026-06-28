@@ -131,7 +131,7 @@ func completedPlanReviewRecoveryProblems(t workflow.TaskInfo) []string {
 		}
 	}
 	if strings.TrimSpace(t.PlanContract) != "" {
-		for _, problem := range workflow.ValidatePlanContract(t.PlanContract, t.ID) {
+		for _, problem := range workflow.ValidatePlanContractForTask(t.PlanContract, t.ID, t.Body) {
 			problems = append(problems, "plan_contract "+problem)
 		}
 	}

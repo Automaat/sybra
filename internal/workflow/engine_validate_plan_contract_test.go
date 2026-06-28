@@ -106,6 +106,39 @@ func TestExecValidatePlanContract_RejectsMissingVerificationCriteria(t *testing.
 	}
 }
 
+func TestValidatePlanContractForTask_RequiresSourceAcceptanceCriteria(t *testing.T) {
+	taskBody := "## Problem\nBuild the thing.\n\n" +
+		"## Acceptance Criteria\n\n" +
+		"- First source criterion.\n" +
+		"- Wrapped source criterion is preserved before reuse in any public\n" +
+		"  artifact.\n"
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+		`"acceptance_criteria": ["First source criterion."]`, 1)
+
+	problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody)
+	joined := strings.Join(problems, "\n")
+	if !strings.Contains(joined, "acceptance_criteria missing source criterion") ||
+		!strings.Contains(joined, "Wrapped source criterion is preserved before reuse in any public artifact.") {
+		t.Fatalf("problems = %v, want missing wrapped source criterion", problems)
+	}
+}
+
+func TestValidatePlanContractForTask_AcceptsCopiedSourceAcceptanceCriteria(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"1. First source criterion.\n" +
+		"2. Wrapped source criterion is preserved before reuse in any public\n" +
+		"   artifact.\n\n" +
+		"## Notes\nNot an acceptance criterion.\n"
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+		`"acceptance_criteria": ["First source criterion.", "Wrapped source criterion is preserved before reuse in any public artifact."]`, 1)
+
+	if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+}
+
 func TestExecValidatePlanContract_RejectsMalformedFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
