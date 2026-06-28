@@ -130,13 +130,19 @@ func runCodexTestVerdictPass() {
 		"surface_kind":      "cli",
 		"app_started":       true,
 		"start_command":     "sybra-cli --json list",
-		"readiness_probe":   "sybra-cli --json list",
+		"readiness_probe": map[string]any{
+			"command": "sybra-cli --json list",
+			"status":  "returned JSON task list",
+		},
 		"manual_probes": []map[string]string{{
 			"command":  "sybra-cli --json list",
 			"expected": "returns JSON task list",
-			"actual":   "[]",
+			"output":   "[]",
 		}},
-		"automated_checks":     []map[string]string{},
+		"automated_checks": []map[string]string{{
+			"command": "go test ./internal/workflow",
+			"output":  "ok",
+		}},
 		"unable_to_run_reason": "",
 	}))
 	emitTurnCompleted(100, 20)
@@ -150,13 +156,19 @@ func runCodexTestVerdictFail() {
 		"surface_kind":      "server",
 		"app_started":       true,
 		"start_command":     "go run ./cmd/test-server",
-		"readiness_probe":   "curl /status",
+		"readiness_probe": map[string]any{
+			"command": "curl /status",
+			"output":  "HTTP 500",
+		},
 		"manual_probes": []map[string]string{{
 			"command":  "curl /status",
 			"expected": "expected output",
-			"actual":   "wrong output",
+			"output":   "wrong output",
 		}},
-		"automated_checks":     []map[string]string{},
+		"automated_checks": []map[string]string{{
+			"command": "go test ./internal/workflow",
+			"output":  "ok",
+		}},
 		"unable_to_run_reason": "",
 	}))
 	emitTurnCompleted(100, 20)
