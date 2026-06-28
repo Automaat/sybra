@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -123,43 +124,236 @@ func runExec() {
 }
 
 func runCodexTestVerdictPass() {
-	emitAgentMessage(mustJSON(map[string]any{
+	emitSchemaValidAgentMessage(map[string]any{
 		"verdict":           "PASS",
 		"outcome":           "pass",
 		"failures_markdown": "",
 		"surface_kind":      "cli",
 		"app_started":       true,
 		"start_command":     "sybra-cli --json list",
-		"readiness_probe":   "sybra-cli --json list",
+		"readiness_probe": map[string]any{
+			"command": "sybra-cli --json list",
+			"status":  "returned JSON task list",
+		},
 		"manual_probes": []map[string]string{{
 			"command":  "sybra-cli --json list",
 			"expected": "returns JSON task list",
-			"actual":   "[]",
+			"output":   "[]",
 		}},
-		"automated_checks":     []map[string]string{},
+		"automated_checks": []map[string]string{{
+			"command": "go test ./internal/workflow",
+			"output":  "ok",
+		}},
 		"unable_to_run_reason": "",
-	}))
+	})
 	emitTurnCompleted(100, 20)
 }
 
 func runCodexTestVerdictFail() {
-	emitAgentMessage(mustJSON(map[string]any{
+	emitSchemaValidAgentMessage(map[string]any{
 		"verdict":           "FAIL",
 		"outcome":           "product_bug",
 		"failures_markdown": testFailureReport(),
 		"surface_kind":      "server",
 		"app_started":       true,
 		"start_command":     "go run ./cmd/test-server",
-		"readiness_probe":   "curl /status",
+		"readiness_probe": map[string]any{
+			"command": "curl /status",
+			"output":  "HTTP 500",
+		},
 		"manual_probes": []map[string]string{{
 			"command":  "curl /status",
 			"expected": "expected output",
-			"actual":   "wrong output",
+			"output":   "wrong output",
 		}},
-		"automated_checks":     []map[string]string{},
+		"automated_checks": []map[string]string{{
+			"command": "go test ./internal/workflow",
+			"output":  "ok",
+		}},
 		"unable_to_run_reason": "",
-	}))
+	})
 	emitTurnCompleted(100, 20)
+}
+
+func emitSchemaValidAgentMessage(payload map[string]any) {
+	text := mustJSON(payload)
+	if err := validateAgainstOutputSchema(os.Args, []byte(text)); err != nil {
+		emitError("fake-codex schema validation failed: " + err.Error())
+		os.Exit(2)
+	}
+	emitAgentMessage(text)
+}
+
+func validateAgainstOutputSchema(args []string, payload []byte) error {
+	schemaPath, ok := outputSchemaPath(args)
+	if !ok {
+		return fmt.Errorf("--output-schema missing")
+	}
+	schemaPath = cleanEnvPath(schemaPath)
+	if schemaPath == "" {
+		return fmt.Errorf("--output-schema path is not under %s", os.TempDir())
+	}
+	schemaData, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return fmt.Errorf("read --output-schema: %w", err)
+	}
+
+	var schema any
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		return fmt.Errorf("parse --output-schema: %w", err)
+	}
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return fmt.Errorf("parse payload: %w", err)
+	}
+	return validateJSONSchema(schema, value, "$")
+}
+
+func outputSchemaPath(args []string) (string, bool) {
+	for i, arg := range args {
+		if arg == "--output-schema" && i+1 < len(args) {
+			return args[i+1], true
+		}
+		if path, found := strings.CutPrefix(arg, "--output-schema="); found {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func validateJSONSchema(schema, value any, path string) error {
+	schemaObject, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	schemaType, _ := schemaObject["type"].(string)
+	switch schemaType {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s: expected object", path)
+		}
+		if err := validateObjectSchema(schemaObject, object, path); err != nil {
+			return err
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s: expected array", path)
+		}
+		if itemSchema, ok := schemaObject["items"]; ok {
+			for i, item := range items {
+				if err := validateJSONSchema(itemSchema, item, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+					return err
+				}
+			}
+		}
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s: expected string", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s: expected boolean", path)
+		}
+	case "number":
+		if _, ok := value.(float64); !ok {
+			return fmt.Errorf("%s: expected number", path)
+		}
+	case "":
+		if hasObjectKeywords(schemaObject) {
+			object, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s: expected object", path)
+			}
+			if err := validateObjectSchema(schemaObject, object, path); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%s: unsupported schema type %q", path, schemaType)
+	}
+
+	if enumValues, ok := schemaObject["enum"].([]any); ok {
+		matched := false
+		for _, enumValue := range enumValues {
+			if reflect.DeepEqual(value, enumValue) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("%s: value %v not in enum", path, value)
+		}
+	}
+
+	if variants, ok := schemaObject["anyOf"].([]any); ok {
+		var firstErr error
+		for _, variant := range variants {
+			if err := validateJSONSchema(variant, value, path); err == nil {
+				return nil
+			} else if firstErr == nil {
+				firstErr = err
+			}
+		}
+		return fmt.Errorf("%s: does not match anyOf: %w", path, firstErr)
+	}
+
+	return nil
+}
+
+func hasObjectKeywords(schema map[string]any) bool {
+	_, hasProperties := schema["properties"]
+	_, hasRequired := schema["required"]
+	_, hasAdditional := schema["additionalProperties"]
+	return hasProperties || hasRequired || hasAdditional
+}
+
+func validateObjectSchema(schema, object map[string]any, path string) error {
+	properties := map[string]any{}
+	if rawProperties, ok := schema["properties"].(map[string]any); ok {
+		properties = rawProperties
+	}
+
+	for _, field := range stringList(schema["required"]) {
+		if _, ok := object[field]; !ok {
+			return fmt.Errorf("%s: missing required field %q", path, field)
+		}
+	}
+
+	if allowAdditional, ok := schema["additionalProperties"].(bool); ok && !allowAdditional {
+		for field := range object {
+			if _, ok := properties[field]; !ok {
+				return fmt.Errorf("%s: unexpected field %q", path, field)
+			}
+		}
+	}
+
+	for field, fieldSchema := range properties {
+		fieldValue, ok := object[field]
+		if !ok {
+			continue
+		}
+		if err := validateJSONSchema(fieldSchema, fieldValue, path+"."+field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func stringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func runCodexMalformedPR() {
