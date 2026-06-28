@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -82,7 +83,11 @@ func (s *ApprovalServer) SetManager(m *Manager) {
 
 // Shutdown gracefully stops the HTTP server.
 func (s *ApprovalServer) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	if closeErr := s.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return errors.Join(err, closeErr)
+	}
+	return err
 }
 
 // hookInput matches the JSON the Claude CLI sends to PreToolUse hooks.

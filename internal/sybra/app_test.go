@@ -2,7 +2,9 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +100,39 @@ func TestInitAgentManagerEmitsDegradedWhenSurvivalDisabled(t *testing.T) {
 	}
 	if !slices.Contains(emitted, eventnames.StartupDegraded) {
 		t.Fatalf("expected %s event, got %v", eventnames.StartupDegraded, emitted)
+	}
+}
+
+func TestInitAgentManagerClosesApprovalServerOnFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.Provider = "unknown"
+	cfg.Agent.ApprovalPort = port
+	a := &App{
+		cfg:      cfg,
+		logger:   discardLogger(),
+		logDir:   t.TempDir(),
+		agentSvc: &AgentService{},
+	}
+
+	if err := a.initAgentManager(t.Context(), func(string, any) {}); err == nil {
+		t.Fatal("expected initAgentManager to fail")
+	}
+
+	rebound, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("approval server still bound port %d: %v", port, err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

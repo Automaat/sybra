@@ -233,6 +233,13 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	}
 	if err != nil {
+		if approvalServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if shutdownErr := approvalServer.Shutdown(shutdownCtx); shutdownErr != nil {
+				a.logger.Warn("approval-server.shutdown-after-agent-manager-init-failure", "err", shutdownErr)
+			}
+			cancel()
+		}
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
