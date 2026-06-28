@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +56,105 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 	// Deleting a missing record is not an error.
 	if err := s.Delete("a1"); err != nil {
 		t.Fatalf("Delete missing: %v", err)
+	}
+}
+
+func TestAgentRecordMappingRoundTrip(t *testing.T) {
+	started := time.Date(2026, 6, 28, 20, 30, 0, 0, time.UTC)
+	a := &Agent{
+		ID:              "a-map",
+		TaskID:          "task-map",
+		Name:            "mapper",
+		Mode:            "interactive",
+		Provider:        "codex",
+		Model:           "gpt-5.3-codex",
+		ExperimentID:    "exp-1",
+		VariantID:       "variant-a",
+		AssignmentUnit:  "task",
+		AssignmentKey:   "task-map",
+		PID:             12345,
+		SessionID:       "sess-map",
+		LogPath:         "/tmp/sybra/agents/a-map.ndjson",
+		StartedAt:       started,
+		MaxTurns:        7,
+		ReasoningEffort: "high",
+	}
+	a.sessionCWD = "/tmp/sybra/worktrees/task-map"
+	a.stdinPath = "/tmp/sybra/agents/a-map.stdin"
+	a.oneShot = true
+	a.requirePermissions = true
+
+	want := Record{
+		ID:                 "a-map",
+		TaskID:             "task-map",
+		Name:               "mapper",
+		Mode:               "interactive",
+		Provider:           "codex",
+		Model:              "gpt-5.3-codex",
+		ExperimentID:       "exp-1",
+		VariantID:          "variant-a",
+		AssignmentUnit:     "task",
+		AssignmentKey:      "task-map",
+		PID:                12345,
+		SessionID:          "sess-map",
+		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
+		CWD:                "/tmp/sybra/worktrees/task-map",
+		StartedAt:          started,
+		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
+		OneShot:            true,
+		MaxTurns:           7,
+		RequirePermissions: true,
+		ReasoningEffort:    "high",
+	}
+	assertRecordFixtureCoversFields(t, want, "ProcStartedAt")
+
+	if got := a.toRecord(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("toRecord mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+
+	before := time.Now().UTC()
+	restored := fromRecord(want)
+	after := time.Now().UTC()
+	if got := restored.toRecord(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("fromRecord/toRecord mismatch:\n got: %+v\nwant: %+v", got, want)
+	}
+	if got := restored.GetState(); got != StateRunning {
+		t.Fatalf("fromRecord must force running state, got %s", got)
+	}
+	last := restored.GetLastEventAt()
+	if last.Before(before) || last.After(after) {
+		t.Fatalf("fromRecord must refresh LastEventAt, got %s outside [%s, %s]", last, before, after)
+	}
+	if !restored.isDetached() {
+		t.Fatal("fromRecord must mark the skeleton agent detached")
+	}
+	if restored.cancel != nil || restored.done != nil || restored.promptCh != nil || restored.GetCmd() != nil {
+		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
+	}
+
+	withProcStart := want
+	withProcStart.ProcStartedAt = "Mon Jun 28 20:30:00 2026"
+	if got := fromRecord(withProcStart).toRecord(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ProcStartedAt must stay caller-owned:\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func assertRecordFixtureCoversFields(t *testing.T, rec Record, ignore ...string) {
+	t.Helper()
+	ignored := map[string]struct{}{}
+	for _, field := range ignore {
+		ignored[field] = struct{}{}
+	}
+	value := reflect.ValueOf(rec)
+	typ := value.Type()
+	for i := range value.NumField() {
+		field := typ.Field(i)
+		if _, ok := ignored[field.Name]; ok {
+			continue
+		}
+		if value.Field(i).IsZero() {
+			t.Fatalf("record mapping test fixture does not cover Record.%s", field.Name)
+		}
 	}
 }
 

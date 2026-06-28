@@ -165,6 +165,61 @@ type Agent struct {
 	mu sync.RWMutex
 }
 
+func (a *Agent) toRecord() Record {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return Record{
+		ID:                 a.ID,
+		TaskID:             a.TaskID,
+		Name:               a.Name,
+		Mode:               a.Mode,
+		Provider:           a.Provider,
+		Model:              a.Model,
+		ExperimentID:       a.ExperimentID,
+		VariantID:          a.VariantID,
+		AssignmentUnit:     a.AssignmentUnit,
+		AssignmentKey:      a.AssignmentKey,
+		PID:                a.PID,
+		SessionID:          a.SessionID,
+		LogPath:            a.LogPath,
+		CWD:                a.sessionCWD,
+		StartedAt:          a.StartedAt,
+		StdinPath:          a.stdinPath,
+		OneShot:            a.oneShot,
+		MaxTurns:           a.MaxTurns,
+		RequirePermissions: a.requirePermissions,
+		ReasoningEffort:    a.ReasoningEffort,
+	}
+}
+
+func fromRecord(r Record) *Agent {
+	return &Agent{
+		ID:                 r.ID,
+		TaskID:             r.TaskID,
+		Name:               r.Name,
+		Mode:               r.Mode,
+		Provider:           r.Provider,
+		Model:              r.Model,
+		ExperimentID:       r.ExperimentID,
+		VariantID:          r.VariantID,
+		AssignmentUnit:     r.AssignmentUnit,
+		AssignmentKey:      r.AssignmentKey,
+		PID:                r.PID,
+		SessionID:          r.SessionID,
+		LogPath:            r.LogPath,
+		sessionCWD:         r.CWD,
+		StartedAt:          r.StartedAt,
+		LastEventAt:        time.Now().UTC(),
+		State:              StateRunning,
+		MaxTurns:           r.MaxTurns,
+		oneShot:            r.OneShot,
+		stdinPath:          r.StdinPath,
+		requirePermissions: r.RequirePermissions,
+		ReasoningEffort:    r.ReasoningEffort,
+		detached:           true,
+	}
+}
+
 // SetState atomically updates the agent state.
 func (a *Agent) SetState(s State) {
 	a.mu.Lock()
