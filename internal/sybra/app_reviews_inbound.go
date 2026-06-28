@@ -1,10 +1,12 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
@@ -325,7 +327,8 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
-	var headParentSHAs []string
+	baseOnlyMergeFromReviewed := false
+	headLineageUnknown := false
 	switch {
 	case inReq:
 		headSHA = reqPR.HeadSHA
@@ -341,22 +344,35 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 			headSHA = sha
 		}
 	}
-	if submitted && headSHA != "" && myState.ReviewedSHA != "" && headSHA != myState.ReviewedSHA {
-		if parents, perr := github.FetchCommitParentSHAs(t.ProjectID, headSHA); perr != nil {
-			r.logger.Warn("review.head-parents", "task_id", t.ID, "err", perr)
+	if submitted && !inReq && !myState.Approved && !inApproved && headSHA != "" && myState.ReviewedSHA != "" && headSHA != myState.ReviewedSHA {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		baseOnly, lerr := github.FetchBaseOnlyMergeFromReviewed(ctx, t.ProjectID, t.PRNumber, headSHA, myState.ReviewedSHA)
+		cancel()
+		if lerr != nil {
+			headLineageUnknown = true
+			r.logger.Warn(
+				"review.head-lineage",
+				"task_id", t.ID,
+				"repo", t.ProjectID,
+				"pr", t.PRNumber,
+				"head_sha", headSHA,
+				"reviewed_sha", myState.ReviewedSHA,
+				"err", lerr,
+			)
 		} else {
-			headParentSHAs = parents
+			baseOnlyMergeFromReviewed = baseOnly
 		}
 	}
 
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
-		HasDraft:       myState.Pending,
-		ViewerApproved: myState.Approved || inApproved,
-		Submitted:      submitted,
-		ReRequested:    inReq,
-		HeadSHA:        headSHA,
-		ReviewedSHA:    myState.ReviewedSHA,
-		HeadParentSHAs: headParentSHAs,
+		HasDraft:                  myState.Pending,
+		ViewerApproved:            myState.Approved || inApproved,
+		Submitted:                 submitted,
+		ReRequested:               inReq,
+		HeadSHA:                   headSHA,
+		ReviewedSHA:               myState.ReviewedSHA,
+		HeadLineageUnknown:        headLineageUnknown,
+		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
 }
 

@@ -49,8 +49,9 @@ func isTransientGHError(out []byte, err error) bool {
 }
 
 type ttlCache[T any] struct {
-	mu    sync.RWMutex
-	items map[string]ttlCacheEntry[T]
+	mu         sync.RWMutex
+	items      map[string]ttlCacheEntry[T]
+	maxEntries int
 }
 
 type ttlCacheEntry[T any] struct {
@@ -60,6 +61,10 @@ type ttlCacheEntry[T any] struct {
 
 func newTTLCache[T any]() *ttlCache[T] {
 	return &ttlCache[T]{items: make(map[string]ttlCacheEntry[T])}
+}
+
+func newBoundedTTLCache[T any](maxEntries int) *ttlCache[T] {
+	return &ttlCache[T]{items: make(map[string]ttlCacheEntry[T]), maxEntries: maxEntries}
 }
 
 func (c *ttlCache[T]) Get(key string) (T, bool) {
@@ -91,12 +96,39 @@ func (c *ttlCache[T]) GetStale(key string) (T, bool) {
 }
 
 func (c *ttlCache[T]) Set(key string, value T, ttl time.Duration) {
+	now := time.Now()
 	c.mu.Lock()
+	c.pruneExpiredLocked(now)
 	c.items[key] = ttlCacheEntry[T]{
 		value:     value,
-		expiresAt: time.Now().Add(ttl),
+		expiresAt: now.Add(ttl),
 	}
+	c.evictOverflowLocked()
 	c.mu.Unlock()
+}
+
+func (c *ttlCache[T]) pruneExpiredLocked(now time.Time) {
+	for key, entry := range c.items {
+		if !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
+			delete(c.items, key)
+		}
+	}
+}
+
+func (c *ttlCache[T]) evictOverflowLocked() {
+	for c.maxEntries > 0 && len(c.items) > c.maxEntries {
+		var oldestKey string
+		var oldest time.Time
+		first := true
+		for key, entry := range c.items {
+			if first || entry.expiresAt.Before(oldest) {
+				oldestKey = key
+				oldest = entry.expiresAt
+				first = false
+			}
+		}
+		delete(c.items, oldestKey)
+	}
 }
 
 func (c *ttlCache[T]) Delete(key string) {
@@ -328,6 +360,7 @@ func invalidatePRCaches(repo string, number int) {
 	prFilesCache.Delete(key)
 	prBranchCache.Delete(key)
 	prHeadSHACache.Delete(key)
+	prBaseSHACache.Delete(key)
 	prContextCache.Delete(key)
 	prClosingIssuesCache.Delete(key)
 	pendingReviewCache.Delete(key)
@@ -347,7 +380,8 @@ var (
 	prFilesCache         = newTTLCache[[]string]()
 	prBranchCache        = newTTLCache[string]()
 	prHeadSHACache       = newTTLCache[string]()
-	commitParentsCache   = newTTLCache[[]string]()
+	prBaseSHACache       = newTTLCache[string]()
+	commitParentsCache   = newBoundedTTLCache[[]string](512)
 	prContextCache       = newTTLCache[PRContext]()
 	prClosingIssuesCache = newTTLCache[prClosingIssuesResult]()
 	pendingReviewCache   = newTTLCache[bool]()

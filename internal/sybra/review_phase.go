@@ -32,15 +32,16 @@ const (
 // reviewSignals are the live GitHub facts about a review task's PR, gathered
 // from the review summary plus the per-PR reviews endpoint.
 type reviewSignals struct {
-	AgentRunning   bool     // a review agent is running for this task
-	HasDraft       bool     // viewer has a PENDING (unsubmitted) review
-	ViewerApproved bool     // viewer's latest submitted review is an approval
-	Submitted      bool     // viewer has a submitted (non-draft) review
-	ReRequested    bool     // PR is back in viewer's review-requested list
-	HeadSHA        string   // current PR head commit ("" if unknown)
-	ReviewedSHA    string   // commit the viewer's latest review was made against
-	HeadParentSHAs []string // current PR head parents in Git parent order
-	Mergeable      string   // MERGEABLE, CONFLICTING, UNKNOWN, or ""
+	AgentRunning              bool   // a review agent is running for this task
+	HasDraft                  bool   // viewer has a PENDING (unsubmitted) review
+	ViewerApproved            bool   // viewer's latest submitted review is an approval
+	Submitted                 bool   // viewer has a submitted (non-draft) review
+	ReRequested               bool   // PR is back in viewer's review-requested list
+	HeadSHA                   string // current PR head commit ("" if unknown)
+	ReviewedSHA               string // commit the viewer's latest review was made against
+	HeadLineageUnknown        bool   // head changed, but GitHub lineage lookup failed
+	BaseOnlyMergeFromReviewed bool   // head only merged base into the reviewed commit
+	Mergeable                 string // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 }
 
 // reviewPhaseResult is the desired task state for a review task.
@@ -154,7 +155,7 @@ func reviewAdvancedPastReviewed(s reviewSignals) bool {
 	if s.HeadSHA == "" || s.ReviewedSHA == "" || s.HeadSHA == s.ReviewedSHA {
 		return false
 	}
-	if len(s.HeadParentSHAs) >= 2 && s.HeadParentSHAs[0] == s.ReviewedSHA {
+	if s.HeadLineageUnknown || s.BaseOnlyMergeFromReviewed {
 		return false
 	}
 	return true

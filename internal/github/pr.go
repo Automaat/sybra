@@ -267,14 +267,45 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 	return raw.HeadRefOid, nil
 }
 
-// FetchCommitParentSHAs returns a commit's parent SHAs in Git's parent order.
-func FetchCommitParentSHAs(repo, sha string) ([]string, error) {
-	return fetchCommitParentSHAsWith(defaultExecer, repo, sha)
+// FetchPRBaseSHAContext is a context-bounded lookup for the current base commit
+// SHA of a PR.
+func FetchPRBaseSHAContext(ctx context.Context, repo string, number int) (string, error) {
+	key := prCacheKey(repo, number)
+	if cached, ok := prBaseSHACache.Get(key); ok {
+		return cached, nil
+	}
+	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "baseRefOid")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view %d base: %s: %w", number, sanitizeGHOutput(out), err)
+	}
+	var raw struct {
+		BaseRefOid string `json:"baseRefOid"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return "", fmt.Errorf("parse pr base: %w", err)
+	}
+	prBaseSHACache.Set(key, raw.BaseRefOid, 30*time.Second)
+	return raw.BaseRefOid, nil
 }
 
-func fetchCommitParentSHAsWith(e execer, repo, sha string) ([]string, error) {
+// FetchCommitParentSHAs returns a commit's parent SHAs in Git's parent order.
+func FetchCommitParentSHAs(repo, sha string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return FetchCommitParentSHAsContext(ctx, repo, sha)
+}
+
+// FetchCommitParentSHAsContext is a context-bounded FetchCommitParentSHAs.
+func FetchCommitParentSHAsContext(ctx context.Context, repo, sha string) ([]string, error) {
+	return fetchCommitParentSHAsWith(ctx, defaultExecer, repo, sha)
+}
+
+func fetchCommitParentSHAsWith(ctx context.Context, e execer, repo, sha string) ([]string, error) {
 	if strings.TrimSpace(sha) == "" {
 		return nil, fmt.Errorf("fetch commit parents for %s: empty sha", repo)
+	}
+	if !isCommitSHA(sha) {
+		return nil, fmt.Errorf("fetch commit parents for %s: invalid commit sha %q", repo, sha)
 	}
 	key := repo + "@" + sha
 	if runtimeCacheEnabled(e) {
@@ -283,7 +314,7 @@ func fetchCommitParentSHAsWith(e execer, repo, sha string) ([]string, error) {
 		}
 	}
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/commits/%s", repo, sha), "--jq", ".parents[].sha")
+	resp, err := runGHAPICtxWith(ctx, e, "30s", fmt.Sprintf("repos/%s/commits/%s", repo, sha), "--jq", ".parents[].sha")
 	if err != nil {
 		return nil, fmt.Errorf("gh api commit %s: %s: %w", sha, sanitizeGHOutput(resp.body), err)
 	}
@@ -292,6 +323,48 @@ func fetchCommitParentSHAsWith(e execer, repo, sha string) ([]string, error) {
 		commitParentsCache.Set(key, append([]string(nil), parents...), 5*time.Minute)
 	}
 	return parents, nil
+}
+
+// FetchBaseOnlyMergeFromReviewed reports whether head is a two-parent merge
+// commit whose first parent is the reviewed commit and whose second parent is
+// reachable from the PR base branch. If any GitHub lookup fails the caller
+// should treat the lineage as unknown, not as author advancement.
+func FetchBaseOnlyMergeFromReviewed(ctx context.Context, repo string, number int, headSHA, reviewedSHA string) (bool, error) {
+	parents, err := FetchCommitParentSHAsContext(ctx, repo, headSHA)
+	if err != nil {
+		return false, err
+	}
+	if len(parents) != 2 || parents[0] != reviewedSHA {
+		return false, nil
+	}
+	baseSHA, err := FetchPRBaseSHAContext(ctx, repo, number)
+	if err != nil {
+		return false, err
+	}
+	cmp, err := FetchPRCompare(ctx, repo, parents[1], baseSHA)
+	if err != nil {
+		return false, err
+	}
+	return isBaseOnlyMergeFromReviewed(parents, reviewedSHA, cmp.Status), nil
+}
+
+func isCommitSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func isBaseOnlyMergeFromReviewed(parents []string, reviewedSHA, baseCompareStatus string) bool {
+	if len(parents) != 2 || parents[0] != reviewedSHA {
+		return false
+	}
+	return baseCompareStatus == "identical" || baseCompareStatus == "ahead"
 }
 
 func parseCommitParentSHAs(out []byte) []string {

@@ -64,12 +64,17 @@ func TestComputeReviewPhase(t *testing.T) {
 		},
 		{
 			name: "base-only merge commit after review → still awaiting author",
-			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1", HeadParentSHAs: []string{"sha1", "base"}},
+			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1", BaseOnlyMergeFromReviewed: true},
+			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
+		},
+		{
+			name: "changed head with unknown lineage → fail closed awaiting author",
+			sig:  reviewSignals{Submitted: true, HeadSHA: "sha2", ReviewedSHA: "sha1", HeadLineageUnknown: true},
 			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
 		},
 		{
 			name: "merge commit after author fix → needs approval",
-			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1", HeadParentSHAs: []string{"fix", "base"}},
+			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1"},
 			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
 		},
 		{
