@@ -12,7 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 )
 
-// NOTE on concurrency: Agent has two distinct mutexes.
+// NOTE on concurrency: Agent has distinct mutexes.
 //   - mu: guards all mutable scalar and slice fields (State, outputBuffer,
 //     convoBuffer, LastEventAt, CostUSD, TurnCount, SessionID, ExitErr,
 //     cmd, PID, LogPath, EscalationReason). Use the helper methods
@@ -22,6 +22,10 @@ import (
 //     goroutine may hold it for the duration of a blocking Write, and
 //     we do not want to starve other consumers that only need to read
 //     State or append an event.
+//   - loops owns its own lock for loop-detection state. Runner write paths and
+//     watchdog read/ack paths intentionally observe loop state independently
+//     from Agent.mu-protected fields; do not assume atomic snapshots across
+//     those lock domains.
 
 type State string
 
@@ -69,19 +73,7 @@ type Agent struct {
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
 	// landed PR) can be measured. Tracked in-memory during the run.
 	ToolCalls int `json:"toolCalls,omitempty"`
-	// lastToolSig / toolLoopStreak track consecutive identical tool-call
-	// signatures so the watchdog can detect an agent looping on the same call
-	// in real time (it never stalls, so the stall trigger misses it). Guarded
-	// by mu; updated from the headless stream via NoteToolSignature.
-	lastToolSig    string
-	toolLoopStreak int
-	// loopAckSig is the signature the watchdog has already inspected and
-	// decided not to kill. While it equals lastToolSig the loop trigger is
-	// suppressed, so a cleared (or legitimately repetitive) loop is not
-	// re-inspected every debounce window — and a now-frozen high streak no
-	// longer masks the stall trigger. Cleared implicitly when the signature
-	// changes (a genuinely new loop re-arms the trigger).
-	loopAckSig string
+	loops     loopDetector
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// oneShot marks workflow-owned interactive runs that must complete after
@@ -424,46 +416,27 @@ func (a *Agent) GetToolCalls() int {
 // reasoning between identical calls does not reset a genuine loop. A new
 // signature resets the streak to 1.
 func (a *Agent) NoteToolSignature(sig string) int {
-	if sig == "" {
-		a.mu.RLock()
-		defer a.mu.RUnlock()
-		return a.toolLoopStreak
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if sig == a.lastToolSig {
-		a.toolLoopStreak++
-	} else {
-		a.lastToolSig = sig
-		a.toolLoopStreak = 1
-	}
-	return a.toolLoopStreak
+	return a.loops.noteSignature(sig)
 }
 
 // ToolLoopStreak returns the current count of consecutive identical tool-call
 // signatures. A high value means the agent is repeating the same call.
 func (a *Agent) ToolLoopStreak() int {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.toolLoopStreak
+	return a.loops.currentStreak()
 }
 
 // AckToolLoop records the current loop signature as already inspected, so the
 // watchdog does not re-trigger on the same unchanged loop. Called after a
 // loop-triggered inspection whose verdict left the agent running.
 func (a *Agent) AckToolLoop() {
-	a.mu.Lock()
-	a.loopAckSig = a.lastToolSig
-	a.mu.Unlock()
+	a.loops.ack()
 }
 
 // ToolLoopAcknowledged reports whether the current loop signature has already
 // been inspected (and the agent left running). True suppresses the loop
 // trigger until the signature changes.
 func (a *Agent) ToolLoopAcknowledged() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.loopAckSig != "" && a.loopAckSig == a.lastToolSig
+	return a.loops.acknowledged()
 }
 
 // SetEscalationReason updates the escalation reason string.
