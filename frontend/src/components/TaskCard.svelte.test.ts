@@ -87,6 +87,29 @@ describe('TaskCard', () => {
     expect(screen.getByText('backend')).toBeDefined()
   })
 
+  it('shows umbrella progress for tracker cards', () => {
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, taskType: 'umbrella' } as Task,
+        umbrellaProgress: { done: 3, total: 10 },
+        onclick: () => {},
+      },
+    })
+    expect(screen.getByText('3/10')).toBeDefined()
+    expect(screen.getByTitle('3/10 subissues complete')).toBeDefined()
+  })
+
+  it('hides empty umbrella progress', () => {
+    render(TaskCard, {
+      props: {
+        task: { ...mockTask, taskType: 'umbrella' } as Task,
+        umbrellaProgress: { done: 0, total: 0 },
+        onclick: () => {},
+      },
+    })
+    expect(screen.queryByText('0/0')).toBeNull()
+  })
+
   it('does not render tags section when empty', () => {
     const taskNoTags = { ...mockTask, tags: [] }
     render(TaskCard, { props: { task: taskNoTags, onclick: () => {} } })
