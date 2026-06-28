@@ -9,17 +9,19 @@
   import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
+  import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import StatusPicker from './StatusPicker.svelte'
   import Pill from './Pill.svelte'
 
   interface Props {
     task: Task
+    umbrellaProgress?: UmbrellaProgress | null
     onclick: () => void
     focused?: boolean
     onstatuschange?: (status: string) => void
   }
 
-  const { task: t, onclick, focused = false, onstatuschange }: Props = $props()
+  const { task: t, umbrellaProgress = null, onclick, focused = false, onstatuschange }: Props = $props()
 
   let dragging = $state(false)
   let moveMenuOpen = $state(false)
@@ -145,6 +147,12 @@
       <Pill role="project" title={t.projectId}>
         <span class="h-2 w-2 shrink-0 rounded-full" style={projectDotStyle(t.projectId)}></span>
         {projectShortName(t.projectId)}
+      </Pill>
+    {/if}
+
+    {#if t.taskType === 'umbrella' && umbrellaProgress && umbrellaProgress.total > 0}
+      <Pill role="reference" title="{umbrellaProgress.done}/{umbrellaProgress.total} subissues complete">
+        {umbrellaProgress.done}/{umbrellaProgress.total}
       </Pill>
     {/if}
 

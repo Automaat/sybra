@@ -2,6 +2,7 @@
   import { ChevronDown } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { BoardColumn } from '../lib/statuses.js'
+  import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import TaskCard from './TaskCard.svelte'
   import InlineTaskAdd from './InlineTaskAdd.svelte'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -14,6 +15,7 @@
     visibleColumns: BoardColumn[]
     /** Tasks for a given column's statuses. Caller filters; we render. */
     columnTasks: (col: BoardColumn) => Task[]
+    umbrellaProgress?: (task: Task) => UmbrellaProgress | null
     focusedTaskId: string | null
     collapsedColumns: Set<string>
     onselect: (id: string) => void
@@ -24,6 +26,7 @@
   const {
     visibleColumns,
     columnTasks,
+    umbrellaProgress = () => null,
     focusedTaskId,
     collapsedColumns,
     onselect,
@@ -180,6 +183,7 @@
             >
               <TaskCard
                 task={t}
+                umbrellaProgress={umbrellaProgress(t)}
                 onclick={() => onselect(t.id)}
                 focused={focusedTaskId === t.id}
                 onstatuschange={(s) => onmove(t.id, s)}

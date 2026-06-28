@@ -7,6 +7,11 @@
   import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
   import { isInboundReview, reviewPhaseNeedsYou, reviewPhaseRank } from '../lib/review-phase.js'
   import { prPhaseRank, prPhaseNeedsYou } from '../lib/pr-phase.js'
+  import {
+    buildUmbrellaProgress,
+    progressForUmbrellaTracker,
+    type UmbrellaProgress,
+  } from '../lib/umbrella-progress.js'
   import { navStore } from '../lib/navigation.svelte.js'
   import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
@@ -93,6 +98,12 @@
       if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     })
+  }
+
+  const umbrellaProgressByIssue = $derived(buildUmbrellaProgress(taskStore.list))
+
+  function umbrellaProgress(t: Task): UmbrellaProgress | null {
+    return progressForUmbrellaTracker(t, umbrellaProgressByIssue)
   }
 
   // The To Review lane: every active inbound review task, sorted so the
@@ -428,6 +439,7 @@
     <TaskBoardView
       visibleColumns={visibleColumns}
       columnTasks={columnTasks}
+      umbrellaProgress={umbrellaProgress}
       focusedTaskId={focusedTaskId}
       collapsedColumns={collapsedColumns}
       onselect={(id) => onselect(id)}

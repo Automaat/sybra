@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -101,6 +102,70 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	}
 	if closes != 1 || gotRepo != "Automaat/sybra" || gotNum != 100 {
 		t.Fatalf("close = %d times repo=%q num=%d, want 1 Automaat/sybra 100", closes, gotRepo, gotNum)
+	}
+}
+
+func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{Body: task.Ptr("Original body.")}); err != nil {
+		t.Fatalf("seed tracker body: %v", err)
+	}
+	mkChild(t, m, "done child", "Automaat/sybra#1", umb, nil, task.StatusDone)
+	mkChild(t, m, "blocked child", "Automaat/sybra#2", umb, nil, task.StatusHumanRequired)
+
+	app.releaseUnblockedChildren()
+
+	body := mustTask(t, m, tracker.ID).Body
+	for _, want := range []string{
+		"Original body.",
+		umbrellaProgressStart,
+		"- [x] done child (#1) — done",
+		"- [ ] blocked child (#2) — human-required",
+		umbrellaProgressEnd,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tracker body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestUmbrellaTrackerBody_ReplacesBlockAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+	children := []umbrellaProgressChild{
+		{title: "first", issue: "Automaat/sybra#1", status: task.StatusDone},
+		{title: "second", issue: "Automaat/sybra#2", status: task.StatusInProgress},
+	}
+	input := "Intro\n\n" +
+		umbrellaProgressStart + "\nold\n" + umbrellaProgressEnd +
+		"\n\nTail"
+
+	got := umbrellaTrackerBody(input, children)
+	if !strings.Contains(got, "Intro\n\n"+umbrellaProgressStart) || !strings.Contains(got, umbrellaProgressEnd+"\n\nTail") {
+		t.Fatalf("body outside generated block was not preserved:\n%s", got)
+	}
+	if strings.Contains(got, "old") {
+		t.Fatalf("old generated block was not replaced:\n%s", got)
+	}
+	if again := umbrellaTrackerBody(got, children); again != got {
+		t.Fatalf("umbrellaTrackerBody is not idempotent:\nfirst:\n%s\nsecond:\n%s", got, again)
+	}
+}
+
+func TestRenderUmbrellaProgressBlock_EmptyChildren(t *testing.T) {
+	t.Parallel()
+	got := renderUmbrellaProgressBlock(nil)
+	for _, want := range []string{
+		umbrellaProgressStart,
+		"## Subissues",
+		"_No materialized subissues._",
+		umbrellaProgressEnd,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress block missing %q:\n%s", want, got)
+		}
 	}
 }
 

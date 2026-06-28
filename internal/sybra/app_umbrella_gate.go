@@ -1,7 +1,9 @@
 package sybra
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/github"
@@ -30,7 +32,20 @@ type umbrellaState struct {
 	anyHR        bool
 	anyCancelled bool
 	released     int // children released so far this tick (counts toward the cap)
+	children     []umbrellaProgressChild
 }
+
+type umbrellaProgressChild struct {
+	id     string
+	title  string
+	issue  string
+	status task.Status
+}
+
+const (
+	umbrellaProgressStart = "<!-- sybra:umbrella-progress:start -->"
+	umbrellaProgressEnd   = "<!-- sybra:umbrella-progress:end -->"
+)
 
 // releaseUnblockedChildren is the umbrella gate, run every orchestrator tick.
 // It releases gate-blocked children whose dependencies are done — up to each
@@ -69,7 +84,7 @@ func (a *App) releaseUnblockedChildren() {
 		}
 		if t.UmbrellaIssue != "" {
 			hasUmbrella = true
-			accumulateChild(stateFor(t.UmbrellaIssue), t.Status, t.Tags)
+			accumulateChild(stateFor(t.UmbrellaIssue), t)
 		}
 		nodes[i] = umbrella.Node{
 			ID:        t.ID,
@@ -105,9 +120,15 @@ func (a *App) releaseUnblockedChildren() {
 // accumulateChild folds one child task's status into its umbrella's tally.
 // A todo child carrying the gating tag is still waiting for deps — it must not
 // count as active or it would consume a parallelism slot before being released.
-func accumulateChild(st *umbrellaState, status task.Status, tags []string) {
+func accumulateChild(st *umbrellaState, t *task.Task) {
 	st.total++
-	switch status {
+	st.children = append(st.children, umbrellaProgressChild{
+		id:     t.ID,
+		title:  t.Title,
+		issue:  t.Issue,
+		status: t.Status,
+	})
+	switch t.Status {
 	case task.StatusDone:
 		st.doneCount++
 	case task.StatusCancelled:
@@ -119,7 +140,7 @@ func accumulateChild(st *umbrellaState, status task.Status, tags []string) {
 		st.anyHR = true
 		st.active++ // a stuck child still occupies a slot until resolved
 	default:
-		if isRunningChild(status) && !slices.Contains(tags, umbrellaGatedTag) {
+		if isRunningChild(t.Status) && !slices.Contains(t.Tags, umbrellaGatedTag) {
 			st.active++
 		}
 	}
@@ -152,16 +173,27 @@ func (a *App) releaseCapped(ready []string, byID map[string]*task.Task, states m
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
-		if _, err := a.tasks.Update(id, task.Update{
+		updated, err := a.tasks.Update(id, task.Update{
 			Status:       task.Ptr(task.StatusTodo),
 			Tags:         &newTags,
 			StatusReason: task.Ptr("umbrella dependencies satisfied"),
-		}); err != nil {
+		})
+		if err != nil {
 			a.logger.Error("umbrella.release.failed", "task_id", id, "err", err)
 			continue
 		}
+		st.setChildStatus(id, updated.Status)
 		st.released++
 		a.logger.Info("umbrella.child.released", "task_id", id)
+	}
+}
+
+func (st *umbrellaState) setChildStatus(id string, status task.Status) {
+	for i := range st.children {
+		if st.children[i].id == id {
+			st.children[i].status = status
+			return
+		}
 	}
 }
 
@@ -183,6 +215,14 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		settled := !st.tracker.CreatedAt.IsZero() &&
 			time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
 		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
+		if body := umbrellaTrackerBody(st.tracker.Body, st.children); body != st.tracker.Body {
+			if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+				Body: task.Ptr(body),
+			}); err != nil {
+				a.logger.Error("umbrella.tracker.progress.update.failed", "task_id", st.tracker.ID, "err", err)
+				continue
+			}
+		}
 		if desired == st.tracker.Status {
 			continue
 		}
@@ -201,6 +241,74 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		}
 		a.logger.Info("umbrella.tracker.rollup", "task_id", st.tracker.ID, "status", desired)
 	}
+}
+
+func umbrellaTrackerBody(body string, children []umbrellaProgressChild) string {
+	block := renderUmbrellaProgressBlock(children)
+	start := strings.Index(body, umbrellaProgressStart)
+	if start >= 0 {
+		searchFrom := start + len(umbrellaProgressStart)
+		if relEnd := strings.Index(body[searchFrom:], umbrellaProgressEnd); relEnd >= 0 {
+			end := searchFrom + relEnd + len(umbrellaProgressEnd)
+			return body[:start] + block + body[end:]
+		}
+	}
+	if strings.TrimSpace(body) == "" {
+		return block
+	}
+	sep := "\n\n"
+	if strings.HasSuffix(body, "\n\n") {
+		sep = ""
+	} else if strings.HasSuffix(body, "\n") {
+		sep = "\n"
+	}
+	return body + sep + block
+}
+
+func renderUmbrellaProgressBlock(children []umbrellaProgressChild) string {
+	children = slices.Clone(children)
+	slices.SortFunc(children, func(a, b umbrellaProgressChild) int {
+		aIssue := umbrella.NormalizeIssueRef(a.issue)
+		bIssue := umbrella.NormalizeIssueRef(b.issue)
+		if aIssue != bIssue {
+			return strings.Compare(aIssue, bIssue)
+		}
+		return strings.Compare(a.title, b.title)
+	})
+
+	var b strings.Builder
+	b.WriteString(umbrellaProgressStart)
+	b.WriteString("\n## Subissues\n\n")
+	if len(children) == 0 {
+		b.WriteString("_No materialized subissues._\n")
+	} else {
+		for _, child := range children {
+			box := " "
+			if child.status == task.StatusDone {
+				box = "x"
+			}
+			fmt.Fprintf(&b, "- [%s] %s%s — %s\n",
+				box,
+				strings.ReplaceAll(child.title, "\n", " "),
+				umbrellaProgressIssueSuffix(child.issue),
+				child.status,
+			)
+		}
+	}
+	b.WriteString(umbrellaProgressEnd)
+	return b.String()
+}
+
+func umbrellaProgressIssueSuffix(ref string) string {
+	_, n, ok := umbrella.ParseRef(ref)
+	if ok {
+		return fmt.Sprintf(" (#%d)", n)
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	return " (" + ref + ")"
 }
 
 // trackerRollup decides an umbrella tracker's status from its children. A
