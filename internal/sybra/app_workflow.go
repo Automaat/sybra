@@ -536,7 +536,7 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.cfg == nil {
 		return
 	}
-	if role != agent.RolePlan || !a.agentOrch.cfg.Experience.Enabled || t.ProjectID == "" {
+	if !roleReceivesExperience(role) || !a.agentOrch.cfg.Experience.Enabled || t.ProjectID == "" {
 		return
 	}
 	projStore := a.projects
@@ -564,13 +564,17 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	for i := range records {
 		ids = append(ids, records[i].TaskID)
 	}
-	data := map[string]any{"record_ids": ids}
+	data := map[string]any{"record_ids": ids, "role": string(role)}
 	if proj.Type == project.ProjectTypeWork {
 		data["project_key"] = projectKey
 	} else {
 		data["project_id"] = t.ProjectID
 	}
 	a.agentOrch.logAudit(audit.EventExperienceInjected, t.ID, "", data)
+}
+
+func roleReceivesExperience(role agent.Role) bool {
+	return role == agent.RolePlan || role == agent.RoleTriage
 }
 
 func (a *agentAdapter) ensureTestRunnerCapacity(role agent.Role) error {
