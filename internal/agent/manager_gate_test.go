@@ -99,16 +99,16 @@ func TestLimitPolicy_DefensiveCopiesMaps(t *testing.T) {
 	policy.ProviderEnabled[limits.ProviderCodex] = true
 	policy.SubscriptionMonthlyUSD[limits.ProviderCodex] = 200
 
-	m.SetLimitGate(nil, policy)
+	m.UpdateRuntimeConfig(ManagerRuntimeConfig{LimitPolicy: policy})
 	policy.ProviderEnabled[limits.ProviderCodex] = false
 	policy.SubscriptionMonthlyUSD[limits.ProviderCodex] = 0
 
 	got := m.LimitPolicy()
 	if !got.ProviderEnabled[limits.ProviderCodex] {
-		t.Fatal("SetLimitGate retained caller-owned ProviderEnabled map")
+		t.Fatal("UpdateRuntimeConfig retained caller-owned ProviderEnabled map")
 	}
 	if got.SubscriptionMonthlyUSD[limits.ProviderCodex] != 200 {
-		t.Fatalf("SetLimitGate retained caller-owned SubscriptionMonthlyUSD map: %+v", got.SubscriptionMonthlyUSD)
+		t.Fatalf("UpdateRuntimeConfig retained caller-owned SubscriptionMonthlyUSD map: %+v", got.SubscriptionMonthlyUSD)
 	}
 
 	got.ProviderEnabled[limits.ProviderCodex] = false

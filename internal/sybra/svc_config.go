@@ -126,7 +126,7 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 }
 
 // applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
-// calls the corresponding live setters. s.mu must be held by the caller.
+// pushes the manager settings that are intentionally live. s.mu must be held by the caller.
 // This never writes to disk — callers that need persistence must call s.cfg.Save().
 func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.cfg.Agent = next.Agent
@@ -148,18 +148,17 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
 	s.cfg.ProjectTypes = next.ProjectTypes
-
 	s.notifier.SetDesktop(next.Notification.Desktop)
-	s.agents.SetMaxConcurrent(next.Agent.MaxConcurrent)
-	s.agents.SetDefaultProvider(next.Agent.Provider)
-	s.agents.SetBashTimeoutMs(next.BashTimeoutMs())
-	s.agents.SetRetryWatchdog(next.RetryWatchdog())
-	s.agents.SetFallbackModel(next.Agent.FallbackModel)
-	s.agents.SetGuardrails(agent.Guardrails{
-		MaxCostUSD: next.Agent.MaxCostUSD,
-		MaxTurns:   next.Agent.MaxTurns,
-	})
-	s.refreshLimitGate()
+	s.notifier.SetDesktop(next.Notification.Desktop)
+	s.refreshAgentRuntimeConfig(next)
+	if s.agents != nil {
+		s.agents.SetGuardrails(agent.Guardrails{
+			MaxCostUSD:       next.Agent.MaxCostUSD,
+			MaxTurns:         next.Agent.MaxTurns,
+			TurnCostFraction: next.Agent.TurnCostFraction,
+			TurnMultiplier:   next.Agent.TurnMultiplier,
+		})
+	}
 	if s.logLevel != nil {
 		s.logLevel.Set(s.cfg.Logging.SlogLevel())
 	}
@@ -168,15 +167,27 @@ func (s *ConfigService) applyFromConfig(next config.Config) {
 	}
 }
 
-func (s *ConfigService) refreshLimitGate() {
-	if s.agents == nil || s.limits == nil {
+func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) {
+	if s.agents == nil {
 		return
 	}
+	s.agents.UpdateRuntimeConfig(s.managerRuntimeConfig(next))
+}
+
+func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRuntimeConfig {
 	policy := limits.DefaultPolicy()
 	if s.policy != nil {
 		policy = s.policy()
 	}
-	s.agents.SetLimitGate(s.limits, policy)
+	return agent.ManagerRuntimeConfig{
+		MaxConcurrent:   cfg.Agent.MaxConcurrent,
+		DefaultProvider: cfg.Agent.Provider,
+		BashTimeoutMs:   cfg.BashTimeoutMs(),
+		RetryWatchdog:   cfg.RetryWatchdog(),
+		FallbackModel:   cfg.Agent.FallbackModel,
+		LimitGate:       s.limits,
+		LimitPolicy:     policy,
+	}
 }
 
 // settingsToConfig converts AppSettings into a config.Config overlay, filling

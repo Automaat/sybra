@@ -11,13 +11,13 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 )
 
-func newOrchSvcForTest(t *testing.T) (*OrchestratorService, *agent.Manager) {
+func newOrchSvcForTest(t *testing.T, cfgs ...agent.ManagerConfig) (*OrchestratorService, *agent.Manager) {
 	t.Helper()
 	ctx := t.Context()
 	logger := slog.New(slog.DiscardHandler)
 	emitted := make(chan struct{}, 16)
 	emit := func(string, any) { emitted <- struct{}{} }
-	mgr := agent.NewManager(ctx, emit, logger, t.TempDir())
+	mgr := newTestAgentManager(t, ctx, emit, logger, t.TempDir(), cfgs...)
 	svc := &OrchestratorService{
 		agents: mgr,
 		logger: logger,
@@ -145,8 +145,7 @@ func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
 	t.Setenv("SYBRA_HOME", t.TempDir())
 
-	svc, mgr := newOrchSvcForTest(t)
-	mgr.SetMaxConcurrent(1)
+	svc, mgr := newOrchSvcForTest(t, agent.ManagerConfig{Runtime: agent.ManagerRuntimeConfig{MaxConcurrent: 1}})
 	t.Cleanup(func() { _ = svc.StopOrchestrator() })
 
 	// Fill the single slot with a normal agent.

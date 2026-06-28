@@ -155,8 +155,9 @@ func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E
 		t.Fatal(err)
 	}
 	logger := e2eLogger()
-	agentMgr := agent.NewManager(ctx, func(string, any) {}, logger, agentLogDir)
-	agentMgr.SetDefaultProvider("claude")
+	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, agentLogDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
 
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: wtDir,

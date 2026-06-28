@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -172,12 +173,6 @@ func (a *App) initLimits() {
 	}
 	a.limits = limitStore
 	policy := a.limitPolicy()
-	a.agents.SetLimitGate(limitStore, policy)
-	a.agents.SetLimitSink(func(snapshot limits.Snapshot) {
-		if err := limitStore.UpdateSnapshot(snapshot); err != nil {
-			a.logger.Warn("limits.snapshot", "provider", snapshot.Provider, "err", err)
-		}
-	})
 	if policy.Enabled {
 		cutoff := time.Now().AddDate(0, 0, -a.cfg.Providers.Limits.BackfillDays)
 		backfillCtx := a.ctx
@@ -199,6 +194,92 @@ func (a *App) initLimits() {
 			a.startLiveLimitPolling(a.ctx, limitStore, policy)
 		}
 	}
+}
+
+func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
+	cfg := agent.ManagerConfig{
+		Runtime:      a.agentRuntimeConfig(a.cfg),
+		OnComplete:   a.onAgentComplete,
+		ApprovalAddr: approvalAddr,
+		SessionSink: func(taskID, agentID, sessionID string) error {
+			return a.tasks.UpdateRun(taskID, agentID, map[string]any{"session_id": sessionID})
+		},
+		TaskExists: a.taskExistsForAgent,
+		LimitSink:  a.recordLimitSnapshot,
+	}
+	if a.cfg.SurviveRestartEnabled() {
+		cfg.SurviveRestartDir = config.AgentsDir()
+	}
+	return cfg
+}
+
+func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
+	approvalServer, approvalAddr := a.startApprovalServer(emit)
+	agentCfg := a.agentManagerConfig(approvalAddr)
+	var err error
+	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
+	if err != nil && agentCfg.SurviveRestartDir != "" {
+		a.logger.Error("agent.survive-restart.init", "err", err)
+		agentCfg.SurviveRestartDir = ""
+		a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
+	}
+	if err != nil {
+		a.logger.Error("agent.manager.init", "err", err)
+		return fmt.Errorf("agent manager: %w", err)
+	}
+	if agentCfg.SurviveRestartDir != "" {
+		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
+	}
+	if approvalServer != nil {
+		approvalServer.SetManager(a.agents)
+		a.agentSvc.approval = approvalServer
+	}
+	return nil
+}
+
+func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig {
+	policy := limits.DefaultPolicy()
+	if a.limits != nil {
+		policy = a.limitPolicy()
+	}
+	return agent.ManagerRuntimeConfig{
+		MaxConcurrent:   cfg.Agent.MaxConcurrent,
+		DefaultProvider: cfg.Agent.Provider,
+		BashTimeoutMs:   cfg.BashTimeoutMs(),
+		RetryWatchdog:   cfg.RetryWatchdog(),
+		FallbackModel:   cfg.Agent.FallbackModel,
+		LimitGate:       a.limits,
+		LimitPolicy:     policy,
+	}
+}
+
+func (a *App) onAgentComplete(ag *agent.Agent) {
+	if a.agentCompletion == nil {
+		a.logger.Warn("agent.complete.unwired", "id", ag.ID, "task_id", ag.TaskID)
+		return
+	}
+	a.agentCompletion.OnComplete(ag)
+}
+
+func (a *App) recordLimitSnapshot(snapshot limits.Snapshot) {
+	if a.limits == nil {
+		return
+	}
+	if err := a.limits.UpdateSnapshot(snapshot); err != nil {
+		a.logger.Warn("limits.snapshot", "provider", snapshot.Provider, "err", err)
+	}
+}
+
+func (a *App) taskExistsForAgent(taskID string) bool {
+	_, err := a.tasks.Get(taskID)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
+	return true
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
@@ -522,43 +603,11 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}
 	a.workflowEngine.SetContext(a.ctx)
-	// SetOnComplete moves to wireServices so the callback closure binds
+	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
 }
 
 func (a *App) initAgentConfig() {
-	a.agents.SetMaxConcurrent(a.cfg.Agent.MaxConcurrent)
-	a.agents.SetBashTimeoutMs(a.cfg.BashTimeoutMs())
-	a.agents.SetRetryWatchdog(a.cfg.RetryWatchdog())
-	a.agents.SetFallbackModel(a.cfg.Agent.FallbackModel)
-	if a.cfg.SurviveRestartEnabled() {
-		if err := a.agents.EnableSurviveRestart(config.AgentsDir()); err != nil {
-			a.logger.Error("agent.survive-restart.init", "err", err)
-		} else {
-			a.logger.Info("agent.survive-restart.enabled", "dir", config.AgentsDir())
-		}
-		// Bridge a crashed agent's session id into its AgentRun on
-		// dead-reattach so restart-stale recovery resumes via --resume. The
-		// error is returned (not swallowed) so the manager retains the
-		// registry record for retry and logs the failure at Warn.
-		a.agents.SetSessionSink(func(taskID, agentID, sessionID string) error {
-			return a.tasks.UpdateRun(taskID, agentID, map[string]any{"session_id": sessionID})
-		})
-		// Skip recreating a codex chat agent whose task was deleted. Only a
-		// definite not-exist returns false; a transient error fails open
-		// (retain the record) so a surviving chat is not lost to a flaky read.
-		a.agents.SetTaskExists(func(taskID string) bool {
-			_, err := a.tasks.Get(taskID)
-			if err == nil {
-				return true
-			}
-			if errors.Is(err, os.ErrNotExist) {
-				return false
-			}
-			a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
-			return true
-		})
-	}
 	a.agents.SetGuardrails(agent.Guardrails{
 		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
 		MaxTurns:         a.cfg.Agent.MaxTurns,
@@ -567,15 +616,13 @@ func (a *App) initAgentConfig() {
 	})
 }
 
-func (a *App) initApprovalServer(emit func(string, any)) {
+func (a *App) startApprovalServer(emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
 	srv, err := agent.NewApprovalServer(emit, a.logger, a.cfg.Agent.ApprovalPort)
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
-		return
+		return nil, ""
 	}
-	srv.SetManager(a.agents)
-	a.agents.SetApprovalAddr(srv.Addr())
-	a.agentSvc.approval = srv
+	return srv, srv.Addr()
 }
 
 func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {

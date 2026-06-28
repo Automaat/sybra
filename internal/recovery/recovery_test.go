@@ -54,7 +54,7 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	tasks := task.NewManager(store, nil)
 
 	logger := discardLogger()
-	agents := agent.NewManager(t.Context(), func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,
@@ -91,7 +91,7 @@ func TestRestartStaleSkipsRecentRun(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
-	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,
@@ -155,7 +155,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
-	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
 	agents.SetHealthGate(fakeGate{rateLimited: true}) // provider rate-limited
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
@@ -220,7 +220,7 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
-	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,
@@ -285,7 +285,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
-	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,
@@ -368,7 +368,7 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
-	agents := agent.NewManager(ctx, func(string, any) {}, logger, t.TempDir())
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: t.TempDir(),
 		Tasks:        tasks,

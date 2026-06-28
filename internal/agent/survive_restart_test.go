@@ -119,15 +119,14 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 		t.Fatalf("seed log: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var completed atomic.Bool
 	var completedID atomic.Value
-	m.SetOnComplete(func(ag *Agent) {
-		completedID.Store(ag.ID)
-		completed.Store(true)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete: func(ag *Agent) {
+			completedID.Store(ag.ID)
+			completed.Store(true)
+		},
 	})
 
 	// Live helper: after a short delay append a terminal result, then exit.
@@ -201,10 +200,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 // TestReattachAll_DropsDeadRecords verifies a record whose process is gone
 // is deleted and not reattached.
 func TestReattachAll_DropsDeadRecords(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: t.TempDir()})
 	// PID 0 is never alive.
 	if err := m.reg.Save(Record{ID: "dead1", Mode: "headless", Provider: "claude", PID: 0}); err != nil {
 		t.Fatalf("save: %v", err)
@@ -222,7 +218,7 @@ func TestReattachAll_DropsDeadRecords(t *testing.T) {
 // was intentionally stopped, but survives (exited=false) on a plain app
 // shutdown.
 func TestTailHeadlessFile_StopVsShutdown(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 	logPath := filepath.Join(t.TempDir(), "tail.ndjson")
 	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -263,7 +259,7 @@ func TestTailHeadlessFile_StopVsShutdown(t *testing.T) {
 // returns the byte offset after the last COMPLETE line, not raw bytes read
 // — so a resume never skips the start of a still-incomplete trailing line.
 func TestTailHeadlessFile_EndOffsetExcludesPartialLine(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 	logPath := filepath.Join(t.TempDir(), "tail.ndjson")
 	complete := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}` + "\n"
 	partial := `{"type":"result","result":"in-flight` // no newline yet
@@ -298,12 +294,11 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 		t.Fatalf("write log: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var completedID atomic.Value
-	m.SetOnComplete(func(ag *Agent) { completedID.Store(ag.ID) })
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: t.TempDir(),
+		OnComplete:        func(ag *Agent) { completedID.Store(ag.ID) },
+	})
 
 	// PID 0 -> process gone; log shows a terminal result.
 	if err := m.reg.Save(Record{ID: "comp1", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath}); err != nil {
@@ -327,10 +322,7 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 // otherwise a mid-run crash leaves no session to resume.
 func TestProcessHeadlessLine_CapturesSessionOnInit(t *testing.T) {
 	regDir := t.TempDir()
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	if err := m.EnableSurviveRestart(regDir); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: regDir})
 	a := &Agent{ID: "cap1", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
 	var lastEmit time.Time
 
@@ -364,16 +356,15 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
 	var gotTask, gotAgent, gotSession atomic.Value
-	m.SetSessionSink(func(taskID, agentID, sessionID string) error {
-		gotTask.Store(taskID)
-		gotAgent.Store(agentID)
-		gotSession.Store(sessionID)
-		return nil
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: t.TempDir(),
+		SessionSink: func(taskID, agentID, sessionID string) error {
+			gotTask.Store(taskID)
+			gotAgent.Store(agentID)
+			gotSession.Store(sessionID)
+			return nil
+		},
 	})
 
 	// Dead process (PID 0), session captured in the registry record.
@@ -410,11 +401,10 @@ func TestReattachAll_RetainsRecordWhenBridgeFails(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
-	if err := m.EnableSurviveRestart(t.TempDir()); err != nil {
-		t.Fatalf("EnableSurviveRestart: %v", err)
-	}
-	m.SetSessionSink(func(_, _, _ string) error { return fmt.Errorf("task store down") })
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: t.TempDir(),
+		SessionSink:       func(_, _, _ string) error { return fmt.Errorf("task store down") },
+	})
 
 	if err := m.reg.Save(Record{ID: "crash2", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, SessionID: "s"}); err != nil {
 		t.Fatalf("save: %v", err)
@@ -430,7 +420,7 @@ func TestReattachAll_RetainsRecordWhenBridgeFails(t *testing.T) {
 // TestShutdownWithGrace_LeavesDetachedAgents verifies a detached agent is
 // neither cancelled nor waited on, while a normal agent is cancelled.
 func TestShutdownWithGrace_LeavesDetachedAgents(t *testing.T) {
-	m := NewManager(context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 
 	var normalCancelled atomic.Bool
 	normal := &Agent{ID: "n1", Mode: "headless", done: make(chan struct{}), cancel: func() { normalCancelled.Store(true) }}

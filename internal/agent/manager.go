@@ -82,16 +82,61 @@ type LimitGate interface {
 	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
-func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string) *Manager {
-	return &Manager{
+// ManagerConfig contains startup-only wiring. Values that are intentionally
+// live-editable are grouped in Runtime and updated via UpdateRuntimeConfig.
+type ManagerConfig struct {
+	Runtime ManagerRuntimeConfig
+
+	OnComplete        func(ag *Agent)
+	ApprovalAddr      string
+	SurviveRestartDir string
+	SessionSink       func(taskID, agentID, sessionID string) error
+	TaskExists        func(taskID string) bool
+	LimitSink         func(limits.Snapshot)
+}
+
+// ManagerRuntimeConfig holds settings that affect future runs and may change
+// on config reload without rebuilding the manager.
+type ManagerRuntimeConfig struct {
+	MaxConcurrent   int
+	DefaultProvider string
+	BashTimeoutMs   int
+	RetryWatchdog   int
+	FallbackModel   string
+	LimitGate       LimitGate
+	LimitPolicy     limits.Policy
+}
+
+func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
+	m := &Manager{
 		agents:         make(map[string]*Agent),
 		dispatchClaims: make(map[string]struct{}),
 		ctx:            ctx,
 		emit:           emit,
+		onComplete:     cfg.OnComplete,
 		logger:         logger,
 		logDir:         logDir,
-		defaultProv:    "claude",
+		approvalAddr:   cfg.ApprovalAddr,
+		defaultProv:    normalizeProvider(cfg.Runtime.DefaultProvider),
+		maxConcurrent:  cfg.Runtime.MaxConcurrent,
+		bashTimeoutMs:  cfg.Runtime.BashTimeoutMs,
+		retryWatchdog:  cfg.Runtime.RetryWatchdog,
+		fallbackModel:  cfg.Runtime.FallbackModel,
+		limitGate:      cfg.Runtime.LimitGate,
+		limitPolicy:    copyLimitPolicy(cfg.Runtime.LimitPolicy),
+		limitSink:      cfg.LimitSink,
+		sessionSink:    cfg.SessionSink,
+		taskExists:     cfg.TaskExists,
 	}
+	if cfg.SurviveRestartDir != "" {
+		s, err := newRegistryStore(cfg.SurviveRestartDir)
+		if err != nil {
+			return nil, fmt.Errorf("agent survival registry: %w", err)
+		}
+		m.reg = s
+		m.surviveRestart = true
+	}
+	return m, nil
 }
 
 // ClaimTaskDispatch reserves the right to dispatch an agent for taskID,
@@ -121,32 +166,17 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) SetOnComplete(fn func(ag *Agent)) {
-	m.onComplete = fn
-}
-
-// EnableSurviveRestart turns on restart survival: headless (and, once
-// Phase 3 lands, interactive) subprocesses are detached and recorded in a
-// registry under dir so the next app instance can reattach to them. Call
-// once during startup before ReattachAll.
-func (m *Manager) EnableSurviveRestart(dir string) error {
-	s, err := newRegistryStore(dir)
-	if err != nil {
-		return err
-	}
+// UpdateRuntimeConfig updates settings that are intentionally live: they affect
+// future Run calls and config reloads without mutating startup-only callbacks.
+func (m *Manager) UpdateRuntimeConfig(cfg ManagerRuntimeConfig) {
 	m.mu.Lock()
-	m.reg = s
-	m.surviveRestart = true
-	m.mu.Unlock()
-	return nil
-}
-
-// SetSessionSink installs the callback used to persist a crashed agent's
-// session id into its task's AgentRun during dead-reattach. Set once at
-// startup before ReattachAll.
-func (m *Manager) SetSessionSink(fn func(taskID, agentID, sessionID string) error) {
-	m.mu.Lock()
-	m.sessionSink = fn
+	m.maxConcurrent = cfg.MaxConcurrent
+	m.defaultProv = normalizeProvider(cfg.DefaultProvider)
+	m.bashTimeoutMs = cfg.BashTimeoutMs
+	m.retryWatchdog = cfg.RetryWatchdog
+	m.fallbackModel = cfg.FallbackModel
+	m.limitGate = cfg.LimitGate
+	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.mu.Unlock()
 }
 
@@ -154,14 +184,6 @@ func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.sessionSink
-}
-
-// SetTaskExists installs the callback used to skip recreating a codex agent
-// whose task was deleted. Set once at startup before ReattachAll.
-func (m *Manager) SetTaskExists(fn func(taskID string) bool) {
-	m.mu.Lock()
-	m.taskExists = fn
-	m.mu.Unlock()
 }
 
 func (m *Manager) taskExistsFn() func(taskID string) bool {
@@ -247,38 +269,12 @@ func (m *Manager) signalKill(a *Agent) {
 	signalPID(a.GetPID(), stopSIGINTGrace)
 }
 
-// SetApprovalAddr sets the HTTP address for the tool approval server.
-func (m *Manager) SetApprovalAddr(addr string) {
-	m.approvalAddr = addr
-}
-
-// SetMaxConcurrent sets the maximum number of concurrently running agents.
-// A value of 0 means unlimited.
-func (m *Manager) SetMaxConcurrent(n int) {
-	m.mu.Lock()
-	m.maxConcurrent = n
-	m.mu.Unlock()
-}
-
-func (m *Manager) SetDefaultProvider(name string) {
-	m.mu.Lock()
-	m.defaultProv = normalizeProvider(name)
-	m.mu.Unlock()
-}
-
 // SetHealthGate wires in a provider health checker so Run() can refuse or
 // failover when the requested provider is unhealthy. A nil gate disables the
 // check entirely (tests, feature-disabled mode).
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
-	m.mu.Unlock()
-}
-
-func (m *Manager) SetLimitGate(g LimitGate, policy limits.Policy) {
-	m.mu.Lock()
-	m.limitGate = g
-	m.limitPolicy = copyLimitPolicy(policy)
 	m.mu.Unlock()
 }
 
@@ -304,12 +300,6 @@ func copyStringFloatMap(in map[string]float64) map[string]float64 {
 
 func copyStringBoolMap(in map[string]bool) map[string]bool {
 	return maps.Clone(in)
-}
-
-func (m *Manager) SetLimitSink(fn func(limits.Snapshot)) {
-	m.mu.Lock()
-	m.limitSink = fn
-	m.mu.Unlock()
 }
 
 // ProviderRateLimited reports whether the named provider is currently in a
@@ -380,31 +370,6 @@ func (m *Manager) DefaultProvider() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.defaultProv
-}
-
-// SetBashTimeoutMs sets the default --bashTimeoutMs passed to claude -p.
-// Zero disables the flag (no per-call timeout).
-func (m *Manager) SetBashTimeoutMs(ms int) {
-	m.mu.Lock()
-	m.bashTimeoutMs = ms
-	m.mu.Unlock()
-}
-
-// SetRetryWatchdog sets the default CLAUDE_CODE_RETRY_WATCHDOG value injected
-// into headless claude subprocess environments. Zero resets to "not set"
-// (no env var exported).
-func (m *Manager) SetRetryWatchdog(n int) {
-	m.mu.Lock()
-	m.retryWatchdog = n
-	m.mu.Unlock()
-}
-
-// SetFallbackModel sets the default --fallback-model passed to headless claude
-// runs. Empty string clears the fallback (no flag added).
-func (m *Manager) SetFallbackModel(model string) {
-	m.mu.Lock()
-	m.fallbackModel = model
-	m.mu.Unlock()
 }
 
 // SetGuardrails configures cost and turn limits applied to all agents.
