@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { render, screen, cleanup, fireEvent, within } from '@testing-library/svelte'
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
@@ -84,6 +84,7 @@ describe('TaskList', () => {
     expect(screen.getByText('In Progress')).toBeDefined()
     expect(screen.getByText('In Review')).toBeDefined()
     expect(screen.getByText('Human Required')).toBeDefined()
+    expect(screen.getByText('Blocked')).toBeDefined()
     expect(screen.queryByText(/^Done$/)).toBeNull()
   })
 
@@ -151,14 +152,34 @@ describe('TaskList', () => {
       viewModeStore.set('board')
       Object.assign(taskStore, {
         list: [
-          mockTask('h1', 'Blocked task', 'human-required'),
+          mockTask('h1', 'Human task', 'human-required'),
           mockTask('p1', 'Plan to review', 'plan-review'),
+          mockTask('b1', 'Blocked task', 'blocked'),
           mockTask('t1', 'Normal task', 'todo'),
         ],
       })
       render(TaskList, { props: { onselect: vi.fn() } })
-      // 2 of 3 tasks await the user — visible regardless of horizontal scroll.
+      // 2 of 4 tasks await the user; blocked is tracked separately.
       expect(screen.getByText('2 need you')).toBeDefined()
+    })
+
+    it('keeps blocked tasks out of the Human Required column', () => {
+      viewModeStore.set('board')
+      Object.assign(taskStore, {
+        list: [
+          mockTask('h1', 'Needs human', 'human-required'),
+          mockTask('b1', 'Blocked by workflow bug', 'blocked'),
+        ],
+      })
+      render(TaskList, { props: { onselect: vi.fn() } })
+
+      const humanCol = document.querySelector('[data-col-status="human-required"]')
+      const blockedCol = document.querySelector('[data-col-status="blocked"]')
+      expect(humanCol).toBeTruthy()
+      expect(blockedCol).toBeTruthy()
+      expect(within(humanCol as HTMLElement).getByText('Needs human')).toBeDefined()
+      expect(within(humanCol as HTMLElement).queryByText('Blocked by workflow bug')).toBeNull()
+      expect(within(blockedCol as HTMLElement).getByText('Blocked by workflow bug')).toBeDefined()
     })
 
     it('hides the need-you counter in list view even when tasks await', () => {

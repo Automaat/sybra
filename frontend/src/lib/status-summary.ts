@@ -16,8 +16,8 @@ export interface StatusSummary {
   tone: StatusTone
 }
 
-// `attention` = waiting on the user; `info` = an agent or the pipeline is
-// working. Statuses absent here (todo, done, cancelled) get no banner.
+// `attention` = waiting on the user; `info` = an agent/pipeline state or
+// non-human blockage. Statuses absent here (todo, done, cancelled) get no banner.
 const SUMMARY: Record<string, { hint: string; tone: StatusTone }> = {
   new: { hint: 'not yet triaged', tone: 'info' },
   planning: { hint: 'an agent is drafting a plan', tone: 'info' },
@@ -28,7 +28,7 @@ const SUMMARY: Record<string, { hint: string; tone: StatusTone }> = {
   testing: { hint: 'an agent is adversarially testing the feature', tone: 'info' },
   'ready-pr': { hint: 'tests passed — opening the PR', tone: 'info' },
   'human-required': { hint: 'needs your input', tone: 'attention' },
-  blocked: { hint: 'needs your response', tone: 'attention' },
+  blocked: { hint: 'blocked until its cause is resolved', tone: 'info' },
 }
 
 /** The per-state summary to surface in the detail banner, or null when there's

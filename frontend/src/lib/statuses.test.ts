@@ -19,10 +19,11 @@ describe('CORE_STATUSES', () => {
   })
 
   it('is a small set (<= 9) and excludes granular states', () => {
-    expect(CORE_STATUSES.length).toBeLessThanOrEqual(9)
-    for (const granular of ['new', 'plan-review', 'ready-pr', 'blocked']) {
+    expect(CORE_STATUSES.length).toBeLessThanOrEqual(10)
+    for (const granular of ['new', 'plan-review', 'ready-pr']) {
       expect(CORE_STATUSES).not.toContain(granular)
     }
+    expect(CORE_STATUSES).toContain('blocked')
   })
 
   it('exposes options with labels from STATUS_MAP', () => {
@@ -38,7 +39,7 @@ describe('coreStatus', () => {
     expect(coreStatus('plan-review')).toBe('planning')
     expect(coreStatus('ready-review')).toBe('ready-review')
     expect(coreStatus('ready-pr')).toBe('in-review')
-    expect(coreStatus('blocked')).toBe('human-required')
+    expect(coreStatus('blocked')).toBe('blocked')
   })
 
   it('maps a column status to itself', () => {
@@ -105,6 +106,11 @@ describe('awaitsHumanLabel — canonical, never a divergent name', () => {
       // no invented "Needs Review"/"Needs You" vocabulary.
       expect(awaitsHumanLabel(status)).toBe(statusLabel(status))
     }
+  })
+
+  it('does not treat blocked containment as a human-required escalation', () => {
+    expect(awaitsHuman('blocked')).toBe(false)
+    expect(awaitsHumanLabel('blocked')).toBe('')
   })
 
   it('is empty for statuses that do not await the user', () => {

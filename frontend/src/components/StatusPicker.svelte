@@ -19,8 +19,8 @@
   let selectedIdx = $state(initialIdx())
 
   // Picking the bucket the task is already in is a no-op — don't overwrite a
-  // granular status (e.g. blocked) with its rolled-up core (human-required)
-  // just because the user confirmed the highlighted "current" option.
+  // granular status with its rolled-up core just because the user confirmed
+  // the highlighted "current" option.
   function pick(value: string) {
     if (value === coreStatus(currentStatus)) { onclose(); return }
     onpick(value)

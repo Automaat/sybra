@@ -10,11 +10,10 @@ describe('statusSummary', () => {
       tone: 'attention',
     })
     expect(statusSummary('human-required')?.tone).toBe('attention')
-    expect(statusSummary('blocked')?.tone).toBe('attention')
   })
 
   it('summarises agent/pipeline states as info', () => {
-    for (const s of ['planning', 'in-progress', 'in-review', 'testing', 'ready-review', 'new']) {
+    for (const s of ['planning', 'in-progress', 'in-review', 'testing', 'ready-review', 'new', 'blocked']) {
       expect(statusSummary(s)?.tone).toBe('info')
       expect(statusSummary(s)?.hint).toBeTruthy()
     }
