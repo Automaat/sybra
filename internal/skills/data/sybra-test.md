@@ -24,6 +24,10 @@ JSON output schema, that JSON object is mandatory. Return fields
 `manual_probes`, `automated_checks`, and `unable_to_run_reason`. On PASS, set
 `outcome` to `pass` and `failures_markdown` to an empty string. On FAIL,
 `failures_markdown` must contain the full `## Test Failures` report.
+Evidence arrays may contain strings or objects. Object entries must include
+`command` plus an observed result field named `actual`, `output`, or `observed`;
+manual probe objects may also include `expected`, but it is optional when the
+command/output pair is self-evident.
 
 If you cannot return JSON, a plain-text PASS must include the same evidence
 labels: `surface_kind`, `app_started`, `start_command`, `readiness_probe`,

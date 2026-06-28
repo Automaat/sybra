@@ -422,6 +422,54 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_object_output_aliases",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","output":"HTTP 200 ok"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_object_actual_without_expected",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","actual":"HTTP 200 ok"}],` +
+				`"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_object_observed_aliases",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","expected":"HTTP 200","observed":"HTTP 200 ok"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","observed":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_object_observed_without_expected",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"go run ./cmd/sybra-server",` +
+				`"readiness_probe":"GET /health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/health","observed":"HTTP 200 ok"}],` +
+				`"automated_checks":[],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:   "plain_text_pass_with_manual_evidence",
 			status: "completed",
 			output: "surface_kind: server\n" +
@@ -468,6 +516,54 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_docs_exemption_still_requires_regression_check",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"docs","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm run check","actual":"ok"}],"unable_to_run_reason":"docs-only task"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_accepts_output_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","output":"ok"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_accepts_observed_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","observed":"ok"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_docs_exemption_accepts_output_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"docs","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm run check","output":"ok"}],"unable_to_run_reason":"docs-only task"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_docs_exemption_accepts_observed_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"docs","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm run check","observed":"ok"}],"unable_to_run_reason":"docs-only task"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_notest_exemption_accepts_output_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"none","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","output":"ok"}],"unable_to_run_reason":"task tagged notest; no product surface changed"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_notest_exemption_accepts_observed_check",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"none","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","observed":"ok"}],"unable_to_run_reason":"task tagged notest; no product surface changed"}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
