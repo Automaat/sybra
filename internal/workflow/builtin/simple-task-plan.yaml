@@ -218,7 +218,13 @@ steps:
 
                 File paths MUST be repository-relative clean paths, not absolute
                 paths and not ../ escapes. Verification and acceptance arrays
-                must be non-empty.
+                must be non-empty. If the task body has a "## Acceptance
+                Criteria" section, copy every criterion from that section into
+                acceptance_criteria verbatim (wrapped lines joined). Do not
+                silently drop, narrow, defer, or mark any source criterion out
+                of scope; if a source criterion needs a human scope decision,
+                record that in .sybra-plan-decisions and keep it in the
+                contract.
 
         Do NOT call sybra-cli update — Sybra will ingest your file as the
         task sidecars after you exit. Do NOT modify task fields directly.
@@ -458,7 +464,10 @@ steps:
              .plan as a compact execution plan and .planContract as the
              executable JSON contract. Do NOT
              paste critique history, council synthesis, or "refinements applied"
-             into the plan.
+             into the plan. If the task body has a "## Acceptance Criteria"
+             section, .planContract acceptance_criteria must keep every source
+             criterion verbatim; do not drop, narrow, defer, or mark source
+             criteria out of scope.
           3. Write revised files in the worktree:
              - .sybra-plan-research-{{.Task.ID}}.md
              - .sybra-plan-decisions-{{.Task.ID}}.md
