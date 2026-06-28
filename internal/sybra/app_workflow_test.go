@@ -42,7 +42,7 @@ func TestEligibleRerequestReviewer(t *testing.T) {
 	}
 }
 
-func TestAgentAdapterExperiencePromptPlanOnly(t *testing.T) {
+func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := experience.New(t.TempDir())
 	if err != nil {
@@ -78,10 +78,16 @@ func TestAgentAdapterExperiencePromptPlanOnly(t *testing.T) {
 		t.Fatalf("plan prompt missing experience appendix:\n%s", cfg.Prompt)
 	}
 
-	nonPlan := agent.RunConfig{Prompt: "base"}
-	adapter.withExperiencePrompt(&nonPlan, agent.RoleReview, tk)
-	if nonPlan.Prompt != "base" {
-		t.Fatalf("non-plan prompt = %q, want unchanged", nonPlan.Prompt)
+	triage := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&triage, agent.RoleTriage, tk)
+	if !strings.Contains(triage.Prompt, "Verified Experience Memory") || !strings.Contains(triage.Prompt, "Use focused tests") {
+		t.Fatalf("triage prompt missing experience appendix:\n%s", triage.Prompt)
+	}
+
+	nonRetrievalRole := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&nonRetrievalRole, agent.RoleReview, tk)
+	if nonRetrievalRole.Prompt != "base" {
+		t.Fatalf("non-retrieval role prompt = %q, want unchanged", nonRetrievalRole.Prompt)
 	}
 
 	adapter.agentOrch.cfg.Experience.Enabled = false
