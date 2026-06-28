@@ -224,13 +224,11 @@ func assertRecordFixtureCoversFields(t *testing.T, rec Record, ignore ...string)
 		ignored[field] = struct{}{}
 	}
 	value := reflect.ValueOf(rec)
-	typ := value.Type()
-	for i := range value.NumField() {
-		field := typ.Field(i)
+	for _, field := range reflect.VisibleFields(value.Type()) {
 		if _, ok := ignored[field.Name]; ok {
 			continue
 		}
-		if value.Field(i).IsZero() {
+		if value.FieldByIndex(field.Index).IsZero() {
 			t.Fatalf("record mapping test fixture does not cover Record.%s", field.Name)
 		}
 	}
