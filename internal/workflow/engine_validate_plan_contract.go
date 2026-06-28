@@ -38,7 +38,7 @@ func (e *Engine) execValidatePlanContract(taskID string, step *Step, t TaskInfo)
 	if raw == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "plan contract absent; markdown-only migration fallback"}, nil
 	}
-	if problems := validatePlanContract(raw, taskID); len(problems) > 0 {
+	if problems := ValidatePlanContract(raw, taskID); len(problems) > 0 {
 		reason := "plan contract invalid: " + strings.Join(problems, "; ")
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.validate-plan-contract.status", "task_id", taskID, "err", statusErr)
@@ -49,7 +49,8 @@ func (e *Engine) execValidatePlanContract(taskID string, step *Step, t TaskInfo)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "plan contract OK"}, nil
 }
 
-func validatePlanContract(raw, taskID string) []string {
+// ValidatePlanContract returns all schema and safety problems in a plan contract.
+func ValidatePlanContract(raw, taskID string) []string {
 	var contract PlanContract
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()

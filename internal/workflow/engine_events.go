@@ -10,6 +10,42 @@ import (
 
 // HandleHumanAction processes approve/reject/input from the UI.
 func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string) error {
+	return e.withHumanActionLock(taskID, func() error {
+		return e.handleHumanAction(taskID, action, data)
+	})
+}
+
+// HandleHumanActionRecovering processes a human action, optionally repairing a
+// narrowly-recognized stale wait state before retrying the same action.
+func (e *Engine) HandleHumanActionRecovering(
+	taskID, action string,
+	data map[string]string,
+	recoverFn func(TaskInfo) (*Execution, bool, error),
+) error {
+	return e.withHumanActionLock(taskID, func() error {
+		err := e.handleHumanAction(taskID, action, data)
+		if err == nil || recoverFn == nil {
+			return err
+		}
+		t, getErr := e.tasks.GetTask(taskID)
+		if getErr != nil {
+			return err
+		}
+		wf, ok, recoverErr := recoverFn(t)
+		if recoverErr != nil {
+			return recoverErr
+		}
+		if !ok {
+			return err
+		}
+		if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+			return err
+		}
+		return e.handleHumanAction(taskID, action, data)
+	})
+}
+
+func (e *Engine) withHumanActionLock(taskID string, fn func() error) error {
 	// Serialize concurrent human actions per task so double-click races do not
 	// both mutate workflow vars and attempt to advance the same wait_human step.
 	e.mu.Lock()
@@ -25,6 +61,10 @@ func (e *Engine) HandleHumanAction(taskID, action string, data map[string]string
 		e.mu.Unlock()
 	}()
 
+	return fn()
+}
+
+func (e *Engine) handleHumanAction(taskID, action string, data map[string]string) error {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		return err
