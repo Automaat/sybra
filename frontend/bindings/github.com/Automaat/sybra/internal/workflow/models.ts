@@ -473,6 +473,12 @@ export class StepConfig {
     "sidecar": string;
 
     /**
+     * AllowMissing turns require_sidecar into a soft gate: the step records a
+     * warning output instead of flipping the task to human-required.
+     */
+    "allowMissing": boolean;
+
+    /**
      * run_agent: when set, the engine ingests a file produced by the agent
      * (typically under /tmp) and stores its content as the named task
      * sidecar after the agent exits. Lets review/critique steps work with
@@ -551,6 +557,9 @@ export class StepConfig {
         if (!("sidecar" in $$source)) {
             this["sidecar"] = "";
         }
+        if (!("allowMissing" in $$source)) {
+            this["allowMissing"] = false;
+        }
         if (!("importSidecars" in $$source)) {
             this["importSidecars"] = [];
         }
@@ -565,8 +574,8 @@ export class StepConfig {
         const $$createField5_0 = $$createType17;
         const $$createField7_0 = $$createType17;
         const $$createField10_0 = $$createType19;
-        const $$createField17_0 = $$createType21;
-        const $$createField18_0 = $$createType22;
+        const $$createField18_0 = $$createType21;
+        const $$createField19_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -578,10 +587,10 @@ export class StepConfig {
             $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
         }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField17_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField18_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField18_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField19_0($$parsedSource["importSidecars"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
