@@ -550,6 +550,48 @@ func TestSyncBuiltins_OverwriteStaleBuiltin(t *testing.T) {
 	}
 }
 
+func TestSyncBuiltins_PrunesObsoleteBuiltin(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	obsolete := newTestDef("simple-task")
+	obsolete.Builtin = true
+	if err := store.Save(obsolete); err != nil {
+		t.Fatalf("Save obsolete: %v", err)
+	}
+
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if _, err := store.Get(obsolete.ID); err == nil {
+		t.Fatalf("obsolete builtin %q still exists", obsolete.ID)
+	}
+}
+
+func TestSyncBuiltins_PreservesObsoleteUserWorkflow(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	custom := newTestDef("simple-task")
+	custom.Builtin = false
+	if err := store.Save(custom); err != nil {
+		t.Fatalf("Save custom: %v", err)
+	}
+
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	if _, err := store.Get(custom.ID); err != nil {
+		t.Fatalf("custom workflow was pruned: %v", err)
+	}
+}
+
 // TestSyncBuiltins_IdempotentOnClean verifies the no-op path: calling
 // SyncBuiltins twice in a row on a freshly seeded store must not bounce
 // the UpdatedAt timestamp on every startup.
