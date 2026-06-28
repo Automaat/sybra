@@ -389,8 +389,7 @@ func rehydrateConvoFromLog(a *Agent, path string) int64 {
 			a.SetSessionID(ev.SessionID)
 		}
 		if ev.Type == "result" {
-			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
-			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
+			a.AddUsage(ev.SessionID, ev.Usage())
 		}
 	}
 	return offset

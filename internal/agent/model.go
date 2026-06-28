@@ -292,17 +292,22 @@ func (a *Agent) GetSessionFilePath() string {
 // AddResultStats merges a result-event's stats into the running totals
 // and returns the new cumulative CostUSD.
 func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
-	a.mu.Lock()
-	if sessionID != "" {
-		a.SessionID = sessionID
-	}
-	usage := a.Usage
-	a.Usage = usage.Add(Usage{
+	return a.AddUsage(sessionID, Usage{
 		CostUSD:         cost,
 		InputTokens:     in,
 		OutputTokens:    out,
 		ReasoningTokens: reasoning,
 	})
+}
+
+// AddUsage merges usage into the running totals, updates a non-empty session ID,
+// and returns the new cumulative CostUSD.
+func (a *Agent) AddUsage(sessionID string, usage Usage) float64 {
+	a.mu.Lock()
+	if sessionID != "" {
+		a.SessionID = sessionID
+	}
+	a.Usage = addUsage(a.Usage, usage)
 	result := a.CostUSD
 	a.mu.Unlock()
 	return result
@@ -313,8 +318,7 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 // stable across runners.
 func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.mu.Lock()
-	usage := a.Usage
-	a.Usage = usage.Add(Usage{
+	a.Usage = addUsage(a.Usage, Usage{
 		CacheCreationInputTokens: cacheCreate,
 		CacheReadInputTokens:     cacheRead,
 	})
@@ -326,8 +330,7 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 // claude/codex never call this (their result events carry no such field).
 func (a *Agent) AddPremiumRequests(n float64) {
 	a.mu.Lock()
-	usage := a.Usage
-	a.Usage = usage.Add(Usage{PremiumRequests: n})
+	a.Usage = addUsage(a.Usage, Usage{PremiumRequests: n})
 	a.mu.Unlock()
 }
 
@@ -337,8 +340,7 @@ func (a *Agent) AddPremiumRequests(n float64) {
 // stream. No-op-equivalent for claude/codex, whose assistant events carry 0.
 func (a *Agent) AddOutputTokens(n int) {
 	a.mu.Lock()
-	usage := a.Usage
-	a.Usage = usage.Add(Usage{OutputTokens: n})
+	a.Usage = addUsage(a.Usage, Usage{OutputTokens: n})
 	a.mu.Unlock()
 }
 

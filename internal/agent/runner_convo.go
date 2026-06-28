@@ -365,8 +365,7 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 			}
 		}
 	case "result":
-		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
+		costNow := a.AddUsage(event.SessionID, event.Usage())
 		m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 		// Drain any prompts queued mid-turn before flipping to paused. Each
 		// queued prompt fires the next turn back-to-back so the user's

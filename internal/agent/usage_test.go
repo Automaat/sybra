@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestUsageAdd(t *testing.T) {
-	got := (Usage{
+func TestAddUsage(t *testing.T) {
+	got := addUsage(Usage{
 		CostUSD:                  1.5,
 		InputTokens:              10,
 		OutputTokens:             20,
@@ -14,7 +14,7 @@ func TestUsageAdd(t *testing.T) {
 		CacheReadInputTokens:     40,
 		ReasoningTokens:          50,
 		PremiumRequests:          2.5,
-	}).Add(Usage{
+	}, Usage{
 		CostUSD:                  2.25,
 		InputTokens:              1,
 		OutputTokens:             2,
@@ -34,7 +34,16 @@ func TestUsageAdd(t *testing.T) {
 		PremiumRequests:          3,
 	}
 	if got != want {
-		t.Fatalf("Add() = %+v, want %+v", got, want)
+		t.Fatalf("addUsage() = %+v, want %+v", got, want)
+	}
+}
+
+func TestAgentDoesNotPromoteUsageAdd(t *testing.T) {
+	type usageAdder interface {
+		Add(Usage) Usage
+	}
+	if _, ok := any(&Agent{}).(usageAdder); ok {
+		t.Fatal("Agent must not expose Usage.Add as a promoted mutator-looking method")
 	}
 }
 
@@ -82,6 +91,40 @@ func TestAgentUsageSerializesFlat(t *testing.T) {
 		if _, ok := got[key]; ok {
 			t.Fatalf("unexpected nested usage key %q in %s", key, data)
 		}
+	}
+}
+
+func TestAgentUsageUnmarshalsFlat(t *testing.T) {
+	var got Agent
+	data := []byte(`{
+		"id": "agent-1",
+		"taskId": "task-1",
+		"mode": "headless",
+		"state": "running",
+		"sessionId": "session-1",
+		"costUsd": 0.42,
+		"inputTokens": 10,
+		"outputTokens": 20,
+		"cacheCreationInputTokens": 30,
+		"cacheReadInputTokens": 40,
+		"reasoningTokens": 50,
+		"premiumRequests": 1.5
+	}`)
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	want := Usage{
+		CostUSD:                  0.42,
+		InputTokens:              10,
+		OutputTokens:             20,
+		CacheCreationInputTokens: 30,
+		CacheReadInputTokens:     40,
+		ReasoningTokens:          50,
+		PremiumRequests:          1.5,
+	}
+	if got.Usage != want {
+		t.Fatalf("usage = %+v, want %+v", got.Usage, want)
 	}
 }
 

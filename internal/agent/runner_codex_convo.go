@@ -417,20 +417,13 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 			// Copilot reports output tokens per assistant message; accumulate
 			// (no-op for codex, which carries 0 here and totals on result).
 			if event.OutputTokens > 0 {
-				a.AddOutputTokens(event.OutputTokens)
+				a.AddUsage("", event.Usage())
 			}
 		case "result":
 			// Copilot reports its session id only on the terminal result event
 			// (codex reports it on a system event handled above). Capture it so
 			// the next turn resumes via --session-id.
-			if event.SessionID != "" {
-				a.SetSessionID(event.SessionID)
-			}
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-			if event.PremiumRequests > 0 {
-				a.AddPremiumRequests(event.PremiumRequests)
-			}
+			costNow := a.AddUsage(event.SessionID, event.Usage())
 			m.logger.Info("agent.convo.result", "id", a.ID, "provider", a.Provider, "cost", costNow)
 			gotResult = true
 		}
@@ -489,11 +482,7 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 			a.SetSessionID(ev.SessionID)
 		}
 		if ev.Type == "result" {
-			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
-			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
-			if ev.PremiumRequests > 0 {
-				a.AddPremiumRequests(ev.PremiumRequests)
-			}
+			a.AddUsage(ev.SessionID, ev.Usage())
 		}
 	}
 }

@@ -422,13 +422,11 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 			// Copilot reports output tokens per assistant message (claude/codex
 			// carry 0 here and total on the result event instead).
 			if ev.OutputTokens > 0 {
-				a.AddOutputTokens(ev.OutputTokens)
+				a.AddUsage("", ev.Usage())
 			}
 		}
 		if ev.Type == "result" {
-			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
-			a.AddCacheStats(ev.CacheCreationInputTokens, ev.CacheReadInputTokens)
-			a.AddPremiumRequests(ev.PremiumRequests)
+			a.AddUsage(ev.SessionID, ev.Usage())
 		}
 	}
 	return offset

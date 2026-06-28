@@ -13,15 +13,14 @@ type Usage struct {
 	PremiumRequests float64 `json:"premiumRequests,omitempty"`
 }
 
-// Add returns the sum of two usage values.
-func (u Usage) Add(other Usage) Usage {
+func addUsage(left, right Usage) Usage {
 	return Usage{
-		CostUSD:                  u.CostUSD + other.CostUSD,
-		InputTokens:              u.InputTokens + other.InputTokens,
-		OutputTokens:             u.OutputTokens + other.OutputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens + other.CacheCreationInputTokens,
-		CacheReadInputTokens:     u.CacheReadInputTokens + other.CacheReadInputTokens,
-		ReasoningTokens:          u.ReasoningTokens + other.ReasoningTokens,
-		PremiumRequests:          u.PremiumRequests + other.PremiumRequests,
+		CostUSD:                  left.CostUSD + right.CostUSD,
+		InputTokens:              left.InputTokens + right.InputTokens,
+		OutputTokens:             left.OutputTokens + right.OutputTokens,
+		CacheCreationInputTokens: left.CacheCreationInputTokens + right.CacheCreationInputTokens,
+		CacheReadInputTokens:     left.CacheReadInputTokens + right.CacheReadInputTokens,
+		ReasoningTokens:          left.ReasoningTokens + right.ReasoningTokens,
+		PremiumRequests:          left.PremiumRequests + right.PremiumRequests,
 	}
 }

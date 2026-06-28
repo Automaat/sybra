@@ -617,7 +617,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		// as they stream so the stats reflect a copilot run that has no
 		// token totals on its terminal result.
 		if event.OutputTokens > 0 {
-			a.AddOutputTokens(event.OutputTokens)
+			a.AddUsage("", event.Usage())
 		}
 		if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
 			return true
@@ -625,12 +625,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 
 	if event.Type == "result" {
-		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-		// Copilot's billing unit: premium requests (no USD on the result event).
-		if event.PremiumRequests > 0 {
-			a.AddPremiumRequests(event.PremiumRequests)
-		}
+		costNow := a.AddUsage(event.SessionID, event.Usage())
 		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.
