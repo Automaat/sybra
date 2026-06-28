@@ -204,7 +204,7 @@ type ImportSidecar struct {
 	// Kind is the sidecar slot to populate.
 	Kind string `yaml:"kind" json:"kind"`
 	// From is a Go template path the engine renders against the run's
-	// TemplateContext (e.g. /tmp/sybra-review-{{.Task.ID}}.md).
+	// TemplateContext (e.g. {{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md).
 	From string `yaml:"from" json:"from"`
 	// Required flips the task to human-required when the imported file is
 	// missing or empty. Existing optional sidecars keep the old log-only

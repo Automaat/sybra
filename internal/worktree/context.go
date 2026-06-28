@@ -105,3 +105,13 @@ func addToInfoExclude(wtPath, entry string) error {
 	}
 	return nil
 }
+
+func excludeWorkflowScratchFiles(wtPath string) error {
+	var errs []error
+	for _, entry := range []string{".sybra-review-*.md", ".sybra-diff-*.patch"} {
+		if err := addToInfoExclude(wtPath, entry); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", entry, err))
+		}
+	}
+	return errors.Join(errs...)
+}

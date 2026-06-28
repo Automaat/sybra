@@ -86,18 +86,18 @@ steps:
         The PR has not been created yet — review the local diff.
 
         Steps:
-          1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
           2. Run /pr-review against that patch and the worktree source
-          3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+          3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        /tmp/sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
-        The /tmp file also remains for the next step (fix_review) to
+        The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
       import_sidecar:
         kind: code_review
-        from: /tmp/sybra-review-{{.Task.ID}}.md
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
@@ -118,25 +118,25 @@ steps:
         The PR has not been created yet — review the local diff.
 
         Steps:
-          1. git diff origin/main..HEAD > /tmp/sybra-diff-{{.Task.ID}}.patch
+          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
-          3. Save the full review to /tmp/sybra-review-{{.Task.ID}}.md
+          3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
         Do NOT submit anything to GitHub. Sybra will ingest
-        /tmp/sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
-        The /tmp file also remains for the next step (fix_review) to
+        The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
       import_sidecar:
         kind: code_review
-        from: /tmp/sybra-review-{{.Task.ID}}.md
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
     next:
       - goto: require_code_review
 
   # Guard: mirrors require_plan_critique in simple-task-plan. Flips task
   # to human-required when the review sidecar is empty (e.g. agent never
-  # wrote /tmp/sybra-review-…md, or its sandbox blocked the path).
-  # Without this, fix_review reads /tmp and the GUI never sees what
+  # wrote .sybra-review-…md, or its sandbox blocked the path).
+  # Without this, fix_review reads the sidecar file and the GUI never sees what
   # the reviewer wrote.
   - id: require_code_review
     name: Require Code Review
@@ -160,7 +160,7 @@ steps:
       needs_worktree: true
       max_retries: 2
       prompt: >-
-        Read the code review at /tmp/sybra-review-{{.Task.ID}}.md
+        Read the code review at .sybra-review-{{.Task.ID}}.md
 
         For each actionable finding (critical/high/medium severity), fix the code.
         Skip low-severity nitpicks and style-only comments.

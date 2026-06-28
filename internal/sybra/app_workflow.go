@@ -386,7 +386,7 @@ type agentAdapter struct {
 	sandboxes *sandbox.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (string, error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (agentID, startedDir string, err error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
@@ -395,16 +395,16 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
 		ag, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, assignment)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return ag.ID, nil
+		return ag.ID, "", nil
 	}
 
 	// For system agents (triage, eval, plan, etc.), build RunConfig directly.
 	r := agent.Role(role)
 	t, err := a.agentOrch.tasks.Get(taskID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Cap concurrent test-runner agents per machine — each one starts an
@@ -414,13 +414,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// ErrTestRunnerBusy and ResumeStalled retries when a slot frees.
 	if r == agent.RoleTestRunner {
 		if a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
-			return "", workflow.ErrTestRunnerBusy
+			return "", "", workflow.ErrTestRunnerBusy
 		}
 	}
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, a.agentOrch.cfg)
 	if postureErr != nil {
-		return "", postureErr
+		return "", "", postureErr
 	}
 
 	cfg := agent.RunConfig{
@@ -455,11 +455,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
 		if t.ProjectID == "" {
-			return "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
+			return "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
 		}
 		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
 		if wtErr != nil {
-			return "", wtErr
+			return "", "", wtErr
 		}
 		cfg.Dir = d
 	}
@@ -486,7 +486,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Flip human-required → in-progress when a system-role agent starts.
@@ -522,7 +522,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 
-	return ag.ID, nil
+	return ag.ID, cfg.Dir, nil
 }
 
 func (a *agentAdapter) HasRunningAgent(taskID string) bool {

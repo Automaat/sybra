@@ -66,6 +66,7 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 	if !hasGit() {
 		t.Skip("git not available")
 	}
+
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
@@ -91,5 +92,30 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 	count := strings.Count(string(data), "/"+contextFileName)
 	if count != 1 {
 		t.Errorf("expected exactly 1 exclude entry, got %d. exclude:\n%s", count, data)
+	}
+}
+
+func TestExcludeWorkflowScratchFiles(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	wt := t.TempDir()
+	mustRunInDir(t, wt, "git", "init", "-b", "main")
+
+	if err := excludeWorkflowScratchFiles(wt); err != nil {
+		t.Fatalf("excludeWorkflowScratchFiles: %v", err)
+	}
+	for _, file := range []string{".sybra-review-task.md", ".sybra-diff-task.patch"} {
+		if err := os.WriteFile(filepath.Join(wt, file), []byte("scratch"), 0o644); err != nil {
+			t.Fatalf("write scratch file: %v", err)
+		}
+	}
+
+	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "" {
+		t.Fatalf("workflow scratch files should be ignored, got status:\n%s", got)
 	}
 }
