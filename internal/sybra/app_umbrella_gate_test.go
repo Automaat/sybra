@@ -80,37 +80,6 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	}
 }
 
-func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
-	t.Parallel()
-	app, m := newUmbrellaGateApp(t)
-	const umb = "https://github.com/Automaat/sybra/issues/100"
-	tracker := mkTracker(t, m, umb, 5)
-	localBug, err := m.CreateFull("Sybra bug", "", task.AgentModeHeadless, task.Update{
-		Tags: task.Ptr([]string{"sybra-bug"}),
-	})
-	if err != nil {
-		t.Fatalf("create local bug: %v", err)
-	}
-	reason := "auto-review: Sybra bug isolated (local task " + localBug.ID + "; issue filing failed)"
-	if _, err := m.Update(tracker.ID, task.Update{
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(reason),
-	}); err != nil {
-		t.Fatalf("block tracker: %v", err)
-	}
-	mkChild(t, m, "stuck", "Automaat/sybra#1", umb, nil, task.StatusHumanRequired)
-
-	app.releaseUnblockedChildren()
-
-	got := mustTask(t, m, tracker.ID)
-	if got.Status != task.StatusBlocked {
-		t.Fatalf("tracker status = %q, want blocked", got.Status)
-	}
-	if got.StatusReason != reason {
-		t.Fatalf("tracker status_reason = %q, want %q", got.StatusReason, reason)
-	}
-}
-
 func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
@@ -203,6 +172,83 @@ func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 	}
 	if closes != 0 {
 		t.Fatalf("umbrella was closed %d times despite a cancelled child", closes)
+	}
+}
+
+func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		childStatus task.Status
+	}{
+		{"human-required child", task.StatusHumanRequired},
+		{"completed child", task.StatusDone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			app, m := newUmbrellaGateApp(t)
+			closes := 0
+			app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
+			const umb = "https://github.com/Automaat/sybra/issues/100"
+			tracker := mkTracker(t, m, umb, 5)
+			const reason = "auto-review: provider failure (local task abc12345; issue filing failed)"
+			if _, err := m.Update(tracker.ID, task.Update{
+				Status:       task.Ptr(task.StatusBlocked),
+				StatusReason: task.Ptr(reason),
+			}); err != nil {
+				t.Fatalf("block tracker: %v", err)
+			}
+			mkChild(t, m, "child", "Automaat/sybra#1", umb, nil, tt.childStatus)
+
+			app.releaseUnblockedChildren()
+
+			got := mustTask(t, m, tracker.ID)
+			if got.Status != task.StatusBlocked {
+				t.Fatalf("tracker = %q, want blocked", got.Status)
+			}
+			if got.StatusReason != reason {
+				t.Fatalf("tracker reason = %q, want %q", got.StatusReason, reason)
+			}
+			if closes != 0 {
+				t.Fatalf("umbrella was closed %d times while tracker blocked", closes)
+			}
+		})
+	}
+}
+
+func TestReleaseUnblockedChildren_BlockedTrackerStillReleasesReadyChildren(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	const reason = "blocked awaiting operator action"
+	if _, err := m.Update(tracker.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		t.Fatalf("block tracker: %v", err)
+	}
+	child := mkChild(t, m, "ready", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren()
+
+	gotTracker := mustTask(t, m, tracker.ID)
+	if gotTracker.Status != task.StatusBlocked {
+		t.Fatalf("tracker = %q, want blocked", gotTracker.Status)
+	}
+	if gotTracker.StatusReason != reason {
+		t.Fatalf("tracker reason = %q, want %q", gotTracker.StatusReason, reason)
+	}
+	gotChild := mustTask(t, m, child.ID)
+	if gotChild.Status != task.StatusTodo {
+		t.Fatalf("child = %q, want todo", gotChild.Status)
+	}
+	if slices.Contains(gotChild.Tags, umbrellaGatedTag) {
+		t.Fatalf("ready child still gated under blocked tracker: tags=%v", gotChild.Tags)
+	}
+	if gotChild.StatusReason != "umbrella dependencies satisfied" {
+		t.Fatalf("child reason = %q, want release reason", gotChild.StatusReason)
 	}
 }
 
