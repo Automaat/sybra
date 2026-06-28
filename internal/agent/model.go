@@ -2,14 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"os/exec"
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/Automaat/sybra/internal/limits"
 )
 
 // NOTE on concurrency: Agent has two distinct mutexes.
@@ -22,15 +19,6 @@ import (
 //     goroutine may hold it for the duration of a blocking Write, and
 //     we do not want to starve other consumers that only need to read
 //     State or append an event.
-
-type State string
-
-const (
-	StateIdle    State = "idle"
-	StateRunning State = "running"
-	StatePaused  State = "paused"
-	StateStopped State = "stopped"
-)
 
 type Agent struct {
 	ID                       string  `json:"id"`
@@ -688,206 +676,6 @@ func (a *Agent) Output() []StreamEvent {
 	return snapshot
 }
 
-// RunConfig is the single entry point for starting any agent.
-type RunConfig struct {
-	TaskID             string
-	Name               string
-	Mode               string // "headless", "interactive", or "conversational"
-	Prompt             string
-	AllowedTools       []string
-	Dir                string
-	Provider           string // "claude", "codex", or "copilot"
-	Model              string // "opus", "sonnet", or full model ID
-	ExperimentID       string
-	VariantID          string
-	AssignmentUnit     string
-	AssignmentKey      string
-	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
-	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
-	Effort             string // "low", "medium", "high", "max" (extended thinking)
-	// OneShot closes stdin after the first `result` event in conversational
-	// mode so the claude process exits naturally. Without this, interactive
-	// agents sit in StatePaused forever and onComplete never fires, stranding
-	// any workflow that expects the agent to "finish". Ignored in headless mode.
-	OneShot bool
-	// IgnoreConcurrencyLimit lets an agent start even when MaxConcurrent is
-	// saturated. Reserved for system-level long-lived sessions (orchestrator)
-	// that must always be runnable regardless of swarm load.
-	IgnoreConcurrencyLimit bool
-	// IgnoreHealthGate lets an agent start even when the provider health gate
-	// marks the requested provider as unhealthy. Reserved for internal probes
-	// and system-critical sessions; user-initiated runs leave this false so
-	// they surface a clear error instead of wasting a hopeless request.
-	IgnoreHealthGate bool
-	// DisableProviderFailover keeps provider selection fixed for A/B variants:
-	// an unhealthy/limited provider fails the run instead of silently becoming a
-	// different provider while retaining stale variant attribution.
-	DisableProviderFailover bool
-	// ResumeSessionID, when set, passes --resume to the claude CLI so the
-	// agent continues a prior conversation instead of starting from scratch.
-	// Populated from the task's last AgentRun.SessionID on restart.
-	ResumeSessionID string
-	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
-	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG).
-	ExtraEnv []string
-	// MaxTurns overrides the global guardrail for this specific agent run.
-	// Zero means "use the manager's global guardrail".
-	MaxTurns int
-	// BashTimeoutMs sets the Bash tool timeout for this run by exporting
-	// BASH_DEFAULT_TIMEOUT_MS and BASH_MAX_TIMEOUT_MS into the claude
-	// subprocess (claude exposes no equivalent CLI flag). Zero means "use
-	// the manager's default".
-	BashTimeoutMs int
-	// ForkSubagent, when true, sets CLAUDE_CODE_FORK_SUBAGENT=1 in the claude
-	// subprocess environment (claude provider only). Enables parallel subagent
-	// spawning from a single prompt at the cost of higher token usage.
-	ForkSubagent bool
-	// RetryWatchdog, when > 0, sets CLAUDE_CODE_RETRY_WATCHDOG to this value
-	// in the claude subprocess environment. Replaces CLAUDE_CODE_MAX_RETRIES
-	// (now capped at 15) for headless/unattended server runs. Zero means "use
-	// the manager's default".
-	RetryWatchdog int
-	// FallbackModel, when non-empty, passes --fallback-model to claude.
-	// Paired with RetryWatchdog so the watchdog can retry on a less-loaded
-	// model when the primary is overloaded. Empty means inherit the manager's
-	// default; the flag is omitted only when the manager default is also empty.
-	FallbackModel string
-	// ReasoningEffort sets codex's model_reasoning_effort (low/medium/high/xhigh)
-	// for this run. Empty = model default. Codex-only. NOT the same as Effort
-	// (claude --effort) — different provider, CLI surface, and value set.
-	ReasoningEffort string
-	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
-	// into the prompt (read/maintain instruction + current contents). Set only
-	// for code-author roles (see Role.AuthorsCode): verifier roles share the
-	// implementation worktree, so seeding them would feed an independent
-	// reviewer/tester the implementer's notes. No-op if the dir has no NOTES.md.
-	SeedWorkingMemory bool
-	// OutputSchema is an inline JSON Schema (codex only). The runner writes it
-	// to a temp file and passes --output-schema <path> to codex exec. Empty =
-	// no schema enforcement. Ignored by claude/copilot.
-	OutputSchema string
-	// outputSchemaPath is the temp file path the runner wrote OutputSchema to.
-	// Set intra-package before buildHeadlessInvocation; cleared by defer after
-	// the subprocess exits. Never set by callers.
-	outputSchemaPath string
-	// HeadlessPermissionMode overrides the permission posture for this run.
-	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
-	// "bypass" (or empty) keeps --dangerously-skip-permissions.
-	// Only effective for claude headless runs when AllowedTools is empty and
-	// RequirePermissions is false.
-	HeadlessPermissionMode string
-}
-
-// PermissionDenial records a single auto-mode classifier denial observed during
-// a headless run. Populated from tool_result error blocks that match the Claude
-// Code auto-mode classifier denial marker.
-type PermissionDenial struct {
-	ToolUseID string
-	Reason    string
-}
-
-// PlanStep represents a single item from a TodoWrite tool call.
-type PlanStep struct {
-	Content string `json:"content"`
-	Status  string `json:"status"` // "pending", "in_progress", "completed"
-}
-
-type StreamEvent struct {
-	Type                     string  `json:"type"`
-	Content                  string  `json:"content,omitempty"`
-	SessionID                string  `json:"session_id,omitempty"`
-	CostUSD                  float64 `json:"cost_usd,omitempty"`
-	InputTokens              int     `json:"input_tokens,omitempty"`
-	OutputTokens             int     `json:"output_tokens,omitempty"`
-	CacheCreationInputTokens int     `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int     `json:"cache_read_input_tokens,omitempty"`
-	ReasoningTokens          int     `json:"reasoning_tokens,omitempty"`
-	// PremiumRequests is Copilot's per-result billing-unit count (result event)
-	// or 0 for claude/codex.
-	PremiumRequests float64   `json:"premium_requests,omitempty"`
-	Subtype         string    `json:"subtype,omitempty"`
-	Timestamp       time.Time `json:"timestamp"`
-	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
-	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
-	ErrorType   string `json:"error_type,omitempty"`
-	ErrorStatus int    `json:"error_status,omitempty"`
-	// PlanSteps is populated when the assistant calls TodoWrite; contains the
-	// latest snapshot of the agent's todo list at this point in the stream.
-	PlanSteps []PlanStep `json:"plan_steps,omitempty"`
-	// PluginErrors carries plugin load failures surfaced by the init event.
-	PluginErrors []string `json:"plugin_errors,omitempty"`
-	// ToolCalls is the number of tool_use blocks in this event: all tool uses
-	// in a Claude assistant turn, or a single Codex tool_use. The runner
-	// accumulates these into Agent.ToolCalls.
-	ToolCalls int `json:"tool_calls,omitempty"`
-	// LimitSnapshot carries provider quota status emitted by CLIs such as
-	// Codex. It is forwarded to the limits ledger and not rendered as normal
-	// assistant output.
-	LimitSnapshot *limits.Snapshot `json:"limit_snapshot,omitempty"`
-	// toolSig is a canonical fingerprint of this event's tool calls (name +
-	// input), used by the watchdog's real-time loop detector to spot an agent
-	// repeating the same call. Unexported so it is never serialized to the
-	// NDJSON log or emitted to the frontend; it lives only in memory.
-	toolSig string
-	// permissionDenials carries auto-mode classifier denial records extracted
-	// from this event's tool_result error blocks. Unexported so it is never
-	// serialized; lives in-memory only. Populated for claude "user" events only.
-	permissionDenials []PermissionDenial
-}
-
-// ConvoEvent is a rich event for conversational mode, preserving full tool
-// call structure for the chat UI.
-type ConvoEvent struct {
-	Type                     string            `json:"type"`
-	Subtype                  string            `json:"subtype,omitempty"`
-	SessionID                string            `json:"sessionId,omitempty"`
-	Text                     string            `json:"text,omitempty"`
-	ToolUses                 []ToolUseBlock    `json:"toolUses,omitempty"`
-	ToolResults              []ToolResultBlock `json:"toolResults,omitempty"`
-	CostUSD                  float64           `json:"costUsd,omitempty"`
-	InputTokens              int               `json:"inputTokens,omitempty"`
-	OutputTokens             int               `json:"outputTokens,omitempty"`
-	CacheCreationInputTokens int               `json:"cacheCreationInputTokens,omitempty"`
-	CacheReadInputTokens     int               `json:"cacheReadInputTokens,omitempty"`
-	ReasoningTokens          int               `json:"reasoningTokens,omitempty"`
-	PremiumRequests          float64           `json:"premiumRequests,omitempty"`
-	LimitSnapshot            *limits.Snapshot  `json:"limitSnapshot,omitempty"`
-	IsPartial                bool              `json:"isPartial,omitempty"`
-	Timestamp                time.Time         `json:"timestamp"`
-	Raw                      json.RawMessage   `json:"raw,omitempty"`
-	// ErrorType and ErrorStatus carry structured fields from the Anthropic error
-	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
-	ErrorType   string `json:"errorType,omitempty"`
-	ErrorStatus int    `json:"errorStatus,omitempty"`
-}
-
-// ToolUseBlock represents a single tool call from the assistant.
-type ToolUseBlock struct {
-	ID    string         `json:"id"`
-	Name  string         `json:"name"`
-	Input map[string]any `json:"input"`
-}
-
-// ToolResultBlock represents the result of a tool execution.
-type ToolResultBlock struct {
-	ToolUseID string `json:"toolUseId"`
-	Content   string `json:"content"`
-	IsError   bool   `json:"isError,omitempty"`
-}
-
-// ApprovalRequest is sent to the frontend when a tool needs user approval.
-type ApprovalRequest struct {
-	ToolUseID string         `json:"toolUseId"`
-	ToolName  string         `json:"toolName"`
-	Input     map[string]any `json:"input"`
-}
-
-// ApprovalResponse carries the user's decision from the frontend.
-type ApprovalResponse struct {
-	ToolUseID string `json:"toolUseId"`
-	Approved  bool   `json:"approved"`
-}
-
 // ConvoOutput returns a snapshot of the conversation event buffer.
 func (a *Agent) ConvoOutput() []ConvoEvent {
 	a.mu.RLock()
@@ -913,25 +701,4 @@ func (a *Agent) GetErrorKind() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ErrorKind
-}
-
-// ErrorEvent is the payload emitted on agent:error:{id}.
-type ErrorEvent struct {
-	Kind string `json:"kind"`
-	Msg  string `json:"msg"`
-}
-
-// PluginErrorsEvent is emitted on agent:plugin_errors:{id} when the init event
-// carries plugin load failures.
-type PluginErrorsEvent struct {
-	Errors []string `json:"errors"`
-}
-
-// EscalationEvent is emitted on agent:escalation:{id} when a guardrail fires.
-type EscalationEvent struct {
-	// Reason is "turns" or "cost".
-	Reason    string  `json:"reason"`
-	TurnCount int     `json:"turnCount,omitempty"`
-	CostUSD   float64 `json:"costUsd,omitempty"`
-	Limit     float64 `json:"limit"`
 }
