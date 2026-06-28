@@ -154,6 +154,28 @@ func TestUmbrellaTrackerBody_ReplacesBlockAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestUmbrellaTrackerBody_ReplacesMalformedBlockFromStart(t *testing.T) {
+	t.Parallel()
+	children := []umbrellaProgressChild{
+		{title: "first", issue: "Automaat/sybra#1", status: task.StatusDone},
+	}
+	input := "Intro\n\n" +
+		umbrellaProgressStart + "\nold without end\n\nTail that belonged to malformed block"
+
+	got := umbrellaTrackerBody(input, children)
+	if !strings.HasPrefix(got, "Intro\n\n"+umbrellaProgressStart) {
+		t.Fatalf("body before malformed generated block was not preserved:\n%s", got)
+	}
+	for _, unwanted := range []string{"old without end", "Tail that belonged to malformed block"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("malformed generated block content %q was not replaced:\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "- [x] first (#1) — done") || !strings.Contains(got, umbrellaProgressEnd) {
+		t.Fatalf("replacement progress block missing expected content:\n%s", got)
+	}
+}
+
 func TestRenderUmbrellaProgressBlock_EmptyChildren(t *testing.T) {
 	t.Parallel()
 	got := renderUmbrellaProgressBlock(nil)

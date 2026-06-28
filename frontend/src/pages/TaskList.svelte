@@ -421,6 +421,7 @@
     <TaskListView
       tasks={allFilteredTasks}
       focusedTaskId={focusedTaskId}
+      umbrellaProgress={umbrellaProgress}
       onselect={(id) => onselect(id)}
       onhover={(rowIdx) => { focusedColIdx = 0; focusedRowIdx = rowIdx }}
     />

@@ -252,6 +252,7 @@ func umbrellaTrackerBody(body string, children []umbrellaProgressChild) string {
 			end := searchFrom + relEnd + len(umbrellaProgressEnd)
 			return body[:start] + block + body[end:]
 		}
+		return body[:start] + block
 	}
 	if strings.TrimSpace(body) == "" {
 		return block

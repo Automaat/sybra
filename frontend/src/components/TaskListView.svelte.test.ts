@@ -59,6 +59,19 @@ describe('TaskListView', () => {
     expect(screen.getByText('—')).toBeDefined()
   })
 
+  it('shows umbrella progress in list rows', () => {
+    render(TaskListView, {
+      props: {
+        tasks: [{ ...tasks[0], taskType: 'umbrella' }] as never,
+        focusedTaskId: null,
+        umbrellaProgress: (() => ({ done: 2, total: 5 })) as never,
+        onselect: vi.fn(),
+        onhover: vi.fn(),
+      },
+    })
+    expect(screen.getByTitle('2/5 subissues complete')).toBeDefined()
+  })
+
   it('row click fires onselect with task id', async () => {
     const onselect = vi.fn()
     render(TaskListView, {
