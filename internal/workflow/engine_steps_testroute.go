@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -128,7 +129,7 @@ func (e *manualProbeEvidence) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	e.Command = firstJSONFieldText(fields, "command", "cmd")
-	e.Expected = firstJSONFieldText(fields, "expected", "want")
+	e.Expected = firstJSONFieldText(fields, "expected", "want", "assertion")
 	e.Actual = firstJSONFieldText(fields, "actual", "output", "observed", "observed_output", "result", "stdout", "stderr")
 	return nil
 }
@@ -148,10 +149,11 @@ func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
 }
 
 func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
+	trimmed := bytesTrimSpace(data)
 	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
+	if err := json.Unmarshal(trimmed, &s); err == nil {
 		return s, true, nil
-	} else if strings.HasPrefix(strings.TrimSpace(string(data)), `"`) {
+	} else if len(trimmed) > 0 && trimmed[0] == '"' {
 		return "", true, err
 	}
 	return "", false, nil
@@ -159,7 +161,7 @@ func unmarshalEvidenceString(data []byte) (raw string, ok bool, err error) {
 
 func unmarshalManualProbeEvidenceList(data []byte) ([]manualProbeEvidence, error) {
 	trimmed := bytesTrimSpace(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
 	}
 	if trimmed[0] == '[' {
@@ -178,7 +180,7 @@ func unmarshalManualProbeEvidenceList(data []byte) ([]manualProbeEvidence, error
 
 func unmarshalAutomatedCheckEvidenceList(data []byte) ([]automatedCheckEvidence, error) {
 	trimmed := bytesTrimSpace(data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
 	}
 	if trimmed[0] == '[' {
@@ -196,13 +198,14 @@ func unmarshalAutomatedCheckEvidenceList(data []byte) ([]automatedCheckEvidence,
 }
 
 func unmarshalFlexibleEvidenceText(data []byte) (string, error) {
-	if len(data) == 0 || string(bytesTrimSpace(data)) == "null" {
+	trimmed := bytesTrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return "", nil
 	}
-	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+	if raw, ok, err := unmarshalEvidenceString(trimmed); err != nil || ok {
 		return raw, err
 	}
-	fields, err := unmarshalEvidenceObject(data)
+	fields, err := unmarshalEvidenceObject(trimmed)
 	if err != nil {
 		return "", err
 	}
@@ -237,26 +240,18 @@ func firstJSONFieldText(fields map[string]json.RawMessage, names ...string) stri
 
 func jsonEvidenceText(raw json.RawMessage) string {
 	trimmed := bytesTrimSpace(raw)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ""
 	}
 	var s string
 	if err := json.Unmarshal(trimmed, &s); err == nil {
 		return strings.TrimSpace(s)
 	}
-	var v any
-	if err := json.Unmarshal(trimmed, &v); err != nil {
-		return ""
-	}
-	compact, err := json.Marshal(v)
-	if err != nil {
-		return ""
-	}
-	return string(compact)
+	return ""
 }
 
 func bytesTrimSpace(data []byte) []byte {
-	return []byte(strings.TrimSpace(string(data)))
+	return bytes.TrimSpace(data)
 }
 
 func compactNonEmpty(values ...string) []string {
@@ -522,6 +517,7 @@ func taskHasAnyTag(t TaskInfo, tags ...string) bool {
 func hasManualProbeEvidence(probes []manualProbeEvidence) bool {
 	for _, p := range probes {
 		if strings.TrimSpace(p.Command) != "" &&
+			strings.TrimSpace(p.Expected) != "" &&
 			strings.TrimSpace(p.Actual) != "" {
 			return true
 		}

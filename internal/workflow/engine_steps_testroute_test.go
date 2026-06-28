@@ -427,7 +427,19 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
 				`"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server",` +
 				`"readiness_probe":{"command":"curl -fsS http://127.0.0.1:55990/health","output":"{\"status\":\"ok\"}"},` +
-				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/tasks","output":"[]"}],` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/tasks","expected":"empty task list","output":"[]"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "pass_with_alias_manual_probe_evidence",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server",` +
+				`"readiness_probe":"curl -fsS http://127.0.0.1:55990/health -> ok",` +
+				`"manual_probes":[{"cmd":"curl -fsS http://127.0.0.1:55990/tasks","assertion":"returns empty task list","observed_output":"[]"}],` +
 				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
@@ -467,6 +479,32 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_without_manual_evidence",
 			status:     "completed",
 			output:     `{"verdict":"PASS"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "pass_with_structured_manual_probe_without_expected_rejected",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server",` +
+				`"readiness_probe":"curl -fsS http://127.0.0.1:55990/health -> ok",` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:55990/tasks","output":"[]"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			name:   "pass_with_non_string_structured_manual_probe_rejected",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,` +
+				`"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server",` +
+				`"readiness_probe":"curl -fsS http://127.0.0.1:55990/health -> ok",` +
+				`"manual_probes":[{"command":123,"expected":"HTTP 200","actual":false}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","output":"ok"}],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
