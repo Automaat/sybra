@@ -88,7 +88,7 @@ func cleanEnvPath(p string) string {
 func main() {
 	// Log args for test verification.
 	if logFile := cleanEnvPath(os.Getenv("FAKE_CLAUDE_ARGS_LOG")); logFile != "" {
-		_ = os.WriteFile(logFile, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
+		_ = writeArgsLog(logFile, []byte(strings.Join(os.Args[1:], "\n")))
 	}
 
 	scenario := popScenario()
@@ -96,6 +96,37 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
+}
+
+func writeArgsLog(logFile string, data []byte) error {
+	dir := filepath.Dir(logFile)
+	tmp, err := os.CreateTemp(dir, ".claude-args-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, logFile); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 var scenarioHandlers = map[string]func(string){
