@@ -654,12 +654,12 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasCommand := containsAny(lower,
 		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
 		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ")
-	hasObserved := containsAny(lower,
+	hasObserved := hasReportLinePrefix(report,
 		"actual output:", "actual:", "observed:", "observed output:",
-		"command output:", "stdout:", "stderr:", "exit code",
-		"printed:", "rendered:", "verbatim output:", "actual behavior:", "actual behaviour:") ||
-		hasReportLinePrefix(report, "output:")
-	hasExpected := containsAny(lower,
+		"command output:", "stdout:", "stderr:",
+		"printed:", "rendered:", "verbatim output:", "output:") ||
+		strings.Contains(lower, "exit code")
+	hasExpected := hasReportLinePrefix(report,
 		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
 		"requirement tested:", "task says", "from the task",
 		"violates", "should render", "should not")
