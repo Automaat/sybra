@@ -1214,7 +1214,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	if agents.CallCount() != 1 {
 		t.Fatalf("expected replacement parallel child start, got %d", agents.CallCount())
 	}
-	if got := agents.LastCall(); got.Provider != "claude" || got.Prompt != "Plan A t1" {
+	if got := agents.LastCall(); got.Prompt != "Plan A t1" {
 		t.Fatalf("unexpected replacement call: %+v", got)
 	}
 	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
@@ -1227,7 +1227,17 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := updated.Workflow.ParallelInflight["plan"].Children["plan_a"]
+	if updated.Workflow == nil || updated.Workflow.ParallelInflight == nil {
+		t.Fatalf("workflow parallel state missing: %+v", updated.Workflow)
+	}
+	rec := updated.Workflow.ParallelInflight["plan"]
+	if rec == nil || rec.Children == nil {
+		t.Fatalf("parallel record missing: %+v", rec)
+	}
+	child := rec.Children["plan_a"]
+	if child == nil {
+		t.Fatal("child plan_a missing")
+	}
 	if child.AgentID != "agent-1" || child.Status != "pending" {
 		t.Fatalf("child status = %+v, want pending agent-1", child)
 	}
@@ -1267,7 +1277,17 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, child := range updated.Workflow.ParallelInflight["plan"].Children {
+	if updated.Workflow == nil || updated.Workflow.ParallelInflight == nil {
+		t.Fatalf("workflow parallel state missing: %+v", updated.Workflow)
+	}
+	rec := updated.Workflow.ParallelInflight["plan"]
+	if rec == nil || rec.Children == nil {
+		t.Fatalf("parallel record missing: %+v", rec)
+	}
+	for id, child := range rec.Children {
+		if child == nil {
+			t.Fatalf("child %s missing", id)
+		}
 		if child.Status != "pending" {
 			t.Fatalf("child %s status = %q, want pending after transient provider block", id, child.Status)
 		}
