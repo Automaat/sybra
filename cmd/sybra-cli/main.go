@@ -375,8 +375,7 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
 // bypasses triage/planning and either starts the requested agentic stage in an
-// existing worktree, reviews an existing PR, or places the task in a raw status
-// without workflow dispatch.
+// existing worktree or places the task in a raw status without workflow dispatch.
 func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
@@ -386,10 +385,10 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	stage := fs.String("stage", "implement", "workflow entry stage: implement|in-progress|review|ready-review|agentic-review|testing|ready-pr|pr|in-review")
+	stage := fs.String("stage", "implement", "workflow entry stage: implement|review|testing|ready-pr")
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
 	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot")
-	pr := fs.Int("pr", 0, "PR number (required for --stage pr)")
+	pr := fs.Int("pr", 0, "existing PR number to link when using --stage ready-pr")
 	extraTags := fs.String("tags", "", "extra comma-separated tags")
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -439,31 +438,19 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if rawStatusMode {
 		init.Status = &status
 	}
-	switch stageCfg.name {
-	case "pr":
-		// Existing PR: Sybra reviews it via the pr-review lane. No worktree
-		// adoption — pr-review checks out the PR head itself.
-		if *pr <= 0 {
-			return fatal(jsonOut, "--stage pr requires --pr <number>")
-		}
+	// Handoff always adopts the current worktree and routes through the internal
+	// Sybra task pipeline. It must never create the inbound PR-review lane's
+	// `review` task shape, because that represents external PRs awaiting human
+	// review rather than Sybra-authored work.
+	if wtProj, e := deriveProjectID(dir); e == nil && !strings.EqualFold(wtProj, projectID) {
+		return fatal(jsonOut, "worktree origin is %q but --project is %q — refusing to push agent work to a different repo", wtProj, projectID)
+	}
+	if e := assertFeatureBranch(dir, projRec); e != nil {
+		return fatal(jsonOut, "%v", e)
+	}
+	init.WorktreeDir = task.Ptr(dir)
+	if *pr > 0 {
 		init.PRNumber = task.Ptr(*pr)
-	default:
-		// Non-PR stages adopt the worktree. Guard that the chosen project
-		// matches the worktree's origin — a mismatched --project (or stale
-		// ProjectID) would make agents run and push against the wrong repo.
-		// Best-effort: only enforced when origin is a parseable GitHub remote.
-		if wtProj, e := deriveProjectID(dir); e == nil && !strings.EqualFold(wtProj, projectID) {
-			return fatal(jsonOut, "worktree origin is %q but --project is %q — refusing to push agent work to a different repo", wtProj, projectID)
-		}
-		// The worktree must be on a dedicated feature branch (enforced again at
-		// adoption).
-		if e := assertFeatureBranch(dir, projRec); e != nil {
-			return fatal(jsonOut, "%v", e)
-		}
-		init.WorktreeDir = task.Ptr(dir)
-		if *pr > 0 {
-			init.PRNumber = task.Ptr(*pr)
-		}
 	}
 
 	t, err := s.CreateFull(*title, *body, *mode, init)
@@ -502,10 +489,13 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (hand
 
 	stageCfg, ok := handoffStageConfigFor(stage)
 	if !ok {
-		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, in-progress, review, ready-review, agentic-review, testing, ready-pr, pr, in-review)", stage)
+		if isExternalPRHandoffStage(stage) {
+			return handoffStageConfig{}, "", false, fmt.Errorf("--stage %s is not supported by handoff: handoff only creates internal Sybra tasks; use --stage ready-pr --pr N to link an existing PR from this worktree", stage)
+		}
+		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, review, testing, ready-pr; aliases: in-progress, ready-review, agentic-review, test, open-pr, create-pr)", stage)
 	}
-	if pr > 0 && stageCfg.name != "pr" && stageCfg.name != "ready-pr" {
-		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage pr or --stage ready-pr")
+	if pr > 0 && stageCfg.name != "ready-pr" {
+		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
 	}
 	return stageCfg, "", false, nil
 }
@@ -541,10 +531,7 @@ type handoffStageConfig struct {
 	tags []string
 }
 
-const (
-	handoffManualTag = "handoff-manual"
-	handoffPRTag     = "handoff-pr"
-)
+const handoffManualTag = "handoff-manual"
 
 // handoffStageConfigFor maps a handoff stage to the tags that route the task
 // into the right Sybra lane on creation, or false for an unknown stage.
@@ -552,7 +539,6 @@ const (
 //   - review:    simple-task-handoff-review → ready-review → review → testing → PR
 //   - testing:   simple-task-handoff-testing → testing → adversarial test → PR
 //   - ready-pr:  simple-task-handoff-ready-pr → ready-pr → open/update PR
-//   - pr:        pr-review lane for an existing PR
 func handoffStageConfigFor(stage string) (handoffStageConfig, bool) {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
 	case "", "implement", "in-progress":
@@ -563,16 +549,23 @@ func handoffStageConfigFor(stage string) (handoffStageConfig, bool) {
 		return handoffStageConfig{name: "testing", tags: []string{"handoff", "handoff-testing"}}, true
 	case "ready-pr", "open-pr", "create-pr":
 		return handoffStageConfig{name: "ready-pr", tags: []string{"handoff", "handoff-ready-pr"}}, true
-	case "pr", "in-review", "pull-request", "pull_request":
-		return handoffStageConfig{name: "pr", tags: []string{"review", handoffPRTag}}, true
 	default:
 		return handoffStageConfig{}, false
 	}
 }
 
+func isExternalPRHandoffStage(stage string) bool {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case "pr", "in-review", "pull-request", "pull_request":
+		return true
+	default:
+		return false
+	}
+}
+
 func handoffStageRequiresSource(stage string) bool {
 	switch stage {
-	case "review", "testing", "pr":
+	case "review", "testing":
 		return true
 	default:
 		return false
@@ -666,9 +659,6 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "ready-pr":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to opening or updating the PR from this worktree.")
-	case "pr":
-		fmt.Printf("  pr:       #%d\n", t.PRNumber)
-		fmt.Println("  Sybra will review the existing PR.")
 	default:
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip planning and start implementing in this worktree.")
@@ -1694,11 +1684,11 @@ Commands:
              implement      have a plan -> Sybra implements, reviews, tests, opens the PR
              review         implemented locally -> Sybra enters agentic review
              testing        reviewed locally -> Sybra tests, then opens the PR
-             ready-pr       tested locally -> Sybra opens or updates the PR
-             pr|in-review   existing PR (--pr N) -> Sybra reviews the PR
+             ready-pr       tested locally -> Sybra opens or updates the PR; pass --pr N
+                            only to link an existing same-branch PR
            --source-provider records which local agent produced handed-off work
            so review/testing/PR steps can run on a different provider.
-           Required for --stage review|testing|pr; optional for implement/ready-pr.
+           Required for --stage review|testing; optional for implement/ready-pr.
            --status STATUS creates the task directly in that status without workflow dispatch
   umbrella <issue-url> [--model M]
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker

@@ -84,7 +84,7 @@ export function isReviewTask(t: { tags?: string[] }): boolean {
   return t.tags?.includes('review') ?? false
 }
 
-/** Tag set by `sybra-cli handoff --stage pr` on a self-authored PR. */
+/** Legacy tag once used for self-authored PR handoffs. New handoffs do not set it. */
 export const HANDOFF_PR_TAG = 'handoff-pr'
 
 /**

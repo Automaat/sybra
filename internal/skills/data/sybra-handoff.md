@@ -25,9 +25,9 @@ Hand off at whatever stage you have reached — Sybra picks up from there:
 - You have **implemented and reviewed** locally and want the testing gate →
   `--stage testing` with a different provider.
 - You have **implemented, reviewed, and tested** locally and want Sybra to open
-  or update the PR from this worktree → `--stage ready-pr`.
-- You already **opened a PR** and want Sybra to review it with a different
-  provider → `--stage pr --pr N` (alias: `in-review --pr N`).
+  or update the PR from this worktree → `--stage ready-pr`. If the PR already
+  exists for this same worktree branch, pass `--pr N` with `--stage ready-pr` so
+  Sybra links and pushes the internal task rather than creating a duplicate PR.
 
 In all cases the approach is decided and you want Sybra to carry it the rest of
 the way autonomously. Do **not** use for exploratory work that still needs human
@@ -40,9 +40,16 @@ workflow entry points, not just column names.
 ## What it does
 
 `sybra-cli handoff` creates a task that skips straight to the requested stage —
-no triage, no planning gate — and (for all non-PR stages) reuses **this** git
+no triage, no planning gate — and always reuses **this** git
 worktree (`--worktree-dir`, default: cwd) instead of creating a fresh one: no
 rebase, no force-push, and Sybra never deletes it.
+
+Handoff only creates **internal Sybra tasks**. It must not route work into the
+inbound/external PR-review lane (the lane for reviewing someone else's PR). Do
+not use external PR stages such as `--stage pr`, `--stage in-review`, or
+`--stage pull-request`; the CLI rejects those stages. Extra tags such as
+`review`/`handoff-pr` are legacy external-lane markers and should not be passed
+with handoffs.
 
 `sybra-cli handoff --status <status>` creates the task directly in that status
 with a `handoff-manual` tag and does **not** start any workflow. This is for
@@ -56,10 +63,9 @@ Stages:
 - **testing**: flips to `testing`; Sybra runs the adversarial testing gate in the
   adopted worktree with a different provider and opens the PR if tests pass.
 - **ready-pr**: flips to `ready-pr`; Sybra opens or updates the PR from the
-  adopted worktree (no implementation, review, or testing step).
-- **pr**: for an existing PR (`--pr N`); Sybra reviews the open PR via its
-  pr-review lane with a different provider (no worktree adoption — it checks out
-  the PR head itself).
+  adopted worktree (no implementation, review, or testing step). With `--pr N`,
+  it links/pushes the existing PR for this same branch while staying an internal
+  Sybra task.
 
 ## Workflow entry context
 
@@ -71,21 +77,18 @@ column label:
 | `implement` | `in-progress` | `simple-task-handoff` -> `simple-task-implement` | The approach is decided but code is not written. |
 | `review` | `ready-review`, `agentic-review` | `simple-task-handoff-review` -> `simple-task-review` | Code exists in this worktree and needs Sybra's review/test/PR flow. |
 | `testing` | `test` | `simple-task-handoff-testing` -> `testing-task` | Code has already had the review you want and only needs Sybra's test/PR flow. |
-| `ready-pr` | `open-pr`, `create-pr` | `simple-task-handoff-ready-pr` -> `simple-task-pr` | Code has already been reviewed and tested, and Sybra should open/update the PR from this worktree. |
-| `pr` | `in-review`, `pull-request` | `pr-review` | A real PR already exists; pass `--pr N`. |
+| `ready-pr` | `open-pr`, `create-pr` | `simple-task-handoff-ready-pr` -> `simple-task-pr` | Code has already been reviewed and tested, and Sybra should open/update the PR from this worktree. Pass `--pr N` only here to link an existing same-branch PR. |
 
 Important status distinction:
 - `ready-review` / `agentic-review` means "start Sybra's review workflow".
 - `ready-pr` means "open or update a PR from this adopted worktree".
-- `in-review` means "an existing PR is already open and needs PR review"; it
-  requires `--pr N` and does not adopt the local worktree.
 - `--status in-review` means "place this task in the in-review column without
   starting any review workflow"; use this only when a human or another system is
   handling the next action.
 
 If unsure, inspect `internal/workflow/builtin/*.yaml` and choose the entry point
 whose trigger matches the next agentic step. Do not add broad workflow-lane tags
-such as `review` unless you intentionally want the existing-PR lane.
+such as `review`; handoff tasks must stay in the internal simple-task workflow.
 
 ## Procedure
 
@@ -124,14 +127,14 @@ such as `review` unless you intentionally want the existing-PR lane.
    ```
    Set `--source-provider` to the provider running this skill: Claude Code uses
    `claude`, Codex uses `codex`, and Copilot uses `copilot`. It is required for
-   `--stage review`, `--stage testing`, and `--stage pr`, and recommended for
-   `--stage implement` and `--stage ready-pr` so provenance is visible on the
-   task.
+   `--stage review` and `--stage testing`, and recommended for `--stage implement`
+   and `--stage ready-pr` so provenance is visible on the task.
    - `--stage review` / `ready-review` / `agentic-review` to skip implementation
      (you already coded it); `--stage testing` to skip implementation and
-     review; `--stage ready-pr` to skip directly to PR creation/update;
-     `--stage pr --pr N` to hand off an existing PR. Default is
-     `--stage implement`.
+     review; `--stage ready-pr` to skip directly to PR creation/update. Default
+     is `--stage implement`.
+   - `--pr N` is valid only with `--stage ready-pr`, where it links an existing
+     PR for the adopted worktree branch. Never use PR handoff as a review lane.
    - `--status STATUS` is mutually exclusive with `--stage` and creates a manual
      task in that exact status without workflow dispatch.
    - `--plan-file` matters most for `--stage implement`; for later stages it is

@@ -8,6 +8,9 @@ trigger:
     - field: task.tags
       operator: contains
       value: review
+    - field: task.tags
+      operator: not_contains
+      value: handoff-pr
 steps:
   # Mechanical heuristic: pick simple vs staff review based on PR diff size.
   # Same step type used by simple-task; here it falls back to `gh pr diff`

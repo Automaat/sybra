@@ -22,8 +22,6 @@ func TestHandoffStageConfigForAliases(t *testing.T) {
 		{stage: "testing", name: "testing", tags: []string{"handoff", "handoff-testing"}},
 		{stage: "ready-pr", name: "ready-pr", tags: []string{"handoff", "handoff-ready-pr"}},
 		{stage: "open-pr", name: "ready-pr", tags: []string{"handoff", "handoff-ready-pr"}},
-		{stage: "in-review", name: "pr", tags: []string{"review", handoffPRTag}},
-		{stage: "pr", name: "pr", tags: []string{"review", handoffPRTag}},
 	}
 
 	for _, tt := range tests {
@@ -48,5 +46,21 @@ func TestHandoffStageConfigForRejectsUnknownStage(t *testing.T) {
 
 	if _, ok := handoffStageConfigFor("done"); ok {
 		t.Fatal("handoffStageConfigFor(\"done\") returned ok=true")
+	}
+}
+
+func TestHandoffStageConfigForRejectsExternalPRStages(t *testing.T) {
+	t.Parallel()
+
+	for _, stage := range []string{"pr", "in-review", "pull-request", "pull_request"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			if _, ok := handoffStageConfigFor(stage); ok {
+				t.Fatalf("handoffStageConfigFor(%q) returned ok=true", stage)
+			}
+			if !isExternalPRHandoffStage(stage) {
+				t.Fatalf("isExternalPRHandoffStage(%q) = false, want true", stage)
+			}
+		})
 	}
 }
