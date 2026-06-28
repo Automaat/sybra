@@ -9,7 +9,9 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -381,10 +383,11 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 
 // agentAdapter bridges agent.Manager + AgentOrchestrator → workflow.AgentLauncher.
 type agentAdapter struct {
-	agents    *agent.Manager
-	agentOrch *AgentOrchestrator
-	tasks     *task.Manager
-	sandboxes *sandbox.Manager
+	agents     *agent.Manager
+	agentOrch  *AgentOrchestrator
+	tasks      *task.Manager
+	sandboxes  *sandbox.Manager
+	experience *experience.Store
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
@@ -408,10 +411,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", "", "", err
 	}
 
-	if r == agent.RoleTestRunner {
-		if a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
-			return "", "", "", workflow.ErrTestRunnerBusy
-		}
+	// Cap concurrent test-runner agents per machine — each one starts an
+	// isolated real-app/cluster sandbox, so this bounds sandbox load
+	// independently of Agent.MaxConcurrent. The benign race (two dispatches
+	// passing the check at once) is acceptable: the workflow step parks on
+	// ErrTestRunnerBusy and ResumeStalled retries when a slot frees.
+	if err := a.ensureTestRunnerCapacity(r); err != nil {
+		return "", "", "", err
 	}
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, a.agentOrch.cfg)
@@ -444,6 +450,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		SeedWorkingMemory: r.AuthorsCode(),
 		OutputSchema:      outputSchema,
 	}
+	a.withExperiencePrompt(&cfg, r, t)
 
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
@@ -522,6 +529,39 @@ func currentWorktreeHead(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Role, t task.Task) {
+	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.cfg == nil {
+		return
+	}
+	if role != agent.RolePlan || !a.agentOrch.cfg.Experience.Enabled || t.ProjectID == "" {
+		return
+	}
+	records, err := a.experience.Query(t.ProjectID, a.agentOrch.cfg.Experience.MaxRecords)
+	if err != nil || len(records) == 0 {
+		return
+	}
+	appendix := experience.FormatForPrompt(records)
+	if appendix == "" {
+		return
+	}
+	cfg.Prompt += appendix
+	ids := make([]string, 0, len(records))
+	for i := range records {
+		ids = append(ids, records[i].TaskID)
+	}
+	a.agentOrch.logAudit(audit.EventExperienceInjected, t.ID, "", map[string]any{
+		"project_id": t.ProjectID,
+		"record_ids": ids,
+	})
+}
+
+func (a *agentAdapter) ensureTestRunnerCapacity(role agent.Role) error {
+	if role == agent.RoleTestRunner && a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
+		return workflow.ErrTestRunnerBusy
+	}
+	return nil
 }
 
 func (a *agentAdapter) HasRunningAgent(taskID string) bool {
