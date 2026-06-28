@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
@@ -59,6 +60,7 @@ type App struct {
 	notifier                      *notification.Emitter
 	audit                         *audit.Logger
 	artifacts                     *artifact.Store
+	experience                    *experience.Store
 	stats                         *stats.Store
 	limits                        *limits.Store
 	tasksDir                      string
@@ -260,6 +262,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
 	a.initArtifacts()
+	a.initExperience()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.agents = agent.NewManager(ctx, emit, a.logger, a.logDir)
@@ -281,7 +284,7 @@ func (a *App) Startup(ctx context.Context) error {
 	})
 	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg)
+	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 
 	a.initWorkflowEngine()
 

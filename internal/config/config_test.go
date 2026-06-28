@@ -78,6 +78,28 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+func TestLoadExperienceDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Experience.Enabled {
+		t.Fatal("experience.enabled = true, want false")
+	}
+	if cfg.Experience.MaxRecords != 5 {
+		t.Fatalf("experience.max_records = %d, want 5", cfg.Experience.MaxRecords)
+	}
+	if got := cfg.ExperiencesDir(); got != filepath.Join(dir, "experience") {
+		t.Fatalf("ExperiencesDir() = %q, want under SYBRA_HOME", got)
+	}
+}
+
 func TestLoadAutoUpdateDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

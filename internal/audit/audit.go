@@ -40,6 +40,9 @@ const (
 	EventHumanReviewVerdict       = "human_review.verdict"
 	EventHumanReviewIssue         = "human_review.issue_filed"
 	EventHumanReviewSkipped       = "human_review.skipped"
+	EventExperienceRecorded       = "experience.recorded"
+	EventExperienceSkipped        = "experience.skipped"
+	EventExperienceInjected       = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

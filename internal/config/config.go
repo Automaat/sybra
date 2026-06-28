@@ -30,6 +30,7 @@ type Config struct {
 	SelfMonitor   SelfMonitorConfig   `yaml:"self_monitor" json:"selfMonitor"`
 	Evaluation    EvaluationConfig    `yaml:"evaluation" json:"evaluation"`
 	HarnessEvolve HarnessEvolveConfig `yaml:"harness_evolution" json:"harnessEvolution"`
+	Experience    ExperienceConfig    `yaml:"experience" json:"experience"`
 	ABTesting     abtest.Config       `yaml:"ab_testing" json:"abTesting"`
 	Providers     ProvidersConfig     `yaml:"providers" json:"providers"`
 	Metrics       MetricsConfig       `yaml:"metrics" json:"metrics"`
@@ -272,6 +273,11 @@ func (c *Config) TestingMaxAttempts() int {
 
 type NotificationConfig struct {
 	Desktop bool `yaml:"desktop" json:"desktop"`
+}
+
+type ExperienceConfig struct {
+	Enabled    bool `yaml:"enabled" json:"enabled"`
+	MaxRecords int  `yaml:"max_records" json:"maxRecords"`
 }
 
 type OrchestratorConfig struct {
@@ -619,7 +625,12 @@ func (c *Config) Directories() map[string]string {
 		"audit":       c.AuditDir(),
 		"loop_agents": c.LoopAgentsDir,
 		"artifacts":   ArtifactsDir(),
+		"experiences": c.ExperiencesDir(),
 	}
+}
+
+func (c *Config) ExperiencesDir() string {
+	return filepath.Join(HomeDir(), "experience")
 }
 
 func Load() (*Config, error) {
@@ -703,11 +714,18 @@ func Load() (*Config, error) {
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
 	applyHarnessEvolveDefaults(cfg)
+	applyExperienceDefaults(cfg)
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 
 	return cfg, nil
+}
+
+func applyExperienceDefaults(cfg *Config) {
+	if cfg.Experience.MaxRecords <= 0 {
+		cfg.Experience.MaxRecords = 5
+	}
 }
 
 func applyAutoUpdateDefaults(cfg *Config) {
