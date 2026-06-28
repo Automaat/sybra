@@ -244,7 +244,7 @@ func suggestedInvestigation(a Anomaly) string {
 	case KindOverDispatchLimit:
 		return "- Cap concurrent agents in `agent.MaxConcurrent` or stop in-progress runs that have been live longer than expected.\n"
 	case KindLostAgent:
-		return "- Confirm the agent process actually exited; the watchdog has reset the task to `todo`.\n"
+		return "- Confirm the agent process actually exited; workflow recovery should resume the in-progress task.\n"
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
 	case KindStuckHumanBlocked:

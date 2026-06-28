@@ -29,13 +29,17 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 		t.Fatal("expected non-empty label")
 	}
 
-	// Task must be reset to todo.
+	// Task must remain in-progress so workflow/recovery can resume it; moving
+	// it to todo leaves existing workflows inert.
 	if len(ft.updates) != 1 {
 		t.Fatalf("want 1 task update, got %d", len(ft.updates))
 	}
 	u := ft.updates[0]
-	if u.u.Status == nil || *u.u.Status != task.StatusTodo {
-		t.Errorf("status = %v, want todo", u.u.Status)
+	if u.u.Status != nil {
+		t.Errorf("status must be preserved, got %v", *u.u.Status)
+	}
+	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
+		t.Error("status_reason should explain recovery handoff")
 	}
 
 	// Running agent run must be marked stopped before the task update.
