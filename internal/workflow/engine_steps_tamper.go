@@ -62,6 +62,7 @@ type tamperFinding struct {
 type tamperReport struct {
 	TaskID   string          `json:"taskId"`
 	Base     string          `json:"base"`
+	Range    string          `json:"range"`
 	Files    []string        `json:"files"`
 	Findings []tamperFinding `json:"findings"`
 }
@@ -82,6 +83,12 @@ type tamperChange struct {
 	Status string // "A", "M", "D", "R100", …
 	Path   string
 	Patch  string
+}
+
+type tamperPatchResult struct {
+	Findings  []tamperFinding
+	AddAssert int
+	DelAssert int
 }
 
 var (
@@ -140,7 +147,7 @@ var (
 	// only `require.` (testify-style assertions) counts.
 	tamperAssertionRe = regexp.MustCompile(
 		`\bassert\b|\brequire\.|\bexpect\s*\(|` +
-			`\bt\.(Error|Errorf|Fatal|Fatalf)\b|\bEXPECT_|\bASSERT_|\.should\b|\bshould\.`)
+			`\b(?:t|tb)\.(Error|Errorf|Fatal|Fatalf)\b|\bEXPECT_|\bASSERT_|\.should\b|\bshould\.`)
 	// tamperTestDeclRe matches a test-case declaration. Net removal flags
 	// deleted test cases.
 	tamperTestDeclRe = regexp.MustCompile(
@@ -223,6 +230,10 @@ func splitTopArgs(s string) []string {
 // for a header. Comment-only additions are ignored, so commenting out a test or
 // assertion registers as a removal (the deletion side) with no offsetting add.
 func scanTamperPatch(path string, cat tamperCategory, patch string) []tamperFinding {
+	return scanTamperPatchResult(path, cat, patch).Findings
+}
+
+func scanTamperPatchResult(path string, cat tamperCategory, patch string) tamperPatchResult {
 	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
@@ -335,7 +346,7 @@ func (s *tamperScan) feedRemoved(content string) {
 
 // finalize appends the net-removal findings (a deletion not offset by an
 // addition signals weakened coverage / a removed gate) and returns the result.
-func (s *tamperScan) finalize() []tamperFinding {
+func (s *tamperScan) finalize() tamperPatchResult {
 	netFinding := func(rule, noun string, del, add int) {
 		if net := del - add; net > 0 {
 			s.findings = append(s.findings, tamperFinding{
@@ -346,11 +357,11 @@ func (s *tamperScan) finalize() []tamperFinding {
 	}
 	if s.isCI {
 		netFinding("removed-ci-step", "check step(s)", s.delRun, s.addRun)
-		return s.findings
+		return tamperPatchResult{Findings: s.findings}
 	}
 	netFinding("removed-assertions", "assertion line(s)", s.delAssert, s.addAssert)
 	netFinding("removed-test-cases", "test declaration(s)", s.delDecl, s.addDecl)
-	return s.findings
+	return tamperPatchResult{Findings: s.findings, AddAssert: s.addAssert, DelAssert: s.delAssert}
 }
 
 // buildTamperReport assembles the report from the parsed diff. Pure function:
@@ -358,6 +369,7 @@ func (s *tamperScan) finalize() []tamperFinding {
 func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport {
 	report := tamperReport{TaskID: taskID, Base: base}
 	scanned := 0
+	totalAddedAssertions := 0
 	for i := range changes {
 		c := changes[i]
 		cat := classifyTamperPath(c.Path)
@@ -378,13 +390,18 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 			continue
 		}
 		scanned++
-		report.Findings = append(report.Findings, scanTamperPatch(c.Path, cat, c.Patch)...)
+		res := scanTamperPatchResult(c.Path, cat, c.Patch)
+		totalAddedAssertions += res.AddAssert
+		report.Findings = append(report.Findings, res.Findings...)
+	}
+	if totalAddedAssertions > 0 {
+		report.Findings = downgradeRemovedAssertionOnlyFindings(report.Findings)
 	}
 
 	// Verification files changed but nothing high fired: record one medium
 	// finding per file so the stored report and the reviewer still have the
 	// context (benign test edits are normal for feature work and do not block).
-	if report.highCount() == 0 {
+	if report.highCount() == 0 && len(report.Findings) == 0 {
 		for _, f := range report.Files {
 			report.Findings = append(report.Findings, tamperFinding{
 				File: f, Category: string(classifyTamperPath(f)),
@@ -393,6 +410,17 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 		}
 	}
 	return report
+}
+
+func downgradeRemovedAssertionOnlyFindings(findings []tamperFinding) []tamperFinding {
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Rule == "removed-assertions" {
+			f.Severity = tamperMedium
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // execDetectTampering inspects the worktree diff (base...HEAD) for reward-
@@ -429,7 +457,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
 
-	report, err := e.collectTamperReport(taskID, wtPath)
+	report, err := e.collectTamperReport(taskID, wtPath, t)
 	if err != nil {
 		// collectTamperReport wraps the per-step timeout/cancel into the
 		// returned error, so check the chain (not e.ctx, which stays live when
@@ -469,11 +497,10 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 // collectTamperReport runs git to gather the changed files and per-file patches
 // for verification files, then delegates to the pure buildTamperReport.
-func (e *Engine) collectTamperReport(taskID, wtPath string) (tamperReport, error) {
+func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperReport, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	base := resolveOriginBase(ctx, wtPath)
-	rangeSpec := base + "...HEAD"
+	base, rangeSpec := resolveTamperRange(ctx, wtPath, t)
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
@@ -512,7 +539,29 @@ func (e *Engine) collectTamperReport(taskID, wtPath string) (tamperReport, error
 		}
 		c.Patch = patch
 	}
-	return buildTamperReport(taskID, base, changes), nil
+	report := buildTamperReport(taskID, base, changes)
+	report.Range = rangeSpec
+	return report, nil
+}
+
+func tamperBaselineVar(stepID string) string {
+	return "step." + stepID + ".tamper_base"
+}
+
+func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, rangeSpec string) {
+	if t.Workflow != nil {
+		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
+			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
+				cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
+				cmd.Dir = wtPath
+				if cmd.Run() == nil {
+					return sha, sha + "..HEAD"
+				}
+			}
+		}
+	}
+	base = resolveOriginBase(ctx, wtPath)
+	return base, base + "...HEAD"
 }
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
