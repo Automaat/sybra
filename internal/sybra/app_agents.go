@@ -203,10 +203,11 @@ func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 }
 
 func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
-	return o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, workflow.AgentAssignment{})
+	ag, _, err := o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, workflow.AgentAssignment{})
+	return ag, err
 }
 
-func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, assignment workflow.AgentAssignment) (*agent.Agent, error) {
+func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -214,7 +215,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	// on the same worktree. workflow.ErrDispatchInFlight is benign: the holder
 	// will produce the task's agent.
 	if !o.agents.ClaimTaskDispatch(taskID) {
-		return nil, workflow.ErrDispatchInFlight
+		return nil, "", workflow.ErrDispatchInFlight
 	}
 	defer o.agents.ReleaseTaskDispatch(taskID)
 
@@ -229,13 +230,13 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// An umbrella tracker task runs no agent — it only rolls up its children.
 	// Refuse here, the single dispatch choke point, so no path (workflow,
 	// recovery, manual start) can launch an agent against it.
 	if t.TaskType == task.TaskTypeUmbrella {
-		return nil, fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
+		return nil, "", fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
 	}
 	researchDir := ""
 	if o.cfg != nil {
@@ -245,20 +246,23 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	if !skipWT {
 		t = o.autoAssignProject(t)
 		if t.ProjectID == "" {
-			return nil, fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
+			return nil, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
 		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
-			return nil, fmt.Errorf("worktree required for project task: %w", wtErr)
+			markRebaseBlocked(o.tasks, taskID, wtErr, o.logger)
+			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
 		o.completeWorktreeOp(opID)
 		dir = d
 	}
 	if dir == "" {
-		return nil, fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
+		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
+
+	baselineRef := currentWorktreeHead(dir)
 
 	var workflowStart time.Time
 	if t.Workflow != nil {
@@ -268,7 +272,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
-		return nil, postureErr
+		return nil, "", postureErr
 	}
 
 	extraEnv := o.sandboxEnvIfRunning(taskID)
@@ -309,10 +313,24 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 			o.logAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
 			o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 		}
-		return nil, err
+		return nil, "", err
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
-	return ag, nil
+	return ag, baselineRef, nil
+}
+
+func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger) bool {
+	if !errors.Is(err, worktree.ErrRebaseFailed) {
+		return false
+	}
+	reason := "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
+	if _, uerr := tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); uerr != nil {
+		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
+	}
+	return true
 }
 
 // recordImplAgentStart emits the agent.started audit event and persists the

@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -222,6 +224,19 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("assertion_refactor_is_medium_not_blocking", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-\tif err != nil { t.Fatalf(\"bad: %v\", err) }\n"},
+			{Status: "A", Path: "internal/foo/helpers_test.go", Patch: "@@ @@\n+func mustOK(tb testing.TB, err error) {\n+\tif err != nil { tb.Fatalf(\"bad: %v\", err) }\n+}\n"},
+		})
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 || r.Findings[0].Rule != "removed-assertions" || r.Findings[0].Severity != tamperMedium {
+			t.Fatalf("want removed-assertions downgraded to medium, got %v", r.Findings)
+		}
+	})
+
 	t.Run("tampering_mixes_high_and_skips_medium", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "a_test.go", Patch: "@@ @@\n+\tt.Skip(\"x\")\n"},
@@ -327,6 +342,17 @@ func writeRepoFile(t *testing.T, dir, rel, content string) {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }
 
 // makeBaseRepo inits a repo with baseFiles committed as the origin/main state.
@@ -524,6 +550,42 @@ func TestExecDetectTampering_NeuteredCIFlags(t *testing.T) {
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (continue-on-error neuters the gate)", out.Output)
+	}
+}
+
+func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                  "init\n",
+		"frontend/Dashboard.test.ts": "test('dashboard', () => expect(true).toBe(true))\n",
+	})
+	gitRun(t, wt, "rm", "frontend/Dashboard.test.ts")
+	gitRun(t, wt, "commit", "-m", "refactor: remove dashboard")
+	baseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+	writeRepoFile(t, wt, "internal/foo/foo.go", "package foo\n\nfunc Foo() int { return 1 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: add foo")
+
+	engine, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): baseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean; baseline should ignore stale test deletion", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
 	}
 }
 

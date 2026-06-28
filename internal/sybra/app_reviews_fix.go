@@ -242,6 +242,9 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 		d, wtErr = r.worktrees.PrepareForTask(t, nil)
 	}
 	if wtErr != nil {
+		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger) {
+			return "", false
+		}
 		if r.wtFailures == nil {
 			r.wtFailures = make(map[string]int)
 		}

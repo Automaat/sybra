@@ -1,12 +1,15 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+var ErrRebaseFailed = errors.New("worktree rebase failed")
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.
 // Fetches origin, creates a conventional-prefixed branch off default branch,
@@ -63,19 +66,18 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 			if err := project.SanitizeWorktree(wtPath); err != nil {
 				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 			}
-			// Rebase is best-effort — conflicts with main shouldn't block agent
-			// start on a branch that already has committed work.
+			// Rebase must succeed before another agent run. Continuing from a
+			// stale branch makes downstream diff gates scan historical commits.
 			callPhase(onPhase, "Rebasing onto origin…")
 			if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-				m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
-			} else {
-				m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-				// Sync remote after rebase. PushSync picks the minimum mode —
-				// no-op when local matches remote, regular push for
-				// fast-forward, --force-with-lease only on divergence.
-				callPhase(onPhase, "Syncing upstream…")
-				m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
+				return "", fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
 			}
+			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+			// Sync remote after rebase. PushSync picks the minimum mode —
+			// no-op when local matches remote, regular push for
+			// fast-forward, --force-with-lease only on divergence.
+			callPhase(onPhase, "Syncing upstream…")
+			m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
 			return m.finalizeWorktree(t, wtPath, wtBranch, proj)
 		}
 		// Worktree was wiped — fall through to create paths below.
@@ -93,12 +95,11 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		}
 		callPhase(onPhase, "Rebasing onto origin…")
 		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-			m.logger.Warn("worktree.rebase-skipped", "task_id", t.ID, "base", baseRef, "err", err)
-		} else {
-			// Sync remote after rebase.
-			callPhase(onPhase, "Syncing upstream…")
-			m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
+			return "", fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
 		}
+		// Sync remote after rebase.
+		callPhase(onPhase, "Syncing upstream…")
+		m.logPushSync(t.ID, wtBranch, project.PushSync(wtPath, wtBranch))
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		callPhase(onPhase, "Running setup…")
 		if err := m.runSetup(t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {

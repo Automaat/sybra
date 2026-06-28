@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -386,41 +387,36 @@ type agentAdapter struct {
 	sandboxes *sandbox.Manager
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (agentID, startedDir string, err error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
-		ag, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, assignment)
+		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, assignment)
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		return ag.ID, "", nil
+		return ag.ID, "", baselineRef, nil
 	}
 
 	// For system agents (triage, eval, plan, etc.), build RunConfig directly.
 	r := agent.Role(role)
 	t, err := a.agentOrch.tasks.Get(taskID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
-	// Cap concurrent test-runner agents per machine — each one starts an
-	// isolated real-app/cluster sandbox, so this bounds sandbox load
-	// independently of Agent.MaxConcurrent. The benign race (two dispatches
-	// passing the check at once) is acceptable: the workflow step parks on
-	// ErrTestRunnerBusy and ResumeStalled retries when a slot frees.
 	if r == agent.RoleTestRunner {
 		if a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
-			return "", "", workflow.ErrTestRunnerBusy
+			return "", "", "", workflow.ErrTestRunnerBusy
 		}
 	}
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, a.agentOrch.cfg)
 	if postureErr != nil {
-		return "", "", postureErr
+		return "", "", "", postureErr
 	}
 
 	cfg := agent.RunConfig{
@@ -449,17 +445,15 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		OutputSchema:      outputSchema,
 	}
 
-	// Caller-provided dir takes precedence (e.g. pr-fix flow pre-stages a
-	// worktree via PrepareForFix). Only fall back to PrepareForTask when no
-	// dir is provided and the step declared needs_worktree.
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
 		if t.ProjectID == "" {
-			return "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
+			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
 		}
 		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
 		if wtErr != nil {
-			return "", "", wtErr
+			markRebaseBlocked(a.tasks, taskID, wtErr, a.agentOrch.logger)
+			return "", "", "", wtErr
 		}
 		cfg.Dir = d
 	}
@@ -472,10 +466,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		cfg.Dir = config.HomeDir()
 	}
 
-	// Testing is where the real app/cluster runs: the test-runner starts (or
-	// reuses) the task's isolated sandbox and inherits SANDBOX_URL/KUBECONFIG.
-	// Every other role only inherits a sandbox that is already running — none
-	// is started during planning/implementation/review (gated to testing).
+	baselineRef = currentWorktreeHead(cfg.Dir)
+
 	if a.sandboxes != nil {
 		if r == agent.RoleTestRunner {
 			cfg.ExtraEnv = a.agentOrch.sandboxEnv(taskID, cfg.Dir, t)
@@ -486,19 +478,15 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
-	// Flip human-required → in-progress when a system-role agent starts.
-	// A competing inline path (e.g. review.triage.small) may have set
-	// human-required before the pr-review workflow fires; leaving the task
-	// there while an agent runs creates an inconsistent observable state.
-	// We only flip human-required: other statuses (todo, planning, …) have
-	// their own semantics and should not be pre-empted by agent start.
-	//
-	// Re-read current status rather than relying on the snapshot taken at the
-	// top of this function: another goroutine (e.g. triage) may have flipped
-	// the task to human-required after that read.
+	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
+
+	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {
 	var nextStatus *task.Status
 	if cur, rerr := a.tasks.Get(taskID); rerr == nil && cur.Status == task.StatusHumanRequired {
 		nextStatus = task.Ptr(task.StatusInProgress)
@@ -521,8 +509,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}, nextStatus); addErr != nil {
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
+}
 
-	return ag.ID, cfg.Dir, nil
+func currentWorktreeHead(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	cmd := exec.Command("git", "rev-parse", "--verify", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func (a *agentAdapter) HasRunningAgent(taskID string) bool {
