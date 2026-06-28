@@ -170,6 +170,9 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if st.tracker == nil {
 			continue
 		}
+		if st.tracker.Status == task.StatusBlocked {
+			continue
+		}
 		// A tracker is "settled" once it has outlived the creation window, so a
 		// childless tally that just reflects children still being materialized
 		// is not mistaken for a completed umbrella. A zero CreatedAt (e.g. a
