@@ -205,7 +205,7 @@ func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
 		"### product_bug: parser rejects valid evidence\n\n" +
 		"**Command run:**\n\n```bash\ngo test ./internal/workflow\n```\n\n" +
 		"**Verbatim output:**\n\n```text\n--- FAIL: TestEvidence\n```\n\n" +
-		"**Expected behaviour:** The task says grounded product defects route back to implementation.\n\n" +
+		"**Expected behaviour:** Grounded product defects route back to implementation.\n\n" +
 		"**Actual behaviour:** The task escalated to human-required.\n\n" +
 		"**Code evidence:**\n\n```text\ninternal/workflow/engine_steps_testroute.go:659\n```\n"
 	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
@@ -216,6 +216,47 @@ func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
 	}
 	if fingerprint == "" {
 		t.Fatal("fingerprint is empty")
+	}
+}
+
+func TestClassifyTestOutcome_AcceptsExpectedBehaviorEvidence(t *testing.T) {
+	t.Parallel()
+
+	report := "## Test Failures\n\n" +
+		"### product_bug: parser rejects valid evidence\n\n" +
+		"**Command run:**\n\n```bash\ngo test ./internal/workflow\n```\n\n" +
+		"**Verbatim output:**\n\n```text\n--- FAIL: TestEvidence\n```\n\n" +
+		"**Expected behavior:** Grounded product defects route back to implementation.\n\n" +
+		"**Actual behavior:** The task escalated to human-required.\n\n" +
+		"**Code evidence:**\n\n```text\ninternal/workflow/engine_steps_testroute.go:659\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	got, fingerprint := classifyTestOutcome("completed", payload, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if got != testOutcomeProductBug {
+		t.Fatalf("outcome = %q, want %q", got, testOutcomeProductBug)
+	}
+	if fingerprint == "" {
+		t.Fatal("fingerprint is empty")
+	}
+}
+
+func TestClassifyTestOutcome_UnexpectedBehaviorIsNotExpectedEvidence(t *testing.T) {
+	t.Parallel()
+
+	report := "## Test Failures\n\n" +
+		"### product_bug: parser rejects valid evidence\n\n" +
+		"Command run:\n\n```bash\ngo test ./internal/workflow\n```\n\n" +
+		"Verbatim output:\n\n```text\n--- FAIL: TestEvidence\n```\n\n" +
+		"Unexpected behavior: The task escalated to human-required.\n\n" +
+		"Code evidence:\n\n```text\ninternal/workflow/engine_steps_testroute.go:659\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	got, fingerprint := classifyTestOutcome("completed", payload, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if got != testOutcomeMissingEvidence {
+		t.Fatalf("outcome = %q, want %q", got, testOutcomeMissingEvidence)
+	}
+	if fingerprint != "" {
+		t.Fatalf("fingerprint = %q, want empty", fingerprint)
 	}
 }
 
@@ -438,6 +479,43 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
+		},
+		{
+			name:   "plain_text_pass_with_manual_behavior_heading_evidence",
+			status: "completed",
+			output: "surface_kind: server\n" +
+				"app_started: true\n" +
+				"start_command: SYBRA_PORT=12345 go run ./cmd/sybra-server\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:12345/health\n" +
+				"manual_probes:\n" +
+				"command: curl -fsS http://127.0.0.1:12345/health\n" +
+				"Expected behavior: status ok\n" +
+				"Actual behavior: {\"status\":\"ok\"}\n" +
+				"automated_checks: go test ./internal/workflow => ok\n" +
+				"unable_to_run_reason:\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:   "plain_text_pass_unexpected_behavior_is_not_expected_evidence",
+			status: "completed",
+			output: "surface_kind: server\n" +
+				"app_started: true\n" +
+				"start_command: SYBRA_PORT=12345 go run ./cmd/sybra-server\n" +
+				"readiness_probe: curl -fsS http://127.0.0.1:12345/health\n" +
+				"manual_probes:\n" +
+				"command: curl -fsS http://127.0.0.1:12345/health\n" +
+				"Unexpected behavior: status ok\n" +
+				"Actual behavior: {\"status\":\"ok\"}\n" +
+				"automated_checks: go test ./internal/workflow => ok\n" +
+				"unable_to_run_reason:\n" +
+				"TEST_VERDICT: PASS",
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
 			name:       "pass_without_manual_evidence",

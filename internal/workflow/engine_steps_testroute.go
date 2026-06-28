@@ -329,8 +329,10 @@ func hasPlainTextManualProbeEvidence(output string) bool {
 	lower := strings.ToLower(output)
 	return containsAny(lower, "manual_probes:", "manual probe:", "manual_probe:") &&
 		containsAny(lower, "command:", "curl ", "sybra-cli", "kubectl ", "go run ", "npm run ") &&
-		containsAny(lower, "expected:", "expected output:") &&
-		containsAny(lower, "actual:", "actual output:", "observed:", "observed output:")
+		hasReportLinePrefix(output, "expected:", "expected output:", "expected behavior:", "expected behaviour:") &&
+		hasReportLinePrefix(output,
+			"actual:", "actual output:", "actual behavior:", "actual behaviour:",
+			"observed:", "observed output:")
 }
 
 func hasPlainTextRegressionCheckEvidence(output string) bool {
@@ -654,12 +656,14 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasCommand := containsAny(lower,
 		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
 		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ")
-	hasObserved := containsAny(lower,
-		"actual output:", "actual:", "observed:", "observed output:",
-		"command output:", "stdout:", "stderr:", "exit code",
-		"verbatim output:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
-	hasExpected := containsAny(lower,
-		"expected:", "expected output:", "requirement tested:", "task says", "from the task",
+	hasObserved := hasReportLinePrefix(report,
+		"actual output:", "actual:", "actual behavior:", "actual behaviour:",
+		"observed:", "observed output:", "command output:", "stdout:", "stderr:",
+		"verbatim output:", "output:", "printed:", "rendered:") || strings.Contains(lower, "exit code")
+	hasExpected := hasReportLinePrefix(report,
+		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
+		"requirement tested:") || containsAny(lower,
+		"task says", "from the task",
 		"violates", "should render", "should not")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
@@ -684,7 +688,7 @@ func hasReportLinePrefix(report string, prefixes ...string) bool {
 		}
 	}
 	for _, line := range reportScanLines(report) {
-		lower := strings.ToLower(strings.TrimSpace(line))
+		lower := normalizeReportEvidenceLine(line)
 		for _, prefix := range normalizedPrefixes {
 			if strings.HasPrefix(lower, prefix) {
 				return true
@@ -692,6 +696,20 @@ func hasReportLinePrefix(report string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeReportEvidenceLine(line string) string {
+	line = strings.ToLower(strings.TrimSpace(line))
+	line = strings.TrimLeft(line, "#")
+	line = strings.TrimSpace(line)
+	for _, marker := range []string{"- ", "* ", "+ ", "> "} {
+		line = strings.TrimPrefix(line, marker)
+	}
+	line = strings.TrimSpace(line)
+	for _, marker := range []string{"**", "__", "*", "_"} {
+		line = strings.TrimPrefix(line, marker)
+	}
+	return strings.TrimSpace(line)
 }
 
 func testFailureFingerprint(report string) string {
