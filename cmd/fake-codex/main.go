@@ -256,11 +256,11 @@ func extractTaskID(args []string) string {
 	return ""
 }
 
-// sidecarPathRe matches `/tmp/sybra-...` sidecar paths in rendered prompts —
+// sidecarPathRe matches sybra sidecar paths in rendered prompts —
 // see fake-claude/main.go for the matching pattern. Used by the
 // write_sidecar_success scenario so a single fake-agent variant can serve
 // any import_sidecar workflow step.
-var sidecarPathRe = regexp.MustCompile(`/tmp/sybra-[A-Za-z0-9_./-]+\.(?:md|json)`)
+var sidecarPathRe = regexp.MustCompile(`(?:/tmp/sybra-|\.sybra-)[A-Za-z0-9_./-]+\.(?:md|json)`)
 
 func extractSidecarPaths(args []string) []string {
 	seen := map[string]struct{}{}
