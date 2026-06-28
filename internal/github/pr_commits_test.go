@@ -21,3 +21,37 @@ func TestParseCommitMessages_Empty(t *testing.T) {
 		t.Errorf("empty output should yield no messages, got %v", got)
 	}
 }
+
+func TestFetchCommitParentSHAsWith(t *testing.T) {
+	t.Parallel()
+	fe := &recordingExecer{output: []byte("parent1\nparent2\n")}
+
+	got, err := fetchCommitParentSHAsWith(fe, "o/r", "head")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 2 || got[0] != "parent1" || got[1] != "parent2" {
+		t.Fatalf("parents = %v, want [parent1 parent2]", got)
+	}
+	wantPath := "repos/o/r/commits/head"
+	foundPath := false
+	foundJQ := false
+	for _, arg := range fe.lastArgs {
+		if arg == wantPath {
+			foundPath = true
+		}
+		if arg == ".parents[].sha" {
+			foundJQ = true
+		}
+	}
+	if !foundPath || !foundJQ {
+		t.Fatalf("args = %v, want commit endpoint and parent jq", fe.lastArgs)
+	}
+}
+
+func TestParseCommitParentSHAs(t *testing.T) {
+	got := parseCommitParentSHAs([]byte(" parent1 \n\nparent2\n"))
+	if len(got) != 2 || got[0] != "parent1" || got[1] != "parent2" {
+		t.Fatalf("parents = %v, want [parent1 parent2]", got)
+	}
+}

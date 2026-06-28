@@ -347,6 +347,7 @@ var (
 	prFilesCache         = newTTLCache[[]string]()
 	prBranchCache        = newTTLCache[string]()
 	prHeadSHACache       = newTTLCache[string]()
+	commitParentsCache   = newTTLCache[[]string]()
 	prContextCache       = newTTLCache[PRContext]()
 	prClosingIssuesCache = newTTLCache[prClosingIssuesResult]()
 	pendingReviewCache   = newTTLCache[bool]()

@@ -32,14 +32,15 @@ const (
 // reviewSignals are the live GitHub facts about a review task's PR, gathered
 // from the review summary plus the per-PR reviews endpoint.
 type reviewSignals struct {
-	AgentRunning   bool   // a review agent is running for this task
-	HasDraft       bool   // viewer has a PENDING (unsubmitted) review
-	ViewerApproved bool   // viewer's latest submitted review is an approval
-	Submitted      bool   // viewer has a submitted (non-draft) review
-	ReRequested    bool   // PR is back in viewer's review-requested list
-	HeadSHA        string // current PR head commit ("" if unknown)
-	ReviewedSHA    string // commit the viewer's latest review was made against
-	Mergeable      string // MERGEABLE, CONFLICTING, UNKNOWN, or ""
+	AgentRunning   bool     // a review agent is running for this task
+	HasDraft       bool     // viewer has a PENDING (unsubmitted) review
+	ViewerApproved bool     // viewer's latest submitted review is an approval
+	Submitted      bool     // viewer has a submitted (non-draft) review
+	ReRequested    bool     // PR is back in viewer's review-requested list
+	HeadSHA        string   // current PR head commit ("" if unknown)
+	ReviewedSHA    string   // commit the viewer's latest review was made against
+	HeadParentSHAs []string // current PR head parents in Git parent order
+	Mergeable      string   // MERGEABLE, CONFLICTING, UNKNOWN, or ""
 }
 
 // reviewPhaseResult is the desired task state for a review task.
@@ -127,7 +128,7 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 		// either way it needs a fresh human pass before approval. Keep the task
 		// in-review so the human-required auto-diagnostic machinery does not
 		// start another review round.
-		advanced := s.HeadSHA != "" && s.ReviewedSHA != "" && s.HeadSHA != s.ReviewedSHA
+		advanced := reviewAdvancedPastReviewed(s)
 		if s.ReRequested || advanced {
 			return reviewPhaseResult{
 				Phase:  ReviewPhaseNeedsApproval,
@@ -147,4 +148,14 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 	// signal, but emit no reason so applyReviewPhase keeps whatever reason
 	// triage already set (e.g. "PR too small for agent review").
 	return reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired}
+}
+
+func reviewAdvancedPastReviewed(s reviewSignals) bool {
+	if s.HeadSHA == "" || s.ReviewedSHA == "" || s.HeadSHA == s.ReviewedSHA {
+		return false
+	}
+	if len(s.HeadParentSHAs) >= 2 && s.HeadParentSHAs[0] == s.ReviewedSHA {
+		return false
+	}
+	return true
 }

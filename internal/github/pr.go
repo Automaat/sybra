@@ -267,6 +267,45 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 	return raw.HeadRefOid, nil
 }
 
+// FetchCommitParentSHAs returns a commit's parent SHAs in Git's parent order.
+func FetchCommitParentSHAs(repo, sha string) ([]string, error) {
+	return fetchCommitParentSHAsWith(defaultExecer, repo, sha)
+}
+
+func fetchCommitParentSHAsWith(e execer, repo, sha string) ([]string, error) {
+	if strings.TrimSpace(sha) == "" {
+		return nil, fmt.Errorf("fetch commit parents for %s: empty sha", repo)
+	}
+	key := repo + "@" + sha
+	if runtimeCacheEnabled(e) {
+		if cached, ok := commitParentsCache.Get(key); ok {
+			return append([]string(nil), cached...), nil
+		}
+	}
+
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/commits/%s", repo, sha), "--jq", ".parents[].sha")
+	if err != nil {
+		return nil, fmt.Errorf("gh api commit %s: %s: %w", sha, sanitizeGHOutput(resp.body), err)
+	}
+	parents := parseCommitParentSHAs(resp.body)
+	if runtimeCacheEnabled(e) {
+		commitParentsCache.Set(key, append([]string(nil), parents...), 5*time.Minute)
+	}
+	return parents, nil
+}
+
+func parseCommitParentSHAs(out []byte) []string {
+	lines := strings.Split(string(out), "\n")
+	parents := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			parents = append(parents, line)
+		}
+	}
+	return parents
+}
+
 // PRCompare summarizes the difference between two commits (base...head).
 // Commits is how many commits head is ahead of base; Additions/Deletions sum the
 // line churn. Note: GitHub caps the compare files list at 300, so on very large

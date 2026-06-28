@@ -325,6 +325,7 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 
 	submitted := myState.Submitted || inApproved
 	headSHA := ""
+	var headParentSHAs []string
 	switch {
 	case inReq:
 		headSHA = reqPR.HeadSHA
@@ -340,6 +341,13 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 			headSHA = sha
 		}
 	}
+	if submitted && headSHA != "" && myState.ReviewedSHA != "" && headSHA != myState.ReviewedSHA {
+		if parents, perr := github.FetchCommitParentSHAs(t.ProjectID, headSHA); perr != nil {
+			r.logger.Warn("review.head-parents", "task_id", t.ID, "err", perr)
+		} else {
+			headParentSHAs = parents
+		}
+	}
 
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
 		HasDraft:       myState.Pending,
@@ -348,6 +356,7 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 		ReRequested:    inReq,
 		HeadSHA:        headSHA,
 		ReviewedSHA:    myState.ReviewedSHA,
+		HeadParentSHAs: headParentSHAs,
 	}))
 }
 

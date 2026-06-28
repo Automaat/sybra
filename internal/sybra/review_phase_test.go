@@ -63,6 +63,16 @@ func TestComputeReviewPhase(t *testing.T) {
 			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
 		},
 		{
+			name: "base-only merge commit after review → still awaiting author",
+			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1", HeadParentSHAs: []string{"sha1", "base"}},
+			want: reviewPhaseResult{Phase: ReviewPhaseAwaitingAuthor, Status: task.StatusInReview, Reason: "Awaiting author response"},
+		},
+		{
+			name: "merge commit after author fix → needs approval",
+			sig:  reviewSignals{Submitted: true, HeadSHA: "merge", ReviewedSHA: "sha1", HeadParentSHAs: []string{"fix", "base"}},
+			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
+		},
+		{
 			name: "re-requested after review → needs approval even at same head",
 			sig:  reviewSignals{Submitted: true, ReRequested: true, HeadSHA: "sha1", ReviewedSHA: "sha1"},
 			want: reviewPhaseResult{Phase: ReviewPhaseNeedsApproval, Status: task.StatusInReview, Reason: "Author updated PR — do a final review & approve"},
