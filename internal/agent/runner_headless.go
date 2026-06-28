@@ -43,6 +43,12 @@ var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 
 // stream_tooLong log lines.
 const headlessScannerBuffer = 4 * 1024 * 1024
 
+type preparedHeadlessAttempt struct {
+	cfg     RunConfig
+	inv     headlessInvocation
+	cleanup func()
+}
+
 func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// outFile is opened lazily on first successful cmd.Start and shared across
 	// retry attempts so all output lands in one file. Closed on function exit.
@@ -114,49 +120,62 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		return false, nil
 	}
 
-	// Materialize the output schema to a temp file for codex so
-	// buildHeadlessInvocation can pass --output-schema <path>. The file is
-	// removed after cmd.Wait() returns (subprocess has exited), so there is no
-	// read-after-delete risk. os.CreateTemp gives a unique name per attempt so
-	// concurrent agents or retries never collide.
-	prov, err := providerForInvocation(a, cfg)
+	prepared, err := prepareHeadlessAttempt(a, cfg)
 	if err != nil {
 		return false, err
+	}
+	defer prepared.cleanup()
+
+	if m.survives() && a.Mode == "headless" {
+		inv := prepared.inv
+		return m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
+	}
+	return m.runHeadlessAttemptPipe(ctx, a, prepared.cfg, outFile, prepared.inv)
+}
+
+func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, error) {
+	prepared := preparedHeadlessAttempt{cfg: cfg, cleanup: func() {}}
+	prov, err := providerForInvocation(a, cfg)
+	if err != nil {
+		return prepared, err
 	}
 	if prov.SupportsOutputSchema() && cfg.OutputSchema != "" {
 		f, schemaErr := os.CreateTemp("", "sybra-codex-schema-*.json")
 		if schemaErr != nil {
-			return false, fmt.Errorf("create codex output schema: %w", schemaErr)
+			return prepared, fmt.Errorf("create codex output schema: %w", schemaErr)
 		}
 		if _, wErr := f.WriteString(cfg.OutputSchema); wErr != nil {
 			_ = f.Close()
 			_ = os.Remove(f.Name())
-			return false, fmt.Errorf("write codex output schema: %w", wErr)
+			return prepared, fmt.Errorf("write codex output schema: %w", wErr)
 		}
 		_ = f.Close()
 		cfg.outputSchemaPath = f.Name()
-		defer os.Remove(cfg.outputSchemaPath)
+		prepared.cfg = cfg
+		prepared.cleanup = func() { _ = os.Remove(cfg.outputSchemaPath) }
 	}
 
 	name, args, invokeEnv, command, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
-		return false, err
+		prepared.cleanup()
+		prepared.cleanup = func() {}
+		return prepared, err
 	}
+	prepared.inv = headlessInvocation{name: name, args: args, env: invokeEnv, command: command}
+	return prepared, nil
+}
 
-	if m.survives() && a.Mode == "headless" {
-		return m.runHeadlessAttemptSurvive(ctx, a, cfg, outFile, tailOffset, name, args, invokeEnv, command)
-	}
-
-	cmd := exec.CommandContext(ctx, name, args...)
+func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
+	cmd := exec.CommandContext(ctx, inv.name, inv.args...)
 	configureGracefulShutdown(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
-		cmd.Env = append(os.Environ(), invokeEnv...)
+	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 {
+		cmd.Env = append(os.Environ(), inv.env...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	a.Command = command
+	a.Command = inv.command
 
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
@@ -167,7 +186,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	cmd.Stderr = &stderrBuf
 
 	if startErr := cmd.Start(); startErr != nil {
-		return false, fmt.Errorf("start %s: %w", name, startErr)
+		return false, fmt.Errorf("start %s: %w", inv.name, startErr)
 	}
 	a.SetCmd(cmd)
 

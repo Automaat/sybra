@@ -27,39 +27,48 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
-	// Hard guard: every agent must run in an explicit, existing directory.
-	// An empty Dir means the spawned process inherits Sybra's cwd, which in
-	// dev mode is the Sybra source repo — agents would then mutate its
-	// branches via git checkout. Reject rather than silently leak.
-	if strings.TrimSpace(cfg.Dir) == "" {
-		return nil, fmt.Errorf("agent.Run: Dir is required (empty Dir would leak agent process into Sybra cwd)")
-	}
-	if info, err := os.Stat(cfg.Dir); err != nil {
-		return nil, fmt.Errorf("agent.Run: Dir %q not accessible: %w", cfg.Dir, err)
-	} else if !info.IsDir() {
-		return nil, fmt.Errorf("agent.Run: Dir %q is not a directory", cfg.Dir)
+	cfg, prov, err := m.prepareRunConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
-	// Inject the worktree's working-memory scratchpad (NOTES.md): a standing
-	// read/maintain instruction plus the file's current contents, giving Codex
-	// (no --resume) and any restarted agent cross-run continuity. Gated on
-	// SeedWorkingMemory, set only for code-author roles: verifier roles (review,
-	// test-runner, eval) reuse the SAME per-task worktree, so seeding them would
-	// feed an independent reviewer/tester the implementer's notes and quietly
-	// erode the reward-hacking defense. Done on the local cfg copy so the inlined
-	// notes never reach the persisted AgentRun.Prompt, which callers record from
-	// their own prompt variable. No-op when Dir has no NOTES.md.
+	id := uuid.NewString()[:8]
+	ctx, cancel := context.WithCancel(m.ctx)
+	a := newRunningAgent(id, cfg, prov, cancel)
+	if m.survives() && willDetach(cfg) {
+		a.setDetached(true)
+	}
+
+	if err := m.registerRunningAgent(a, cfg, cancel); err != nil {
+		return nil, err
+	}
+
+	metrics.AgentStarted(a.Provider, a.Mode)
+	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
+
+	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
+		return nil, err
+	}
+
+	m.emit(events.AgentState(id), a)
+	return a, nil
+}
+
+func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
+	if err := validateRunDir(cfg.Dir); err != nil {
+		return cfg, nil, err
+	}
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
 
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
-		return nil, gateErr
+		return cfg, nil, gateErr
 	}
 	prov, providerErr := lookupProvider(resolvedProvider)
 	if providerErr != nil {
-		return nil, providerErr
+		return cfg, nil, providerErr
 	}
 	cfg.provider = prov
 
@@ -74,10 +83,22 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		cfg.FallbackModel = m.fallbackModel
 	}
 	m.mu.RUnlock()
+	return cfg, prov, nil
+}
 
-	id := uuid.NewString()[:8]
-	ctx, cancel := context.WithCancel(m.ctx)
+func validateRunDir(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("agent.Run: Dir is required (empty Dir would leak agent process into Sybra cwd)")
+	}
+	if info, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("agent.Run: Dir %q not accessible: %w", dir, err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("agent.Run: Dir %q is not a directory", dir)
+	}
+	return nil
+}
 
+func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.CancelFunc) *Agent {
 	now := time.Now().UTC()
 	a := &Agent{
 		ID:                     id,
@@ -108,30 +129,25 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		a.escalationCh = make(chan bool, 1)
 	}
 	a.setAssignment(cfg)
-	// Pre-mark detached so a shutdown racing the runner goroutine already
-	// knows to leave this agent's record alive. Headless and interactive
-	// Claude survive as detached processes; codex interactive has no
-	// persistent process and survives by recreate-on-restart, but is still
-	// marked so ShutdownWithGrace leaves its record for recreate.
-	if m.survives() && willDetach(cfg) {
-		a.setDetached(true)
-	}
+	return a
+}
 
+func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.CancelFunc) error {
 	m.mu.Lock()
 	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
-		return nil, fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+		return fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
 	}
-	m.agents[id] = a
+	m.agents[a.ID] = a
 	if a.done != nil {
 		m.liveCount++
 	}
 	m.mu.Unlock()
+	return nil
+}
 
-	metrics.AgentStarted(a.Provider, a.Mode)
-	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
-
+func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig, prov Provider, cancel context.CancelFunc) error {
 	switch cfg.Mode {
 	case "headless":
 		go m.runHeadless(ctx, a, cfg)
@@ -149,11 +165,9 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		}
 	default:
 		cancel()
-		return nil, fmt.Errorf("unknown mode: %s", cfg.Mode)
+		return fmt.Errorf("unknown mode: %s", cfg.Mode)
 	}
-
-	m.emit(events.AgentState(id), a)
-	return a, nil
+	return nil
 }
 
 func (m *Manager) markAgentDone(a *Agent) {
