@@ -14,8 +14,10 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -43,6 +45,7 @@ type ReviewHandler struct {
 	worktrees      *worktree.Manager
 	workflowEngine *workflow.Engine
 	cfg            *config.Config
+	experience     *experience.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
@@ -97,6 +100,7 @@ func newReviewHandler(
 	worktrees *worktree.Manager,
 	renovatePRsFn func() []github.PullRequest,
 	cfg *config.Config,
+	experienceStore *experience.Store,
 ) *ReviewHandler {
 	return &ReviewHandler{
 		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
@@ -111,6 +115,7 @@ func newReviewHandler(
 		fetchThreads:  github.FetchReviewThreads,
 		resolveThread: github.ResolveReviewThread,
 		cfg:           cfg,
+		experience:    experienceStore,
 	}
 }
 
@@ -285,6 +290,9 @@ func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, 
 				r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
 			}
 		}
+		if t, err := r.tasks.Get(c.TaskID); err == nil {
+			r.recordExperienceOnLanding(t)
+		}
 		r.logAudit(audit.EventTaskLanded, c.TaskID, "", landData)
 		r.logger.Info("pr-monitor.auto-done", "task_id", c.TaskID, "pr", c.PRNumber, "state", c.State, "outcome", outcome)
 	}
@@ -390,6 +398,86 @@ func landingOutcome(state, agentSHA, mergedHeadSHA string) string {
 		return "merged_with_edits"
 	}
 	return "merged"
+}
+
+func (r *ReviewHandler) recordExperienceOnLanding(t task.Task) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Warn("experience.record.panic", "task_id", t.ID, "panic", rec)
+		}
+	}()
+	if r == nil || r.experience == nil || r.cfg == nil || !r.cfg.Experience.Enabled {
+		return
+	}
+	if t.ProjectID == "" || (t.Outcome != "merged" && t.Outcome != "merged_with_edits") {
+		return
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.ID == "" {
+		r.logAudit(audit.EventExperienceSkipped, t.ID, "", map[string]any{
+			"reason": "project_unresolved",
+		})
+		return
+	}
+	if !r.cfg.AllowsProjectType(string(proj.Type)) {
+		return
+	}
+
+	rec := experience.FromTask(t, proj)
+	projectKey := experience.ProjectKey(proj)
+	if proj.Type == project.ProjectTypeWork {
+		scrubExperienceRecord(&rec, experienceBlocklist(proj))
+	}
+	if err := r.experience.Put(projectKey, rec); err != nil {
+		r.logAudit(audit.EventExperienceSkipped, t.ID, "", map[string]any{
+			"reason": "write_failed",
+		})
+		r.logger.Warn("experience.record.write", "task_id", t.ID, "err", err)
+		return
+	}
+	data := map[string]any{"record_id": rec.TaskID}
+	if proj.Type == project.ProjectTypeWork {
+		data["project_key"] = projectKey
+	} else {
+		data["project_id"] = t.ProjectID
+	}
+	r.logAudit(audit.EventExperienceRecorded, t.ID, "", data)
+}
+
+func experienceBlocklist(proj project.Project) []string {
+	blocklist := []string{proj.ID, proj.Owner, proj.Repo}
+	if proj.URL != "" {
+		blocklist = append(blocklist, proj.URL)
+	}
+	return blocklist
+}
+
+func scrubExperienceRecord(rec *experience.Record, blocklist []string) {
+	rawTaskID := rec.TaskID
+	if scrubbed, redactions := scrub.Scrub(rec.TaskID, blocklist); redactions > 0 {
+		rec.TaskID = experience.WorkRecordID(rawTaskID)
+	} else {
+		rec.TaskID = scrubbed
+	}
+	rec.ProjectID, _ = scrub.Scrub(rec.ProjectID, blocklist)
+	rec.ProjectType, _ = scrub.Scrub(rec.ProjectType, blocklist)
+	rec.Title, _ = scrub.Scrub(rec.Title, blocklist)
+	rec.Size, _ = scrub.Scrub(rec.Size, blocklist)
+	rec.Type, _ = scrub.Scrub(rec.Type, blocklist)
+	rec.AgentMode, _ = scrub.Scrub(rec.AgentMode, blocklist)
+	rec.Provider, _ = scrub.Scrub(rec.Provider, blocklist)
+	rec.Outcome, _ = scrub.Scrub(rec.Outcome, blocklist)
+	rec.Strategy, _ = scrub.Scrub(rec.Strategy, blocklist)
+	rec.Caution, _ = scrub.Scrub(rec.Caution, blocklist)
+	for i := range rec.Tags {
+		rec.Tags[i], _ = scrub.Scrub(rec.Tags[i], blocklist)
+	}
+	for i := range rec.FailureModes {
+		rec.FailureModes[i], _ = scrub.Scrub(rec.FailureModes[i], blocklist)
+	}
+	for i := range rec.VerifyCommands {
+		rec.VerifyCommands[i], _ = scrub.Scrub(rec.VerifyCommands[i], blocklist)
+	}
 }
 
 // lastAgentHeadSHA returns the HeadSHA of the most recent agent run that recorded
@@ -816,6 +904,9 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 		if _, err := r.tasks.Update(taskID, upd); err != nil {
 			r.logger.Warn("pr-monitor.orphan-merged-refine", "task_id", taskID, "err", err)
 		}
+	}
+	if current, err := r.tasks.Get(taskID); err == nil {
+		r.recordExperienceOnLanding(current)
 	}
 	r.logAudit(audit.EventTaskLanded, taskID, "", landData)
 	r.logger.Info("pr-monitor.orphan-merged-adopted",

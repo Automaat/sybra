@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -44,6 +48,80 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
 		}
 	}
+}
+
+func newExperienceProjectStore(t *testing.T, tmp string) *project.Store {
+	t.Helper()
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projects
+}
+
+func seedExperienceProject(t *testing.T, dir string, proj project.Project) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if proj.Name == "" {
+		proj.Name = proj.Repo
+	}
+	if proj.ClonePath == "" {
+		proj.ClonePath = filepath.Join(t.TempDir(), proj.Repo+".git")
+	}
+	var b strings.Builder
+	b.WriteString("id: " + proj.ID + "\n")
+	b.WriteString("name: " + proj.Name + "\n")
+	b.WriteString("owner: " + proj.Owner + "\n")
+	b.WriteString("repo: " + proj.Repo + "\n")
+	b.WriteString("url: " + proj.URL + "\n")
+	b.WriteString("clone_path: " + proj.ClonePath + "\n")
+	b.WriteString("type: " + string(proj.Type) + "\n")
+	if proj.Checks != nil && len(proj.Checks.Verify) > 0 {
+		b.WriteString("checks:\n  verify:\n")
+		for _, cmd := range proj.Checks.Verify {
+			b.WriteString("    - " + cmd + "\n")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, strings.ReplaceAll(proj.ID, "/", "--")+".yaml"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustExperienceStore(t *testing.T, dir string) *experience.Store {
+	t.Helper()
+	store, err := experience.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func readExperienceAuditEvents(t *testing.T, dir string) []audit.Event {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []audit.Event
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var ev audit.Event
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, ev)
+		}
+	}
+	return events
 }
 
 // TestPRMonitorEligible exercises the scan predicate used by the PR monitor
@@ -575,6 +653,239 @@ func TestOrphanPRAdoptionEligible(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
+		ID:    "owner/repo",
+		Owner: "owner",
+		Repo:  "repo",
+		URL:   "https://github.com/owner/repo",
+		Type:  project.ProjectTypePet,
+	})
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+
+	r.recordExperienceOnLanding(task.Task{ID: "closed", ProjectID: "owner/repo", Outcome: "closed"})
+	r.recordExperienceOnLanding(task.Task{ID: "merged", ProjectID: "owner/repo", Outcome: "merged", Title: "Keep owner/repo visible"})
+	got, err := store.Query("owner/repo", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != "Keep owner/repo visible" {
+		t.Fatalf("non-work record = %+v, want unsanitized owner/repo title", got)
+	}
+	r.recordExperienceOnLanding(task.Task{ID: "merged", ProjectID: "owner/repo", Outcome: "merged", Title: "updated"})
+
+	got, err = store.Query("owner/repo", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("records = %+v, want one merged record", got)
+	}
+	if got[0].TaskID != "merged" || got[0].Title != "updated" {
+		t.Fatalf("record = %+v, want idempotently updated merged record", got[0])
+	}
+
+	r.cfg.Experience.Enabled = false
+	r.recordExperienceOnLanding(task.Task{ID: "disabled", ProjectID: "owner/repo", Outcome: "merged"})
+	got, err = store.Query("owner/repo", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("disabled feature wrote records: %+v", got)
+	}
+}
+
+func TestRecordExperienceOnLandingProjectUnresolvedSkips(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog, err := audit.NewLogger(filepath.Join(tmp, "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+
+	r.recordExperienceOnLanding(task.Task{ID: "missing", ProjectID: "missing/repo", Outcome: "merged"})
+	got, err := store.Query("missing/repo", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("unresolved project wrote records: %+v", got)
+	}
+	events := readExperienceAuditEvents(t, filepath.Join(tmp, "audit"))
+	if len(events) != 1 || events[0].Type != audit.EventExperienceSkipped || events[0].Data["reason"] != "project_unresolved" {
+		t.Fatalf("audit events = %+v, want experience.skipped project_unresolved", events)
+	}
+}
+
+func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog, err := audit.NewLogger(filepath.Join(tmp, "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	workProject := project.Project{
+		ID:    "workco/private",
+		Owner: "workco",
+		Repo:  "private",
+		URL:   "https://github.com/workco/private",
+		Type:  project.ProjectTypeWork,
+		Checks: &project.ChecksConfig{
+			Verify: []string{"go test ./workco/private/..."},
+		},
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+	r.recordExperienceOnLanding(task.Task{
+		ID:        "work",
+		ProjectID: "workco/private",
+		Outcome:   "merged",
+		Title:     "Fix workco/private from https://github.com/workco/private",
+		Tags:      []string{"workco"},
+		PlanBrief: "Touch private repo",
+		AgentRuns: []task.AgentRun{{
+			ProtocolViolation: "workco/private appeared",
+			TestOutcome:       "workco/private retry",
+		}},
+	})
+
+	rawDir := filepath.Join(tmp, "experience", "workco--private")
+	if _, err := os.Stat(rawDir); !os.IsNotExist(err) {
+		t.Fatalf("raw work experience dir exists or stat failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "experience", experience.ProjectKey(workProject), "work.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("persisted work record contains %q:\n%s", forbidden, data)
+		}
+	}
+	events := readExperienceAuditEvents(t, filepath.Join(tmp, "audit"))
+	auditJSON, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
+		if strings.Contains(string(auditJSON), forbidden) {
+			t.Fatalf("work experience audit contains %q:\n%s", forbidden, auditJSON)
+		}
+	}
+}
+
+func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workProject := project.Project{
+		ID:    "workco/private",
+		Owner: "workco",
+		Repo:  "private",
+		URL:   "https://github.com/workco/private",
+		Type:  project.ProjectTypeWork,
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+
+	r.recordExperienceOnLanding(task.Task{ID: "workco", ProjectID: "workco/private", Outcome: "merged", Title: "safe title"})
+	r.recordExperienceOnLanding(task.Task{ID: "workco", ProjectID: "workco/private", Outcome: "merged", Title: "updated"})
+
+	records, err := store.Query(experience.ProjectKey(workProject), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want one idempotent record", records)
+	}
+	if records[0].TaskID == "workco" || !strings.HasPrefix(records[0].TaskID, "work-task-") {
+		t.Fatalf("TaskID = %q, want opaque work task id", records[0].TaskID)
+	}
+	if records[0].Title != "updated" {
+		t.Fatalf("idempotent update title = %q, want updated", records[0].Title)
+	}
+	recordJSON, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := experience.FormatForPrompt(records)
+	for _, forbidden := range []string{"workco", "private", "https://github.com/workco/private"} {
+		if strings.Contains(string(recordJSON), forbidden) {
+			t.Fatalf("persisted work record contains %q:\n%s", forbidden, recordJSON)
+		}
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("work identifier reused in planning prompt:\n%s", prompt)
+		}
+	}
+}
+
+func TestRecordExperienceOnLandingWriteErrorIsNonBlocking(t *testing.T) {
+	tmp := t.TempDir()
+	projects := newExperienceProjectStore(t, tmp)
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
+		ID:    "owner/repo",
+		Owner: "owner",
+		Repo:  "repo",
+		Type:  project.ProjectTypePet,
+	})
+	store := mustExperienceStore(t, filepath.Join(tmp, "experience-file"))
+	if err := os.RemoveAll(filepath.Join(tmp, "experience-file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "experience-file"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		projects:      projects,
+		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience:    store,
+	}
+
+	r.recordExperienceOnLanding(task.Task{ID: "merged", ProjectID: "owner/repo", Outcome: "merged"})
 }
 
 func TestCancelResolvedPRFixWorkflows(t *testing.T) {

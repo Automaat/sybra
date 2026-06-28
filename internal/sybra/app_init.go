@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -162,6 +163,15 @@ func (a *App) initStats() {
 	if err := statsStore.Backfill(a.auditDir); err != nil {
 		a.logger.Warn("stats.backfill", "err", err)
 	}
+}
+
+func (a *App) initExperience() {
+	store, err := experience.New(a.cfg.ExperiencesDir())
+	if err != nil {
+		a.logger.Warn("experience.init.degraded", "err", err)
+		return
+	}
+	a.experience = store
 }
 
 func (a *App) initLimits() {
@@ -508,7 +518,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, sandboxes: a.sandboxes},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience},
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})

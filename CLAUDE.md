@@ -212,6 +212,14 @@ never left for `SanitizeWorktree`'s `git add -A` to commit onto the PR. For
 work-typed tasks the file stays local; route through `internal/scrub` if ever
 summarized into a persisted artifact.
 
+### Verified Experience Memory
+
+Experience records under `~/.sybra/experience/` are advisory-only context for
+triage and planning, never a deterministic decision gate. Work-typed project
+records are scrubbed before they are written to disk; do not add a second raw
+write path or surface experience content in public artifacts without going
+through the same work-project scrub context.
+
 ### Per-Machine Automations
 
 Sybra can run on multiple machines (e.g. laptop + remote server). Each instance has its own `~/.sybra/` and runs background automations independently. Two routing axes prevent duplicate work:

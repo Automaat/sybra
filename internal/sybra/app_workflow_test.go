@@ -3,8 +3,12 @@ package sybra
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -35,6 +39,104 @@ func TestEligibleRerequestReviewer(t *testing.T) {
 					tt.login, tt.viewer, tt.author, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := experience.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := newExperienceProjectStore(t, tmp)
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
+		ID:    "owner/repo",
+		Owner: "owner",
+		Repo:  "repo",
+		URL:   "https://github.com/owner/repo",
+		Type:  project.ProjectTypePet,
+	})
+	if err := store.Put("owner/repo", experience.Record{
+		TaskID:      "task-old",
+		ProjectID:   "owner/repo",
+		ProjectType: "pet",
+		Outcome:     "merged",
+		Title:       "Use focused tests",
+		Strategy:    "Keep it narrow",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &agentAdapter{
+		experience: store,
+		agentOrch:  &AgentOrchestrator{cfg: &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}, projects: projects},
+	}
+	tk := task.Task{ID: "current", ProjectID: "owner/repo"}
+
+	cfg := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&cfg, agent.RolePlan, tk)
+	if !strings.Contains(cfg.Prompt, "Verified Experience Memory") || !strings.Contains(cfg.Prompt, "Use focused tests") {
+		t.Fatalf("plan prompt missing experience appendix:\n%s", cfg.Prompt)
+	}
+
+	triage := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&triage, agent.RoleTriage, tk)
+	if !strings.Contains(triage.Prompt, "Verified Experience Memory") || !strings.Contains(triage.Prompt, "Use focused tests") {
+		t.Fatalf("triage prompt missing experience appendix:\n%s", triage.Prompt)
+	}
+
+	nonRetrievalRole := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&nonRetrievalRole, agent.RoleReview, tk)
+	if nonRetrievalRole.Prompt != "base" {
+		t.Fatalf("non-retrieval role prompt = %q, want unchanged", nonRetrievalRole.Prompt)
+	}
+
+	adapter.agentOrch.cfg.Experience.Enabled = false
+	disabled := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&disabled, agent.RolePlan, tk)
+	if disabled.Prompt != "base" {
+		t.Fatalf("disabled prompt = %q, want unchanged", disabled.Prompt)
+	}
+}
+
+func TestAgentAdapterExperiencePromptUsesOpaqueWorkKey(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := experience.New(filepath.Join(tmp, "experience"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := newExperienceProjectStore(t, tmp)
+	workProject := project.Project{
+		ID:    "workco/private",
+		Owner: "workco",
+		Repo:  "private",
+		URL:   "https://github.com/workco/private",
+		Type:  project.ProjectTypeWork,
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
+	if err := store.Put(experience.ProjectKey(workProject), experience.Record{
+		TaskID: "task-old",
+		Title:  "Use narrow tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("workco/private", experience.Record{
+		TaskID: "raw-key",
+		Title:  "must not load",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &agentAdapter{
+		experience: store,
+		agentOrch:  &AgentOrchestrator{cfg: &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}, projects: projects},
+	}
+
+	cfg := agent.RunConfig{Prompt: "base"}
+	adapter.withExperiencePrompt(&cfg, agent.RolePlan, task.Task{ID: "current", ProjectID: "workco/private"})
+	if !strings.Contains(cfg.Prompt, "Use narrow tests") {
+		t.Fatalf("work prompt missing opaque-key record:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, "must not load") {
+		t.Fatalf("work prompt loaded raw project-key record:\n%s", cfg.Prompt)
 	}
 }
 
