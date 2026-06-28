@@ -256,7 +256,7 @@ func runMalformedPROutput() {
 }
 
 // runWriteSidecarSuccess serves any workflow step that declares
-// import_sidecar/import_sidecars by extracting /tmp/sybra-* sidecar paths from
+// import_sidecar/import_sidecars by extracting sybra sidecar paths from
 // the rendered prompt and writing a stub there. The engine then ingests it as
 // the configured sidecar.
 func runWriteSidecarSuccess(taskID string) {
@@ -316,6 +316,11 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
+	for _, path := range extractSidecarPaths(os.Args) {
+		if strings.Contains(filepath.Base(path), "sybra-critique") {
+			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
+		}
+	}
 	if taskID != "" {
 		runCLI("update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
 	}
@@ -486,11 +491,11 @@ func extractTaskID(args []string) string {
 	return ""
 }
 
-// sidecarPathRe matches `/tmp/sybra-...` sidecar paths as they appear inside
+// sidecarPathRe matches sybra sidecar paths as they appear inside
 // rendered workflow prompts. Used by the write_sidecar_success scenario
 // so a single fake-agent scenario can serve any import_sidecar step
 // without needing per-kind variants.
-var sidecarPathRe = regexp.MustCompile(`/tmp/sybra-[A-Za-z0-9_./-]+\.(?:md|json)`)
+var sidecarPathRe = regexp.MustCompile(`(?:/tmp/sybra-|\.sybra-)[A-Za-z0-9_./-]+\.(?:md|json)`)
 
 func extractSidecarPaths(args []string) []string {
 	seen := map[string]struct{}{}

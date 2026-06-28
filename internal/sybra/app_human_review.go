@@ -226,6 +226,21 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		h.mu.Unlock()
 	}()
 
+	current, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.task.get-on-complete", "task_id", taskID, "agent_id", ag.ID, "err", err)
+		return
+	}
+	if current.Status != task.StatusHumanRequired {
+		h.logger.Info("human-review.verdict.stale",
+			"task_id", taskID, "agent_id", ag.ID, "status", current.Status)
+		h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{
+			"reason": "status_changed",
+			"status": string(current.Status),
+		})
+		return
+	}
+
 	final := finalAssistantText(ag)
 	v, parseErr := parseVerdict(final)
 	if parseErr != nil {
@@ -291,7 +306,12 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	body, bodyRed := scrub.Scrub(v.IssueBody, wctx.Blocklist)
 	summary, _ := scrub.Scrub(v.Summary, wctx.Blocklist)
 
-	newTask, err := h.tasks.Create(title, body, task.AgentModeHeadless)
+	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
+	init := task.Update{Tags: &tags}
+	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
+		init.ProjectID = &projectID
+	}
+	newTask, err := h.tasks.CreateFull(title, body, task.AgentModeHeadless, init)
 	if err != nil {
 		h.logger.Error("human-review.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
 		// The diagnosis note IS the durable artifact here; mark rendered so a
@@ -301,14 +321,6 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 			h.markVerdictRendered(taskID, agentID)
 		}
 		return
-	}
-	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
-	update := task.Update{Tags: &tags}
-	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
-		update.ProjectID = &projectID
-	}
-	if _, err := h.tasks.Update(newTask.ID, update); err != nil {
-		h.logger.Warn("human-review.local.tag", "new_task_id", newTask.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
 		"created": true, "url": "", "title": title,
@@ -392,18 +404,15 @@ func (h *humanReviewHandler) fileLocalIssueFallback(taskID, agentID string, v ve
 		return false
 	}
 	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing failure\n\nGitHub issue filing failed, so Sybra created this local fallback task instead.\n\nError: " + submitErr.Error()
-	newTask, err := h.tasks.Create(v.IssueTitle, body, task.AgentModeHeadless)
+	tags := append([]string{"sybra-bug", "issue-filing-failed"}, v.IssueLabels...)
+	init := task.Update{Tags: &tags}
+	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
+		init.ProjectID = &projectID
+	}
+	newTask, err := h.tasks.CreateFull(v.IssueTitle, body, task.AgentModeHeadless, init)
 	if err != nil {
 		h.logger.Error("human-review.issue.local-fallback.create", "task_id", taskID, "agent_id", agentID, "err", err)
 		return false
-	}
-	tags := append([]string{"sybra-bug", "issue-filing-failed"}, v.IssueLabels...)
-	update := task.Update{Tags: &tags}
-	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
-		update.ProjectID = &projectID
-	}
-	if _, err := h.tasks.Update(newTask.ID, update); err != nil {
-		h.logger.Warn("human-review.issue.local-fallback.tag", "new_task_id", newTask.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
 		"created":       true,

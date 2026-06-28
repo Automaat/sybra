@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -14,6 +16,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
 )
+
+const triageRetryableStatusReasonPrefix = "triage retryable: "
 
 // triageResult is the CLI's JSON output for a classify call.
 type triageResult struct {
@@ -122,7 +126,8 @@ func cmdTriageClassify(
 		}
 	} else {
 		for i := range results {
-			fmt.Printf("Classified %s → %s (%s, %s, %s)\n",
+			fmt.Printf(
+				"Classified %s → %s (%s, %s, %s)\n",
 				results[i].Task.ID,
 				results[i].Verdict.Title,
 				results[i].Verdict.Size,
@@ -151,6 +156,9 @@ func classifyOne(
 
 	v, err := classifier.Classify(ctx, t, projects)
 	if err != nil {
+		if markErr := markTriageRetryable(store, t, err); markErr != nil {
+			return triageResult{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
+		}
 		return triageResult{}, err
 	}
 	updated, err := triage.Apply(store, t, v, projects)
@@ -173,4 +181,23 @@ func classifyOne(
 		})
 	}
 	return triageResult{Verdict: v, Task: updated}, nil
+}
+
+func markTriageRetryable(store *task.Manager, t task.Task, err error) error {
+	reason := triageRetryableReason(err)
+	_, updateErr := store.Update(t.ID, task.Update{StatusReason: &reason})
+	return updateErr
+}
+
+func triageRetryableReason(err error) string {
+	detail := strings.TrimSpace(err.Error())
+	if detail == "" {
+		detail = "unknown classifier failure"
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	const maxDetailLen = 500
+	if len(detail) > maxDetailLen {
+		detail = detail[:maxDetailLen] + "..."
+	}
+	return triageRetryableStatusReasonPrefix + "classifier failed: " + detail
 }

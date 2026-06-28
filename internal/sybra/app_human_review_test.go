@@ -262,6 +262,53 @@ func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
 	}
 }
 
+func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Transient failure", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusTodo)}); err != nil {
+		t.Fatalf("requeue task: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "Diagnosis.\n\n```sybra-verdict\n" + `{
+  "decision": "sybra_bug",
+  "summary": "retryable provider failure",
+  "issue_title": "fix(workflow): retry provider failures",
+  "issue_body": "details"
+}` + "\n```\n",
+	})
+	h.inflight[tk.ID] = "agent-stale"
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusTodo {
+		t.Errorf("status: got %q want todo", got.Status)
+	}
+	if got.Body != "Original body." {
+		t.Errorf("stale verdict should not mutate body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("stale verdict should not file an issue; calls=%d", sink.calls)
+	}
+	if _, busy := h.inflight[tk.ID]; busy {
+		t.Errorf("inflight should be cleared after stale onComplete")
+	}
+}
+
 func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)

@@ -21,6 +21,7 @@ type TaskInfo struct {
 	ID                    string
 	Title                 string
 	Status                string
+	StatusReason          string
 	Tags                  []string
 	AgentMode             string
 	ProjectID             string

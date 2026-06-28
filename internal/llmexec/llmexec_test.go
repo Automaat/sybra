@@ -32,6 +32,62 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	}
 }
 
+func TestRunJSONPassesCodexPromptOnStdin(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
+	writeExe(t, filepath.Join(dir, "codex"), `#!/bin/bash
+if [ "${@: -1}" != "-" ]; then
+  echo "prompt should be read from stdin" >&2
+  exit 7
+fi
+input=$(/bin/cat)
+if [ "$input" != "classify" ]; then
+  echo "unexpected stdin: $input" >&2
+  exit 7
+fi
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "codex" {
+		t.Fatalf("provider = %q, want codex", res.Provider)
+	}
+}
+
+func TestRunJSONFallsBackOnCodexUsageLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
+	writeExe(t, filepath.Join(dir, "codex"), `#!/bin/sh
+printf '%s\n' '{"type":"error","message":"You'\''ve hit your usage limit. Try again later."}'
+exit 1
+`)
+	writeExe(t, filepath.Join(dir, "copilot"), `#!/bin/sh
+printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "copilot" {
+		t.Fatalf("provider = %q, want copilot", res.Provider)
+	}
+	if res.Text != `{"ok":true}` {
+		t.Fatalf("text = %q", res.Text)
+	}
+}
+
 func TestParseCodexTextAllowsLargeStreamLine(t *testing.T) {
 	text := strings.Repeat("x", 2*1024*1024)
 	raw := fmt.Appendf(nil, `{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}`, text)
