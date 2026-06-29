@@ -137,6 +137,15 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 		if ag.GetState() != agent.StateRunning || ag.Mode != "headless" || ag.External {
 			continue
 		}
+		// A headless agent whose stream already ended in a successful terminal
+		// result is logically complete; its process just has not exited yet (a
+		// skill that spawns subagents can leave CC alive after the final
+		// result). The runner's post-result guard finalizes it shortly. Never
+		// inspect or escalate such an agent — doing so flips a finished run to
+		// human-required on a false stall (task c4a0fda0).
+		if ag.CompletedSuccessfully() {
+			continue
+		}
 		logPath := ag.GetLogPath()
 		if logPath == "" {
 			continue

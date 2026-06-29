@@ -120,6 +120,12 @@ type Agent struct {
 	// workflow step to "failed".
 	stopped bool
 
+	// completedByResult is set when the post-result-hang guard stopped a
+	// headless process that emitted a terminal (non-error) result but never
+	// exited on its own. It tells the finalize path to derive completion
+	// status from the result event rather than the kill signal.
+	completedByResult bool
+
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
 	// kill). ShutdownWithGrace leaves detached agents running instead of
@@ -690,6 +696,44 @@ func (a *Agent) lastConvoResult() (found, isError bool) {
 		}
 	}
 	return false, false
+}
+
+// CompletedSuccessfully reports whether the headless agent's stream buffer
+// ends in a non-error terminal result. The watchdog uses it to skip
+// inspecting (and never escalate) an agent that has already produced its
+// final result but whose process has not yet exited — a skill that spawns
+// subagents can leave CC alive after the terminal result.
+func (a *Agent) CompletedSuccessfully() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	found, isError := lastHeadlessResultEvent(a.outputBuffer)
+	return found && !isError
+}
+
+// TerminalResultIdle reports whether the headless stream's last event is a
+// non-error terminal result and no further output has arrived for at least
+// grace. It flags a process that finished its work (emitted the final result)
+// but did not exit, so the runner can stop it and finalize from the result.
+func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	found, isError := lastHeadlessResultEvent(a.outputBuffer)
+	if !found || isError {
+		return false
+	}
+	return time.Since(a.LastEventAt) >= grace
+}
+
+func (a *Agent) setCompletedByResult(v bool) {
+	a.mu.Lock()
+	a.completedByResult = v
+	a.mu.Unlock()
+}
+
+func (a *Agent) wasCompletedByResult() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.completedByResult
 }
 
 // GetLastEventAt returns the most recent event timestamp.

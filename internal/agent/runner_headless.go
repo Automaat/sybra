@@ -28,6 +28,19 @@ var errSurviveShutdown = errors.New("agent: detached, leaving process running fo
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
 
+// postResultGrace bounds how long the tailer waits for a headless process to
+// exit on its own after it has emitted a terminal (non-error) result event.
+// CC normally exits within a second or two; a skill that spawns subagents or
+// leaves a background task alive can hang the process indefinitely after the
+// final result (observed in task c4a0fda0, where a staff-code-review workflow
+// finished but the process never exited and the stall watchdog mis-escalated
+// the completed run to human-required). When the stream ends in a result and
+// stays idle past this window the run is logically complete, so the tailer
+// stops the orphaned process and finalizes from the result. Any further
+// output re-arms the clock, so a provider that legitimately emits multiple
+// result events is never cut off mid-work.
+const postResultGrace = 90 * time.Second
+
 // headlessEmitInterval caps per-agent stream event emission rate.
 // Result events always emit immediately (terminal signal). Frontend
 // subscribers may miss intermediate events but can recover via
@@ -318,6 +331,14 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 		return false, nil
 	}
 
+	// Post-result-hang finalize: the tailer stopped a process that had already
+	// emitted a terminal result, so the kill signal in waitErr is expected and
+	// not a failure. Completion status comes from the result event.
+	if a.wasCompletedByResult() {
+		m.finalizeFromResult(a, prevLen)
+		return false, nil
+	}
+
 	var stderrOut string
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
@@ -347,6 +368,23 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 		a.SetExitErr(errProviderRateLimited)
 	}
 	return false, nil
+}
+
+// finalizeFromResult sets the exit status of a run that the post-result-hang
+// guard stopped, deriving completion from the terminal result event rather
+// than the kill signal that appears in the process wait error.
+func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
+	evs := attemptEventsFrom(a, prevLen)
+	if streamErr := resultStreamError(evs); streamErr != nil {
+		a.SetExitErr(streamErr)
+		m.reportProviderHealthSignal(a, "", evs)
+		return
+	}
+	if m.reportCleanProviderHealthSignal(a, "", evs) == providerpkg.SignalRateLimit {
+		a.SetExitErr(errProviderRateLimited)
+		return
+	}
+	a.SetExitErr(nil)
 }
 
 func attemptEventsFrom(a *Agent, prevLen int) []StreamEvent {
@@ -472,6 +510,19 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 
 		if drain() {
 			// Guardrail kill: force the child to stop, wait for it, finalize.
+			m.signalKill(a)
+			waitExit()
+			return true, end()
+		}
+
+		// Post-result hang: the process emitted its terminal result but has
+		// not exited. The run is logically complete — stop the orphan and
+		// finalize from the result so the workflow advances instead of the
+		// stall watchdog escalating a finished run to human-required.
+		if a.TerminalResultIdle(postResultGrace) {
+			m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
+				"idle_sec", int(time.Since(a.GetLastEventAt()).Seconds()))
+			a.setCompletedByResult(true)
 			m.signalKill(a)
 			waitExit()
 			return true, end()

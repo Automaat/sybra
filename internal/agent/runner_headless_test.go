@@ -283,6 +283,74 @@ func TestLastHeadlessResultMarksErrorSubtype(t *testing.T) {
 	}
 }
 
+func TestCompletedSuccessfully(t *testing.T) {
+	t.Run("success result", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "assistant", Content: "working"})
+		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+		if !a.CompletedSuccessfully() {
+			t.Fatal("CompletedSuccessfully = false on clean terminal result, want true")
+		}
+	})
+	t.Run("error result", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Subtype: "error_during_execution"})
+		if a.CompletedSuccessfully() {
+			t.Fatal("CompletedSuccessfully = true on error result, want false")
+		}
+	})
+	t.Run("not terminated on result", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+		a.AppendOutput(StreamEvent{Type: "assistant", Content: "still going"})
+		if a.CompletedSuccessfully() {
+			t.Fatal("CompletedSuccessfully = true when result is not the last event, want false")
+		}
+	})
+}
+
+func TestTerminalResultIdle(t *testing.T) {
+	t.Run("idle past grace after clean result", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+		a.mu.Lock()
+		a.LastEventAt = time.Now().Add(-2 * time.Minute)
+		a.mu.Unlock()
+		if !a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = false on result idle past grace, want true")
+		}
+	})
+	t.Run("within grace", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+		a.TouchLastEvent()
+		if a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = true within grace, want false")
+		}
+	})
+	t.Run("error result never idles out", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Subtype: "error_during_execution"})
+		a.mu.Lock()
+		a.LastEventAt = time.Now().Add(-2 * time.Minute)
+		a.mu.Unlock()
+		if a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = true on error result, want false")
+		}
+	})
+	t.Run("non-result last event", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+		a.AppendOutput(StreamEvent{Type: "assistant", Content: "long bash running"})
+		a.mu.Lock()
+		a.LastEventAt = time.Now().Add(-2 * time.Minute)
+		a.mu.Unlock()
+		if a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = true when last event is not a result, want false")
+		}
+	})
+}
+
 func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
 	a := &Agent{}
 	a.AppendOutput(StreamEvent{Type: "result", Content: "overloaded", ErrorType: "overloaded_error", ErrorStatus: 529})
