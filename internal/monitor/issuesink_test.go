@@ -99,7 +99,7 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	if !containsPair(got, "--title", "[monitor] over_dispatch_limit") {
 		t.Errorf("wrong title: %v", got)
 	}
-	if !containsPair(got, "--body", "body") {
+	if !containsPair(got, "--body", attribution.Append("body")) {
 		t.Errorf("missing body: %v", got)
 	}
 	if !containsPair(got, "--label", "monitor,bug") {

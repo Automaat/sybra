@@ -104,7 +104,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 	}
 	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "create",
 		"--title", title,
-		"--body", body,
+		"--body", attribution.Append(body),
 		"--label", lb.String(),
 	)...)
 	if err != nil {
