@@ -102,11 +102,11 @@ func buildClaudeCommand(model, effort string, allowedTools []string, requirePerm
 }
 
 // effortArgs returns the reasoning-effort CLI flag shared by the claude and
-// copilot CLIs (`--effort <level>`), or nil when effort is empty so the model
-// default is used. Codex uses a different surface — see codexReasoningArgs.
+// copilot CLIs (`--effort <level>`), or an empty slice when effort is empty so
+// the model default is used. Codex uses a different surface — see codexReasoningArgs.
 func effortArgs(effort string) []string {
 	if effort == "" {
-		return nil
+		return []string{}
 	}
 	return []string{"--effort", effort}
 }
