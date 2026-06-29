@@ -637,6 +637,11 @@ func TestShutdown(t *testing.T) {
 	a.Shutdown(t.Context())
 }
 
+func TestShutdownBeforeStartup(t *testing.T) {
+	a := NewApp(discardLogger(), &slog.LevelVar{}, testConfig(t))
+	a.Shutdown(t.Context())
+}
+
 func TestStartup(t *testing.T) {
 	a := NewApp(discardLogger(), &slog.LevelVar{}, testConfig(t))
 	if a.tasksDir == "" {

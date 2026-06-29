@@ -357,7 +357,9 @@ func (a *App) Shutdown(_ context.Context) {
 		a.cancel()
 	}
 	a.wg.Wait()
-	a.agents.Shutdown()
+	if a.agents != nil {
+		a.agents.Shutdown()
+	}
 	if a.audit != nil {
 		_ = a.audit.Close()
 	}
