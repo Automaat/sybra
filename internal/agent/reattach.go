@@ -189,7 +189,7 @@ func (m *Manager) persistDeadSession(r Record) (done bool) {
 // recovery is handled by the workflow's recoverStaleInteractive / chat gc).
 // Returns the reattached agent, or nil when the process is gone or a
 // duplicate already exists.
-func (m *Manager) reattachInteractive(r Record, reg *registryStore) *Agent {
+func (m *Manager) reattachInteractive(r Record, reg survivalRegistry) *Agent {
 	if !reattachAlive(r) {
 		_ = reg.Delete(r.ID)
 		m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID, "mode", "interactive")
@@ -254,7 +254,7 @@ func convoResumeState(evs []ConvoEvent) State {
 // rehydrate its chat from the log, and restart the loop in resume-wait mode
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
-func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
+func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
 	// was down — that would leak a zombie agent gcOrphanChats can't reap.
@@ -300,7 +300,7 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg *registryStore) *Agent {
 	return a
 }
 
-func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg *registryStore) {
+func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistry) {
 	if found, isError := a.lastConvoResult(); !found {
 		a.SetExitErr(errReattachedGone)
 	} else if isError {

@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -128,6 +130,67 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		rehydrated.ReasoningTokens != 0 ||
 		rehydrated.PremiumRequests != 0 {
 		t.Fatalf("usage fields rehydrated from registry, want zero: %#v", rehydrated)
+	}
+}
+
+func TestRegistryStore_ConcurrentSaveDeleteList(t *testing.T) {
+	regDir := t.TempDir()
+	s, err := newRegistryStore(regDir)
+	if err != nil {
+		t.Fatalf("newRegistryStore: %v", err)
+	}
+
+	const workers = 16
+	const iterations = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers*iterations*3)
+	for worker := range workers {
+		wg.Go(func() {
+			for iteration := range iterations {
+				id := fmt.Sprintf("agent-%02d-%02d", worker, iteration)
+				fifo := agentFIFOPath(regDir, id)
+				if mkErr := makeFIFO(fifo); mkErr != nil {
+					errs <- fmt.Errorf("mkfifo %s: %w", id, mkErr)
+					continue
+				}
+				if saveErr := s.Save(Record{
+					ID:        id,
+					Mode:      "interactive",
+					Provider:  "claude",
+					PID:       os.Getpid(),
+					StartedAt: time.Now().UTC(),
+					StdinPath: fifo,
+				}); saveErr != nil {
+					errs <- fmt.Errorf("save %s: %w", id, saveErr)
+					continue
+				}
+				if _, listErr := s.List(); listErr != nil {
+					errs <- fmt.Errorf("list %s: %w", id, listErr)
+				}
+				if deleteErr := s.Delete(id); deleteErr != nil {
+					errs <- fmt.Errorf("delete %s: %w", id, deleteErr)
+					continue
+				}
+				if _, statErr := os.Stat(fifo); !os.IsNotExist(statErr) {
+					errs <- fmt.Errorf("fifo %s still present, stat err=%w", id, statErr)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		return
+	}
+	records, err := s.List()
+	if err != nil {
+		t.Fatalf("final list: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records left after concurrent delete = %d, want 0", len(records))
 	}
 }
 

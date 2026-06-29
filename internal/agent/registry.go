@@ -2,8 +2,10 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -45,9 +47,22 @@ type Record struct {
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
 }
 
+// survivalRegistry implementations must be safe for concurrent use.
+type survivalRegistry interface {
+	Save(Record) error
+	List() ([]Record, error)
+	Delete(string) error
+}
+
 // registryStore persists Records as one YAML file per agent under dir.
-// Mirrors internal/loopagent.Store.
+// It owns registry persistence serialization. Manager.mu owns the live
+// in-memory agent map and runtime config, not registry file I/O; keeping the
+// registry lock here lets reattach/lifecycle code depend on the narrow
+// survivalRegistry interface without carrying Manager's lifecycle mutex.
+// Unlike internal/loopagent.Store, this store owns its own serialization lock
+// because runner goroutines can save and delete agent records concurrently.
 type registryStore struct {
+	mu  sync.Mutex
 	dir string
 }
 
@@ -64,10 +79,14 @@ func (s *registryStore) Save(r Record) error {
 	if r.ID == "" {
 		return fmt.Errorf("registry: empty agent id")
 	}
+	// Record is a value type; this marshal captures a complete snapshot before
+	// registry file serialization is acquired.
 	data, err := yaml.Marshal(r)
 	if err != nil {
 		return fmt.Errorf("marshal record: %w", err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return fsutil.AtomicWrite(s.path(r.ID), data)
 }
 
@@ -75,6 +94,8 @@ func (s *registryStore) Save(r Record) error {
 // skipped rather than failing the whole sweep — a corrupt record must not
 // block reattachment of healthy ones.
 func (s *registryStore) List() ([]Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read agents dir: %w", err)
@@ -97,21 +118,41 @@ func (s *registryStore) List() ([]Record, error) {
 // Delete removes the record file and the agent's stdin FIFO (if any). A
 // missing file is not an error.
 func (s *registryStore) Delete(id string) error {
-	// Best-effort FIFO cleanup so detached conversational agents don't leak
-	// a named pipe per run under the agents dir.
-	_ = os.Remove(s.fifoPath(id))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeFIFO(s.stdinPathForDelete(id), id)
 	if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete record: %w", err)
 	}
 	return nil
 }
 
+func (s *registryStore) stdinPathForDelete(id string) string {
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return agentFIFOPath(s.dir, id)
+	}
+	var r Record
+	if yaml.Unmarshal(data, &r) != nil || r.StdinPath == "" {
+		return agentFIFOPath(s.dir, id)
+	}
+	return r.StdinPath
+}
+
+func (s *registryStore) removeFIFO(path, id string) {
+	// Best-effort FIFO cleanup so detached conversational agents don't leak
+	// a named pipe per run under the agents dir.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Warn("agent.registry.fifo.remove", "id", id, "path", path, "err", err)
+	}
+}
+
 func (s *registryStore) path(id string) string {
 	return filepath.Join(s.dir, id+".yaml")
 }
 
-// fifoPath returns the stdin FIFO path for a detached conversational agent,
-// alongside its registry record under the agents dir.
-func (s *registryStore) fifoPath(id string) string {
-	return filepath.Join(s.dir, id+".stdin")
+// agentFIFOPath returns the stdin FIFO path for a detached conversational
+// agent, alongside its registry record under the agents dir.
+func agentFIFOPath(registryDir, id string) string {
+	return filepath.Join(registryDir, id+".stdin")
 }
