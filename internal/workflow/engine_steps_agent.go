@@ -168,6 +168,11 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// interactive plan agent with reuse_agent that outlived plan approval).
 	// Empty role = stop all roles for this task.
 	e.agents.StopAgentsForTask(taskID, "")
+	// Drop the stopped agents' step mappings so a late/double completion from a
+	// superseded agent (e.g. a stopped test-runner during a run_test retry) is
+	// treated as untracked and dropped rather than counted against the step's
+	// retry budget. The agent spawned just below becomes the only tracked one.
+	e.clearAgentStepsForTask(taskID)
 
 	// Interactive agents that aren't meant to persist across turns (no
 	// reuse_agent, no wait_for_status) must signal completion via process
