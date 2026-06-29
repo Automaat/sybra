@@ -54,7 +54,7 @@ type structuredTestOutput struct {
 	Outcome           string                     `json:"outcome,omitempty"`
 	FailuresMarkdown  string                     `json:"failures_markdown,omitempty"`
 	SurfaceKind       string                     `json:"surface_kind,omitempty"`
-	AppStarted        bool                       `json:"app_started,omitempty"`
+	AppStarted        flexBool                   `json:"app_started,omitempty"`
 	StartCommand      string                     `json:"start_command,omitempty"`
 	ReadinessProbe    evidenceText               `json:"readiness_probe,omitempty"`
 	ManualProbes      manualProbeEvidenceList    `json:"manual_probes,omitempty"`
@@ -86,6 +86,32 @@ type automatedCheckEvidence struct {
 }
 
 type evidenceText string
+
+// flexBool tolerates LLM JSON drift on boolean verdict fields: a model often
+// emits app_started as the quoted string "true"/"false" instead of a JSON
+// bool. A strict bool unmarshal would fail the WHOLE structuredTestOutput
+// object and discard an otherwise-valid PASS verdict — misclassifying a passing
+// test as infra_failure. Accept either shape.
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	var bv bool
+	if err := json.Unmarshal(data, &bv); err == nil {
+		*b = flexBool(bv)
+		return nil
+	}
+	var sv string
+	if err := json.Unmarshal(data, &sv); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(sv)) {
+	case "true", "yes", "y", "t", "1":
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
+}
 
 func (l *manualProbeEvidenceList) UnmarshalJSON(data []byte) error {
 	*l = nil

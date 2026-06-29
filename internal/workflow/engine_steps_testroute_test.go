@@ -51,6 +51,8 @@ func TestExtractTestVerdict(t *testing.T) {
 		{"json_array_not_object", `[{"verdict":"PASS"}]`, ""},
 		{"fenced_json_no_marker", "```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
 		{"prose_then_fenced_json", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
+		// app_started emitted as a quoted string must not break the verdict parse.
+		{"json_string_app_started", `{"verdict":"PASS","app_started":"true"}`, "PASS"},
 	}
 
 	for _, tc := range cases {
@@ -477,6 +479,22 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				`"readiness_probe":"curl -fsS http://127.0.0.1:55990/health -> {\"status\":\"ok\"}",` +
 				`"manual_probes":["POST /api/TaskService/ListTasks -> []","sybra-cli --json create --title smoke -> created task"],` +
 				`"automated_checks":["go test ./... -> pass","go build ./cmd/sybra-server -> pass"],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// Regression: a model emitted app_started as the quoted string
+			// "true" instead of a bool. A strict bool unmarshal failed the whole
+			// verdict object, losing a valid PASS and misclassifying it as
+			// infra_failure. flexBool must accept the string shape.
+			name:   "pass_with_string_app_started",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":"true",` +
+				`"start_command":"SYBRA_HOME=$(mktemp -d) go run ./cmd/sybra-server",` +
+				`"readiness_probe":{"command":"curl -fsS http://127.0.0.1:57942/health","actual":"{\"status\":\"ok\"}"},` +
+				`"manual_probes":[{"command":"curl -fsS http://127.0.0.1:57942/health","actual":"{\"status\":\"ok\"}"}],` +
+				`"automated_checks":[{"command":"go test ./internal/attribution/...","actual":"pass"}],"unable_to_run_reason":""}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
