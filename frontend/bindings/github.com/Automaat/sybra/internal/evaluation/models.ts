@@ -94,6 +94,7 @@ export class ComparisonBreakdown {
     "toolsPerLanded": number;
     "insufficientData": boolean;
     "qualityAttributionLimited": boolean;
+    "roleBreakdowns"?: ComparisonBreakdown[];
 
     /** Creates a new ComparisonBreakdown instance. */
     constructor($$source: Partial<ComparisonBreakdown> = {}) {
@@ -174,7 +175,11 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
+        const $$createField29_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("roleBreakdowns" in $$parsedSource) {
+            $$parsedSource["roleBreakdowns"] = $$createField29_0($$parsedSource["roleBreakdowns"]);
+        }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
 }
@@ -215,8 +220,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType1;
-        const $$createField4_0 = $$createType3;
+        const $$createField3_0 = $$createType3;
+        const $$createField4_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -312,11 +317,11 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType6;
-        const $$createField5_0 = $$createType6;
-        const $$createField6_0 = $$createType8;
-        const $$createField7_0 = $$createType8;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType8;
+        const $$createField5_0 = $$createType8;
+        const $$createField6_0 = $$createType1;
+        const $$createField7_0 = $$createType1;
         const $$createField8_0 = $$createType10;
         const $$createField9_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -600,14 +605,14 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = PhaseStat.createFrom;
+const $$createType0 = ComparisonBreakdown.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = TaskPhases.createFrom;
+const $$createType2 = PhaseStat.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = Scorecard.createFrom;
-const $$createType5 = Breakdown.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = ComparisonBreakdown.createFrom;
+const $$createType4 = TaskPhases.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = Scorecard.createFrom;
+const $$createType7 = Breakdown.createFrom;
 const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = Weakness.createFrom;
 const $$createType10 = $Create.Array($$createType9);

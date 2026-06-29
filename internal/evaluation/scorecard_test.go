@@ -162,6 +162,163 @@ func TestCompareByVariantDoesNotAttributePreWindowRun(t *testing.T) {
 	}
 }
 
+func TestCompareVariantsAggregatesRoles(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", ExperimentID: "exp", VariantID: "a", DurationS: 120, CostUSD: 2, PremiumRequests: 4, Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "fix-review", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", ExperimentID: "exp", VariantID: "a", DurationS: 240, CostUSD: 3, PremiumRequests: 6, Outcome: "failed", Timestamp: in},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in.Add(30 * time.Minute), Data: map[string]any{"outcome": "merged"}},
+	}
+
+	got := CompareVariants(records, events, since, base, 0)
+	if len(got) != 1 {
+		t.Fatalf("variant rows = %d, want 1: %+v", len(got), got)
+	}
+	parent := got[0]
+	if parent.ExperimentID != "exp" || parent.VariantID != "a" || parent.Role != "" {
+		t.Fatalf("parent identity = %+v, want exp/a with empty role", parent)
+	}
+	if parent.Runs != 2 || parent.Failures != 1 || parent.Landed != 1 || parent.MergeRate != 1 || parent.FailureRate != 0.5 {
+		t.Fatalf("parent metrics = %+v", parent)
+	}
+	if parent.TotalCostUSD != 5 || parent.CostPerLanded != 5 || parent.PremiumRequests != 10 || parent.PremiumRequestsPerLanded != 10 {
+		t.Fatalf("parent cost/premium metrics = %+v", parent)
+	}
+	if parent.DurationP50S != 120 || parent.DurationP90S != 240 {
+		t.Fatalf("parent duration = p50 %v p90 %v, want 120/240", parent.DurationP50S, parent.DurationP90S)
+	}
+	if len(parent.RoleBreakdowns) != 2 {
+		t.Fatalf("role breakdowns = %d, want 2: %+v", len(parent.RoleBreakdowns), parent.RoleBreakdowns)
+	}
+	impl := comparisonByRole(t, parent.RoleBreakdowns, "implementation")
+	if impl.Runs != 1 || impl.Landed != 1 || impl.MergeRate != 1 || impl.TotalCostUSD != 2 || impl.PremiumRequests != 4 {
+		t.Fatalf("implementation child = %+v", impl)
+	}
+	fix := comparisonByRole(t, parent.RoleBreakdowns, "fix-review")
+	if fix.Runs != 1 || fix.Failures != 1 || fix.Landed != 0 || fix.FailureRate != 1 {
+		t.Fatalf("fix-review child = %+v", fix)
+	}
+}
+
+func TestCompareVariantsKeepsChildLowSampleRows(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "testing", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+	}
+
+	got := CompareVariants(records, nil, since, base, 20)
+	if len(got) != 1 {
+		t.Fatalf("variant rows = %d, want 1: %+v", len(got), got)
+	}
+	if !got[0].InsufficientData {
+		t.Fatalf("parent should be low sample: %+v", got[0])
+	}
+	if len(got[0].RoleBreakdowns) != 2 {
+		t.Fatalf("role breakdowns = %d, want 2: %+v", len(got[0].RoleBreakdowns), got[0].RoleBreakdowns)
+	}
+	for _, child := range got[0].RoleBreakdowns {
+		if !child.InsufficientData {
+			t.Fatalf("child should be low sample: %+v", child)
+		}
+	}
+}
+
+func TestCompareVariantsClearsMixedParentMetadata(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Role: "implementation", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+		{Role: "fix-review", Provider: "codex", Model: "gpt-5", ReasoningEffort: "high", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+	}
+
+	got := CompareVariants(records, nil, since, base, 0)
+	if len(got) != 1 {
+		t.Fatalf("variant rows = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Provider != "" || got[0].Model != "" || got[0].ReasoningEffort != "" {
+		t.Fatalf("mixed parent metadata should be cleared: %+v", got[0])
+	}
+}
+
+func TestCompareVariantsUsesDelimiterSafeIdentity(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", ExperimentID: "exp:a", VariantID: "var:b", Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "fix-review", ExperimentID: "exp:a", VariantID: "var:b", Outcome: "completed", Timestamp: in},
+	}
+
+	got := CompareVariants(records, nil, since, base, 0)
+	if len(got) != 1 {
+		t.Fatalf("variant rows = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].ExperimentID != "exp:a" || got[0].VariantID != "var:b" {
+		t.Fatalf("parent identity lost delimiters: %+v", got[0])
+	}
+	if len(got[0].RoleBreakdowns) != 2 {
+		t.Fatalf("children did not attach to delimiter-containing parent: %+v", got[0])
+	}
+}
+
+func TestCompareVariantsPreservesLatestAuthorAttribution(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	t1 := base.Add(-3 * time.Hour)
+	t2 := base.Add(-2 * time.Hour)
+	landedAt := base.Add(-1 * time.Hour)
+	revertedAt := base.Add(-30 * time.Minute)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: t1},
+		{TaskID: "A", Role: "fix-review", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: t2},
+		{TaskID: "B", Role: "implementation", ExperimentID: "exp", VariantID: "a", CostUSD: 4, PremiumRequests: 8, Outcome: "completed", Timestamp: t2},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: landedAt, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "B", Timestamp: landedAt, Data: map[string]any{"outcome": "merged_with_edits"}},
+		{Type: audit.EventPRCIFailureDetected, TaskID: "B", Timestamp: t2},
+		{Type: audit.EventTaskStatusChanged, TaskID: "B", Timestamp: t2, Data: map[string]any{"from": "in-progress", "to": "in-review"}},
+		{Type: audit.EventTaskStatusChanged, TaskID: "B", Timestamp: t2.Add(time.Minute), Data: map[string]any{"from": "in-progress", "to": "in-review"}},
+		{Type: audit.EventPRReverted, TaskID: "B", Timestamp: revertedAt},
+	}
+
+	got := CompareVariants(records, events, since, base, 0)
+	if len(got) != 1 {
+		t.Fatalf("variant rows = %d, want 1: %+v", len(got), got)
+	}
+	parent := got[0]
+	if parent.Landed != 2 || parent.Merged != 1 || parent.MergedWithEdits != 1 || parent.CIFirstPassRate != 0.5 || parent.ReworkRate != 0.5 || parent.RevertRate != 0.5 {
+		t.Fatalf("parent attribution metrics = %+v", parent)
+	}
+	impl := comparisonByRole(t, parent.RoleBreakdowns, "implementation")
+	if impl.Landed != 1 || impl.MergedWithEdits != 1 || impl.CIFirstPassRate != 0 || impl.ReworkRate != 1 || impl.RevertRate != 1 {
+		t.Fatalf("implementation child attribution = %+v", impl)
+	}
+	fix := comparisonByRole(t, parent.RoleBreakdowns, "fix-review")
+	if fix.Landed != 1 || fix.Merged != 1 || fix.CIFirstPassRate != 1 || fix.ReworkRate != 0 || fix.RevertRate != 0 {
+		t.Fatalf("fix-review child attribution = %+v", fix)
+	}
+}
+
+func comparisonByRole(t *testing.T, rows []ComparisonBreakdown, role string) ComparisonBreakdown {
+	t.Helper()
+	for i := range rows {
+		if rows[i].Role == role {
+			return rows[i]
+		}
+	}
+	t.Fatalf("role %q not found in %+v", role, rows)
+	return ComparisonBreakdown{}
+}
+
 func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -30)
