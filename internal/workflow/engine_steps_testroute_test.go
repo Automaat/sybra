@@ -46,9 +46,11 @@ func TestExtractTestVerdict(t *testing.T) {
 		// BOM + leading whitespace stripping.
 		{"json_bom_prefix", "\xef\xbb\xbf{\"verdict\":\"PASS\"}", "PASS"},
 		{"json_leading_whitespace", "  \n{\"verdict\":\"PASS\"}", "PASS"},
-		// Non-object shapes fall through to the marker scan (safe direction).
+		// Non-object shapes fall through to the marker scan (safe direction),
+		// except a fenced JSON final report with a verdict is accepted for Claude.
 		{"json_array_not_object", `[{"verdict":"PASS"}]`, ""},
-		{"fenced_json_no_marker", "```json\n{\"verdict\":\"PASS\"}\n```", ""},
+		{"fenced_json_no_marker", "```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
+		{"prose_then_fenced_json", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
 	}
 
 	for _, tc := range cases {
@@ -342,6 +344,22 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "structured_json_product_bug_with_task_expectation_and_code_line_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
+				"## Test Failures\n\n"+
+					"### Wilson confidence interval lower bounds can be negative for 0/N rates\n\n"+
+					"Classification: product_bug\n\n"+
+					"Task expectation: the task requires Wilson confidence intervals for rates. A rate confidence interval is expected to stay within [0, 1].\n\n"+
+					"Command run:\n```bash\ncurl -fsS /api/App/GetEvaluationReport | jq '.byVariant[0].ciFirstPassEstimate'\n```\n\n"+
+					"Verbatim output:\n```json\n{\"wilsonLower\":-3.185582654932028E-17,\"wilsonUpper\":0.7934506856227624}\n```\n\n"+
+					"Current code line evidence:\n```text\n616\t\test.WilsonLower = finiteOrZero((center - margin) / denom)\n```\n",
+			) + `}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:   "structured_json_ignores_fenced_heading",
 			status: "completed",
 			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(
@@ -439,6 +457,14 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_manual_evidence",
 			status:     "completed",
 			output:     structuredPassOutput(),
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_fenced_json_manual_evidence",
+			status:     "completed",
+			output:     fencedStructuredPassOutput(),
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
@@ -800,6 +826,12 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 
 func structuredPassOutput() string {
 	return `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server","readiness_probe":"curl -fsS http://127.0.0.1:12345/health","manual_probes":[{"command":"curl -fsS http://127.0.0.1:12345/health","expected":"HTTP 200 ok","actual":"ok"}],"automated_checks":[{"command":"go test ./internal/workflow","actual":"ok"}],"unable_to_run_reason":""}`
+}
+
+func fencedStructuredPassOutput() string {
+	return "All probes passed.\n\n```json\n" +
+		`{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"SYBRA_HOME=$TMP/home SYBRA_PORT=$PORT go run ./cmd/sybra-server","readiness_probe":"curl -fsS http://127.0.0.1:$PORT/health -> {\"status\":\"ok\"}","manual_probes":[{"command":"POST /api/App/GetEvaluationReport []","observed":"byAgentModelContribution rows present"},{"command":"attribution mode check","observed":"byAgentModel rows have attributionMode=latest_author"}],"automated_checks":[{"command":"go test ./internal/evaluation/...","status":"PASS"}],"unable_to_run_reason":""}` +
+		"\n```"
 }
 
 // makeTestEngine builds a minimal Engine for route_test_result unit tests.
