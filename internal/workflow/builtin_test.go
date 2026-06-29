@@ -675,7 +675,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
 	}
-	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string"},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string","minLength":1},{"type":"number"},{"type":"boolean"}]},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false}]},"manual_probes":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}]}}]},"automated_checks":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command","actual","observed","output","status"],"additionalProperties":false}]}}]},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string"},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
 		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
 	}
@@ -714,6 +714,10 @@ func requireCodexStrictSchemaNode(t *testing.T, node any, path string) {
 
 	switch v := node.(type) {
 	case map[string]any:
+		_, hasAdditionalProperties := v["additionalProperties"]
+		if isCodexObjectSchema(v) && !hasAdditionalProperties {
+			t.Fatalf("%s is object-shaped and must set additionalProperties:false", path)
+		}
 		propsValue, hasProps := v["properties"]
 		if _, hasRequired := v["required"]; hasRequired && !hasProps {
 			t.Fatalf("%s uses required without properties; Codex strict rejects requirement-only schemas", path)
@@ -753,6 +757,16 @@ func requireCodexStrictSchemaNode(t *testing.T, node any, path string) {
 			requireCodexStrictSchemaNode(t, child, path+"[]")
 		}
 	}
+}
+
+func isCodexObjectSchema(schema map[string]any) bool {
+	if schemaType, ok := schema["type"].(string); ok && schemaType == "object" {
+		return true
+	}
+	_, hasProperties := schema["properties"]
+	_, hasRequired := schema["required"]
+	_, hasAdditionalProperties := schema["additionalProperties"]
+	return hasProperties || hasRequired || hasAdditionalProperties
 }
 
 func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {

@@ -307,15 +307,52 @@ func plainTestFailureReport(output string) string {
 }
 
 func parseStructuredTestOutput(output string) (structuredTestOutput, bool) {
+	for _, candidate := range structuredTestOutputCandidates(output) {
+		var parsed structuredTestOutput
+		if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
+			continue
+		}
+		if strings.TrimSpace(parsed.Verdict) == "" {
+			continue
+		}
+		return parsed, true
+	}
+	return structuredTestOutput{}, false
+}
+
+func structuredTestOutputCandidates(output string) []string {
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
-	if !strings.HasPrefix(s, "{") {
-		return structuredTestOutput{}, false
+	if strings.HasPrefix(s, "{") {
+		return []string{s}
 	}
-	var parsed structuredTestOutput
-	if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-		return structuredTestOutput{}, false
+	return fencedCodeBlockCandidates(s)
+}
+
+func fencedCodeBlockCandidates(output string) []string {
+	var candidates []string
+	var block strings.Builder
+	inFence := false
+	for line := range strings.SplitSeq(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if inFence {
+				if candidate := strings.TrimSpace(block.String()); candidate != "" {
+					candidates = append(candidates, candidate)
+				}
+				block.Reset()
+				inFence = false
+				continue
+			}
+			inFence = true
+			block.Reset()
+			continue
+		}
+		if inFence {
+			block.WriteString(line)
+			block.WriteByte('\n')
+		}
 	}
-	return parsed, true
+	return candidates
 }
 
 func normalizeStructuredFailuresMarkdown(report, outcome string) string {
@@ -931,10 +968,12 @@ func hasGroundedFailureEvidence(report string) bool {
 		"observed behavior:", "observed behaviour:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
 	hasExpected := containsAny(lower,
 		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
-		"requirement tested:", "task says", "from the task", "violates", "should render", "should not")
+		"requirement tested:", "task expectation:", "task requirement:", "task says",
+		"task requires", "from the task", "violates", "should render", "should not")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
-		"current file", "source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
+		"current file", "current code line evidence:", "code line evidence:",
+		"source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
@@ -1191,6 +1230,14 @@ func extractTestVerdict(output string) string {
 			}
 		}
 		return ""
+	}
+	if parsed, ok := parseStructuredTestOutput(s); ok {
+		switch strings.ToUpper(strings.TrimSpace(parsed.Verdict)) {
+		case "PASS":
+			return "PASS"
+		case "FAIL":
+			return "FAIL"
+		}
 	}
 
 	// Plain-text path (claude): exact-line marker scan, last match wins.
