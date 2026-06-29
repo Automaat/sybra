@@ -223,35 +223,65 @@ func fetchLabeledIssuesForReposWith(e execer, repos []string, label string) ([]I
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	parts := make([]string, len(repos))
-	for i, r := range repos {
-		parts[i] = "repo:" + r
-	}
-	query := fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(parts, " "))
+	// Cache against the full repo set; the per-chunk searches below are an
+	// implementation detail callers shouldn't see.
+	cacheKey := "label:" + label + "||" + strings.Join(repos, ",")
 	if runtimeCacheEnabled(e) {
-		if cached, ok := labeledIssuesCache.Get(query); ok {
+		if cached, ok := labeledIssuesCache.Get(cacheKey); ok {
 			return cached, nil
 		}
 		if ghGate.shouldSkipOptional("graphql") {
-			if stale, ok := labeledIssuesCache.GetStale(query); ok {
+			if stale, ok := labeledIssuesCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
 		}
 	}
 
-	issues, err := searchIssuesWith(e, query)
+	issues, err := searchLabeledChunked(e, repos, label)
 	if err != nil {
 		if runtimeCacheEnabled(e) {
-			if stale, ok := labeledIssuesCache.GetStale(query); ok {
+			if stale, ok := labeledIssuesCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
 		}
 		return nil, err
 	}
 	if runtimeCacheEnabled(e) {
-		labeledIssuesCache.Set(query, issues, 30*time.Second)
+		labeledIssuesCache.Set(cacheKey, issues, 30*time.Second)
 	}
 	return issues, nil
+}
+
+// labeledRepoQuery builds the labeled-issue search query for one repo chunk.
+func labeledRepoQuery(repos []string, label string) string {
+	parts := make([]string, len(repos))
+	for i, r := range repos {
+		parts[i] = "repo:" + r
+	}
+	return fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(parts, " "))
+}
+
+// searchLabeledChunked runs the labeled-issue search in repo chunks so the
+// query string can't grow unbounded (GitHub rejects/truncates oversized search
+// queries with many repo: qualifiers), then dedupes by URL.
+func searchLabeledChunked(e execer, repos []string, label string) ([]Issue, error) {
+	seen := make(map[string]struct{})
+	var all []Issue
+	for start := 0; start < len(repos); start += issueSearchChunkSize {
+		end := min(start+issueSearchChunkSize, len(repos))
+		issues, err := searchIssuesWith(e, labeledRepoQuery(repos[start:end], label))
+		if err != nil {
+			return nil, err
+		}
+		for i := range issues {
+			if _, dup := seen[issues[i].URL]; dup {
+				continue
+			}
+			seen[issues[i].URL] = struct{}{}
+			all = append(all, issues[i])
+		}
+	}
+	return all, nil
 }
 
 func searchIssuesWith(e execer, query string) ([]Issue, error) {
@@ -273,7 +303,14 @@ func searchIssuesWith(e execer, query string) ([]Issue, error) {
 	return convertIssues(gqlResp.Data.Search.Nodes), nil
 }
 
-// FetchIssueSnapshot returns assigned issues and labeled issues in one GraphQL call.
+// issueSearchChunkSize bounds how many repo: qualifiers go into one labeled
+// search query, so a large project set can't produce an oversized query that
+// GitHub rejects or silently truncates.
+const issueSearchChunkSize = 15
+
+// FetchIssueSnapshot returns assigned issues and labeled issues. The first repo
+// chunk's labeled search rides the same GraphQL request as the assigned search;
+// extra chunks are fetched as labeled-only searches and merged.
 func FetchIssueSnapshot(repos []string, label string) (IssueSnapshot, error) {
 	return fetchIssueSnapshotWith(defaultExecer, repos, label)
 }
@@ -289,19 +326,22 @@ func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapsh
 		return snapshot, nil
 	}
 
-	labeledParts := make([]string, len(repos))
-	for i, repo := range repos {
-		labeledParts[i] = "repo:" + repo
-	}
+	// The combined assigned+labeled request only carries the first repo chunk's
+	// labeled qualifiers, so the query can't grow unbounded with many projects.
+	// Any remaining chunks are fetched as labeled-only searches below and merged.
+	firstChunkEnd := min(issueSearchChunkSize, len(repos))
 	assignedQuery := "is:issue is:open assignee:@me sort:updated-desc"
-	labeledQuery := fmt.Sprintf("is:issue is:open label:%s %s sort:updated-desc", label, strings.Join(labeledParts, " "))
+	labeledQuery := labeledRepoQuery(repos[:firstChunkEnd], label)
+	// Cache labeled results against the full repo set, not just the first
+	// chunk, so the stale-fallback returns the complete labeled list.
+	labeledCacheKey := "label:" + label + "||" + strings.Join(repos, ",")
 
 	if runtimeCacheEnabled(e) {
 		if ghGate.shouldSkipOptional("graphql") {
 			if assigned, ok := assignedIssuesCache.GetStale(assignedQuery); ok {
 				snapshot.Assigned = assigned
 			}
-			if labeled, ok := labeledIssuesCache.GetStale(labeledQuery); ok {
+			if labeled, ok := labeledIssuesCache.GetStale(labeledCacheKey); ok {
 				snapshot.Labeled = labeled
 			}
 			if snapshot.Assigned != nil || snapshot.Labeled != nil {
@@ -319,7 +359,7 @@ func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapsh
 			if assigned, ok := assignedIssuesCache.GetStale(assignedQuery); ok {
 				snapshot.Assigned = assigned
 			}
-			if labeled, ok := labeledIssuesCache.GetStale(labeledQuery); ok {
+			if labeled, ok := labeledIssuesCache.GetStale(labeledCacheKey); ok {
 				snapshot.Labeled = labeled
 			}
 			if snapshot.Assigned != nil || snapshot.Labeled != nil {
@@ -339,9 +379,28 @@ func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapsh
 
 	snapshot.Assigned = convertIssues(gqlResp.Data.Assigned.Nodes)
 	snapshot.Labeled = convertIssues(gqlResp.Data.Labeled.Nodes)
+
+	// Merge labeled issues from any repo chunks beyond the first (fetched as
+	// standalone labeled-only searches to keep each query bounded).
+	if len(repos) > firstChunkEnd {
+		rest, err := searchLabeledChunked(e, repos[firstChunkEnd:], label)
+		if err != nil {
+			return snapshot, fmt.Errorf("fetch labeled issues (chunked): %w", err)
+		}
+		seen := make(map[string]struct{}, len(snapshot.Labeled))
+		for i := range snapshot.Labeled {
+			seen[snapshot.Labeled[i].URL] = struct{}{}
+		}
+		for i := range rest {
+			if _, dup := seen[rest[i].URL]; !dup {
+				snapshot.Labeled = append(snapshot.Labeled, rest[i])
+			}
+		}
+	}
+
 	if runtimeCacheEnabled(e) {
 		assignedIssuesCache.Set(assignedQuery, snapshot.Assigned, 30*time.Second)
-		labeledIssuesCache.Set(labeledQuery, snapshot.Labeled, 30*time.Second)
+		labeledIssuesCache.Set(labeledCacheKey, snapshot.Labeled, 30*time.Second)
 	}
 	return snapshot, nil
 }
