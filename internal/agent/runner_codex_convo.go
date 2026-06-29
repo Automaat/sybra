@@ -349,6 +349,7 @@ func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, pro
 // --session-id to resume the same conversation.
 func buildCopilotConvoArgs(a *Agent, prompt string) []string {
 	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}

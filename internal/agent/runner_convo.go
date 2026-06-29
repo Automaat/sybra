@@ -99,9 +99,7 @@ func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
 	if cfg.PermissionMode != "" {
 		args = append(args, "--permission-mode", cfg.PermissionMode)
 	}
-	if cfg.Effort != "" {
-		args = append(args, "--effort", cfg.Effort)
-	}
+	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if len(cfg.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(cfg.AllowedTools, ","))
 	} else if !cfg.RequirePermissions && cfg.PermissionMode == "" {
