@@ -13,7 +13,7 @@ import (
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "")
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
 
 	cfg := startupTestConfig(home)
 	logger := slog.New(slog.DiscardHandler)
@@ -50,6 +50,18 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 	}
 }
 
+func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
+	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, startupTestConfig(t.TempDir()))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Shutdown before Startup panicked: %v", r)
+		}
+	}()
+
+	app.Shutdown(context.Background())
+}
+
 func startupTestConfig(home string) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.TasksDir = filepath.Join(home, "tasks")
@@ -61,6 +73,7 @@ func startupTestConfig(home string) *config.Config {
 	cfg.LoopAgentsDir = filepath.Join(home, "loop-agents")
 	cfg.Logging.Dir = filepath.Join(home, "logs")
 
+	// Keep every background automation disabled; this test only verifies startup wiring.
 	cfg.Notification.Desktop = false
 	cfg.GitHub.Enabled = false
 	cfg.Renovate.Enabled = false

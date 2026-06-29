@@ -374,6 +374,8 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 }
 
 func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
+	// Exercises the full Run -> persisted registry record -> fresh manager
+	// ReattachAll path; sibling reattach tests start from injected records.
 	prev := reattachPIDPoll
 	reattachPIDPoll = 50 * time.Millisecond
 	t.Cleanup(func() { reattachPIDPoll = prev })
@@ -384,7 +386,7 @@ func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
 trap 'exit 130' INT TERM
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
 i=0
-while [ "$i" -lt 20 ]; do
+while [ "$i" -lt 5 ]; do
   sleep 0.1
   i=$((i + 1))
 done
@@ -666,9 +668,9 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 			t.Fatalf("registry list: %v", err)
 		}
 		for i := range recs {
-			rec := recs[i]
+			rec := &recs[i]
 			if rec.ID == agentID && rec.PID != 0 && rec.LogPath != "" && rec.SessionID != "" {
-				return rec
+				return *rec
 			}
 		}
 		select {
@@ -682,7 +684,7 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 func waitForAgentDone(t *testing.T, ag *Agent, timeout time.Duration) {
 	t.Helper()
 	if ag.done == nil {
-		return
+		t.Fatal("waitForAgentDone: agent has no done channel; reattach wiring incomplete")
 	}
 	select {
 	case <-ag.done:
