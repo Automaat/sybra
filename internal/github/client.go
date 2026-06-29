@@ -23,6 +23,9 @@ type ghExecer struct{}
 func (ghExecer) run(args ...string) ([]byte, error) {
 	return ghGate.execute(func() ([]byte, error) {
 		cmd := exec.Command("gh", args...)
+		if env := ghEnv(); env != nil {
+			cmd.Env = env
+		}
 		return cmd.CombinedOutput()
 	})
 }
@@ -33,6 +36,9 @@ func (ghExecer) run(args ...string) ([]byte, error) {
 func ghRunCtx(ctx context.Context, args ...string) ([]byte, error) {
 	return ghGate.execute(func() ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "gh", args...)
+		if env := ghEnv(); env != nil {
+			cmd.Env = env
+		}
 		return cmd.CombinedOutput()
 	})
 }
