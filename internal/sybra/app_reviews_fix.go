@@ -223,6 +223,46 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 	)
 }
 
+// recoverStaleBranchConflict turns a worktree-prep rebase failure into
+// autonomous conflict resolution instead of a human escalation. The CI-fix and
+// implement/review/test prepare paths rebase the task branch onto base before
+// the agent starts; when the branch also conflicts with base — common when
+// GitHub still reports UNKNOWN mergeability, so the monitor only emitted the CI
+// failure, not a conflict — that rebase aborts. Rather than stranding a human,
+// dispatch the conflict pr-fix, which checks out the PR head WITHOUT rebasing
+// and has the agent resolve conflicts itself.
+//
+// Returns false (caller escalates to human as before) when there is no linked
+// PR to fix, the PR is closed/unfetchable, or the conflict-fix retry budget is
+// already spent. handlePRIssue's conflict branch prepares via PrepareForFix (no
+// rebase), so this never re-enters the rebasing path that called it.
+func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
+	if r == nil || r.workflowEngine == nil || r.prTracker == nil {
+		return false
+	}
+	t, err := r.tasks.Get(taskID)
+	if err != nil || t.PRNumber == 0 || t.ProjectID == "" {
+		return false
+	}
+	// Don't loop forever on a genuinely unresolvable conflict — once the
+	// conflict-fix budget is spent the normal exhaustion path escalates.
+	if r.prTracker.AtCap(taskID, github.PRIssueConflict) {
+		return false
+	}
+	fetchFn := github.FetchPRForMonitor
+	if r.fetchKnownPRFn != nil {
+		fetchFn = r.fetchKnownPRFn
+	}
+	pr, open, ferr := fetchFn(t.ProjectID, t.PRNumber)
+	if ferr != nil || !open {
+		return false
+	}
+	r.logger.Info("pr-monitor.rebase-block.recover-as-conflict",
+		"task_id", taskID, "pr", t.PRNumber)
+	r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
+	return true
+}
+
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
 // Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
 // consecutive failures. Returns ("", true) when no worktree is needed.
@@ -242,7 +282,15 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 		d, wtErr = r.worktrees.PrepareForTask(t, nil)
 	}
 	if wtErr != nil {
-		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger) {
+		// A conflict fix already operates on the non-rebasing PrepareForFix path,
+		// so a rebase failure here can only come from the CI-fix PrepareForTask
+		// branch. Recover by re-routing to the conflict fix unless this already
+		// IS a conflict fix (avoid re-entering ourselves).
+		var recoverFn func(string) bool
+		if issue.Kind != github.PRIssueConflict {
+			recoverFn = r.recoverStaleBranchConflict
+		}
+		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false
 		}
 		if r.wtFailures == nil {

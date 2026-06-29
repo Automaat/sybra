@@ -110,6 +110,10 @@ type AgentOrchestrator struct {
 	cfg       *config.Config
 	sandboxes *sandbox.Manager
 	bgops     *bgop.Tracker
+	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
+	// conflict pr-fix instead of a human escalation. Wired in wireServices after
+	// the ReviewHandler exists; nil keeps the escalate-to-human fallback.
+	conflictRecovery func(taskID string) bool
 }
 
 func newAgentOrchestrator(
@@ -252,7 +256,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
-			markRebaseBlocked(o.tasks, taskID, wtErr, o.logger)
+			markRebaseBlocked(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery)
 			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
 		o.completeWorktreeOp(opID)
@@ -319,9 +323,21 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	return ag, baselineRef, nil
 }
 
-func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger) bool {
+// markRebaseBlocked handles a worktree-prep rebase failure. A rebase abort means
+// the task branch conflicts with base — exactly the case the conflict pr-fix
+// agent resolves (it checks out the PR head without rebasing and resolves
+// conflicts in-agent). So when recoverConflict re-dispatches that fix, the task
+// is NOT stranded on a human; only when there is no linked PR to fix (or its
+// retry budget is spent) do we fall back to human-required. recoverConflict may
+// be nil (callers without a PR-monitor handle), which preserves the old
+// escalate-to-human behaviour.
+func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) bool {
 	if !errors.Is(err, worktree.ErrRebaseFailed) {
 		return false
+	}
+	if recoverConflict != nil && recoverConflict(taskID) {
+		logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
+		return true
 	}
 	reason := "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
 	if _, uerr := tasks.Update(taskID, task.Update{
