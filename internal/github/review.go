@@ -169,6 +169,15 @@ func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool
 		return PullRequest{}, false, fmt.Errorf("invalid repo or PR: %s#%d", repo, number)
 	}
 
+	// When the GraphQL budget is low, fetch the conflict/CI/state signals over
+	// REST (a separate, usually-idle bucket) instead of spending scarce GraphQL
+	// points or hard-failing. The REST result omits thread/review-decision data,
+	// so callers must only act on its conflict/ci_failure/closed signals. Gated
+	// on runtimeCacheEnabled so unit tests (fake execer) keep the GraphQL path.
+	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql") {
+		return fetchPRForMonitorViaREST(e, repo, number)
+	}
+
 	resp, err := runGHAPIWith(e, "", "graphql",
 		"-f", "query="+prForMonitorQuery,
 		"-f", "owner="+owner,
@@ -206,10 +215,15 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 		if cached, ok := reviewSummaryCache.Get(cacheKey); ok {
 			return cached, nil
 		}
+		// Pace the search legs by the live GraphQL budget: when it is low, serve
+		// a stale summary if we have one, otherwise back off (ErrBudgetExhausted
+		// is transient) instead of firing three searches that would only be
+		// rejected and burn the last of the shared budget.
 		if ghGate.shouldSkipOptional("graphql") {
 			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
+			return ReviewSummary{}, ErrBudgetExhausted
 		}
 	}
 

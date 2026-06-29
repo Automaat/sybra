@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -480,6 +481,11 @@ func ViewerLogin() string {
 func IsTransientError(err error) bool {
 	if err == nil {
 		return false
+	}
+	// A skipped optional poll (low GraphQL budget) is transient by design: back
+	// off and retry next cycle rather than treating it as a hard fetch failure.
+	if errors.Is(err, ErrBudgetExhausted) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	// HTTP 5xx: sanitized gh output produces "gh: http 5xx"
