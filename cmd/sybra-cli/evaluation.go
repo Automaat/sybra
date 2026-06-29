@@ -120,9 +120,10 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 		return fatal(jsonOut, "open stats: %v", err)
 	}
 	svc := evaluation.NewService(evaluation.Deps{
-		Cfg:   cfg.Evaluation,
-		Stats: statsStore,
-		Audit: evaluation.AuditDirReader(cfg.AuditDir()),
+		Cfg:       cfg.Evaluation,
+		ABTesting: cfg.ABTesting,
+		Stats:     statsStore,
+		Audit:     evaluation.AuditDirReader(cfg.AuditDir()),
 	})
 	report, err := svc.Scan(context.Background())
 	if err != nil {

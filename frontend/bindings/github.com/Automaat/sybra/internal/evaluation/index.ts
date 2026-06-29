@@ -4,10 +4,13 @@
 export {
     Breakdown,
     ComparisonBreakdown,
+    ExperimentSampleStatus,
     PhaseReport,
     PhaseStat,
+    RateEstimate,
     Report,
     Scorecard,
     TaskPhases,
+    VariantSampleStatus,
     Weakness
 } from "./models.js";

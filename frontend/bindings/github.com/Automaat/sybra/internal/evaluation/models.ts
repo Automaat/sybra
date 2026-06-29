@@ -72,7 +72,9 @@ export class ComparisonBreakdown {
     "runs": number;
     "failures": number;
     "failureRate": number;
+    "failureEstimate": RateEstimate;
     "landed": number;
+    "landedEstimate": RateEstimate;
     "merged": number;
     "mergedWithEdits": number;
     "closed": number;
@@ -81,6 +83,11 @@ export class ComparisonBreakdown {
     "ciFirstPassRate": number;
     "reworkRate": number;
     "revertRate": number;
+    "mergeEstimate": RateEstimate;
+    "ciFirstPassEstimate": RateEstimate;
+    "mergedWithEditsEstimate": RateEstimate;
+    "reworkEstimate": RateEstimate;
+    "revertEstimate": RateEstimate;
     "durationP50S": number;
     "durationP90S": number;
     "totalCostUsd": number;
@@ -91,6 +98,10 @@ export class ComparisonBreakdown {
     "toolsPerLanded": number;
     "insufficientData": boolean;
     "qualityAttributionLimited": boolean;
+    "baseline": boolean;
+    "baselineVariantId"?: string;
+    "sampleStatus"?: string;
+    "minSamplesPerVariant"?: number;
     "roleBreakdowns"?: ComparisonBreakdown[];
 
     /** Creates a new ComparisonBreakdown instance. */
@@ -110,8 +121,14 @@ export class ComparisonBreakdown {
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
         }
+        if (!("failureEstimate" in $$source)) {
+            this["failureEstimate"] = (new RateEstimate());
+        }
         if (!("landed" in $$source)) {
             this["landed"] = 0;
+        }
+        if (!("landedEstimate" in $$source)) {
+            this["landedEstimate"] = (new RateEstimate());
         }
         if (!("merged" in $$source)) {
             this["merged"] = 0;
@@ -136,6 +153,21 @@ export class ComparisonBreakdown {
         }
         if (!("revertRate" in $$source)) {
             this["revertRate"] = 0;
+        }
+        if (!("mergeEstimate" in $$source)) {
+            this["mergeEstimate"] = (new RateEstimate());
+        }
+        if (!("ciFirstPassEstimate" in $$source)) {
+            this["ciFirstPassEstimate"] = (new RateEstimate());
+        }
+        if (!("mergedWithEditsEstimate" in $$source)) {
+            this["mergedWithEditsEstimate"] = (new RateEstimate());
+        }
+        if (!("reworkEstimate" in $$source)) {
+            this["reworkEstimate"] = (new RateEstimate());
+        }
+        if (!("revertEstimate" in $$source)) {
+            this["revertEstimate"] = (new RateEstimate());
         }
         if (!("durationP50S" in $$source)) {
             this["durationP50S"] = 0;
@@ -167,6 +199,9 @@ export class ComparisonBreakdown {
         if (!("qualityAttributionLimited" in $$source)) {
             this["qualityAttributionLimited"] = false;
         }
+        if (!("baseline" in $$source)) {
+            this["baseline"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -175,12 +210,97 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
-        const $$createField30_0 = $$createType1;
+        const $$createField11_0 = $$createType0;
+        const $$createField13_0 = $$createType0;
+        const $$createField22_0 = $$createType0;
+        const $$createField23_0 = $$createType0;
+        const $$createField24_0 = $$createType0;
+        const $$createField25_0 = $$createType0;
+        const $$createField26_0 = $$createType0;
+        const $$createField41_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("failureEstimate" in $$parsedSource) {
+            $$parsedSource["failureEstimate"] = $$createField11_0($$parsedSource["failureEstimate"]);
+        }
+        if ("landedEstimate" in $$parsedSource) {
+            $$parsedSource["landedEstimate"] = $$createField13_0($$parsedSource["landedEstimate"]);
+        }
+        if ("mergeEstimate" in $$parsedSource) {
+            $$parsedSource["mergeEstimate"] = $$createField22_0($$parsedSource["mergeEstimate"]);
+        }
+        if ("ciFirstPassEstimate" in $$parsedSource) {
+            $$parsedSource["ciFirstPassEstimate"] = $$createField23_0($$parsedSource["ciFirstPassEstimate"]);
+        }
+        if ("mergedWithEditsEstimate" in $$parsedSource) {
+            $$parsedSource["mergedWithEditsEstimate"] = $$createField24_0($$parsedSource["mergedWithEditsEstimate"]);
+        }
+        if ("reworkEstimate" in $$parsedSource) {
+            $$parsedSource["reworkEstimate"] = $$createField25_0($$parsedSource["reworkEstimate"]);
+        }
+        if ("revertEstimate" in $$parsedSource) {
+            $$parsedSource["revertEstimate"] = $$createField26_0($$parsedSource["revertEstimate"]);
+        }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField30_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField41_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
+    }
+}
+
+/**
+ * ExperimentSampleStatus summarizes sample readiness for an experiment/role.
+ */
+export class ExperimentSampleStatus {
+    "key": string;
+    "experimentId": string;
+    "role": string;
+    "baselineVariantId"?: string;
+    "minSamplesPerVariant": number;
+    "variants": VariantSampleStatus[];
+    "readyVariants": number;
+    "totalRuns": number;
+    "status": string;
+
+    /** Creates a new ExperimentSampleStatus instance. */
+    constructor($$source: Partial<ExperimentSampleStatus> = {}) {
+        if (!("key" in $$source)) {
+            this["key"] = "";
+        }
+        if (!("experimentId" in $$source)) {
+            this["experimentId"] = "";
+        }
+        if (!("role" in $$source)) {
+            this["role"] = "";
+        }
+        if (!("minSamplesPerVariant" in $$source)) {
+            this["minSamplesPerVariant"] = 0;
+        }
+        if (!("variants" in $$source)) {
+            this["variants"] = [];
+        }
+        if (!("readyVariants" in $$source)) {
+            this["readyVariants"] = 0;
+        }
+        if (!("totalRuns" in $$source)) {
+            this["totalRuns"] = 0;
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ExperimentSampleStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ExperimentSampleStatus {
+        const $$createField5_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("variants" in $$parsedSource) {
+            $$parsedSource["variants"] = $$createField5_0($$parsedSource["variants"]);
+        }
+        return new ExperimentSampleStatus($$parsedSource as Partial<ExperimentSampleStatus>);
     }
 }
 
@@ -220,8 +340,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType3;
-        const $$createField4_0 = $$createType5;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -281,6 +401,59 @@ export class PhaseStat {
 }
 
 /**
+ * RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
+ * optional effect delta relative to an A/B baseline row.
+ */
+export class RateEstimate {
+    "numerator": number;
+    "denominator": number;
+    "point": number;
+    "wilsonLower": number;
+    "wilsonUpper": number;
+    "deltaFromBaseline": number;
+    "hasDelta": boolean;
+    "hasData": boolean;
+
+    /** Creates a new RateEstimate instance. */
+    constructor($$source: Partial<RateEstimate> = {}) {
+        if (!("numerator" in $$source)) {
+            this["numerator"] = 0;
+        }
+        if (!("denominator" in $$source)) {
+            this["denominator"] = 0;
+        }
+        if (!("point" in $$source)) {
+            this["point"] = 0;
+        }
+        if (!("wilsonLower" in $$source)) {
+            this["wilsonLower"] = 0;
+        }
+        if (!("wilsonUpper" in $$source)) {
+            this["wilsonUpper"] = 0;
+        }
+        if (!("deltaFromBaseline" in $$source)) {
+            this["deltaFromBaseline"] = 0;
+        }
+        if (!("hasDelta" in $$source)) {
+            this["hasDelta"] = false;
+        }
+        if (!("hasData" in $$source)) {
+            this["hasData"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RateEstimate instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RateEstimate {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RateEstimate($$parsedSource as Partial<RateEstimate>);
+    }
+}
+
+/**
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
@@ -294,6 +467,7 @@ export class Report {
     "byAgentModelContribution"?: ComparisonBreakdown[];
     "byVariant"?: ComparisonBreakdown[];
     "byVariantContribution"?: ComparisonBreakdown[];
+    "variantExperiments"?: ExperimentSampleStatus[];
     "weaknesses"?: Weakness[];
     "notes"?: string[];
 
@@ -319,15 +493,16 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType6;
-        const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType8;
-        const $$createField6_0 = $$createType1;
-        const $$createField7_0 = $$createType1;
-        const $$createField8_0 = $$createType1;
-        const $$createField9_0 = $$createType1;
-        const $$createField10_0 = $$createType10;
-        const $$createField11_0 = $$createType11;
+        const $$createField3_0 = $$createType9;
+        const $$createField4_0 = $$createType11;
+        const $$createField5_0 = $$createType11;
+        const $$createField6_0 = $$createType2;
+        const $$createField7_0 = $$createType2;
+        const $$createField8_0 = $$createType2;
+        const $$createField9_0 = $$createType2;
+        const $$createField10_0 = $$createType13;
+        const $$createField11_0 = $$createType15;
+        const $$createField12_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -350,11 +525,14 @@ export class Report {
         if ("byVariantContribution" in $$parsedSource) {
             $$parsedSource["byVariantContribution"] = $$createField9_0($$parsedSource["byVariantContribution"]);
         }
+        if ("variantExperiments" in $$parsedSource) {
+            $$parsedSource["variantExperiments"] = $$createField10_0($$parsedSource["variantExperiments"]);
+        }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField11_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField12_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -565,12 +743,57 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType12;
+        const $$createField2_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
         }
         return new TaskPhases($$parsedSource as Partial<TaskPhases>);
+    }
+}
+
+/**
+ * VariantSampleStatus describes whether one configured or observed A/B variant
+ * has enough samples for the configured minimum.
+ */
+export class VariantSampleStatus {
+    "variantId": string;
+    "runs": number;
+    "ready": boolean;
+    "configured": boolean;
+    "observed": boolean;
+    "sampleStatus": string;
+
+    /** Creates a new VariantSampleStatus instance. */
+    constructor($$source: Partial<VariantSampleStatus> = {}) {
+        if (!("variantId" in $$source)) {
+            this["variantId"] = "";
+        }
+        if (!("runs" in $$source)) {
+            this["runs"] = 0;
+        }
+        if (!("ready" in $$source)) {
+            this["ready"] = false;
+        }
+        if (!("configured" in $$source)) {
+            this["configured"] = false;
+        }
+        if (!("observed" in $$source)) {
+            this["observed"] = false;
+        }
+        if (!("sampleStatus" in $$source)) {
+            this["sampleStatus"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VariantSampleStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VariantSampleStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new VariantSampleStatus($$parsedSource as Partial<VariantSampleStatus>);
     }
 }
 
@@ -615,16 +838,21 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = ComparisonBreakdown.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = PhaseStat.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = TaskPhases.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = Scorecard.createFrom;
-const $$createType7 = Breakdown.createFrom;
+const $$createType0 = RateEstimate.createFrom;
+const $$createType1 = ComparisonBreakdown.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = VariantSampleStatus.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = PhaseStat.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = TaskPhases.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = Weakness.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = $Create.Array($Create.Any);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = Scorecard.createFrom;
+const $$createType10 = Breakdown.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = ExperimentSampleStatus.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = Weakness.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = $Create.Array($Create.Any);
+const $$createType17 = $Create.Map($Create.Any, $Create.Any);
