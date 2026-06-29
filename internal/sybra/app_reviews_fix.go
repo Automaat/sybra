@@ -129,10 +129,10 @@ func (r *ReviewHandler) escalateExhaustedFix(issue github.PRIssue) {
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
 }
 
-func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
+func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) bool {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
-		return
+		return false
 	}
 
 	var prompt string
@@ -174,17 +174,21 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	case github.PRIssueReadyToMerge:
 		// handled by handleAutoMerge, not by agent spawn
-		return
+		return false
 	}
 
 	dir, ok := r.prepareWorktree(t, issue)
 	if !ok {
-		return
+		return false
 	}
 
+	return r.dispatchPRIssue(t, issue, prompt, dir)
+}
+
+func (r *ReviewHandler) dispatchPRIssue(t task.Task, issue github.PRIssue, prompt, dir string) bool {
 	if r.workflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
-		return
+		return false
 	}
 
 	// Dispatch pr.event through the engine so trigger conditions in the
@@ -201,15 +205,15 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			r.logger.Info("pr-monitor.workflow-already-active",
 				"task_id", t.ID, "kind", string(issue.Kind))
-			return
+			return false
 		}
 		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
-		return
+		return false
 	}
 	if wfID == "" {
 		r.logger.Warn("pr-monitor.no-matching-workflow",
 			"task_id", t.ID, "kind", string(issue.Kind))
-		return
+		return false
 	}
 
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
@@ -221,6 +225,46 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		"task_id", t.ID, "issue", string(issue.Kind),
 		"pr", issue.PR.Number, "workflow", wfID,
 	)
+	return true
+}
+
+// recoverStaleBranchConflict turns a worktree-prep rebase failure into
+// autonomous conflict resolution instead of a human escalation. The CI-fix and
+// implement/review/test prepare paths rebase the task branch onto base before
+// the agent starts; when the branch also conflicts with base — common when
+// GitHub still reports UNKNOWN mergeability, so the monitor only emitted the CI
+// failure, not a conflict — that rebase aborts. Rather than stranding a human,
+// dispatch the conflict pr-fix, which checks out the PR head WITHOUT rebasing
+// and has the agent resolve conflicts itself.
+//
+// Returns false (caller escalates to human as before) when there is no linked
+// PR to fix, the PR is closed/unfetchable, or the conflict-fix retry budget is
+// already spent. handlePRIssue's conflict branch prepares via PrepareForFix (no
+// rebase), so this never re-enters the rebasing path that called it.
+func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
+	if r == nil || r.workflowEngine == nil || r.prTracker == nil {
+		return false
+	}
+	t, err := r.tasks.Get(taskID)
+	if err != nil || t.PRNumber == 0 || t.ProjectID == "" {
+		return false
+	}
+	// Don't loop forever on a genuinely unresolvable conflict — once the
+	// conflict-fix budget is spent the normal exhaustion path escalates.
+	if r.prTracker.AtCap(taskID, github.PRIssueConflict) {
+		return false
+	}
+	fetchFn := github.FetchPRForMonitor
+	if r.fetchKnownPRFn != nil {
+		fetchFn = r.fetchKnownPRFn
+	}
+	pr, open, ferr := fetchFn(t.ProjectID, t.PRNumber)
+	if ferr != nil || !open {
+		return false
+	}
+	r.logger.Info("pr-monitor.rebase-block.recover-as-conflict",
+		"task_id", taskID, "pr", t.PRNumber)
+	return r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
 }
 
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
@@ -242,7 +286,15 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 		d, wtErr = r.worktrees.PrepareForTask(t, nil)
 	}
 	if wtErr != nil {
-		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger) {
+		// A conflict fix already operates on the non-rebasing PrepareForFix path,
+		// so a rebase failure here can only come from the CI-fix PrepareForTask
+		// branch. Recover by re-routing to the conflict fix unless this already
+		// IS a conflict fix (avoid re-entering ourselves).
+		var recoverFn func(string) bool
+		if issue.Kind != github.PRIssueConflict {
+			recoverFn = r.recoverStaleBranchConflict
+		}
+		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false
 		}
 		if r.wtFailures == nil {

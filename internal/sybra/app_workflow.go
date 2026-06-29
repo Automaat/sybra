@@ -460,7 +460,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
 		if wtErr != nil {
-			markRebaseBlocked(a.tasks, taskID, wtErr, a.agentOrch.logger)
+			markRebaseBlocked(a.tasks, taskID, wtErr, a.agentOrch.logger, a.agentOrch.conflictRecovery)
 			return "", "", "", wtErr
 		}
 		cfg.Dir = d

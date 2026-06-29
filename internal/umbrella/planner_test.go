@@ -15,6 +15,18 @@ func subs(refs ...string) []SubIssue {
 	return out
 }
 
+func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
+	t.Parallel()
+	prompt := BuildPrompt("o/r#100", "body", subs("o/r#1", "o/r#2"))
+	// The planner must be told to serialize sub-issues that edit the same files,
+	// so overlapping siblings merge one at a time instead of colliding.
+	for _, want := range []string{"SAME files", "merge one at a time", "disjoint"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing serialization guidance %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestFirstJSONObject(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
