@@ -373,6 +373,100 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	}
 }
 
+func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
+	// Exercises the full Run -> persisted registry record -> fresh manager
+	// ReattachAll path; sibling reattach tests start from injected records.
+	prev := reattachPIDPoll
+	reattachPIDPoll = 50 * time.Millisecond
+	t.Cleanup(func() { reattachPIDPoll = prev })
+
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(fakeClaude, []byte(`#!/bin/sh
+trap 'exit 130' INT TERM
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
+i=0
+while [ "$i" -lt 5 ]; do
+  sleep 0.1
+  i=$((i + 1))
+done
+printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","total_cost_usd":0}'
+`), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	runDir := t.TempDir()
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	m1 := mustNewManager(t, ctx1, func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: regDir,
+	})
+	ag, err := m1.Run(RunConfig{
+		TaskID:             "task-lifecycle",
+		Name:               "implementation: lifecycle",
+		Mode:               "headless",
+		Prompt:             "exercise lifecycle",
+		Dir:                runDir,
+		RequirePermissions: false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rec := waitForRegistryRecord(t, m1, ag.ID)
+	if rec.TaskID != "task-lifecycle" || rec.Mode != "headless" || rec.Provider != "claude" {
+		t.Fatalf("unexpected persisted record: %+v", rec)
+	}
+	if rec.PID == 0 || rec.LogPath == "" || rec.CWD != runDir {
+		t.Fatalf("record missing real process boundary fields: %+v", rec)
+	}
+	if rec.ProcStartedAt == "" {
+		t.Fatalf("record missing PID reuse guard: %+v", rec)
+	}
+	if rec.SessionID != "sess-lifecycle" {
+		t.Fatalf("record session = %q, want sess-lifecycle", rec.SessionID)
+	}
+
+	// Model an app restart: cancel the first manager's root context but leave
+	// the detached child alive, then construct a fresh manager over the same
+	// registry and log directories.
+	cancel1()
+
+	m2 := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: regDir,
+	})
+	reattached := m2.ReattachAll()
+	if len(reattached) != 1 {
+		t.Fatalf("expected 1 reattached agent, got %d", len(reattached))
+	}
+	got := reattached[0]
+	if got.ID != ag.ID || got.TaskID != "task-lifecycle" || got.GetPID() != rec.PID || got.LogPath != rec.LogPath {
+		t.Fatalf("reattached agent mismatch:\n got: %+v\nrecord: %+v", got, rec)
+	}
+	if got.GetState() != StateRunning {
+		t.Fatalf("reattached state = %s, want %s", got.GetState(), StateRunning)
+	}
+	if got.GetSessionID() != "sess-lifecycle" {
+		t.Fatalf("reattached session = %q, want sess-lifecycle", got.GetSessionID())
+	}
+	if len(got.Output()) == 0 {
+		t.Fatal("expected reattached agent to rehydrate output from log")
+	}
+
+	waitForAgentDone(t, got, 5*time.Second)
+	if got.GetState() != StateStopped {
+		t.Fatalf("completed reattached state = %s, want %s", got.GetState(), StateStopped)
+	}
+	if got.GetExitErr() != nil {
+		t.Fatalf("completed reattached agent has exit error: %v", got.GetExitErr())
+	}
+}
+
 // TestReattachAll_DropsDeadRecords verifies a record whose process is gone
 // is deleted and not reattached.
 func TestReattachAll_DropsDeadRecords(t *testing.T) {
@@ -562,6 +656,40 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 	}
 	if list, _ := m.reg.List(); len(list) != 0 {
 		t.Fatal("expected record deleted after bridge")
+	}
+}
+
+func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		recs, err := m.reg.List()
+		if err != nil {
+			t.Fatalf("registry list: %v", err)
+		}
+		for i := range recs {
+			rec := &recs[i]
+			if rec.ID == agentID && rec.PID != 0 && rec.LogPath != "" && rec.SessionID != "" {
+				return *rec
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for registry record for %s; records=%+v", agentID, recs)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func waitForAgentDone(t *testing.T, ag *Agent, timeout time.Duration) {
+	t.Helper()
+	if ag.done == nil {
+		t.Fatal("waitForAgentDone: agent has no done channel; reattach wiring incomplete")
+	}
+	select {
+	case <-ag.done:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for agent %s to stop", ag.ID)
 	}
 }
 
