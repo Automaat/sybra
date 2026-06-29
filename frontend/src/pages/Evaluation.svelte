@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { interpretExperiment } from '$lib/evaluation-interpretation.js'
   import { evaluationStore } from '../stores/evaluation.svelte.js'
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
 
@@ -70,6 +71,18 @@
     return sev === 'warn'
       ? 'bg-warning-200 text-warning-800 dark:bg-warning-800 dark:text-warning-200'
       : 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200'
+  }
+  function verdictClasses(verdict: string): string {
+    if (verdict === 'promising') return 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'
+    if (verdict === 'risky') return 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-200'
+    if (verdict === 'costly') return 'bg-warning-200 text-warning-800 dark:bg-warning-800 dark:text-warning-200'
+    return 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200'
+  }
+  function guardrailClasses(status: string): string {
+    if (status === 'breach') return 'border-error-300 text-error-700 dark:border-error-700 dark:text-error-300'
+    if (status === 'watch') return 'border-warning-300 text-warning-700 dark:border-warning-700 dark:text-warning-300'
+    if (status === 'ok') return 'border-success-300 text-success-700 dark:border-success-700 dark:text-success-300'
+    return 'border-surface-300 text-surface-500 dark:border-surface-600 dark:text-surface-300'
   }
 </script>
 
@@ -287,11 +300,16 @@
     <!-- A/B testing and model comparisons -->
     <div class="grid grid-cols-1 gap-6">
       {#each [
-        { title: 'Agent / Model', data: report?.byAgentModel },
-        { title: 'A/B Experiments', data: report?.byVariant },
+        { title: 'Agent / Model', kind: 'agent', data: report?.byAgentModel },
+        { title: 'A/B Experiments', kind: 'experiment', data: report?.byVariant },
       ] as section (section.title)}
         <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
           <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
+          {#if section.kind === 'experiment'}
+            <p class="mb-3 max-w-3xl text-xs text-surface-400">
+              Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
+            </p>
+          {/if}
           {#if section.data && section.data.length > 0}
             <table class="w-full min-w-[980px] text-sm">
               <thead>
@@ -312,12 +330,24 @@
               </thead>
               <tbody>
                 {#each section.data as row (row.key)}
+                  {@const interpretation = section.kind === 'experiment' ? interpretExperiment(row, section.data) : null}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
                     <td class="py-1.5">
                       <div class="font-mono text-xs">{row.variantId || row.key}</div>
                       <div class="text-xs text-surface-400">
                         {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
                       </div>
+                      {#if interpretation}
+                        <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
+                            {interpretation.verdictLabel}
+                          </span>
+                          <span class="text-[10px] text-surface-500">
+                            {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
+                          </span>
+                        </div>
+                        <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
+                      {/if}
                     </td>
                     <td class="py-1.5 text-xs">{row.role || '—'}</td>
                     <td class="py-1.5 text-right">
@@ -336,6 +366,27 @@
                     <td class="py-1.5 text-right">${num(row.costPerLanded, 2)}/landed</td>
                     <td class="py-1.5 text-right">{num(row.premiumRequestsPerLanded, 1)}/landed</td>
                   </tr>
+                  {#if interpretation}
+                    <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                      <td class="pb-2 pt-0" colspan="12">
+                        <div class="flex flex-wrap gap-1.5">
+                          {#each interpretation.guardrails as guardrail (guardrail.key)}
+                            <span
+                              class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
+                              title={guardrail.detail}
+                            >
+                              {guardrail.label}: {guardrail.status}
+                            </span>
+                          {/each}
+                        </div>
+                        {#if interpretation.limitedSignals.length > 0}
+                          <p class="mt-1 text-[10px] text-surface-400">
+                            Limited signals: {interpretation.limitedSignals.join(' ')}
+                          </p>
+                        {/if}
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               </tbody>
             </table>

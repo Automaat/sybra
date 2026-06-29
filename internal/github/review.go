@@ -68,6 +68,61 @@ const reviewSummaryQuery = `query($q: String!) {
   }
 }`
 
+const prForMonitorQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      title
+      url
+      state
+      headRefName
+      isDraft
+      mergeable
+      createdAt
+      updatedAt
+      reviewDecision
+      author { login type: __typename }
+      repository { name nameWithOwner }
+      labels(first: 5) { nodes { name } }
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              state
+              contexts(first: 20) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name
+                    status
+                    conclusion
+                  }
+                  ... on StatusContext {
+                    name: context
+                    state
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(last: 1) { nodes { author { login } } }
+        }
+      }
+      latestReviews(first: 10) {
+        nodes { state author { login } }
+      }
+    }
+  }
+}`
+
 type gqlReviewSummaryResponse struct {
 	Data struct {
 		Viewer struct {
@@ -82,9 +137,62 @@ type gqlReviewSummaryResponse struct {
 	} `json:"errors"`
 }
 
+type gqlPRForMonitorResponse struct {
+	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+		Repository struct {
+			PullRequest *gqlPR `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
 func FetchReviews() (ReviewSummary, error) {
 	return fetchReviewsWith(defaultExecer)
+}
+
+// FetchPRForMonitor fetches one PR with the same signals used by FetchReviews,
+// but without a GitHub search query. The bool reports whether the PR is still
+// open; closed/merged PRs are left to FetchPRState-based reconciliation.
+func FetchPRForMonitor(repo string, number int) (PullRequest, bool, error) {
+	return fetchPRForMonitorWith(defaultExecer, repo, number)
+}
+
+func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || number <= 0 {
+		return PullRequest{}, false, fmt.Errorf("invalid repo or PR: %s#%d", repo, number)
+	}
+
+	resp, err := runGHAPIWith(e, "", "graphql",
+		"-f", "query="+prForMonitorQuery,
+		"-f", "owner="+owner,
+		"-f", "name="+name,
+		"-F", "number="+strconv.Itoa(number))
+	if err != nil {
+		return PullRequest{}, false, fmt.Errorf("gh api graphql pr %s#%d: %s: %w", repo, number, sanitizeGHOutput(resp.body), err)
+	}
+
+	var gqlResp gqlPRForMonitorResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+		return PullRequest{}, false, fmt.Errorf("parse graphql pr response: %w", err)
+	}
+	if len(gqlResp.Errors) > 0 {
+		return PullRequest{}, false, fmt.Errorf("graphql pr %s#%d: %s", repo, number, gqlResp.Errors[0].Message)
+	}
+	if gqlResp.Data.Repository.PullRequest == nil {
+		return PullRequest{}, false, nil
+	}
+	pr := gqlResp.Data.Repository.PullRequest
+	if pr.State != "OPEN" {
+		return PullRequest{}, false, nil
+	}
+	return convertCommonPR(pr, gqlResp.Data.Viewer.Login), true, nil
 }
 
 func fetchReviewsWith(e execer) (ReviewSummary, error) {

@@ -423,8 +423,10 @@ func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *pol
 	if !runSearch {
 		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
-	if runSearch {
+	if a.reviewer != nil {
 		hub.Register(a.reviewer, 10*time.Second)
+	}
+	if runSearch {
 		if issuesFetcher != nil {
 			hub.Register(issuesFetcher, 20*time.Second)
 		}

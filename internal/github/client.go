@@ -212,6 +212,7 @@ type gqlPR struct {
 	Number         int    `json:"number"`
 	Title          string `json:"title"`
 	URL            string `json:"url"`
+	State          string `json:"state"`
 	HeadRefName    string `json:"headRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
