@@ -421,7 +421,7 @@
       </div>
 
       <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-        <h3 class="mb-3 text-sm font-semibold text-surface-500">A/B Experiments final-stage</h3>
+        <h3 class="mb-3 text-sm font-semibold text-surface-500">A/B Experiments</h3>
         <p class="mb-3 max-w-3xl text-xs text-surface-400">
           Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
         </p>
