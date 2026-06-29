@@ -45,7 +45,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 		cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
 	}
 
-	fifoPath := reg.fifoPath(a.ID)
+	fifoPath := agentFIFOPath(m.registryDir(), a.ID)
 	if err := makeFIFO(fifoPath); err != nil {
 		return nil, fmt.Errorf("mkfifo: %w", err)
 	}

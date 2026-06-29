@@ -9,7 +9,7 @@ processes.
 
 | Lock | Owner | Guards | Does not guard |
 | --- | --- | --- | --- |
-| `Manager.mu` | `internal/agent/manager.go` | `Manager.agents`, `liveCount`, dispatch claims, runtime config, and the `reg`/`surviveRestart` pointers | Registry file reads/writes, agent-internal fields |
+| `Manager.mu` | `internal/agent/manager.go` | `Manager.agents`, `liveCount`, dispatch claims, runtime config, and survival config | Registry file reads/writes, agent-internal fields |
 | `registryStore.mu` | `internal/agent/registry.go` | On-disk registry operations: `Save`, `List`, `Delete`, including FIFO cleanup in `Delete` | In-memory agent lifecycle state |
 | `Agent.mu` | `internal/agent/model.go` | Per-agent mutable state copied into `Record` by `Agent.toRecord()` | Manager maps, registry directory contents |
 
@@ -29,8 +29,9 @@ processes.
 ## Refactor Boundary
 
 The clean split is persistence-only: code outside `registry.go` should depend on
-the unexported `survivalRegistry` interface (`Save`, `List`, `Delete`,
-`fifoPath`) rather than the concrete store. Reattach policy still needs
+the unexported `survivalRegistry` interface (`Save`, `List`, `Delete`) rather
+than the concrete store. FIFO path construction is a pure layout helper, not a
+persistence capability. Reattach policy still needs
 `Manager.mu` because it registers live agents and updates `liveCount`, so moving
 reattach wholesale out of `Manager` would require an explicit lifecycle API for
 map registration and completion callbacks.

@@ -349,14 +349,15 @@ func TestConvoResumeState(t *testing.T) {
 }
 
 func TestRegistryDelete_RemovesFIFO(t *testing.T) {
-	s, err := newRegistryStore(t.TempDir())
+	regDir := t.TempDir()
+	s, err := newRegistryStore(regDir)
 	if err != nil {
 		t.Fatalf("newRegistryStore: %v", err)
 	}
-	if err := s.Save(Record{ID: "f1", Mode: "interactive", Provider: "claude"}); err != nil {
+	fifo := agentFIFOPath(regDir, "f1")
+	if err := s.Save(Record{ID: "f1", Mode: "interactive", Provider: "claude", StdinPath: fifo}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	fifo := s.fifoPath("f1")
 	if err := makeFIFO(fifo); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
@@ -459,7 +460,7 @@ func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
 	})
 
 	// FIFO must exist for the reopen to succeed.
-	fifoPath := m.reg.fifoPath("ic1")
+	fifoPath := agentFIFOPath(regDir, "ic1")
 	if err := makeFIFO(fifoPath); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
