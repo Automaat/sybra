@@ -44,18 +44,12 @@ func ParseBytes(data []byte) (Task, error) {
 
 	fm := data[locs[0][1]:locs[1][0]]
 
-	var t Task
-	if err := yaml.Unmarshal(fm, &t); err != nil {
+	var persisted taskFrontmatter
+	if err := yaml.Unmarshal(fm, &persisted); err != nil {
 		return Task{}, fmt.Errorf("unmarshal frontmatter: %w", err)
 	}
 
-	t.Body = string(bytes.TrimSpace(data[locs[1][1]:]))
-	if t.TaskType == "" {
-		t.TaskType = TaskTypeNormal
-	}
-	if t.AgentRuns == nil {
-		t.AgentRuns = []AgentRun{}
-	}
+	t := taskFromFrontmatter(persisted, string(bytes.TrimSpace(data[locs[1][1]:])))
 	if t.AgentMode != "" {
 		if _, err := ValidateAgentMode(t.AgentMode); err != nil {
 			return Task{}, err
@@ -82,7 +76,7 @@ func Marshal(t Task) ([]byte, error) {
 		t.AgentRuns[i].Prompt = strings.TrimLeft(t.AgentRuns[i].Prompt, " \t\n\r")
 	}
 
-	fm, err := yaml.Marshal(t)
+	fm, err := yaml.Marshal(frontmatterFromTask(t))
 	if err != nil {
 		return nil, fmt.Errorf("marshal frontmatter: %w", err)
 	}

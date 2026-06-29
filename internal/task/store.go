@@ -304,9 +304,9 @@ func (s *Store) Get(id string) (Task, error) {
 
 // read parses just the task file for id, skipping the sidecar fan-out that
 // Get performs. Write paths (Update, Delete) and the watcher status hook only
-// need the task's own frontmatter/body — the sidecar fields are yaml:"-" so
-// Marshal never serializes them, and no List() consumer reads them off a
-// cached entry. Loading them there is pure waste, dominated by
+// need the task's own frontmatter/body — sidecars live outside the task
+// frontmatter schema, and no List() consumer reads them off a cached entry.
+// Loading them there is pure waste, dominated by
 // PlanDraftStore.List, which scans the entire tasks dir (~one lstat per file)
 // on every call. That scan was ~20% of server CPU and ~50% of allocations
 // under churn because Update/Delete/OnExternalUpdate each paid it.
