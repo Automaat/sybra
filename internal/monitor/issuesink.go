@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Automaat/sybra/internal/attribution"
 )
 
 // ErrGHRateLimit is returned by IssueSink when gh reports an API rate limit.
@@ -85,7 +87,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", err
 	}
 	if num > 0 {
-		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", body)...); runErr != nil {
+		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...); runErr != nil {
 			return false, foundURL, classifyGHError(runErr)
 		}
 		return false, foundURL, nil
