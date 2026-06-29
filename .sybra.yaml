@@ -9,6 +9,7 @@
 setup:
   - mise install
   - (cd frontend && npm ci)
+  - (cd frontend && npm run build:desktop)
 
 # Black-box testing guidance for the testing workflow. Test-runners must prefer
 # this runnable surface over static inspection: start the server, wait for

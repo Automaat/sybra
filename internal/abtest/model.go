@@ -11,7 +11,8 @@ type Config struct {
 type Experiment struct {
 	ID             string    `yaml:"id" json:"id"`
 	Enabled        *bool     `yaml:"enabled" json:"enabled"`
-	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"` // "task" or "stage"
+	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"
+	Bracket        string    `yaml:"bracket,omitempty" json:"bracket,omitempty"` // "cheap" or "expensive"
 	Roles          []string  `yaml:"roles" json:"roles"`
 	Variants       []Variant `yaml:"variants" json:"variants"`
 }
@@ -22,6 +23,7 @@ type Variant struct {
 	Provider        string `yaml:"provider" json:"provider"`
 	Model           string `yaml:"model" json:"model"`
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	Tier            string `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
 	Weight          int    `yaml:"weight" json:"weight"`
 }
 
@@ -36,27 +38,40 @@ type Assignment struct {
 	AssignmentKey   string
 }
 
-// DefaultConfig returns the default A/B suite: Claude Code Opus, Codex GPT-5.5,
-// and Copilot across Opus, GPT-5.5, and the current best Gemini model.
+// DefaultConfig returns the default A/B suite split by price bracket: code
+// author roles use cheap variants, while planning and review use premium ones.
 func DefaultConfig() Config {
 	enabled := true
 	expEnabled := true
 	return Config{
 		Enabled:              &enabled,
 		MinSamplesPerVariant: 20,
-		Experiments: []Experiment{{
-			ID:             "code-author-models-v1",
-			Enabled:        &expEnabled,
-			AssignmentUnit: "stage",
-			Roles:          []string{"implementation", "fix-review", "pr-fix"},
-			Variants: []Variant{
-				{ID: "claude-opus", Provider: "claude", Model: "opus", Weight: 1},
-				{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Weight: 1},
-				{ID: "copilot-opus", Provider: "copilot", Model: "claude-opus-4.6", Weight: 1},
-				{ID: "copilot-gpt-5.5", Provider: "copilot", Model: "gpt-5.5", Weight: 1},
-				{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Weight: 1},
+		Experiments: []Experiment{
+			{
+				ID:             "code-author-cheap",
+				Enabled:        &expEnabled,
+				AssignmentUnit: "stage",
+				Bracket:        "cheap",
+				Roles:          []string{"implementation", "test-runner", "fix-review", "pr-fix"},
+				Variants: []Variant{
+					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 2},
+					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 2},
+					{ID: "copilot-sonnet", Provider: "copilot", Model: "claude-sonnet-4.6", Tier: "cheap", Weight: 1},
+				},
 			},
-		}},
+			{
+				ID:             "review-expensive",
+				Enabled:        &expEnabled,
+				AssignmentUnit: "stage",
+				Bracket:        "expensive",
+				Roles:          []string{"review", "plan"},
+				Variants: []Variant{
+					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+				},
+			},
+		},
 	}
 }
 
