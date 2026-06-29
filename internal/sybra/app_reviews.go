@@ -24,11 +24,6 @@ import (
 )
 
 const (
-	prPollFast = 1 * time.Minute
-	prPollSlow = 5 * time.Minute
-)
-
-const (
 	reviewSmallAdditions = 40
 	reviewSmallFiles     = 5
 )
@@ -89,6 +84,23 @@ func (r *ReviewHandler) agentLogin() string {
 	return github.ViewerLogin()
 }
 
+// pollFast/pollSlow resolve the review poll cadence from config (github.*),
+// falling back to the raised defaults, then scaled by GitHub budget pressure.
+// nil cfg (test construction) uses defaults too.
+func (r *ReviewHandler) pollFast() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsFastSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.ReviewsFast())
+}
+
+func (r *ReviewHandler) pollSlow() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsSlowSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.ReviewsSlow())
+}
+
 func newReviewHandler(
 	tasks *task.Manager,
 	projects *project.Store,
@@ -130,7 +142,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	// when FetchReviews fails (transient errors, rate limits, etc.).
 	tasks, err := r.tasks.List()
 	if err != nil {
-		return prPollSlow
+		return r.pollSlow()
 	}
 
 	fetchFn := github.FetchReviews
@@ -154,7 +166,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}
-		return prPollSlow
+		return r.pollSlow()
 	}
 	r.transientFetchFails = 0
 
@@ -242,9 +254,9 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 
 	if prNeedsAttention(monitoredPRs) {
-		return prPollFast
+		return r.pollFast()
 	}
-	return prPollSlow
+	return r.pollSlow()
 }
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,

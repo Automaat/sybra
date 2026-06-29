@@ -41,6 +41,22 @@ type IssuesFetcher struct {
 	// after an expansion failure, so a broken umbrella does not re-run the
 	// planner every poll.
 	umbrellaCooldown map[string]time.Time
+	// pollInterval overrides IssuesPollInterval when > 0 (set from config).
+	pollInterval time.Duration
+}
+
+// SetPollInterval overrides the fixed issues poll cadence. Zero keeps the
+// package default.
+func (f *IssuesFetcher) SetPollInterval(d time.Duration) {
+	f.pollInterval = d
+}
+
+func (f *IssuesFetcher) interval() time.Duration {
+	base := f.pollInterval
+	if base <= 0 {
+		base = IssuesPollInterval
+	}
+	return github.ScaleInterval(base)
 }
 
 // umbrellaRetryCooldown is how long to wait before re-attempting an umbrella
@@ -87,7 +103,7 @@ func (f *IssuesFetcher) Name() string { return "issues" }
 func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	if f.fetchSnapshot != nil {
 		f.pollSnapshot()
-		return IssuesPollInterval
+		return f.interval()
 	}
 
 	issues, err := f.fetchAssigned()
@@ -104,7 +120,7 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 			f.transientFetchFails = 0
 			f.logger.Warn("issues.fetch", "err", err)
 		}
-		return IssuesPollInterval
+		return f.interval()
 	}
 	f.transientFetchFails = 0
 	f.emit("issues:updated", issues)
@@ -112,7 +128,7 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	metrics.GitHubIssuesImported(len(issues))
 	f.syncIssuesToTasks(issues)
 	f.syncLabeledIssuesToTasks()
-	return IssuesPollInterval
+	return f.interval()
 }
 
 func (f *IssuesFetcher) pollSnapshot() {

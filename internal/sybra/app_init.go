@@ -120,6 +120,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 		return nil
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
+	f.SetPollInterval(a.cfg.GitHub.Issues())
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
 		f.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {

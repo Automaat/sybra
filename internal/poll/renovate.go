@@ -29,6 +29,26 @@ type RenovateHandler struct {
 	allowsType          func(project.ProjectType) bool
 	lastPRsCount        atomic.Int64
 	transientFetchFails int
+	// fast/slow are the resolved poll intervals (override-or-default). Zero
+	// falls back to the package constants.
+	fast time.Duration
+	slow time.Duration
+}
+
+func (h *RenovateHandler) fastInterval() time.Duration {
+	base := h.fast
+	if base <= 0 {
+		base = RenovatePollFast
+	}
+	return github.ScaleInterval(base)
+}
+
+func (h *RenovateHandler) slowInterval() time.Duration {
+	base := h.slow
+	if base <= 0 {
+		base = RenovatePollSlow
+	}
+	return github.ScaleInterval(base)
 }
 
 // NewRenovateHandler creates a RenovateHandler. allowsType filters which
@@ -50,6 +70,12 @@ func NewRenovateHandler(
 		cfg:        cfg,
 		allowsType: allowsType,
 	}
+}
+
+// SetIntervals overrides the fast/slow poll cadence. Zero values keep the
+// package defaults. Called at wiring time from the resolved github config.
+func (h *RenovateHandler) SetIntervals(fast, slow time.Duration) {
+	h.fast, h.slow = fast, slow
 }
 
 // Repos returns owner/repo strings for registered projects whose type is
@@ -85,7 +111,7 @@ func (h *RenovateHandler) LastFetchedCount() int64 {
 func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 	repos := h.Repos()
 	if len(repos) == 0 {
-		return RenovatePollSlow
+		return h.slowInterval()
 	}
 
 	prs, err := github.FetchRenovatePRs(h.cfg.Author, repos)
@@ -102,7 +128,7 @@ func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 			h.transientFetchFails = 0
 			h.logger.Warn("renovate.fetch", "err", err)
 		}
-		return RenovatePollSlow
+		return h.slowInterval()
 	}
 	h.transientFetchFails = 0
 
@@ -112,8 +138,8 @@ func (h *RenovateHandler) pollRenovatePRs() time.Duration {
 
 	for i := range prs {
 		if prs[i].CIStatus == "PENDING" || prs[i].CIStatus == "FAILURE" {
-			return RenovatePollFast
+			return h.fastInterval()
 		}
 	}
-	return RenovatePollSlow
+	return h.slowInterval()
 }
