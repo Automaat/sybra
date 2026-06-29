@@ -357,6 +357,70 @@
       </div>
 
       <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <h3 class="mb-1 text-sm font-semibold text-surface-500">Agent / Model contribution</h3>
+        <p class="mb-3 text-xs text-surface-400">
+          Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
+        </p>
+        {#if report?.byAgentModelContribution && report.byAgentModelContribution.length > 0}
+          <table class="w-full min-w-[1080px] text-sm">
+            <thead>
+              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                <th class="pb-2">Variant</th>
+                <th class="pb-2">Role</th>
+                <th class="pb-2 text-right">Runs</th>
+                <th class="pb-2 text-right">Landed</th>
+                <th class="pb-2 text-right">Fail %</th>
+                <th class="pb-2 text-right">Merge %</th>
+                <th class="pb-2 text-right">CI 1st</th>
+                <th class="pb-2 text-right">Edited</th>
+                <th class="pb-2 text-right">Rework</th>
+                <th class="pb-2 text-right">Revert</th>
+                <th class="pb-2 text-right">Duration</th>
+                <th class="pb-2 text-right">Cost</th>
+                <th class="pb-2 text-right">Premium req</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each report.byAgentModelContribution as row (row.key)}
+                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                  <td class="py-1.5">
+                    <div class="font-mono text-xs">{row.variantId || row.key}</div>
+                    <div class="text-xs text-surface-400">
+                      {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
+                    </div>
+                  </td>
+                  <td class="py-1.5 text-xs">{row.role || '—'}</td>
+                  <td class="py-1.5 text-right">
+                    {row.runs}
+                    {#if row.insufficientData}
+                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">
+                    {row.landed}
+                    {#if row.qualityAttributionLimited}
+                      <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">{pct(row.failureRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.mergeRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.ciFirstPassRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.mergedWithEditsRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.reworkRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.revertRate)}</td>
+                  <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
+                  <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
+                  <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="text-xs text-surface-400">No data</p>
+        {/if}
+      </div>
+
+      <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <h3 class="mb-3 text-sm font-semibold text-surface-500">A/B Experiments</h3>
         <p class="mb-3 max-w-3xl text-xs text-surface-400">
           Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
@@ -452,6 +516,131 @@
                       {/if}
                     </td>
                     <td class="py-1.5 text-right">{child.landed}</td>
+                    <td class="py-1.5 text-right">{pct(child.failureRate)}</td>
+                    <td class="py-1.5 text-right">{pct(child.mergeRate)}</td>
+                    <td class="py-1.5 text-right">{pct(child.ciFirstPassRate)}</td>
+                    <td class="py-1.5 text-right">{pct(child.mergedWithEditsRate)}</td>
+                    <td class="py-1.5 text-right">{pct(child.reworkRate)}</td>
+                    <td class="py-1.5 text-right">{pct(child.revertRate)}</td>
+                    <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
+                    <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
+                    <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
+                  </tr>
+                {/each}
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="text-xs text-surface-400">No data</p>
+        {/if}
+      </div>
+
+      <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <h3 class="mb-1 text-sm font-semibold text-surface-500">A/B Experiments contribution</h3>
+        <p class="mb-3 max-w-3xl text-xs text-surface-400">
+          Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
+        </p>
+        {#if report?.byVariantContribution && report.byVariantContribution.length > 0}
+          <table class="w-full min-w-[1080px] text-sm">
+            <thead>
+              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                <th class="pb-2">Variant</th>
+                <th class="pb-2">Role</th>
+                <th class="pb-2 text-right">Runs</th>
+                <th class="pb-2 text-right">Landed</th>
+                <th class="pb-2 text-right">Fail %</th>
+                <th class="pb-2 text-right">Merge %</th>
+                <th class="pb-2 text-right">CI 1st</th>
+                <th class="pb-2 text-right">Edited</th>
+                <th class="pb-2 text-right">Rework</th>
+                <th class="pb-2 text-right">Revert</th>
+                <th class="pb-2 text-right">Duration</th>
+                <th class="pb-2 text-right">Cost</th>
+                <th class="pb-2 text-right">Premium req</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each report.byVariantContribution as row (row.key)}
+                {@const interpretation = interpretExperiment(row, report.byVariantContribution)}
+                <tr class="border-b border-surface-100 bg-surface-100/60 dark:border-surface-700 dark:bg-surface-700/30">
+                  <td class="py-1.5">
+                    <div class="font-mono text-xs">{row.variantId || row.key}</div>
+                    <div class="text-xs text-surface-400">
+                      {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
+                    </div>
+                    <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
+                        {interpretation.verdictLabel}
+                      </span>
+                      <span class="text-[10px] text-surface-500">
+                        {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
+                      </span>
+                    </div>
+                    <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
+                  </td>
+                  <td class="py-1.5 text-xs font-medium">All roles</td>
+                  <td class="py-1.5 text-right">
+                    {row.runs}
+                    {#if row.insufficientData}
+                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">
+                    {row.landed}
+                    {#if row.qualityAttributionLimited}
+                      <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">{pct(row.failureRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.mergeRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.ciFirstPassRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.mergedWithEditsRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.reworkRate)}</td>
+                  <td class="py-1.5 text-right">{pct(row.revertRate)}</td>
+                  <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
+                  <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
+                  <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
+                </tr>
+                <tr class="border-b border-surface-100 dark:border-surface-700">
+                  <td class="pb-2 pt-0" colspan="13">
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each interpretation.guardrails as guardrail (guardrail.key)}
+                        <span
+                          class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
+                          title={guardrail.detail}
+                        >
+                          {guardrail.label}: {guardrail.status}
+                        </span>
+                      {/each}
+                    </div>
+                    {#if interpretation.limitedSignals.length > 0}
+                      <p class="mt-1 text-[10px] text-surface-400">
+                        Limited signals: {interpretation.limitedSignals.join(' ')}
+                      </p>
+                    {/if}
+                  </td>
+                </tr>
+                {#each row.roleBreakdowns ?? [] as child (child.key)}
+                  <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                    <td class="py-1.5 pl-6">
+                      <div class="font-mono text-xs text-surface-500">{child.variantId || row.variantId || child.key}</div>
+                      <div class="text-xs text-surface-400">
+                        {child.provider}{child.model ? ` · ${child.model}` : ''}{child.reasoningEffort ? ` · ${child.reasoningEffort}` : ''}
+                      </div>
+                    </td>
+                    <td class="py-1.5 text-xs">{child.role || '—'}</td>
+                    <td class="py-1.5 text-right">
+                      {child.runs}
+                      {#if child.insufficientData}
+                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                      {/if}
+                    </td>
+                    <td class="py-1.5 text-right">
+                      {child.landed}
+                      {#if child.qualityAttributionLimited}
+                        <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
+                      {/if}
+                    </td>
                     <td class="py-1.5 text-right">{pct(child.failureRate)}</td>
                     <td class="py-1.5 text-right">{pct(child.mergeRate)}</td>
                     <td class="py-1.5 text-right">{pct(child.ciFirstPassRate)}</td>

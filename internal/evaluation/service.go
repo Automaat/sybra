@@ -153,14 +153,21 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		Overall:     Compute(recs, evts, since, now),
 		ByProvider:  BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Provider }),
 		ByRole:      BreakdownBy(recs, since, now, func(r stats.RunRecord) string { return r.Role }),
-		ByAgentModel: CompareBy(recs, evts, since, now, 20, func(r stats.RunRecord) string {
+		ByAgentModel: CompareByLatestAuthor(recs, evts, since, now, 20, func(r stats.RunRecord) string {
 			if r.Provider == "" || r.Model == "" {
 				return ""
 			}
 			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
 		}),
-		ByVariant: CompareVariants(recs, evts, since, now, 20),
-		Notes:     deferredNotes,
+		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, func(r stats.RunRecord) string {
+			if r.Provider == "" || r.Model == "" {
+				return ""
+			}
+			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
+		}),
+		ByVariant:             CompareVariants(recs, evts, since, now, 20),
+		ByVariantContribution: CompareVariantsByContribution(recs, evts, since, now, 20),
+		Notes:                 deferredNotes,
 	}
 	rep.Weaknesses = Weaknesses(rep)
 	return rep, nil
