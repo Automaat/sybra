@@ -32,7 +32,6 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
-	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
@@ -47,53 +46,51 @@ import (
 )
 
 type App struct {
-	ctx                           context.Context
-	cancel                        context.CancelFunc
-	wg                            sync.WaitGroup
-	tasks                         *task.Manager
-	projects                      *project.Store
-	loopAgents                    *loopagent.Store
-	loopSched                     *loopagent.Scheduler
-	agents                        *agent.Manager
-	watcher                       *watcher.Watcher
-	configWatcher                 *confighot.Watcher
-	notifier                      *notification.Emitter
-	audit                         *audit.Logger
-	artifacts                     *artifact.Store
-	experience                    *experience.Store
-	stats                         *stats.Store
-	limits                        *limits.Store
-	tasksDir                      string
-	skillsDir                     string
-	repoDir                       string
-	worktreesDir                  string
-	logger                        *slog.Logger
-	logDir                        string
-	auditDir                      string
-	prTracker                     *github.IssueTracker
-	providerHealth                *provider.Checker
-	worktrees                     *worktree.Manager
-	sandboxes                     *sandbox.Manager
-	monitorSvc                    *monitor.Service
-	selfMonitorSvc                *selfmonitor.Service
-	evaluationSvc                 *evaluation.Service
-	agentOrch                     *AgentOrchestrator
-	reviewer                      *ReviewHandler
-	workflowEngine                *workflow.Engine
-	workflowStore                 *workflow.Store
-	todoistHandler                *poll.TodoistHandler
-	todoistCancel                 context.CancelFunc
-	renovateHandler               *poll.RenovateHandler
-	renovateMonitorTransientFails int
-	triageHandler                 *poll.TriageHandler
-	humanReview                   *humanReviewHandler
-	cfg                           *config.Config
-	logLevel                      *slog.LevelVar
-	emit                          func(string, any)
-	emitFactory                   func(context.Context) func(string, any)
-	openBrowser                   func(string)
-	requestRestart                func()
-	restartStaleErr               *logging.ErrorThrottle
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	tasks           *task.Manager
+	projects        *project.Store
+	loopAgents      *loopagent.Store
+	loopSched       *loopagent.Scheduler
+	agents          *agent.Manager
+	watcher         *watcher.Watcher
+	configWatcher   *confighot.Watcher
+	notifier        *notification.Emitter
+	audit           *audit.Logger
+	artifacts       *artifact.Store
+	experience      *experience.Store
+	stats           *stats.Store
+	limits          *limits.Store
+	tasksDir        string
+	skillsDir       string
+	repoDir         string
+	worktreesDir    string
+	logger          *slog.Logger
+	logDir          string
+	auditDir        string
+	prTracker       *github.IssueTracker
+	providerHealth  *provider.Checker
+	worktrees       *worktree.Manager
+	sandboxes       *sandbox.Manager
+	monitorSvc      *monitor.Service
+	selfMonitorSvc  *selfmonitor.Service
+	evaluationSvc   *evaluation.Service
+	agentOrch       *AgentOrchestrator
+	reviewer        *ReviewHandler
+	workflowEngine  *workflow.Engine
+	workflowStore   *workflow.Store
+	todoist         *todoistCoordinator
+	renovate        *renovateCoordinator
+	triage          *triageCoordinator
+	humanReview     *humanReviewHandler
+	cfg             *config.Config
+	logLevel        *slog.LevelVar
+	emit            func(string, any)
+	emitFactory     func(context.Context) func(string, any)
+	openBrowser     func(string)
+	requestRestart  func()
+	restartStaleErr *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.

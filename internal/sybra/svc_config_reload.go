@@ -29,8 +29,8 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 
 	// Always update s.cfg to match disk — including restart-required fields —
 	// so subsequent reloads with the same content produce no diff and no
-	// repeated restart warnings. renovateHandler holds &s.cfg.Renovate, so
-	// assign its fields in-place rather than replacing the whole struct.
+	// repeated restart warnings. The renovate coordinator holds &s.cfg.Renovate,
+	// so assign its fields in-place rather than replacing the whole struct.
 	s.cfg.Agent = next.Agent
 	s.cfg.Notification = next.Notification
 	s.cfg.Orchestrator = next.Orchestrator

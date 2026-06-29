@@ -10,7 +10,6 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
@@ -22,27 +21,23 @@ import (
 // IntegrationService exposes Todoist, Renovate, and GitHub issue operations
 // as Wails-bound methods.
 type IntegrationService struct {
-	tasks           *task.Manager
-	projects        *project.Store
-	agents          *agent.Manager
-	worktrees       *worktree.Manager
-	audit           *audit.Logger
-	cfg             *config.Config
-	logger          *slog.Logger
-	todoistHandler  *poll.TodoistHandler
-	renovateHandler *poll.RenovateHandler
-	workflowEngine  *workflow.Engine
-	providerHealth  *provider.Checker
-	saveConfig      func() error
+	tasks          *task.Manager
+	projects       *project.Store
+	agents         *agent.Manager
+	worktrees      *worktree.Manager
+	audit          *audit.Logger
+	cfg            *config.Config
+	logger         *slog.Logger
+	todoist        *todoistCoordinator
+	renovate       *renovateCoordinator
+	workflowEngine *workflow.Engine
+	providerHealth *provider.Checker
+	saveConfig     func() error
 }
 
 // SyncTodoist triggers an immediate Todoist sync.
 func (s *IntegrationService) SyncTodoist() error {
-	if s.todoistHandler == nil {
-		return fmt.Errorf("todoist integration not enabled")
-	}
-	s.todoistHandler.PollAndSync()
-	return nil
+	return s.todoist.syncNow()
 }
 
 // GetTodoistProjects returns Todoist projects for the settings UI.
@@ -57,15 +52,12 @@ func (s *IntegrationService) GetTodoistProjects() ([]todoist.Project, error) {
 
 // TodoistEnabled returns whether the todoist handler is active.
 func (s *IntegrationService) TodoistEnabled() bool {
-	return s.todoistHandler != nil
+	return s.todoist.enabled()
 }
 
 // FetchRenovatePRs returns Renovate PRs for manual refresh.
 func (s *IntegrationService) FetchRenovatePRs() ([]github.RenovatePR, error) {
-	if s.renovateHandler == nil {
-		return nil, nil
-	}
-	repos := s.renovateHandler.Repos()
+	repos := s.renovate.repos()
 	if len(repos) == 0 {
 		return nil, nil
 	}
