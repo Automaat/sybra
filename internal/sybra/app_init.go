@@ -430,6 +430,26 @@ func (a *App) initStatusHook() {
 					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
 				}
 			}
+		case string(task.StatusReadyPR):
+			if a.workflowEngine != nil {
+				// ErrWorkflowAlreadyActive is benign and the COMMON case: when
+				// testing-task flips to ready-pr on a PASS, this hook fires while
+				// the testing workflow is still active, so the start is rejected
+				// here and the cascade drives simple-task-pr via OnWorkflowComplete.
+				// The case that NEEDS this is recovery: a task flipped to ready-pr
+				// out of band — `sybra-cli update` (a separate process with no
+				// engine) or the UpdateTask UI path after a tester infra failure —
+				// has no terminal cascade to open its PR, so without this branch it
+				// sits inert with no PR. Mirrors the testing/ready-review cases.
+				if _, err := a.workflowEngine.DispatchEvent(
+					taskID,
+					"task.status_changed",
+					map[string]string{"task.status": string(task.StatusReadyPR)},
+					nil,
+				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+					a.logger.Error("workflow.dispatch.ready-pr", "task_id", taskID, "err", err)
+				}
+			}
 		}
 	})
 }
