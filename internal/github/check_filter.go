@@ -21,15 +21,48 @@ var informationalCheckPrefixes = []string{
 	"deepsource/",
 }
 
+// aiReviewCheckPrefixes lists check-name prefixes for AI/LLM PR-review checks
+// (e.g. GitHub Copilot code review). Like the informational reporters above
+// these do not gate mergeability: their useful output is advisory review
+// *comments* (handled by the comments path), and a failing run is usually an
+// external condition no code change fixes — most commonly "you have exceeded
+// your monthly quota" (HTTP 402). Counting such a failure as CI FAILURE makes
+// pr-monitor dispatch the pr-fix loop, which burns its whole retry budget
+// re-confirming "nothing to fix here" before escalating to a human. Excluding
+// the check keeps CIStatus driven by the real CI gates.
+//
+// Matched by lowercase prefix, so `Copilot` and `Copilot review` both match.
+var aiReviewCheckPrefixes = []string{
+	"copilot",
+}
+
 // isInformationalCheck reports whether the check name belongs to a
 // non-gating reporter (coverage, quality scan). Empty name returns
 // false so unparseable contexts still feed the rollup.
 func isInformationalCheck(name string) bool {
+	return hasAnyPrefix(name, informationalCheckPrefixes)
+}
+
+// isAIReviewCheck reports whether the check is an AI code-review reporter
+// whose pass/fail must not gate mergeability (see aiReviewCheckPrefixes).
+func isAIReviewCheck(name string) bool {
+	return hasAnyPrefix(name, aiReviewCheckPrefixes)
+}
+
+// isNonGatingCheck reports whether a check should be left out of the CIStatus
+// rollup entirely — either an informational reporter or an AI-review check.
+func isNonGatingCheck(name string) bool {
+	return isInformationalCheck(name) || isAIReviewCheck(name)
+}
+
+// hasAnyPrefix reports whether name (lowercased) starts with any of prefixes.
+// Empty name returns false so unparseable contexts still feed the rollup.
+func hasAnyPrefix(name string, prefixes []string) bool {
 	if name == "" {
 		return false
 	}
 	lower := strings.ToLower(name)
-	for _, p := range informationalCheckPrefixes {
+	for _, p := range prefixes {
 		if strings.HasPrefix(lower, p) {
 			return true
 		}
@@ -105,7 +138,7 @@ func rollupFromContexts(contexts []gqlCheckContext) (ciStatus string, hasPending
 
 	var sawCounted, sawFailure, sawPending, sawSuccess bool
 	for i := range contexts {
-		if isInformationalCheck(contexts[i].Name) {
+		if isNonGatingCheck(contexts[i].Name) {
 			continue
 		}
 		state := effectiveCheckState(contexts[i])
