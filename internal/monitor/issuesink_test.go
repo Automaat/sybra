@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/attribution"
 )
 
 // fakeExecer records every gh invocation and returns canned responses keyed
@@ -97,7 +99,7 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	if !containsPair(got, "--title", "[monitor] over_dispatch_limit") {
 		t.Errorf("wrong title: %v", got)
 	}
-	if !containsPair(got, "--body", "body") {
+	if !containsPair(got, "--body", attribution.Append("body")) {
 		t.Errorf("missing body: %v", got)
 	}
 	if !containsPair(got, "--label", "monitor,bug") {
@@ -133,7 +135,7 @@ func TestGHIssueSink_DedupHitComments(t *testing.T) {
 	if comments[0][2] != "87" {
 		t.Errorf("commented on wrong issue: %v", comments[0])
 	}
-	if !containsPair(comments[0], "--body", "new evidence") {
+	if !containsPair(comments[0], "--body", attribution.Append("new evidence")) {
 		t.Errorf("missing body in comment: %v", comments[0])
 	}
 	if len(fe.callsMatching("issue", "create")) != 0 {
