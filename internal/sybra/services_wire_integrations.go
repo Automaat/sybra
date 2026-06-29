@@ -12,5 +12,6 @@ func (a *App) wireIntegrationService() {
 	a.intgSvc.renovateHandler = a.renovateHandler
 	a.intgSvc.workflowEngine = a.workflowEngine
 	a.intgSvc.providerHealth = a.providerHealth
+	// Read a.cfg inside the closure so config reloads save the current config.
 	a.intgSvc.saveConfig = func() error { return a.cfg.Save() }
 }

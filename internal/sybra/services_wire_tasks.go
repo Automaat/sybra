@@ -20,6 +20,7 @@ func (a *App) wireTaskService() {
 	// Expand a manually-added umbrella issue into a gated child DAG instead of
 	// a flat task. Wired unconditionally; enrichFromIssue gates the call on
 	// cfg.Umbrella.Enabled so a config reload toggles it without re-wiring.
+	// Read a.cfg inside the closure so config reloads update the planner model.
 	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
 	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
 		return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL)

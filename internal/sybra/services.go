@@ -12,7 +12,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.wireReviewServices()
 	a.wireTaskService()
 	a.wirePlanningService()
-	a.wireAgentServices(emit)
+	a.wireAgentAndOrchestratorServices(emit)
 	a.wireProjectServices()
 	a.wireLoopAgentService()
 	a.wireConfigService()
@@ -20,6 +20,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.wireStatsService()
 	a.wireWorkflowService()
 	a.wireBrowserService()
+	// MUST be last: completion handlers read fully-wired service dependencies.
 	a.wireCompletionHandlers(emit)
 }
 

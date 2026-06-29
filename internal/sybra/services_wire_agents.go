@@ -1,6 +1,6 @@
 package sybra
 
-func (a *App) wireAgentServices(emit func(string, any)) {
+func (a *App) wireAgentAndOrchestratorServices(emit func(string, any)) {
 	a.agentSvc.agents = a.agents
 	a.agentSvc.logger = a.logger
 	a.agentSvc.tasks = a.tasks
