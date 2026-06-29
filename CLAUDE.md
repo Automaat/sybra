@@ -236,6 +236,8 @@ Sybra can run on multiple machines (e.g. laptop + remote server). Each instance 
 - All project-scoped automations filter via `cfg.AllowsProjectType(...)` (config helper).
 - Example: server handles `pet`, laptop handles `work`.
 
+**3. `github.poller_role`** (shared-token de-dupe): `secondary` skips the periodic GitHub search polls (reviews/issues/renovate) so only the `primary` instance spends the shared token's rate budget. See `docs/github-rate-limits.md` for the full `github:` block (poll-interval overrides, GitHub App installation-token auth for a 15k/hr ceiling). Request volume is paced by `ghGate` and auto-throttled when the live budget (refreshed from the free `/rate_limit` endpoint) runs low.
+
 ```yaml
 # server config
 project_types: [pet]

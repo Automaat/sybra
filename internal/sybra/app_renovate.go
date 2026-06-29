@@ -10,6 +10,7 @@ func (a *App) initRenovate(emit func(string, any)) {
 		return
 	}
 	a.renovateHandler = poll.NewRenovateHandler(a.projects, a.logger, emit, &a.cfg.Renovate, a.allowsProjectType)
+	a.renovateHandler.SetIntervals(a.cfg.GitHub.RenovateFast(), a.cfg.GitHub.RenovateSlow())
 	a.logger.Info("renovate.enabled", "author", a.cfg.Renovate.Author)
 }
 

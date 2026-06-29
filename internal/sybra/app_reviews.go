@@ -24,11 +24,6 @@ import (
 )
 
 const (
-	prPollFast = 1 * time.Minute
-	prPollSlow = 5 * time.Minute
-)
-
-const (
 	reviewSmallAdditions = 40
 	reviewSmallFiles     = 5
 )
@@ -66,6 +61,10 @@ type ReviewHandler struct {
 	// review-task's PR is still open. Overridable in tests; nil falls back to
 	// github.FetchPRState.
 	fetchPRStateFn func(repo string, number int) (github.PRState, error)
+	// fetchKnownPRFn fetches one linked PR without using a GitHub search leg.
+	// Secondary pollers use this to keep local task PRs moving while leaving
+	// global search polling to the primary instance.
+	fetchKnownPRFn func(repo string, number int) (github.PullRequest, bool, error)
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
@@ -87,6 +86,23 @@ func (r *ReviewHandler) agentLogin() string {
 		return r.viewerLoginFn()
 	}
 	return github.ViewerLogin()
+}
+
+// pollFast/pollSlow resolve the review poll cadence from config (github.*),
+// falling back to the raised defaults, then scaled by GitHub budget pressure.
+// nil cfg (test construction) uses defaults too.
+func (r *ReviewHandler) pollFast() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsFastSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.ReviewsFast())
+}
+
+func (r *ReviewHandler) pollSlow() time.Duration {
+	if r.cfg == nil {
+		return github.ScaleInterval(config.DefaultReviewsSlowSeconds * time.Second)
+	}
+	return github.ScaleInterval(r.cfg.GitHub.ReviewsSlow())
 }
 
 func newReviewHandler(
@@ -122,7 +138,60 @@ func newReviewHandler(
 func (r *ReviewHandler) Name() string { return "reviews" }
 
 func (r *ReviewHandler) Poll(_ context.Context) time.Duration {
+	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
+		return r.pollKnownTaskPRs()
+	}
 	return r.pollAndMonitorPRs()
+}
+
+func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
+	tasks, err := r.tasks.List()
+	if err != nil {
+		return r.pollSlow()
+	}
+
+	var (
+		matchers       []github.TaskMatcher
+		closedMatchers []github.TaskMatcher
+	)
+	for i := range tasks {
+		m := github.TaskMatcher{
+			ID:        tasks[i].ID,
+			PRNumber:  tasks[i].PRNumber,
+			Branch:    tasks[i].Branch,
+			ProjectID: tasks[i].ProjectID,
+		}
+		if prMonitorEligible(&tasks[i]) {
+			matchers = append(matchers, m)
+			closedMatchers = append(closedMatchers, m)
+		} else if prClosedEligible(&tasks[i]) {
+			closedMatchers = append(closedMatchers, m)
+		}
+	}
+
+	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	if len(matchers) > 0 {
+		issues := github.MatchTaskPRs(monitoredPRs, matchers)
+		if r.prTracker != nil {
+			r.prTracker.Cleanup()
+		}
+		r.cancelResolvedPRFixWorkflows(tasks, issues)
+		r.handleMatchedPRIssues(issues)
+	}
+
+	if len(closedMatchers) > 0 {
+		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
+	}
+
+	r.scanForReverts(tasks)
+	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.reconcilePRPhases(tasks, monitoredPRs)
+	r.closeFinishedReviewTasks(tasks, nil)
+
+	if prNeedsAttention(monitoredPRs) {
+		return r.pollFast()
+	}
+	return r.pollSlow()
 }
 
 func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
@@ -130,7 +199,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	// when FetchReviews fails (transient errors, rate limits, etc.).
 	tasks, err := r.tasks.List()
 	if err != nil {
-		return prPollSlow
+		return r.pollSlow()
 	}
 
 	fetchFn := github.FetchReviews
@@ -154,7 +223,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}
-		return prPollSlow
+		return r.pollSlow()
 	}
 	r.transientFetchFails = 0
 
@@ -192,42 +261,11 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 
 	if len(matchers) > 0 {
 		issues := github.MatchTaskPRs(monitoredPRs, matchers)
-		r.prTracker.Cleanup()
-		r.cancelResolvedPRFixWorkflows(tasks, issues)
-
-		for i := range issues {
-			if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
-				continue
-			}
-			// Gate dispatch on workflow state too: an agent may have just
-			// exited while the workflow is still in verify_commits /
-			// link_pr_and_review. Without this, a fresh issue (e.g.
-			// kind=conflict appearing because main moved during the agent
-			// run) races the in-flight workflow's tail steps and triggers
-			// a layered re-dispatch that DispatchEvent later rejects, but
-			// only after we've prepped a worktree and emitted audit
-			// noise.
-			if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
-				continue
-			}
-			// Only the comments kind carries a feedback fingerprint; conflict,
-			// ci_failure, and ready_to_merge fall back to SHA-only gating.
-			var sig string
-			if issues[i].Kind == github.PRIssueComments {
-				sig = issues[i].PR.FeedbackSig
-			}
-			switch r.prTracker.Decide(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA, sig) {
-			case github.DispatchHandle:
-				if issues[i].Kind == github.PRIssueReadyToMerge {
-					r.handleAutoMerge(issues[i])
-					continue
-				}
-				r.handlePRIssue(issues[i])
-			case github.DispatchExhausted:
-				r.escalateExhaustedFix(issues[i])
-			case github.DispatchSkip:
-			}
+		if r.prTracker != nil {
+			r.prTracker.Cleanup()
 		}
+		r.cancelResolvedPRFixWorkflows(tasks, issues)
+		r.handleMatchedPRIssues(issues)
 	}
 
 	if len(closedMatchers) > 0 {
@@ -242,16 +280,89 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 
 	if prNeedsAttention(monitoredPRs) {
-		return prPollFast
+		return r.pollFast()
 	}
-	return prPollSlow
+	return r.pollSlow()
+}
+
+func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
+	for i := range issues {
+		if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
+			continue
+		}
+		// Gate dispatch on workflow state too: an agent may have just
+		// exited while the workflow is still in verify_commits /
+		// link_pr_and_review. Without this, a fresh issue (e.g.
+		// kind=conflict appearing because main moved during the agent
+		// run) races the in-flight workflow's tail steps and triggers
+		// a layered re-dispatch that DispatchEvent later rejects, but
+		// only after we've prepped a worktree and emitted audit noise.
+		if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
+			continue
+		}
+		// Only the comments kind carries a feedback fingerprint; conflict,
+		// ci_failure, and ready_to_merge fall back to SHA-only gating.
+		var sig string
+		if issues[i].Kind == github.PRIssueComments {
+			sig = issues[i].PR.FeedbackSig
+		}
+		decision := github.DispatchHandle
+		if r.prTracker != nil {
+			decision = r.prTracker.Decide(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
+		}
+		switch decision {
+		case github.DispatchHandle:
+			if issues[i].Kind == github.PRIssueReadyToMerge {
+				r.handleAutoMerge(issues[i])
+				continue
+			}
+			r.handlePRIssue(issues[i])
+		case github.DispatchExhausted:
+			r.escalateExhaustedFix(issues[i])
+		case github.DispatchSkip:
+		}
+	}
+}
+
+func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
+	fetchFn := github.FetchPRForMonitor
+	if r.fetchKnownPRFn != nil {
+		fetchFn = r.fetchKnownPRFn
+	}
+	prs := make([]github.PullRequest, 0, len(matchers))
+	seen := make(map[string]struct{}, len(matchers))
+	for i := range matchers {
+		m := &matchers[i]
+		if m.ProjectID == "" || m.PRNumber == 0 {
+			continue
+		}
+		key := fmt.Sprintf("%s#%d", m.ProjectID, m.PRNumber)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		pr, open, err := fetchFn(m.ProjectID, m.PRNumber)
+		if err != nil {
+			r.logger.Warn("pr-monitor.known-pr-fetch", "repo", m.ProjectID, "pr", m.PRNumber, "err", err)
+			continue
+		}
+		if !open {
+			continue
+		}
+		prs = append(prs, pr)
+	}
+	return prs
 }
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
 // stamping the terminal outcome and emitting the audit + task.landed events the
 // evaluation scorecard reads. Skips tasks with a still-running agent.
 func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
-	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, github.FetchPRState)
+	fetchFn := github.FetchPRState
+	if r.fetchPRStateFn != nil {
+		fetchFn = r.fetchPRStateFn
+	}
+	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
 			r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)

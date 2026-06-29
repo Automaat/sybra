@@ -1544,3 +1544,115 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 		})
 	}
 }
+
+func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	openTask, err := tasks.Create("Ready PR", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(openTask.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(42),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	closedTask, err := tasks.Create("Merged PR", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(closedTask.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(43),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := t.TempDir()
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+
+	fetchReviewsCalled := false
+	knownFetches := 0
+	merged := false
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
+		tasks:         tasks,
+		projects:      projects,
+		agents:        agentMgr,
+		prTracker:     github.NewIssueTracker(0),
+		cfg:           &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}},
+		fetchReviewsFn: func() (github.ReviewSummary, error) {
+			fetchReviewsCalled = true
+			return github.ReviewSummary{}, nil
+		},
+		fetchKnownPRFn: func(repo string, number int) (github.PullRequest, bool, error) {
+			knownFetches++
+			if number != 42 {
+				return github.PullRequest{}, false, nil
+			}
+			return github.PullRequest{
+				Number:          42,
+				Repository:      repo,
+				HeadSHA:         "abc123",
+				Mergeable:       "MERGEABLE",
+				CIStatus:        "SUCCESS",
+				CopilotReviewed: true,
+			}, true, nil
+		},
+		fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
+			if repo != "o/r" {
+				t.Fatalf("repo = %q, want o/r", repo)
+			}
+			switch number {
+			case 42:
+				return github.PRState{State: "OPEN"}, nil
+			case 43:
+				return github.PRState{State: "MERGED"}, nil
+			default:
+				t.Fatalf("unexpected PR number %d", number)
+				return github.PRState{}, nil
+			}
+		},
+		mergePR: func(repo string, number int) error {
+			if repo != "o/r" || number != 42 {
+				t.Fatalf("merge target = %s#%d, want o/r#42", repo, number)
+			}
+			merged = true
+			return nil
+		},
+	}
+
+	r.Poll(t.Context())
+
+	if fetchReviewsCalled {
+		t.Fatal("secondary poller called FetchReviews search path")
+	}
+	if knownFetches != 1 {
+		t.Fatalf("knownFetches = %d, want 1", knownFetches)
+	}
+	if !merged {
+		t.Fatal("secondary poller did not act on ready linked PR")
+	}
+	got, err := tasks.Get(closedTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" {
+		t.Fatalf("closed linked PR status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
+	}
+}

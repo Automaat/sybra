@@ -181,6 +181,7 @@ func parseGHHTTPResponse(out []byte) ghHTTPResponse {
 
 type ghRateWindow struct {
 	remaining int
+	limit     int
 	resetAt   time.Time
 }
 
@@ -236,6 +237,11 @@ func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
 				window.remaining = n
 			}
 		}
+		if limit, ok := resp.headers["x-ratelimit-limit"]; ok {
+			if n, convErr := strconv.Atoi(strings.TrimSpace(limit)); convErr == nil {
+				window.limit = n
+			}
+		}
 		if reset, ok := resp.headers["x-ratelimit-reset"]; ok {
 			if ts, convErr := strconv.ParseInt(strings.TrimSpace(reset), 10, 64); convErr == nil && ts > 0 {
 				window.resetAt = time.Unix(ts, 0)
@@ -274,6 +280,43 @@ func (g *ghRequestGate) bumpLocked(until time.Time) {
 	if until.After(g.notBefore) {
 		g.notBefore = until
 	}
+}
+
+// setResource records a rate-limit window for a resource bucket. Used by the
+// /rate_limit refresher to give the gate budget visibility for every gh path,
+// not only `gh api --include` calls whose response headers it can observe.
+func (g *ghRequestGate) setResource(resource string, remaining, limit int, resetAt time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resources[strings.ToLower(strings.TrimSpace(resource))] = ghRateWindow{
+		remaining: remaining,
+		limit:     limit,
+		resetAt:   resetAt,
+	}
+}
+
+// lowestBudgetFraction returns the smallest remaining/limit ratio across the
+// known resource buckets, plus whether any bucket is known. Used to scale poll
+// intervals globally when budget runs low. A bucket with no recorded limit is
+// skipped.
+func (g *ghRequestGate) pressure() (fraction float64, known bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if time.Until(g.notBefore) > 0 {
+		return 0, true
+	}
+	minFrac := 1.0
+	for _, w := range g.resources {
+		if w.remaining < 0 || w.limit <= 0 {
+			continue
+		}
+		f := float64(w.remaining) / float64(w.limit)
+		if f < minFrac {
+			minFrac = f
+		}
+		known = true
+	}
+	return minFrac, known
 }
 
 func isRateLimitedMessage(msg string) bool {

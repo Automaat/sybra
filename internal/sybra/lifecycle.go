@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -62,8 +63,79 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, any), issuesFetcher *poll.IssuesFetcher) {
 	a := lm.app
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
+	lm.startAppAuthLoop(ctx)
+	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
 	a.startTodoistLoop(ctx)
+}
+
+// appTokenRefreshInterval is how often the GitHub App installation token is
+// renewed. Tokens last ~1h; refreshing well inside that keeps gh authenticated.
+const appTokenRefreshInterval = 30 * time.Minute
+
+// startAppAuthLoop enables GitHub App installation-token auth (when configured)
+// and keeps the token fresh. With App auth on, every gh call runs against the
+// installation token (15k/hr REST) instead of the personal token. A
+// misconfiguration is logged and leaves gh on its own auth — never fatal.
+func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
+	a := lm.app
+	app := a.cfg.GitHub.App
+	if !app.Enabled {
+		return
+	}
+	if err := github.EnableAppAuth(github.AppCredentials{
+		AppID:          app.AppID,
+		InstallationID: app.InstallationID,
+		PrivateKeyPath: app.PrivateKeyPath,
+	}); err != nil {
+		a.logger.Error("github.app.disabled", "err", err)
+		return
+	}
+	a.logger.Info("github.app.enabled", "app_id", app.AppID, "installation_id", app.InstallationID)
+	a.wg.Go(func() {
+		ticker := time.NewTicker(appTokenRefreshInterval)
+		defer ticker.Stop()
+		for {
+			if err := github.RefreshAppToken(ctx); err != nil {
+				a.logger.Warn("github.app.token.refresh", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+}
+
+// rateBudgetRefreshInterval is how often the free GET /rate_limit endpoint is
+// polled to keep the request gate's budget view current for every gh path.
+const rateBudgetRefreshInterval = 60 * time.Second
+
+// startRateBudgetLoop periodically refreshes the shared GitHub rate-limit
+// budget from the free /rate_limit endpoint, so the request gate and the
+// global poll-interval throttle see accurate remaining quota across all gh
+// subcommands — not only the `gh api --include` calls whose headers it can
+// observe directly.
+func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
+	a := lm.app
+	if !a.cfg.GitHub.Enabled {
+		return
+	}
+	a.wg.Go(func() {
+		ticker := time.NewTicker(rateBudgetRefreshInterval)
+		defer ticker.Stop()
+		for {
+			if err := github.RefreshRateBudget(ctx); err != nil {
+				a.logger.Debug("github.budget.refresh", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
 }
 
 // StartWatchers launches the config-file hot-reload watcher.
@@ -343,12 +415,24 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
 	a := lm.app
 	hub := poll.NewHub()
-	hub.Register(a.reviewer, 10*time.Second)
-	if issuesFetcher != nil {
-		hub.Register(issuesFetcher, 20*time.Second)
+	// Periodic GitHub search pollers (reviews/issues/renovate) only run on the
+	// primary instance — a "secondary" machine sharing the same token skips them
+	// so the shared rate budget isn't billed twice. Triage is local (no GitHub
+	// search) and always runs.
+	runSearch := a.cfg.GitHub.RunsSearchPollers()
+	if !runSearch {
+		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
-	if a.renovateHandler != nil {
-		hub.Register(a.renovateHandler, 15*time.Second)
+	if a.reviewer != nil {
+		hub.Register(a.reviewer, 10*time.Second)
+	}
+	if runSearch {
+		if issuesFetcher != nil {
+			hub.Register(issuesFetcher, 20*time.Second)
+		}
+		if a.renovateHandler != nil {
+			hub.Register(a.renovateHandler, 15*time.Second)
+		}
 	}
 	if a.triageHandler != nil {
 		hub.Register(a.triageHandler, 30*time.Second)
