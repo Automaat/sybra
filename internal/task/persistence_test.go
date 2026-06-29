@@ -97,3 +97,188 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		t.Fatalf("frontmatter mapping mismatch\n got: %#v\nwant: %#v", got, original)
 	}
 }
+
+func TestTaskFrontmatterMappingCoversPersistedFields(t *testing.T) {
+	t.Parallel()
+	taskType := reflect.TypeFor[Task]()
+	frontmatterType := reflect.TypeFor[taskFrontmatter]()
+
+	for field := range taskType.Fields() {
+		if taskSidecarField(field.Name) {
+			continue
+		}
+		if _, ok := frontmatterType.FieldByName(field.Name); !ok {
+			t.Errorf("Task.%s is persisted but missing from taskFrontmatter", field.Name)
+		}
+	}
+	for field := range frontmatterType.Fields() {
+		if _, ok := taskType.FieldByName(field.Name); !ok {
+			t.Errorf("taskFrontmatter.%s has no matching Task field", field.Name)
+		}
+	}
+}
+
+func TestTaskFrontmatterMappingPreservesEachPersistedField(t *testing.T) {
+	t.Parallel()
+	taskType := reflect.TypeFor[Task]()
+
+	for field := range taskType.Fields() {
+		if taskSidecarField(field.Name) {
+			continue
+		}
+		t.Run(field.Name, func(t *testing.T) {
+			t.Parallel()
+			original := Task{}
+			setTaskFieldForPersistenceTest(t, &original, field.Name)
+
+			got := taskFromFrontmatter(frontmatterFromTask(original), "")
+			if !reflect.DeepEqual(reflect.ValueOf(got).FieldByName(field.Name).Interface(), reflect.ValueOf(original).FieldByName(field.Name).Interface()) {
+				t.Fatalf("Task.%s did not survive frontmatter mapping\n got: %#v\nwant: %#v", field.Name, reflect.ValueOf(got).FieldByName(field.Name).Interface(), reflect.ValueOf(original).FieldByName(field.Name).Interface())
+			}
+		})
+	}
+}
+
+func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []reflect.Type{reflect.TypeFor[taskFrontmatter](), reflect.TypeFor[agentRunRecord]()} {
+		for field := range typ.Fields() {
+			if tag := field.Tag.Get("yaml"); tag == "" {
+				t.Errorf("%s.%s is missing a yaml tag", typ.Name(), field.Name)
+			}
+		}
+	}
+}
+
+func taskSidecarField(name string) bool {
+	switch name {
+	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath":
+		return true
+	default:
+		return false
+	}
+}
+
+func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
+	t.Helper()
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	falseValue := false
+	later := now.Add(time.Hour)
+	completedAt := now.Add(2 * time.Hour)
+
+	switch name {
+	case "ID":
+		task.ID = "task-persist"
+	case "Slug":
+		task.Slug = "task-persist-slug"
+	case "Title":
+		task.Title = "Task persistence title"
+	case "Status":
+		task.Status = StatusTesting
+	case "TaskType":
+		task.TaskType = TaskTypeResearch
+	case "AgentMode":
+		task.AgentMode = AgentModeHeadless
+	case "AllowedTools":
+		task.AllowedTools = []string{"Read", "Write"}
+	case "Tags":
+		task.Tags = []string{"backend", "review"}
+	case "ProjectID":
+		task.ProjectID = "owner/repo"
+	case "Branch":
+		task.Branch = "feature/task-persist"
+	case "WorktreeDir":
+		task.WorktreeDir = "/tmp/task-persist"
+	case "PRNumber":
+		task.PRNumber = 123
+	case "Issue":
+		task.Issue = "owner/repo#123"
+	case "StatusReason":
+		task.StatusReason = "testing"
+	case "HandoffSourceProvider":
+		task.HandoffSourceProvider = "codex"
+	case "BlockedByIssue":
+		task.BlockedByIssue = "owner/repo#456"
+	case "UmbrellaIssue":
+		task.UmbrellaIssue = "owner/repo#789"
+	case "DependsOn":
+		task.DependsOn = []string{"owner/repo#321"}
+	case "Reviewed":
+		task.Reviewed = true
+	case "RunRole":
+		task.RunRole = "pr-fix"
+	case "SupervisorSteer":
+		task.SupervisorSteer = "read the failure"
+	case "ReviewPhase":
+		task.ReviewPhase = "awaiting-author"
+	case "PRPhase":
+		task.PRPhase = "fixing"
+	case "TodoistID":
+		task.TodoistID = "todoist-123"
+	case "Priority":
+		task.Priority = PriorityHigh
+	case "DueDate":
+		task.DueDate = &later
+	case "ClosedAt":
+		task.ClosedAt = &later
+	case "Outcome":
+		task.Outcome = "merged"
+	case "MergeCommit":
+		task.MergeCommit = "abc123"
+	case "MaxTurns":
+		task.MaxTurns = 7
+	case "RequirePermissions":
+		task.RequirePermissions = &falseValue
+	case "HeadlessPermissionMode":
+		task.HeadlessPermissionMode = "auto"
+	case "ForkSubagent":
+		task.ForkSubagent = true
+	case "ReasoningEffort":
+		task.ReasoningEffort = "xhigh"
+	case "TestingCycleStartedAt":
+		task.TestingCycleStartedAt = &later
+	case "AgentRuns":
+		task.AgentRuns = []AgentRun{{
+			AgentID:                "agent-1",
+			Role:                   "test-runner",
+			Mode:                   AgentModeHeadless,
+			Provider:               "claude",
+			Model:                  "model-a",
+			ExperimentID:           "exp",
+			VariantID:              "variant",
+			AssignmentUnit:         "task",
+			AssignmentKey:          "task-persist",
+			ReasoningEffort:        "high",
+			State:                  "done",
+			StartedAt:              now,
+			CostUSD:                1.25,
+			PremiumRequests:        2.5,
+			Prompt:                 "prompt",
+			Result:                 "result",
+			OneShot:                true,
+			Verdict:                "human",
+			VerdictRendered:        true,
+			LogFile:                "/tmp/log",
+			SessionID:              "session-1",
+			ProtocolViolation:      "bad-report",
+			TestOutcome:            "product_bug",
+			TestFailureFingerprint: "fp",
+			HeadSHA:                "def456",
+		}}
+	case "Workflow":
+		task.Workflow = &workflow.Execution{
+			WorkflowID:  "workflow-1",
+			CurrentStep: "step-1",
+			State:       workflow.ExecRunning,
+			StartedAt:   now,
+			CompletedAt: &completedAt,
+			Variables:   map[string]string{"k": "v"},
+		}
+	case "CreatedAt":
+		task.CreatedAt = now
+	case "UpdatedAt":
+		task.UpdatedAt = later
+	default:
+		t.Fatalf("no persistence test value for Task.%s", name)
+	}
+}

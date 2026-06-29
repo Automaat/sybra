@@ -79,6 +79,8 @@ type agentRunRecord struct {
 	HeadSHA                string    `yaml:"head_sha,omitempty"`
 }
 
+// taskFromFrontmatter rebuilds the persisted task fields. Store loading
+// populates sidecar fields such as Plan, CodeReview, PlanDrafts, and FilePath.
 func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	t := Task{
 		ID:                     fm.ID,
