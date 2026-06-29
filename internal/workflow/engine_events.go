@@ -330,6 +330,28 @@ func (e *Engine) clearAgentStep(agentID string) {
 	e.mu.Unlock()
 }
 
+// clearAgentStepsForTask drops every agent→step mapping owned by a task. Called
+// right after StopAgentsForTask on a (re)dispatch: any agent we just stopped is
+// superseded by the one about to be spawned, so its late or double-delivered
+// completion must not be credited to the workflow. Clearing the entry turns
+// that completion "untracked", at which point the phantom-completion guard in
+// HandleAgentComplete drops it (the freshly-dispatched agent is the only tracked
+// agent for the current step). Without this a stopped test-runner's late
+// provider-error completion lands on the still-current run_test step and burns
+// the retry budget before the retry agent has produced a verdict.
+func (e *Engine) clearAgentStepsForTask(taskID string) {
+	if taskID == "" {
+		return
+	}
+	e.mu.Lock()
+	for id, entry := range e.agentSteps {
+		if entry.taskID == taskID {
+			delete(e.agentSteps, id)
+		}
+	}
+	e.mu.Unlock()
+}
+
 // ClearAgentStep removes the agent→step mapping without advancing the workflow.
 // Used when an agent exits due to an infrastructure-level signal kill so the
 // tracked-agent entry is released while the workflow step stays stalled for

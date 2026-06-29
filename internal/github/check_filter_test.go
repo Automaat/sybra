@@ -33,6 +33,30 @@ func TestIsInformationalCheck(t *testing.T) {
 	}
 }
 
+func TestIsAIReviewCheck(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"Copilot", true},
+		{"Copilot review", true},
+		{"copilot", true},
+		{"build", false},
+		{"CI", false},
+		{"codecov/patch", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isAIReviewCheck(tt.name); got != tt.want {
+				t.Errorf("isAIReviewCheck(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEffectiveCheckState_CheckRun(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -201,6 +225,32 @@ func TestRollupFromContexts(t *testing.T) {
 				statusCtx("codecov/project", "FAILURE"),
 			},
 			wantStatus: "",
+		},
+		{
+			// Real CI green, Copilot AI-review check failing on monthly quota
+			// (HTTP 402). The review check must not gate, so the PR stays
+			// SUCCESS and pr-monitor never dispatches the pr-fix loop.
+			name: "real CI green, Copilot review fails on quota -> SUCCESS",
+			contexts: []gqlCheckContext{
+				checkRun("CI", "COMPLETED", "SUCCESS"),
+				checkRun("Copilot review", "COMPLETED", "FAILURE"),
+			},
+			wantStatus: "SUCCESS",
+		},
+		{
+			name: "only Copilot review fails -> filtered to caller fallback",
+			contexts: []gqlCheckContext{
+				checkRun("Copilot", "COMPLETED", "FAILURE"),
+			},
+			wantStatus: "",
+		},
+		{
+			name: "real check fails alongside Copilot review -> FAILURE",
+			contexts: []gqlCheckContext{
+				checkRun("build", "COMPLETED", "FAILURE"),
+				checkRun("Copilot review", "COMPLETED", "FAILURE"),
+			},
+			wantStatus: "FAILURE",
 		},
 	}
 

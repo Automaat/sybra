@@ -48,6 +48,10 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	// Doing this inside the per-child loop would kill the child we just
 	// spawned for the previous iteration.
 	e.agents.StopAgentsForTask(taskID, "")
+	// Drop the stopped agents' step mappings so their late completions are
+	// dropped as untracked rather than crediting a superseded step (mirrors
+	// execRunAgent). The children spawned below register fresh entries.
+	e.clearAgentStepsForTask(taskID)
 
 	// Persist the inflight record before spawning so an agent that
 	// completes mid-loop finds the parent record on AdvanceStep.

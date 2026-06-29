@@ -780,6 +780,78 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	}
 }
 
+// TestRetry_SupersededAgentLateCompletionDropped reproduces the production bug
+// where a stopped/superseded agent's late (double-delivered) completion was
+// credited to the still-current step and burned its retry budget before the
+// retry agent could produce a result. A headless test-runner that is
+// interrupted can emit more than one terminal completion (e.g. an
+// aborted_streaming result followed by a provider-error exit); both used to
+// land on the run_test step and exhaust max_retries instantly.
+//
+// After the fix, dispatching the retry stops the original agent AND clears its
+// step mapping, so its second completion is untracked and dropped by the
+// phantom-completion guard rather than triggering a further retry.
+func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First triage agent is dispatched and tracked by execRunAgent.
+	agentA := agents.LastID()
+
+	// Agent A fails once → workflow retries and dispatches agent B (still on the
+	// triage step, max_retries: 3). Driving this through AdvanceStep (rather than
+	// HandleAgentComplete) reproduces the production race: A's step mapping is
+	// NOT yet cleared when its late completion arrives, because the two
+	// completions run on different goroutines and HandleAgentComplete's trailing
+	// clearAgentStep for the first hasn't executed yet.
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", AgentID: agentA, Status: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	agentB := agents.LastID()
+	if agentB == agentA {
+		t.Fatalf("retry did not dispatch a new agent: still %s", agentA)
+	}
+	if got := triageStartCount(agents); got != 2 {
+		t.Fatalf("after first failure: triage calls = %d, want 2 (initial + 1 retry)", got)
+	}
+
+	// Agent A (now superseded/stopped) double-fires a second late completion
+	// while its mapping is still live. This must be dropped, not counted as
+	// another retry attempt against the step's retry budget.
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentA, Success: false})
+
+	if got := triageStartCount(agents); got != 2 {
+		t.Fatalf("after superseded late completion: triage calls = %d, want 2 — stale completion must not trigger another retry", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if got := ti.Workflow.CountStep("triage"); got != 1 {
+		t.Errorf("CountStep(triage) = %d, want 1 — superseded completion must not be recorded", got)
+	}
+	if ti.Workflow.CurrentStep != "triage" {
+		t.Errorf("current_step = %q, want triage — retry agent B should still own the step", ti.Workflow.CurrentStep)
+	}
+}
+
+func triageStartCount(agents *mockAgents) int {
+	agents.mu.Lock()
+	defer agents.mu.Unlock()
+	n := 0
+	for i := range agents.calls {
+		if agents.calls[i].Role == "triage" {
+			n++
+		}
+	}
+	return n
+}
+
 func TestTriageRetryableReasonTreatsCompletedRunAsFailed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
