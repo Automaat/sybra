@@ -354,7 +354,7 @@ export class Task {
      */
     "testingCycleStartedAt"?: time$0.Time | null;
     "agentRuns": AgentRun[];
-    "workflow": workflow$0.Execution | null;
+    "workflow"?: workflow$0.Execution | null;
     "createdAt": time$0.Time;
     "updatedAt": time$0.Time;
     "body": string;
@@ -434,9 +434,6 @@ export class Task {
         }
         if (!("agentRuns" in $$source)) {
             this["agentRuns"] = [];
-        }
-        if (!("workflow" in $$source)) {
-            this["workflow"] = null;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = null;
