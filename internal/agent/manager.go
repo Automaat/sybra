@@ -55,7 +55,9 @@ type Manager struct {
 
 	// reg persists live-agent records so subprocesses can be reattached
 	// after an app restart. nil disables survival (legacy behaviour).
-	reg            *registryStore
+	// Manager.mu guards only this pointer and surviveRestart; registryStore
+	// owns serialization of its on-disk Save/List/Delete operations.
+	reg            survivalRegistry
 	surviveRestart bool
 
 	// sessionSink, when set, persists a crashed agent's captured session id
@@ -228,8 +230,8 @@ func willDetach(cfg RunConfig) bool {
 	}
 }
 
-// registry returns the registry store (nil when survival is disabled).
-func (m *Manager) registry() *registryStore {
+// registry returns the survival registry (nil when survival is disabled).
+func (m *Manager) registry() survivalRegistry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.reg
