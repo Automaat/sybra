@@ -675,7 +675,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
 	}
-	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string"},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"url":{"type":"string"}},"required":["command"],"anyOf":[{"required":["actual"]},{"required":["observed"]},{"required":["output"]},{"required":["status"]},{"required":["url"]}],"additionalProperties":false}]},"manual_probes":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command"],"anyOf":[{"required":["actual"]},{"required":["observed"]},{"required":["output"]},{"required":["status"]}],"additionalProperties":false}]}}]},"automated_checks":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command"],"anyOf":[{"required":["actual"]},{"required":["observed"]},{"required":["output"]},{"required":["status"]}],"additionalProperties":false}]}}]},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
+	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string"},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string","minLength":1},{"type":"number"},{"type":"boolean"}]},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false}]},"manual_probes":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"expected":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}]}}]},"automated_checks":{"anyOf":[{"type":"string"},{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"command":{"type":"string"},"actual":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"observed":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"output":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]},"status":{"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"}]}},"required":["command","actual","observed","output","status"],"additionalProperties":false}]}}]},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
 		t.Errorf("run_test.Config.OutputSchema =\n%q\nwant:\n%q", step.Config.OutputSchema, wantSchema)
 	}
@@ -694,6 +694,63 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	for field := range schema.Properties {
 		if !required[field] {
 			t.Fatalf("codex strict output schema requires every property; %q missing from required", field)
+		}
+	}
+	requireCodexStrictOutputSchema(t, []byte(step.Config.OutputSchema))
+}
+
+func requireCodexStrictOutputSchema(t *testing.T, raw []byte) {
+	t.Helper()
+
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal output schema: %v", err)
+	}
+	requireCodexStrictSchemaNode(t, schema, "$")
+}
+
+func requireCodexStrictSchemaNode(t *testing.T, node any, path string) {
+	t.Helper()
+
+	switch v := node.(type) {
+	case map[string]any:
+		propsValue, hasProps := v["properties"]
+		if _, hasRequired := v["required"]; hasRequired && !hasProps {
+			t.Fatalf("%s uses required without properties; Codex strict rejects requirement-only schemas", path)
+		}
+		if hasProps {
+			props, ok := propsValue.(map[string]any)
+			if !ok {
+				t.Fatalf("%s.properties is %T, want object", path, propsValue)
+			}
+			additionalProperties, ok := v["additionalProperties"].(bool)
+			if !ok || additionalProperties {
+				t.Fatalf("%s must set additionalProperties:false", path)
+			}
+			requiredValue, ok := v["required"].([]any)
+			if !ok {
+				t.Fatalf("%s must require every property", path)
+			}
+			required := make(map[string]bool, len(requiredValue))
+			for _, field := range requiredValue {
+				name, ok := field.(string)
+				if !ok {
+					t.Fatalf("%s required field is %T, want string", path, field)
+				}
+				required[name] = true
+			}
+			for field := range props {
+				if !required[field] {
+					t.Fatalf("%s property %q missing from required", path, field)
+				}
+			}
+		}
+		for key, child := range v {
+			requireCodexStrictSchemaNode(t, child, path+"."+key)
+		}
+	case []any:
+		for _, child := range v {
+			requireCodexStrictSchemaNode(t, child, path+"[]")
 		}
 	}
 }
