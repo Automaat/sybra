@@ -101,6 +101,12 @@ func roleMatches(roles []string, role string) bool {
 }
 
 func validateExperiment(exp Experiment) error {
+	bracket := strings.TrimSpace(exp.Bracket)
+	switch bracket {
+	case "", "cheap", "expensive":
+	default:
+		return fmt.Errorf("abtest: experiment %q has invalid bracket %q", exp.ID, exp.Bracket)
+	}
 	seen := map[string]bool{}
 	for i := range exp.Variants {
 		v := exp.Variants[i]
@@ -109,6 +115,9 @@ func validateExperiment(exp Experiment) error {
 		}
 		if err := validateVariant(exp.ID, v); err != nil {
 			return err
+		}
+		if bracket != "" && v.Tier != bracket {
+			return fmt.Errorf("abtest: experiment %q bracket %q but variant %q has tier %q", exp.ID, bracket, v.ID, v.Tier)
 		}
 		if seen[v.ID] {
 			return fmt.Errorf("abtest: experiment %q has duplicate variant id %q", exp.ID, v.ID)
@@ -129,6 +138,11 @@ func validateVariant(expID string, v Variant) error {
 	}
 	if strings.TrimSpace(v.Model) == "" {
 		return fmt.Errorf("abtest: variant %q must set model explicitly", v.ID)
+	}
+	switch v.Tier {
+	case "", "cheap", "expensive":
+	default:
+		return fmt.Errorf("abtest: variant %q has invalid tier %q", v.ID, v.Tier)
 	}
 	return nil
 }
