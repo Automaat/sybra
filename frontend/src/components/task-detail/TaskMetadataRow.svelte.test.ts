@@ -58,6 +58,15 @@ describe('TaskMetadataRow', () => {
     expect(screen.getByText('global default')).toBeDefined()
   })
 
+  it('describes reasoning effort as provider-wide', () => {
+    render(TaskMetadataRow, { props: { task: baseTask as never } })
+    expect(screen.getByText('Reasoning Effort')).toBeDefined()
+    expect(screen.getByLabelText('Reasoning Effort').getAttribute('title')).toBe(
+      'Provider reasoning effort. Empty = model default.',
+    )
+    expect(screen.queryByText(/Codex only/)).toBeNull()
+  })
+
   it('renders agent mode + tags + project + branch + issue + allowed tools', () => {
     render(TaskMetadataRow, { props: { task: baseTask as never } })
     expect(screen.getByText('Agent Mode')).toBeDefined()
