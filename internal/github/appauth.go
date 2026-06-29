@@ -142,6 +142,9 @@ func (s *appTokenSource) refresh(ctx context.Context) error {
 // signJWT builds the short-lived App JWT (RS256) used to authenticate the
 // installation-token request. Hand-rolled to avoid a JWT dependency.
 func (s *appTokenSource) signJWT(now time.Time) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("sign app jwt: app auth is disabled")
+	}
 	header := base64URL([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	// iat backdated 60s to tolerate clock skew; exp capped at 10m (GitHub max).
 	claims := fmt.Sprintf(`{"iat":%d,"exp":%d,"iss":"%d"}`,
