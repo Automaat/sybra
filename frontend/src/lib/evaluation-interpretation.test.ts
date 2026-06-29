@@ -84,6 +84,7 @@ describe('interpretExperiment', () => {
 
     expect(result.verdict).toBe('risky')
     expect(result.guardrails.find((g) => g.key === 'ci-first-pass')?.status).toBe('breach')
+    expect(result.guardrails.find((g) => g.key === 'ci-first-pass')?.category).toBe('risk')
   })
 
   it('marks peer-relative outlier breaches as costly', () => {
@@ -93,6 +94,21 @@ describe('interpretExperiment', () => {
 
     expect(result.verdict).toBe('costly')
     expect(result.guardrails.find((g) => g.key === 'durationP90S')?.status).toBe('breach')
+    expect(result.guardrails.find((g) => g.key === 'durationP90S')?.category).toBe('cost')
+  })
+
+  it('assigns explicit categories to every guardrail', () => {
+    const result = interpretExperiment(row(), [peer()])
+
+    expect(result.guardrails.map((g) => [g.key, g.category])).toEqual([
+      ['ci-first-pass', 'risk'],
+      ['edited-merge', 'risk'],
+      ['rework', 'risk'],
+      ['revert', 'risk'],
+      ['durationP90S', 'cost'],
+      ['costPerLanded', 'cost'],
+      ['premiumRequestsPerLanded', 'cost'],
+    ])
   })
 
   it('marks rows as promising when no guardrail breaches', () => {

@@ -3,10 +3,12 @@ import type { ComparisonBreakdown } from '../../bindings/github.com/Automaat/syb
 export type ExperimentVerdict = 'underpowered' | 'needs-more-data' | 'risky' | 'costly' | 'promising'
 
 export type GuardrailStatus = 'ok' | 'watch' | 'breach' | 'limited'
+export type GuardrailCategory = 'risk' | 'cost'
 
 export interface GuardrailSignal {
   key: string
   label: string
+  category: GuardrailCategory
   status: GuardrailStatus
   detail: string
 }
@@ -46,10 +48,10 @@ export function interpretExperiment(
   const landed = finiteNonNegative(row.landed)
   const landedPerRun = runs > 0 ? landed / runs : undefined
   const guardrails: GuardrailSignal[] = [
-    thresholdLow('ci-first-pass', 'CI first pass', finiteRate(row.ciFirstPassRate), 0.6, 0.8),
-    thresholdHigh('edited-merge', 'Edited merge rate', finiteRate(row.mergedWithEditsRate), 0.3, 0.15),
-    thresholdHigh('rework', 'Rework', finiteRate(row.reworkRate), 0.3, 0.15),
-    thresholdHigh('revert', 'Revert', finiteRate(row.revertRate), 0, 0),
+    thresholdLow('ci-first-pass', 'CI first pass', 'risk', finiteRate(row.ciFirstPassRate), 0.6, 0.8),
+    thresholdHigh('edited-merge', 'Edited merge rate', 'risk', finiteRate(row.mergedWithEditsRate), 0.3, 0.15),
+    thresholdHigh('rework', 'Rework', 'risk', finiteRate(row.reworkRate), 0.3, 0.15),
+    thresholdHigh('revert', 'Revert', 'risk', finiteRate(row.revertRate), 0, 0),
   ]
   const limitedSignals: string[] = []
 
@@ -83,6 +85,7 @@ export function interpretExperiment(
       guardrails.push({
         key: metric.key,
         label: metric.label,
+        category: 'cost',
         status: 'limited',
         detail: `No usable same-experiment ${metric.unit}.`,
       })
@@ -95,6 +98,7 @@ export function interpretExperiment(
       guardrails.push({
         key: metric.key,
         label: metric.label,
+        category: 'cost',
         status: 'limited',
         detail: `No positive ${metric.label.toLowerCase()} value for this variant.`,
       })
@@ -107,6 +111,7 @@ export function interpretExperiment(
     guardrails.push({
       key: metric.key,
       label: metric.label,
+      category: 'cost',
       status,
       detail: `${metric.format(value)} vs ${metric.format(peerMedian)} ${metric.unit} (${ratio.toFixed(2)}x).`,
     })
@@ -132,8 +137,8 @@ export function interpretExperiment(
 function deriveVerdict(row: ComparisonBreakdown, landed: number, guardrails: GuardrailSignal[]): ExperimentVerdict {
   if (row.insufficientData) return 'underpowered'
   if (row.qualityAttributionLimited || landed === 0) return 'needs-more-data'
-  if (guardrails.slice(0, 4).some((g) => g.status === 'breach')) return 'risky'
-  if (guardrails.slice(4).some((g) => g.status === 'breach')) return 'costly'
+  if (guardrails.some((g) => g.category === 'risk' && g.status === 'breach')) return 'risky'
+  if (guardrails.some((g) => g.category === 'cost' && g.status === 'breach')) return 'costly'
   return 'promising'
 }
 
@@ -154,25 +159,27 @@ function verdictReason(
 function thresholdLow(
   key: string,
   label: string,
+  category: GuardrailCategory,
   value: number | undefined,
   breachBelow: number,
   watchBelow: number,
 ): GuardrailSignal {
-  if (value === undefined) return { key, label, status: 'limited', detail: 'No finite rate available.' }
+  if (value === undefined) return { key, label, category, status: 'limited', detail: 'No finite rate available.' }
   const status: GuardrailStatus = value < breachBelow ? 'breach' : value < watchBelow ? 'watch' : 'ok'
-  return { key, label, status, detail: `${formatPct(value)} (${formatPct(breachBelow)} breach floor).` }
+  return { key, label, category, status, detail: `${formatPct(value)} (${formatPct(breachBelow)} breach floor).` }
 }
 
 function thresholdHigh(
   key: string,
   label: string,
+  category: GuardrailCategory,
   value: number | undefined,
   breachAbove: number,
   watchAbove: number,
 ): GuardrailSignal {
-  if (value === undefined) return { key, label, status: 'limited', detail: 'No finite rate available.' }
+  if (value === undefined) return { key, label, category, status: 'limited', detail: 'No finite rate available.' }
   const status: GuardrailStatus = value > breachAbove ? 'breach' : value > watchAbove ? 'watch' : 'ok'
-  return { key, label, status, detail: `${formatPct(value)} (${formatPct(breachAbove)} breach ceiling).` }
+  return { key, label, category, status, detail: `${formatPct(value)} (${formatPct(breachAbove)} breach ceiling).` }
 }
 
 function peerValues(
