@@ -798,7 +798,7 @@ func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []Ex
 	if len(opts.Experiments) == 0 {
 		return nil
 	}
-	configured := configuredExperimentRoles(opts.Experiments)
+	configured := configuredExperimentRoles(opts.Experiments, rows)
 	if len(configured) == 0 {
 		return nil
 	}
@@ -827,6 +827,9 @@ func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []Ex
 		rowByVariant := map[string]*ComparisonBreakdown{}
 		for _, idx := range indexes {
 			row := &rows[idx]
+			if cfg.disabledVariants[row.VariantID] {
+				continue
+			}
 			row.MinSamplesPerVariant = opts.MinSamples
 			row.BaselineVariantID = cfg.baselineVariantID
 			if opts.MinSamples > 0 && row.Runs < opts.MinSamples {
@@ -847,32 +850,72 @@ type experimentRoleConfig struct {
 	role               string
 	baselineVariantID  string
 	configuredVariants []string
+	disabledVariants   map[string]bool
 }
 
-func configuredExperimentRoles(experiments []abtest.Experiment) map[string]experimentRoleConfig {
+func configuredExperimentRoles(experiments []abtest.Experiment, rows []ComparisonBreakdown) map[string]experimentRoleConfig {
 	out := map[string]experimentRoleConfig{}
 	for _, exp := range experiments {
 		if exp.ID == "" || !exp.EnabledValue() || len(exp.Variants) == 0 {
 			continue
 		}
-		baseline := exp.Variants[0].ID
-		variants := make([]string, 0, len(exp.Variants))
+		eligible, _ := abtest.EligibleVariants(exp, nil)
+		variants := make([]string, 0, len(eligible))
+		disabled := map[string]bool{}
 		for _, v := range exp.Variants {
+			if v.ID != "" && v.Weight <= 0 {
+				disabled[v.ID] = true
+			}
+		}
+		baseline := ""
+		for _, v := range eligible {
 			if v.ID != "" {
+				if baseline == "" {
+					baseline = v.ID
+				}
 				variants = append(variants, v.ID)
 			}
 		}
-		for _, role := range exp.Roles {
+		if len(variants) == 0 {
+			continue
+		}
+		for _, role := range configuredExperimentRoleNames(exp, rows) {
 			role = normalizedRole(role)
 			out[experimentRoleKey(exp.ID, role)] = experimentRoleConfig{
 				experimentID:       exp.ID,
 				role:               role,
 				baselineVariantID:  baseline,
 				configuredVariants: variants,
+				disabledVariants:   disabled,
 			}
 		}
 	}
 	return out
+}
+
+func configuredExperimentRoleNames(exp abtest.Experiment, rows []ComparisonBreakdown) []string {
+	if len(exp.Roles) > 0 {
+		return exp.Roles
+	}
+	seen := map[string]bool{}
+	roles := make([]string, 0)
+	for i := range rows {
+		row := &rows[i]
+		if row.ExperimentID != exp.ID || row.Role == "" {
+			continue
+		}
+		role := normalizedRole(row.Role)
+		if seen[role] {
+			continue
+		}
+		seen[role] = true
+		roles = append(roles, role)
+	}
+	if len(roles) == 0 {
+		return []string{normalizedRole("")}
+	}
+	sort.Strings(roles)
+	return roles
 }
 
 func experimentRoleKey(experimentID, role string) string {

@@ -48,19 +48,7 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 	} else if unit != "task" {
 		return Assignment{}, false, fmt.Errorf("abtest: experiment %q has invalid assignment_unit %q", exp.ID, exp.AssignmentUnit)
 	}
-	var total int
-	eligible := make([]Variant, 0, len(exp.Variants))
-	for i := range exp.Variants {
-		v := exp.Variants[i]
-		if v.Weight <= 0 {
-			continue
-		}
-		if providerAllowed != nil && !providerAllowed(v.Provider) {
-			continue
-		}
-		total += v.Weight
-		eligible = append(eligible, v)
-	}
+	eligible, total := EligibleVariants(exp, providerAllowed)
 	if total <= 0 {
 		return Assignment{}, false, fmt.Errorf("abtest: experiment %q has no eligible positive-weight variants", exp.ID)
 	}
@@ -83,6 +71,23 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 		}
 	}
 	return Assignment{}, false, fmt.Errorf("abtest: experiment %q selection fell through", exp.ID)
+}
+
+// EligibleVariants returns the positive-weight variants that can be assigned.
+func EligibleVariants(exp Experiment, providerAllowed func(string) bool) (eligible []Variant, totalWeight int) {
+	eligible = make([]Variant, 0, len(exp.Variants))
+	for i := range exp.Variants {
+		v := exp.Variants[i]
+		if v.Weight <= 0 {
+			continue
+		}
+		if providerAllowed != nil && !providerAllowed(v.Provider) {
+			continue
+		}
+		totalWeight += v.Weight
+		eligible = append(eligible, v)
+	}
+	return eligible, totalWeight
 }
 
 func roleMatches(roles []string, role string) bool {

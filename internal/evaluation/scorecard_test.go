@@ -434,7 +434,7 @@ func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
 		Experiments: []abtest.Experiment{{
 			ID:       "exp",
 			Roles:    []string{"implementation"},
-			Variants: []abtest.Variant{{ID: "control"}, {ID: "treatment"}, {ID: "missing"}},
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}, {ID: "missing", Weight: 1}},
 		}},
 	}, func(r stats.RunRecord) string {
 		if r.ExperimentID == "" || r.VariantID == "" {
@@ -497,7 +497,7 @@ func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
 		Experiments: []abtest.Experiment{{
 			ID:       "exp",
 			Roles:    []string{"implementation"},
-			Variants: []abtest.Variant{{ID: "control"}, {ID: "treatment"}},
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}},
 		}},
 	}, func(r stats.RunRecord) string {
 		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
@@ -511,6 +511,121 @@ func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
 	}
 	if len(res.Experiments) != 1 || res.Experiments[0].Status != "directional" {
 		t.Fatalf("experiment status = %+v", res.Experiments)
+	}
+}
+
+func TestCompareByVariantEmptyExperimentRolesUseObservedRoles(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:       "exp",
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	control := rows["control"]
+	treatment := rows["treatment"]
+	if control == nil || treatment == nil {
+		t.Fatalf("rows = %+v", res.Rows)
+	}
+	if !control.Baseline || control.BaselineVariantID != "control" {
+		t.Fatalf("control baseline fields = %+v", *control)
+	}
+	if !treatment.FailureEstimate.HasDelta || treatment.FailureEstimate.DeltaFromBaseline != 1 {
+		t.Fatalf("treatment failure delta = %+v, want +1 from baseline", treatment.FailureEstimate)
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.ExperimentID != "exp" || status.Role != "implementation" || status.BaselineVariantID != "control" || status.Status != "actionable" {
+		t.Fatalf("experiment status = %+v", status)
+	}
+}
+
+func TestCompareByVariantZeroWeightFirstVariantDoesNotBecomeBaseline(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "disabled", Weight: 0},
+				{ID: "control", Weight: 1},
+				{ID: "treatment", Weight: 1},
+			},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	if rows["control"] == nil || !rows["control"].Baseline || rows["control"].BaselineVariantID != "control" {
+		t.Fatalf("control baseline fields = %+v", rows["control"])
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.BaselineVariantID != "control" || status.Status != "actionable" || len(status.Variants) != 2 {
+		t.Fatalf("experiment status = %+v", status)
+	}
+	for _, variant := range status.Variants {
+		if variant.VariantID == "disabled" {
+			t.Fatalf("zero-weight variant included in readiness: %+v", status.Variants)
+		}
+	}
+}
+
+func TestCompareByVariantZeroWeightNonBaselineDoesNotBlockReadiness(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+		{TaskID: "C1", Role: "implementation", ExperimentID: "exp", VariantID: "disabled", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "control", Weight: 1},
+				{ID: "disabled", Weight: 0},
+				{ID: "treatment", Weight: 1},
+			},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.Status != "actionable" || status.ReadyVariants != 2 || status.TotalRuns != 2 || len(status.Variants) != 2 {
+		t.Fatalf("experiment status = %+v", status)
+	}
+	for _, variant := range status.Variants {
+		if variant.VariantID == "disabled" {
+			t.Fatalf("zero-weight variant included in readiness: %+v", status.Variants)
+		}
 	}
 }
 
