@@ -129,10 +129,10 @@ func (r *ReviewHandler) escalateExhaustedFix(issue github.PRIssue) {
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
 }
 
-func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
+func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) bool {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
-		return
+		return false
 	}
 
 	var prompt string
@@ -174,17 +174,21 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 
 	case github.PRIssueReadyToMerge:
 		// handled by handleAutoMerge, not by agent spawn
-		return
+		return false
 	}
 
 	dir, ok := r.prepareWorktree(t, issue)
 	if !ok {
-		return
+		return false
 	}
 
+	return r.dispatchPRIssue(t, issue, prompt, dir)
+}
+
+func (r *ReviewHandler) dispatchPRIssue(t task.Task, issue github.PRIssue, prompt, dir string) bool {
 	if r.workflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
-		return
+		return false
 	}
 
 	// Dispatch pr.event through the engine so trigger conditions in the
@@ -201,15 +205,15 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			r.logger.Info("pr-monitor.workflow-already-active",
 				"task_id", t.ID, "kind", string(issue.Kind))
-			return
+			return false
 		}
 		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
-		return
+		return false
 	}
 	if wfID == "" {
 		r.logger.Warn("pr-monitor.no-matching-workflow",
 			"task_id", t.ID, "kind", string(issue.Kind))
-		return
+		return false
 	}
 
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
@@ -221,6 +225,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) {
 		"task_id", t.ID, "issue", string(issue.Kind),
 		"pr", issue.PR.Number, "workflow", wfID,
 	)
+	return true
 }
 
 // recoverStaleBranchConflict turns a worktree-prep rebase failure into
@@ -259,8 +264,7 @@ func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
 	}
 	r.logger.Info("pr-monitor.rebase-block.recover-as-conflict",
 		"task_id", taskID, "pr", t.PRNumber)
-	r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
-	return true
+	return r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
 }
 
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
