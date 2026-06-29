@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/todoist"
 )
 
@@ -52,9 +53,9 @@ func TestTodoistImport_SetsDefaultProjectID(t *testing.T) {
 	}
 	client := todoist.NewClientWith(cfg.APIToken, http.DefaultClient, srv.URL)
 
-	h := newTodoistHandler(
+	h := poll.NewTodoistHandler(
 		a.tasks,
-		taskSvc,
+		taskSvc.CreateTask,
 		client,
 		nil,
 		a.logger,
@@ -110,9 +111,9 @@ func TestTodoistImport_EmptyDefaultProjectIDLeavesUnset(t *testing.T) {
 	}
 	client := todoist.NewClientWith(cfg.APIToken, http.DefaultClient, srv.URL)
 
-	h := newTodoistHandler(
+	h := poll.NewTodoistHandler(
 		a.tasks,
-		taskSvc,
+		taskSvc.CreateTask,
 		client,
 		nil,
 		a.logger,

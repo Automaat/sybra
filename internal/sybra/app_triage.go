@@ -11,6 +11,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// triageCoordinator owns the auto-triage poll handler. Its handler lifetime is
+// managed by the shared poll hub, so runtime config changes take effect on restart.
 type triageCoordinator struct {
 	tasks          *task.Manager
 	projects       *project.Store

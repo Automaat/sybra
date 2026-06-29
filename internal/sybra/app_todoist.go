@@ -15,6 +15,7 @@ import (
 )
 
 type todoistCoordinator struct {
+	mu       sync.Mutex
 	tasks    *task.Manager
 	svc      *TaskService
 	auditLog *audit.Logger
@@ -46,20 +47,16 @@ func newTodoistCoordinator(
 	}
 }
 
-// newTodoistHandler constructs a poll.TodoistHandler using a TaskService.
-func newTodoistHandler(
-	tasks *task.Manager,
-	svc *TaskService,
-	client *todoist.Client,
-	al *audit.Logger,
-	logger *slog.Logger,
-	emit func(string, any),
-	cfg config.TodoistConfig,
-) *poll.TodoistHandler {
-	return poll.NewTodoistHandler(tasks, svc.CreateTask, client, al, logger, emit, cfg)
+func (c *todoistCoordinator) init() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.initLocked()
 }
 
-func (c *todoistCoordinator) init() {
+func (c *todoistCoordinator) initLocked() {
 	if !c.cfg.Todoist.Enabled || c.cfg.Todoist.APIToken == "" {
 		return
 	}
@@ -69,6 +66,15 @@ func (c *todoistCoordinator) init() {
 }
 
 func (c *todoistCoordinator) start(parent context.Context) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.startLocked(parent)
+}
+
+func (c *todoistCoordinator) startLocked(parent context.Context) {
 	if c.handler == nil {
 		return
 	}
@@ -78,7 +84,7 @@ func (c *todoistCoordinator) start(parent context.Context) {
 	c.wg.Go(func() { p.Run(ctx) })
 }
 
-func (c *todoistCoordinator) stop() {
+func (c *todoistCoordinator) stopLocked() {
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
@@ -87,17 +93,32 @@ func (c *todoistCoordinator) stop() {
 }
 
 func (c *todoistCoordinator) reload(parent context.Context) {
-	c.stop()
-	c.init()
-	c.start(parent)
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopLocked()
+	c.initLocked()
+	c.startLocked(parent)
 }
 
 func (c *todoistCoordinator) enabled() bool {
-	return c != nil && c.handler != nil
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.handler != nil
 }
 
 func (c *todoistCoordinator) syncNow() error {
-	if !c.enabled() {
+	if c == nil {
+		return fmt.Errorf("todoist integration not enabled")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.handler == nil {
 		return fmt.Errorf("todoist integration not enabled")
 	}
 	c.handler.PollAndSync()
