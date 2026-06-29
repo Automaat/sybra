@@ -60,12 +60,9 @@ export class Breakdown {
     }
 }
 
-/**
- * ComparisonBreakdown compares agent/model or experiment variants on the
- * speed, quality, and cost signals Sybra already records.
- */
 export class ComparisonBreakdown {
     "key": string;
+    "attributionMode": string;
     "provider"?: string;
     "model"?: string;
     "role"?: string;
@@ -100,6 +97,9 @@ export class ComparisonBreakdown {
     constructor($$source: Partial<ComparisonBreakdown> = {}) {
         if (!("key" in $$source)) {
             this["key"] = "";
+        }
+        if (!("attributionMode" in $$source)) {
+            this["attributionMode"] = "";
         }
         if (!("runs" in $$source)) {
             this["runs"] = 0;
@@ -175,10 +175,10 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
-        const $$createField29_0 = $$createType1;
+        const $$createField30_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField29_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField30_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -291,7 +291,9 @@ export class Report {
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
+    "byAgentModelContribution"?: ComparisonBreakdown[];
     "byVariant"?: ComparisonBreakdown[];
+    "byVariantContribution"?: ComparisonBreakdown[];
     "weaknesses"?: Weakness[];
     "notes"?: string[];
 
@@ -322,8 +324,10 @@ export class Report {
         const $$createField5_0 = $$createType8;
         const $$createField6_0 = $$createType1;
         const $$createField7_0 = $$createType1;
-        const $$createField8_0 = $$createType10;
-        const $$createField9_0 = $$createType11;
+        const $$createField8_0 = $$createType1;
+        const $$createField9_0 = $$createType1;
+        const $$createField10_0 = $$createType10;
+        const $$createField11_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -337,14 +341,20 @@ export class Report {
         if ("byAgentModel" in $$parsedSource) {
             $$parsedSource["byAgentModel"] = $$createField6_0($$parsedSource["byAgentModel"]);
         }
+        if ("byAgentModelContribution" in $$parsedSource) {
+            $$parsedSource["byAgentModelContribution"] = $$createField7_0($$parsedSource["byAgentModelContribution"]);
+        }
         if ("byVariant" in $$parsedSource) {
-            $$parsedSource["byVariant"] = $$createField7_0($$parsedSource["byVariant"]);
+            $$parsedSource["byVariant"] = $$createField8_0($$parsedSource["byVariant"]);
+        }
+        if ("byVariantContribution" in $$parsedSource) {
+            $$parsedSource["byVariantContribution"] = $$createField9_0($$parsedSource["byVariantContribution"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField8_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField9_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }

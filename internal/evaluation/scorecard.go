@@ -71,8 +71,16 @@ type Breakdown struct {
 
 // ComparisonBreakdown compares agent/model or experiment variants on the
 // speed, quality, and cost signals Sybra already records.
+type ComparisonAttributionMode string
+
+const (
+	ComparisonAttributionLatestAuthor    ComparisonAttributionMode = "latest_author"
+	ComparisonAttributionAnyContribution ComparisonAttributionMode = "any_author_contribution"
+)
+
 type ComparisonBreakdown struct {
 	Key                       string                `json:"key"`
+	AttributionMode           string                `json:"attributionMode"`
 	Provider                  string                `json:"provider,omitempty"`
 	Model                     string                `json:"model,omitempty"`
 	Role                      string                `json:"role,omitempty"`
@@ -106,16 +114,18 @@ type ComparisonBreakdown struct {
 
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt  time.Time             `json:"generatedAt"`
-	Since        time.Time             `json:"since"`
-	Until        time.Time             `json:"until"`
-	Overall      Scorecard             `json:"overall"`
-	ByProvider   []Breakdown           `json:"byProvider,omitempty"`
-	ByRole       []Breakdown           `json:"byRole,omitempty"`
-	ByAgentModel []ComparisonBreakdown `json:"byAgentModel,omitempty"`
-	ByVariant    []ComparisonBreakdown `json:"byVariant,omitempty"`
-	Weaknesses   []Weakness            `json:"weaknesses,omitempty"`
-	Notes        []string              `json:"notes,omitempty"`
+	GeneratedAt              time.Time             `json:"generatedAt"`
+	Since                    time.Time             `json:"since"`
+	Until                    time.Time             `json:"until"`
+	Overall                  Scorecard             `json:"overall"`
+	ByProvider               []Breakdown           `json:"byProvider,omitempty"`
+	ByRole                   []Breakdown           `json:"byRole,omitempty"`
+	ByAgentModel             []ComparisonBreakdown `json:"byAgentModel,omitempty"`
+	ByAgentModelContribution []ComparisonBreakdown `json:"byAgentModelContribution,omitempty"`
+	ByVariant                []ComparisonBreakdown `json:"byVariant,omitempty"`
+	ByVariantContribution    []ComparisonBreakdown `json:"byVariantContribution,omitempty"`
+	Weaknesses               []Weakness            `json:"weaknesses,omitempty"`
+	Notes                    []string              `json:"notes,omitempty"`
 }
 
 // deferredNotes documents metrics that need signals not yet captured, so the
@@ -380,9 +390,10 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	return out
 }
 
-// CompareBy groups run records by key and attributes landed-task outcomes to
-// the latest code-author run for that task. minSamples controls the
-// InsufficientData flag only; rows are still emitted so users can see early data.
+// CompareByLatestAuthor and CompareByContribution group run records by key and
+// attribute landed-task outcomes using explicit final-stage or contribution
+// semantics. minSamples controls the InsufficientData flag only; rows are still
+// emitted so users can see early data.
 type comparisonAcc struct {
 	row             ComparisonBreakdown
 	durations       []float64
@@ -391,13 +402,22 @@ type comparisonAcc struct {
 	reverted        int
 }
 
-func CompareBy(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
+func CompareByLatestAuthor(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
+	return compareByAttribution(records, events, since, until, minSamples, key, ComparisonAttributionLatestAuthor)
+}
+
+func CompareByContribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
+	return compareByAttribution(records, events, since, until, minSamples, key, ComparisonAttributionAnyContribution)
+}
+
+func compareByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string, mode ComparisonAttributionMode) []ComparisonBreakdown {
 	groups := map[string]*comparisonAcc{}
 	ensure := func(r stats.RunRecord, k string) *comparisonAcc {
 		a := groups[k]
 		if a == nil {
 			a = &comparisonAcc{row: ComparisonBreakdown{
 				Key:             k,
+				AttributionMode: string(mode),
 				Provider:        r.Provider,
 				Model:           r.Model,
 				Role:            normalizedRole(r.Role),
@@ -430,17 +450,23 @@ func CompareBy(records []stats.RunRecord, events []audit.Event, since, until tim
 		a.tools += r.ToolCalls
 	}
 
-	applyComparisonLandings(ensure, records, events, since, until, key)
+	applyComparisonLandings(ensure, records, events, since, until, key, mode)
 	return comparisonRows(groups, minSamples)
 }
 
 // CompareVariants returns A/B rows at experiment/variant granularity, with
-// role-specific rows attached as drilldowns. It deliberately reuses CompareBy
-// for both levels so attribution and low-sample semantics stay identical to the
-// flat comparison path.
+// role-specific rows attached as drilldowns. It uses latest-author attribution.
 func CompareVariants(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int) []ComparisonBreakdown {
-	parents := CompareBy(records, events, since, until, minSamples, variantKey)
-	children := CompareBy(records, events, since, until, minSamples, variantRoleKey)
+	return compareVariantsByAttribution(records, events, since, until, minSamples, ComparisonAttributionLatestAuthor)
+}
+
+func CompareVariantsByContribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int) []ComparisonBreakdown {
+	return compareVariantsByAttribution(records, events, since, until, minSamples, ComparisonAttributionAnyContribution)
+}
+
+func compareVariantsByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, mode ComparisonAttributionMode) []ComparisonBreakdown {
+	parents := compareByAttribution(records, events, since, until, minSamples, variantKey, mode)
+	children := compareByAttribution(records, events, since, until, minSamples, variantRoleKey, mode)
 	normalizeVariantParents(parents, records, since, until)
 
 	for i := range parents {
@@ -538,41 +564,42 @@ func (v *valueConsensus) value() string {
 	return v.chosen
 }
 
-func applyComparisonLandings(ensure func(stats.RunRecord, string) *comparisonAcc, records []stats.RunRecord, events []audit.Event, since, until time.Time, key func(stats.RunRecord) string) {
+func applyComparisonLandings(ensure func(stats.RunRecord, string) *comparisonAcc, records []stats.RunRecord, events []audit.Event, since, until time.Time, key func(stats.RunRecord) string, mode ComparisonAttributionMode) {
 	landed := scanLandings(events, func(t time.Time) bool { return !t.Before(since) && !t.After(until) })
 	sigs := scanTaskSignals(events)
+	credited := map[string]map[string]stats.RunRecord{}
 	for taskID := range landed.tasks {
 		landedAt := landingTimestamp(events, taskID, since, until)
 		if landedAt.IsZero() {
 			continue
 		}
-		r, ok := latestAuthorRun(records, taskID, since, landedAt, key)
-		if !ok {
+		taskCredits := creditedAuthorRuns(records, taskID, since, landedAt, key, mode)
+		if len(taskCredits) == 0 {
 			continue
 		}
-		k := key(r)
-		if k == "" {
-			continue
-		}
-		a := ensure(r, k)
-		a.row.Landed++
-		if landed.edited[taskID] {
-			a.row.MergedWithEdits++
-		} else {
-			// scanLandings tracks closed only as aggregate; read the per-task
-			// outcome directly so variant rows preserve merged vs closed.
-			switch landingOutcome(events, taskID, since, until) {
-			case "closed":
-				a.row.Closed++
-			default:
-				a.row.Merged++
+		credited[taskID] = taskCredits
+		for k := range taskCredits {
+			r := taskCredits[k]
+			a := ensure(r, k)
+			a.row.Landed++
+			if landed.edited[taskID] {
+				a.row.MergedWithEdits++
+			} else {
+				// scanLandings tracks closed only as aggregate; read the per-task
+				// outcome directly so variant rows preserve merged vs closed.
+				switch landingOutcome(events, taskID, since, until) {
+				case "closed":
+					a.row.Closed++
+				default:
+					a.row.Merged++
+				}
 			}
-		}
-		if s := sigs[taskID]; s == nil || !s.ciFixNeeded {
-			a.ciClean++
-		}
-		if taskHasRework(sigs[taskID]) {
-			a.rework++
+			if s := sigs[taskID]; s == nil || !s.ciFixNeeded {
+				a.ciClean++
+			}
+			if taskHasRework(sigs[taskID]) {
+				a.rework++
+			}
 		}
 	}
 	for i := range events {
@@ -580,14 +607,42 @@ func applyComparisonLandings(ensure func(stats.RunRecord, string) *comparisonAcc
 		if e.Type != audit.EventPRReverted || e.TaskID == "" || e.Timestamp.Before(since) || e.Timestamp.After(until) {
 			continue
 		}
-		r, ok := latestAuthorRun(records, e.TaskID, since, e.Timestamp, key)
-		if !ok {
-			continue
-		}
-		if k := key(r); k != "" {
+		for k := range credited[e.TaskID] {
+			r := credited[e.TaskID][k]
 			ensure(r, k).reverted++
 		}
 	}
+}
+
+func creditedAuthorRuns(records []stats.RunRecord, taskID string, since, landedAt time.Time, key func(stats.RunRecord) string, mode ComparisonAttributionMode) map[string]stats.RunRecord {
+	switch mode {
+	case ComparisonAttributionAnyContribution:
+		return latestAuthorRunsByKey(records, taskID, since, landedAt, key)
+	default:
+		r, ok := latestAuthorRun(records, taskID, since, landedAt, key)
+		if !ok {
+			return nil
+		}
+		return map[string]stats.RunRecord{key(r): r}
+	}
+}
+
+func latestAuthorRunsByKey(records []stats.RunRecord, taskID string, since, until time.Time, key func(stats.RunRecord) string) map[string]stats.RunRecord {
+	best := map[string]stats.RunRecord{}
+	for i := range records {
+		r := records[i]
+		if r.TaskID != taskID || r.Timestamp.Before(since) || r.Timestamp.After(until) || !isAuthorRole(r.Role) {
+			continue
+		}
+		k := key(r)
+		if k == "" {
+			continue
+		}
+		if prev, ok := best[k]; !ok || r.Timestamp.After(prev.Timestamp) {
+			best[k] = r
+		}
+	}
+	return best
 }
 
 func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []ComparisonBreakdown {

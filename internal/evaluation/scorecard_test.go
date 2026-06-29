@@ -1,10 +1,12 @@
 package evaluation
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -124,7 +126,7 @@ func TestCompareByVariant(t *testing.T) {
 	events := []audit.Event{
 		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
 	}
-	got := CompareBy(records, events, since, base, 20, func(r stats.RunRecord) string {
+	got := CompareByLatestAuthor(records, events, since, base, 20, func(r stats.RunRecord) string {
 		if r.ExperimentID == "" || r.VariantID == "" {
 			return ""
 		}
@@ -140,6 +142,9 @@ func TestCompareByVariant(t *testing.T) {
 	if gpt.Runs != 1 || gpt.Landed != 1 || gpt.MergeRate != 1 || gpt.PremiumRequests != 7.5 || gpt.PremiumRequestsPerLanded != 7.5 {
 		t.Fatalf("gpt row = %+v", gpt)
 	}
+	if gpt.AttributionMode != string(ComparisonAttributionLatestAuthor) {
+		t.Fatalf("attribution mode = %q, want latest author", gpt.AttributionMode)
+	}
 	if !gpt.InsufficientData {
 		t.Fatalf("gpt row should be marked low sample: %+v", gpt)
 	}
@@ -154,7 +159,7 @@ func TestCompareByVariantDoesNotAttributePreWindowRun(t *testing.T) {
 	events := []audit.Event{
 		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: base.Add(-1 * time.Hour), Data: map[string]any{"outcome": "merged"}},
 	}
-	got := CompareBy(records, events, since, base, 0, func(r stats.RunRecord) string {
+	got := CompareByLatestAuthor(records, events, since, base, 0, func(r stats.RunRecord) string {
 		return r.ExperimentID + ":" + r.VariantID
 	})
 	if len(got) != 0 {
@@ -319,6 +324,64 @@ func comparisonByRole(t *testing.T, rows []ComparisonBreakdown, role string) Com
 	return ComparisonBreakdown{}
 }
 
+func TestCompareByAttributionModes(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	landedAt := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		// Pre-window author must not be credited.
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "old", ExperimentID: "exp", VariantID: "old", Outcome: "completed", Timestamp: since.Add(-1 * time.Nanosecond)},
+		// Same key appears twice before landing; contribution mode credits it once.
+		{TaskID: "A", Role: "implementation", Provider: "copilot", Model: "gpt", ExperimentID: "exp", VariantID: "gpt", Outcome: "completed", Timestamp: since},
+		{TaskID: "A", Role: "implementation", Provider: "copilot", Model: "gpt", ExperimentID: "exp", VariantID: "gpt", Outcome: "completed", Timestamp: landedAt.Add(-10 * time.Minute)},
+		// Inclusive landedAt cutoff: this final-stage author is eligible exactly at landing.
+		{TaskID: "A", Role: "fix-review", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "opus", Outcome: "completed", Timestamp: landedAt},
+		// Reverted but never landed in this window: runs remain visible, quality attribution does not move.
+		{TaskID: "B", Role: "implementation", Provider: "codex", Model: "gpt", ExperimentID: "exp", VariantID: "unused", Outcome: "completed", Timestamp: landedAt},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: landedAt, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: landedAt.Add(1 * time.Minute), Data: map[string]any{"outcome": "merged"}}, // duplicate audit event
+		{Type: audit.EventPRReverted, TaskID: "A", Timestamp: landedAt.Add(30 * time.Minute)},
+		{Type: audit.EventPRReverted, TaskID: "B", Timestamp: landedAt.Add(30 * time.Minute)},
+	}
+	key := func(r stats.RunRecord) string {
+		if r.ExperimentID == "" || r.VariantID == "" {
+			return ""
+		}
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	}
+
+	latest := CompareByLatestAuthor(records, events, since, base, 0, key)
+	latestOpus := mustComparisonRow(t, latest, "exp:opus:fix-review")
+	if latestOpus.Landed != 1 || latestOpus.Merged != 1 || latestOpus.RevertRate != 1 {
+		t.Fatalf("latest opus row = %+v, want one landed merged revert", latestOpus)
+	}
+	if latestOpus.AttributionMode != string(ComparisonAttributionLatestAuthor) {
+		t.Fatalf("latest attribution mode = %q", latestOpus.AttributionMode)
+	}
+	if row, ok := comparisonRow(latest, "exp:gpt:implementation"); !ok || row.Landed != 0 || !row.QualityAttributionLimited {
+		t.Fatalf("latest gpt row = %+v/%v, want visible limited-attribution run with no landing", row, ok)
+	}
+
+	contrib := CompareByContribution(records, events, since, base, 0, key)
+	gpt := mustComparisonRow(t, contrib, "exp:gpt:implementation")
+	if gpt.Landed != 1 || gpt.Merged != 1 || gpt.RevertRate != 1 {
+		t.Fatalf("contribution gpt row = %+v, want one de-duplicated landed merged revert", gpt)
+	}
+	if gpt.AttributionMode != string(ComparisonAttributionAnyContribution) {
+		t.Fatalf("contribution attribution mode = %q", gpt.AttributionMode)
+	}
+	opus := mustComparisonRow(t, contrib, "exp:opus:fix-review")
+	if opus.Landed != 1 || opus.RevertRate != 1 {
+		t.Fatalf("contribution opus row = %+v, want same landed cohort revert attribution", opus)
+	}
+	unused := mustComparisonRow(t, contrib, "exp:unused:implementation")
+	if unused.Landed != 0 || unused.RevertRate != 0 || !unused.QualityAttributionLimited {
+		t.Fatalf("unused out-of-cohort row = %+v, want no landing/revert quality attribution", unused)
+	}
+}
+
 func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -30)
@@ -389,6 +452,45 @@ func TestCompute_RevertOfOutOfWindowMergeNotCounted(t *testing.T) {
 	}
 }
 
+type staticStats struct {
+	records []stats.RunRecord
+}
+
+func (s staticStats) All() []stats.RunRecord { return append([]stats.RunRecord(nil), s.records...) }
+
+func TestServiceScanPopulatesAttributionReports(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	landedAt := now.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "copilot", Model: "gpt", ReasoningEffort: "high", ExperimentID: "exp", VariantID: "gpt", Outcome: "completed", Timestamp: landedAt.Add(-30 * time.Minute)},
+		{TaskID: "A", Role: "pr-fix", Provider: "claude", Model: "opus", ReasoningEffort: "medium", ExperimentID: "exp", VariantID: "opus", Outcome: "completed", Timestamp: landedAt},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: landedAt, Data: map[string]any{"outcome": "merged"}},
+	}
+	svc := NewService(Deps{
+		Cfg:   config.EvaluationConfig{WindowDays: 7},
+		Stats: staticStats{records: records},
+		Audit: auditFunc(func(audit.Query) ([]audit.Event, error) { return events, nil }),
+		Now:   func() time.Time { return now },
+	})
+	rep, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(rep.ByAgentModel) == 0 || len(rep.ByAgentModelContribution) == 0 || len(rep.ByVariant) == 0 || len(rep.ByVariantContribution) == 0 {
+		t.Fatalf("missing attribution report slices: agent=%d agentContrib=%d variant=%d variantContrib=%d", len(rep.ByAgentModel), len(rep.ByAgentModelContribution), len(rep.ByVariant), len(rep.ByVariantContribution))
+	}
+	if row := mustComparisonVariant(t, rep.ByVariant, "opus"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionLatestAuthor) {
+		t.Fatalf("latest variant row = %+v, want final-stage opus landing", row)
+	}
+	if row := mustComparisonVariant(t, rep.ByVariantContribution, "gpt"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionAnyContribution) {
+		t.Fatalf("contribution variant row = %+v, want gpt contribution landing", row)
+	} else if child := comparisonByRole(t, row.RoleBreakdowns, "implementation"); child.Landed != 1 {
+		t.Fatalf("contribution variant child = %+v, want implementation gpt contribution landing", child)
+	}
+}
+
 func TestComputeEmpty(t *testing.T) {
 	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	got := Compute(nil, nil, now.AddDate(0, 0, -7), now)
@@ -399,6 +501,35 @@ func TestComputeEmpty(t *testing.T) {
 	if got.WindowDays != 7 {
 		t.Errorf("WindowDays = %v, want 7", got.WindowDays)
 	}
+}
+
+func mustComparisonRow(t *testing.T, rows []ComparisonBreakdown, key string) ComparisonBreakdown {
+	t.Helper()
+	row, ok := comparisonRow(rows, key)
+	if !ok {
+		t.Fatalf("missing comparison row %q in %+v", key, rows)
+	}
+	return row
+}
+
+func mustComparisonVariant(t *testing.T, rows []ComparisonBreakdown, variant string) ComparisonBreakdown {
+	t.Helper()
+	for i := range rows {
+		if rows[i].VariantID == variant {
+			return rows[i]
+		}
+	}
+	t.Fatalf("missing comparison variant %q in %+v", variant, rows)
+	return ComparisonBreakdown{}
+}
+
+func comparisonRow(rows []ComparisonBreakdown, key string) (ComparisonBreakdown, bool) {
+	for i := range rows {
+		if rows[i].Key == key {
+			return rows[i], true
+		}
+	}
+	return ComparisonBreakdown{}, false
 }
 
 func TestPercentile(t *testing.T) {
