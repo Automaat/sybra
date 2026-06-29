@@ -398,60 +398,54 @@ func (a *App) initStatusHook() {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			if a.workflowEngine != nil {
-				// ErrWorkflowAlreadyActive is benign: when the cascade flips to
-				// ready-review (simple-task-implement ending), this hook fires
-				// while the implement workflow is still active; OnWorkflowComplete
-				// drives the cascade instead. Only real errors are surfaced —
-				// this also enables the manual "move card to Ready Review" path.
-				if _, err := a.workflowEngine.DispatchEvent(
-					taskID,
-					"task.status_changed",
-					map[string]string{"task.status": string(task.StatusReadyReview)},
-					nil,
-				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
-					a.logger.Error("workflow.dispatch.ready-review", "task_id", taskID, "err", err)
-				}
-			}
+			a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
 		case string(task.StatusTesting):
-			if a.workflowEngine != nil {
-				// ErrWorkflowAlreadyActive is benign and the COMMON case: when
-				// simple-task-review's done_review flips to testing, this hook
-				// fires while the review workflow is still active, so the start
-				// is rejected here and the cascade is driven by OnWorkflowComplete
-				// instead. Only a real, unexpected error is worth surfacing —
-				// this also serves the genuine manual "move card to Testing" path.
-				if _, err := a.workflowEngine.DispatchEvent(
-					taskID,
-					"task.status_changed",
-					map[string]string{"task.status": string(task.StatusTesting)},
-					nil,
-				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
-					a.logger.Error("workflow.dispatch.testing", "task_id", taskID, "err", err)
-				}
-			}
+			a.dispatchStatusWorkflow(taskID, task.StatusTesting)
 		case string(task.StatusReadyPR):
-			if a.workflowEngine != nil {
-				// ErrWorkflowAlreadyActive is benign and the COMMON case: when
-				// testing-task flips to ready-pr on a PASS, this hook fires while
-				// the testing workflow is still active, so the start is rejected
-				// here and the cascade drives simple-task-pr via OnWorkflowComplete.
-				// The case that NEEDS this is recovery: a task flipped to ready-pr
-				// out of band — `sybra-cli update` (a separate process with no
-				// engine) or the UpdateTask UI path after a tester infra failure —
-				// has no terminal cascade to open its PR, so without this branch it
-				// sits inert with no PR. Mirrors the testing/ready-review cases.
-				if _, err := a.workflowEngine.DispatchEvent(
-					taskID,
-					"task.status_changed",
-					map[string]string{"task.status": string(task.StatusReadyPR)},
-					nil,
-				); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
-					a.logger.Error("workflow.dispatch.ready-pr", "task_id", taskID, "err", err)
-				}
-			}
+			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 		}
 	})
+}
+
+// dispatchStatusWorkflow starts the workflow matching a status-change event.
+//
+// ErrWorkflowAlreadyActive is benign for these status transitions:
+//   - ready-review: when the cascade flips to ready-review
+//     (simple-task-implement ending), this hook fires while the implement
+//     workflow is still active; OnWorkflowComplete drives the cascade instead.
+//     Only real errors are surfaced. This also enables the manual "move card to
+//     Ready Review" path.
+//   - testing: ErrWorkflowAlreadyActive is benign and the COMMON case. When
+//     simple-task-review's done_review flips to testing, this hook fires while
+//     the review workflow is still active, so the start is rejected here and the
+//     cascade is driven by OnWorkflowComplete instead. Only a real, unexpected
+//     error is worth surfacing. This also serves the genuine manual "move card
+//     to Testing" path.
+//   - ready-pr: ErrWorkflowAlreadyActive is benign and the COMMON case. When
+//     testing-task flips to ready-pr on a PASS, this hook fires while the
+//     testing workflow is still active, so the start is rejected here and the
+//     cascade drives simple-task-pr via OnWorkflowComplete. The case that NEEDS
+//     this is recovery: a task flipped to ready-pr out of band — `sybra-cli
+//     update` (a separate process with no engine) or the UpdateTask UI path
+//     after a tester infra failure — has no terminal cascade to open its PR, so
+//     without this branch it sits inert with no PR. Mirrors the
+//     testing/ready-review cases.
+func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
+	if a.workflowEngine == nil {
+		return
+	}
+
+	statusValue := string(status)
+	logKey := "workflow.dispatch." + statusValue
+
+	if _, err := a.workflowEngine.DispatchEvent(
+		taskID,
+		"task.status_changed",
+		map[string]string{"task.status": statusValue},
+		nil,
+	); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		a.logger.Error(logKey, "task_id", taskID, "err", err)
+	}
 }
 
 func expectedHumanKind(t task.Task) string {
