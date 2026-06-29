@@ -398,6 +398,7 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	a := lm.app
 	deps := evaluation.Deps{
 		Cfg:        a.cfg.Evaluation,
+		ABTesting:  a.cfg.ABTesting,
 		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
 		Emit:       emit,
 		Logger:     a.logger,

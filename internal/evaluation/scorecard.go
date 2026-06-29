@@ -7,9 +7,11 @@ package evaluation
 
 import (
 	"encoding/base64"
+	"math"
 	"sort"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/stats"
 )
@@ -90,7 +92,9 @@ type ComparisonBreakdown struct {
 	Runs                      int                   `json:"runs"`
 	Failures                  int                   `json:"failures"`
 	FailureRate               float64               `json:"failureRate"`
+	FailureEstimate           RateEstimate          `json:"failureEstimate"`
 	Landed                    int                   `json:"landed"`
+	LandedEstimate            RateEstimate          `json:"landedEstimate"`
 	Merged                    int                   `json:"merged"`
 	MergedWithEdits           int                   `json:"mergedWithEdits"`
 	Closed                    int                   `json:"closed"`
@@ -99,6 +103,11 @@ type ComparisonBreakdown struct {
 	CIFirstPassRate           float64               `json:"ciFirstPassRate"`
 	ReworkRate                float64               `json:"reworkRate"`
 	RevertRate                float64               `json:"revertRate"`
+	MergeEstimate             RateEstimate          `json:"mergeEstimate"`
+	CIFirstPassEstimate       RateEstimate          `json:"ciFirstPassEstimate"`
+	MergedWithEditsEstimate   RateEstimate          `json:"mergedWithEditsEstimate"`
+	ReworkEstimate            RateEstimate          `json:"reworkEstimate"`
+	RevertEstimate            RateEstimate          `json:"revertEstimate"`
 	DurationP50S              float64               `json:"durationP50S"`
 	DurationP90S              float64               `json:"durationP90S"`
 	TotalCostUSD              float64               `json:"totalCostUsd"`
@@ -109,23 +118,65 @@ type ComparisonBreakdown struct {
 	ToolsPerLanded            float64               `json:"toolsPerLanded"`
 	InsufficientData          bool                  `json:"insufficientData"`
 	QualityAttributionLimited bool                  `json:"qualityAttributionLimited"`
+	Baseline                  bool                  `json:"baseline"`
+	BaselineVariantID         string                `json:"baselineVariantId,omitempty"`
+	SampleStatus              string                `json:"sampleStatus,omitempty"`
+	MinSamplesPerVariant      int                   `json:"minSamplesPerVariant,omitempty"`
 	RoleBreakdowns            []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
+}
+
+// RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
+// optional effect delta relative to an A/B baseline row.
+type RateEstimate struct {
+	Numerator         int     `json:"numerator"`
+	Denominator       int     `json:"denominator"`
+	Point             float64 `json:"point"`
+	WilsonLower       float64 `json:"wilsonLower"`
+	WilsonUpper       float64 `json:"wilsonUpper"`
+	DeltaFromBaseline float64 `json:"deltaFromBaseline"`
+	HasDelta          bool    `json:"hasDelta"`
+	HasData           bool    `json:"hasData"`
+}
+
+// VariantSampleStatus describes whether one configured or observed A/B variant
+// has enough samples for the configured minimum.
+type VariantSampleStatus struct {
+	VariantID    string `json:"variantId"`
+	Runs         int    `json:"runs"`
+	Ready        bool   `json:"ready"`
+	Configured   bool   `json:"configured"`
+	Observed     bool   `json:"observed"`
+	SampleStatus string `json:"sampleStatus"`
+}
+
+// ExperimentSampleStatus summarizes sample readiness for an experiment/role.
+type ExperimentSampleStatus struct {
+	Key                  string                `json:"key"`
+	ExperimentID         string                `json:"experimentId"`
+	Role                 string                `json:"role"`
+	BaselineVariantID    string                `json:"baselineVariantId,omitempty"`
+	MinSamplesPerVariant int                   `json:"minSamplesPerVariant"`
+	Variants             []VariantSampleStatus `json:"variants"`
+	ReadyVariants        int                   `json:"readyVariants"`
+	TotalRuns            int                   `json:"totalRuns"`
+	Status               string                `json:"status"`
 }
 
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt              time.Time             `json:"generatedAt"`
-	Since                    time.Time             `json:"since"`
-	Until                    time.Time             `json:"until"`
-	Overall                  Scorecard             `json:"overall"`
-	ByProvider               []Breakdown           `json:"byProvider,omitempty"`
-	ByRole                   []Breakdown           `json:"byRole,omitempty"`
-	ByAgentModel             []ComparisonBreakdown `json:"byAgentModel,omitempty"`
-	ByAgentModelContribution []ComparisonBreakdown `json:"byAgentModelContribution,omitempty"`
-	ByVariant                []ComparisonBreakdown `json:"byVariant,omitempty"`
-	ByVariantContribution    []ComparisonBreakdown `json:"byVariantContribution,omitempty"`
-	Weaknesses               []Weakness            `json:"weaknesses,omitempty"`
-	Notes                    []string              `json:"notes,omitempty"`
+	GeneratedAt              time.Time                `json:"generatedAt"`
+	Since                    time.Time                `json:"since"`
+	Until                    time.Time                `json:"until"`
+	Overall                  Scorecard                `json:"overall"`
+	ByProvider               []Breakdown              `json:"byProvider,omitempty"`
+	ByRole                   []Breakdown              `json:"byRole,omitempty"`
+	ByAgentModel             []ComparisonBreakdown    `json:"byAgentModel,omitempty"`
+	ByAgentModelContribution []ComparisonBreakdown    `json:"byAgentModelContribution,omitempty"`
+	ByVariant                []ComparisonBreakdown    `json:"byVariant,omitempty"`
+	ByVariantContribution    []ComparisonBreakdown    `json:"byVariantContribution,omitempty"`
+	VariantExperiments       []ExperimentSampleStatus `json:"variantExperiments,omitempty"`
+	Weaknesses               []Weakness               `json:"weaknesses,omitempty"`
+	Notes                    []string                 `json:"notes,omitempty"`
 }
 
 // deferredNotes documents metrics that need signals not yet captured, so the
@@ -390,6 +441,19 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	return out
 }
 
+// CompareOptions controls optional comparison semantics. MinSamples controls the
+// InsufficientData flag only; rows are still emitted so users can see early data.
+type CompareOptions struct {
+	MinSamples  int
+	Experiments []abtest.Experiment
+}
+
+// CompareResult is the row set plus optional experiment readiness summaries.
+type CompareResult struct {
+	Rows        []ComparisonBreakdown
+	Experiments []ExperimentSampleStatus
+}
+
 // CompareByLatestAuthor and CompareByContribution group run records by key and
 // attribute landed-task outcomes using explicit final-stage or contribution
 // semantics. minSamples controls the InsufficientData flag only; rows are still
@@ -402,15 +466,19 @@ type comparisonAcc struct {
 	reverted        int
 }
 
+func CompareBy(records []stats.RunRecord, events []audit.Event, since, until time.Time, opts CompareOptions, key func(stats.RunRecord) string) CompareResult {
+	return compareByAttribution(records, events, since, until, opts, key, ComparisonAttributionLatestAuthor)
+}
+
 func CompareByLatestAuthor(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
-	return compareByAttribution(records, events, since, until, minSamples, key, ComparisonAttributionLatestAuthor)
+	return compareByAttribution(records, events, since, until, CompareOptions{MinSamples: minSamples}, key, ComparisonAttributionLatestAuthor).Rows
 }
 
 func CompareByContribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string) []ComparisonBreakdown {
-	return compareByAttribution(records, events, since, until, minSamples, key, ComparisonAttributionAnyContribution)
+	return compareByAttribution(records, events, since, until, CompareOptions{MinSamples: minSamples}, key, ComparisonAttributionAnyContribution).Rows
 }
 
-func compareByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, key func(stats.RunRecord) string, mode ComparisonAttributionMode) []ComparisonBreakdown {
+func compareByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, opts CompareOptions, key func(stats.RunRecord) string, mode ComparisonAttributionMode) CompareResult {
 	groups := map[string]*comparisonAcc{}
 	ensure := func(r stats.RunRecord, k string) *comparisonAcc {
 		a := groups[k]
@@ -451,22 +519,26 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 	}
 
 	applyComparisonLandings(ensure, records, events, since, until, key, mode)
-	return comparisonRows(groups, minSamples)
+	rows := comparisonRows(groups, opts.MinSamples)
+	experiments := applyVariantSemantics(rows, opts)
+	return CompareResult{Rows: rows, Experiments: experiments}
 }
 
 // CompareVariants returns A/B rows at experiment/variant granularity, with
 // role-specific rows attached as drilldowns. It uses latest-author attribution.
 func CompareVariants(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int) []ComparisonBreakdown {
-	return compareVariantsByAttribution(records, events, since, until, minSamples, ComparisonAttributionLatestAuthor)
+	return compareVariantsByAttribution(records, events, since, until, CompareOptions{MinSamples: minSamples}, ComparisonAttributionLatestAuthor).Rows
 }
 
 func CompareVariantsByContribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int) []ComparisonBreakdown {
-	return compareVariantsByAttribution(records, events, since, until, minSamples, ComparisonAttributionAnyContribution)
+	return compareVariantsByAttribution(records, events, since, until, CompareOptions{MinSamples: minSamples}, ComparisonAttributionAnyContribution).Rows
 }
 
-func compareVariantsByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int, mode ComparisonAttributionMode) []ComparisonBreakdown {
-	parents := compareByAttribution(records, events, since, until, minSamples, variantKey, mode)
-	children := compareByAttribution(records, events, since, until, minSamples, variantRoleKey, mode)
+func compareVariantsByAttribution(records []stats.RunRecord, events []audit.Event, since, until time.Time, opts CompareOptions, mode ComparisonAttributionMode) CompareResult {
+	parentResult := compareByAttribution(records, events, since, until, CompareOptions{MinSamples: opts.MinSamples}, variantKey, mode)
+	childResult := compareByAttribution(records, events, since, until, opts, variantRoleKey, mode)
+	parents := parentResult.Rows
+	children := childResult.Rows
 	normalizeVariantParents(parents, records, since, until)
 
 	for i := range parents {
@@ -479,7 +551,7 @@ func compareVariantsByAttribution(records []stats.RunRecord, events []audit.Even
 			return parents[i].RoleBreakdowns[a].Key < parents[i].RoleBreakdowns[b].Key
 		})
 	}
-	return parents
+	return CompareResult{Rows: parents, Experiments: childResult.Experiments}
 }
 
 func variantKey(r stats.RunRecord) string {
@@ -649,15 +721,32 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 	out := make([]ComparisonBreakdown, 0, len(groups))
 	for _, a := range groups {
 		row := a.row
-		if row.Runs > 0 {
-			row.FailureRate = float64(row.Failures) / float64(row.Runs)
+		row.FailureEstimate = wilson95(row.Failures, row.Runs)
+		row.LandedEstimate = wilson95(row.Landed, row.Runs)
+		row.MergeEstimate = wilson95(row.Merged, row.Landed)
+		row.MergedWithEditsEstimate = wilson95(row.MergedWithEdits, row.Landed)
+		row.CIFirstPassEstimate = wilson95(a.ciClean, row.Landed)
+		row.ReworkEstimate = wilson95(a.rework, row.Landed)
+		row.RevertEstimate = wilson95(a.reverted, row.Landed)
+		if row.FailureEstimate.HasData {
+			row.FailureRate = row.FailureEstimate.Point
+		}
+		if row.MergeEstimate.HasData {
+			row.MergeRate = row.MergeEstimate.Point
+		}
+		if row.MergedWithEditsEstimate.HasData {
+			row.MergedWithEditsRate = row.MergedWithEditsEstimate.Point
+		}
+		if row.CIFirstPassEstimate.HasData {
+			row.CIFirstPassRate = row.CIFirstPassEstimate.Point
+		}
+		if row.ReworkEstimate.HasData {
+			row.ReworkRate = row.ReworkEstimate.Point
+		}
+		if row.RevertEstimate.HasData {
+			row.RevertRate = row.RevertEstimate.Point
 		}
 		if row.Landed > 0 {
-			row.MergeRate = float64(row.Merged) / float64(row.Landed)
-			row.MergedWithEditsRate = float64(row.MergedWithEdits) / float64(row.Landed)
-			row.CIFirstPassRate = float64(a.ciClean) / float64(row.Landed)
-			row.ReworkRate = float64(a.rework) / float64(row.Landed)
-			row.RevertRate = float64(a.reverted) / float64(row.Landed)
 			row.CostPerLanded = row.TotalCostUSD / float64(row.Landed)
 			row.PremiumRequestsPerLanded = row.PremiumRequests / float64(row.Landed)
 			row.TurnsPerLanded = float64(a.turns) / float64(row.Landed)
@@ -670,6 +759,267 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+func wilson95(numerator, denominator int) RateEstimate {
+	est := RateEstimate{Numerator: numerator, Denominator: denominator}
+	if denominator <= 0 {
+		return est
+	}
+	if numerator < 0 {
+		numerator = 0
+	}
+	if numerator > denominator {
+		numerator = denominator
+	}
+	const z = 1.959963984540054
+	n := float64(denominator)
+	p := float64(numerator) / n
+	z2 := z * z
+	center := p + z2/(2*n)
+	margin := z * math.Sqrt((p*(1-p)+z2/(4*n))/n)
+	denom := 1 + z2/n
+	est.Point = finiteOrZero(p)
+	est.WilsonLower = finiteOrZero((center - margin) / denom)
+	est.WilsonUpper = finiteOrZero((center + margin) / denom)
+	est.HasData = true
+	return est
+}
+
+func finiteOrZero(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
+}
+
+func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []ExperimentSampleStatus {
+	if len(opts.Experiments) == 0 {
+		return nil
+	}
+	configured := configuredExperimentRoles(opts.Experiments, rows)
+	if len(configured) == 0 {
+		return nil
+	}
+	byGroup := map[string][]int{}
+	for i := range rows {
+		row := &rows[i]
+		if row.ExperimentID == "" || row.Role == "" || row.VariantID == "" {
+			continue
+		}
+		gk := experimentRoleKey(row.ExperimentID, row.Role)
+		byGroup[gk] = append(byGroup[gk], i)
+		if _, ok := configured[gk]; !ok {
+			configured[gk] = experimentRoleConfig{experimentID: row.ExperimentID, role: row.Role}
+		}
+	}
+	keys := make([]string, 0, len(configured))
+	for k := range configured {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	statuses := make([]ExperimentSampleStatus, 0, len(keys))
+	for _, gk := range keys {
+		cfg := configured[gk]
+		indexes := byGroup[gk]
+		rowByVariant := map[string]*ComparisonBreakdown{}
+		for _, idx := range indexes {
+			row := &rows[idx]
+			if cfg.disabledVariants[row.VariantID] {
+				continue
+			}
+			row.MinSamplesPerVariant = opts.MinSamples
+			row.BaselineVariantID = cfg.baselineVariantID
+			if opts.MinSamples > 0 && row.Runs < opts.MinSamples {
+				row.SampleStatus = "low-sample"
+			} else {
+				row.SampleStatus = "actionable"
+			}
+			rowByVariant[row.VariantID] = row
+		}
+		applyBaselineDeltas(rowByVariant, cfg.baselineVariantID)
+		statuses = append(statuses, experimentSampleStatus(gk, cfg, rowByVariant, opts.MinSamples))
+	}
+	return statuses
+}
+
+type experimentRoleConfig struct {
+	experimentID       string
+	role               string
+	baselineVariantID  string
+	configuredVariants []string
+	disabledVariants   map[string]bool
+}
+
+func configuredExperimentRoles(experiments []abtest.Experiment, rows []ComparisonBreakdown) map[string]experimentRoleConfig {
+	out := map[string]experimentRoleConfig{}
+	for _, exp := range experiments {
+		if exp.ID == "" || !exp.EnabledValue() || len(exp.Variants) == 0 {
+			continue
+		}
+		eligible, _ := abtest.EligibleVariants(exp, nil)
+		variants := make([]string, 0, len(eligible))
+		disabled := map[string]bool{}
+		for _, v := range exp.Variants {
+			if v.ID != "" && v.Weight <= 0 {
+				disabled[v.ID] = true
+			}
+		}
+		baseline := ""
+		for _, v := range eligible {
+			if v.ID != "" {
+				if baseline == "" {
+					baseline = v.ID
+				}
+				variants = append(variants, v.ID)
+			}
+		}
+		if len(variants) == 0 {
+			continue
+		}
+		for _, role := range configuredExperimentRoleNames(exp, rows) {
+			role = normalizedRole(role)
+			out[experimentRoleKey(exp.ID, role)] = experimentRoleConfig{
+				experimentID:       exp.ID,
+				role:               role,
+				baselineVariantID:  baseline,
+				configuredVariants: variants,
+				disabledVariants:   disabled,
+			}
+		}
+	}
+	return out
+}
+
+func configuredExperimentRoleNames(exp abtest.Experiment, rows []ComparisonBreakdown) []string {
+	if len(exp.Roles) > 0 {
+		return exp.Roles
+	}
+	seen := map[string]bool{}
+	roles := make([]string, 0)
+	for i := range rows {
+		row := &rows[i]
+		if row.ExperimentID != exp.ID || row.Role == "" {
+			continue
+		}
+		role := normalizedRole(row.Role)
+		if seen[role] {
+			continue
+		}
+		seen[role] = true
+		roles = append(roles, role)
+	}
+	if len(roles) == 0 {
+		return []string{normalizedRole("")}
+	}
+	sort.Strings(roles)
+	return roles
+}
+
+func experimentRoleKey(experimentID, role string) string {
+	return experimentID + "|" + role
+}
+
+func applyBaselineDeltas(rows map[string]*ComparisonBreakdown, baselineVariantID string) {
+	if baselineVariantID == "" {
+		return
+	}
+	baseline := rows[baselineVariantID]
+	if baseline == nil {
+		return
+	}
+	baseline.Baseline = true
+	applyDelta := func(est *RateEstimate, base RateEstimate) {
+		if !est.HasData || !base.HasData {
+			return
+		}
+		est.DeltaFromBaseline = est.Point - base.Point
+		est.HasDelta = true
+	}
+	for _, row := range rows {
+		applyDelta(&row.FailureEstimate, baseline.FailureEstimate)
+		applyDelta(&row.LandedEstimate, baseline.LandedEstimate)
+		applyDelta(&row.MergeEstimate, baseline.MergeEstimate)
+		applyDelta(&row.CIFirstPassEstimate, baseline.CIFirstPassEstimate)
+		applyDelta(&row.MergedWithEditsEstimate, baseline.MergedWithEditsEstimate)
+		applyDelta(&row.ReworkEstimate, baseline.ReworkEstimate)
+		applyDelta(&row.RevertEstimate, baseline.RevertEstimate)
+	}
+}
+
+func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[string]*ComparisonBreakdown, minSamples int) ExperimentSampleStatus {
+	variantIDs := orderedVariantIDs(cfg.configuredVariants, rows)
+	status := ExperimentSampleStatus{
+		Key:                  key,
+		ExperimentID:         cfg.experimentID,
+		Role:                 cfg.role,
+		BaselineVariantID:    cfg.baselineVariantID,
+		MinSamplesPerVariant: minSamples,
+		Variants:             make([]VariantSampleStatus, 0, len(variantIDs)),
+	}
+	configured := map[string]bool{}
+	for _, id := range cfg.configuredVariants {
+		configured[id] = true
+	}
+	for _, id := range variantIDs {
+		row := rows[id]
+		runs := 0
+		observed := false
+		if row != nil {
+			runs = row.Runs
+			observed = true
+		}
+		ready := minSamples <= 0 || runs >= minSamples
+		if ready {
+			status.ReadyVariants++
+		}
+		status.TotalRuns += runs
+		sampleStatus := "low-sample"
+		if ready {
+			sampleStatus = "actionable"
+		}
+		status.Variants = append(status.Variants, VariantSampleStatus{
+			VariantID:    id,
+			Runs:         runs,
+			Ready:        ready,
+			Configured:   configured[id],
+			Observed:     observed,
+			SampleStatus: sampleStatus,
+		})
+	}
+	switch {
+	case len(status.Variants) == 0 || status.TotalRuns == 0:
+		status.Status = "no-data"
+	case status.ReadyVariants == len(status.Variants):
+		status.Status = "actionable"
+	case status.ReadyVariants == 0:
+		status.Status = "low-sample"
+	default:
+		status.Status = "directional"
+	}
+	return status
+}
+
+func orderedVariantIDs(configured []string, rows map[string]*ComparisonBreakdown) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(configured)+len(rows))
+	for _, id := range configured {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	observed := make([]string, 0, len(rows))
+	for id := range rows {
+		if id != "" && !seen[id] {
+			observed = append(observed, id)
+		}
+	}
+	sort.Strings(observed)
+	out = append(out, observed...)
 	return out
 }
 

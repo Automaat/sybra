@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
@@ -36,6 +37,7 @@ func AuditDirReader(dir string) auditReader {
 // Deps are the collaborators for the evaluation service.
 type Deps struct {
 	Cfg        config.EvaluationConfig
+	ABTesting  abtest.Config
 	Stats      statsReader
 	Audit      auditReader
 	Emit       EmitFunc
@@ -48,6 +50,7 @@ type Deps struct {
 // Read-only: it never dispatches agents or files issues.
 type Service struct {
 	cfg        config.EvaluationConfig
+	abTesting  abtest.Config
 	stats      statsReader
 	audit      auditReader
 	emit       EmitFunc
@@ -72,6 +75,7 @@ func NewService(d Deps) *Service {
 	}
 	return &Service{
 		cfg:        d.Cfg,
+		abTesting:  d.ABTesting,
 		stats:      d.Stats,
 		audit:      d.Audit,
 		emit:       d.Emit,
@@ -146,6 +150,14 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	if s.stats != nil {
 		recs = s.stats.All()
 	}
+	byVariant := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
+		MinSamples:  s.abTesting.MinSamplesPerVariant,
+		Experiments: s.abTesting.Experiments,
+	}, ComparisonAttributionLatestAuthor)
+	byVariantContribution := compareVariantsByAttribution(recs, evts, since, now, CompareOptions{
+		MinSamples:  s.abTesting.MinSamplesPerVariant,
+		Experiments: s.abTesting.Experiments,
+	}, ComparisonAttributionAnyContribution)
 	rep := Report{
 		GeneratedAt: now,
 		Since:       since,
@@ -165,8 +177,9 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 			}
 			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
 		}),
-		ByVariant:             CompareVariants(recs, evts, since, now, 20),
-		ByVariantContribution: CompareVariantsByContribution(recs, evts, since, now, 20),
+		ByVariant:             byVariant.Rows,
+		ByVariantContribution: byVariantContribution.Rows,
+		VariantExperiments:    byVariant.Experiments,
 		Notes:                 deferredNotes,
 	}
 	rep.Weaknesses = Weaknesses(rep)

@@ -2,9 +2,12 @@ package evaluation
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/stats"
@@ -380,6 +383,268 @@ func TestCompareByAttributionModes(t *testing.T) {
 	if unused.Landed != 0 || unused.RevertRate != 0 || !unused.QualityAttributionLimited {
 		t.Fatalf("unused out-of-cohort row = %+v, want no landing/revert quality attribution", unused)
 	}
+}
+
+func TestWilson95(t *testing.T) {
+	got := wilson95(5, 10)
+	if !got.HasData {
+		t.Fatalf("expected data: %+v", got)
+	}
+	if got.Numerator != 5 || got.Denominator != 10 || got.Point != 0.5 {
+		t.Fatalf("estimate counts/point = %+v", got)
+	}
+	if math.Abs(got.WilsonLower-0.2366) > 0.0001 || math.Abs(got.WilsonUpper-0.7634) > 0.0001 {
+		t.Fatalf("Wilson interval = %.4f..%.4f, want ~0.2366..0.7634", got.WilsonLower, got.WilsonUpper)
+	}
+	empty := wilson95(0, 0)
+	if empty.HasData || empty.Point != 0 || empty.WilsonLower != 0 || empty.WilsonUpper != 0 {
+		t.Fatalf("zero denominator estimate = %+v, want no data zeros", empty)
+	}
+	data, err := json.Marshal([]RateEstimate{got, empty, wilson95(1, -1)})
+	if err != nil {
+		t.Fatalf("marshal estimates: %v", err)
+	}
+	if len(data) == 0 || containsNonFinite(got) || containsNonFinite(empty) {
+		t.Fatalf("non-finite estimate JSON/data: %s %+v %+v", data, got, empty)
+	}
+}
+
+func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "A2", Role: "implementation", Provider: "claude", Model: "opus", ExperimentID: "exp", VariantID: "control", Outcome: "failed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+		{TaskID: "B2", Role: "implementation", Provider: "codex", Model: "gpt-5.5", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+		{TaskID: "C1", Role: "implementation", Provider: "other", Model: "model", ExperimentID: "exp", VariantID: "observed", Outcome: "completed", Timestamp: in},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A1", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "B1", Timestamp: in, Data: map[string]any{"outcome": "merged_with_edits"}},
+		{Type: audit.EventTaskLanded, TaskID: "B2", Timestamp: in, Data: map[string]any{"outcome": "closed"}},
+		{Type: audit.EventPRCIFailureDetected, TaskID: "B2", Timestamp: in},
+		{Type: audit.EventTaskStatusChanged, TaskID: "B2", Timestamp: in, Data: map[string]any{"from": "testing", "to": "in-review"}},
+		{Type: audit.EventTaskStatusChanged, TaskID: "B2", Timestamp: in, Data: map[string]any{"from": "testing", "to": "in-review"}},
+		{Type: audit.EventPRReverted, TaskID: "B1", Timestamp: in},
+	}
+	res := CompareBy(records, events, since, base, CompareOptions{
+		MinSamples: 2,
+		Experiments: []abtest.Experiment{{
+			ID:       "exp",
+			Roles:    []string{"implementation"},
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}, {ID: "missing", Weight: 1}},
+		}},
+	}, func(r stats.RunRecord) string {
+		if r.ExperimentID == "" || r.VariantID == "" {
+			return ""
+		}
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	control := rows["control"]
+	treatment := rows["treatment"]
+	observed := rows["observed"]
+	if control == nil || treatment == nil || observed == nil {
+		t.Fatalf("rows by variant = %+v", res.Rows)
+	}
+	if !control.Baseline || control.BaselineVariantID != "control" {
+		t.Fatalf("control baseline fields = %+v", *control)
+	}
+	if !control.FailureEstimate.HasDelta || control.FailureEstimate.DeltaFromBaseline != 0 {
+		t.Fatalf("control failure delta = %+v", control.FailureEstimate)
+	}
+	if treatment.FailureRate != treatment.FailureEstimate.Point || treatment.MergeRate != treatment.MergeEstimate.Point {
+		t.Fatalf("scalar rates do not mirror estimates: %+v", *treatment)
+	}
+	if !treatment.MergeEstimate.HasDelta || treatment.MergeEstimate.DeltaFromBaseline != -1 {
+		t.Fatalf("treatment merge delta = %+v, want -1 from baseline", treatment.MergeEstimate)
+	}
+	if treatment.CIFirstPassEstimate.Point != 0.5 || treatment.MergedWithEditsEstimate.Point != 0.5 ||
+		treatment.ReworkEstimate.Point != 0.5 || treatment.RevertEstimate.Point != 0.5 {
+		t.Fatalf("treatment secondary estimates = ci %+v edited %+v rework %+v revert %+v",
+			treatment.CIFirstPassEstimate, treatment.MergedWithEditsEstimate, treatment.ReworkEstimate, treatment.RevertEstimate)
+	}
+	if observed.SampleStatus != "low-sample" || observed.MinSamplesPerVariant != 2 {
+		t.Fatalf("observed sample status = %+v", *observed)
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.BaselineVariantID != "control" || status.ReadyVariants != 2 || status.TotalRuns != 5 || status.Status != "directional" {
+		t.Fatalf("experiment status = %+v", status)
+	}
+	if len(status.Variants) != 4 {
+		t.Fatalf("variants = %+v, want configured plus observed-unconfigured", status.Variants)
+	}
+	missing := status.Variants[2]
+	if missing.VariantID != "missing" || missing.Observed || !missing.Configured || missing.Ready {
+		t.Fatalf("missing configured variant = %+v", missing)
+	}
+}
+
+func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:       "exp",
+			Roles:    []string{"implementation"},
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	if rows["treatment"] == nil {
+		t.Fatalf("rows = %+v", res.Rows)
+	}
+	if rows["treatment"].FailureEstimate.HasDelta || rows["treatment"].Baseline {
+		t.Fatalf("missing baseline should not set delta/baseline: %+v", *rows["treatment"])
+	}
+	if len(res.Experiments) != 1 || res.Experiments[0].Status != "directional" {
+		t.Fatalf("experiment status = %+v", res.Experiments)
+	}
+}
+
+func TestCompareByVariantEmptyExperimentRolesUseObservedRoles(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:       "exp",
+			Variants: []abtest.Variant{{ID: "control", Weight: 1}, {ID: "treatment", Weight: 1}},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	control := rows["control"]
+	treatment := rows["treatment"]
+	if control == nil || treatment == nil {
+		t.Fatalf("rows = %+v", res.Rows)
+	}
+	if !control.Baseline || control.BaselineVariantID != "control" {
+		t.Fatalf("control baseline fields = %+v", *control)
+	}
+	if !treatment.FailureEstimate.HasDelta || treatment.FailureEstimate.DeltaFromBaseline != 1 {
+		t.Fatalf("treatment failure delta = %+v, want +1 from baseline", treatment.FailureEstimate)
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.ExperimentID != "exp" || status.Role != "implementation" || status.BaselineVariantID != "control" || status.Status != "actionable" {
+		t.Fatalf("experiment status = %+v", status)
+	}
+}
+
+func TestCompareByVariantZeroWeightFirstVariantDoesNotBecomeBaseline(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "disabled", Weight: 0},
+				{ID: "control", Weight: 1},
+				{ID: "treatment", Weight: 1},
+			},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	rows := rowsByVariant(res.Rows)
+	if rows["control"] == nil || !rows["control"].Baseline || rows["control"].BaselineVariantID != "control" {
+		t.Fatalf("control baseline fields = %+v", rows["control"])
+	}
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.BaselineVariantID != "control" || status.Status != "actionable" || len(status.Variants) != 2 {
+		t.Fatalf("experiment status = %+v", status)
+	}
+	for _, variant := range status.Variants {
+		if variant.VariantID == "disabled" {
+			t.Fatalf("zero-weight variant included in readiness: %+v", status.Variants)
+		}
+	}
+}
+
+func TestCompareByVariantZeroWeightNonBaselineDoesNotBlockReadiness(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A1", Role: "implementation", ExperimentID: "exp", VariantID: "control", Outcome: "completed", Timestamp: in},
+		{TaskID: "B1", Role: "implementation", ExperimentID: "exp", VariantID: "treatment", Outcome: "completed", Timestamp: in},
+		{TaskID: "C1", Role: "implementation", ExperimentID: "exp", VariantID: "disabled", Outcome: "failed", Timestamp: in},
+	}
+	res := CompareBy(records, nil, since, base, CompareOptions{
+		MinSamples: 1,
+		Experiments: []abtest.Experiment{{
+			ID:    "exp",
+			Roles: []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "control", Weight: 1},
+				{ID: "disabled", Weight: 0},
+				{ID: "treatment", Weight: 1},
+			},
+		}},
+	}, func(r stats.RunRecord) string {
+		return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
+	})
+	if len(res.Experiments) != 1 {
+		t.Fatalf("experiment statuses = %+v", res.Experiments)
+	}
+	status := res.Experiments[0]
+	if status.Status != "actionable" || status.ReadyVariants != 2 || status.TotalRuns != 2 || len(status.Variants) != 2 {
+		t.Fatalf("experiment status = %+v", status)
+	}
+	for _, variant := range status.Variants {
+		if variant.VariantID == "disabled" {
+			t.Fatalf("zero-weight variant included in readiness: %+v", status.Variants)
+		}
+	}
+}
+
+func containsNonFinite(est RateEstimate) bool {
+	values := []float64{est.Point, est.WilsonLower, est.WilsonUpper, est.DeltaFromBaseline}
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func rowsByVariant(rows []ComparisonBreakdown) map[string]*ComparisonBreakdown {
+	out := map[string]*ComparisonBreakdown{}
+	for i := range rows {
+		out[rows[i].VariantID] = &rows[i]
+	}
+	return out
 }
 
 func TestCompute_MergedWithEditsNotAutonomous(t *testing.T) {

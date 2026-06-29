@@ -49,6 +49,57 @@
   function pct(x: number | null | undefined): string {
     return Number.isFinite(x) ? `${((x ?? 0) * 100).toFixed(0)}%` : '—'
   }
+  type RateEstimateLike = {
+    point?: number
+    wilsonLower?: number
+    wilsonUpper?: number
+    deltaFromBaseline?: number
+    hasDelta?: boolean
+    hasData?: boolean
+  }
+  type EstimateKey =
+    | 'failureEstimate'
+    | 'landedEstimate'
+    | 'mergeEstimate'
+    | 'ciFirstPassEstimate'
+    | 'mergedWithEditsEstimate'
+    | 'reworkEstimate'
+    | 'revertEstimate'
+  type ComparisonRowLike = {
+    failureEstimate?: RateEstimateLike
+    landedEstimate?: RateEstimateLike
+    mergeEstimate?: RateEstimateLike
+    ciFirstPassEstimate?: RateEstimateLike
+    mergedWithEditsEstimate?: RateEstimateLike
+    reworkEstimate?: RateEstimateLike
+    revertEstimate?: RateEstimateLike
+    baseline?: boolean
+    baselineVariantId?: string
+    sampleStatus?: string
+  }
+  function estimate(row: ComparisonRowLike, key: EstimateKey): RateEstimateLike | undefined {
+    return row[key]
+  }
+  function estimatePct(row: ComparisonRowLike, key: EstimateKey, fallback: number | undefined): string {
+    const est = estimate(row, key)
+    return est?.hasData ? pct(est.point) : pct(fallback)
+  }
+  function estimateInterval(row: ComparisonRowLike, key: EstimateKey): string {
+    const est = estimate(row, key)
+    if (!est?.hasData) return ''
+    return `${pct(est.wilsonLower)}-${pct(est.wilsonUpper)}`
+  }
+  function estimateDelta(row: ComparisonRowLike, key: EstimateKey): string {
+    const est = estimate(row, key)
+    if (!est?.hasDelta || est.deltaFromBaseline === undefined) return ''
+    const pp = est.deltaFromBaseline * 100
+    return `${pp >= 0 ? '+' : ''}${pp.toFixed(0)}pp`
+  }
+  function rateCell(row: ComparisonRowLike, key: EstimateKey, fallback: number | undefined, showDelta: boolean): string {
+    const interval = estimateInterval(row, key)
+    const delta = showDelta ? estimateDelta(row, key) : ''
+    return [estimatePct(row, key, fallback), interval ? `CI ${interval}` : '', delta].filter(Boolean).join(' · ')
+  }
   function hours(x: number | undefined): string {
     return x === undefined ? '—' : `${x.toFixed(1)}h`
   }
@@ -84,6 +135,17 @@
     if (status === 'watch') return 'border-warning-300 text-warning-700 dark:border-warning-700 dark:text-warning-300'
     if (status === 'ok') return 'border-success-300 text-success-700 dark:border-success-700 dark:text-success-300'
     return 'border-surface-300 text-surface-500 dark:border-surface-600 dark:text-surface-300'
+  }
+  function sampleClasses(status: string | undefined): string {
+    if (status === 'actionable') return 'bg-success-100 text-success-700 dark:bg-success-900 dark:text-success-200'
+    if (status === 'directional') return 'bg-warning-100 text-warning-700 dark:bg-warning-900 dark:text-warning-200'
+    if (status === 'low-sample') return 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-200'
+    return 'bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-300'
+  }
+  function rowState(row: ComparisonRowLike): string {
+    if (row.baseline) return 'baseline'
+    if (row.baselineVariantId && !estimate(row, 'failureEstimate')?.hasDelta) return 'no baseline'
+    return row.sampleStatus ?? ''
   }
 </script>
 
@@ -397,7 +459,7 @@
                     {/if}
                   </td>
                   <td class="py-1.5 text-right">
-                    {row.landed}
+                    <span class="text-xs">{row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}</span>
                     {#if row.qualityAttributionLimited}
                       <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
                     {/if}
@@ -425,8 +487,26 @@
         <p class="mb-3 max-w-3xl text-xs text-surface-400">
           Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
         </p>
+        {#if report?.variantExperiments && report.variantExperiments.length > 0}
+          <div class="mb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {#each report.variantExperiments as exp (exp.key)}
+              <div class="rounded border border-surface-200 p-3 text-xs dark:border-surface-700">
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <span class="truncate font-mono">{exp.experimentId} · {exp.role}</span>
+                  <span class="rounded px-1.5 py-0.5 {sampleClasses(exp.status)}">{exp.status}</span>
+                </div>
+                <div class="text-surface-400">
+                  {exp.readyVariants}/{exp.variants.length} ready · {exp.totalRuns} runs · min {exp.minSamplesPerVariant}
+                </div>
+                {#if exp.baselineVariantId}
+                  <div class="mt-1 text-surface-400">baseline {exp.baselineVariantId}</div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if report?.byVariant && report.byVariant.length > 0}
-          <table class="w-full min-w-[1080px] text-sm">
+          <table class="w-full min-w-[1180px] text-sm">
             <thead>
               <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
                 <th class="pb-2">Variant</th>
@@ -466,17 +546,19 @@
                   <td class="py-1.5 text-xs font-medium">All roles</td>
                   <td class="py-1.5 text-right">
                     {row.runs}
-                    {#if row.insufficientData}
+                    {#if rowState(row)}
+                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
+                    {:else if row.insufficientData}
                       <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                     {/if}
                   </td>
-                  <td class="py-1.5 text-right">{row.landed}</td>
-                  <td class="py-1.5 text-right">{pct(row.failureRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.mergeRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.ciFirstPassRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.mergedWithEditsRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.reworkRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.revertRate)}</td>
+                  <td class="py-1.5 text-right text-xs">{row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
                   <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
                   <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
                   <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
@@ -511,17 +593,19 @@
                     <td class="py-1.5 text-xs">{child.role || '—'}</td>
                     <td class="py-1.5 text-right">
                       {child.runs}
-                      {#if child.insufficientData}
+                      {#if rowState(child)}
+                        <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
+                      {:else if child.insufficientData}
                         <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                       {/if}
                     </td>
-                    <td class="py-1.5 text-right">{child.landed}</td>
-                    <td class="py-1.5 text-right">{pct(child.failureRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.mergeRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.ciFirstPassRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.mergedWithEditsRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.reworkRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.revertRate)}</td>
+                    <td class="py-1.5 text-right text-xs">{child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
                     <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
                     <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
                     <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
@@ -541,7 +625,7 @@
           Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
         </p>
         {#if report?.byVariantContribution && report.byVariantContribution.length > 0}
-          <table class="w-full min-w-[1080px] text-sm">
+          <table class="w-full min-w-[1180px] text-sm">
             <thead>
               <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
                 <th class="pb-2">Variant</th>
@@ -581,7 +665,9 @@
                   <td class="py-1.5 text-xs font-medium">All roles</td>
                   <td class="py-1.5 text-right">
                     {row.runs}
-                    {#if row.insufficientData}
+                    {#if rowState(row)}
+                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
+                    {:else if row.insufficientData}
                       <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                     {/if}
                   </td>
@@ -591,12 +677,12 @@
                       <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
                     {/if}
                   </td>
-                  <td class="py-1.5 text-right">{pct(row.failureRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.mergeRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.ciFirstPassRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.mergedWithEditsRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.reworkRate)}</td>
-                  <td class="py-1.5 text-right">{pct(row.revertRate)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
                   <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
                   <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
                   <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
@@ -631,22 +717,24 @@
                     <td class="py-1.5 text-xs">{child.role || '—'}</td>
                     <td class="py-1.5 text-right">
                       {child.runs}
-                      {#if child.insufficientData}
+                      {#if rowState(child)}
+                        <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
+                      {:else if child.insufficientData}
                         <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                       {/if}
                     </td>
                     <td class="py-1.5 text-right">
-                      {child.landed}
+                      <span class="text-xs">{child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}</span>
                       {#if child.qualityAttributionLimited}
                         <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
                       {/if}
                     </td>
-                    <td class="py-1.5 text-right">{pct(child.failureRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.mergeRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.ciFirstPassRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.mergedWithEditsRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.reworkRate)}</td>
-                    <td class="py-1.5 text-right">{pct(child.revertRate)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
                     <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
                     <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
                     <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
