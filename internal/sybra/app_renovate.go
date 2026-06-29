@@ -1,17 +1,73 @@
 package sybra
 
 import (
+	"log/slog"
+
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/project"
 )
 
-func (a *App) initRenovate(emit func(string, any)) {
-	if !a.cfg.Renovate.Enabled {
+type renovateCoordinator struct {
+	projects              *project.Store
+	logger                *slog.Logger
+	emit                  func(string, any)
+	cfg                   *config.Config
+	allowsProjectType     func(project.ProjectType) bool
+	handler               *poll.RenovateHandler
+	monitorTransientFails int
+}
+
+func newRenovateCoordinator(
+	projects *project.Store,
+	logger *slog.Logger,
+	emit func(string, any),
+	cfg *config.Config,
+	allowsProjectType func(project.ProjectType) bool,
+) *renovateCoordinator {
+	return &renovateCoordinator{
+		projects:          projects,
+		logger:            logger,
+		emit:              emit,
+		cfg:               cfg,
+		allowsProjectType: allowsProjectType,
+	}
+}
+
+func (c *renovateCoordinator) init() {
+	if !c.cfg.Renovate.Enabled {
 		return
 	}
-	a.renovateHandler = poll.NewRenovateHandler(a.projects, a.logger, emit, &a.cfg.Renovate, a.allowsProjectType)
-	a.renovateHandler.SetIntervals(a.cfg.GitHub.RenovateFast(), a.cfg.GitHub.RenovateSlow())
-	a.logger.Info("renovate.enabled", "author", a.cfg.Renovate.Author)
+	c.handler = poll.NewRenovateHandler(c.projects, c.logger, c.emit, &c.cfg.Renovate, c.allowsProjectType)
+	c.handler.SetIntervals(c.cfg.GitHub.RenovateFast(), c.cfg.GitHub.RenovateSlow())
+	c.logger.Info("renovate.enabled", "author", c.cfg.Renovate.Author)
+}
+
+func (c *renovateCoordinator) poller() *poll.RenovateHandler {
+	if c == nil {
+		return nil
+	}
+	return c.handler
+}
+
+func (c *renovateCoordinator) repos() []string {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.Repos()
+}
+
+func (c *renovateCoordinator) lastFetchedCount() func() int64 {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.LastFetchedCount
+}
+
+func (a *App) initRenovate(emit func(string, any)) {
+	a.renovate = newRenovateCoordinator(a.projects, a.logger, emit, a.cfg, a.allowsProjectType)
+	a.renovate.init()
 }
 
 // renovatePRsForMonitor returns Renovate-bot PRs flattened to PullRequest for
@@ -20,29 +76,26 @@ func (a *App) initRenovate(emit func(string, any)) {
 // never gets re-dispatched to pr-fix when CI keeps failing. Returns nil when
 // renovate is disabled or no projects are registered for this machine.
 func (a *App) renovatePRsForMonitor() []github.PullRequest {
-	if a.renovateHandler == nil {
-		return nil
-	}
-	repos := a.renovateHandler.Repos()
+	repos := a.renovate.repos()
 	if len(repos) == 0 {
 		return nil
 	}
 	rps, err := github.FetchRenovatePRs(a.cfg.Renovate.Author, repos)
 	if err != nil {
 		if github.IsTransientError(err) {
-			a.renovateMonitorTransientFails++
-			if a.renovateMonitorTransientFails < transientFetchWarnThreshold {
+			a.renovate.monitorTransientFails++
+			if a.renovate.monitorTransientFails < transientFetchWarnThreshold {
 				a.logger.Info("pr-monitor.renovate-fetch", "err", err)
 			} else {
-				a.logger.Warn("pr-monitor.renovate-fetch", "err", err, "consecutive", a.renovateMonitorTransientFails)
+				a.logger.Warn("pr-monitor.renovate-fetch", "err", err, "consecutive", a.renovate.monitorTransientFails)
 			}
 		} else {
-			a.renovateMonitorTransientFails = 0
+			a.renovate.monitorTransientFails = 0
 			a.logger.Warn("pr-monitor.renovate-fetch", "err", err)
 		}
 		return nil
 	}
-	a.renovateMonitorTransientFails = 0
+	a.renovate.monitorTransientFails = 0
 	prs := make([]github.PullRequest, len(rps))
 	for i := range rps {
 		prs[i] = rps[i].PullRequest

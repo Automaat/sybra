@@ -252,8 +252,8 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
-	if a.renovateHandler != nil {
-		metrics.RegisterRenovatePRsFetched(a.renovateHandler.LastFetchedCount)
+	if fn := a.renovate.lastFetchedCount(); fn != nil {
+		metrics.RegisterRenovatePRsFetched(fn)
 	}
 	if a.providerHealth != nil {
 		metrics.RegisterProviderHealth(func() map[string]int64 {
@@ -431,12 +431,12 @@ func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *pol
 		if issuesFetcher != nil {
 			hub.Register(issuesFetcher, 20*time.Second)
 		}
-		if a.renovateHandler != nil {
-			hub.Register(a.renovateHandler, 15*time.Second)
+		if renovatePoller := a.renovate.poller(); renovatePoller != nil {
+			hub.Register(renovatePoller, 15*time.Second)
 		}
 	}
-	if a.triageHandler != nil {
-		hub.Register(a.triageHandler, 30*time.Second)
+	if triagePoller := a.triage.poller(); triagePoller != nil {
+		hub.Register(triagePoller, 30*time.Second)
 	}
 	hub.Start(ctx, &a.wg, a.logger)
 }

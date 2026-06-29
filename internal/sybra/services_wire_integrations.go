@@ -8,8 +8,8 @@ func (a *App) wireIntegrationService() {
 	a.intgSvc.audit = a.audit
 	a.intgSvc.cfg = a.cfg
 	a.intgSvc.logger = a.logger
-	a.intgSvc.todoistHandler = a.todoistHandler
-	a.intgSvc.renovateHandler = a.renovateHandler
+	a.intgSvc.todoist = a.todoist
+	a.intgSvc.renovate = a.renovate
 	a.intgSvc.workflowEngine = a.workflowEngine
 	a.intgSvc.providerHealth = a.providerHealth
 	// Read a.cfg inside the closure so config reloads save the current config.

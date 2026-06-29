@@ -2,7 +2,9 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -11,6 +13,38 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/todoist"
 )
+
+type todoistCoordinator struct {
+	tasks    *task.Manager
+	svc      *TaskService
+	auditLog *audit.Logger
+	logger   *slog.Logger
+	emit     func(string, any)
+	cfg      *config.Config
+	wg       *sync.WaitGroup
+	handler  *poll.TodoistHandler
+	cancel   context.CancelFunc
+}
+
+func newTodoistCoordinator(
+	tasks *task.Manager,
+	svc *TaskService,
+	auditLog *audit.Logger,
+	logger *slog.Logger,
+	emit func(string, any),
+	cfg *config.Config,
+	wg *sync.WaitGroup,
+) *todoistCoordinator {
+	return &todoistCoordinator{
+		tasks:    tasks,
+		svc:      svc,
+		auditLog: auditLog,
+		logger:   logger,
+		emit:     emit,
+		cfg:      cfg,
+		wg:       wg,
+	}
+}
 
 // newTodoistHandler constructs a poll.TodoistHandler using a TaskService.
 func newTodoistHandler(
@@ -25,38 +59,68 @@ func newTodoistHandler(
 	return poll.NewTodoistHandler(tasks, svc.CreateTask, client, al, logger, emit, cfg)
 }
 
-func (a *App) initTodoist(emit func(string, any)) {
-	if !a.cfg.Todoist.Enabled || a.cfg.Todoist.APIToken == "" {
+func (c *todoistCoordinator) init() {
+	if !c.cfg.Todoist.Enabled || c.cfg.Todoist.APIToken == "" {
 		return
 	}
-	tc := todoist.NewClient(a.cfg.Todoist.APIToken)
-	a.todoistHandler = poll.NewTodoistHandler(a.tasks, a.taskSvc.CreateTask, tc, a.audit, a.logger, emit, a.cfg.Todoist)
-	a.logger.Info("todoist.enabled", "project_id", a.cfg.Todoist.ProjectID)
+	tc := todoist.NewClient(c.cfg.Todoist.APIToken)
+	c.handler = poll.NewTodoistHandler(c.tasks, c.svc.CreateTask, tc, c.auditLog, c.logger, c.emit, c.cfg.Todoist)
+	c.logger.Info("todoist.enabled", "project_id", c.cfg.Todoist.ProjectID)
+}
+
+func (c *todoistCoordinator) start(parent context.Context) {
+	if c.handler == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	c.cancel = cancel
+	p := poll.New(c.handler, 15*time.Second, c.logger)
+	c.wg.Go(func() { p.Run(ctx) })
+}
+
+func (c *todoistCoordinator) stop() {
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
+	}
+	c.handler = nil
+}
+
+func (c *todoistCoordinator) reload(parent context.Context) {
+	c.stop()
+	c.init()
+	c.start(parent)
+}
+
+func (c *todoistCoordinator) enabled() bool {
+	return c != nil && c.handler != nil
+}
+
+func (c *todoistCoordinator) syncNow() error {
+	if !c.enabled() {
+		return fmt.Errorf("todoist integration not enabled")
+	}
+	c.handler.PollAndSync()
+	return nil
+}
+
+func (a *App) initTodoist(emit func(string, any)) {
+	a.todoist = newTodoistCoordinator(a.tasks, a.taskSvc, a.audit, a.logger, emit, a.cfg, &a.wg)
+	a.todoist.init()
 }
 
 // startTodoistLoop launches the poll goroutine if the handler is initialized.
 func (a *App) startTodoistLoop(parent context.Context) {
-	if a.todoistHandler == nil {
+	if a.todoist == nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
-	a.todoistCancel = cancel
-	p := poll.New(a.todoistHandler, 15*time.Second, a.logger)
-	a.wg.Go(func() { p.Run(ctx) })
-}
-
-// stopTodoistLoop cancels the running poll goroutine if any.
-func (a *App) stopTodoistLoop() {
-	if a.todoistCancel != nil {
-		a.todoistCancel()
-		a.todoistCancel = nil
-	}
-	a.todoistHandler = nil
+	a.todoist.start(parent)
 }
 
 // reloadTodoist tears down and (if enabled) re-creates the Todoist handler + poll loop.
 func (a *App) reloadTodoist() {
-	a.stopTodoistLoop()
-	a.initTodoist(a.emit)
-	a.startTodoistLoop(a.ctx)
+	if a.todoist == nil {
+		a.initTodoist(a.emit)
+	}
+	a.todoist.reload(a.ctx)
 }

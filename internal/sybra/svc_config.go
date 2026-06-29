@@ -139,7 +139,7 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
 	s.cfg.Audit = next.Audit
 	s.cfg.Todoist = next.Todoist
-	// In-place field assignment: renovateHandler holds &s.cfg.Renovate
+	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
 	s.cfg.Renovate.Enabled = next.Renovate.Enabled
 	s.cfg.Renovate.Author = next.Renovate.Author
 	s.cfg.Providers = next.Providers
