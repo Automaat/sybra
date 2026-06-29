@@ -204,3 +204,79 @@ steps:
 		t.Errorf("task status = %q, want testing (set_status step in test workflow)", tk.Status)
 	}
 }
+
+// TestApp_StatusHook_ReadyPR_DispatchesPRWorkflow verifies that initStatusHook
+// dispatches simple-task-pr when a task is moved to ready-pr. This reproduces
+// the production strand where tasks that hit a tester infra failure were
+// manually flipped to ready-pr (via sybra-cli or the UI) but no PR ever opened:
+// the switch handled testing and ready-review but had no ready-pr case, so the
+// hook silently no-opped and simple-task-pr never ran on re-entry.
+func TestApp_StatusHook_ReadyPR_DispatchesPRWorkflow(t *testing.T) {
+	a := setupApp(t)
+
+	// Lightweight simple-task-pr that completes without spawning agents — the
+	// real builtin's create_pr step needs a live gh/claude binary.
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const testPRWF = `id: simple-task-pr
+name: Test Open PR
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-pr
+steps:
+  - id: mark_in_review
+    name: Hand to In Review
+    type: set_status
+    config:
+      status: in-review
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-pr.yaml"), []byte(testPRWF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("ready-pr dispatch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act — move to ready-pr, mirroring a manual sybra-cli/UI recovery.
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusReadyPR),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert — the hook must have dispatched simple-task-pr, which runs
+	// synchronously (single set_status step) and completes before UpdateMap
+	// returns.
+	tk, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow attached — initStatusHook did not dispatch simple-task-pr on ready-pr")
+	}
+	if tk.Workflow.WorkflowID != "simple-task-pr" {
+		t.Errorf("workflow.id = %q, want simple-task-pr", tk.Workflow.WorkflowID)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Errorf("workflow.state = %q, want ExecCompleted", tk.Workflow.State)
+	}
+	// The test workflow's single step flips status to in-review.
+	if tk.Status != task.StatusInReview {
+		t.Errorf("task status = %q, want in-review (set_status step in test workflow)", tk.Status)
+	}
+}
