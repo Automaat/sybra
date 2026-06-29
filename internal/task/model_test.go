@@ -1,6 +1,9 @@
 package task
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestValidateStatus_Valid(t *testing.T) {
 	t.Parallel()
@@ -207,5 +210,16 @@ func TestTask_DirName_NoSlug(t *testing.T) {
 	got := task.DirName()
 	if got != "a1b2c3d4" {
 		t.Errorf("got %q, want %q", got, "a1b2c3d4")
+	}
+}
+
+func TestTaskDomainTypesHaveNoYAMLTags(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []reflect.Type{reflect.TypeFor[Task](), reflect.TypeFor[AgentRun]()} {
+		for field := range typ.Fields() {
+			if tag := field.Tag.Get("yaml"); tag != "" {
+				t.Errorf("%s.%s has yaml tag %q; task persistence tags belong in taskFrontmatter/agentRunRecord", typ.Name(), field.Name, tag)
+			}
+		}
 	}
 }

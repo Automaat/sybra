@@ -403,6 +403,55 @@ func TestMarshalRoundTripAgentRuns(t *testing.T) {
 	}
 }
 
+func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Second)
+	original := Task{
+		ID:        "ar-operational",
+		Title:     "AgentRun operational fields",
+		Status:    StatusInReview,
+		AgentMode: "headless",
+		AgentRuns: []AgentRun{{
+			AgentID:           "agent-001",
+			Mode:              "headless",
+			State:             "done",
+			StartedAt:         now,
+			Verdict:           "sybra_bug",
+			VerdictRendered:   true,
+			SessionID:         "session-001",
+			ProtocolViolation: "missing-contract",
+			HeadSHA:           "abcdef123456",
+		}},
+	}
+
+	data, err := Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	parsed, err := ParseBytes(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if len(parsed.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(parsed.AgentRuns))
+	}
+	got := parsed.AgentRuns[0]
+	if !got.VerdictRendered {
+		t.Error("VerdictRendered = false, want true")
+	}
+	if got.SessionID != original.AgentRuns[0].SessionID {
+		t.Errorf("SessionID = %q, want %q", got.SessionID, original.AgentRuns[0].SessionID)
+	}
+	if got.ProtocolViolation != original.AgentRuns[0].ProtocolViolation {
+		t.Errorf("ProtocolViolation = %q, want %q", got.ProtocolViolation, original.AgentRuns[0].ProtocolViolation)
+	}
+	if got.HeadSHA != original.AgentRuns[0].HeadSHA {
+		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, original.AgentRuns[0].HeadSHA)
+	}
+}
+
 func TestMarshalRoundTripAgentRunsIndentedResult(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Second)
