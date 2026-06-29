@@ -477,6 +477,14 @@ func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPR
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
 	}
+	r.closeFinishedReviewTasksWithFetch(tasks, openReviewPRs, fetchFn)
+}
+
+func (r *ReviewHandler) closeFinishedReviewTasksWithFetch(tasks []task.Task, openReviewPRs []github.PullRequest, fetchFn func(repo string, number int) (github.PRState, error)) {
+	matchers := reviewTaskMatchers(tasks)
+	if len(matchers) == 0 {
+		return
+	}
 	closedPRs := github.DetectClosedTaskPRs(openReviewPRs, matchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {

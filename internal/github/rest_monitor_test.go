@@ -104,6 +104,44 @@ func TestFetchPRForMonitorViaREST_PendingCI(t *testing.T) {
 	}
 }
 
+func TestFetchPRForMonitorViaREST_LegacyStatusFailure(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"/pulls/8": `{"number":8,"state":"open","mergeable_state":"clean",
+			"head":{"ref":"b","sha":"s8"}}`,
+		"/commits/s8/check-runs": `{"check_runs":[]}`,
+		"/commits/s8/status": `{"statuses":[
+			{"context":"ci/build","state":"failure"}]}`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 8)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if pr.CIStatus != "FAILURE" || pr.HasPendingChecks {
+		t.Errorf("CIStatus=%q pending=%v, want FAILURE/false", pr.CIStatus, pr.HasPendingChecks)
+	}
+}
+
+func TestFetchPRForMonitorViaREST_FiltersInformationalAndCancelledChecks(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"/pulls/10": `{"number":10,"state":"open","mergeable_state":"clean",
+			"head":{"ref":"b","sha":"s10"}}`,
+		"/commits/s10/check-runs": `{"check_runs":[
+			{"name":"codecov/patch","status":"completed","conclusion":"failure"},
+			{"name":"ci/cancelled-optional","status":"completed","conclusion":"cancelled"},
+			{"name":"ci/build","status":"completed","conclusion":"success"}]}`,
+		"/commits/s10/status": `{"statuses":[]}`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 10)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if pr.CIStatus != "SUCCESS" || pr.HasPendingChecks {
+		t.Errorf("CIStatus=%q pending=%v, want SUCCESS/false", pr.CIStatus, pr.HasPendingChecks)
+	}
+}
+
 func TestFetchPRForMonitorViaREST_ClosedPR(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
@@ -115,6 +153,43 @@ func TestFetchPRForMonitorViaREST_ClosedPR(t *testing.T) {
 	}
 	if open {
 		t.Error("closed PR should report open=false")
+	}
+}
+
+func TestFetchPRStateViaREST_MergedAndClosed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "merged",
+			body: `{"number":11,"state":"closed","merged_at":"2026-06-29T10:00:00Z","mergeable_state":"clean"}`,
+			want: "MERGED",
+		},
+		{
+			name: "closed unmerged",
+			body: `{"number":12,"state":"closed","merged_at":null,"mergeable_state":"dirty"}`,
+			want: "CLOSED",
+		},
+		{
+			name: "open",
+			body: `{"number":13,"state":"open","mergeable_state":"clean"}`,
+			want: "OPEN",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &pathExecer{responses: map[string]string{"/pulls/": tt.body}}
+			got, err := fetchPRStateViaREST(e, "o/r", 11)
+			if err != nil {
+				t.Fatalf("fetchPRStateViaREST: %v", err)
+			}
+			if got.State != tt.want {
+				t.Errorf("State = %q, want %q", got.State, tt.want)
+			}
+		})
 	}
 }
 

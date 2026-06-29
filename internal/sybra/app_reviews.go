@@ -216,16 +216,24 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			} else {
 				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
 			}
-			// Reconcile stale review tasks on transient failures only. Non-transient
-			// errors (auth, 4xx) mean the per-task FetchPRState calls will also fail
-			// or be wasted, compounding backoff under an already-throttled API.
-			r.closeFinishedReviewTasks(tasks, nil)
 			// GraphQL budget exhausted: the per-PR fetch falls back to the idle
 			// REST bucket, so keep conflict/CI handling moving instead of stalling
 			// until the hourly reset. Thread-driven kinds are skipped (REST lacks
 			// thread data) and resume when GraphQL recovers.
 			if errors.Is(fetchErr, github.ErrBudgetExhausted) {
 				r.handleKnownPRConflictsViaREST(tasks)
+				fetchState := github.FetchPRStateViaREST
+				if r.fetchPRStateFn != nil {
+					fetchState = r.fetchPRStateFn
+				}
+				r.closeFinishedReviewTasksWithFetch(tasks, nil, fetchState)
+			} else {
+				// Reconcile stale review tasks on transient failures only.
+				// Non-transient errors (auth, 4xx) mean the per-task FetchPRState
+				// calls will also fail or be wasted, compounding backoff under an
+				// already-throttled API. Budget exhaustion uses the REST fallback
+				// above instead of this GraphQL-backed path.
+				r.closeFinishedReviewTasks(tasks, nil)
 			}
 		} else {
 			r.transientFetchFails = 0
@@ -335,7 +343,11 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 		r.handleMatchedPRIssues(conflictCI)
 	}
 	if len(closedMatchers) > 0 {
-		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
+		fetchState := github.FetchPRStateViaREST
+		if r.fetchPRStateFn != nil {
+			fetchState = r.fetchPRStateFn
+		}
+		r.advanceClosedTaskPRsWithFetch(monitoredPRs, closedMatchers, fetchState)
 	}
 }
 
@@ -416,6 +428,10 @@ func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, 
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
 	}
+	r.advanceClosedTaskPRsWithFetch(monitoredPRs, closedMatchers, fetchFn)
+}
+
+func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {

@@ -1545,6 +1545,57 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 	}
 }
 
+func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("Human review PR", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(77),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileCalls := 0
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
+		tasks:         tasks,
+		agents:        agentMgr,
+		fetchReviewsFn: func() (github.ReviewSummary, error) {
+			return github.ReviewSummary{}, github.ErrBudgetExhausted
+		},
+		fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
+			reconcileCalls++
+			if repo != "o/r" || number != 77 {
+				t.Fatalf("state fetch = %s#%d, want o/r#77", repo, number)
+			}
+			return github.PRState{State: "MERGED"}, nil
+		},
+	}
+
+	r.pollAndMonitorPRs()
+
+	if reconcileCalls != 1 {
+		t.Fatalf("reconcileCalls = %d, want 1", reconcileCalls)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" {
+		t.Fatalf("status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
+	}
+}
+
 func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
