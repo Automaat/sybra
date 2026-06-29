@@ -883,7 +883,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
-		reasoningEffort:   fs.String("reasoning-effort", "", "codex reasoning effort: low|medium|high|xhigh ('default' or 'none' clears the override)"),
+		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
 	}
 }
 

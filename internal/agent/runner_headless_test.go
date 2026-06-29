@@ -1000,6 +1000,48 @@ func TestBuildHeadlessInvocation_CodexReasoningEffort(t *testing.T) {
 	})
 }
 
+// TestBuildHeadlessInvocation_EffortFlag verifies claude and copilot headless
+// runs carry --effort <level> from the agent's ReasoningEffort (the same value
+// codex feeds to model_reasoning_effort), and omit it when unset.
+func TestBuildHeadlessInvocation_EffortFlag(t *testing.T) {
+	t.Parallel()
+
+	hasEffort := func(args []string, level string) bool {
+		for i := range len(args) - 1 {
+			if args[i] == "--effort" && args[i+1] == level {
+				return true
+			}
+		}
+		return false
+	}
+	hasEffortFlag := func(args []string) bool {
+		return slices.Contains(args, "--effort")
+	}
+
+	for _, provider := range []string{"claude", "copilot"} {
+		t.Run(provider+"_present_when_set", func(t *testing.T) {
+			a := &Agent{ID: "a", Provider: provider, ReasoningEffort: "medium"}
+			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
+			if err != nil {
+				t.Fatalf("buildHeadlessInvocation: %v", err)
+			}
+			if !hasEffort(args, "medium") {
+				t.Errorf("expected --effort medium in %s args; got %v", provider, args)
+			}
+		})
+		t.Run(provider+"_absent_when_empty", func(t *testing.T) {
+			a := &Agent{ID: "a", Provider: provider, ReasoningEffort: ""}
+			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
+			if err != nil {
+				t.Fatalf("buildHeadlessInvocation: %v", err)
+			}
+			if hasEffortFlag(args) {
+				t.Errorf("--effort must be absent when empty; got %v", args)
+			}
+		})
+	}
+}
+
 // TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox verifies that headless
 // codex invocations always use --dangerously-bypass-approvals-and-sandbox,
 // even when RequirePermissions=true. In headless mode there is no UI to serve

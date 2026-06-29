@@ -33,7 +33,7 @@ func (claudeProvider) NormalizeModel(model string) string {
 }
 
 func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
-	return buildClaudeCommand(model, cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)
+	return buildClaudeCommand(model, cfg.ReasoningEffort, cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
@@ -42,6 +42,7 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		args = append(args, "--resume", sid)
 	}
 	args = append(args, claudePermissionArgs(cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)...)
+	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -90,13 +91,24 @@ func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg
 }
 
 // buildClaudeCommand builds the display command string for a Claude agent.
-func buildClaudeCommand(model string, allowedTools []string, requirePerms bool, mode string) string {
+func buildClaudeCommand(model, effort string, allowedTools []string, requirePerms bool, mode string) string {
 	parts := []string{"claude"}
 	parts = append(parts, claudePermissionArgs(allowedTools, requirePerms, mode)...)
+	parts = append(parts, effortArgs(effort)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}
 	return strings.Join(parts, " ")
+}
+
+// effortArgs returns the reasoning-effort CLI flag shared by the claude and
+// copilot CLIs (`--effort <level>`), or an empty slice when effort is empty so
+// the model default is used. Codex uses a different surface — see codexReasoningArgs.
+func effortArgs(effort string) []string {
+	if effort == "" {
+		return []string{}
+	}
+	return []string{"--effort", effort}
 }
 
 // claudePermissionArgs returns the permission-related CLI flags for a claude headless run.

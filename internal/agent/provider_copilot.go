@@ -37,14 +37,15 @@ func (copilotProvider) NormalizeModel(model string) string {
 	}
 }
 
-func (copilotProvider) BuildCommand(_ RunConfig, model string) string {
-	return buildCopilotCommand(model)
+func (copilotProvider) BuildCommand(cfg RunConfig, model string) string {
+	return buildCopilotCommand(model, cfg.ReasoningEffort)
 }
 
 func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	// --allow-all-tools is required for non-interactive mode; --no-ask-user
 	// stops the agent blocking on questions (no TTY/UI to answer them).
 	args := []string{"-p", cfg.Prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -93,8 +94,9 @@ func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpk
 // (and its `-p` flag) are omitted here — like buildClaudeCommand /
 // buildCodexCommand, this is a display-only string showing the flags, not a
 // runnable line.
-func buildCopilotCommand(model string) string {
+func buildCopilotCommand(model, effort string) string {
 	parts := []string{"copilot", "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	parts = append(parts, effortArgs(effort)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
 	}

@@ -137,13 +137,15 @@ func ValidateAgentMode(s string) (string, error) {
 	return s, nil
 }
 
-// AllReasoningEfforts returns every valid codex reasoning effort level.
+// AllReasoningEfforts returns every valid reasoning effort level. This is the
+// common subset accepted by all providers (codex model_reasoning_effort and the
+// claude/copilot --effort flag).
 func AllReasoningEfforts() []string { return []string{"low", "medium", "high", "xhigh"} }
 
 var validReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
 
 // ValidateReasoningEffort accepts the empty string (model default) or one of the
-// codex-advertised levels. Static allowlist — offline-safe, no codex probe.
+// supported levels. Static allowlist — offline-safe, no provider probe.
 func ValidateReasoningEffort(s string) (string, error) {
 	if s == "" {
 		return "", nil
@@ -309,10 +311,10 @@ type Task struct {
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.
 	ForkSubagent bool `json:"forkSubagent,omitempty"`
-	// ReasoningEffort sets the Codex model reasoning level for this task's agents
-	// via -c model_reasoning_effort=<v>. Empty = model default. Codex-only;
-	// ignored for claude agents. Distinct from the claude-only extended-thinking
-	// knob — different CLI surface and vocabulary (xhigh vs max).
+	// ReasoningEffort sets the reasoning level for this task's agents
+	// (low/medium/high/xhigh). Empty = model default. Applied across providers:
+	// codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
+	// The value set is the common subset all three CLIs accept.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// TestingCycleStartedAt marks the start of the current testing cycle. It is
 	// set when a human re-dispatches the task after a human-required escalation,

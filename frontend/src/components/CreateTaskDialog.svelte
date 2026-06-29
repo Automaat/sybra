@@ -221,7 +221,7 @@
             </label>
           {/if}
           <label class="flex flex-col gap-1">
-            <span class="text-sm font-medium">Reasoning effort <span class="font-normal text-surface-400">(Codex only)</span></span>
+            <span class="text-sm font-medium">Reasoning effort</span>
             <select
               bind:value={reasoningEffort}
               class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"

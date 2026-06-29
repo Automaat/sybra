@@ -338,10 +338,10 @@ export class Task {
     "forkSubagent"?: boolean;
 
     /**
-     * ReasoningEffort sets the Codex model reasoning level for this task's agents
-     * via -c model_reasoning_effort=<v>. Empty = model default. Codex-only;
-     * ignored for claude agents. Distinct from the claude-only extended-thinking
-     * knob — different CLI surface and vocabulary (xhigh vs max).
+     * ReasoningEffort sets the reasoning level for this task's agents
+     * (low/medium/high/xhigh). Empty = model default. Applied across providers:
+     * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
+     * The value set is the common subset all three CLIs accept.
      */
     "reasoningEffort"?: string;
 

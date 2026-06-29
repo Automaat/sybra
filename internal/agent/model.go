@@ -735,7 +735,6 @@ type RunConfig struct {
 	AssignmentKey      string
 	RequirePermissions bool   // when true, suppress --dangerously-skip-permissions
 	PermissionMode     string // "default", "acceptEdits", "bypassPermissions" (conversational mode)
-	Effort             string // "low", "medium", "high", "max" (extended thinking)
 	// OneShot closes stdin after the first `result` event in conversational
 	// mode so the claude process exits naturally. Without this, interactive
 	// agents sit in StatePaused forever and onComplete never fires, stranding
@@ -783,9 +782,10 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
-	// ReasoningEffort sets codex's model_reasoning_effort (low/medium/high/xhigh)
-	// for this run. Empty = model default. Codex-only. NOT the same as Effort
-	// (claude --effort) — different provider, CLI surface, and value set.
+	// ReasoningEffort sets the agent's reasoning effort for this run
+	// (low/medium/high/xhigh). Empty = model default. Applied to every provider
+	// via its own CLI surface: codex `-c model_reasoning_effort=`, claude and
+	// copilot `--effort`. The value set is the common subset all three accept.
 	ReasoningEffort string
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only
