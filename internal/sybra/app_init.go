@@ -398,11 +398,11 @@ func (a *App) initStatusHook() {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			a.dispatchStatusWorkflow(taskID, to)
+			a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
 		case string(task.StatusTesting):
-			a.dispatchStatusWorkflow(taskID, to)
+			a.dispatchStatusWorkflow(taskID, task.StatusTesting)
 		case string(task.StatusReadyPR):
-			a.dispatchStatusWorkflow(taskID, to)
+			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 		}
 	})
 }
@@ -430,27 +430,18 @@ func (a *App) initStatusHook() {
 //     after a tester infra failure — has no terminal cascade to open its PR, so
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
-func (a *App) dispatchStatusWorkflow(taskID, status string) {
+func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 	if a.workflowEngine == nil {
 		return
 	}
 
-	var logKey string
-	switch status {
-	case string(task.StatusReadyReview):
-		logKey = "workflow.dispatch.ready-review"
-	case string(task.StatusTesting):
-		logKey = "workflow.dispatch.testing"
-	case string(task.StatusReadyPR):
-		logKey = "workflow.dispatch.ready-pr"
-	default:
-		logKey = "workflow.dispatch.status"
-	}
+	statusValue := string(status)
+	logKey := "workflow.dispatch." + statusValue
 
 	if _, err := a.workflowEngine.DispatchEvent(
 		taskID,
 		"task.status_changed",
-		map[string]string{"task.status": status},
+		map[string]string{"task.status": statusValue},
 		nil,
 	); err != nil && !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 		a.logger.Error(logKey, "task_id", taskID, "err", err)

@@ -205,6 +205,80 @@ steps:
 	}
 }
 
+// TestApp_StatusHook_Testing_DispatchesTestingWorkflow verifies that
+// initStatusHook dispatches testing-task when a task is manually moved to
+// testing. This covers the hook-level path that direct workflow-engine tests
+// bypass.
+func TestApp_StatusHook_Testing_DispatchesTestingWorkflow(t *testing.T) {
+	a := setupApp(t)
+
+	// Lightweight testing-task that completes without spawning agents — the
+	// real builtin's test runner step needs a live provider binary.
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const testTestingWF = `id: testing-task
+name: Test Testing
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  - id: mark_ready_pr
+    name: Hand to PR
+    type: set_status
+    config:
+      status: ready-pr
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "testing-task.yaml"), []byte(testTestingWF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("testing dispatch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act — move to testing, mirroring a manual sybra-cli/UI recovery.
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusTesting),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert — the hook must have dispatched testing-task, which runs
+	// synchronously (single set_status step) and completes before UpdateMap
+	// returns.
+	tk, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow attached — initStatusHook did not dispatch testing-task on testing")
+	}
+	if tk.Workflow.WorkflowID != "testing-task" {
+		t.Errorf("workflow.id = %q, want testing-task", tk.Workflow.WorkflowID)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Errorf("workflow.state = %q, want ExecCompleted", tk.Workflow.State)
+	}
+	// The test workflow's single step flips status to ready-pr.
+	if tk.Status != task.StatusReadyPR {
+		t.Errorf("task status = %q, want ready-pr (set_status step in test workflow)", tk.Status)
+	}
+}
+
 // TestApp_StatusHook_ReadyPR_DispatchesPRWorkflow verifies that initStatusHook
 // dispatches simple-task-pr when a task is moved to ready-pr. This reproduces
 // the production strand where tasks that hit a tester infra failure were
