@@ -6,6 +6,7 @@
 package evaluation
 
 import (
+	"encoding/base64"
 	"sort"
 	"time"
 
@@ -71,35 +72,36 @@ type Breakdown struct {
 // ComparisonBreakdown compares agent/model or experiment variants on the
 // speed, quality, and cost signals Sybra already records.
 type ComparisonBreakdown struct {
-	Key                       string  `json:"key"`
-	Provider                  string  `json:"provider,omitempty"`
-	Model                     string  `json:"model,omitempty"`
-	Role                      string  `json:"role,omitempty"`
-	ReasoningEffort           string  `json:"reasoningEffort,omitempty"`
-	ExperimentID              string  `json:"experimentId,omitempty"`
-	VariantID                 string  `json:"variantId,omitempty"`
-	Runs                      int     `json:"runs"`
-	Failures                  int     `json:"failures"`
-	FailureRate               float64 `json:"failureRate"`
-	Landed                    int     `json:"landed"`
-	Merged                    int     `json:"merged"`
-	MergedWithEdits           int     `json:"mergedWithEdits"`
-	Closed                    int     `json:"closed"`
-	MergeRate                 float64 `json:"mergeRate"`
-	MergedWithEditsRate       float64 `json:"mergedWithEditsRate"`
-	CIFirstPassRate           float64 `json:"ciFirstPassRate"`
-	ReworkRate                float64 `json:"reworkRate"`
-	RevertRate                float64 `json:"revertRate"`
-	DurationP50S              float64 `json:"durationP50S"`
-	DurationP90S              float64 `json:"durationP90S"`
-	TotalCostUSD              float64 `json:"totalCostUsd"`
-	CostPerLanded             float64 `json:"costPerLanded"`
-	PremiumRequests           float64 `json:"premiumRequests"`
-	PremiumRequestsPerLanded  float64 `json:"premiumRequestsPerLanded"`
-	TurnsPerLanded            float64 `json:"turnsPerLanded"`
-	ToolsPerLanded            float64 `json:"toolsPerLanded"`
-	InsufficientData          bool    `json:"insufficientData"`
-	QualityAttributionLimited bool    `json:"qualityAttributionLimited"`
+	Key                       string                `json:"key"`
+	Provider                  string                `json:"provider,omitempty"`
+	Model                     string                `json:"model,omitempty"`
+	Role                      string                `json:"role,omitempty"`
+	ReasoningEffort           string                `json:"reasoningEffort,omitempty"`
+	ExperimentID              string                `json:"experimentId,omitempty"`
+	VariantID                 string                `json:"variantId,omitempty"`
+	Runs                      int                   `json:"runs"`
+	Failures                  int                   `json:"failures"`
+	FailureRate               float64               `json:"failureRate"`
+	Landed                    int                   `json:"landed"`
+	Merged                    int                   `json:"merged"`
+	MergedWithEdits           int                   `json:"mergedWithEdits"`
+	Closed                    int                   `json:"closed"`
+	MergeRate                 float64               `json:"mergeRate"`
+	MergedWithEditsRate       float64               `json:"mergedWithEditsRate"`
+	CIFirstPassRate           float64               `json:"ciFirstPassRate"`
+	ReworkRate                float64               `json:"reworkRate"`
+	RevertRate                float64               `json:"revertRate"`
+	DurationP50S              float64               `json:"durationP50S"`
+	DurationP90S              float64               `json:"durationP90S"`
+	TotalCostUSD              float64               `json:"totalCostUsd"`
+	CostPerLanded             float64               `json:"costPerLanded"`
+	PremiumRequests           float64               `json:"premiumRequests"`
+	PremiumRequestsPerLanded  float64               `json:"premiumRequestsPerLanded"`
+	TurnsPerLanded            float64               `json:"turnsPerLanded"`
+	ToolsPerLanded            float64               `json:"toolsPerLanded"`
+	InsufficientData          bool                  `json:"insufficientData"`
+	QualityAttributionLimited bool                  `json:"qualityAttributionLimited"`
+	RoleBreakdowns            []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
 }
 
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
@@ -430,6 +432,110 @@ func CompareBy(records []stats.RunRecord, events []audit.Event, since, until tim
 
 	applyComparisonLandings(ensure, records, events, since, until, key)
 	return comparisonRows(groups, minSamples)
+}
+
+// CompareVariants returns A/B rows at experiment/variant granularity, with
+// role-specific rows attached as drilldowns. It deliberately reuses CompareBy
+// for both levels so attribution and low-sample semantics stay identical to the
+// flat comparison path.
+func CompareVariants(records []stats.RunRecord, events []audit.Event, since, until time.Time, minSamples int) []ComparisonBreakdown {
+	parents := CompareBy(records, events, since, until, minSamples, variantKey)
+	children := CompareBy(records, events, since, until, minSamples, variantRoleKey)
+	normalizeVariantParents(parents, records, since, until)
+
+	for i := range parents {
+		for j := range children {
+			if children[j].ExperimentID == parents[i].ExperimentID && children[j].VariantID == parents[i].VariantID {
+				parents[i].RoleBreakdowns = append(parents[i].RoleBreakdowns, children[j])
+			}
+		}
+		sort.Slice(parents[i].RoleBreakdowns, func(a, b int) bool {
+			return parents[i].RoleBreakdowns[a].Key < parents[i].RoleBreakdowns[b].Key
+		})
+	}
+	return parents
+}
+
+func variantKey(r stats.RunRecord) string {
+	if r.ExperimentID == "" || r.VariantID == "" {
+		return ""
+	}
+	return encodedComparisonKey(r.ExperimentID, r.VariantID)
+}
+
+func variantRoleKey(r stats.RunRecord) string {
+	if r.ExperimentID == "" || r.VariantID == "" {
+		return ""
+	}
+	return encodedComparisonKey(r.ExperimentID, r.VariantID, normalizedRole(r.Role))
+}
+
+func encodedComparisonKey(parts ...string) string {
+	out := make([]byte, 0, len(parts)*12)
+	for i, part := range parts {
+		if i > 0 {
+			out = append(out, ':')
+		}
+		out = base64.RawURLEncoding.AppendEncode(out, []byte(part))
+	}
+	return string(out)
+}
+
+func normalizeVariantParents(rows []ComparisonBreakdown, records []stats.RunRecord, since, until time.Time) {
+	type meta struct {
+		provider, model, reasoning valueConsensus
+	}
+	metas := map[string]*meta{}
+	for i := range records {
+		r := records[i]
+		if r.Timestamp.Before(since) || r.Timestamp.After(until) {
+			continue
+		}
+		k := variantKey(r)
+		if k == "" {
+			continue
+		}
+		m := metas[k]
+		if m == nil {
+			m = &meta{}
+			metas[k] = m
+		}
+		m.provider.add(r.Provider)
+		m.model.add(r.Model)
+		m.reasoning.add(r.ReasoningEffort)
+	}
+	for i := range rows {
+		rows[i].Role = ""
+		if m := metas[rows[i].Key]; m != nil {
+			rows[i].Provider = m.provider.value()
+			rows[i].Model = m.model.value()
+			rows[i].ReasoningEffort = m.reasoning.value()
+		}
+	}
+}
+
+type valueConsensus struct {
+	seen   bool
+	mixed  bool
+	chosen string
+}
+
+func (v *valueConsensus) add(next string) {
+	if !v.seen {
+		v.seen = true
+		v.chosen = next
+		return
+	}
+	if v.chosen != next {
+		v.mixed = true
+	}
+}
+
+func (v *valueConsensus) value() string {
+	if v.mixed {
+		return ""
+	}
+	return v.chosen
 }
 
 func applyComparisonLandings(ensure func(stats.RunRecord, string) *comparisonAcc, records []stats.RunRecord, events []audit.Event, since, until time.Time, key func(stats.RunRecord) string) {

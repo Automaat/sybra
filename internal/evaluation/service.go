@@ -159,13 +159,8 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 			}
 			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
 		}),
-		ByVariant: CompareBy(recs, evts, since, now, 20, func(r stats.RunRecord) string {
-			if r.ExperimentID == "" || r.VariantID == "" {
-				return ""
-			}
-			return r.ExperimentID + ":" + r.VariantID + ":" + normalizedRole(r.Role)
-		}),
-		Notes: deferredNotes,
+		ByVariant: CompareVariants(recs, evts, since, now, 20),
+		Notes:     deferredNotes,
 	}
 	rep.Weaknesses = Weaknesses(rep)
 	return rep, nil
