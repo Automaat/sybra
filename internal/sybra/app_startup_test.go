@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -19,9 +20,9 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	logLevel := &slog.LevelVar{}
 
-	var emitted []string
+	var emitted startupEventRecorder
 	app := NewApp(logger, logLevel, cfg, WithEmit(func(event string, _ any) {
-		emitted = append(emitted, event)
+		emitted.append(event)
 	}))
 
 	// NewApp must pre-allocate the bound service structs before Startup so
@@ -43,11 +44,29 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 	assertStartupCoreWiring(t, app, logger, cfg, logLevel)
 	assertStartupServiceWiring(t, app)
 
-	for _, event := range emitted {
+	emittedEvents := emitted.snapshot()
+	for _, event := range emittedEvents {
 		if event == events.StartupDegraded {
-			t.Fatalf("isolated startup emitted degraded event: %v", emitted)
+			t.Fatalf("isolated startup emitted degraded event: %v", emittedEvents)
 		}
 	}
+}
+
+type startupEventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *startupEventRecorder) append(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *startupEventRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
 }
 
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
