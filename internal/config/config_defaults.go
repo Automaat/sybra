@@ -406,6 +406,10 @@ func Load() (*Config, error) {
 		cfg.SkillsDir = defaultSkillsDir()
 	}
 
+	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
+	// Code never reads. Silently retarget the old default so users with stale
+	// configs get the fix without manual intervention. cdb6dc5 changed the
+	// default but did not migrate persisted overrides.
 	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
 		cfg.SkillsDir = defaultSkillsDir()
 	}
@@ -568,6 +572,16 @@ func applySelfMonitorDefaults(cfg *Config) {
 		}
 	}
 
+	// DryRun defaults to true as the first-week safety net. Operators flip
+	// it to false once the ledger shows clean ActionRecords. Because bool
+	// zero-values are indistinguishable from explicit false, we only flip
+	// to true when the whole SelfMonitor block is freshly populated — i.e.
+	// when none of the user-facing knobs were set. This avoids silently
+	// re-enabling DryRun on an operator who explicitly disabled it.
+	//
+	// Proxy for "freshly populated": IssueLabel is the last field the
+	// operator typically edits; if it's empty after the above defaults
+	// ran, we know nothing in the block was user-specified.
 	if s.IssueCooldownHours <= 0 {
 		s.IssueCooldownHours = 24
 	}
