@@ -170,7 +170,10 @@ func TestServiceTickEndToEnd(t *testing.T) {
 			t.AgentMode = ""
 		}),
 		// PR gap: in-review with project but no PR.
-		mkTask("pr", task.StatusInReview, func(t *task.Task) { t.ProjectID = "owner/repo" }),
+		mkTask("pr", task.StatusInReview, func(t *task.Task) {
+			t.ProjectID = "owner/repo"
+			t.UpdatedAt = now.Add(-20 * time.Minute)
+		}),
 	}}
 	disp := &fakeDispatcher{}
 	sink := &fakeSink{createNext: true}

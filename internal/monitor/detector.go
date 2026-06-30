@@ -112,7 +112,7 @@ func detectPerTask(in DetectInput) []Anomaly {
 		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget); a != nil {
 			out = append(out, *a)
 		}
-		if a := detectPRGap(t, in.Now); a != nil {
+		if a := detectPRGap(t, in.Now, time.Duration(in.Cfg.PRGapGraceMinutes)*time.Minute); a != nil {
 			out = append(out, *a)
 		}
 	}
@@ -204,18 +204,28 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 	}
 }
 
-func detectPRGap(t *task.Task, now time.Time) *Anomaly {
+func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 	if t.Status != task.StatusInReview {
 		return nil
 	}
 	if t.ProjectID == "" || t.PRNumber > 0 {
 		return nil
 	}
+	dwell := time.Duration(0)
+	if !t.UpdatedAt.IsZero() {
+		dwell = now.Sub(t.UpdatedAt)
+	}
+	if grace > 0 && !t.UpdatedAt.IsZero() && dwell >= 0 && dwell < grace {
+		return nil
+	}
 	ev := map[string]any{
-		"task_id":    t.ID,
-		"title":      t.Title,
-		"project_id": t.ProjectID,
-		"branch":     t.Branch,
+		"task_id":       t.ID,
+		"title":         t.Title,
+		"project_id":    t.ProjectID,
+		"branch":        t.Branch,
+		"updated_at":    t.UpdatedAt.Format(time.RFC3339),
+		"dwell_minutes": dwell.Minutes(),
+		"grace_minutes": grace.Minutes(),
 	}
 	return &Anomaly{
 		Kind:        KindPRGap,

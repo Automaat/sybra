@@ -276,6 +276,7 @@ type MonitorConfig struct {
 	DispatchLimit        int                `yaml:"dispatch_limit" json:"dispatchLimit"`
 	StuckHumanHours      float64            `yaml:"stuck_human_hours" json:"stuckHumanHours"`
 	LostAgentMinutes     int                `yaml:"lost_agent_minutes" json:"lostAgentMinutes"`
+	PRGapGraceMinutes    int                `yaml:"pr_gap_grace_minutes" json:"prGapGraceMinutes"`
 	FailureRateThreshold float64            `yaml:"failure_rate_threshold" json:"failureRateThreshold"`
 	BottleneckHours      map[string]float64 `yaml:"bottleneck_hours" json:"bottleneckHours"`
 	IssueLabel           string             `yaml:"issue_label" json:"issueLabel"`

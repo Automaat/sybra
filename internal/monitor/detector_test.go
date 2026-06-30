@@ -18,6 +18,7 @@ func defaultCfg() config.MonitorConfig {
 		DispatchLimit:        3,
 		StuckHumanHours:      8,
 		LostAgentMinutes:     15,
+		PRGapGraceMinutes:    15,
 		FailureRateThreshold: 0.3,
 		BottleneckHours: map[string]float64{
 			"plan-review":    4,
@@ -162,15 +163,28 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "pr_gap on in-review with project but no PR",
+			name: "pr_gap on stale in-review with project but no PR",
 			in: DetectInput{
 				Now: now,
 				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
 					t.ProjectID = "owner/repo"
+					t.UpdatedAt = now.Add(-20 * time.Minute)
 				})},
 				Cfg: cfg,
 			},
 			want: []AnomalyKind{KindPRGap},
+		},
+		{
+			name: "pr_gap suppressed during grace period",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
+					t.ProjectID = "owner/repo"
+					t.UpdatedAt = now.Add(-5 * time.Minute)
+				})},
+				Cfg: cfg,
+			},
+			want: nil,
 		},
 		{
 			name: "pr_gap suppressed when PR is set",
@@ -341,6 +355,32 @@ func TestDetect(t *testing.T) {
 				t.Fatalf("want kinds %v, got %v", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestDetectPRGap_EvidenceIncludesTiming(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	updatedAt := now.Add(-20 * time.Minute)
+	tk := mkTask("a", task.StatusInReview, func(t *task.Task) {
+		t.ProjectID = "owner/repo"
+		t.Branch = "task-a"
+		t.UpdatedAt = updatedAt
+	})
+
+	report := Detect(DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg})
+	if len(report.Anomalies) != 1 {
+		t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
+	}
+	ev := report.Anomalies[0].Evidence
+	if ev["updated_at"] != updatedAt.Format(time.RFC3339) {
+		t.Errorf("updated_at = %v, want %s", ev["updated_at"], updatedAt.Format(time.RFC3339))
+	}
+	if ev["dwell_minutes"] != 20.0 {
+		t.Errorf("dwell_minutes = %v, want 20", ev["dwell_minutes"])
+	}
+	if ev["grace_minutes"] != 15.0 {
+		t.Errorf("grace_minutes = %v, want 15", ev["grace_minutes"])
 	}
 }
 
