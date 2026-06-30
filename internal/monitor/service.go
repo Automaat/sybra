@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // auditAPI mirrors the slice of internal/audit the service needs. Tests
@@ -170,6 +171,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	summary := audit.Summarize(events1h, since1h, now)
 
 	live := snapshotLiveAgents(s.agents)
+	s.logPRGapGraceSuppressions(tasks, now)
 	report := Detect(DetectInput{
 		Now:           now,
 		Tasks:         tasks,
@@ -195,6 +197,38 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		metrics.MonitorAnomaly(string(report.Anomalies[i].Kind))
 	}
 	return report, nil
+}
+
+func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
+	grace := time.Duration(s.cfg.PRGapGraceMinutes) * time.Minute
+	if grace <= 0 {
+		return
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Status != task.StatusInReview {
+			continue
+		}
+		if t.ProjectID == "" || t.PRNumber > 0 {
+			continue
+		}
+		if !projectAllowed(s.allowsProject, t.ProjectID) {
+			continue
+		}
+		if t.UpdatedAt.IsZero() {
+			continue
+		}
+		dwell := now.Sub(t.UpdatedAt)
+		if dwell < 0 || dwell >= grace {
+			continue
+		}
+		s.logger.Debug("monitor.pr_gap.grace_suppressed",
+			"task_id", t.ID,
+			"updated_at", t.UpdatedAt.Format(time.RFC3339),
+			"grace", grace.String(),
+			"dwell", dwell.String(),
+		)
+	}
 }
 
 // Scan runs one detector pass with no remediation, dispatch, or issue side

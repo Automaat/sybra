@@ -211,14 +211,21 @@ func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 	if t.ProjectID == "" || t.PRNumber > 0 {
 		return nil
 	}
-	if prGapWithinGrace(t, now, grace) {
+	dwell := time.Duration(0)
+	if !t.UpdatedAt.IsZero() {
+		dwell = now.Sub(t.UpdatedAt)
+	}
+	if grace > 0 && !t.UpdatedAt.IsZero() && dwell >= 0 && dwell < grace {
 		return nil
 	}
 	ev := map[string]any{
-		"task_id":    t.ID,
-		"title":      t.Title,
-		"project_id": t.ProjectID,
-		"branch":     t.Branch,
+		"task_id":       t.ID,
+		"title":         t.Title,
+		"project_id":    t.ProjectID,
+		"branch":        t.Branch,
+		"updated_at":    t.UpdatedAt.Format(time.RFC3339),
+		"dwell_minutes": dwell.Minutes(),
+		"grace_minutes": grace.Minutes(),
 	}
 	return &Anomaly{
 		Kind:        KindPRGap,
@@ -229,17 +236,6 @@ func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 		Evidence:    ev,
 		DetectedAt:  now,
 	}
-}
-
-func prGapWithinGrace(t *task.Task, now time.Time, grace time.Duration) bool {
-	if grace <= 0 {
-		return false
-	}
-	if t.UpdatedAt.IsZero() {
-		return false
-	}
-	dwell := now.Sub(t.UpdatedAt)
-	return dwell >= 0 && dwell < grace
 }
 
 func detectLostAgents(in DetectInput) []Anomaly {
