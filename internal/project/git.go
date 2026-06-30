@@ -323,6 +323,13 @@ func BranchExists(barePath, branch string) bool {
 	return err == nil
 }
 
+// RefExists reports whether an arbitrary ref (e.g. refs/remotes/origin/<branch>)
+// resolves in the repo.
+func RefExists(barePath, ref string) bool {
+	_, ok := resolveRef(barePath, ref)
+	return ok
+}
+
 // CreateWorktreeDetached creates a worktree in detached HEAD mode from a remote ref.
 // Used for read-only checkouts like code reviews.
 func CreateWorktreeDetached(barePath, worktreePath, ref string) error {
