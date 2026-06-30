@@ -366,13 +366,28 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 		_ = project.RemoveWorktree(proj.ClonePath, wtPath)
 	}
 
-	ref := "refs/remotes/origin/" + branch
-	if project.BranchExists(proj.ClonePath, branch) {
+	originRef := "refs/remotes/origin/" + branch
+	switch {
+	case project.BranchExists(proj.ClonePath, branch):
 		if err := project.CreateWorktreeExisting(proj.ClonePath, wtPath, branch); err != nil {
 			return "", fmt.Errorf("checkout fix branch %s: %w", branch, err)
 		}
-	} else if err := project.CreateWorktree(proj.ClonePath, wtPath, branch, ref); err != nil {
-		return "", fmt.Errorf("create fix worktree: %w", err)
+	case project.RefExists(proj.ClonePath, originRef):
+		if err := project.CreateWorktree(proj.ClonePath, wtPath, branch, originRef); err != nil {
+			return "", fmt.Errorf("create fix worktree: %w", err)
+		}
+	default:
+		// Branch head is not under refs/remotes/origin/* — e.g. a fork PR, or a
+		// branch FetchOrigin could not pull. Fall back to the PR head ref, which
+		// GitHub exposes at refs/pull/<N>/head for every PR, and branch off that
+		// so the fix agent still gets a real local branch to push.
+		prHeadRef, err := project.FetchPRHead(proj.ClonePath, prNumber)
+		if err != nil {
+			return "", fmt.Errorf("fetch pr head: %w", err)
+		}
+		if err := project.CreateWorktree(proj.ClonePath, wtPath, branch, prHeadRef); err != nil {
+			return "", fmt.Errorf("create fix worktree: %w", err)
+		}
 	}
 	if err := project.SanitizeWorktree(wtPath); err != nil {
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)

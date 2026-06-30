@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -130,6 +131,76 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("managed worktrees dir not empty: %v", entries)
+	}
+}
+
+// TestPrepareForFix_FallsBackToPRHead is the regression for "fix review
+// comments" failing with `fatal: invalid reference:
+// refs/remotes/origin/<branch>`. When the PR head is not reachable under
+// refs/remotes/origin/* (a fork PR, or a branch FetchOrigin could not pull),
+// PrepareForFix must fall back to the refs/pull/<N>/head ref and still create a
+// real local branch to push.
+func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const prNumber = 7
+	const branch = "default-delta-xds"
+
+	// Build a commit in the origin remote (src) that is reachable ONLY via
+	// refs/pull/<N>/head — never as a branch head. Mirrors a fork PR.
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "pr head")
+	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse: %v: %s", err, shaOut)
+	}
+	prSHA := strings.TrimSpace(string(shaOut))
+	srcGit("update-ref", "refs/pull/7/head", prSHA)
+	srcGit("checkout", "main")
+	srcGit("branch", "-D", branch)
+
+	// Resolver returns the PR branch name; the head is not on origin.
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("fix fork pr", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+
+	// Worktree is on a real local branch (not detached) at the PR head commit.
+	headBranch, err := exec.Command("git", "-C", wtPath, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD branch: %v: %s", err, headBranch)
+	}
+	if got := strings.TrimSpace(string(headBranch)); got != branch {
+		t.Errorf("worktree branch = %q, want %q", got, branch)
+	}
+	headSHA, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v: %s", err, headSHA)
+	}
+	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
+		t.Errorf("worktree HEAD = %q, want PR head %q", got, prSHA)
 	}
 }
 
