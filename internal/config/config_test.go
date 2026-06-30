@@ -169,6 +169,23 @@ func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
 	}
 }
 
+func TestLoadMonitorPRGapGraceDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("monitor:\n  pr_gap_grace_minutes: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Monitor.PRGapGraceMinutes != 15 {
+		t.Fatalf("PRGapGraceMinutes = %d, want 15", cfg.Monitor.PRGapGraceMinutes)
+	}
+}
+
 func TestLoadHarnessEvolutionDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

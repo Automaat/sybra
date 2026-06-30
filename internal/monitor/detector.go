@@ -112,7 +112,7 @@ func detectPerTask(in DetectInput) []Anomaly {
 		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget); a != nil {
 			out = append(out, *a)
 		}
-		if a := detectPRGap(t, in.Now); a != nil {
+		if a := detectPRGap(t, in.Now, time.Duration(in.Cfg.PRGapGraceMinutes)*time.Minute); a != nil {
 			out = append(out, *a)
 		}
 	}
@@ -204,11 +204,14 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 	}
 }
 
-func detectPRGap(t *task.Task, now time.Time) *Anomaly {
+func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 	if t.Status != task.StatusInReview {
 		return nil
 	}
 	if t.ProjectID == "" || t.PRNumber > 0 {
+		return nil
+	}
+	if prGapWithinGrace(t, now, grace) {
 		return nil
 	}
 	ev := map[string]any{
@@ -226,6 +229,17 @@ func detectPRGap(t *task.Task, now time.Time) *Anomaly {
 		Evidence:    ev,
 		DetectedAt:  now,
 	}
+}
+
+func prGapWithinGrace(t *task.Task, now time.Time, grace time.Duration) bool {
+	if grace <= 0 {
+		return false
+	}
+	if t.UpdatedAt.IsZero() {
+		return false
+	}
+	dwell := now.Sub(t.UpdatedAt)
+	return dwell >= 0 && dwell < grace
 }
 
 func detectLostAgents(in DetectInput) []Anomaly {

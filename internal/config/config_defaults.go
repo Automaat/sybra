@@ -637,6 +637,9 @@ func applyMonitorDefaults(cfg *Config) {
 	if cfg.Monitor.LostAgentMinutes <= 0 {
 		cfg.Monitor.LostAgentMinutes = 15
 	}
+	if cfg.Monitor.PRGapGraceMinutes <= 0 {
+		cfg.Monitor.PRGapGraceMinutes = 15
+	}
 	if cfg.Monitor.FailureRateThreshold <= 0 {
 		cfg.Monitor.FailureRateThreshold = 0.3
 	}

@@ -18,6 +18,7 @@ func defaultCfg() config.MonitorConfig {
 		DispatchLimit:        3,
 		StuckHumanHours:      8,
 		LostAgentMinutes:     15,
+		PRGapGraceMinutes:    15,
 		FailureRateThreshold: 0.3,
 		BottleneckHours: map[string]float64{
 			"plan-review":    4,
@@ -162,15 +163,28 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "pr_gap on in-review with project but no PR",
+			name: "pr_gap on stale in-review with project but no PR",
 			in: DetectInput{
 				Now: now,
 				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
 					t.ProjectID = "owner/repo"
+					t.UpdatedAt = now.Add(-20 * time.Minute)
 				})},
 				Cfg: cfg,
 			},
 			want: []AnomalyKind{KindPRGap},
+		},
+		{
+			name: "pr_gap suppressed during grace period",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
+					t.ProjectID = "owner/repo"
+					t.UpdatedAt = now.Add(-5 * time.Minute)
+				})},
+				Cfg: cfg,
+			},
+			want: nil,
 		},
 		{
 			name: "pr_gap suppressed when PR is set",
