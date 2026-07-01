@@ -920,6 +920,24 @@ func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
 	}
 }
 
+func TestHasRawReadinessProbeEvidenceAcceptsReturnedStatusText(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl /health returned 200"
+	if !hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("readiness probe evidence was rejected: %q", raw)
+	}
+}
+
+func TestHasRawReadinessProbeEvidenceAcceptsExpectedWithActualResult(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl /health expected to return 200, it returned 200"
+	if !hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("readiness probe evidence with actual result was rejected: %q", raw)
+	}
+}
+
 func structuredPassOutput() string {
 	return `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"server","app_started":true,"start_command":"SYBRA_PORT=0 go run ./cmd/sybra-server","readiness_probe":"curl -fsS http://127.0.0.1:12345/health","manual_probes":[{"command":"curl -fsS http://127.0.0.1:12345/health","expected":"HTTP 200 ok","actual":"ok"}],"automated_checks":[{"command":"go test ./internal/workflow","actual":"ok"}],"unable_to_run_reason":""}`
 }

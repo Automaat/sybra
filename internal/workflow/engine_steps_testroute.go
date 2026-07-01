@@ -803,14 +803,20 @@ func hasRawRegressionCheckEvidence(raw string) bool {
 func hasExecutedResultEvidence(lower string) bool {
 	return containsAny(lower,
 		"->", "=>", "ran ", "ran:", "executed", "exit code", "exit status",
-		"output:", "actual:", "observed:", "confirmed", "status:")
+		"output:", "actual:", "observed:", "confirmed", "status:", "returned")
 }
 
 func hasReadinessHypotheticalEvidence(lower string) bool {
-	return containsAny(lower,
+	if !containsAny(lower,
 		"would ", "would've", "would have", "could ", "could've", "could have",
 		"should ", "should've", "should have", "expected to", "if the ",
-		"if it ", "if this ", "if run", "assuming ", "hypothetical")
+		"if it ", "if this ", "if run", "assuming ", "hypothetical") {
+		return false
+	}
+	return !containsAny(lower,
+		"->", "=>", "actual:", "observed:", "output:", "status:", "confirmed",
+		"it returned", "command returned", "request returned", "endpoint returned",
+		"got ", "received ")
 }
 
 func hasManualActionEvidence(lower string) bool {
