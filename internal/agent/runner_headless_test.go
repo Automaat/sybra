@@ -1496,9 +1496,25 @@ func TestBuildHeadlessInvocation_CodexHooksAbsentWithEmptyTaskID(t *testing.T) {
 	}
 }
 
-// TestBuildHeadlessInvocation_Claude_NoHooks verifies that Claude and Copilot
-// invocations never receive codex hook args regardless of TaskID.
-func TestBuildHeadlessInvocation_Claude_NoHooks(t *testing.T) {
+func TestBuildHeadlessInvocation_ClaudeKlaudiushHookPresent(t *testing.T) {
+	makeFakeHookBinary(t, "klaudiush")
+
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--settings" && i+1 < len(args) && strings.Contains(args[i+1], "klaudiush --hook-type PreToolUse") {
+			return
+		}
+	}
+	t.Fatalf("Claude headless args missing klaudiush --settings hook: %v", args)
+}
+
+// TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs verifies that Claude and
+// Copilot invocations never receive codex hook args regardless of TaskID.
+func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {
 	makeFakeSybraCLI(t)
 
 	for _, provider := range []string{"claude", "copilot"} {
