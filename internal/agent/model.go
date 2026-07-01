@@ -830,10 +830,10 @@ type RunConfig struct {
 	FallbackModel string
 	// ReasoningEffort sets the agent's reasoning effort for this run
 	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
-	// Manager.Run only for providers with a validated reasoning surface. Lower-level
+	// Manager.Run for every provider before command construction. Lower-level
 	// command builders still omit the provider flag when handed an empty value
 	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
-	// `--effort` only when a caller explicitly sets the field.
+	// `--effort`.
 	ReasoningEffort string
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only

@@ -70,7 +70,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, providerErr
 	}
 	cfg.provider = prov
-	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort, prov)
+	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
@@ -86,7 +86,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	return cfg, prov, nil
 }
 
-func defaultReasoningEffort(effort string, prov Provider) string {
+func defaultReasoningEffort(effort string) string {
 	if effort != "" {
 		return effort
 	}
