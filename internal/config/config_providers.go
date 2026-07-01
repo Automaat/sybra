@@ -31,4 +31,10 @@ type ProviderLimitsConfig struct {
 	WeeklyThresholdPercent  float64 `yaml:"weekly_threshold_percent" json:"weeklyThresholdPercent"`
 	PreferUnderused         bool    `yaml:"prefer_underused" json:"preferUnderused"`
 	BackfillDays            int     `yaml:"backfill_days" json:"backfillDays"`
+	// MaxInFlightPerProvider caps concurrent in-flight agents per provider,
+	// distinct from the global agent.max_concurrent ceiling. 0 (default)
+	// disables the cap. When set, gateProvider redirects new dispatches away
+	// from an at-cap provider even when PreferUnderused is false, so the cap
+	// cannot silently no-op.
+	MaxInFlightPerProvider int `yaml:"max_in_flight_per_provider" json:"maxInFlightPerProvider"`
 }

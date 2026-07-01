@@ -279,10 +279,11 @@ func DefaultConfig() *Config {
 			RetentionDays: 30,
 		},
 		Agent: AgentDefaults{
-			Provider:      "claude",
-			MaxConcurrent: 100,
-			MaxCostUSD:    5.0,
-			MaxTurns:      150,
+			Provider:         "claude",
+			MaxConcurrent:    100,
+			MaxCostUSD:       5.0,
+			MaxTurns:         150,
+			DispatchJitterMs: 500,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,
@@ -326,6 +327,7 @@ func DefaultConfig() *Config {
 				WeeklyThresholdPercent:  90,
 				PreferUnderused:         true,
 				BackfillDays:            14,
+				MaxInFlightPerProvider:  0,
 			},
 			AutoFailover: true,
 		},

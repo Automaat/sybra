@@ -78,6 +78,43 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	}
 }
 
+// TestDefaultDispatchJitterAndInFlightCap locks in the jitter/soft-cap
+// defaults: jitter on (500ms) so a dispatch wave de-correlates out of the
+// box, cap off (0) so operators must opt in to a per-provider ceiling.
+func TestDefaultDispatchJitterAndInFlightCap(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	if cfg.Agent.DispatchJitterMs != 500 {
+		t.Errorf("Agent.DispatchJitterMs = %d, want 500", cfg.Agent.DispatchJitterMs)
+	}
+	if cfg.Providers.Limits.MaxInFlightPerProvider != 0 {
+		t.Errorf("Providers.Limits.MaxInFlightPerProvider = %d, want 0 (disabled)", cfg.Providers.Limits.MaxInFlightPerProvider)
+	}
+}
+
+// TestLoadPreservesDispatchJitterAndInFlightCapOverrides verifies both new
+// knobs round-trip through YAML like the other Agent/Providers.Limits fields.
+func TestLoadPreservesDispatchJitterAndInFlightCapOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yamlDoc := []byte("agent:\n  dispatch_jitter_ms: 250\nproviders:\n  limits:\n    max_in_flight_per_provider: 3\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yamlDoc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.DispatchJitterMs != 250 {
+		t.Errorf("Agent.DispatchJitterMs = %d, want 250", cfg.Agent.DispatchJitterMs)
+	}
+	if cfg.Providers.Limits.MaxInFlightPerProvider != 3 {
+		t.Errorf("Providers.Limits.MaxInFlightPerProvider = %d, want 3", cfg.Providers.Limits.MaxInFlightPerProvider)
+	}
+}
+
 func TestLoadExperienceDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
