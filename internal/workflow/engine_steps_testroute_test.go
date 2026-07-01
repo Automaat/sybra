@@ -843,6 +843,38 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 			wantTaint:  testProtocolMissingEvidence,
 		},
+		{
+			// Regression: an internal Go component with no runnable product
+			// surface, described in prose, must resolve to the library exemption
+			// rather than being read as "surface_kind omitted".
+			name:       "pass_with_internal_component_prose_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal Go component/package: heartbeat component","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/intercp/catalog/...","actual":"ok"}],"unable_to_run_reason":"internal component; no standalone app surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// Regression: a surface described as explicitly HAVING no surface
+			// ("no HTTP/CLI/UI surface") must not be misread as owning that
+			// surface, and a decorated app_started ("true (...)") counts as true.
+			name:       "pass_with_negated_surface_prose_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal background component (no HTTP/CLI/UI surface); heartbeat goroutine inside kuma-cp","app_started":"true (component.Start() run as a real goroutine)","start_command":"","readiness_probe":"go test ./pkg/intercp/catalog/... -> ok","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"internal background goroutine; no product surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// Regression: negated surface lists can be written as prose
+			// ("no http or cli needed"), not only as slash-delimited clauses.
+			name:       "pass_with_or_joined_negated_surface_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal library change, no http or cli needed for this pure internal change","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/foo/...","actual":"ok"}],"unable_to_run_reason":"pure internal-library refactor, no CLI or HTTP surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
 	}
 
 	for _, tc := range cases {
@@ -885,6 +917,24 @@ func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
 	raw := "curl would have returned 200 for the health endpoint if the server were running, but this is a pure library change"
 	if hasRawReadinessProbeEvidence(raw) {
 		t.Fatalf("hypothetical readiness probe evidence was accepted: %q", raw)
+	}
+}
+
+func TestHasRawReadinessProbeEvidenceAcceptsReturnedStatusText(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl /health returned 200"
+	if !hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("readiness probe evidence was rejected: %q", raw)
+	}
+}
+
+func TestHasRawReadinessProbeEvidenceAcceptsExpectedWithActualResult(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl /health expected to return 200, it returned 200"
+	if !hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("readiness probe evidence with actual result was rejected: %q", raw)
 	}
 }
 

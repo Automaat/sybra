@@ -38,7 +38,7 @@ steps:
       needs_worktree: true
       max_retries: 1
       output_schema: >-
-        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string"},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}
       prompt: >-
         Adversarially test task {{.Task.ID}} using the /sybra-test skill.
 
@@ -78,6 +78,12 @@ steps:
         equivalent. Automated tests, lint, builds, diff review, and grep are
         support evidence only — they do NOT count as manual testing by
         themselves.
+
+        Set surface_kind to exactly ONE canonical token: web, cli, server,
+        desktop, k8s, library, docs, or none. Use library for internal
+        package/component/refactor changes with no runnable product surface (put
+        the detail in unable_to_run_reason, not in surface_kind). Do NOT write a
+        free-form description — the router only recognizes these tokens.
 
         Exception: for pure refactors, internal-library changes, docs-only work,
         or changes with no runnable product surface, do not force an app start.

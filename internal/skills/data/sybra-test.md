@@ -63,6 +63,8 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
    - Desktop/GUI: drive the headless HTTP/server equivalent; use browser/computer-use tooling when available.
    Automated tests, lint, builds, diff review, and source grep are useful support evidence, but they **do not count as manual testing by themselves**.
 
+   Set `surface_kind` to exactly one canonical token — `web`, `cli`, `server`, `desktop`, `k8s`, `library`, `docs`, or `none` — never a free-form description; the router only recognizes these tokens. Use `library` for internal package/component/refactor changes with no runnable product surface and put the detail in `unable_to_run_reason`.
+
    **Exception:** for pure refactors, internal-library changes, docs-only work, or changes with no runnable product surface, do not force an app start. Instead, state the exception in your final PASS summary and run the strongest behavioral regression evidence available: a CLI/test harness probe (for example `go test`, package tests, `npm run check`, or the real CLI command) plus grep/invariant probes when useful for sweep wording like "everywhere", "all", "single utility", or "no raw X remains". Static review or grep alone is not enough. If you cannot justify the exception from the task scope, missing manual testing is `missing_evidence` → FAIL.
 
    If manual testing is impossible, say exactly why in your response. In JSON
