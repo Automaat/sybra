@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -684,6 +685,177 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 	if r.TestFailureFingerprint != "abc123" {
 		t.Errorf("TestFailureFingerprint = %q, want abc123", r.TestFailureFingerprint)
+	}
+}
+
+func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Update run payload", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := AgentRun{
+		AgentID:  "agent-payload",
+		Role:     "implementation",
+		Mode:     "headless",
+		State:    "running",
+		Provider: "claude",
+		Model:    "old-model",
+	}
+	if err := store.AddRun(created.ID, run); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := RunPatch{
+		State:                  Ptr("done"),
+		CostUSD:                Ptr(1.23),
+		PremiumRequests:        Ptr(2.5),
+		Result:                 Ptr("completed with result"),
+		Verdict:                Ptr("sybra_bug"),
+		VerdictRendered:        Ptr(true),
+		LogFile:                Ptr("/tmp/sybra/agent-payload.ndjson"),
+		Provider:               Ptr("codex"),
+		Model:                  Ptr("gpt-5"),
+		ExperimentID:           Ptr("exp-123"),
+		VariantID:              Ptr("variant-b"),
+		AssignmentUnit:         Ptr("task"),
+		AssignmentKey:          Ptr("task-abc123"),
+		ReasoningEffort:        Ptr("high"),
+		SessionID:              Ptr("session-123"),
+		ProtocolViolation:      Ptr("missing-json"),
+		TestOutcome:            Ptr("product_bug"),
+		TestFailureFingerprint: Ptr("fingerprint-123"),
+		HeadSHA:                Ptr("0123456789abcdef0123456789abcdef01234567"),
+	}
+	assertRunPatchCoversEveryField(t, patch)
+
+	if err := store.UpdateRun(created.ID, "agent-payload", patch); err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Parse(got.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(reloaded.AgentRuns))
+	}
+
+	assertAgentRunPayload(t, reloaded.AgentRuns[0], AgentRun{
+		AgentID:                "agent-payload",
+		Role:                   "implementation",
+		Mode:                   "headless",
+		Provider:               "codex",
+		Model:                  "gpt-5",
+		ExperimentID:           "exp-123",
+		VariantID:              "variant-b",
+		AssignmentUnit:         "task",
+		AssignmentKey:          "task-abc123",
+		ReasoningEffort:        "high",
+		State:                  "done",
+		CostUSD:                1.23,
+		PremiumRequests:        2.5,
+		Result:                 "completed with result",
+		Verdict:                "sybra_bug",
+		VerdictRendered:        true,
+		LogFile:                "/tmp/sybra/agent-payload.ndjson",
+		SessionID:              "session-123",
+		ProtocolViolation:      "missing-json",
+		TestOutcome:            "product_bug",
+		TestFailureFingerprint: "fingerprint-123",
+		HeadSHA:                "0123456789abcdef0123456789abcdef01234567",
+	})
+}
+
+func assertRunPatchCoversEveryField(t *testing.T, patch RunPatch) {
+	t.Helper()
+
+	value := reflect.ValueOf(patch)
+	for _, field := range reflect.VisibleFields(value.Type()) {
+		if value.FieldByIndex(field.Index).IsNil() {
+			t.Errorf("RunPatch field %s is not covered by payload round-trip test", field.Name)
+		}
+	}
+}
+
+func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
+	t.Helper()
+
+	if got.AgentID != want.AgentID {
+		t.Errorf("AgentID = %q, want %q", got.AgentID, want.AgentID)
+	}
+	if got.Role != want.Role {
+		t.Errorf("Role = %q, want %q", got.Role, want.Role)
+	}
+	if got.Mode != want.Mode {
+		t.Errorf("Mode = %q, want %q", got.Mode, want.Mode)
+	}
+	if got.Provider != want.Provider {
+		t.Errorf("Provider = %q, want %q", got.Provider, want.Provider)
+	}
+	if got.Model != want.Model {
+		t.Errorf("Model = %q, want %q", got.Model, want.Model)
+	}
+	if got.ExperimentID != want.ExperimentID {
+		t.Errorf("ExperimentID = %q, want %q", got.ExperimentID, want.ExperimentID)
+	}
+	if got.VariantID != want.VariantID {
+		t.Errorf("VariantID = %q, want %q", got.VariantID, want.VariantID)
+	}
+	if got.AssignmentUnit != want.AssignmentUnit {
+		t.Errorf("AssignmentUnit = %q, want %q", got.AssignmentUnit, want.AssignmentUnit)
+	}
+	if got.AssignmentKey != want.AssignmentKey {
+		t.Errorf("AssignmentKey = %q, want %q", got.AssignmentKey, want.AssignmentKey)
+	}
+	if got.ReasoningEffort != want.ReasoningEffort {
+		t.Errorf("ReasoningEffort = %q, want %q", got.ReasoningEffort, want.ReasoningEffort)
+	}
+	if got.State != want.State {
+		t.Errorf("State = %q, want %q", got.State, want.State)
+	}
+	if got.CostUSD != want.CostUSD {
+		t.Errorf("CostUSD = %f, want %f", got.CostUSD, want.CostUSD)
+	}
+	if got.PremiumRequests != want.PremiumRequests {
+		t.Errorf("PremiumRequests = %f, want %f", got.PremiumRequests, want.PremiumRequests)
+	}
+	if got.Result != want.Result {
+		t.Errorf("Result = %q, want %q", got.Result, want.Result)
+	}
+	if got.Verdict != want.Verdict {
+		t.Errorf("Verdict = %q, want %q", got.Verdict, want.Verdict)
+	}
+	if got.VerdictRendered != want.VerdictRendered {
+		t.Errorf("VerdictRendered = %t, want %t", got.VerdictRendered, want.VerdictRendered)
+	}
+	if got.LogFile != want.LogFile {
+		t.Errorf("LogFile = %q, want %q", got.LogFile, want.LogFile)
+	}
+	if got.SessionID != want.SessionID {
+		t.Errorf("SessionID = %q, want %q", got.SessionID, want.SessionID)
+	}
+	if got.ProtocolViolation != want.ProtocolViolation {
+		t.Errorf("ProtocolViolation = %q, want %q", got.ProtocolViolation, want.ProtocolViolation)
+	}
+	if got.TestOutcome != want.TestOutcome {
+		t.Errorf("TestOutcome = %q, want %q", got.TestOutcome, want.TestOutcome)
+	}
+	if got.TestFailureFingerprint != want.TestFailureFingerprint {
+		t.Errorf("TestFailureFingerprint = %q, want %q", got.TestFailureFingerprint, want.TestFailureFingerprint)
+	}
+	if got.HeadSHA != want.HeadSHA {
+		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
 	}
 }
 
