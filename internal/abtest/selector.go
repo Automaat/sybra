@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
 // Select deterministically chooses a variant for the task/stage. It returns
@@ -63,6 +65,8 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 				ReasoningEffort: v.ReasoningEffort,
 				AssignmentUnit:  unit,
 				AssignmentKey:   key,
+				PromptTransform: clonePromptTransform(v.PromptTransform),
+				SkillAliases:    cloneSkillAliases(v.SkillAliases),
 			}, true, nil
 		}
 	}
@@ -203,7 +207,77 @@ func validateVariant(expID string, v Variant) error {
 	default:
 		return fmt.Errorf("abtest: variant %q has invalid tier %q", v.ID, v.Tier)
 	}
+	if err := validatePromptTransform(v); err != nil {
+		return err
+	}
+	if err := validateSkillAliases(v); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validatePromptTransform(v Variant) error {
+	if v.PromptTransform == nil {
+		return nil
+	}
+	op := strings.TrimSpace(v.PromptTransform.Op)
+	text := strings.TrimSpace(v.PromptTransform.Text)
+	switch op {
+	case "":
+		return nil
+	case "replace", "template":
+		if text == "" {
+			return fmt.Errorf("abtest: variant %q prompt_transform %q requires text", v.ID, op)
+		}
+	case "prepend", "append":
+	default:
+		return fmt.Errorf("abtest: variant %q has invalid prompt_transform op %q", v.ID, v.PromptTransform.Op)
+	}
+	return nil
+}
+
+func validateSkillAliases(v Variant) error {
+	for from, to := range v.SkillAliases {
+		if from != strings.TrimSpace(from) {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
+		}
+		if to != strings.TrimSpace(to) {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
+		}
+		normalizedFrom, ok := skillinvoke.NormalizeName(from)
+		if !ok || normalizedFrom != strings.TrimPrefix(strings.TrimSpace(from), "/") {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
+		}
+		normalizedTo, ok := skillinvoke.NormalizeName(to)
+		if !ok || normalizedTo != strings.TrimPrefix(strings.TrimSpace(to), "/") {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
+		}
+	}
+	return nil
+}
+
+func clonePromptTransform(in *PromptTransform) *PromptTransform {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneSkillAliases(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for from, to := range in {
+		normalizedFrom, okFrom := skillinvoke.NormalizeName(from)
+		normalizedTo, okTo := skillinvoke.NormalizeName(to)
+		if !okFrom || !okTo {
+			continue
+		}
+		out[normalizedFrom] = normalizedTo
+	}
+	return out
 }
 
 func hashKey(s string) uint64 {
