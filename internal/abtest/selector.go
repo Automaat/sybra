@@ -32,7 +32,7 @@ func SelectEligible(cfg Config, taskID, role, stepID string, providerAllowed fun
 }
 
 func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
-	if err := validateExperiment(exp); err != nil {
+	if err := validateExperiment(exp, providerAllowed); err != nil {
 		return Assignment{}, false, err
 	}
 	unit := exp.AssignmentUnit
@@ -96,7 +96,7 @@ func roleMatches(roles []string, role string) bool {
 	return slices.Contains(roles, role)
 }
 
-func validateExperiment(exp Experiment) error {
+func validateExperiment(exp Experiment, providerAllowed func(string) bool) error {
 	if strings.TrimSpace(exp.ID) == "" {
 		return fmt.Errorf("abtest: experiment id is required")
 	}
@@ -136,7 +136,7 @@ func validateExperiment(exp Experiment) error {
 		}
 		seen[v.ID] = true
 	}
-	if err := validatePromptSkillHomogeneity(exp); err != nil {
+	if err := validatePromptSkillHomogeneity(exp, providerAllowed); err != nil {
 		return err
 	}
 	return nil
@@ -154,16 +154,19 @@ func validateExperimentSubject(exp Experiment) error {
 	if strings.TrimSpace(exp.Subject.StepID) == "" && strings.TrimSpace(exp.Subject.Role) == "" {
 		return fmt.Errorf("abtest: experiment %q kind %q requires subject step_id or role", exp.ID, exp.KindValue())
 	}
+	if exp.KindValue() == "skill" && strings.TrimSpace(exp.Subject.SkillName) == "" {
+		return fmt.Errorf("abtest: experiment %q kind %q requires subject skill_name", exp.ID, exp.KindValue())
+	}
 	return nil
 }
 
-func validatePromptSkillHomogeneity(exp Experiment) error {
+func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string) bool) error {
 	switch exp.KindValue() {
 	case "prompt", "skill":
 	default:
 		return nil
 	}
-	eligible, _ := EligibleVariants(exp, nil)
+	eligible, _ := EligibleVariants(exp, providerAllowed)
 	if len(eligible) < 2 {
 		return nil
 	}

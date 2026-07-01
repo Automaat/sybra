@@ -93,7 +93,7 @@ func DefaultConfig() Config {
 // Validate checks all configured experiments, including disabled experiments.
 func (c Config) Validate() error {
 	for i := range c.Experiments {
-		if err := validateExperiment(c.Experiments[i]); err != nil {
+		if err := validateExperiment(c.Experiments[i], nil); err != nil {
 			return err
 		}
 	}

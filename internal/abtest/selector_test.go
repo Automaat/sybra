@@ -358,10 +358,14 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			expID := strings.ReplaceAll(tt.name, " ", "-")
+			subject := &Subject{StepID: "implement"}
+			if tt.kind == "skill" {
+				subject.SkillName = "sybra-test"
+			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      expID,
 				Kind:    tt.kind,
-				Subject: &Subject{StepID: "implement"},
+				Subject: subject,
 				Variants: []Variant{
 					{ID: "base", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
 					tt.variant,
@@ -457,13 +461,60 @@ func TestConfigValidateRejectsMissingPromptSkillSubject(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsMissingSkillName(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "skill-no-name",
+		Kind:    "skill",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate should reject skill experiment without subject skill_name")
+	}
+	if !strings.Contains(err.Error(), "skill_name") {
+		t.Fatalf("error %q does not contain %q", err.Error(), "skill_name")
+	}
+}
+
+func TestSelectIgnoresProviderDriftOnIneligibleVariant(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "prompt-mixed-provider",
+		Kind:           "prompt",
+		Enabled:        &enabled,
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Subject:        &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "claude-variant", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+			{ID: "codex-variant", Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "medium", Weight: 1},
+		},
+	}}}
+	_, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", func(provider string) bool {
+		return provider == "claude"
+	})
+	if err != nil {
+		t.Fatalf("SelectEligible should not fail homogeneity check when the drifting variant is ineligible: %v", err)
+	}
+	if !ok {
+		t.Fatal("SelectEligible ok = false, want true")
+	}
+}
+
 func TestConfigValidateIgnoresZeroWeightPromptSkillDrift(t *testing.T) {
 	for _, kind := range []string{"prompt", "skill"} {
 		t.Run(kind, func(t *testing.T) {
+			subject := &Subject{Role: "implementation"}
+			if kind == "skill" {
+				subject.SkillName = "sybra-test"
+			}
 			cfg := Config{Experiments: []Experiment{{
 				ID:      kind + "-zero-weight",
 				Kind:    kind,
-				Subject: &Subject{Role: "implementation"},
+				Subject: subject,
 				Variants: []Variant{
 					{ID: "base", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
 					{ID: "ignored", Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "high", Weight: 0},
