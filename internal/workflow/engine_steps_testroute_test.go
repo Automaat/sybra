@@ -843,6 +843,28 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "failed",
 			wantTaint:  testProtocolMissingEvidence,
 		},
+		{
+			// Regression: an internal Go component with no runnable product
+			// surface, described in prose, must resolve to the library exemption
+			// rather than being read as "surface_kind omitted".
+			name:       "pass_with_internal_component_prose_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal Go component/package: heartbeat component","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/intercp/catalog/...","actual":"ok"}],"unable_to_run_reason":"internal component; no standalone app surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			// Regression: a surface described as explicitly HAVING no surface
+			// ("no HTTP/CLI/UI surface") must not be misread as owning that
+			// surface, and a decorated app_started ("true (...)") counts as true.
+			name:       "pass_with_negated_surface_prose_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal background component (no HTTP/CLI/UI surface); heartbeat goroutine inside kuma-cp","app_started":"true (component.Start() run as a real goroutine)","start_command":"","readiness_probe":"go test ./pkg/intercp/catalog/... -> ok","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"internal background goroutine; no product surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
 	}
 
 	for _, tc := range cases {

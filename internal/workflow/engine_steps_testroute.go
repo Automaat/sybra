@@ -113,7 +113,15 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &sv); err != nil {
 		return err
 	}
-	switch strings.ToLower(strings.TrimSpace(sv)) {
+	// Models often decorate the boolean with a parenthetical justification, e.g.
+	// `"true (component.Start() run as a goroutine)"`. Judge the leading token so
+	// an affirmative answer is not silently read as false.
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(sv)))
+	if len(fields) == 0 {
+		*b = false
+		return nil
+	}
+	switch strings.Trim(fields[0], "(),.:;\"'`") {
 	case "true", "yes", "y", "t", "1":
 		*b = true
 	default:
@@ -497,14 +505,36 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	return true, ""
 }
 
+// surfaceNegationPattern strips clauses that explicitly DENY a runnable surface
+// ("no HTTP/CLI/UI surface", "no runnable product surface") before the positive
+// token scan. Without this, a tester who correctly states the change has no
+// product surface is misclassified as owning the very surface it disclaims —
+// e.g. "cli" pulled out of "(no HTTP/CLI/UI surface)".
+var surfaceNegationPattern = regexp.MustCompile(
+	`\bno\s+[a-z0-9/,\- ]*\bsurface\b|\bno\s+runnable\b|\bno\s+(?:http|https|cli|ui|web|server|desktop|k8s|kubernetes|api|gui)\b`,
+)
+
+// internalSurfaceMarkers identify an internal/library/no-product-surface change
+// described in prose ("internal Go component/package", "background goroutine").
+// They map to the "library" exemption — which still requires regression
+// evidence — but only as a last resort when no positive product-surface token
+// is present, so "internal Kubernetes informer" still resolves to its real k8s
+// surface and keeps the app-start requirement.
+var internalSurfaceMarkers = []string{
+	"internal", "library", "package", "component", "refactor",
+	"helper", "goroutine", "background", "no runnable",
+	"no product surface", "no user-facing", "not a product surface",
+}
+
 func normalizeSurfaceKind(s string) string {
 	lower := strings.ToLower(strings.TrimSpace(s))
 	switch lower {
 	case "web", "cli", "server", "desktop", "k8s", "library", "docs", "none":
 		return lower
 	}
+	scan := surfaceNegationPattern.ReplaceAllString(lower, " ")
 	var fallback string
-	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
+	for _, token := range strings.FieldsFunc(scan, func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	}) {
 		switch token {
@@ -521,6 +551,9 @@ func normalizeSurfaceKind(s string) string {
 				fallback = token
 			}
 		}
+	}
+	if fallback == "" && containsAny(lower, internalSurfaceMarkers...) {
+		return "library"
 	}
 	return fallback
 }
