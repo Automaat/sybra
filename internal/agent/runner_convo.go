@@ -108,17 +108,65 @@ func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	// Only wire the approval hook for agents that actually need permission checks.
-	// Agents with --dangerously-skip-permissions should not be blocked by the hook.
 	needsApproval := cfg.RequirePermissions || cfg.PermissionMode != ""
-	if m.approvalAddr != "" && needsApproval {
-		hookSettings := fmt.Sprintf(
-			`{"hooks":{"PreToolUse":[{"matcher":"","hooks":[{"type":"http","url":"http://%s/hooks/pre-tool-use","timeout":300}]}]}}`,
-			m.approvalAddr,
-		)
+	if hookSettings := buildClaudeHookSettings(m.approvalAddr, needsApproval); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	return args
+}
+
+type claudeHookSettings struct {
+	Hooks map[string][]claudeHookEntry `json:"hooks"`
+}
+
+type claudeHookEntry struct {
+	Matcher string             `json:"matcher"`
+	Hooks   []claudeHookAction `json:"hooks"`
+}
+
+type claudeHookAction struct {
+	Type    string `json:"type"`
+	Command string `json:"command,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Timeout int    `json:"timeout"`
+}
+
+func buildClaudeHookSettings(approvalAddr string, needsApproval bool) string {
+	var actions []claudeHookAction
+	if bin, ok := resolveKlaudiushHookBin(); ok {
+		actions = append(actions, claudeHookAction{
+			Type:    "command",
+			Command: bin + " --hook-type PreToolUse",
+			Timeout: 30,
+		})
+	}
+
+	// Only wire the approval hook for agents that actually need permission checks.
+	// Agents with --dangerously-skip-permissions still get klaudiush validation,
+	// but should not block on Sybra's human approval server.
+	if approvalAddr != "" && needsApproval {
+		actions = append(actions, claudeHookAction{
+			Type:    "http",
+			URL:     fmt.Sprintf("http://%s/hooks/pre-tool-use", approvalAddr),
+			Timeout: 300,
+		})
+	}
+	if len(actions) == 0 {
+		return ""
+	}
+	settings := claudeHookSettings{
+		Hooks: map[string][]claudeHookEntry{
+			"PreToolUse": {{
+				Matcher: "",
+				Hooks:   actions,
+			}},
+		},
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig) (*exec.Cmd, io.ReadCloser, *bytes.Buffer, error) {

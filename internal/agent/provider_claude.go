@@ -42,6 +42,9 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		args = append(args, "--resume", sid)
 	}
 	args = append(args, claudePermissionArgs(cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)...)
+	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
+		args = append(args, "--settings", hookSettings)
+	}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)

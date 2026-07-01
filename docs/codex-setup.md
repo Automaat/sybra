@@ -110,38 +110,42 @@ Existing Sybra skills (`/sybra-tasks`, `/sybra-triage`, `/sybra-plan`, etc.) are
 
 The orchestrator prompt (`orchestrator/CLAUDE.md`) governs the Sybra orchestrator session, which always runs as a Claude Code agent. Codex is used for implementation agents dispatched by the orchestrator, not for the orchestrator itself.
 
-## Lifecycle Hook Telemetry
+## Hook Telemetry And Validation
 
-Sybra injects observe-only lifecycle hooks into every `codex exec` invocation using inline `-c hooks.<Event>=...` config overrides. This is the only channel that survives Sybra's `--ignore-user-config --ignore-rules` flags — per-worktree `.codex/hooks.json` and `~/.codex` plugin files are explicitly ignored by those flags and do not fire.
+Sybra injects hooks into every `codex exec` invocation using inline `-c hooks.<Event>=...` config overrides. This is the only channel that survives Sybra's `--ignore-user-config --ignore-rules` flags — per-worktree `.codex/hooks.json` and `~/.codex` plugin files are explicitly ignored by those flags and do not fire.
 
 ### Instrumented events
 
-| Event | Audit type |
-|-------|-----------|
-| `SessionStart` | `codex.session.start` |
-| `SubagentStart` | `codex.subagent.start` |
-| `SubagentStop` | `codex.subagent.stop` |
-| `Stop` | `codex.session.stop` |
+| Event | Purpose |
+|-------|---------|
+| `PreToolUse` | Klaudiush validation before tool execution |
+| `SessionStart` | Observe-only `codex.session.start` audit event |
+| `SubagentStart` | Observe-only `codex.subagent.start` audit event |
+| `SubagentStop` | Observe-only `codex.subagent.stop` audit event |
+| `Stop` | Observe-only `codex.session.stop` audit event |
 
-`PreToolUse` and `PostToolUse` are deliberately excluded — per-tool-call hooks would sit on the agent's critical path.
+`PreToolUse` uses Codex's foreground command-hook default so klaudiush can deny unsafe git commands such as commits missing required `-s`/`-S` flags. Lifecycle hooks run in the background and remain fail-open telemetry.
 
 ### How it works
 
 For each event, Sybra appends a `-c` override to the `codex exec` command:
 
 ```
+-c 'hooks.PreToolUse=[{hooks=[{type="command",command="klaudiush --provider codex --event PreToolUse",timeout_seconds=30}]}]'
 -c 'hooks.SessionStart=[{hooks=[{type="command",command="sybra-cli hook SessionStart --task <id>",run_mode="background",timeout_seconds=5}]}]'
 ```
 
 The `--dangerously-bypass-hook-trust` flag is also passed so codex executes the hook without requiring a trusted source check.
 
-`sybra-cli hook <Event> --task <id>` is the hook receiver: it reads the JSON payload from stdin, maps it to a structural-only `audit.Event` (session_id, subagent_id, kind, model — never cwd, prompts, tool_input, or file paths), and appends it to the daily audit NDJSON (`~/.sybra/logs/audit/<date>.ndjson`). The receiver always exits 0 (fail-open) so hook errors never stall the agent run.
+`klaudiush` reads the provider hook payload from stdin and returns the provider-native permission decision JSON. Sybra omits the klaudiush hook only when the binary is not resolvable on `PATH` or adjacent to the Sybra binary.
+
+`sybra-cli hook <Event> --task <id>` is the lifecycle telemetry receiver: it reads the JSON payload from stdin, maps it to a structural-only `audit.Event` (session_id, subagent_id, kind, model — never cwd, prompts, tool_input, or file paths), and appends it to the daily audit NDJSON (`~/.sybra/logs/audit/<date>.ndjson`). The receiver always exits 0 (fail-open) so hook errors never stall the agent run.
 
 ### Fail-open behaviour
 
-Hooks are omitted (the codex run proceeds normally, without hooks) when:
-- `sybra-cli` is not on `PATH` and not adjacent to the Sybra binary
-- The resolved `sybra-cli` path contains shell-sensitive characters
+Hooks are omitted (the codex run proceeds normally, without the affected hook) when:
+- `klaudiush` or `sybra-cli` is not on `PATH` and not adjacent to the Sybra binary
+- The resolved hook binary path contains shell-sensitive characters
 - The task ID is empty or contains characters outside `[a-zA-Z0-9._/-]`
 
 ### Minimum supported codex version

@@ -8,9 +8,8 @@ import (
 )
 
 // codexHookEvents are the low-frequency lifecycle events for which Sybra
-// registers observe-only hooks on codex invocations. Per-tool-call events
-// (PreToolUse, PostToolUse) are explicitly excluded — only session and
-// subagent boundaries are instrumented to keep hooks off the critical path.
+// registers observe-only hooks on codex invocations. Command validation is
+// handled separately by a foreground PreToolUse klaudiush hook.
 var codexHookEvents = []string{
 	"SessionStart",
 	"SubagentStart",
@@ -24,14 +23,22 @@ var codexHookEvents = []string{
 // executable is checked. Returns ("", false) if no shell-safe path is
 // resolvable; the caller must omit hooks in that case (fail-open).
 func resolveCodexHookBin() (string, bool) {
-	if _, err := exec.LookPath("sybra-cli"); err == nil {
-		return "sybra-cli", true
+	return resolveHookBin("sybra-cli")
+}
+
+func resolveKlaudiushHookBin() (string, bool) {
+	return resolveHookBin("klaudiush")
+}
+
+func resolveHookBin(name string) (string, bool) {
+	if _, err := exec.LookPath(name); err == nil {
+		return name, true
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return "", false
 	}
-	adjacent := filepath.Join(filepath.Dir(self), "sybra-cli")
+	adjacent := filepath.Join(filepath.Dir(self), name)
 	if _, err := exec.LookPath(adjacent); err != nil {
 		return "", false
 	}
@@ -45,30 +52,49 @@ func resolveCodexHookBin() (string, bool) {
 
 // buildCodexHookArgs returns the -c override pairs and
 // --dangerously-bypass-hook-trust flag to append to a codex exec invocation.
-// If sybra-cli cannot be resolved to a shell-safe path, or taskID fails the
-// allowlist check, an empty slice is returned (fail-open — the run proceeds
+// If hook binaries cannot be resolved to shell-safe paths, or taskID fails the
+// allowlist check, those hooks are omitted (fail-open — the run proceeds
 // without hooks rather than erroring).
 func buildCodexHookArgs(taskID string) []string {
 	if !safeArgRe.MatchString(taskID) {
 		return nil
 	}
-	bin, ok := resolveCodexHookBin()
-	if !ok {
-		return nil
+
+	args := make([]string, 0, (len(codexHookEvents)+1)*2+1)
+
+	if bin, ok := resolveKlaudiushHookBin(); ok {
+		args = append(args, "-c", codexCommandHookValue(
+			"PreToolUse",
+			bin+" --provider codex --event PreToolUse",
+			"",
+			30,
+		))
 	}
 
-	args := make([]string, 0, len(codexHookEvents)*2+1)
-	for _, event := range codexHookEvents {
-		cmd := fmt.Sprintf("%s hook %s --task %s", bin, event, taskID)
-		// TOML inline-table value for the hooks.<Event> config key.
-		// Outer array: hook-filter entry. Inner hooks: the action list.
-		// run_mode=background keeps hooks off the critical path.
-		val := fmt.Sprintf(
-			`hooks.%s=[{hooks=[{type="command",command=%q,run_mode="background",timeout_seconds=5}]}]`,
-			event, cmd,
-		)
-		args = append(args, "-c", val)
+	if bin, ok := resolveCodexHookBin(); ok {
+		for _, event := range codexHookEvents {
+			cmd := fmt.Sprintf("%s hook %s --task %s", bin, event, taskID)
+			args = append(args, "-c", codexCommandHookValue(event, cmd, "background", 5))
+		}
+	}
+	if len(args) == 0 {
+		return nil
 	}
 	args = append(args, "--dangerously-bypass-hook-trust")
 	return args
+}
+
+func codexCommandHookValue(event, command, runMode string, timeoutSeconds int) string {
+	// TOML inline-table value for the hooks.<Event> config key.
+	// Outer array: hook-filter entry. Inner hooks: the action list.
+	if runMode == "" {
+		return fmt.Sprintf(
+			`hooks.%s=[{hooks=[{type="command",command=%q,timeout_seconds=%d}]}]`,
+			event, command, timeoutSeconds,
+		)
+	}
+	return fmt.Sprintf(
+		`hooks.%s=[{hooks=[{type="command",command=%q,run_mode=%q,timeout_seconds=%d}]}]`,
+		event, command, runMode, timeoutSeconds,
+	)
 }
