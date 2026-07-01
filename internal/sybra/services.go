@@ -22,6 +22,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.wireStatsService()
 	a.wireWorkflowService()
 	a.wireBrowserService()
+	a.wireLearningService(emit)
 	// MUST be last: completion handlers read fully-wired service dependencies.
 	a.wireCompletionHandlers(emit)
 }
@@ -30,7 +31,7 @@ func (a *App) wireServices(emit func(string, any)) {
 // Each service carries an explicit method allowlist — only listed methods are
 // reachable; all other exported methods return 404.
 func ServiceRegistry(a *App) map[string]httpapi.Service {
-	out := make(map[string]httpapi.Service, 13)
+	out := make(map[string]httpapi.Service, 14)
 	maps.Copy(out, a.coreHTTPServices())
 	maps.Copy(out, a.planningHTTPServices())
 	maps.Copy(out, a.projectHTTPServices())
@@ -83,6 +84,12 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",
+		),
+		"LearningService": httpapi.NewService(a.learningSvc,
+			"ListDigests",
+			"GetLatestDigest",
+			// StoreDigest excluded: the raw store is never scrubbed at write
+			// time (see internal/learning package doc) — Wails/local-only.
 		),
 	}
 }

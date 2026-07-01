@@ -144,7 +144,15 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(out[0].Interface()); err != nil {
+		result := out[0].Interface()
+		if len(out) > 1 {
+			results := make([]any, len(out))
+			for i := range out {
+				results[i] = out[i].Interface()
+			}
+			result = results
+		}
+		if err := json.NewEncoder(w).Encode(result); err != nil {
 			logger.Error("httpapi.encode", "service", svcName, "method", methodName, "err", err)
 		}
 	})

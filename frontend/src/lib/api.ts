@@ -9,6 +9,7 @@ import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra
 import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
 import * as ConfigSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/configservice.js'
 import * as IntegrationSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
+import * as LearningSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/learningservice.js'
 import * as LoopSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/loopagentservice.js'
 import * as OrchestratorSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/orchestratorservice.js'
 import * as PlanningSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/planningservice.js'
@@ -85,6 +86,10 @@ export const SetProviderAutoFailover = pick(IntegrationSvc.SetProviderAutoFailov
 export const SetProviderEnabled = pick(IntegrationSvc.SetProviderEnabled, http.SetProviderEnabled)
 export const SyncTodoist = pick(IntegrationSvc.SyncTodoist, http.SyncTodoist)
 export const TodoistEnabled = pick(IntegrationSvc.TodoistEnabled, http.TodoistEnabled)
+
+// LearningService
+export const ListDigests = pick(LearningSvc.ListDigests, http.ListDigests)
+export const GetLatestDigest = pick(LearningSvc.GetLatestDigest, http.GetLatestDigest)
 
 // LoopAgentService
 export const CreateLoopAgent = pick(LoopSvc.CreateLoopAgent, http.CreateLoopAgent)

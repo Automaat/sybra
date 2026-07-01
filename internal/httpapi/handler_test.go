@@ -18,9 +18,12 @@ type testSvc struct{}
 
 func (s *testSvc) Echo(msg string) string { return "echo:" + msg }
 func (s *testSvc) Add(a, b int) int       { return a + b }
-func (s *testSvc) Void()                  {}
-func (s *testSvc) Fail() error            { return nil }
-func (s *testSvc) FailWith() error        { return &testError{"boom"} }
+func (s *testSvc) Multi() (msg string, ok bool, err error) {
+	return "ok", true, nil
+}
+func (s *testSvc) Void()           {}
+func (s *testSvc) Fail() error     { return nil }
+func (s *testSvc) FailWith() error { return &testError{"boom"} }
 func (s *testSvc) ReturnAndFail(v string) (string, error) {
 	return "", &testError{v}
 }
@@ -51,7 +54,7 @@ func setup(t *testing.T) (*http.ServeMux, *httptest.Server, *bytes.Buffer) {
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TestSvc": httpapi.NewService(&testSvc{},
-			"Echo", "Add", "Void", "Fail", "FailWith", "ReturnAndFail", "ObjIn",
+			"Echo", "Add", "Multi", "Void", "Fail", "FailWith", "ReturnAndFail", "ObjIn",
 			"ClientFail400", "ClientFail409",
 			// AdminOnly is intentionally absent from the allowlist.
 		),
@@ -135,6 +138,35 @@ func TestHandler_Add(t *testing.T) {
 	}
 	if result != 7 {
 		t.Fatalf("got %d", result)
+	}
+}
+
+func TestHandler_MultipleNonErrorReturns(t *testing.T) {
+	_, srv, _ := setup(t)
+
+	resp := post(t, srv, "TestSvc", "Multi")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var result []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(result))
+	}
+	var first string
+	if err := json.Unmarshal(result[0], &first); err != nil {
+		t.Fatalf("decode first return: %v", err)
+	}
+	var second bool
+	if err := json.Unmarshal(result[1], &second); err != nil {
+		t.Fatalf("decode second return: %v", err)
+	}
+	if first != "ok" || !second {
+		t.Fatalf("got (%q, %v), want (%q, %v)", first, second, "ok", true)
 	}
 }
 
