@@ -5,7 +5,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
+)
+
+const (
+	watchdogHangStatusReasonPrefix = "watchdog hang"
+	watchdogHangRetryVarPrefix     = "watchdog.hang_retry."
+	maxWatchdogHangRetries         = 2
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -550,6 +558,9 @@ func (e *Engine) ResumeStalled() {
 		if e.shouldSkipResumeForRateLimitedProvider(t, step) {
 			continue
 		}
+		if e.handleWatchdogHangRetry(t, step) {
+			continue
+		}
 		// Skip tasks whose step is currently being dispatched. Interactive
 		// spawns (worktree creation, rebase, agent process start) take
 		// several seconds during which no agent is yet registered — without
@@ -624,6 +635,55 @@ func (e *Engine) ResumeStalled() {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
 		}
 	}
+}
+
+func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
+	if t == nil || t.Workflow == nil || !isWatchdogHangReason(t.StatusReason) {
+		return false
+	}
+	if step.Type != StepRunAgent {
+		return false
+	}
+	retryKey := watchdogHangRetryKey(step.ID)
+	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
+	if attempts >= maxWatchdogHangRetries {
+		reason := fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts)
+		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.watchdog-hang.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if err := e.tasks.UpdateTaskStatus(t.ID, t.Status, ""); err != nil {
+		e.logger.Error("workflow.watchdog-hang.clear", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	e.logger.Info("workflow.watchdog-hang.retry",
+		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogHangRetries)
+	return false
+}
+
+func isWatchdogHangReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == watchdogHangStatusReasonPrefix || strings.HasPrefix(reason, watchdogHangStatusReasonPrefix+":")
+}
+
+func watchdogHangRetryKey(stepID string) string {
+	return watchdogHangRetryVarPrefix + stepID
+}
+
+func parseWorkflowInt(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step) bool {
