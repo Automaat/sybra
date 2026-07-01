@@ -1142,10 +1142,14 @@ func hasGroundedFailureEvidence(report string) bool {
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
-// bareLabelLineRe matches a report line that is nothing but a markdown-decorated
-// label followed by a colon, e.g. "command:" or "actual (observed):" with all
-// decoration already stripped — no evidence content on the same line.
-var bareLabelLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]*:\**$`)
+// headerLikeLineRe matches a report line that STARTS with a short
+// markdown-decorated label followed by a colon, whether or not further text
+// follows on the same line, e.g. "actual:** something happened" or
+// "command:". Used to recognize that a line belongs to a *different* header's
+// own section rather than being prose content continuing a preceding bare
+// header — a bare header immediately followed by another header's line (with
+// or without inline content) still has no content of its own.
+var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,40}:`)
 
 // hasLabeledSection reports whether any report line is a markdown section header
 // whose label starts with one of keywords, optionally followed by a parenthetical
@@ -1196,9 +1200,11 @@ func hasLabeledSection(report string, keywords ...string) bool {
 // hasFollowingContent reports whether the bare label line at rawLines[idx] (a
 // header with nothing after its colon) is backed by real evidence on a
 // following line — a fenced code block, or any non-blank line that is not
-// itself another bare label. It stops at the first non-blank line: a header
-// immediately followed by another header, with nothing in between, has no
-// content of its own.
+// itself a header line (bare or otherwise). It stops at the first non-blank
+// line: a header immediately followed by another header — whether that
+// header itself carries inline content or not — has no content of its own,
+// since the inline content belongs to the *other* header's section, not the
+// bare one being tested.
 func hasFollowingContent(rawLines []string, idx int) bool {
 	for j := idx + 1; j < len(rawLines); j++ {
 		trimmed := strings.TrimSpace(rawLines[j])
@@ -1209,7 +1215,7 @@ func hasFollowingContent(rawLines []string, idx int) bool {
 			return true
 		}
 		stripped := strings.TrimLeft(strings.ToLower(trimmed), "*_>#- \t")
-		return !bareLabelLineRe.MatchString(stripped)
+		return !headerLikeLineRe.MatchString(stripped)
 	}
 	return false
 }

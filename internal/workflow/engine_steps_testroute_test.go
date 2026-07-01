@@ -265,6 +265,22 @@ func TestHasGroundedFailureEvidence_RejectsBareHeadersWithNoContent(t *testing.T
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingNextHeaderContent(t *testing.T) {
+	t.Parallel()
+
+	// A bare "**Command:**" header must not be credited with the *following*
+	// header's inline content ("**Actual:** something happened") — that
+	// content belongs to Actual's own section, not Command's. Without this
+	// distinction the report has no stated reproduction command anywhere yet
+	// still passes the gate as grounded.
+	report := "**Command:**\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header borrowing next header's content accepted as grounded; want rejected")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 
