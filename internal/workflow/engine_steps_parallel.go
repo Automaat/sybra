@@ -107,19 +107,6 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx
 	childCtx.Step = *child
-	prompt, err := RenderTemplate(child.Config.Prompt, childCtx)
-	if err != nil {
-		return fmt.Errorf("render prompt: %w", err)
-	}
-
-	// Consume a pending watchdog headless-nudge steer here too, so a steer set
-	// for a looping parallel child is delivered to (and cleared by) this
-	// dispatch rather than leaking into a later run_agent step's prompt.
-	if steered, sErr := e.tasks.ConsumeSupervisorSteer(taskID, prompt); sErr != nil {
-		e.logger.Warn("workflow.parallel.consume-steer", "task_id", taskID, "child", child.ID, "err", sErr)
-	} else {
-		prompt = steered
-	}
 
 	mode := child.Config.Mode
 	if strings.Contains(mode, "{{") {
@@ -136,6 +123,11 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	}
 
 	provider, model, assignment, err := e.resolveAgentVariant(childCtx.Task, child, wfExec, model, "workflow.parallel.cross-provider.fallback")
+	if err != nil {
+		return err
+	}
+
+	prompt, err := e.renderAssignedPrompt(taskID, child, childCtx, assignment, "workflow.parallel.consume-steer")
 	if err != nil {
 		return err
 	}

@@ -6,7 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
 func TestRewriteSkillInvocations(t *testing.T) {
@@ -80,6 +84,27 @@ func TestRewriteSkillInvocations(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "sybra-test-v2")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	aliased := skillinvoke.ApplyAliases("Run /sybra-test now", map[string]string{"sybra-test": "sybra-test-v2"})
+	inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: aliased})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	got := inv.args[len(inv.args)-1]
+	if got != "Run $sybra-test-v2 now" {
+		t.Fatalf("prompt arg = %q, want Codex dollar invocation", got)
+	}
+	if strings.Contains(got, "/sybra-test") || strings.Contains(got, "$sybra-test now") {
+		t.Fatalf("prompt was not fully aliased before Codex rewrite: %q", got)
 	}
 }
 
@@ -586,6 +611,25 @@ func writePluginManifest(t *testing.T, path, skills string) {
 		t.Fatal(err)
 	}
 	writePluginManifestJSON(t, path, data)
+}
+
+func resetCodexSkillsCache(t *testing.T) {
+	t.Helper()
+	codexSkillsCacheMu.Lock()
+	origHome := codexSkillsCacheHome
+	origNames := cloneSkillNames(codexSkillsCacheNames)
+	origExpires := codexSkillsCacheExpires
+	codexSkillsCacheHome = ""
+	codexSkillsCacheNames = nil
+	codexSkillsCacheExpires = time.Time{}
+	codexSkillsCacheMu.Unlock()
+	t.Cleanup(func() {
+		codexSkillsCacheMu.Lock()
+		codexSkillsCacheHome = origHome
+		codexSkillsCacheNames = origNames
+		codexSkillsCacheExpires = origExpires
+		codexSkillsCacheMu.Unlock()
+	})
 }
 
 func writePluginManifestJSON(t *testing.T, path string, data []byte) {

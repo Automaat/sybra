@@ -1,19 +1,18 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/skillinvoke"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,26 +23,7 @@ import (
 // character, and followed by a non-identifier char or end — so path
 // segments like `/tmp/sybra-plan-xxx.md` are never touched.
 func rewriteSkillInvocations(prompt string, skillNames []string) string {
-	if len(skillNames) == 0 || prompt == "" {
-		return prompt
-	}
-	// Sort descending by length so longer names are tried first (avoids a
-	// shorter prefix like "plan" consuming part of "plan-critic").
-	sorted := make([]string, len(skillNames))
-	copy(sorted, skillNames)
-	slices.SortFunc(sorted, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
-	for _, name := range sorted {
-		if name == "" {
-			continue
-		}
-		pattern := `(^|[^\w/])/` + regexp.QuoteMeta(name) + `([^a-z0-9-]|$)`
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue
-		}
-		prompt = re.ReplaceAllString(prompt, "${1}$$"+name+"${2}")
-	}
-	return prompt
+	return skillinvoke.RewriteInvocations(prompt, skillNames)
 }
 
 // discoverCodexSkills returns the union of skill names sybra knows about for

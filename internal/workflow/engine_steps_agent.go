@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
 // importSidecarIfConfigured reads the file the agent produced (template
@@ -111,34 +113,6 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 }
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext) error {
-	prompt, err := RenderTemplate(step.Config.Prompt, ctx)
-	if err != nil {
-		return fmt.Errorf("render prompt: %w", err)
-	}
-
-	// Consume a pending watchdog headless-nudge steer (no-op when none). Done
-	// here, before dispatch (fresh or resumed via ResumeStalled), so a step
-	// re-run after the watchdog stopped a looping agent carries the correction.
-	if steered, sErr := e.tasks.ConsumeSupervisorSteer(taskID, prompt); sErr != nil {
-		e.logger.Warn("workflow.consume-steer", "task_id", taskID, "step", step.ID, "err", sErr)
-	} else {
-		prompt = steered
-	}
-
-	// Reuse a live agent if configured and one exists for this role.
-	if step.Config.ReuseAgent {
-		if agentID, found := e.agents.FindRunningAgentForRole(taskID, step.Config.Role); found {
-			if sendErr := e.agents.SendPrompt(agentID, prompt); sendErr != nil {
-				e.logger.Warn("workflow.reuse-agent.send-failed", "task_id", taskID, "agent_id", agentID, "err", sendErr)
-				e.agents.StopAgentsForTask(taskID, step.Config.Role)
-			} else {
-				wfExec.State = ExecWaiting
-				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
-				return e.tasks.SetWorkflow(taskID, wfExec)
-			}
-		}
-	}
-
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 
 	mode := step.Config.Mode
@@ -160,6 +134,25 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	provider, model, assignment, err := e.resolveAgentVariant(ctx.Task, step, wfExec, model, "workflow.cross-provider.fallback")
 	if err != nil {
 		return err
+	}
+
+	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
+	if err != nil {
+		return err
+	}
+
+	// Reuse a live agent if configured and one exists for this role.
+	if step.Config.ReuseAgent {
+		if agentID, found := e.agents.FindRunningAgentForRole(taskID, step.Config.Role); found {
+			if sendErr := e.agents.SendPrompt(agentID, prompt); sendErr != nil {
+				e.logger.Warn("workflow.reuse-agent.send-failed", "task_id", taskID, "agent_id", agentID, "err", sendErr)
+				e.agents.StopAgentsForTask(taskID, step.Config.Role)
+			} else {
+				wfExec.State = ExecWaiting
+				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
+				return e.tasks.SetWorkflow(taskID, wfExec)
+			}
+		}
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
@@ -221,11 +214,11 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
-func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, bool, error) {
+func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
 	providerAllowed := func(provider string) bool {
 		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
 	}
-	a, ok, err := abtest.SelectEligible(e.abTesting, taskID, role, stepID, providerAllowed)
+	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed)
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}
@@ -238,7 +231,55 @@ func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, 
 		AssignmentUnit:  a.AssignmentUnit,
 		AssignmentKey:   a.AssignmentKey,
 		ReasoningEffort: a.ReasoningEffort,
+		PromptTransform: workflowPromptTransform(a.PromptTransform),
+		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
 	}, true, nil
+}
+
+func (e *Engine) renderAssignedPrompt(taskID string, step *Step, ctx TemplateContext, assignment AgentAssignment, steerLog string) (string, error) {
+	templateText := applyPromptTransform(step.Config.Prompt, assignment.PromptTransform)
+	prompt, err := RenderTemplate(templateText, ctx)
+	if err != nil {
+		return "", fmt.Errorf("render prompt: %w", err)
+	}
+	if steered, sErr := e.tasks.ConsumeSupervisorSteer(taskID, prompt); sErr != nil {
+		e.logger.Warn(steerLog, "task_id", taskID, "step", step.ID, "err", sErr)
+	} else {
+		prompt = steered
+	}
+	return skillinvoke.ApplyAliases(prompt, assignment.SkillAliases), nil
+}
+
+func applyPromptTransform(prompt string, transform *PromptTransform) string {
+	if transform == nil {
+		return prompt
+	}
+	switch strings.TrimSpace(transform.Op) {
+	case "replace", "template":
+		return transform.Text
+	case "prepend":
+		return transform.Text + prompt
+	case "append":
+		return prompt + transform.Text
+	default:
+		return prompt
+	}
+}
+
+func workflowPromptTransform(in *abtest.PromptTransform) *PromptTransform {
+	if in == nil {
+		return nil
+	}
+	return &PromptTransform{Op: in.Op, Text: in.Text}
+}
+
+func cloneWorkflowSkillAliases(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	maps.Copy(out, in)
+	return out
 }
 
 func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, model, fallbackLog string) (provider, resolvedModel string, assignment AgentAssignment, err error) {
@@ -246,7 +287,13 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 	provider = resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), t)
 	resolvedModel = model
 	if step.Config.Provider == "" || step.Config.Provider == "ab" {
-		selected, ok, err := e.selectABVariant(t.ID, step.Config.Role, step.ID)
+		selected, ok, err := e.selectABVariant(abtest.SelectionContext{
+			TaskID:     t.ID,
+			WorkflowID: wfExec.WorkflowID,
+			Role:       step.Config.Role,
+			StepID:     step.ID,
+			Prompt:     step.Config.Prompt,
+		})
 		if err != nil {
 			return "", "", AgentAssignment{}, fmt.Errorf("select ab variant: %w", err)
 		}

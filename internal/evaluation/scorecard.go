@@ -863,13 +863,15 @@ func configuredExperimentRoles(experiments []abtest.Experiment, rows []Compariso
 		eligible, _ := abtest.EligibleVariants(exp, nil)
 		variants := make([]string, 0, len(eligible))
 		disabled := map[string]bool{}
-		for _, v := range exp.Variants {
+		for i := range exp.Variants {
+			v := &exp.Variants[i]
 			if v.ID != "" && v.Weight <= 0 {
 				disabled[v.ID] = true
 			}
 		}
 		baseline := ""
-		for _, v := range eligible {
+		for i := range eligible {
+			v := &eligible[i]
 			if v.ID != "" {
 				if baseline == "" {
 					baseline = v.ID
