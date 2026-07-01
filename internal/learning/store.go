@@ -91,6 +91,12 @@ func (s *Store) Put(d Digest) (stored bool, err error) {
 	if capErr := s.enforceCapLocked(digests); capErr != nil {
 		return true, capErr
 	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("learning: stat %s after retention: %w", path, statErr)
+	}
 	return true, nil
 }
 

@@ -206,6 +206,48 @@ func TestRetentionCap(t *testing.T) {
 	}
 }
 
+func TestPutReportsFalseWhenRetentionEvictsInsertedDigest(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	store.max = 1
+
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	newer := mkDigest(t, base.AddDate(0, 0, 7), base.AddDate(0, 0, 14), "newer")
+	if stored, err := store.Put(newer); err != nil || !stored {
+		t.Fatalf("Put newer: stored=%v err=%v", stored, err)
+	}
+
+	older := mkDigest(t, base, base.AddDate(0, 0, 7), "older")
+	stored, err := store.Put(older)
+	if err != nil {
+		t.Fatalf("Put older: %v", err)
+	}
+	if stored {
+		t.Fatal("older digest evicted by retention should report stored=false")
+	}
+	if _, ok, err := store.Get(older.Key()); err != nil || ok {
+		t.Fatalf("older digest should not be persisted after retention: ok=%v err=%v", ok, err)
+	}
+
+	stored, err = store.Put(older)
+	if err != nil {
+		t.Fatalf("repeat Put older: %v", err)
+	}
+	if stored {
+		t.Fatal("repeat older digest evicted by retention should still report stored=false")
+	}
+
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].ReportDigest != "newer" {
+		t.Fatalf("retention should keep only newer digest, got %#v", list)
+	}
+}
+
 func TestLatestJSONDisposable(t *testing.T) {
 	dir := t.TempDir()
 	store, err := New(dir)
