@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -36,6 +37,11 @@ type PlannedChild struct {
 	Touches   []string `json:"touches,omitempty"`
 	Produces  []string `json:"produces,omitempty"`
 	Requires  []string `json:"requires,omitempty"`
+	// ParallelJustification maps a sibling ref to why it is safe to run in
+	// parallel with this child (disjoint change surfaces). Its presence on
+	// either side of a pair exempts that pair from deriveEdges's serial-default
+	// layer; the text itself is advisory only (never validated or enforced).
+	ParallelJustification map[string]string `json:"parallelJustification,omitempty"`
 }
 
 // Plan is the dependency DAG the planner extracts from an umbrella body.
@@ -168,15 +174,20 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\nFor each sub-issue, report its change surface, not a dependency graph — dependency\n")
+	b.WriteString("\nSub-issues of one umbrella in this codebase almost always share code. Assume a\n")
+	b.WriteString("dependency exists between any two sub-issues by default — serial execution is the\n")
+	b.WriteString("safe, zero-cost default. Running a pair in parallel is the expensive claim: it is\n")
+	b.WriteString("only allowed when you back it with a parallelJustification (see below).\n\n")
+	b.WriteString("For each sub-issue, report its change surface, not a dependency graph — dependency\n")
 	b.WriteString("edges are derived automatically from this metadata:\n")
 	b.WriteString("  - touches: EVERY file, directory, or package this sub-issue will actually edit")
 	b.WriteString(" (e.g. \"internal/foo\", \"internal/bar/x.go\"). List all of them, including paths")
 	b.WriteString(" shared with other sub-issues — sub-issues whose touches overlap on the SAME files")
 	b.WriteString(" or code area get serialized automatically so they merge one at a time instead of")
-	b.WriteString(" colliding. Omitting a shared path to avoid ordering just causes silent merge")
-	b.WriteString(" conflicts later. Keep paths as narrow as the real edit (a single package or file),")
-	b.WriteString(" not a broad directory that creates false overlap with unrelated siblings.\n")
+	b.WriteString(" colliding, regardless of any parallelJustification. Omitting a shared path to avoid")
+	b.WriteString(" ordering just causes silent merge conflicts later. Keep paths as narrow as the real")
+	b.WriteString(" edit (a single package or file), not a broad directory that creates false overlap")
+	b.WriteString(" with unrelated siblings.\n")
 	b.WriteString("  - produces: symbols, APIs, schemas, or flags it creates or changes (e.g. \"Foo.Run\",")
 	b.WriteString(" \"Tier type\").\n")
 	b.WriteString("  - requires: symbols, APIs, schemas, or flags it needs another sub-issue to have")
@@ -184,12 +195,17 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString(" automatically depend on it.\n")
 	b.WriteString("  - dependsOn (optional): explicit hard-ordering edges the metadata above can't")
 	b.WriteString(" express, e.g. markers like \"← #N\" or \"⛔ blocks all\" in the umbrella body. Kept in")
-	b.WriteString(" addition to the derived edges, not instead of them.\n\n")
+	b.WriteString(" addition to the derived edges, not instead of them.\n")
+	b.WriteString("  - parallelJustification (optional): to run this sub-issue in parallel with another,")
+	b.WriteString(" add an entry keyed by that sub-issue's ref explaining concretely why their change")
+	b.WriteString(" surfaces are disjoint. Without an entry for a pair, that pair defaults to serial")
+	b.WriteString(" (the later sub-issue depends on the earlier one). An overlapping touches always")
+	b.WriteString(" re-serializes the pair even with a justification present.\n\n")
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
-	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"track":"<label>"}],"maxParallel":<int>}` + "\n")
-	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn must")
-	b.WriteString(" reference only the sub-issues above; never create a cycle; maxParallel is the max")
-	b.WriteString(" children to run at once (default 5).\n")
+	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"parallelJustification":{"<ref>":"<why disjoint>"},"track":"<label>"}],"maxParallel":<int>}` + "\n")
+	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn and")
+	b.WriteString(" parallelJustification keys must reference only the sub-issues above; never create a")
+	b.WriteString(" cycle; maxParallel is the max children to run at once (default 5).\n")
 	return b.String()
 }
 
@@ -274,19 +290,51 @@ func (p *Plan) resolve(idx refIndex) error {
 		}
 		c.DependsOn = deps
 	}
+	// Canonicalize parallelJustification keys in a second pass (after every
+	// child's Ref is already canonical above). Unlike DependsOn, an unresolved
+	// or self-referencing key is dropped silently instead of erroring: a
+	// justification only relaxes the serial-default safety net in
+	// deriveEdges, it never introduces an ordering constraint, so a malformed
+	// key should fail closed to serial rather than abort an otherwise-valid
+	// plan. Do not "fix" this into matching DependsOn's loud failure — the two
+	// fields have opposite risk profiles by design.
+	for i := range p.Children {
+		c := &p.Children[i]
+		if len(c.ParallelJustification) == 0 {
+			continue
+		}
+		canon := make(map[string]string, len(c.ParallelJustification))
+		for k, v := range c.ParallelJustification {
+			ck, ok := idx.lookup(k)
+			if !ok || ck == c.Ref {
+				continue
+			}
+			canon[ck] = v
+		}
+		c.ParallelJustification = canon
+		if len(c.ParallelJustification) == 0 {
+			c.ParallelJustification = nil
+		}
+	}
 	return nil
 }
 
-// deriveEdges rewrites each child's DependsOn to union in edges derived from
-// change-surface metadata, on top of whatever explicit edges the model already
-// emitted: a child requiring a symbol depends on every child that produces it,
-// and a child touching a file/package another (earlier-ordered) child also
-// touches depends on that earlier child. subs establishes the canonical
-// ordering used both to pick the "earlier" side of a touch overlap and to make
-// edge derivation deterministic regardless of plan.Children's slice order.
-// resolve must run first so every ref here is canonical. Legacy input with no
-// touches/produces/requires derives no new edges, but DependsOn is still
-// rewritten: it is de-duped and self/empty entries are dropped.
+// deriveEdges rewrites each child's DependsOn in two passes. Pass 1 unions in
+// edges derived from change-surface metadata, on top of whatever explicit
+// edges the model already emitted: a child requiring a symbol depends on
+// every child that produces it, and a child touching a file/package another
+// (earlier-ordered) child also touches depends on that earlier child. Pass 2
+// applies a serial-default layer on top of pass 1's fully-merged result: every
+// child depends on every earlier canonical sibling unless that pair carries a
+// ParallelJustification on either side, or the sibling already depends on it
+// (direct 2-cycle guard) — so a plan with no metadata at all is serialized
+// end to end rather than treated as all-parallel. subs establishes the
+// canonical ordering used to pick the "earlier" side of both the touch
+// overlap and the serial-default layer, and to make edge derivation
+// deterministic regardless of plan.Children's slice order. resolve must run
+// first so every ref (including ParallelJustification keys) here is
+// canonical. DependsOn is always rewritten: it is de-duped and self/empty
+// entries are dropped even for legacy input with no touches/produces/requires.
 func (p *Plan) deriveEdges(subs []SubIssue) {
 	order := make(map[string]int, len(subs))
 	for i, s := range subs {
@@ -348,6 +396,42 @@ func (p *Plan) deriveEdges(subs []SubIssue) {
 			}
 		}
 		c.DependsOn = merged
+	}
+
+	// Pass 2: the serial-default layer. Every child depends on every earlier
+	// canonical sibling unless the pair is justified parallel or that would
+	// create a direct 2-cycle. This is a DISTINCT second loop, not grafted
+	// into pass 1 above: the 2-cycle guard must read each sibling's DependsOn
+	// only after pass 1 has fully merged it, otherwise which pairs get
+	// serialized would depend on iteration order instead of being
+	// deterministic.
+	byRef := make(map[string]*PlannedChild, len(p.Children))
+	for i := range p.Children {
+		byRef[p.Children[i].Ref] = &p.Children[i]
+	}
+	dependsOn := func(c *PlannedChild, ref string) bool {
+		return slices.Contains(c.DependsOn, ref)
+	}
+	justifiedParallel := func(a, b *PlannedChild) bool {
+		return a.ParallelJustification[b.Ref] != "" || b.ParallelJustification[a.Ref] != ""
+	}
+	for _, ref := range refs {
+		c := byRef[ref]
+		for _, otherRef := range refs {
+			if order[otherRef] >= order[ref] {
+				continue
+			}
+			other := byRef[otherRef]
+			if justifiedParallel(c, other) {
+				continue
+			}
+			if dependsOn(other, ref) {
+				continue // direct 2-cycle guard: other already depends on c
+			}
+			if !dependsOn(c, otherRef) {
+				c.DependsOn = append(c.DependsOn, otherRef)
+			}
+		}
 	}
 }
 

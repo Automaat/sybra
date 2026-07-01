@@ -26,6 +26,8 @@ func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
 	for _, want := range []string{
 		"SAME files", "merge one at a time", "false overlap",
 		"touches", "produces", "requires", "derived automatically",
+		"almost always share code", "dependency exists between any two",
+		"safe, zero-cost default", "parallelJustification",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing metadata guidance %q:\n%s", want, prompt)
@@ -124,6 +126,49 @@ func TestPlanResolve(t *testing.T) {
 			t.Error("expected error for unresolved dependency (must not be silently dropped)")
 		}
 	})
+
+	t.Run("unknown parallelJustification key is dropped, not an error", func(t *testing.T) {
+		t.Parallel()
+		// Unlike DependsOn, a hallucinated justification key must fail closed
+		// (drop, keep the pair serial) rather than abort the whole plan.
+		p := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1"},
+			{Ref: "o/r#2", ParallelJustification: map[string]string{"o/r#404": "disjoint"}},
+		}}
+		if err := p.resolve(idx); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if len(p.Children[1].ParallelJustification) != 0 {
+			t.Errorf("ParallelJustification = %v, want dropped", p.Children[1].ParallelJustification)
+		}
+	})
+
+	t.Run("self-key parallelJustification is dropped", func(t *testing.T) {
+		t.Parallel()
+		p := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1", ParallelJustification: map[string]string{"o/r#1": "self, nonsensical"}},
+		}}
+		if err := p.resolve(idx); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if len(p.Children[0].ParallelJustification) != 0 {
+			t.Errorf("ParallelJustification = %v, want self-key dropped", p.Children[0].ParallelJustification)
+		}
+	})
+
+	t.Run("shorthand parallelJustification key is canonicalized", func(t *testing.T) {
+		t.Parallel()
+		p := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1"},
+			{Ref: "o/r#2", ParallelJustification: map[string]string{"#1": "disjoint dirs"}},
+		}}
+		if err := p.resolve(idx); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if got := p.Children[1].ParallelJustification["o/r#1"]; got != "disjoint dirs" {
+			t.Errorf("ParallelJustification = %v, want canonical key o/r#1", p.Children[1].ParallelJustification)
+		}
+	})
 }
 
 func TestPlanValidate(t *testing.T) {
@@ -220,7 +265,9 @@ func TestDeriveEdges(t *testing.T) {
 				{Ref: "o/r#2", Produces: []string{"Sym"}},
 				{Ref: "o/r#3", Requires: []string{"Sym"}},
 			},
-			want: map[string][]string{"o/r#1": nil, "o/r#2": nil, "o/r#3": {"o/r#1", "o/r#2"}},
+			// o/r#2 used to have no deps; the serial-default layer now adds its
+			// only earlier canonical sibling (#1), since no justification exists.
+			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}, "o/r#3": {"o/r#1", "o/r#2"}},
 		},
 		{
 			name: "touch overlap including ancestor directory",
@@ -232,13 +279,24 @@ func TestDeriveEdges(t *testing.T) {
 			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}},
 		},
 		{
-			name: "sibling directories do not overlap by string prefix",
+			name: "sibling directories do not overlap and are mutually justified parallel",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				{Ref: "o/r#1", Touches: []string{"internal/foo"}, ParallelJustification: map[string]string{"o/r#2": "disjoint packages"}},
+				{Ref: "o/r#2", Touches: []string{"internal/foobar"}, ParallelJustification: map[string]string{"o/r#1": "disjoint packages"}},
+			},
+			// Proves both pathsOverlap (no touch-derived edge) and the
+			// justification exemption (no serial-default edge either).
+			want: map[string][]string{"o/r#1": nil, "o/r#2": nil},
+		},
+		{
+			name: "serial-default fires with no justification even when directories look disjoint",
 			subs: subs("o/r#1", "o/r#2"),
 			children: []PlannedChild{
 				{Ref: "o/r#1", Touches: []string{"internal/foo"}},
 				{Ref: "o/r#2", Touches: []string{"internal/foobar"}},
 			},
-			want: map[string][]string{"o/r#1": nil, "o/r#2": nil},
+			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}},
 		},
 		{
 			name: "explicit dependsOn is unioned with derived edges",
@@ -248,7 +306,8 @@ func TestDeriveEdges(t *testing.T) {
 				{Ref: "o/r#2"},
 				{Ref: "o/r#3", Requires: []string{"Sym"}, DependsOn: []string{"o/r#2"}},
 			},
-			want: map[string][]string{"o/r#1": nil, "o/r#2": nil, "o/r#3": {"o/r#2", "o/r#1"}},
+			// o/r#2 used to have no deps; serial-default now adds #1.
+			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}, "o/r#3": {"o/r#2", "o/r#1"}},
 		},
 		{
 			name: "legacy dependsOn-only input is a no-op",
@@ -279,6 +338,57 @@ func TestDeriveEdges(t *testing.T) {
 			},
 			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}},
 		},
+		{
+			name: "no metadata at all still serializes end to end",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				{Ref: "o/r#1"},
+				{Ref: "o/r#2"},
+			},
+			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}},
+		},
+		{
+			name: "one-sided justification exempts the pair (OR semantics)",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				{Ref: "o/r#1"},
+				{Ref: "o/r#2", ParallelJustification: map[string]string{"o/r#1": "disjoint surfaces"}},
+			},
+			want: map[string][]string{"o/r#1": nil, "o/r#2": nil},
+		},
+		{
+			name: "mutual (both-sided) justification also exempts the pair",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				{Ref: "o/r#1", ParallelJustification: map[string]string{"o/r#2": "disjoint surfaces"}},
+				{Ref: "o/r#2", ParallelJustification: map[string]string{"o/r#1": "disjoint surfaces"}},
+			},
+			// Guards against an accidental OR->AND regression: both sides
+			// carrying a justification must not somehow re-add the edge.
+			want: map[string][]string{"o/r#1": nil, "o/r#2": nil},
+		},
+		{
+			name: "justified pair still re-serializes on overlapping touches",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				{Ref: "o/r#1", Touches: []string{"internal/foo"}, ParallelJustification: map[string]string{"o/r#2": "thought disjoint"}},
+				{Ref: "o/r#2", Touches: []string{"internal/foo/x.go"}, ParallelJustification: map[string]string{"o/r#1": "thought disjoint"}},
+			},
+			want: map[string][]string{"o/r#1": nil, "o/r#2": {"o/r#1"}},
+		},
+		{
+			name: "producer listed after its consumer avoids a direct 2-cycle",
+			subs: subs("o/r#1", "o/r#2"),
+			children: []PlannedChild{
+				// o/r#1 is canonically earlier but requires a symbol only
+				// o/r#2 (canonically later) produces, forcing a forward
+				// requires edge #1 -> #2. Serial-default must not also add
+				// #2 -> #1, which would be a direct 2-cycle.
+				{Ref: "o/r#1", Requires: []string{"Sym"}},
+				{Ref: "o/r#2", Produces: []string{"Sym"}},
+			},
+			want: map[string][]string{"o/r#1": {"o/r#2"}, "o/r#2": nil},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -301,13 +411,14 @@ func TestDeriveEdges(t *testing.T) {
 
 	t.Run("determinism independent of plan.Children slice order", func(t *testing.T) {
 		t.Parallel()
-		s := subs("o/r#1", "o/r#2", "o/r#3")
+		s := subs("o/r#1", "o/r#2", "o/r#3", "o/r#4")
 		forward := []PlannedChild{
 			{Ref: "o/r#1", Produces: []string{"Sym"}, Touches: []string{"internal/foo"}},
 			{Ref: "o/r#2", Produces: []string{"Sym"}, Touches: []string{"internal/foo/x.go"}},
 			{Ref: "o/r#3", Requires: []string{"Sym"}},
+			{Ref: "o/r#4"}, // no metadata at all: purely a serial-default case
 		}
-		reversed := []PlannedChild{forward[2], forward[1], forward[0]}
+		reversed := []PlannedChild{forward[3], forward[2], forward[1], forward[0]}
 
 		p1 := Plan{Children: append([]PlannedChild(nil), forward...)}
 		p1.deriveEdges(s)
@@ -325,8 +436,42 @@ func TestDeriveEdges(t *testing.T) {
 				}
 			}
 		}
-		assertEqual(t, depsOf(p1, "o/r#3"), depsOf(p2, "o/r#3"), "non-deterministic")
+		assertEqual(t, depsOf(p1, "o/r#1"), depsOf(p2, "o/r#1"), "non-deterministic")
 		assertEqual(t, depsOf(p1, "o/r#2"), depsOf(p2, "o/r#2"), "non-deterministic touch overlap")
+		assertEqual(t, depsOf(p1, "o/r#3"), depsOf(p2, "o/r#3"), "non-deterministic")
+		assertEqual(t, depsOf(p1, "o/r#4"), depsOf(p2, "o/r#4"), "non-deterministic serial-default")
+		// o/r#4 carries no metadata at all: the serial-default layer must still
+		// serialize it after every earlier canonical sibling, regardless of
+		// where the model happened to place it in plan.Children.
+		if got := depsOf(p1, "o/r#4"); len(got) != 3 {
+			t.Fatalf("o/r#4 DependsOn = %v, want all 3 earlier canonical siblings", got)
+		}
+	})
+
+	t.Run("transitive requires-before-produces stays acyclic through serial-default", func(t *testing.T) {
+		t.Parallel()
+		// o/r#1 is canonically earlier but requires a symbol only the later
+		// o/r#2 produces (forward requires edge). o/r#3 carries no metadata.
+		// The serial-default layer adds edges from o/r#3 to both earlier
+		// siblings, and must not add o/r#2 -> o/r#1 (would be a direct
+		// 2-cycle against the forward requires edge). The resulting DAG must
+		// still validate as acyclic.
+		s := subs("o/r#1", "o/r#2", "o/r#3")
+		plan := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1", Requires: []string{"Sym"}},
+			{Ref: "o/r#2", Produces: []string{"Sym"}},
+			{Ref: "o/r#3"},
+		}}
+		plan.deriveEdges(s)
+		if err := plan.validate(s); err != nil {
+			t.Fatalf("validate: %v (deps: %+v)", err, plan.Children)
+		}
+		if got := depsOf(plan, "o/r#1"); len(got) != 1 || got[0] != "o/r#2" {
+			t.Fatalf("o/r#1 DependsOn = %v, want [o/r#2]", got)
+		}
+		if got := depsOf(plan, "o/r#2"); len(got) != 0 {
+			t.Fatalf("o/r#2 DependsOn = %v, want none (2-cycle guard)", got)
+		}
 	})
 }
 
