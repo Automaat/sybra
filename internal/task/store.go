@@ -28,10 +28,16 @@ type Store struct {
 	planDecisions *PlanningSidecarStore
 	planBrief     *PlanningSidecarStore
 	codeReviews   *CodeReviewStore
-	writeLocks    sync.Map // map task ID -> *sync.Mutex
+	writeLocksMu  sync.Mutex
+	writeLocks    map[string]*taskWriteLock
 	cacheMu       sync.RWMutex
 	listCache     []Task
 	listValid     bool
+}
+
+type taskWriteLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -49,6 +55,7 @@ func NewStore(dir string) (*Store, error) {
 		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
 		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
 		codeReviews:   NewCodeReviewStore(dir),
+		writeLocks:    map[string]*taskWriteLock{},
 	}, nil
 }
 
@@ -88,13 +95,33 @@ func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
 }
 
-func (s *Store) lockFor(id string) *sync.Mutex {
-	actual, _ := s.writeLocks.LoadOrStore(id, &sync.Mutex{})
-	mu, ok := actual.(*sync.Mutex)
-	if !ok {
-		panic("task store write lock has unexpected type")
+// lockTask serializes in-process read/modify/write calls for a single task
+// file. It is deliberately ref-counted so deleted or one-off task IDs do not
+// leave lock entries behind for the lifetime of a long-running server.
+func (s *Store) lockTask(id string) func() {
+	s.writeLocksMu.Lock()
+	if s.writeLocks == nil {
+		s.writeLocks = map[string]*taskWriteLock{}
 	}
-	return mu
+	lock := s.writeLocks[id]
+	if lock == nil {
+		lock = &taskWriteLock{}
+		s.writeLocks[id] = lock
+	}
+	lock.refs++
+	s.writeLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+
+		s.writeLocksMu.Lock()
+		defer s.writeLocksMu.Unlock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.writeLocks, id)
+		}
+	}
 }
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
@@ -509,9 +536,8 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 }
 
 func (s *Store) Delete(id string) error {
-	mu := s.lockFor(id)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.lockTask(id)
+	defer unlock()
 
 	t, err := s.read(id)
 	if err != nil {
@@ -721,9 +747,8 @@ func applyUpdateFields(t *Task, u Update) error {
 }
 
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
-	mu := s.lockFor(id)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.lockTask(id)
+	defer unlock()
 
 	t, err := s.read(id)
 	if err != nil {
@@ -959,9 +984,8 @@ func (s *Store) AddRunWithStatus(taskID string, run AgentRun, status *Status) er
 }
 
 func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.lockTask(taskID)
+	defer unlock()
 
 	t, err := s.Get(taskID)
 	if err != nil {
@@ -1109,9 +1133,8 @@ func applyRunPatch(run *AgentRun, p RunPatch) {
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.lockTask(taskID)
+	defer unlock()
 
 	t, err := s.Get(taskID)
 	if err != nil {

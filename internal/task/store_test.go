@@ -238,6 +238,39 @@ func TestStoreDelete(t *testing.T) {
 	}
 }
 
+func TestStoreWriteLocksAreReclaimed(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Lock lifecycle", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(created.ID, Update{Body: Ptr("updated")}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	store.writeLocksMu.Lock()
+	lockCount := len(store.writeLocks)
+	store.writeLocksMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("writeLocks length after update = %d, want 0", lockCount)
+	}
+
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	store.writeLocksMu.Lock()
+	lockCount = len(store.writeLocks)
+	store.writeLocksMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("writeLocks length after delete = %d, want 0", lockCount)
+	}
+}
+
 func TestStoreDeleteNotFound(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
