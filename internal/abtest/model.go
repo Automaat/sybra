@@ -1,5 +1,7 @@
 package abtest
 
+import "strings"
+
 // Config controls deterministic A/B assignment for workflow agent runs.
 type Config struct {
 	Enabled              *bool        `yaml:"enabled" json:"enabled"`
@@ -10,11 +12,21 @@ type Config struct {
 // Experiment selects among variants for matching workflow roles.
 type Experiment struct {
 	ID             string    `yaml:"id" json:"id"`
+	Kind           string    `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Enabled        *bool     `yaml:"enabled" json:"enabled"`
 	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"
 	Bracket        string    `yaml:"bracket,omitempty" json:"bracket,omitempty"` // "cheap" or "expensive"
+	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
 	Variants       []Variant `yaml:"variants" json:"variants"`
+}
+
+// Subject identifies the workflow target for prompt and skill experiments.
+type Subject struct {
+	WorkflowID string `yaml:"workflow_id,omitempty" json:"workflowId,omitempty"`
+	StepID     string `yaml:"step_id,omitempty" json:"stepId,omitempty"`
+	Role       string `yaml:"role,omitempty" json:"role,omitempty"`
+	SkillName  string `yaml:"skill_name,omitempty" json:"skillName,omitempty"`
 }
 
 // Variant is one provider/model arm of an experiment.
@@ -24,12 +36,15 @@ type Variant struct {
 	Model           string `yaml:"model" json:"model"`
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
 	Tier            string `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
+	Version         string `yaml:"version,omitempty" json:"version,omitempty"`
+	Digest          string `yaml:"digest,omitempty" json:"digest,omitempty"`
 	Weight          int    `yaml:"weight" json:"weight"`
 }
 
 // Assignment is the durable identity selected for a workflow stage.
 type Assignment struct {
 	ExperimentID    string
+	Kind            string
 	VariantID       string
 	Provider        string
 	Model           string
@@ -75,6 +90,16 @@ func DefaultConfig() Config {
 	}
 }
 
+// Validate checks all configured experiments, including disabled experiments.
+func (c Config) Validate() error {
+	for i := range c.Experiments {
+		if err := validateExperiment(c.Experiments[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
 	return c.Enabled == nil || *c.Enabled
@@ -82,4 +107,12 @@ func (c Config) EnabledValue() bool {
 
 func (e Experiment) EnabledValue() bool {
 	return e.Enabled == nil || *e.Enabled
+}
+
+func (e Experiment) KindValue() string {
+	kind := strings.TrimSpace(e.Kind)
+	if kind == "" {
+		return "model"
+	}
+	return kind
 }

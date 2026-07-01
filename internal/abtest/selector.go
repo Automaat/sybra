@@ -32,9 +32,6 @@ func SelectEligible(cfg Config, taskID, role, stepID string, providerAllowed fun
 }
 
 func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
-	if strings.TrimSpace(exp.ID) == "" {
-		return Assignment{}, false, fmt.Errorf("abtest: experiment id is required")
-	}
 	if err := validateExperiment(exp); err != nil {
 		return Assignment{}, false, err
 	}
@@ -45,8 +42,6 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 	key := taskID
 	if unit == "stage" {
 		key = strings.Join([]string{taskID, role, stepID}, "|")
-	} else if unit != "task" {
-		return Assignment{}, false, fmt.Errorf("abtest: experiment %q has invalid assignment_unit %q", exp.ID, exp.AssignmentUnit)
 	}
 	eligible, total := EligibleVariants(exp, providerAllowed)
 	if total <= 0 {
@@ -61,6 +56,7 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 		if pick < acc {
 			return Assignment{
 				ExperimentID:    exp.ID,
+				Kind:            exp.KindValue(),
 				VariantID:       v.ID,
 				Provider:        v.Provider,
 				Model:           v.Model,
@@ -101,11 +97,27 @@ func roleMatches(roles []string, role string) bool {
 }
 
 func validateExperiment(exp Experiment) error {
+	if strings.TrimSpace(exp.ID) == "" {
+		return fmt.Errorf("abtest: experiment id is required")
+	}
+	switch exp.KindValue() {
+	case "model", "prompt", "skill", "compound":
+	default:
+		return fmt.Errorf("abtest: experiment %q has invalid kind %q", exp.ID, exp.Kind)
+	}
+	switch exp.AssignmentUnit {
+	case "", "stage", "task":
+	default:
+		return fmt.Errorf("abtest: experiment %q has invalid assignment_unit %q", exp.ID, exp.AssignmentUnit)
+	}
 	bracket := strings.TrimSpace(exp.Bracket)
 	switch bracket {
 	case "", "cheap", "expensive":
 	default:
 		return fmt.Errorf("abtest: experiment %q has invalid bracket %q", exp.ID, exp.Bracket)
+	}
+	if err := validateExperimentSubject(exp); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for i := range exp.Variants {
@@ -123,6 +135,50 @@ func validateExperiment(exp Experiment) error {
 			return fmt.Errorf("abtest: experiment %q has duplicate variant id %q", exp.ID, v.ID)
 		}
 		seen[v.ID] = true
+	}
+	if err := validatePromptSkillHomogeneity(exp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateExperimentSubject(exp Experiment) error {
+	switch exp.KindValue() {
+	case "prompt", "skill":
+	default:
+		return nil
+	}
+	if exp.Subject == nil {
+		return fmt.Errorf("abtest: experiment %q kind %q requires subject", exp.ID, exp.KindValue())
+	}
+	if strings.TrimSpace(exp.Subject.StepID) == "" && strings.TrimSpace(exp.Subject.Role) == "" {
+		return fmt.Errorf("abtest: experiment %q kind %q requires subject step_id or role", exp.ID, exp.KindValue())
+	}
+	return nil
+}
+
+func validatePromptSkillHomogeneity(exp Experiment) error {
+	switch exp.KindValue() {
+	case "prompt", "skill":
+	default:
+		return nil
+	}
+	eligible, _ := EligibleVariants(exp, nil)
+	if len(eligible) < 2 {
+		return nil
+	}
+	base := eligible[0]
+	for i := 1; i < len(eligible); i++ {
+		v := eligible[i]
+		if v.Provider != base.Provider {
+			return fmt.Errorf("abtest: experiment %q provider mismatch on variant %q", exp.ID, v.ID)
+		}
+		if v.Model != base.Model {
+			return fmt.Errorf("abtest: experiment %q model mismatch on variant %q", exp.ID, v.ID)
+		}
+		if v.ReasoningEffort != base.ReasoningEffort {
+			return fmt.Errorf("abtest: experiment %q reasoning_effort mismatch on variant %q", exp.ID, v.ID)
+		}
 	}
 	return nil
 }

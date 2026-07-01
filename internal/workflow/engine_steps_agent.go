@@ -231,6 +231,7 @@ func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, 
 	}
 	return AgentAssignment{
 		ExperimentID:    a.ExperimentID,
+		Kind:            a.Kind,
 		VariantID:       a.VariantID,
 		Provider:        a.Provider,
 		Model:           a.Model,

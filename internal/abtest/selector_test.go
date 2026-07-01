@@ -2,14 +2,23 @@ package abtest
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSelectDeterministic(t *testing.T) {
 	cfg := DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("DefaultConfig().Validate: %v", err)
+	}
 	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+	}
+	if a.Kind != "model" {
+		t.Fatalf("Kind = %q, want model", a.Kind)
 	}
 	for range 10 {
 		got, ok, err := Select(cfg, "task-1", "implementation", "implement")
@@ -225,5 +234,262 @@ func TestSelectEligibleSkipsUnavailableProvider(t *testing.T) {
 	}
 	if a.VariantID != "available" {
 		t.Fatalf("VariantID = %q, want available", a.VariantID)
+	}
+}
+
+func TestConfigValidateChecksDisabledExperiments(t *testing.T) {
+	disabled := false
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "disabled-invalid",
+		Enabled: &disabled,
+		Kind:    "bogus",
+		Variants: []Variant{
+			{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should reject disabled invalid experiment")
+	}
+}
+
+func TestConfigValidatePromptAndSkillYAML(t *testing.T) {
+	raw := []byte(`
+enabled: true
+experiments:
+  - id: prompt-copy
+    kind: prompt
+    assignment_unit: stage
+    subject:
+      workflow_id: test-workflow
+      step_id: draft_prompt
+      role: implementation
+    variants:
+      - id: control
+        provider: claude
+        model: sonnet
+        reasoning_effort: medium
+        version: v1
+        digest: sha256:control
+        weight: 1
+      - id: treatment
+        provider: claude
+        model: sonnet
+        reasoning_effort: medium
+        version: v2
+        digest: sha256:treatment
+        weight: 1
+  - id: skill-choice
+    kind: skill
+    assignment_unit: task
+    subject:
+      role: review
+      skill_name: sybra-test
+    variants:
+      - id: control
+        provider: codex
+        model: gpt-5.5
+        weight: 1
+      - id: treatment
+        provider: codex
+        model: gpt-5.5
+        version: v2
+        digest: sha256:skill
+        weight: 1
+`)
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := cfg.Experiments[0].Subject.WorkflowID; got != "test-workflow" {
+		t.Fatalf("workflow_id = %q", got)
+	}
+	if got := cfg.Experiments[0].Variants[1].Version; got != "v2" {
+		t.Fatalf("version = %q", got)
+	}
+	if got := cfg.Experiments[1].Subject.SkillName; got != "sybra-test" {
+		t.Fatalf("skill_name = %q", got)
+	}
+	if got := cfg.Experiments[1].Variants[1].Digest; got != "sha256:skill" {
+		t.Fatalf("digest = %q", got)
+	}
+}
+
+func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       string
+		variant    Variant
+		wantFields []string
+	}{
+		{
+			name:    "prompt provider",
+			kind:    "prompt",
+			variant: Variant{ID: "bad-provider", Provider: "codex", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+			wantFields: []string{
+				`experiment "prompt-provider"`,
+				"provider",
+				`variant "bad-provider"`,
+			},
+		},
+		{
+			name:    "prompt model",
+			kind:    "prompt",
+			variant: Variant{ID: "bad-model", Provider: "claude", Model: "opus", ReasoningEffort: "medium", Weight: 1},
+			wantFields: []string{
+				`experiment "prompt-model"`,
+				"model",
+				`variant "bad-model"`,
+			},
+		},
+		{
+			name:    "skill reasoning",
+			kind:    "skill",
+			variant: Variant{ID: "bad-reasoning", Provider: "claude", Model: "sonnet", ReasoningEffort: "high", Weight: 1},
+			wantFields: []string{
+				`experiment "skill-reasoning"`,
+				"reasoning_effort",
+				`variant "bad-reasoning"`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expID := strings.ReplaceAll(tt.name, " ", "-")
+			cfg := Config{Experiments: []Experiment{{
+				ID:      expID,
+				Kind:    tt.kind,
+				Subject: &Subject{StepID: "implement"},
+				Variants: []Variant{
+					{ID: "base", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+					tt.variant,
+				},
+			}}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate should reject prompt/skill model attribution drift")
+			}
+			msg := err.Error()
+			for _, want := range tt.wantFields {
+				if !strings.Contains(msg, want) {
+					t.Fatalf("error %q does not contain %q", msg, want)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigValidateCompoundAllowsProviderModelReasoningDrift(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:   "compound",
+		Kind: "compound",
+		Variants: []Variant{
+			{ID: "claude", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+			{ID: "codex", Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "high", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsInvalidKindAndAssignmentUnit(t *testing.T) {
+	tests := []struct {
+		name string
+		exp  Experiment
+	}{
+		{
+			name: "empty id",
+			exp: Experiment{
+				Variants: []Variant{{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1}},
+			},
+		},
+		{
+			name: "invalid kind",
+			exp: Experiment{
+				ID:       "bad-kind",
+				Kind:     "Prompt",
+				Variants: []Variant{{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1}},
+			},
+		},
+		{
+			name: "invalid assignment_unit",
+			exp: Experiment{
+				ID:             "bad-unit",
+				AssignmentUnit: "workflow",
+				Variants:       []Variant{{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := (Config{Experiments: []Experiment{tt.exp}}).Validate(); err == nil {
+				t.Fatal("Validate should reject invalid experiment")
+			}
+		})
+	}
+}
+
+func TestConfigValidateRejectsMissingPromptSkillSubject(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject *Subject
+	}{
+		{name: "missing", subject: nil},
+		{name: "whitespace", subject: &Subject{StepID: " \t", Role: "  "}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      "prompt-subject-" + tt.name,
+				Kind:    "prompt",
+				Subject: tt.subject,
+				Variants: []Variant{
+					{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1},
+				},
+			}}}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate should reject missing prompt subject")
+			}
+		})
+	}
+}
+
+func TestConfigValidateIgnoresZeroWeightPromptSkillDrift(t *testing.T) {
+	for _, kind := range []string{"prompt", "skill"} {
+		t.Run(kind, func(t *testing.T) {
+			cfg := Config{Experiments: []Experiment{{
+				ID:      kind + "-zero-weight",
+				Kind:    kind,
+				Subject: &Subject{Role: "implementation"},
+				Variants: []Variant{
+					{ID: "base", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+					{ID: "ignored", Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "high", Weight: 0},
+				},
+			}}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateDuplicateVariantIDOnlyChecksPositiveWeight(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID: "duplicates",
+		Variants: []Variant{
+			{ID: "same", Provider: "claude", Model: "sonnet", Weight: 1},
+			{ID: "same", Provider: "codex", Model: "gpt-5.5", Weight: 0},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	cfg.Experiments[0].Variants[1].Weight = 1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should reject duplicate positive-weight variant ids")
 	}
 }
