@@ -48,10 +48,18 @@ type Plan struct {
 // Injected so the planner logic is unit-testable without spawning a CLI.
 type Runner func(ctx context.Context, prompt string) (string, error)
 
+// criticSuffix is appended to the prompt for the single re-ask Generate issues
+// when the first valid plan looks suspiciously flat (see flatPlanSuspicious).
+const criticSuffix = "You produced a fully-parallel plan — re-examine `touches`/`requires` for overlaps you missed. " +
+	"Sub-issues that edit the same files or need each other's symbols must reflect that in their metadata."
+
 // Generate runs the planner end to end: build the prompt, invoke the model,
 // then resolve and validate the result against the sub-issues. A malformed or
 // invalid plan is retried (the model is stochastic); a runner error is fatal.
-// All child and dependency refs in the returned plan are canonical.
+// All child and dependency refs in the returned plan are canonical. If the
+// first valid plan is suspiciously flat, Generate re-asks the model once with
+// a critic nudge; any failure of that re-ask (parse, validate, or run error)
+// falls back to the original plan rather than failing the whole expansion.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue) (Plan, error) {
 	if len(subs) == 0 {
 		return Plan{}, fmt.Errorf("umbrella %s has no sub-issues to expand", umbrellaRef)
@@ -59,6 +67,25 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 	idx := buildRefIndex(subs)
 	prompt := BuildPrompt(umbrellaRef, umbrellaBody, subs)
 
+	plan, err := attemptPlan(ctx, run, idx, prompt, subs)
+	if err != nil {
+		return Plan{}, err
+	}
+	if flatPlanSuspicious(plan, subs) {
+		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, subs)
+		if err == nil {
+			return reasked, nil
+		}
+	}
+	return plan, nil
+}
+
+// attemptPlan runs up to plannerAttempts model invocations with the given
+// prompt, returning the first plan that parses, resolves, and validates
+// against subs, with MaxParallel defaulted. A runner error is fatal and
+// returned immediately; a parse or validate failure retries with the same
+// prompt.
+func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, subs []SubIssue) (Plan, error) {
 	var lastErr error
 	for range plannerAttempts {
 		raw, err := run(ctx, prompt)
@@ -85,6 +112,42 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 		return plan, nil
 	}
 	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w", plannerAttempts, lastErr)
+}
+
+// flatPlanSuspicious reports whether a validated plan looks like it skipped
+// dependency derivation: 3 or more non-done sub-issues but zero derived edges
+// that will actually survive into the materialized plan. Below that threshold
+// small plans are legitimately edge-free and are not flagged. Edges on a
+// closed child, or pointing at a closed sub-issue, are excluded from the
+// count — ChildSpecs drops both (the closed child gets no task, and a
+// dependency on a closed sub-issue is already satisfied), so counting them
+// here would suppress the critic re-ask while the materialized plan for the
+// remaining non-done children is still fully parallel.
+func flatPlanSuspicious(p Plan, subs []SubIssue) bool {
+	closed := make(map[string]bool, len(subs))
+	nonDone := 0
+	for _, s := range subs {
+		if s.Closed {
+			closed[NormalizeIssueRef(s.Ref)] = true
+		} else {
+			nonDone++
+		}
+	}
+	if nonDone < 3 {
+		return false
+	}
+	for i := range p.Children {
+		c := &p.Children[i]
+		if closed[NormalizeIssueRef(c.Ref)] {
+			continue
+		}
+		for _, d := range c.DependsOn {
+			if !closed[NormalizeIssueRef(d)] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // BuildPrompt renders the planner instruction. The model is asked to emit ONLY
