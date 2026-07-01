@@ -24,7 +24,7 @@ func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
 	// produces/requires) instead of reading a dependency graph, and that
 	// overlapping touches get serialized automatically.
 	for _, want := range []string{
-		"SAME files", "merge one at a time", "disjoint",
+		"SAME files", "merge one at a time", "false overlap",
 		"touches", "produces", "requires", "derived automatically",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -314,12 +314,19 @@ func TestDeriveEdges(t *testing.T) {
 		p2 := Plan{Children: append([]PlannedChild(nil), reversed...)}
 		p2.deriveEdges(s)
 
-		if got, want := depsOf(p1, "o/r#3"), depsOf(p2, "o/r#3"); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-			t.Fatalf("non-deterministic: forward=%v reversed=%v", got, want)
+		assertEqual := func(t *testing.T, got, want []string, msg string) {
+			t.Helper()
+			if len(got) != len(want) {
+				t.Fatalf("%s: forward=%v reversed=%v", msg, got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("%s: forward=%v reversed=%v", msg, got, want)
+				}
+			}
 		}
-		if got, want := depsOf(p1, "o/r#2"), depsOf(p2, "o/r#2"); len(got) != len(want) || got[0] != want[0] {
-			t.Fatalf("non-deterministic touch overlap: forward=%v reversed=%v", got, want)
-		}
+		assertEqual(t, depsOf(p1, "o/r#3"), depsOf(p2, "o/r#3"), "non-deterministic")
+		assertEqual(t, depsOf(p1, "o/r#2"), depsOf(p2, "o/r#2"), "non-deterministic touch overlap")
 	})
 }
 

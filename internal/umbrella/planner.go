@@ -107,11 +107,13 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	}
 	b.WriteString("\nFor each sub-issue, report its change surface, not a dependency graph — dependency\n")
 	b.WriteString("edges are derived automatically from this metadata:\n")
-	b.WriteString("  - touches: files, directories, or packages it changes (e.g. \"internal/foo\",")
-	b.WriteString(" \"internal/bar/x.go\"). Sub-issues whose touches overlap on the SAME files or code")
-	b.WriteString(" area get serialized automatically — they merge one at a time instead of colliding,")
-	b.WriteString(" so only list a path here when the change is genuinely disjoint from siblings that")
-	b.WriteString(" should not wait on it.\n")
+	b.WriteString("  - touches: EVERY file, directory, or package this sub-issue will actually edit")
+	b.WriteString(" (e.g. \"internal/foo\", \"internal/bar/x.go\"). List all of them, including paths")
+	b.WriteString(" shared with other sub-issues — sub-issues whose touches overlap on the SAME files")
+	b.WriteString(" or code area get serialized automatically so they merge one at a time instead of")
+	b.WriteString(" colliding. Omitting a shared path to avoid ordering just causes silent merge")
+	b.WriteString(" conflicts later. Keep paths as narrow as the real edit (a single package or file),")
+	b.WriteString(" not a broad directory that creates false overlap with unrelated siblings.\n")
 	b.WriteString("  - produces: symbols, APIs, schemas, or flags it creates or changes (e.g. \"Foo.Run\",")
 	b.WriteString(" \"Tier type\").\n")
 	b.WriteString("  - requires: symbols, APIs, schemas, or flags it needs another sub-issue to have")
@@ -220,7 +222,8 @@ func (p *Plan) resolve(idx refIndex) error {
 // ordering used both to pick the "earlier" side of a touch overlap and to make
 // edge derivation deterministic regardless of plan.Children's slice order.
 // resolve must run first so every ref here is canonical. Legacy input with no
-// touches/produces/requires is a no-op: DependsOn is left unchanged.
+// touches/produces/requires derives no new edges, but DependsOn is still
+// rewritten: it is de-duped and self/empty entries are dropped.
 func (p *Plan) deriveEdges(subs []SubIssue) {
 	order := make(map[string]int, len(subs))
 	for i, s := range subs {
