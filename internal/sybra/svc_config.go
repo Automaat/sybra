@@ -184,13 +184,15 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		policy = s.policy()
 	}
 	return agent.ManagerRuntimeConfig{
-		MaxConcurrent:   cfg.Agent.MaxConcurrent,
-		DefaultProvider: cfg.Agent.Provider,
-		BashTimeoutMs:   cfg.BashTimeoutMs(),
-		RetryWatchdog:   cfg.RetryWatchdog(),
-		FallbackModel:   cfg.Agent.FallbackModel,
-		LimitGate:       s.limits,
-		LimitPolicy:     policy,
+		MaxConcurrent:          cfg.Agent.MaxConcurrent,
+		DefaultProvider:        cfg.Agent.Provider,
+		BashTimeoutMs:          cfg.BashTimeoutMs(),
+		RetryWatchdog:          cfg.RetryWatchdog(),
+		FallbackModel:          cfg.Agent.FallbackModel,
+		LimitGate:              s.limits,
+		LimitPolicy:            policy,
+		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
+		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 	}
 }
 

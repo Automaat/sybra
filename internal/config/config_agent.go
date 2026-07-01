@@ -59,4 +59,9 @@ type AgentDefaults struct {
 	// which activates the Claude Code auto-mode classifier (blocks destructive ops
 	// such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass".
 	HeadlessPermissionMode string `yaml:"headless_permission_mode" json:"headlessPermissionMode"`
+	// DispatchJitterMs bounds a uniform random delay applied before headless
+	// agent dispatch, so a wave of concurrently ready tasks does not all
+	// probe the provider health gate in the same tick. 0 disables jitter.
+	// Never applied to interactive/chat dispatch. Default 500.
+	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
 }

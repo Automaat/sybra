@@ -70,15 +70,17 @@ var (
 
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
-	obsMu              sync.RWMutex
-	tasksByStatusFn    func() map[string]int64
-	agentsActiveFn     func() map[string]int64
-	renovatePRsFetchFn func() int64
-	providerHealthFn   func() map[string]int64
-	tasksByStatusGauge metric.Int64ObservableGauge
-	agentsActiveGauge  metric.Int64ObservableGauge
-	renovatePRsGauge   metric.Int64ObservableGauge
-	providerHealthyG   metric.Int64ObservableGauge
+	obsMu               sync.RWMutex
+	tasksByStatusFn     func() map[string]int64
+	agentsActiveFn      func() map[string]int64
+	renovatePRsFetchFn  func() int64
+	providerHealthFn    func() map[string]int64
+	agentsInFlightFn    func() map[string]int64
+	tasksByStatusGauge  metric.Int64ObservableGauge
+	agentsActiveGauge   metric.Int64ObservableGauge
+	renovatePRsGauge    metric.Int64ObservableGauge
+	providerHealthyG    metric.Int64ObservableGauge
+	agentsInFlightGauge metric.Int64ObservableGauge
 )
 
 // Enabled reports whether the metrics pipeline was initialized and is active.
@@ -364,9 +366,15 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if agentsInFlightGauge, err = m.Int64ObservableGauge(
+		"sybra_agents_in_flight",
+		metric.WithDescription("Current in-flight agent count, by provider."),
+	); err != nil {
+		return err
+	}
 	_, err = m.RegisterCallback(
 		observe,
-		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG,
+		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, agentsInFlightGauge,
 	)
 	return err
 }
@@ -377,6 +385,7 @@ func observe(_ context.Context, obs metric.Observer) error {
 	byState := agentsActiveFn
 	prs := renovatePRsFetchFn
 	providerHealth := providerHealthFn
+	inFlight := agentsInFlightFn
 	obsMu.RUnlock()
 
 	if byStatus != nil {
@@ -397,6 +406,12 @@ func observe(_ context.Context, obs metric.Observer) error {
 	if providerHealth != nil {
 		for name, healthy := range providerHealth() {
 			obs.ObserveInt64(providerHealthyG, healthy,
+				metric.WithAttributes(attribute.String("provider", name)))
+		}
+	}
+	if inFlight != nil {
+		for name, n := range inFlight() {
+			obs.ObserveInt64(agentsInFlightGauge, n,
 				metric.WithAttributes(attribute.String("provider", name)))
 		}
 	}
@@ -432,6 +447,14 @@ func RegisterRenovatePRsFetched(fn func() int64) {
 func RegisterProviderHealth(fn func() map[string]int64) {
 	obsMu.Lock()
 	providerHealthFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterAgentsInFlightByProvider wires a provider callback returning
+// provider name -> in-flight agent count for the agents_in_flight gauge.
+func RegisterAgentsInFlightByProvider(fn func() map[string]int64) {
+	obsMu.Lock()
+	agentsInFlightFn = fn
 	obsMu.Unlock()
 }
 

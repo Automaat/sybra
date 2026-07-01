@@ -301,13 +301,15 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		policy = a.limitPolicy()
 	}
 	return agent.ManagerRuntimeConfig{
-		MaxConcurrent:   cfg.Agent.MaxConcurrent,
-		DefaultProvider: cfg.Agent.Provider,
-		BashTimeoutMs:   cfg.BashTimeoutMs(),
-		RetryWatchdog:   cfg.RetryWatchdog(),
-		FallbackModel:   cfg.Agent.FallbackModel,
-		LimitGate:       a.limits,
-		LimitPolicy:     policy,
+		MaxConcurrent:          cfg.Agent.MaxConcurrent,
+		DefaultProvider:        cfg.Agent.Provider,
+		BashTimeoutMs:          cfg.BashTimeoutMs(),
+		RetryWatchdog:          cfg.RetryWatchdog(),
+		FallbackModel:          cfg.Agent.FallbackModel,
+		LimitGate:              a.limits,
+		LimitPolicy:            policy,
+		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
+		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 	}
 }
 

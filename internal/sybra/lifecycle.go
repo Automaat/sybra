@@ -271,6 +271,14 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 			return out
 		})
 	}
+	metrics.RegisterAgentsInFlightByProvider(func() map[string]int64 {
+		snapshot := a.agents.InFlightByProvider()
+		out := make(map[string]int64, len(snapshot))
+		for name, n := range snapshot {
+			out[name] = int64(n)
+		}
+		return out
+	})
 }
 
 // startMonitorService wires the in-process monitor loop when enabled.
