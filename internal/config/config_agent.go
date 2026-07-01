@@ -1,0 +1,62 @@
+package config
+
+type AgentDefaults struct {
+	Provider           string  `yaml:"provider" json:"provider"`
+	Model              string  `yaml:"model" json:"model"`
+	Mode               string  `yaml:"mode" json:"mode"`
+	MaxConcurrent      int     `yaml:"max_concurrent" json:"maxConcurrent"`
+	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
+	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
+	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
+	// escalation is auto-continued. Default 0.8 when unset.
+	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
+	// TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset.
+	TurnMultiplier float64 `yaml:"turn_multiplier" json:"turnMultiplier"`
+	// RequirePermissions sets the default permission requirement for agents.
+	// nil means not configured (falls back to true — safe default).
+	// Set to false in config to opt all tasks into skip-permissions mode.
+	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
+	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
+	// vars (claude has no equivalent CLI flag). 0 means use
+	// DefaultBashTimeoutSeconds (300).
+	BashTimeoutSeconds int `yaml:"bash_timeout_seconds" json:"bashTimeoutSeconds"`
+	// RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess
+	// for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now
+	// capped at 15) for server/unattended sessions. 0 means use
+	// DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog
+	// entirely (env var omitted), matching the zero-omit semantics at the
+	// RunConfig level.
+	RetryWatchdog int `yaml:"retry_watchdog" json:"retryWatchdog"`
+	// FallbackModel, when set, passes --fallback-model to claude for headless
+	// runs. Paired with RetryWatchdog so the watchdog can retry with a less
+	// loaded model when the primary is overloaded.
+	FallbackModel string `yaml:"fallback_model" json:"fallbackModel"`
+	// MaxLogEvents caps how many NDJSON events are returned when replaying
+	// a completed agent's log file. 0 means use DefaultMaxLogEvents (500).
+	MaxLogEvents int `yaml:"max_log_events" json:"maxLogEvents"`
+	// LogRetentionDays bounds how long per-agent NDJSON log files live
+	// under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte
+	// files, regardless of age) are swept on app startup and daily
+	// thereafter. 0 falls back to DefaultLogRetentionDays (14).
+	LogRetentionDays int `yaml:"log_retention_days" json:"logRetentionDays"`
+	// SurviveRestart keeps agent subprocesses running across an app
+	// restart (detached, output streamed to their log files) and reattaches
+	// to them on the next startup. nil means not configured (defaults to
+	// true). Set false to revert to the legacy behaviour where agents are
+	// killed on shutdown and recovered via restart-stale.
+	SurviveRestart *bool `yaml:"survive_restart" json:"surviveRestart"`
+	// ApprovalPort pins the localhost port of the PreToolUse approval
+	// server. The hook URL is baked into a permission-gated agent's
+	// --settings at spawn, so a fixed port lets a detached agent's approval
+	// requests still resolve after a restart. 0 (default) binds a random
+	// port (no cross-restart approval survival).
+	ApprovalPort int `yaml:"approval_port" json:"approvalPort"`
+	// HeadlessPermissionMode sets the default permission posture for unattended
+	// headless claude runs. "bypass" (default) keeps the current
+	// --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto
+	// which activates the Claude Code auto-mode classifier (blocks destructive ops
+	// such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass".
+	HeadlessPermissionMode string `yaml:"headless_permission_mode" json:"headlessPermissionMode"`
+}
