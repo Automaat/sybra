@@ -79,13 +79,13 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 }
 
 // TestDefaultDispatchJitterAndInFlightCap locks in the jitter/soft-cap
-// defaults: jitter on (500ms) so a dispatch wave de-correlates out of the
-// box, cap off (0) so operators must opt in to a per-provider ceiling.
+// defaults: both off (0) by default so existing deployments upgrade with no
+// behavior change; operators must opt in to either knob.
 func TestDefaultDispatchJitterAndInFlightCap(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if cfg.Agent.DispatchJitterMs != 500 {
-		t.Errorf("Agent.DispatchJitterMs = %d, want 500", cfg.Agent.DispatchJitterMs)
+	if cfg.Agent.DispatchJitterMs != 0 {
+		t.Errorf("Agent.DispatchJitterMs = %d, want 0 (disabled)", cfg.Agent.DispatchJitterMs)
 	}
 	if cfg.Providers.Limits.MaxInFlightPerProvider != 0 {
 		t.Errorf("Providers.Limits.MaxInFlightPerProvider = %d, want 0 (disabled)", cfg.Providers.Limits.MaxInFlightPerProvider)

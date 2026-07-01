@@ -62,6 +62,6 @@ type AgentDefaults struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// agent dispatch, so a wave of concurrently ready tasks does not all
 	// probe the provider health gate in the same tick. 0 disables jitter.
-	// Never applied to interactive/chat dispatch. Default 500.
+	// Never applied to interactive/chat dispatch. Default 0 (opt-in).
 	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
 }

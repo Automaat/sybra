@@ -295,7 +295,17 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 				Reason:   reason,
 			}
 		}
-		if alt := g.Failover(resolved); alt != "" {
+		alt := g.Failover(resolved)
+		if alt != "" && !underCap(alt) {
+			// g.Failover only consults health, so its pick may already be at
+			// its in-flight cap. AutoFailover being enabled is established by
+			// alt != "", so it's safe to look for another peer that is both
+			// healthy and under cap before settling for the at-cap pick.
+			if capAlt := firstHealthyProvider(resolved, candidateProviders, healthy); capAlt != "" {
+				alt = capAlt
+			}
+		}
+		if alt != "" {
 			altProv, err := lookupProvider(alt)
 			if err != nil {
 				return "", err
