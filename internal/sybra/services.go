@@ -80,6 +80,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"CreateTask",
 			"UpdateTask",
 			"DeleteTask",
+			"BlessTampering",
 		),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",
