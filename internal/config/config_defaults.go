@@ -283,7 +283,7 @@ func DefaultConfig() *Config {
 			MaxConcurrent:    100,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
-			DispatchJitterMs: 500,
+			DispatchJitterMs: 0,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,
