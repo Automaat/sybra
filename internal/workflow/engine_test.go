@@ -2150,6 +2150,73 @@ func TestExecRunAgentSkillAlias(t *testing.T) {
 	}
 }
 
+func TestExecRunAgentVariantSubjectMismatchDoesNotApplyPayload(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	tests := []struct {
+		name    string
+		subject *abtest.Subject
+		step    Step
+		wfID    string
+	}{
+		{
+			name:    "step",
+			subject: &abtest.Subject{StepID: "implement", SkillName: "sybra-test"},
+			step:    Step{ID: "evaluate", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /sybra-test"}},
+			wfID:    "test-simple",
+		},
+		{
+			name:    "workflow",
+			subject: &abtest.Subject{WorkflowID: "target-workflow", SkillName: "sybra-test"},
+			step:    Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /sybra-test"}},
+			wfID:    "other-workflow",
+		},
+		{
+			name:    "skill",
+			subject: &abtest.Subject{StepID: "implement", SkillName: "sybra-test"},
+			step:    Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /other-skill"}},
+			wfID:    "test-simple",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			enabled := true
+			engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+				ID:             "subject-exp",
+				Kind:           "skill",
+				AssignmentUnit: "stage",
+				Roles:          []string{"implementation"},
+				Subject:        tt.subject,
+				Variants: []abtest.Variant{{
+					ID: "variant", Provider: "claude", Model: "sonnet", Weight: 1,
+					PromptTransform: &abtest.PromptTransform{Op: "prepend", Text: "variant: "},
+					SkillAliases:    map[string]string{"sybra-test": "sybra-test-v2"},
+				}},
+			}}})
+			tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+			wfExec := &Execution{WorkflowID: tt.wfID, State: ExecRunning, Variables: map[string]string{}}
+			ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: tt.step, Vars: wfExec.Variables}
+
+			if err := engine.execRunAgent("t1", &tt.step, wfExec, ctx); err != nil {
+				t.Fatal(err)
+			}
+			call := agents.LastCall()
+			if call.Assignment.ExperimentID != "" {
+				t.Fatalf("assignment applied despite subject mismatch: %+v", call.Assignment)
+			}
+			if call.Prompt != tt.step.Config.Prompt {
+				t.Fatalf("prompt = %q, want %q", call.Prompt, tt.step.Config.Prompt)
+			}
+		})
+	}
+}
+
 func TestExecRunAgentReuseAgentSkillAlias(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
@@ -2212,7 +2279,13 @@ func TestSelectABVariantPropagatesExperimentKind(t *testing.T) {
 		}},
 	})
 
-	assignment, ok, err := engine.selectABVariant("t1", "implementation", "implement")
+	assignment, ok, err := engine.selectABVariant(abtest.SelectionContext{
+		TaskID:     "t1",
+		WorkflowID: "test-simple",
+		Role:       "implementation",
+		StepID:     "implement",
+		Prompt:     "Run /sybra-test",
+	})
 	if err != nil || !ok {
 		t.Fatalf("selectABVariant ok=%v err=%v", ok, err)
 	}

@@ -214,11 +214,11 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	return e.tasks.SetWorkflow(taskID, wfExec)
 }
 
-func (e *Engine) selectABVariant(taskID, role, stepID string) (AgentAssignment, bool, error) {
+func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
 	providerAllowed := func(provider string) bool {
 		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
 	}
-	a, ok, err := abtest.SelectEligible(e.abTesting, taskID, role, stepID, providerAllowed)
+	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed)
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}
@@ -287,7 +287,13 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 	provider = resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), t)
 	resolvedModel = model
 	if step.Config.Provider == "" || step.Config.Provider == "ab" {
-		selected, ok, err := e.selectABVariant(t.ID, step.Config.Role, step.ID)
+		selected, ok, err := e.selectABVariant(abtest.SelectionContext{
+			TaskID:     t.ID,
+			WorkflowID: wfExec.WorkflowID,
+			Role:       step.Config.Role,
+			StepID:     step.ID,
+			Prompt:     step.Config.Prompt,
+		})
 		if err != nil {
 			return "", "", AgentAssignment{}, fmt.Errorf("select ab variant: %w", err)
 		}

@@ -38,6 +38,16 @@ func TestRewriteInvocations(t *testing.T) {
 	}
 }
 
+func TestContainsInvocation(t *testing.T) {
+	t.Parallel()
+	if !ContainsInvocation("Run /sybra-test now.", "sybra-test") {
+		t.Fatal("ContainsInvocation returned false for a slash invocation")
+	}
+	if ContainsInvocation("Ignore /tmp/sybra-test.md and /sybra-test-v2.", "sybra-test") {
+		t.Fatal("ContainsInvocation matched a path or longer skill name")
+	}
+}
+
 func TestApplyAliases(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

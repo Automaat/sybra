@@ -15,20 +15,34 @@ func Select(cfg Config, taskID, role, stepID string) (Assignment, bool, error) {
 	return SelectEligible(cfg, taskID, role, stepID, nil)
 }
 
+// SelectionContext identifies the workflow step currently being assigned.
+type SelectionContext struct {
+	TaskID     string
+	WorkflowID string
+	Role       string
+	StepID     string
+	Prompt     string
+}
+
 // SelectEligible is Select with an optional provider eligibility predicate.
 // Ineligible positive-weight variants are excluded before hashing so machines
 // without a CLI do not silently fall back to a different provider while keeping
 // stale experiment attribution.
 func SelectEligible(cfg Config, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
+	return SelectEligibleForContext(cfg, SelectionContext{TaskID: taskID, Role: role, StepID: stepID}, providerAllowed)
+}
+
+// SelectEligibleForContext is SelectEligible with workflow subject context.
+func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool) (Assignment, bool, error) {
 	if !cfg.EnabledValue() {
 		return Assignment{}, false, nil
 	}
 	for i := range cfg.Experiments {
 		exp := cfg.Experiments[i]
-		if !exp.EnabledValue() || !roleMatches(exp.Roles, role) {
+		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
-		return selectFromExperiment(exp, taskID, role, stepID, providerAllowed)
+		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed)
 	}
 	return Assignment{}, false, nil
 }
@@ -98,6 +112,32 @@ func roleMatches(roles []string, role string) bool {
 		role = "implementation"
 	}
 	return slices.Contains(roles, role)
+}
+
+func subjectMatches(subject *Subject, ctx SelectionContext) bool {
+	if subject == nil {
+		return true
+	}
+	if want := strings.TrimSpace(subject.WorkflowID); want != "" && want != ctx.WorkflowID {
+		return false
+	}
+	if want := strings.TrimSpace(subject.StepID); want != "" && want != ctx.StepID {
+		return false
+	}
+	if want := strings.TrimSpace(subject.Role); want != "" && want != defaultRole(ctx.Role) {
+		return false
+	}
+	if want := strings.TrimSpace(subject.SkillName); want != "" && !skillinvoke.ContainsInvocation(ctx.Prompt, want) {
+		return false
+	}
+	return true
+}
+
+func defaultRole(role string) string {
+	if role == "" {
+		return "implementation"
+	}
+	return role
 }
 
 func validateExperiment(exp Experiment, providerAllowed func(string) bool) error {

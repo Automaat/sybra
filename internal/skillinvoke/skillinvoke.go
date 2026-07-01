@@ -52,6 +52,16 @@ func RewriteInvocations(prompt string, skillNames []string) string {
 	return out.String()
 }
 
+// ContainsInvocation reports whether prompt contains a slash invocation for
+// the named skill. Path-like text such as /tmp/skill.md is ignored.
+func ContainsInvocation(prompt, skillName string) bool {
+	normalized, ok := NormalizeName(skillName)
+	if !ok || prompt == "" {
+		return false
+	}
+	return len(findMatches(prompt, []string{normalized})) > 0
+}
+
 // ApplyAliases rewrites known slash skill invocations to another slash skill
 // name. The pass is non-chaining: all matches are found against the original
 // prompt before replacements are emitted.
