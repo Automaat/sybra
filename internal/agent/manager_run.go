@@ -61,6 +61,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
+	if cfg.ReasoningEffort == "" {
+		cfg.ReasoningEffort = DefaultReasoningEffort
+	}
 
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {

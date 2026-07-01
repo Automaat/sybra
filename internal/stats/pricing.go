@@ -1,6 +1,9 @@
 package stats
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 const copilotAICreditUSD = 0.01
 
@@ -8,7 +11,7 @@ const copilotAICreditUSD = 0.01
 // `cached_input_tokens` (Codex) or `cache_read_input_tokens` (Claude) subset.
 // Cache-write rate applies to Claude `cache_creation_input_tokens`.
 //
-// Sources (May 2026): platform.openai.com/docs/pricing,
+// Sources (OpenAI May 2026, Anthropic July 2026): platform.openai.com/docs/pricing,
 // docs.claude.com/en/docs/about-claude/pricing.
 type modelPrice struct {
 	in           float64
@@ -18,49 +21,87 @@ type modelPrice struct {
 	cacheWrite1h float64 // Claude only: 2.00× standard input
 }
 
-var pricingTable = map[string]modelPrice{
+type pricedTier struct {
+	from  time.Time
+	price modelPrice
+}
+
+var sonnet5StandardFrom = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+var (
+	gpt5Price            = modelPrice{in: 1.25, out: 10.00, cacheRead: 0.125}
+	gpt5MiniPrice        = modelPrice{in: 0.25, out: 2.00, cacheRead: 0.025}
+	gpt5NanoPrice        = modelPrice{in: 0.05, out: 0.40, cacheRead: 0.005}
+	haiku45Price         = modelPrice{in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.00}
+	sonnet46Price        = modelPrice{in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00}
+	sonnet5IntroPrice    = modelPrice{in: 2.00, out: 10.00, cacheRead: 0.20, cacheWrite5m: 2.50, cacheWrite1h: 4.00}
+	sonnet5StandardPrice = modelPrice{in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00}
+	opus48Price          = modelPrice{in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite5m: 6.25, cacheWrite1h: 10.00}
+	opus41Price          = modelPrice{in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite5m: 18.75, cacheWrite1h: 30.00}
+)
+
+func tiers(price modelPrice) []pricedTier {
+	return []pricedTier{{price: price}}
+}
+
+func sonnet5Tiers() []pricedTier {
+	return []pricedTier{
+		{price: sonnet5IntroPrice},
+		{from: sonnet5StandardFrom, price: sonnet5StandardPrice},
+	}
+}
+
+var pricingTable = map[string][]pricedTier{
 	// OpenAI / Codex CLI defaults.
 	// gpt-5 / gpt-5-mini are the underlying models behind `gpt-5.4` (codex
 	// alias) and `gpt-5.4-mini`. Cached input is billed at 10% of standard.
-	"gpt-5":         {in: 1.25, out: 10.00, cacheRead: 0.125},
-	"gpt-5-codex":   {in: 1.25, out: 10.00, cacheRead: 0.125},
-	"gpt-5-mini":    {in: 0.25, out: 2.00, cacheRead: 0.025},
-	"gpt-5-nano":    {in: 0.05, out: 0.40, cacheRead: 0.005},
-	"gpt-5.5":       {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex default (0.142.2+)
-	"gpt-5.4":       {in: 1.25, out: 10.00, cacheRead: 0.125}, // codex alias
-	"gpt-5.4-mini":  {in: 0.25, out: 2.00, cacheRead: 0.025},  // codex alias
-	"gpt-5.3-codex": {in: 1.25, out: 10.00, cacheRead: 0.125}, // selectable codex option; gpt-5-codex pricing
+	"gpt-5":         tiers(gpt5Price),
+	"gpt-5-codex":   tiers(gpt5Price),
+	"gpt-5-mini":    tiers(gpt5MiniPrice),
+	"gpt-5-nano":    tiers(gpt5NanoPrice),
+	"gpt-5.5":       tiers(gpt5Price), // codex default (0.142.2+)
+	"gpt-5.4":       tiers(gpt5Price), // codex alias
+	"gpt-5.4-mini":  tiers(gpt5MiniPrice),
+	"gpt-5.3-codex": tiers(gpt5Price), // selectable codex option; gpt-5-codex pricing
 
 	// Legacy OpenAI (kept for back-compat with old run records).
-	"o4-mini":      {in: 1.10, out: 4.40, cacheRead: 0.275},
-	"o3":           {in: 2.00, out: 8.00, cacheRead: 0.50},
-	"o3-mini":      {in: 1.10, out: 4.40, cacheRead: 0.55},
-	"gpt-4o":       {in: 2.50, out: 10.00, cacheRead: 1.25},
-	"gpt-4o-mini":  {in: 0.15, out: 0.60, cacheRead: 0.075},
-	"gpt-4.1":      {in: 2.00, out: 8.00, cacheRead: 0.50},
-	"gpt-4.1-mini": {in: 0.40, out: 1.60, cacheRead: 0.10},
-	"gpt-4.1-nano": {in: 0.10, out: 0.40, cacheRead: 0.025},
+	"o4-mini":      tiers(modelPrice{in: 1.10, out: 4.40, cacheRead: 0.275}),
+	"o3":           tiers(modelPrice{in: 2.00, out: 8.00, cacheRead: 0.50}),
+	"o3-mini":      tiers(modelPrice{in: 1.10, out: 4.40, cacheRead: 0.55}),
+	"gpt-4o":       tiers(modelPrice{in: 2.50, out: 10.00, cacheRead: 1.25}),
+	"gpt-4o-mini":  tiers(modelPrice{in: 0.15, out: 0.60, cacheRead: 0.075}),
+	"gpt-4.1":      tiers(modelPrice{in: 2.00, out: 8.00, cacheRead: 0.50}),
+	"gpt-4.1-mini": tiers(modelPrice{in: 0.40, out: 1.60, cacheRead: 0.10}),
+	"gpt-4.1-nano": tiers(modelPrice{in: 0.10, out: 0.40, cacheRead: 0.025}),
 
 	// Anthropic — used for cross-checking Claude's reported total_cost_usd
 	// and for runs where Claude's result event omits cost (older CLI versions).
-	"claude-haiku-4-5":          {in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.00},
-	"claude-haiku-4-5-20251001": {in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.00},
-	"claude-sonnet-4-5":         {in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00},
-	"claude-sonnet-4-6":         {in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00},
-	"claude-opus-4-5":           {in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite5m: 18.75, cacheWrite1h: 30.00},
-	"claude-opus-4-6":           {in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite5m: 18.75, cacheWrite1h: 30.00},
-	"claude-opus-4-7":           {in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite5m: 18.75, cacheWrite1h: 30.00},
+	//
+	// Pricing is effective-dated. To change a model rate, append a new tier
+	// with its effective date; do not mutate an existing tier or historical
+	// runs will be repriced when read-time estimates are recomputed.
+	"claude-haiku-4-5":          tiers(haiku45Price),
+	"claude-haiku-4-5-20251001": tiers(haiku45Price),
+	"claude-sonnet-4-5":         tiers(sonnet46Price),
+	"claude-sonnet-4-6":         tiers(sonnet46Price),
+	"claude-sonnet-5":           sonnet5Tiers(),
+	"claude-opus-4-1":           tiers(opus41Price),
+	"claude-opus-4":             tiers(opus41Price),
+	"claude-opus-4-5":           tiers(opus48Price),
+	"claude-opus-4-6":           tiers(opus48Price),
+	"claude-opus-4-7":           tiers(opus48Price),
+	"claude-opus-4-8":           tiers(opus48Price),
 	// Aliases used by `claude --model <name>` — map to current generation.
-	"haiku":  {in: 1.00, out: 5.00, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.00},
-	"sonnet": {in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite5m: 3.75, cacheWrite1h: 6.00},
-	"opus":   {in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite5m: 18.75, cacheWrite1h: 30.00},
+	"haiku":  tiers(haiku45Price),
+	"sonnet": sonnet5Tiers(),
+	"opus":   tiers(opus48Price),
 }
 
 // EstimateCost estimates USD cost from raw input/output tokens. Returns 0 for
 // unknown models. Provided for back-compat with callers that don't track cache
 // tokens — prefer EstimateCostDetailed when cache breakdown is available.
-func EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	p, ok := lookupPrice(model)
+func EstimateCost(model string, inputTokens, outputTokens int, at time.Time) float64 {
+	p, ok := lookupPrice(model, at)
 	if !ok {
 		return 0
 	}
@@ -86,9 +127,9 @@ func EstimateCopilotCost(premiumRequests float64) float64 {
 // cacheRead is `usage.cache_read_input_tokens`. Reasoning output tokens are
 // already part of `output_tokens` for both providers, so the `reasoning` arg
 // is informational and not double-billed here.
-func EstimateCostDetailed(model string, input, output, cacheCreate, cacheRead, reasoning int) float64 {
+func EstimateCostDetailed(model string, input, output, cacheCreate, cacheRead, reasoning int, at time.Time) float64 {
 	_ = reasoning // tokens already counted under `output`; arg kept for future per-tier pricing
-	p, ok := lookupPrice(model)
+	p, ok := lookupPrice(model, at)
 	if !ok {
 		return 0
 	}
@@ -107,19 +148,36 @@ func EstimateCostDetailed(model string, input, output, cacheCreate, cacheRead, r
 		float64(cacheCreate)/1_000_000*cacheWriteRate
 }
 
-func lookupPrice(model string) (modelPrice, bool) {
-	p, ok := pricingTable[model]
-	if ok {
-		return p, true
+func lookupPrice(model string, at time.Time) (modelPrice, bool) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if tiers, ok := pricingTable[model]; ok {
+		return priceForTier(tiers, at)
 	}
 	// Loose match: trim provider prefix (e.g. "openai/gpt-5" -> "gpt-5") and
 	// drop trailing date suffixes ("-20251001"). Keeps the table small without
 	// silently returning $0 for slightly-different model strings.
 	stripped := stripModelSuffix(model)
-	if p, ok := pricingTable[stripped]; ok {
-		return p, true
+	if tiers, ok := pricingTable[stripped]; ok {
+		return priceForTier(tiers, at)
 	}
 	return modelPrice{}, false
+}
+
+func priceForTier(tiers []pricedTier, at time.Time) (modelPrice, bool) {
+	if len(tiers) == 0 {
+		return modelPrice{}, false
+	}
+	var selected modelPrice
+	found := false
+	for _, tier := range tiers {
+		if tier.from.IsZero() || !tier.from.After(at) {
+			selected = tier.price
+			found = true
+		}
+	}
+	return selected, found
 }
 
 func stripModelSuffix(m string) string {

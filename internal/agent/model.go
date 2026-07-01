@@ -34,6 +34,8 @@ const (
 	StateStopped State = "stopped"
 )
 
+const DefaultReasoningEffort = "medium"
+
 type Agent struct {
 	ID                       string  `json:"id"`
 	TaskID                   string  `json:"taskId"`
@@ -827,7 +829,9 @@ type RunConfig struct {
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
 	// ReasoningEffort sets the agent's reasoning effort for this run
-	// (low/medium/high/xhigh). Empty = model default. Applied to every provider
+	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
+	// Manager.Run; lower-level command builders still omit the provider flag
+	// when handed an empty value directly. Applied to every provider
 	// via its own CLI surface: codex `-c model_reasoning_effort=`, claude and
 	// copilot `--effort`. The value set is the common subset all three accept.
 	ReasoningEffort string

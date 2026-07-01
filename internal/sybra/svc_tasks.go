@@ -115,7 +115,7 @@ func estimateAgentRunUsage(run task.AgentRun) (agentRunUsageEstimate, bool) {
 		if err != nil {
 			continue
 		}
-		estimate, ok := estimateUsageFromEvents(run.Model, provider, events)
+		estimate, ok := estimateUsageFromEvents(run.Model, provider, events, run.StartedAt)
 		if ok {
 			return estimate, true
 		}
@@ -123,7 +123,7 @@ func estimateAgentRunUsage(run task.AgentRun) (agentRunUsageEstimate, bool) {
 	return agentRunUsageEstimate{}, false
 }
 
-func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent) (agentRunUsageEstimate, bool) {
+func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent, startedAt time.Time) (agentRunUsageEstimate, bool) {
 	var input, output, cacheCreate, cacheRead, reasoning int
 	var cost, premiumRequests float64
 	var resultSeen bool
@@ -148,7 +148,7 @@ func estimateUsageFromEvents(model, provider string, events []agent.StreamEvent)
 		case "copilot":
 			cost = stats.EstimateCopilotCost(premiumRequests)
 		case "codex", "claude":
-			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning)
+			cost = stats.EstimateCostDetailed(model, input, output, cacheCreate, cacheRead, reasoning, startedAt)
 		}
 	}
 	if cost == 0 && premiumRequests == 0 {
