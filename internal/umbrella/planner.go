@@ -115,13 +115,21 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 }
 
 // flatPlanSuspicious reports whether a validated plan looks like it skipped
-// dependency derivation: 3 or more non-done sub-issues but zero total derived
-// edges across all children. Below that threshold small plans are legitimately
-// edge-free and are not flagged.
+// dependency derivation: 3 or more non-done sub-issues but zero derived edges
+// that will actually survive into the materialized plan. Below that threshold
+// small plans are legitimately edge-free and are not flagged. Edges on a
+// closed child, or pointing at a closed sub-issue, are excluded from the
+// count — ChildSpecs drops both (the closed child gets no task, and a
+// dependency on a closed sub-issue is already satisfied), so counting them
+// here would suppress the critic re-ask while the materialized plan for the
+// remaining non-done children is still fully parallel.
 func flatPlanSuspicious(p Plan, subs []SubIssue) bool {
+	closed := make(map[string]bool, len(subs))
 	nonDone := 0
 	for _, s := range subs {
-		if !s.Closed {
+		if s.Closed {
+			closed[NormalizeIssueRef(s.Ref)] = true
+		} else {
 			nonDone++
 		}
 	}
@@ -129,8 +137,14 @@ func flatPlanSuspicious(p Plan, subs []SubIssue) bool {
 		return false
 	}
 	for i := range p.Children {
-		if len(p.Children[i].DependsOn) > 0 {
-			return false
+		c := &p.Children[i]
+		if closed[NormalizeIssueRef(c.Ref)] {
+			continue
+		}
+		for _, d := range c.DependsOn {
+			if !closed[NormalizeIssueRef(d)] {
+				return false
+			}
 		}
 	}
 	return true

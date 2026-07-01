@@ -568,6 +568,38 @@ func TestFlatPlanSuspicious(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "edge only on a closed child is still suspicious",
+			plan: Plan{Children: []PlannedChild{
+				{Ref: "o/r#1", DependsOn: []string{"o/r#2"}}, // closed child, dropped by ChildSpecs
+				{Ref: "o/r#2"},
+				{Ref: "o/r#3"},
+				{Ref: "o/r#4"},
+			}},
+			subs: []SubIssue{
+				{Ref: "o/r#1", Closed: true},
+				{Ref: "o/r#2"},
+				{Ref: "o/r#3"},
+				{Ref: "o/r#4"},
+			},
+			want: true,
+		},
+		{
+			name: "edge pointing only at a closed sub-issue is still suspicious",
+			plan: Plan{Children: []PlannedChild{
+				{Ref: "o/r#1"},
+				{Ref: "o/r#2", DependsOn: []string{"o/r#1"}}, // dep already satisfied, dropped by ChildSpecs
+				{Ref: "o/r#3"},
+				{Ref: "o/r#4"},
+			}},
+			subs: []SubIssue{
+				{Ref: "o/r#1", Closed: true},
+				{Ref: "o/r#2"},
+				{Ref: "o/r#3"},
+				{Ref: "o/r#4"},
+			},
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
