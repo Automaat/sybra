@@ -1136,9 +1136,10 @@ func hasGroundedFailureEvidence(report string) bool {
 			"expected", "expected output", "expected behavior", "expected behaviour",
 			"requirement tested", "task expectation", "task requirement")
 	hasGrounding := containsAny(lower,
-		"code evidence:", "quoted code", "current source", "src/", "internal/",
-		"current file", "current code line evidence:", "code line evidence:",
-		"source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
+		"quoted code", "current source", "current file", "source quote") ||
+		fileLineCitationRe.MatchString(report) ||
+		hasLabeledSection(report,
+			"code evidence", "current code line evidence", "code line evidence")
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
@@ -1150,6 +1151,15 @@ func hasGroundedFailureEvidence(report string) bool {
 // header — a bare header immediately followed by another header's line (with
 // or without inline content) still has no content of its own.
 var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,40}:`)
+
+// fileLineCitationRe matches a real file:line citation such as
+// "internal/x.go:42" or "src/App.svelte:10" — a path segment ending in a
+// known source extension, followed by a line number. Unlike a bare "src/" or
+// "internal/" substring (which can appear incidentally, e.g. inside a `go
+// test ./internal/workflow/ ...` command line), this requires the extension
+// AND line number together, so it can't be satisfied by quoting a package
+// path with no actual code citation.
+var fileLineCitationRe = regexp.MustCompile(`[\w./-]+\.(?:go|ts|tsx|js|jsx|svelte):\d+`)
 
 // hasLabeledSection reports whether any report line is a markdown section header
 // whose label starts with one of keywords, optionally followed by a parenthetical

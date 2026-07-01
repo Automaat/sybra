@@ -281,6 +281,36 @@ func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingNextHeaderContent(
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsBareCodeEvidenceHeader(t *testing.T) {
+	t.Parallel()
+
+	// hasGrounding (the code-evidence clause) was a plain substring check that
+	// never verified any content followed the header, unlike the other three
+	// clauses. A bare "**Code evidence:**" header with nothing after the colon
+	// must not satisfy the gate even when command/observed/expected are real.
+	report := "**Command:** go test ./internal/workflow/ -run Foo -v\n\n" +
+		"**Actual:** the test failed with a nil pointer panic\n\n" +
+		"**Expected:** the task says the handler should return an error, not panic\n\n" +
+		"**Code evidence:**\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare code evidence header accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_AcceptsRealFileLineCitation(t *testing.T) {
+	t.Parallel()
+
+	report := "**Command:** go test ./internal/workflow/ -run Foo -v\n\n" +
+		"**Actual:** the test failed with a nil pointer panic\n\n" +
+		"**Expected:** the task says the handler should return an error, not panic\n\n" +
+		"**Code evidence:** internal/workflow/engine_steps_testroute.go:1142\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("real file:line citation rejected as ungrounded; want grounded")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 
