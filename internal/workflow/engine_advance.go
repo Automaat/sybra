@@ -92,7 +92,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 
 	// Retry failed steps if max_retries configured and not exhausted.
-	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 {
+	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 && ctx.Task.Status != "human-required" {
 		retries := wfExec.CountStep(output.StepID)
 		if retries <= currentStep.Config.MaxRetries {
 			e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,

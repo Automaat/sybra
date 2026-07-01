@@ -780,6 +780,131 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	}
 }
 
+func TestImplementRetry_SucceedsWithinBudget(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	for range 2 {
+		agentID := agents.RunningAgentID("t1")
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{
+			StepID:  "implement",
+			Status:  "failed",
+			AgentID: agentID,
+			Output:  "provider connection closed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 3 {
+		t.Fatalf("implementation calls after retries = %d, want 3", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Fatalf("status = %q, want retry to keep task active", ti.Status)
+	}
+	if ti.Workflow.CurrentStep != "implement" {
+		t.Fatalf("current step = %q, want implement", ti.Workflow.CurrentStep)
+	}
+
+	agentID := agents.RunningAgentID("t1")
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "completed",
+		AgentID: agentID,
+		Output:  "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep == "implement" && ti.Workflow.State == ExecRunning {
+		t.Fatal("implement success after retries did not advance")
+	}
+	if got := ti.Workflow.CountStep("implement"); got != 3 {
+		t.Fatalf("implement records = %d, want 3", got)
+	}
+}
+
+func TestImplementRetry_ExhaustedFallsThrough(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	for range 3 {
+		agentID := agents.RunningAgentID("t1")
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{
+			StepID:  "implement",
+			Status:  "failed",
+			AgentID: agentID,
+			Output:  "provider connection closed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 3 {
+		t.Fatalf("implementation calls = %d, want 3 total attempts", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep == "implement" && ti.Workflow.State == ExecRunning {
+		t.Fatal("expected workflow to advance after retry exhaustion")
+	}
+	if got := ti.Workflow.CountStep("implement"); got != 3 {
+		t.Fatalf("implement records = %d, want 3", got)
+	}
+}
+
+func TestImplementRetry_SkipsWhenTaskAlreadyHumanRequired(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	agentID := agents.RunningAgentID("t1")
+	if err := tasks.UpdateTaskStatus("t1", "human-required", "watchdog escalation"); err != nil {
+		t.Fatal(err)
+	}
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "failed",
+		AgentID: agentID,
+		Output:  "agent stopped after watchdog escalation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 1 {
+		t.Fatalf("implementation calls = %d, want no retry after human-required", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed after terminal transition", ti.Workflow.State)
+	}
+}
+
+func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *Engine) {
+	t.Helper()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed", Output: "triaged"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.LastCall().Role; got != "implementation" {
+		t.Fatalf("last agent role = %q, want implementation", got)
+	}
+	return store, tasks, agents, engine
+}
+
 // TestRetry_SupersededAgentLateCompletionDropped reproduces the production bug
 // where a stopped/superseded agent's late (double-delivered) completion was
 // credited to the still-current step and burned its retry budget before the
@@ -841,11 +966,15 @@ func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
 }
 
 func triageStartCount(agents *mockAgents) int {
+	return roleStartCount(agents, "triage")
+}
+
+func roleStartCount(agents *mockAgents, role string) int {
 	agents.mu.Lock()
 	defer agents.mu.Unlock()
 	n := 0
 	for i := range agents.calls {
-		if agents.calls[i].Role == "triage" {
+		if agents.calls[i].Role == role {
 			n++
 		}
 	}

@@ -76,6 +76,7 @@ steps:
       role: implementation
       mode: "{{.Task.AgentMode}}"
       model: sonnet
+      max_retries: 2
       prompt: "Implement {{.Task.ID}}"
     next:
       - goto: evaluate

@@ -487,6 +487,21 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 	}
 }
 
+func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "prompt-default-effort",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "explicit-medium", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+			{ID: "omitted-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: "", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
 func TestConfigValidateCompoundAllowsProviderModelReasoningDrift(t *testing.T) {
 	cfg := Config{Experiments: []Experiment{{
 		ID:   "compound",
