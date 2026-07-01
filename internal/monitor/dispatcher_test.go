@@ -61,7 +61,7 @@ func (d dispatcherTasksStub) Get(id string) (task.Task, error) {
 func (d dispatcherTasksStub) Update(string, task.Update) (task.Task, error) {
 	return task.Task{}, errors.New("not implemented")
 }
-func (d dispatcherTasksStub) UpdateRun(string, string, map[string]any) error {
+func (d dispatcherTasksStub) UpdateRun(string, string, task.RunPatch) error {
 	return errors.New("not implemented")
 }
 

@@ -258,9 +258,9 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 		return
 	}
 	if lr.State == string(agent.StateRunning) {
-		if err := r.Tasks.UpdateRun(t.ID, lr.AgentID, map[string]any{
-			"state":  string(agent.StateStopped),
-			"result": "stale: agent gone, auto-recovered",
+		if err := r.Tasks.UpdateRun(t.ID, lr.AgentID, task.RunPatch{
+			State:  task.Ptr(string(agent.StateStopped)),
+			Result: task.Ptr("stale: agent gone, auto-recovered"),
 		}); err != nil {
 			r.Logger.Error("recover-stale.update-run", "task_id", t.ID, "err", err)
 		}

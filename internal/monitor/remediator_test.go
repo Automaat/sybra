@@ -53,8 +53,8 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 	if ru.agentID != "lost-agent" {
 		t.Errorf("runUpdate agentID = %q, want lost-agent", ru.agentID)
 	}
-	if ru.updates["state"] != "stopped" {
-		t.Errorf("runUpdate state = %v, want stopped", ru.updates["state"])
+	if ru.patch.State == nil || *ru.patch.State != "stopped" {
+		t.Errorf("runUpdate state = %v, want stopped", ru.patch.State)
 	}
 }
 

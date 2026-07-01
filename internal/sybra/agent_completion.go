@@ -148,29 +148,29 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
 	}
-	runUpdates := map[string]any{
-		"state":            string(state),
-		"cost_usd":         cost,
-		"premium_requests": premiumRequests,
-		"result":           truncated,
-		"log_file":         ag.LogPath,
-		"session_id":       ag.GetSessionID(),
-		"model":            ag.Model,
-		"provider":         ag.Provider,
+	runUpdates := task.RunPatch{
+		State:           task.Ptr(string(state)),
+		CostUSD:         task.Ptr(cost),
+		PremiumRequests: task.Ptr(premiumRequests),
+		Result:          task.Ptr(truncated),
+		LogFile:         task.Ptr(ag.LogPath),
+		SessionID:       task.Ptr(ag.GetSessionID()),
+		Model:           task.Ptr(ag.Model),
+		Provider:        task.Ptr(ag.Provider),
 	}
-	addRunMetadata(runUpdates, ag)
+	addRunMetadata(&runUpdates, ag)
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
 	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
 		if v, err := parseVerdict(finalAssistantText(ag)); err == nil {
-			runUpdates["verdict"] = v.Decision
+			runUpdates.Verdict = task.Ptr(v.Decision)
 		}
 	}
 	// Capture the worktree HEAD while it still exists (cleanup below is async) so
 	// landing can later detect human edits after the agent (merged_with_edits).
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
-		runUpdates["head_sha"] = sha
+		runUpdates.HeadSHA = task.Ptr(sha)
 	}
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
@@ -225,15 +225,15 @@ func (h *AgentCompletionHandler) emitPermissionDenialAudits(ag *agent.Agent) {
 	}
 }
 
-func addRunMetadata(updates map[string]any, ag *agent.Agent) {
+func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ExperimentID != "" {
-		updates["experiment_id"] = ag.ExperimentID
-		updates["variant_id"] = ag.VariantID
-		updates["assignment_unit"] = ag.AssignmentUnit
-		updates["assignment_key"] = ag.AssignmentKey
+		updates.ExperimentID = task.Ptr(ag.ExperimentID)
+		updates.VariantID = task.Ptr(ag.VariantID)
+		updates.AssignmentUnit = task.Ptr(ag.AssignmentUnit)
+		updates.AssignmentKey = task.Ptr(ag.AssignmentKey)
 	}
 	if ag.ReasoningEffort != "" {
-		updates["reasoning_effort"] = ag.ReasoningEffort
+		updates.ReasoningEffort = task.Ptr(ag.ReasoningEffort)
 	}
 }
 
