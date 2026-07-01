@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -126,25 +125,34 @@ func emptyTamperReport(taskID string) TamperReportDTO {
 }
 
 func isMissingArtifactError(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), ": not found")
+	return errors.Is(err, artifact.ErrNotFound)
 }
 
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
-	cur, err := s.tasks.Get(taskID)
-	if err != nil {
-		return cur, err
-	}
-	if cur.Status != task.StatusHumanRequired || !workflow.IsTamperFlaggedReason(cur.StatusReason) {
-		return cur, conflictError("task is not tamper-flagged")
-	}
+	var (
+		cur      task.Task
+		tagAdded bool
+	)
+	updated, err := s.tasks.UpdateFn(taskID, func(t task.Task) (task.Update, error) {
+		if t.Status != task.StatusHumanRequired || !workflow.IsTamperFlaggedReason(t.StatusReason) {
+			return task.Update{}, conflictError("task is not tamper-flagged")
+		}
+		cur = t
 
-	merged := append([]string(nil), cur.Tags...)
-	tagAdded := false
-	if !slices.Contains(merged, workflow.TamperBlessedTag) {
-		merged = append(merged, workflow.TamperBlessedTag)
-		tagAdded = true
+		merged := append([]string(nil), t.Tags...)
+		if !slices.Contains(merged, workflow.TamperBlessedTag) {
+			merged = append(merged, workflow.TamperBlessedTag)
+			tagAdded = true
+		}
+		return task.Update{
+			Tags:   task.Ptr(merged),
+			Status: task.Ptr(task.StatusReadyReview),
+		}, nil
+	})
+	if err != nil {
+		return updated, err
 	}
 
 	report, reportErr := s.GetTamperReport(taskID)
@@ -162,13 +170,6 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		s.logger.Warn("task.tamper-report.audit-skipped", "task_id", taskID, "err", reportErr)
 	}
 
-	updated, err := s.tasks.Update(taskID, task.Update{
-		Tags:   task.Ptr(merged),
-		Status: task.Ptr(task.StatusReadyReview),
-	})
-	if err != nil {
-		return updated, err
-	}
 	if s.audit != nil {
 		if logErr := s.audit.Log(audit.Event{
 			Type:   audit.EventTaskTamperBlessed,

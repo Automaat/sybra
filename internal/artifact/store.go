@@ -253,7 +253,7 @@ func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, Meta{}, fmt.Errorf("artifact: %s/%s: not found", taskID, name)
+			return nil, Meta{}, fmt.Errorf("artifact: %s/%s: %w", taskID, name, ErrNotFound)
 		}
 		return nil, Meta{}, fmt.Errorf("artifact: read blob: %w", err)
 	}

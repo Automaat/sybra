@@ -24,9 +24,9 @@
   let report = $state<TamperReportDTO | null>(null)
   let reportLoading = $state(false)
   let reportError = $state('')
-  let blessLoading = $state(false)
   let blessError = $state('')
   let reportSeq = 0
+  const blessLoading = $derived(taskStore.isBlessing(task.id))
 
   $effect(() => {
     if (!isTamperFlagged) {
@@ -60,14 +60,11 @@
 
   async function blessTampering() {
     if (blessLoading || !isTamperFlagged) return
-    blessLoading = true
     blessError = ''
     try {
       await taskStore.blessTampering(task.id)
     } catch (e) {
       blessError = String(e)
-    } finally {
-      blessLoading = false
     }
   }
 </script>

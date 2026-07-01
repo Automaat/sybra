@@ -8,9 +8,15 @@
 package artifact
 
 import (
+	"errors"
 	"regexp"
 	"time"
 )
+
+// ErrNotFound is returned by Read when the requested artifact's blob does not
+// exist. It never wraps a meta-read/parse failure — that's a corrupt/partial
+// write, not an absent artifact, and callers must not treat the two alike.
+var ErrNotFound = errors.New("artifact: not found")
 
 // Kind classifies an artifact's role in the workflow.
 type Kind string

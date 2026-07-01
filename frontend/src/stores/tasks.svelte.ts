@@ -28,6 +28,15 @@ class TaskStore extends EntityStore<Task> {
     return n
   }
 
+  // Task-keyed bless-in-flight guard, shared by every "Bless & send to
+  // review" button (header bar + status banner). A local $state flag per
+  // component can't stop two buttons for the same task racing each other.
+  #blessing = $state<Set<string>>(new Set())
+
+  isBlessing(id: string): boolean {
+    return this.#blessing.has(id)
+  }
+
   constructor() {
     super(
       () => ListTasks(),
@@ -97,9 +106,17 @@ class TaskStore extends EntityStore<Task> {
   }
 
   async blessTampering(id: string): Promise<Task> {
-    const result = await BlessTampering(id)
-    this.set(result.id, result)
-    return result
+    if (this.#blessing.has(id)) throw new Error('bless already in flight')
+    this.#blessing = new Set(this.#blessing).add(id)
+    try {
+      const result = await BlessTampering(id)
+      this.set(result.id, result)
+      return result
+    } finally {
+      const next = new Set(this.#blessing)
+      next.delete(id)
+      this.#blessing = next
+    }
   }
 
   async remove(id: string): Promise<void> {

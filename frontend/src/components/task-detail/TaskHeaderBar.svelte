@@ -29,7 +29,6 @@
   let copiedBranch = $state(false)
   let reviewLoading = $state(false)
   let fixReviewLoading = $state(false)
-  let blessLoading = $state(false)
   let error = $state('')
   let menuOpen = $state(false)
 
@@ -88,6 +87,7 @@
   )
   const isReviewTask = $derived(task.tags?.includes('review') ?? false)
   const isTamperFlagged = $derived(isTamperFlaggedTask(task))
+  const blessLoading = $derived(taskStore.isBlessing(task.id))
 
   $effect(() => {
     if (editingTitle && titleInputRef) titleInputRef.focus()
@@ -215,14 +215,11 @@
 
   async function blessTampering() {
     if (blessLoading || !isTamperFlagged) return
-    blessLoading = true
     error = ''
     try {
       await taskStore.blessTampering(task.id)
     } catch (e) {
       error = String(e)
-    } finally {
-      blessLoading = false
     }
   }
 
