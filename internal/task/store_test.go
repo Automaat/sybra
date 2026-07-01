@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -711,28 +712,30 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updates := map[string]any{
-		"state":                    "done",
-		"cost_usd":                 1.23,
-		"premium_requests":         2.5,
-		"result":                   "completed with result",
-		"verdict":                  "sybra_bug",
-		"verdict_rendered":         true,
-		"log_file":                 "/tmp/sybra/agent-payload.ndjson",
-		"provider":                 "codex",
-		"model":                    "gpt-5",
-		"experiment_id":            "exp-123",
-		"variant_id":               "variant-b",
-		"assignment_unit":          "task",
-		"assignment_key":           "task-abc123",
-		"reasoning_effort":         "high",
-		"session_id":               "session-123",
-		"protocol_violation":       "missing-json",
-		"test_outcome":             "product_bug",
-		"test_failure_fingerprint": "fingerprint-123",
-		"head_sha":                 "0123456789abcdef0123456789abcdef01234567",
+	patch := RunPatch{
+		State:                  Ptr("done"),
+		CostUSD:                Ptr(1.23),
+		PremiumRequests:        Ptr(2.5),
+		Result:                 Ptr("completed with result"),
+		Verdict:                Ptr("sybra_bug"),
+		VerdictRendered:        Ptr(true),
+		LogFile:                Ptr("/tmp/sybra/agent-payload.ndjson"),
+		Provider:               Ptr("codex"),
+		Model:                  Ptr("gpt-5"),
+		ExperimentID:           Ptr("exp-123"),
+		VariantID:              Ptr("variant-b"),
+		AssignmentUnit:         Ptr("task"),
+		AssignmentKey:          Ptr("task-abc123"),
+		ReasoningEffort:        Ptr("high"),
+		SessionID:              Ptr("session-123"),
+		ProtocolViolation:      Ptr("missing-json"),
+		TestOutcome:            Ptr("product_bug"),
+		TestFailureFingerprint: Ptr("fingerprint-123"),
+		HeadSHA:                Ptr("0123456789abcdef0123456789abcdef01234567"),
 	}
-	if err := store.UpdateRun(created.ID, "agent-payload", updates); err != nil {
+	assertRunPatchCoversEveryField(t, patch)
+
+	if err := store.UpdateRun(created.ID, "agent-payload", patch); err != nil {
 		t.Fatalf("UpdateRun: %v", err)
 	}
 
@@ -772,6 +775,18 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		TestFailureFingerprint: "fingerprint-123",
 		HeadSHA:                "0123456789abcdef0123456789abcdef01234567",
 	})
+}
+
+func assertRunPatchCoversEveryField(t *testing.T, patch RunPatch) {
+	t.Helper()
+
+	value := reflect.ValueOf(patch)
+	typ := value.Type()
+	for i := range value.NumField() {
+		if value.Field(i).IsNil() {
+			t.Errorf("RunPatch field %s is not covered by payload round-trip test", typ.Field(i).Name)
+		}
+	}
 }
 
 func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
