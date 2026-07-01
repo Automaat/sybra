@@ -371,8 +371,12 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.BlessTampering(human.ID); err == nil {
+	_, err = svc.BlessTampering(human.ID)
+	if err == nil {
 		t.Fatal("BlessTampering non-tamper err = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), workflow.TamperFlaggedReasonPrefix) {
+		t.Fatalf("BlessTampering non-tamper err = %q, want actionable preconditions", err.Error())
 	}
 	got, err := svc.tasks.Get(human.ID)
 	if err != nil {

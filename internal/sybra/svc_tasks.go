@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,8 +137,11 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		tagAdded bool
 	)
 	updated, err := s.tasks.UpdateFn(taskID, func(t task.Task) (task.Update, error) {
-		if t.Status != task.StatusHumanRequired || !workflow.IsTamperFlaggedReason(t.StatusReason) {
-			return task.Update{}, conflictError("task is not tamper-flagged")
+		if !t.TamperFlagged {
+			return task.Update{}, conflictError(
+				"task is not tamper-flagged: bless requires status=human-required with a " +
+					"status_reason starting with " + strconv.Quote(workflow.TamperFlaggedReasonPrefix),
+			)
 		}
 		cur = t
 

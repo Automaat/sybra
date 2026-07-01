@@ -382,6 +382,16 @@ export class Task {
     "planDrafts"?: { [_ in string]?: string };
     "filePath": string;
 
+    /**
+     * TamperFlagged reports whether this task is parked at human-required
+     * pending a tamper bless. Derived from Status/StatusReason (never
+     * persisted) so the frontend doesn't need to duplicate
+     * workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
+     * action. Recomputed on every load/update — see taskFromFrontmatter and
+     * Store.UpdateWithPrev.
+     */
+    "tamperFlagged": boolean;
+
     /** Creates a new Task instance. */
     constructor($$source: Partial<Task> = {}) {
         if (!("id" in $$source)) {
@@ -446,6 +456,9 @@ export class Task {
         }
         if (!("filePath" in $$source)) {
             this["filePath"] = "";
+        }
+        if (!("tamperFlagged" in $$source)) {
+            this["tamperFlagged"] = false;
         }
 
         Object.assign(this, $$source);
