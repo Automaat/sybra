@@ -781,10 +781,9 @@ func assertRunPatchCoversEveryField(t *testing.T, patch RunPatch) {
 	t.Helper()
 
 	value := reflect.ValueOf(patch)
-	typ := value.Type()
-	for i := range value.NumField() {
-		if value.Field(i).IsNil() {
-			t.Errorf("RunPatch field %s is not covered by payload round-trip test", typ.Field(i).Name)
+	for _, field := range reflect.VisibleFields(value.Type()) {
+		if value.FieldByIndex(field.Index).IsNil() {
+			t.Errorf("RunPatch field %s is not covered by payload round-trip test", field.Name)
 		}
 	}
 }
