@@ -53,7 +53,7 @@ func (s *TaskService) ListTasks() ([]task.Task, error) {
 		if all[i].TaskType == task.TaskTypeChat {
 			continue
 		}
-		out = append(out, all[i])
+		out = append(out, s.withComputedTaskFields(all[i]))
 	}
 	return out, nil
 }
@@ -64,7 +64,7 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 	if err != nil {
 		return t, err
 	}
-	return s.withEstimatedAgentRunCosts(t), nil
+	return s.withComputedTaskFields(s.withEstimatedAgentRunCosts(t)), nil
 }
 
 // BlessTampering marks a human-reviewed tamper finding as accepted and sends
@@ -74,15 +74,22 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 	if err != nil {
 		return cur, err
 	}
-
-	tags := slices.Clone(cur.Tags)
-	if !slices.Contains(tags, workflow.TamperBlessedTag) {
-		tags = append(tags, workflow.TamperBlessedTag)
+	if !canBlessTampering(cur) {
+		return cur, fmt.Errorf("task %s is not awaiting tamper blessing", taskID)
 	}
 
-	updated, err := s.tasks.Update(taskID, task.Update{
-		Tags:   task.Ptr(tags),
-		Status: task.Ptr(task.StatusReadyReview),
+	updated, err := s.tasks.UpdateFromCurrent(taskID, func(latest task.Task) (task.Update, error) {
+		if !canBlessTampering(latest) {
+			return task.Update{}, fmt.Errorf("task %s is no longer awaiting tamper blessing", taskID)
+		}
+		tags := slices.Clone(latest.Tags)
+		if !slices.Contains(tags, workflow.TamperBlessedTag) {
+			tags = append(tags, workflow.TamperBlessedTag)
+		}
+		return task.Update{
+			Tags:   task.Ptr(tags),
+			Status: task.Ptr(task.StatusReadyReview),
+		}, nil
 	})
 	if err != nil {
 		return updated, err
@@ -92,12 +99,25 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			Type:   audit.EventTamperBlessed,
 			TaskID: taskID,
 			Data: map[string]any{
-				"from_status": cur.Status,
-				"to_status":   updated.Status,
+				"from_status":           cur.Status,
+				"to_status":             updated.Status,
+				"status_reason":         cur.StatusReason,
+				"finding_severity":      "high",
+				"tamper_blessed_tag":    workflow.TamperBlessedTag,
+				"accepted_finding_text": cur.StatusReason,
 			},
 		})
 	}
-	return updated, nil
+	return s.withComputedTaskFields(updated), nil
+}
+
+func canBlessTampering(t task.Task) bool {
+	return t.Status == task.StatusHumanRequired && workflow.IsTamperStatusReason(t.StatusReason)
+}
+
+func (s *TaskService) withComputedTaskFields(t task.Task) task.Task {
+	t.CanBlessTampering = canBlessTampering(t)
+	return t
 }
 
 func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
@@ -268,7 +288,7 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	if !isURLStub {
 		s.startCreatedWorkflow(t)
 	}
-	return t, nil
+	return s.withComputedTaskFields(t), nil
 }
 
 func (s *TaskService) startCreatedWorkflow(t task.Task) {
@@ -373,7 +393,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		}
 	}
 
-	return t, nil
+	return s.withComputedTaskFields(t), nil
 }
 
 // DeleteTask removes a task file from disk and cleans up its worktree.

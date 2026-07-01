@@ -86,10 +86,7 @@
     ),
   )
   const isReviewTask = $derived(task.tags?.includes('review') ?? false)
-  const canBlessTampering = $derived(
-    task.status === 'human-required' &&
-      (task.statusReason ?? '').startsWith('possible test tampering'),
-  )
+  const canBlessTampering = $derived(task.canBlessTampering ?? false)
 
   $effect(() => {
     if (editingTitle && titleInputRef) titleInputRef.focus()
@@ -221,7 +218,8 @@
     try {
       await taskStore.blessTampering(task.id)
     } catch (e) {
-      error = String(e)
+      await taskStore.patchOne(task.id)
+      error = `${String(e)}. Task state was refreshed; retry only if it is still awaiting tamper blessing.`
     } finally {
       blessTamperingLoading = false
     }

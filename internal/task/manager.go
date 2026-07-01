@@ -214,30 +214,65 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
 
-	t, prev, err := m.store.UpdateWithPrev(id, u)
+	t, hook, err := m.updateLocked(id, u)
+	mu.Unlock()
+	m.fireStatusHook(hook)
+	return t, err
+}
+
+// UpdateFromCurrent builds and applies an update while holding the per-task
+// mutation lock, so callers can merge fields from the latest task state without
+// racing another Manager write for the same task.
+func (m *Manager) UpdateFromCurrent(id string, build func(Task) (Update, error)) (Task, error) {
+	mu := m.lockFor(id)
+	mu.Lock()
+
+	cur, err := m.store.Get(id)
 	if err != nil {
 		mu.Unlock()
-		return t, err
+		return cur, err
+	}
+	u, err := build(cur)
+	if err != nil {
+		mu.Unlock()
+		return cur, err
+	}
+	t, hook, err := m.updateLocked(id, u)
+	mu.Unlock()
+	m.fireStatusHook(hook)
+	return t, err
+}
+
+type statusHookCall struct {
+	id         string
+	prevStatus string
+	newStatus  string
+}
+
+func (m *Manager) updateLocked(id string, u Update) (Task, *statusHookCall, error) {
+	t, prev, err := m.store.UpdateWithPrev(id, u)
+	if err != nil {
+		return t, nil, err
 	}
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 
-	var (
-		fireHook            bool
-		prevStatus, newStat string
-	)
 	if u.Status != nil && m.onStatusHook != nil {
-		prevStatus = string(prev)
-		newStat = string(t.Status)
-		fireHook = newStat != prevStatus
+		prevStatus := string(prev)
+		newStatus := string(t.Status)
+		if newStatus != prevStatus {
+			return t, &statusHookCall{id: id, prevStatus: prevStatus, newStatus: newStatus}, nil
+		}
 	}
-	mu.Unlock()
+	return t, nil, nil
+}
 
-	if fireHook {
-		m.recordFiredStatus(id, newStat)
-		m.onStatusHook(id, prevStatus, newStat)
+func (m *Manager) fireStatusHook(call *statusHookCall) {
+	if call == nil {
+		return
 	}
-	return t, nil
+	m.recordFiredStatus(call.id, call.newStatus)
+	m.onStatusHook(call.id, call.prevStatus, call.newStatus)
 }
 
 // UpdateMap converts raw to a typed Update and applies it.

@@ -4,6 +4,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/sv
 const mockUpdate = vi.fn()
 const mockRemove = vi.fn()
 const mockBlessTampering = vi.fn()
+const mockPatchOne = vi.fn()
 const mockStartReview = vi.fn()
 const mockStartFixReview = vi.fn()
 
@@ -12,6 +13,7 @@ vi.mock('../../stores/tasks.svelte.js', () => ({
     update: (...args: unknown[]) => mockUpdate(...args),
     remove: (...args: unknown[]) => mockRemove(...args),
     blessTampering: (...args: unknown[]) => mockBlessTampering(...args),
+    patchOne: (...args: unknown[]) => mockPatchOne(...args),
   },
 }))
 
@@ -56,11 +58,13 @@ describe('TaskHeaderBar', () => {
     mockUpdate.mockReset()
     mockRemove.mockReset()
     mockBlessTampering.mockReset()
+    mockPatchOne.mockReset()
     mockStartReview.mockReset()
     mockStartFixReview.mockReset()
     mockUpdate.mockResolvedValue(baseTask)
     mockRemove.mockResolvedValue(undefined)
     mockBlessTampering.mockResolvedValue({ ...baseTask, status: 'ready-review', tags: ['tamper-blessed'] })
+    mockPatchOne.mockResolvedValue(undefined)
   })
   afterEach(cleanup)
 
@@ -195,7 +199,8 @@ describe('TaskHeaderBar', () => {
         task: {
           ...baseTask,
           status: 'human-required',
-          statusReason: 'possible test tampering — needs human bless before review: test.go',
+          statusReason: 'human-readable detector details',
+          canBlessTampering: true,
         } as never,
         ondelete: vi.fn(),
       },
@@ -209,7 +214,12 @@ describe('TaskHeaderBar', () => {
   it('hides Bless Tampering for non-tamper human-required tasks', () => {
     render(TaskHeaderBar, {
       props: {
-        task: { ...baseTask, status: 'human-required', statusReason: 'approval required' } as never,
+        task: {
+          ...baseTask,
+          status: 'human-required',
+          statusReason: 'possible test tampering — old prose alone is insufficient',
+          canBlessTampering: false,
+        } as never,
         ondelete: vi.fn(),
       },
     })

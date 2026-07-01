@@ -244,6 +244,9 @@ type Task struct {
 	PRNumber     int    `json:"prNumber"`
 	Issue        string `json:"issue"`
 	StatusReason string `json:"statusReason"`
+	// CanBlessTampering is a computed API field set by TaskService when a
+	// human-required task was blocked by detect_tampering.
+	CanBlessTampering bool `json:"canBlessTampering,omitempty"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run

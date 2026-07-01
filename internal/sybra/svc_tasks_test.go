@@ -169,6 +169,9 @@ func TestTaskService_BlessTamperingMergesTagStatusAndAudit(t *testing.T) {
 	if !slices.Contains(updated.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("tags = %v, want %q", updated.Tags, workflow.TamperBlessedTag)
 	}
+	if updated.CanBlessTampering {
+		t.Fatalf("CanBlessTampering = true after bless, want false")
+	}
 
 	events, err := audit.Read(auditDir, audit.Query{
 		Since:  time.Now().Add(-time.Hour),
@@ -184,6 +187,63 @@ func TestTaskService_BlessTamperingMergesTagStatusAndAudit(t *testing.T) {
 	}
 	if events[0].Data["from_status"] != string(task.StatusHumanRequired) || events[0].Data["to_status"] != string(task.StatusReadyReview) {
 		t.Fatalf("audit data = %+v, want from/to status", events[0].Data)
+	}
+	if events[0].Data["status_reason"] != created.StatusReason {
+		t.Fatalf("audit data = %+v, want status_reason %q", events[0].Data, created.StatusReason)
+	}
+	if events[0].Data["finding_severity"] != "high" {
+		t.Fatalf("audit data = %+v, want finding_severity high", events[0].Data)
+	}
+}
+
+func TestTaskService_BlessTamperingRejectsNonTamperTasks(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	cases := []struct {
+		name         string
+		status       task.Status
+		statusReason string
+	}{
+		{
+			name:         "human required unrelated reason",
+			status:       task.StatusHumanRequired,
+			statusReason: "approval required",
+		},
+		{
+			name:         "tamper reason wrong status",
+			status:       task.StatusInProgress,
+			statusReason: workflow.TamperReasonPrefix + " — needs human bless before review: test.go",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := svc.tasks.CreateFull(tc.name, "", "headless", task.Update{
+				Status:       task.Ptr(tc.status),
+				StatusReason: task.Ptr(tc.statusReason),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			updated, err := svc.BlessTampering(created.ID)
+			if err == nil {
+				t.Fatal("BlessTampering succeeded, want error")
+			}
+			if updated.Status != tc.status {
+				t.Fatalf("returned status = %q, want %q", updated.Status, tc.status)
+			}
+			persisted, err := svc.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted.Status != tc.status {
+				t.Fatalf("persisted status = %q, want %q", persisted.Status, tc.status)
+			}
+			if slices.Contains(persisted.Tags, workflow.TamperBlessedTag) {
+				t.Fatalf("persisted tags = %v, must not contain %q", persisted.Tags, workflow.TamperBlessedTag)
+			}
+		})
 	}
 }
 
