@@ -9,6 +9,11 @@ import (
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
+// defaultReasoningEffort mirrors agent.DefaultReasoningEffort. It cannot be
+// imported directly: internal/agent transitively depends on internal/config,
+// which depends on internal/abtest, so importing agent here would cycle.
+const defaultReasoningEffort = "medium"
+
 // Select deterministically chooses a variant for the task/stage. It returns
 // ok=false when A/B is disabled or no enabled experiment matches the role.
 func Select(cfg Config, taskID, role, stepID string) (Assignment, bool, error) {
@@ -215,6 +220,7 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		return nil
 	}
 	base := eligible[0]
+	baseEffort := normalizeReasoningEffort(base.ReasoningEffort)
 	for i := 1; i < len(eligible); i++ {
 		v := eligible[i]
 		if v.Provider != base.Provider {
@@ -223,11 +229,21 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		if v.Model != base.Model {
 			return fmt.Errorf("abtest: experiment %q model mismatch on variant %q", exp.ID, v.ID)
 		}
-		if v.ReasoningEffort != base.ReasoningEffort {
+		if normalizeReasoningEffort(v.ReasoningEffort) != baseEffort {
 			return fmt.Errorf("abtest: experiment %q reasoning_effort mismatch on variant %q", exp.ID, v.ID)
 		}
 	}
 	return nil
+}
+
+// normalizeReasoningEffort treats an omitted effort as the agent runtime's
+// default, so a variant that explicitly sets "medium" is homogeneous with one
+// that leaves the field empty.
+func normalizeReasoningEffort(effort string) string {
+	if effort == "" {
+		return defaultReasoningEffort
+	}
+	return effort
 }
 
 func validateVariant(expID string, v Variant) error {

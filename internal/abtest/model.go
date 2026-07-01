@@ -14,7 +14,7 @@ type Experiment struct {
 	ID             string    `yaml:"id" json:"id"`
 	Kind           string    `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Enabled        *bool     `yaml:"enabled" json:"enabled"`
-	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"
+	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"; empty defaults to "stage"
 	Bracket        string    `yaml:"bracket,omitempty" json:"bracket,omitempty"` // "cheap" or "expensive"
 	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
