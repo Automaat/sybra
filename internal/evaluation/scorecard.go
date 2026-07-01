@@ -855,7 +855,8 @@ type experimentRoleConfig struct {
 
 func configuredExperimentRoles(experiments []abtest.Experiment, rows []ComparisonBreakdown) map[string]experimentRoleConfig {
 	out := map[string]experimentRoleConfig{}
-	for _, exp := range experiments {
+	for i := range experiments {
+		exp := experiments[i]
 		if exp.ID == "" || !exp.EnabledValue() || len(exp.Variants) == 0 {
 			continue
 		}
