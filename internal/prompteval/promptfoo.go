@@ -124,17 +124,24 @@ type promptfooAssert struct {
 // prompt/assertion text is always properly quoted — never string
 // concatenation, which would let injected `"` or newlines smuggle extra YAML
 // keys into the generated config.
+//
+// The prompt template composes the variant's own resolved prompt/skill body
+// ({{variantPrompt}}) ahead of the golden case input ({{input}}) so the
+// bytes promptfoo actually sends to the provider are the digested candidate
+// prompt, not just the fixture input. Both are passed as vars (never
+// interpolated into the template string itself) so injected `{{`/YAML
+// syntax in either one can't reshape the generated config or template.
 func generateConfig(spec Spec) ([]byte, error) {
 	asserts := make([]promptfooAssert, 0, len(spec.Assertions))
 	for _, a := range spec.Assertions {
 		asserts = append(asserts, promptfooAssert(a))
 	}
 	cfg := promptfooConfig{
-		Prompts:   []string{"{{input}}"},
+		Prompts:   []string{"{{variantPrompt}}\n\n{{input}}"},
 		Providers: []promptfooProvider{{ID: fmt.Sprintf("%s:%s", spec.Variant.Provider, spec.Variant.Model)}},
 		Tests: []promptfooTestEntry{
 			{
-				Vars:   map[string]string{"input": spec.Input},
+				Vars:   map[string]string{"input": spec.Input, "variantPrompt": spec.Variant.Prompt},
 				Assert: asserts,
 			},
 		},

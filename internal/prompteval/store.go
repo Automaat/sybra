@@ -46,9 +46,22 @@ func validateKey(key string) error {
 	return nil
 }
 
+// normalizeDigest strips an optional "sha256:" prefix so callers that carry
+// the abtest.Variant.Digest convention (e.g. "sha256:<hex>") and callers
+// that pass raw prompteval.Digest output (bare hex) resolve to the same
+// on-disk key.
+func normalizeDigest(digest string) string {
+	const prefix = "sha256:"
+	if len(digest) > len(prefix) && strings.EqualFold(digest[:len(prefix)], prefix) {
+		return digest[len(prefix):]
+	}
+	return digest
+}
+
 // verdictPath resolves and containment-checks the on-disk path for a
 // (variantID, digest) pair.
 func (s *Store) verdictPath(variantID, digest string) (string, error) {
+	digest = normalizeDigest(digest)
 	if err := validateKey(variantID); err != nil {
 		return "", err
 	}

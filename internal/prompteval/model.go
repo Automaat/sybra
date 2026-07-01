@@ -89,3 +89,15 @@ func Digest(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+// resolvedPrompt composes the candidate variant's own prompt/skill body with
+// the golden case's input so a runner actually screens the digested bytes —
+// not just the fixture input — against the provider. A variant with no
+// resolved Prompt (e.g. a bare model/provider comparison) falls back to the
+// input alone, unchanged from prior behavior.
+func resolvedPrompt(spec Spec) string {
+	if spec.Variant.Prompt == "" {
+		return spec.Input
+	}
+	return spec.Variant.Prompt + "\n\n" + spec.Input
+}

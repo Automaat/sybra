@@ -91,6 +91,33 @@ func TestCmdEvaluationOfflineRunExitsZeroOnPass(t *testing.T) {
 	}
 }
 
+// TestCmdEvaluationOfflineRunExitsNonzeroOnUnavailable guards against a
+// broken eval setup (e.g. promptfoo binary missing) reading as green in CI:
+// under the default fail-closed UnavailablePolicy, a runner error must exit
+// nonzero even though no verdict is StatusFail.
+func TestCmdEvaluationOfflineRunExitsNonzeroOnUnavailable(t *testing.T) {
+	dir := setupStore(t)
+	old := newOfflineRunner
+	defer func() { newOfflineRunner = old }()
+	newOfflineRunner = func(config.OfflineEvalConfig) prompteval.OfflineRunner {
+		return fakeOfflineRunner{err: os.ErrNotExist}
+	}
+
+	variantsPath := filepath.Join(dir, "variants.json")
+	goldenPath := filepath.Join(dir, "golden.json")
+	writeJSONFile(t, variantsPath, []prompteval.CandidateVariant{
+		{ID: "unavailable-variant", Prompt: "some prompt", Provider: "claude", Model: "opus"},
+	})
+	writeJSONFile(t, goldenPath, []offlineGoldenCase{
+		{CaseID: "c1", Input: "hi", Assertions: []prompteval.Assertion{{Type: "contains", Value: "x"}}},
+	})
+
+	code, output := runCLI(t, "evaluation", "offline", "run", "--variants", variantsPath, "--golden", goldenPath, "--json")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for an UNAVAILABLE verdict under default fail-closed policy, got 0. output: %s", output)
+	}
+}
+
 func TestCmdEvaluationOfflineRunRejectsEmptyVariants(t *testing.T) {
 	dir := setupStore(t)
 	variantsPath := filepath.Join(dir, "variants.json")

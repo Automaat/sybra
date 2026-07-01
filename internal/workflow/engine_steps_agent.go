@@ -223,9 +223,19 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 	providerAllowed := func(provider string) bool {
 		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
 	}
-	// evalPassed is nil: wiring a live internal/prompteval.Gate here is out of
-	// scope for the offline runner itself (see internal/prompteval doc comment).
-	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, nil)
+	var evalPassed abtest.EvalPassed
+	if e.evalGate != nil {
+		evalPassed = func(variantID, digest string) bool {
+			allow, _, gateErr := e.evalGate.AllowEnrollment(variantID, digest)
+			if gateErr != nil {
+				// Gate read failure (store I/O, not "no verdict") — fail closed
+				// rather than silently enrolling an unverified variant.
+				return false
+			}
+			return allow
+		}
+	}
+	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, evalPassed)
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}

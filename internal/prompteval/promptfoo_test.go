@@ -95,3 +95,31 @@ func TestGenerateConfigEscapesInjectedYAML(t *testing.T) {
 		t.Fatalf("input vars = %q, want %q", parsed.Tests[0].Vars["input"], spec.Input)
 	}
 }
+
+// TestGenerateConfigCarriesVariantPrompt proves the digested candidate
+// prompt (spec.Variant.Prompt) — not just the golden-case input — reaches
+// the generated promptfoo config, so two variants differing only by Prompt
+// produce distinguishable provider calls.
+func TestGenerateConfigCarriesVariantPrompt(t *testing.T) {
+	t.Parallel()
+	spec := Spec{
+		CaseID: "c1",
+		Variant: CandidateVariant{
+			Provider: "claude",
+			Model:    "opus",
+			Prompt:   "You are a terse assistant.",
+		},
+		Input: "what is 2+2?",
+	}
+	data, err := generateConfig(spec)
+	if err != nil {
+		t.Fatalf("generateConfig: %v", err)
+	}
+	var parsed promptfooConfig
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("generated config is not valid YAML: %v\n%s", err, data)
+	}
+	if got := parsed.Tests[0].Vars["variantPrompt"]; got != spec.Variant.Prompt {
+		t.Fatalf("variantPrompt vars = %q, want %q", got, spec.Variant.Prompt)
+	}
+}

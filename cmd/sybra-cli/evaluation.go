@@ -96,6 +96,8 @@ func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) in
 	runner := newOfflineRunner(cfg.Evaluation.Offline)
 	store := prompteval.New(config.PromptEvalDir())
 
+	unavailablePolicyPass := strings.EqualFold(strings.TrimSpace(cfg.Evaluation.Offline.UnavailablePolicy), "pass")
+
 	ctx := context.Background()
 	verdicts := make([]prompteval.VariantVerdict, 0, len(variants))
 	anyFail := false
@@ -106,6 +108,9 @@ func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) in
 		}
 		verdicts = append(verdicts, verdict)
 		if verdict.Status == prompteval.StatusFail {
+			anyFail = true
+		}
+		if verdict.Status == prompteval.StatusUnavailable && !unavailablePolicyPass {
 			anyFail = true
 		}
 	}

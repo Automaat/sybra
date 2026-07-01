@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/prompteval"
 )
 
 const (
@@ -202,6 +203,7 @@ type Engine struct {
 	maxTestAttempts int           // testing → re-implement loop cap (0 → defaultTestAttempts)
 	verifyTimeout   time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting       abtest.Config
+	evalGate        *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -275,6 +277,11 @@ func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
 
 // SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
 func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
+
+// SetEvalGate wires a prompteval.Gate so stored offline eval verdicts block
+// online A/B enrollment for digested variants. Leaving it unset (nil)
+// preserves prior behavior: no offline-eval gating.
+func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

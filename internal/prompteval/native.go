@@ -40,7 +40,7 @@ func (r *NativeRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 
 	start := time.Now()
-	out, err := llmexec.RunJSON(ctx, spec.Input, llmexec.Options{
+	out, err := llmexec.RunJSON(ctx, resolvedPrompt(spec), llmexec.Options{
 		Provider: spec.Variant.Provider,
 		Models:   map[string]string{spec.Variant.Provider: spec.Variant.Model},
 	})

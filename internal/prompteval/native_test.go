@@ -1,6 +1,9 @@
 package prompteval
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestNativeScoring exercises evaluateAssertion directly (the pure scoring
 // logic NativeRunner.Run delegates to) since Run shells out to a live
@@ -37,6 +40,29 @@ func TestNativeScoring(t *testing.T) {
 				t.Errorf("Passed = %v, want %v (detail: %s)", got.Passed, tc.wantPass, got.Detail)
 			}
 		})
+	}
+}
+
+// TestResolvedPromptCarriesVariantPrompt proves NativeRunner composes the
+// digested candidate prompt with the golden-case input rather than testing
+// the fixture input alone — two variants differing only by Prompt must
+// produce different resolved prompts sent to the provider.
+func TestResolvedPromptCarriesVariantPrompt(t *testing.T) {
+	t.Parallel()
+	specA := Spec{Variant: CandidateVariant{Prompt: "Be terse."}, Input: "hello"}
+	specB := Spec{Variant: CandidateVariant{Prompt: "Be verbose."}, Input: "hello"}
+	gotA := resolvedPrompt(specA)
+	gotB := resolvedPrompt(specB)
+	if gotA == gotB {
+		t.Fatalf("resolvedPrompt did not vary with Variant.Prompt: both = %q", gotA)
+	}
+	if !strings.Contains(gotA, specA.Variant.Prompt) || !strings.Contains(gotA, specA.Input) {
+		t.Fatalf("resolvedPrompt(%+v) = %q, want it to contain both prompt and input", specA, gotA)
+	}
+	// A variant with no resolved prompt (e.g. a bare model comparison) falls
+	// back to the input alone, unchanged from prior behavior.
+	if got := resolvedPrompt(Spec{Input: "hello"}); got != "hello" {
+		t.Fatalf("resolvedPrompt with empty Variant.Prompt = %q, want %q", got, "hello")
 	}
 }
 

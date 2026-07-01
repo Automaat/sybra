@@ -661,6 +661,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	a.workflowEngine.SetEvalGate(prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline))
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}

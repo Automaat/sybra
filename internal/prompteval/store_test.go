@@ -32,6 +32,34 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStoreNormalizesSha256PrefixedDigest guards the abtest.Variant.Digest
+// convention ("sha256:<hex>", preserved by internal/abtest config tests)
+// against the bare-hex convention prompteval.Digest produces: both must
+// resolve to the same on-disk verdict so a Gate lookup keyed by the
+// abtest-style digest finds a verdict written under the bare-hex form.
+func TestStoreNormalizesSha256PrefixedDigest(t *testing.T) {
+	t.Parallel()
+	store := New(t.TempDir())
+	bareDigest := Digest([]byte("prompt bytes"))
+	v := VariantVerdict{
+		VariantID: "v1",
+		Digest:    bareDigest,
+		Status:    StatusPass,
+		Score:     1,
+		Runner:    "native",
+	}
+	if err := store.Write(v); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := store.Read(v.VariantID, "sha256:"+bareDigest)
+	if err != nil {
+		t.Fatalf("Read with sha256:-prefixed digest: %v", err)
+	}
+	if got.Status != StatusPass {
+		t.Fatalf("Read = %+v, want pass", got)
+	}
+}
+
 func TestStoreReadMissingReturnsErrNotFound(t *testing.T) {
 	t.Parallel()
 	store := New(t.TempDir())
