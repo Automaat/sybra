@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -60,6 +61,7 @@ type App struct {
 	audit           *audit.Logger
 	artifacts       *artifact.Store
 	experience      *experience.Store
+	learning        *learning.Store
 	stats           *stats.Store
 	limits          *limits.Store
 	tasksDir        string
@@ -121,6 +123,7 @@ type App struct {
 	workflowSvc  *WorkflowService
 	infoSvc      *InfoService
 	browserSvc   *BrowserService
+	learningSvc  *LearningService
 }
 
 // Option configures App behaviour at construction time.
@@ -189,6 +192,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.workflowSvc = &WorkflowService{}
 	a.infoSvc = &InfoService{}
 	a.browserSvc = &BrowserService{}
+	a.learningSvc = &LearningService{}
 	for _, o := range opts {
 		o(a)
 	}
@@ -258,8 +262,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	a.initStatusHook()
-	a.initArtifacts()
-	a.initExperience()
+	a.initLocalStores()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits()

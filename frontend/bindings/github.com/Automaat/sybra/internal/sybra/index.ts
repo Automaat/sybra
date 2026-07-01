@@ -7,6 +7,7 @@ import * as BrowserService from "./browserservice.js";
 import * as ConfigService from "./configservice.js";
 import * as InfoService from "./infoservice.js";
 import * as IntegrationService from "./integrationservice.js";
+import * as LearningService from "./learningservice.js";
 import * as LoopAgentService from "./loopagentservice.js";
 import * as OrchestratorService from "./orchestratorservice.js";
 import * as PlanningService from "./planningservice.js";
@@ -22,6 +23,7 @@ export {
     ConfigService,
     InfoService,
     IntegrationService,
+    LearningService,
     LoopAgentService,
     OrchestratorService,
     PlanningService,

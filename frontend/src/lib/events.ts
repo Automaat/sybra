@@ -32,6 +32,7 @@ export const BgOpFailed = "bgop:failed"
 export const AppQuitConfirm = "app:quit-confirm"
 export const StartupDegraded = "startup:degraded"
 export const ProviderHealth = "provider:health"
+export const LearningSummary = "learning:summary"
 
 export const agentApproval = (id: string) => `${AgentApprovalPrefix}${id}`
 export const agentConvo = (id: string) => `${AgentConvoPrefix}${id}`
