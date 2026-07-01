@@ -238,6 +238,39 @@ func TestStoreDelete(t *testing.T) {
 	}
 }
 
+func TestStoreWriteLocksAreReclaimed(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Lock lifecycle", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(created.ID, Update{Body: Ptr("updated")}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	store.writeLocksMu.Lock()
+	lockCount := len(store.writeLocks)
+	store.writeLocksMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("writeLocks length after update = %d, want 0", lockCount)
+	}
+
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	store.writeLocksMu.Lock()
+	lockCount = len(store.writeLocks)
+	store.writeLocksMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("writeLocks length after delete = %d, want 0", lockCount)
+	}
+}
+
 func TestStoreDeleteNotFound(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
@@ -1358,9 +1391,9 @@ func TestStoreSafePathRejectsTraversal(t *testing.T) {
 }
 
 // TestStoreConcurrentUpdateSameTask verifies that two goroutines updating the
-// same task concurrently never leave the file corrupted (unparseable) or with
-// a lost StatusReason/Title state — the last writer must win cleanly. The test
-// also checks that the on-disk file parses successfully after the race.
+// same task concurrently never leave the file corrupted (unparseable) or lose
+// independently updated fields. The test also checks that the on-disk file
+// parses successfully after the race.
 func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
@@ -1406,6 +1439,12 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	if final.ID != created.ID {
 		t.Errorf("ID changed across updates: got %q, want %q", final.ID, created.ID)
 	}
+	if final.Title != "A-99" {
+		t.Errorf("Title = %q, want A-99", final.Title)
+	}
+	if final.Body != "B-99" {
+		t.Errorf("Body = %q, want B-99", final.Body)
+	}
 
 	// Parse the raw file to confirm on-disk consistency independent of cache.
 	reloaded, err := Parse(final.FilePath)
@@ -1414,6 +1453,60 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	}
 	if reloaded.ID != created.ID {
 		t.Errorf("reloaded ID = %q, want %q", reloaded.ID, created.ID)
+	}
+}
+
+func TestStoreConcurrentUpdateAndUpdateRunSameTask(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("orig", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-1", State: "queued"}); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	const rounds = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range rounds {
+			if _, err := store.Update(created.ID, Update{Body: Ptr(fmt.Sprintf("body-%d", i))}); err != nil {
+				t.Errorf("Update body: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range rounds {
+			state := fmt.Sprintf("state-%d", i)
+			if err := store.UpdateRun(created.ID, "agent-1", RunPatch{State: &state}); err != nil {
+				t.Errorf("UpdateRun state: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	final, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get after concurrent updates: %v", err)
+	}
+	if final.Body != "body-99" {
+		t.Errorf("Body = %q, want body-99", final.Body)
+	}
+	if len(final.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns length = %d, want 1", len(final.AgentRuns))
+	}
+	if final.AgentRuns[0].State != "state-99" {
+		t.Errorf("AgentRuns[0].State = %q, want state-99", final.AgentRuns[0].State)
 	}
 }
 
