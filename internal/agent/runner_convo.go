@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -213,42 +212,13 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	// tailOffset tracks the survival file tailer's position across retries.
 	var tailOffset int64
 
-	for attempt := range len(headlessRetryBackoffs) + 1 {
-		if attempt > 0 {
-			wait := headlessRetryBackoffs[attempt-1]
-			m.logger.Info("agent.convo.retry", "id", a.ID, "attempt", attempt, "backoff", wait)
-			select {
-			case <-ctx.Done():
-				if a.isDetached() && !a.WasStopped() {
-					return
-				}
-				goto done
-			case <-time.After(wait):
-			}
-		}
-
-		retry, fatalErr := m.runConvoAttempt(ctx, a, cfg, &outFile, &tailOffset)
-		if errors.Is(fatalErr, errSurviveShutdown) {
-			return
-		}
-		if fatalErr != nil {
-			m.handleError(a, fatalErr)
-			return
-		}
-		if !retry {
-			break
-		}
-		if attempt == len(headlessRetryBackoffs) {
-			m.logger.Error("agent.convo.retry.exhausted", "id", a.ID, "attempts", len(headlessRetryBackoffs))
-		}
+	if earlyReturn := m.runRetryLoop(ctx, a, "convo", func(int) (bool, error) {
+		return m.runConvoAttempt(ctx, a, cfg, &outFile, &tailOffset)
+	}); earlyReturn {
+		return
 	}
 
-done:
-	a.SetState(StateStopped)
-	m.logger.Info("agent.convo.done", "id", a.ID, "cost", a.GetCostUSD())
-	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
-	m.markAgentDone(a)
+	m.finalizeRun(a, "agent.convo.done")
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -311,11 +281,7 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
-	all := a.ConvoOutput()
-	if prevLen > len(all) {
-		prevLen = len(all)
-	}
-	attemptEvents := all[prevLen:]
+	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)

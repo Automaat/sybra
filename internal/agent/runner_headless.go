@@ -77,55 +77,22 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// of reprocessing them. Unused by the legacy pipe path.
 	var tailOffset int64
 
-	for attempt := range len(headlessRetryBackoffs) + 1 {
-		if attempt > 0 {
-			wait := headlessRetryBackoffs[attempt-1]
-			m.logger.Info("agent.headless.retry", "id", a.ID, "attempt", attempt, "backoff", wait)
-			select {
-			case <-ctx.Done():
-				// App shutdown between retries on a detached agent: the prior
-				// process is already gone, so leave finalize to the next
-				// reattach rather than advancing a workflow mid-shutdown.
-				if a.isDetached() && !a.WasStopped() {
-					return
-				}
-				goto done
-			case <-time.After(wait):
-			}
-		}
-
-		retry, fatalErr := m.runHeadlessAttempt(ctx, a, cfg, &outFile, &tailOffset)
-		if errors.Is(fatalErr, errSurviveShutdown) {
-			// Detached subprocess left running across shutdown — do not
-			// finalize; the next app instance reattaches via the registry.
-			return
-		}
-		if fatalErr != nil {
-			m.handleError(a, fatalErr)
-			return
-		}
-		if !retry {
-			break
-		}
-		if attempt == len(headlessRetryBackoffs) {
-			m.logger.Error("agent.headless.retry.exhausted", "id", a.ID, "attempts", len(headlessRetryBackoffs))
-		}
+	if earlyReturn := m.runRetryLoop(ctx, a, "headless", func(int) (bool, error) {
+		return m.runHeadlessAttempt(ctx, a, cfg, &outFile, &tailOffset)
+	}); earlyReturn {
+		return
 	}
 
-done:
 	// If CC exited after a graceful SIGINT (WasStopped + session_id captured
 	// from the final result event), the next run can pass --resume.
 	if a.WasStopped() && a.GetSessionID() != "" {
 		a.SetResumable(true)
 	}
-	a.SetState(StateStopped)
-	m.logger.Info("agent.headless.done", "id", a.ID, "cost", a.GetCostUSD())
-	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
-	// Close `done` only after onComplete returns. HasRunningAgentForTask
-	// gates ResumeStalled; releasing it before the workflow advance handler
-	// runs lets a tight ResumeStalled loop dispatch a duplicate agent.
-	m.markAgentDone(a)
+	// finalizeRun releases the agent only after onComplete returns.
+	// HasRunningAgentForTask gates ResumeStalled; releasing it before the
+	// workflow advance handler runs lets a tight ResumeStalled loop dispatch
+	// a duplicate agent.
+	m.finalizeRun(a, "agent.headless.done")
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -231,7 +198,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if stderrOut != "" {
 		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
 	}
-	if streamErr := resultStreamError(attemptEventsFrom(a, prevLen)); waitErr == nil && streamErr != nil {
+	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
 	if waitErr != nil {
@@ -244,7 +211,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// Only inspect the events produced during this attempt. Some CLIs report
 	// quota exhaustion as an exit-0 result event, so classify provider health
 	// even when the process itself looked successful.
-	attemptEvents := attemptEventsFrom(a, prevLen)
+	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
 	if waitErr != nil {
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
@@ -346,7 +313,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if stderrOut != "" {
 		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
 	}
-	if streamErr := resultStreamError(attemptEventsFrom(a, prevLen)); waitErr == nil && streamErr != nil {
+	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
 	if waitErr != nil {
@@ -358,7 +325,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	// Only inspect events from this attempt, mirroring the legacy path —
 	// otherwise a transient 529 from an earlier attempt makes every later
 	// attempt retry regardless of its real failure.
-	attemptEvents := attemptEventsFrom(a, prevLen)
+	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
 	if waitErr != nil {
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			return true, nil
@@ -374,7 +341,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 // guard stopped, deriving completion from the terminal result event rather
 // than the kill signal that appears in the process wait error.
 func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
-	evs := attemptEventsFrom(a, prevLen)
+	evs := attemptEventsFrom(a.Output(), prevLen)
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
 		m.reportProviderHealthSignal(a, "", evs)
@@ -385,14 +352,6 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		return
 	}
 	a.SetExitErr(nil)
-}
-
-func attemptEventsFrom(a *Agent, prevLen int) []StreamEvent {
-	all := a.Output()
-	if prevLen > len(all) {
-		prevLen = len(all)
-	}
-	return all[prevLen:]
 }
 
 func resultStreamError(streamEvents []StreamEvent) error {
