@@ -645,6 +645,14 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	if step.Type != StepRunAgent {
 		return false
 	}
+	// A tracked agent for this task+step may still be mid-completion-routing
+	// even though HasRunningAgent already returned false (see the agentSteps
+	// comment in ResumeStalled). Treating that window as a hang would burn
+	// retry budget and clear the hang marker without a clean re-dispatch
+	// actually happening.
+	if e.hasTrackedAgentForTaskStep(t.ID, step.ID) {
+		return false
+	}
 	retryKey := watchdogHangRetryKey(step.ID)
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogHangRetries {

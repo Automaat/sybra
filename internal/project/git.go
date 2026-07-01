@@ -232,16 +232,12 @@ func SanitizeWorktree(wtPath string) error {
 		_ = cmd.Run() // best-effort
 	}
 
-	// Abort stuck merge if any.
-	cmd := exec.Command("git", "rev-parse", "--git-path", "MERGE_HEAD")
-	cmd.Dir = wtPath
-	if out, err := cmd.Output(); err == nil {
-		if _, statErr := os.Stat(strings.TrimSpace(string(out))); statErr == nil {
-			abort := exec.Command("git", "merge", "--abort")
-			abort.Dir = wtPath
-			_ = abort.Run()
-		}
-	}
+	// Abort stuck merge if any. No harm running this when no merge is in
+	// progress — git just errors, which we ignore (best-effort, like the
+	// rebase abort above).
+	abort := exec.Command("git", "merge", "--abort")
+	abort.Dir = wtPath
+	_ = abort.Run()
 
 	// Auto-commit any uncommitted changes before resetting. Agents are expected
 	// to commit before finishing, but if they forget this preserves their work
@@ -303,15 +299,9 @@ func ResetWorktreeForRetry(wtPath, ref string) error {
 		_ = cmd.Run()
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--git-path", "MERGE_HEAD")
-	cmd.Dir = wtPath
-	if out, err := cmd.Output(); err == nil {
-		if _, statErr := os.Stat(strings.TrimSpace(string(out))); statErr == nil {
-			abort := exec.Command("git", "merge", "--abort")
-			abort.Dir = wtPath
-			_ = abort.Run()
-		}
-	}
+	abort := exec.Command("git", "merge", "--abort")
+	abort.Dir = wtPath
+	_ = abort.Run()
 
 	reset := exec.Command("git", "reset", "--hard", ref)
 	reset.Dir = wtPath
