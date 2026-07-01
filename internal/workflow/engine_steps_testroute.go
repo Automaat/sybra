@@ -511,7 +511,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 // product surface is misclassified as owning the very surface it disclaims —
 // e.g. "cli" pulled out of "(no HTTP/CLI/UI surface)".
 var surfaceNegationPattern = regexp.MustCompile(
-	`\bno\s+[a-z0-9/,\- ]*\bsurface\b|\bno\s+runnable\b|\bno\s+(?:http|https|cli|ui|web|server|desktop|k8s|kubernetes|api|gui)\b`,
+	`\bno\s+[a-z0-9/,\- ]*\bsurface\b|\bno\s+runnable\b|\bno\s+(?:(?:http|https|cli|ui|web|server|desktop|k8s|kubernetes|api|gui)\s*(?:(?:/|,|\bor\b|\band\b)\s*)?)+`,
 )
 
 // internalSurfaceMarkers identify an internal/library/no-product-surface change

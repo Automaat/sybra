@@ -865,6 +865,16 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			want:       testOutcomePass,
 			wantStatus: "completed",
 		},
+		{
+			// Regression: negated surface lists can be written as prose
+			// ("no http or cli needed"), not only as slash-delimited clauses.
+			name:       "pass_with_or_joined_negated_surface_uses_library_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal library change, no http or cli needed for this pure internal change","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./pkg/foo/...","actual":"ok"}],"unable_to_run_reason":"pure internal-library refactor, no CLI or HTTP surface"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
 	}
 
 	for _, tc := range cases {
