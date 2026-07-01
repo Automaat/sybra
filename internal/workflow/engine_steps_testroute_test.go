@@ -224,6 +224,33 @@ func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_AcceptsAnnotatedLabels(t *testing.T) {
+	t.Parallel()
+
+	// Reproduces task b9d9181f: a fully grounded FAIL report whose headers were
+	// annotated with a parenthetical qualifier (e.g. "Expected (task's own
+	// words):"), which defeated the literal "expected:" substring check and
+	// forced an unnecessary human escalation.
+	report := "## Test Failures\n\n" +
+		"**Command run:** `curl -fsS http://127.0.0.1:8080/rpc`\n\n" +
+		"**Actual (observed):**\n\n```text\nHTTP/1.1 404 Not Found\n" +
+		`{"error":"unknown method: TaskService.BlessTampering"}` + "\n```\n\n" +
+		"**Expected (task's own words):** the GUI blesses tamper-flagged tasks in one click.\n\n" +
+		"**Code evidence:** internal/sybra/services.go missing BlessTampering from allowlist.\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("annotated-label FAIL report rejected as ungrounded; want grounded")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
+	t.Parallel()
+
+	if hasGroundedFailureEvidence("The feature seems broken and should be fixed.") {
+		t.Fatal("prose-only report accepted as grounded; want rejected")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 

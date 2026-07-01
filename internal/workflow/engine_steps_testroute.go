@@ -1123,12 +1123,53 @@ func hasGroundedFailureEvidence(report string) bool {
 	hasExpected := containsAny(lower,
 		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
 		"requirement tested:", "task expectation:", "task requirement:", "task says",
-		"task requires", "from the task", "violates", "should render", "should not")
+		"task requires", "from the task", "violates", "should render", "should not") ||
+		hasLabeledSection(report,
+			"expected", "requirement tested", "task expectation", "task requirement")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
 		"current file", "current code line evidence:", "code line evidence:",
 		"source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
+	// Labeled-section fallbacks tolerate annotated headers such as
+	// "**Expected (task's own words):**", where a parenthetical qualifier sits
+	// between the keyword and the colon and defeats the literal substring checks
+	// above — otherwise a well-grounded FAIL report is wrongly rejected as
+	// missing_evidence and forces an unnecessary human escalation.
+	hasCommand = hasCommand || hasLabeledSection(report,
+		"command run", "command", "reproduction steps", "repro", "steps")
+	hasObserved = hasObserved || hasLabeledSection(report,
+		"actual output", "actual", "observed output", "observed",
+		"command output", "stdout", "stderr", "output")
 	return hasCommand && hasObserved && hasExpected && hasGrounding
+}
+
+// hasLabeledSection reports whether any report line is a markdown section header
+// whose label starts with one of keywords, optionally followed by a parenthetical
+// qualifier, then a colon — e.g. "**Expected (task's own words):**". Leading
+// markdown decoration (*, _, >, #, -) is stripped before matching. This keeps
+// hasGroundedFailureEvidence from rejecting grounded FAIL reports that annotate
+// their evidence headers.
+func hasLabeledSection(report string, keywords ...string) bool {
+	for _, line := range reportScanLines(report) {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		lower = strings.TrimLeft(lower, "*_>#- \t")
+		for _, kw := range keywords {
+			rest, ok := strings.CutPrefix(lower, kw)
+			if !ok {
+				continue
+			}
+			rest = strings.TrimSpace(rest)
+			if strings.HasPrefix(rest, "(") {
+				if idx := strings.Index(rest, ")"); idx >= 0 {
+					rest = strings.TrimSpace(rest[idx+1:])
+				}
+			}
+			if strings.HasPrefix(rest, ":") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func containsAny(s string, needles ...string) bool {
