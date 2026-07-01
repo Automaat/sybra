@@ -98,12 +98,29 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 	}
 }
 
+// persistedFields returns the leaf (non-anonymous) fields of a struct type,
+// recursing into embedded fields so a Task built from feature-cluster
+// sub-structs (e.g. `ReviewState`) is still checked field-by-field rather
+// than by its container name. Unlike Type.Fields()/NumField(), which only
+// walk the direct field list, reflect.VisibleFields flattens promoted fields
+// from anonymous embeds.
+func persistedFields(typ reflect.Type) []reflect.StructField {
+	var fields []reflect.StructField
+	for _, field := range reflect.VisibleFields(typ) {
+		if field.Anonymous {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
 func TestTaskFrontmatterMappingCoversPersistedFields(t *testing.T) {
 	t.Parallel()
 	taskType := reflect.TypeFor[Task]()
 	frontmatterType := reflect.TypeFor[taskFrontmatter]()
 
-	for field := range taskType.Fields() {
+	for _, field := range persistedFields(taskType) {
 		if taskSidecarField(field.Name) {
 			continue
 		}
@@ -111,7 +128,7 @@ func TestTaskFrontmatterMappingCoversPersistedFields(t *testing.T) {
 			t.Errorf("Task.%s is persisted but missing from taskFrontmatter", field.Name)
 		}
 	}
-	for field := range frontmatterType.Fields() {
+	for _, field := range persistedFields(frontmatterType) {
 		if _, ok := taskType.FieldByName(field.Name); !ok {
 			t.Errorf("taskFrontmatter.%s has no matching Task field", field.Name)
 		}
@@ -122,7 +139,7 @@ func TestTaskFrontmatterMappingPreservesEachPersistedField(t *testing.T) {
 	t.Parallel()
 	taskType := reflect.TypeFor[Task]()
 
-	for field := range taskType.Fields() {
+	for _, field := range persistedFields(taskType) {
 		if taskSidecarField(field.Name) {
 			continue
 		}
