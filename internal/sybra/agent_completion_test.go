@@ -257,6 +257,19 @@ func TestEstimatedRunCost(t *testing.T) {
 			t.Errorf("estimatedRunCost copilot = %g, want %g", got, want)
 		}
 	})
+
+	t.Run("uses started time for dated pricing", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{
+			Provider:  "codex",
+			Model:     "claude-sonnet-5",
+			StartedAt: time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC),
+		}
+		ag.AddResultStats("", 0, 1_000_000, 1_000_000, 0)
+		if got, want := estimatedRunCost(ag, 0, 0), 12.0; got != want {
+			t.Errorf("estimatedRunCost dated = %g, want %g", got, want)
+		}
+	})
 }
 
 // itoa converts a small non-negative int to its decimal string representation

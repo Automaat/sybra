@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -54,6 +55,41 @@ func TestTaskService_WithEstimatedAgentRunCosts(t *testing.T) {
 	}
 	if got.AgentRuns[3].CostUSD != 0.42 {
 		t.Fatalf("reported cost = %g, want 0.42", got.AgentRuns[3].CostUSD)
+	}
+}
+
+func TestEstimateUsageFromEvents_UsesRunStartedAtForDatedPricing(t *testing.T) {
+	t.Parallel()
+
+	events := []agent.StreamEvent{{
+		Type:         "result",
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	}}
+	intro, ok := estimateUsageFromEvents(
+		"claude-sonnet-5",
+		"claude",
+		events,
+		time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC),
+	)
+	if !ok {
+		t.Fatal("intro estimate not produced")
+	}
+	if diff := intro.CostUSD - 12.0; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("intro cost = %g, want 12", intro.CostUSD)
+	}
+
+	standard, ok := estimateUsageFromEvents(
+		"claude-sonnet-5",
+		"claude",
+		events,
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+	)
+	if !ok {
+		t.Fatal("standard estimate not produced")
+	}
+	if diff := standard.CostUSD - 18.0; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("standard cost = %g, want 18", standard.CostUSD)
 	}
 }
 
