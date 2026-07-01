@@ -27,9 +27,8 @@ const streamScannerBuffer = 4 * 1024 * 1024
 type Options struct {
 	// Provider is the preferred provider. Empty means claude first, then peers.
 	Provider string
-	// Model is passed only to Claude; alternate providers keep their CLI default
-	// because Claude aliases like "sonnet" are not portable.
-	Model  string
+	// Models maps provider name to the model slug passed to that provider's CLI.
+	Models map[string]string
 	Logger *slog.Logger
 	Gate   provider.HealthGate
 }
@@ -58,7 +57,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Model)
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p])
 		if err != nil {
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
@@ -148,12 +147,20 @@ func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, s
 func invocation(p, prompt, model string) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
-		return "codex", []string{
+		args := []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
 			"--dangerously-bypass-approvals-and-sandbox", "-",
-		}, prompt
+		}
+		if model != "" {
+			args = append(args[:len(args)-1], "--model", model, "-")
+		}
+		return "codex", args, prompt
 	case "copilot":
-		return "copilot", []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}, ""
+		args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		return "copilot", args, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
 		if model != "" {

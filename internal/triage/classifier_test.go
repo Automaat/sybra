@@ -1,6 +1,10 @@
 package triage
 
 import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,5 +66,32 @@ func TestExtractLastJSONObject(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("extract(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestFallbackClassifierPassesConfiguredClaudeModel(t *testing.T) {
+	dir := t.TempDir()
+	writeTestExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
+if [[ "$*" != *"--model opus"* ]]; then
+  echo "missing configured model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"result":"{\"title\":\"fix(api): handle bug\",\"original_title\":\"bug\",\"description\":\"\",\"tags\":[\"backend\",\"small\",\"bug\"],\"size\":\"small\",\"type\":\"bug\",\"mode\":\"headless\",\"project_id\":\"\"}"}'
+`)
+	t.Setenv("PATH", dir)
+
+	_, err := (&FallbackClassifier{
+		Model:  "opus",
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+	}).Classify(context.Background(), task.Task{Title: "bug"}, nil)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+}
+
+func writeTestExe(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

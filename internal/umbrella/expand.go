@@ -2,6 +2,7 @@ package umbrella
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -212,12 +214,26 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		gate = gates[0]
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Gate: gate})
+		plan, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Plan]{
+			Name: "umbrella-order",
+			Tier: llmjob.Standard,
+		}, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}
-		return res.Text, nil
+		out, err := json.Marshal(plan)
+		if err != nil {
+			return "", fmt.Errorf("marshal planner result: %w", err)
+		}
+		return string(out), nil
 	}
+}
+
+func claudeModelOverride(model string) map[string]string {
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+	return map[string]string{"claude": model}
 }
 
 // IsUmbrellaIssue reports whether a GitHub issue should be auto-expanded as an
