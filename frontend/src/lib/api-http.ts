@@ -6,7 +6,7 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
@@ -142,8 +142,10 @@ export function ListDigests(): Promise<Array<Digest>> { return call('LearningSer
 export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('LearningService', 'GetLatestDigest') }
 
 // TaskService
+export function BlessTampering(arg1: string): Promise<Task> { return call('TaskService', 'BlessTampering', arg1) }
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
+export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }

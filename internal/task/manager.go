@@ -211,17 +211,33 @@ func (m *Manager) CreateChat(projectID string) (Task, error) {
 // workflow field via taskAdapter.SetWorkflow → Manager.Update). Calling
 // the hook while still holding the lock would deadlock that re-entry.
 func (m *Manager) Update(id string, u Update) (Task, error) {
+	return m.UpdateFn(id, func(Task) (Update, error) { return u, nil })
+}
+
+// UpdateFn atomically reads the current task and applies the Update computed
+// by fn, under the same per-task lock — for read-modify-write callers (e.g. a
+// tag merge gated on the current status) that would otherwise race with a
+// concurrent Update for the same id between their read and their write.
+func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
+
+	cur, err := m.store.Get(id)
+	if err != nil {
+		mu.Unlock()
+		return cur, err
+	}
+	u, err := fn(cur)
+	if err != nil {
+		mu.Unlock()
+		return cur, err
+	}
 
 	t, prev, err := m.store.UpdateWithPrev(id, u)
 	if err != nil {
 		mu.Unlock()
 		return t, err
 	}
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-
 	var (
 		fireHook            bool
 		prevStatus, newStat string
@@ -237,6 +253,8 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 		m.recordFiredStatus(id, newStat)
 		m.onStatusHook(id, prevStatus, newStat)
 	}
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil
 }
 

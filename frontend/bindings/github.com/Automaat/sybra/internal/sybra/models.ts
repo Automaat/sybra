@@ -285,6 +285,92 @@ export class MonitorReportBinding {
     }
 }
 
+export class TamperFindingDTO {
+    "file": string;
+    "category": string;
+    "severity": string;
+    "rule": string;
+    "detail": string;
+
+    /** Creates a new TamperFindingDTO instance. */
+    constructor($$source: Partial<TamperFindingDTO> = {}) {
+        if (!("file" in $$source)) {
+            this["file"] = "";
+        }
+        if (!("category" in $$source)) {
+            this["category"] = "";
+        }
+        if (!("severity" in $$source)) {
+            this["severity"] = "";
+        }
+        if (!("rule" in $$source)) {
+            this["rule"] = "";
+        }
+        if (!("detail" in $$source)) {
+            this["detail"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TamperFindingDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TamperFindingDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TamperFindingDTO($$parsedSource as Partial<TamperFindingDTO>);
+    }
+}
+
+export class TamperReportDTO {
+    "taskId": string;
+    "reportAvailable": boolean;
+    "base": string;
+    "range": string;
+    "files": string[];
+    "findings": TamperFindingDTO[];
+
+    /** Creates a new TamperReportDTO instance. */
+    constructor($$source: Partial<TamperReportDTO> = {}) {
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("reportAvailable" in $$source)) {
+            this["reportAvailable"] = false;
+        }
+        if (!("base" in $$source)) {
+            this["base"] = "";
+        }
+        if (!("range" in $$source)) {
+            this["range"] = "";
+        }
+        if (!("files" in $$source)) {
+            this["files"] = [];
+        }
+        if (!("findings" in $$source)) {
+            this["findings"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TamperReportDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TamperReportDTO {
+        const $$createField4_0 = $$createType9;
+        const $$createField5_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("files" in $$parsedSource) {
+            $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
+        }
+        if ("findings" in $$parsedSource) {
+            $$parsedSource["findings"] = $$createField5_0($$parsedSource["findings"]);
+        }
+        return new TamperReportDTO($$parsedSource as Partial<TamperReportDTO>);
+    }
+}
+
 /**
  * VersionInfo holds version strings for the server and client.
  */
@@ -321,3 +407,5 @@ const $$createType7 = config$0.ProvidersConfig.createFrom;
 const $$createType8 = $Create.Map($Create.Any, $Create.Any);
 const $$createType9 = $Create.Array($Create.Any);
 const $$createType10 = monitor$0.Report.createFrom;
+const $$createType11 = TamperFindingDTO.createFrom;
+const $$createType12 = $Create.Array($$createType11);

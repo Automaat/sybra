@@ -11,11 +11,21 @@ import (
 	"strings"
 )
 
-// tamperBlessedTag short-circuits the detector: a human who has reviewed a
+// TamperBlessedTag short-circuits the detector: a human who has reviewed a
 // flagged diff and accepted it adds this tag, then moves the task back into the
 // flow. Without it, re-dispatching a flagged task would re-scan the same
 // committed diff and re-flag forever (livelock).
-const tamperBlessedTag = "tamper-blessed"
+const TamperBlessedTag = "tamper-blessed"
+
+// TamperFlaggedReasonPrefix is the status_reason prefix used when the detector
+// flips a task to human-required for manual review.
+const TamperFlaggedReasonPrefix = "possible test tampering — needs human bless before review:"
+
+// IsTamperFlaggedReason reports whether a human-required status reason was
+// produced by the tamper detector.
+func IsTamperFlaggedReason(reason string) bool {
+	return strings.HasPrefix(reason, TamperFlaggedReasonPrefix)
+}
 
 // tamperCategory classifies a changed file by the role it plays in the
 // project's verification surface. Only test/snapshot/fixture/ci files are
@@ -445,7 +455,7 @@ func downgradeRemovedAssertionOnlyFindings(findings []tamperFinding) []tamperFin
 // worktrees to human-required, so a diff failure here is logged and passed
 // through rather than double-flipping or stranding the task.
 func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if slices.Contains(t.Tags, tamperBlessedTag) {
+	if slices.Contains(t.Tags, TamperBlessedTag) {
 		e.logger.Info("workflow.detect-tampering.blessed", "task_id", taskID)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
 	}
@@ -599,7 +609,7 @@ func parseNameStatus(out string) []tamperChange {
 // tamperReason builds the human-required status reason from high findings.
 func tamperReason(r tamperReport) string {
 	var b strings.Builder
-	b.WriteString("possible test tampering — needs human bless before review: ")
+	b.WriteString(TamperFlaggedReasonPrefix + " ")
 	shown := 0
 	for i := range r.Findings {
 		f := r.Findings[i]

@@ -41,5 +41,7 @@ export {
     LoggingSettings,
     LoopAgentRun,
     MonitorReportBinding,
+    TamperFindingDTO,
+    TamperReportDTO,
     VersionInfo
 } from "./models.js";

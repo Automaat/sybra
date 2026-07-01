@@ -1,19 +1,24 @@
 package sybra
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestTaskService_WithEstimatedAgentRunCosts(t *testing.T) {
@@ -133,6 +138,282 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	if persisted.AgentRuns[0].Provider != "copilot" {
 		t.Fatalf("persisted provider = %q, want copilot", persisted.AgentRuns[0].Provider)
 	}
+}
+
+func TestTaskService_GetTamperReport(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Tamper report", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportJSON := `{
+  "taskId": "ignored",
+  "base": "abc123",
+  "range": "abc123..HEAD",
+  "files": ["internal/foo_test.go"],
+  "findings": [{
+    "file": "internal/foo_test.go",
+    "category": "test",
+    "severity": "high",
+    "rule": "removed-test",
+    "detail": "func TestFoo"
+  }]
+}`
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:    artifact.KindGeneric,
+		Name:    "tamper-report.json",
+		StepID:  "detect_tampering",
+		Content: []byte(reportJSON),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTamperReport(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ReportAvailable {
+		t.Fatal("ReportAvailable = false, want true")
+	}
+	if got.TaskID != created.ID || got.Base != "abc123" || got.Range != "abc123..HEAD" {
+		t.Fatalf("report identity = (%q, %q, %q), want task/base/range", got.TaskID, got.Base, got.Range)
+	}
+	if !slices.Equal(got.Files, []string{"internal/foo_test.go"}) {
+		t.Fatalf("Files = %v", got.Files)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings len = %d, want 1", len(got.Findings))
+	}
+	if f := got.Findings[0]; f.File != "internal/foo_test.go" || f.Category != "test" || f.Severity != "high" || f.Rule != "removed-test" || f.Detail != "func TestFoo" {
+		t.Fatalf("Finding = %+v", f)
+	}
+}
+
+func TestTaskService_GetTamperReportMissing(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+
+	got, err := svc.GetTamperReport("missing-report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskID != "missing-report" || got.ReportAvailable {
+		t.Fatalf("missing report = %+v, want unavailable for task", got)
+	}
+	if len(got.Files) != 0 || len(got.Findings) != 0 {
+		t.Fatalf("missing report files/findings = %v/%v, want empty", got.Files, got.Findings)
+	}
+}
+
+func TestTaskService_GetTamperReportMalformed(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Bad tamper report", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:    artifact.KindGeneric,
+		Name:    "tamper-report.json",
+		Content: []byte(`{"taskId":`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.GetTamperReport(created.ID); err == nil {
+		t.Fatal("GetTamperReport malformed JSON err = nil, want error")
+	}
+}
+
+func TestTaskService_BlessTampering(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	svc.audit = al
+
+	created, err := svc.tasks.Create("Bless tamper", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
+	flagged, err := svc.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		Tags:         task.Ptr([]string{"backend", "frontend"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(flagged.ID, artifact.Artifact{
+		Kind: artifact.KindGeneric,
+		Name: "tamper-report.json",
+		Content: []byte(`{
+  "taskId": "` + flagged.ID + `",
+  "base": "abc123",
+  "range": "abc123..HEAD",
+  "files": ["internal/foo_test.go"],
+  "findings": [
+    {"file":"internal/foo_test.go","category":"test","severity":"high","rule":"removed-test","detail":"func TestFoo"},
+    {"file":"internal/bar_test.go","category":"test","severity":"medium","rule":"changed-fixture","detail":"fixture"}
+  ]
+}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusHook := make(chan [3]string, 1)
+	svc.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+		statusHook <- [3]string{taskID, from, to}
+	})
+	got, err := svc.BlessTampering(flagged.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("Status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("StatusReason = %q, want cleared", got.StatusReason)
+	}
+	if !slices.Equal(got.Tags, []string{"backend", "frontend", workflow.TamperBlessedTag}) {
+		t.Fatalf("Tags = %v, want existing tags plus blessed", got.Tags)
+	}
+	select {
+	case fired := <-statusHook:
+		if fired != [3]string{flagged.ID, string(task.StatusHumanRequired), string(task.StatusReadyReview)} {
+			t.Fatalf("status hook = %v", fired)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("status hook did not fire")
+	}
+
+	events := readTaskServiceAuditEvents(t, auditDir)
+	var bless audit.Event
+	for i := range events {
+		if events[i].Type == audit.EventTaskTamperBlessed {
+			bless = events[i]
+			break
+		}
+	}
+	if bless.Type == "" {
+		t.Fatalf("audit events = %+v, want tamper bless event", events)
+	}
+	if bless.TaskID != flagged.ID {
+		t.Fatalf("audit task_id = %q, want %q", bless.TaskID, flagged.ID)
+	}
+	if got := bless.Data["previousStatus"]; got != string(task.StatusHumanRequired) {
+		t.Fatalf("previousStatus = %v", got)
+	}
+	if got := bless.Data["previousStatusReason"]; got != reason {
+		t.Fatalf("previousStatusReason = %v", got)
+	}
+	if got := bless.Data["reportAvailable"]; got != true {
+		t.Fatalf("reportAvailable = %v", got)
+	}
+	if got := bless.Data["findingCount"]; got != float64(2) {
+		t.Fatalf("findingCount = %v", got)
+	}
+	if got := bless.Data["highSeverityFindingCount"]; got != float64(1) {
+		t.Fatalf("highSeverityFindingCount = %v", got)
+	}
+	if got := bless.Data["tagAdded"]; got != true {
+		t.Fatalf("tagAdded = %v", got)
+	}
+}
+
+func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	created, err := svc.tasks.Create("Already blessed", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
+	flagged, err := svc.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+		Tags:         task.Ptr([]string{"backend", workflow.TamperBlessedTag}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.BlessTampering(flagged.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Tags, []string{"backend", workflow.TamperBlessedTag}) {
+		t.Fatalf("Tags = %v, want no duplicate blessed tag", got.Tags)
+	}
+}
+
+func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	created, err := svc.tasks.Create("Not tamper", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	human, err := svc.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("needs human input"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.BlessTampering(human.ID)
+	if err == nil {
+		t.Fatal("BlessTampering non-tamper err = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), workflow.TamperFlaggedReasonPrefix) {
+		t.Fatalf("BlessTampering non-tamper err = %q, want actionable preconditions", err.Error())
+	}
+	got, err := svc.tasks.Get(human.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired || slices.Contains(got.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("task after rejected bless = status %q tags %v", got.Status, got.Tags)
+	}
+}
+
+func readTaskServiceAuditEvents(t *testing.T, dir string) []audit.Event {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []audit.Event
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var ev audit.Event
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, ev)
+		}
+	}
+	return events
 }
 
 func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {

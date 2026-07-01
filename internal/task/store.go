@@ -769,6 +769,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		t.TestingCycleStartedAt = &now
 	}
 	t.UpdatedAt = now
+	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}

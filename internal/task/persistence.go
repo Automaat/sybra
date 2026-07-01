@@ -130,6 +130,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
 	}
+	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	return t
 }
 
