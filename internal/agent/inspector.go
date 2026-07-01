@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // InspectorVerdict is the structured judgment returned by the inspector agent.
@@ -46,19 +47,24 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 
 	prompt := buildInspectorPrompt(in)
 
-	model := in.Model
-	if model == "" {
-		model = "sonnet"
-	}
-	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: logger})
+	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[InspectorVerdict]{
+		Name:     "inspect",
+		Tier:     llmjob.Cheap,
+		Validate: validateInspectorVerdict,
+	}, llmexec.Options{Logger: logger})
 	if err != nil {
 		return InspectorVerdict{}, fmt.Errorf("inspector: %w", err)
 	}
-	v, err := parseInspectorOutput([]byte(res.Text))
-	if err != nil {
-		return InspectorVerdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
-	}
 	return v, nil
+}
+
+func validateInspectorVerdict(v *InspectorVerdict) error {
+	switch v.Recommendation {
+	case "stop", "continue", "escalate", "nudge":
+		return nil
+	default:
+		return fmt.Errorf("invalid recommendation: %q", v.Recommendation)
+	}
 }
 
 func buildInspectorPrompt(in InspectInput) string {

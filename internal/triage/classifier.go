@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
@@ -67,24 +68,16 @@ func (c *ClaudeClassifier) Classify(ctx context.Context, t task.Task, projects [
 // Classify shells out to the first available provider and falls back when it is
 // rate-limited/logged-out/unavailable.
 func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
-	model := c.Model
-	if model == "" {
-		model = "sonnet"
-	}
-	res, err := llmexec.RunJSON(ctx, buildPrompt(t, projects), llmexec.Options{
-		Model:  model,
+	v, _, err := llmjob.Run(ctx, buildPrompt(t, projects), llmjob.Spec[Verdict]{
+		Name:     "triage",
+		Tier:     llmjob.Cheap,
+		Validate: ValidateVerdict,
+	}, llmexec.Options{
 		Logger: c.Logger,
 		Gate:   c.Gate,
 	})
 	if err != nil {
 		return Verdict{}, err
-	}
-	v, err := parseVerdict([]byte(res.Text))
-	if err != nil {
-		return Verdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
-	}
-	if err := ValidateVerdict(&v); err != nil {
-		return Verdict{}, fmt.Errorf("validate verdict: %w", err)
 	}
 	return v, nil
 }

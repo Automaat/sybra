@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
@@ -81,16 +82,23 @@ func (j *ClaudeQualityJudge) Judge(ctx context.Context, req JudgeRequest) (Quali
 		model = defaultJudgeModel
 	}
 	prompt := buildQualityPrompt(req, shuffledRubric(j.DimSeed))
-	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: j.Logger, Gate: j.Gate})
+	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[QualityVerdict]{
+		Name:     "quality-judge",
+		Tier:     qualityTier(model),
+		Validate: validateQualityVerdict,
+	}, llmexec.Options{Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
 		return QualityVerdict{}, err
 	}
-	v, err := parseQualityVerdict([]byte(res.Text))
-	if err != nil {
-		return QualityVerdict{}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
-	}
 	v.TaskID = req.TaskID
 	return v, nil
+}
+
+func qualityTier(model string) llmjob.Tier {
+	if strings.Contains(strings.ToLower(model), "opus") {
+		return llmjob.Deep
+	}
+	return llmjob.Standard
 }
 
 // shuffledRubric returns the rubric in a deterministic permutation for the seed,
@@ -171,6 +179,13 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
 		return QualityVerdict{}, fmt.Errorf("unmarshal verdict: %w", err)
 	}
+	if err := validateQualityVerdict(&v); err != nil {
+		return QualityVerdict{}, err
+	}
+	return v, nil
+}
+
+func validateQualityVerdict(v *QualityVerdict) error {
 	// Require every rubric dimension: a partial verdict would skew Overall and
 	// the outcome calibration. Clamp scores and sum over the rubric keys (not
 	// len(v.Dimensions)) so extra/unknown keys can't distort the mean.
@@ -178,7 +193,7 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 	for _, d := range Rubric {
 		ds, ok := v.Dimensions[d.Key]
 		if !ok {
-			return QualityVerdict{}, fmt.Errorf("verdict missing dimension %q", d.Key)
+			return fmt.Errorf("verdict missing dimension %q", d.Key)
 		}
 		ds.Score = clampScore(ds.Score)
 		v.Dimensions[d.Key] = ds
@@ -193,7 +208,7 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 	if v.Overall < 0 || v.Overall > 10 || (v.Overall == 0 && mean != 0) {
 		v.Overall = mean
 	}
-	return v, nil
+	return nil
 }
 
 // AgreesWithOutcome reports whether a verdict is consistent with the task's
