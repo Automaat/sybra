@@ -287,6 +287,45 @@ func SanitizeWorktree(wtPath string) error {
 	return nil
 }
 
+// ResetWorktreeForRetry discards partial work from a killed/hung agent before a
+// bounded clean re-dispatch. Unlike SanitizeWorktree, it intentionally does not
+// auto-commit dirty state: the retry must start from the pre-run baseline, not
+// compound half-applied edits from the stopped process.
+func ResetWorktreeForRetry(wtPath, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	if _, err := os.Stat(rebaseStateDir(wtPath)); err == nil {
+		cmd := exec.Command("git", "rebase", "--abort")
+		cmd.Dir = wtPath
+		_ = cmd.Run()
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-path", "MERGE_HEAD")
+	cmd.Dir = wtPath
+	if out, err := cmd.Output(); err == nil {
+		if _, statErr := os.Stat(strings.TrimSpace(string(out))); statErr == nil {
+			abort := exec.Command("git", "merge", "--abort")
+			abort.Dir = wtPath
+			_ = abort.Run()
+		}
+	}
+
+	reset := exec.Command("git", "reset", "--hard", ref)
+	reset.Dir = wtPath
+	if out, err := reset.CombinedOutput(); err != nil {
+		return fmt.Errorf("reset worktree to %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
+	}
+	clean := exec.Command("git", "clean", "-fd")
+	clean.Dir = wtPath
+	if out, err := clean.CombinedOutput(); err != nil {
+		return fmt.Errorf("clean worktree: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // rebaseStateDir returns the path to the rebase-merge or rebase-apply dir.
 func rebaseStateDir(wtPath string) string {
 	// git worktrees store rebase state inside the .git dir (which is a file

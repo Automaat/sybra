@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	watchdogHangStatusReasonPrefix = "watchdog hang"
-	watchdogHangRetryVarPrefix     = "watchdog.hang_retry."
-	maxWatchdogHangRetries         = 2
+	watchdogHangStatusReasonPrefix  = "watchdog hang"
+	watchdogHangRetryVarPrefix      = "watchdog.hang_retry."
+	watchdogHangCleanRetryVarPrefix = "watchdog.hang_clean_retry."
+	maxWatchdogHangRetries          = 2
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -656,6 +657,11 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		return true
 	}
 	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	cleanRef := t.Workflow.Variables[tamperBaselineVar(step.ID)]
+	if cleanRef == "" {
+		cleanRef = "HEAD"
+	}
+	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true
@@ -676,6 +682,10 @@ func isWatchdogHangReason(reason string) bool {
 
 func watchdogHangRetryKey(stepID string) string {
 	return watchdogHangRetryVarPrefix + stepID
+}
+
+func watchdogHangCleanRetryKey(stepID string) string {
+	return watchdogHangCleanRetryVarPrefix + stepID
 }
 
 func parseWorkflowInt(raw string) int {

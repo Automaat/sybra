@@ -391,14 +391,14 @@ type agentAdapter struct {
 	experience *experience.Store
 }
 
-func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
 	// seeds WorkflowVarDir (e.g. tests or flows that pre-stage via
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
-		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, assignment)
+		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -453,10 +453,17 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 	a.withExperiencePrompt(&cfg, r, t)
 
+	cleanRetryReset := false
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.autoAssignProject(t)
 		if t.ProjectID == "" {
 			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
+		}
+		if cleanRetryRef != "" {
+			if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
+				return "", "", "", resetErr
+			}
+			cleanRetryReset = true
 		}
 		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
 		if wtErr != nil {
@@ -466,6 +473,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 			return "", "", "", wtErr
 		}
 		cfg.Dir = d
+	}
+	if cfg.Dir != "" && cleanRetryRef != "" && !cleanRetryReset {
+		if resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
+			return "", "", "", resetErr
+		}
 	}
 	if cfg.Dir == "" {
 		// System-role fallback (triage, plan, eval, …): no worktree required,
@@ -494,6 +506,32 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
+	target := dir
+	if target == "" {
+		if t.WorktreeDir != "" {
+			target = t.WorktreeDir
+		} else {
+			target = a.agentOrch.worktrees.PathFor(t)
+		}
+	}
+	if target == "" {
+		return nil
+	}
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat clean retry worktree: %w", err)
+	}
+	if err := project.ResetWorktreeForRetry(target, ref); err != nil {
+		a.agentOrch.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
+		return err
+	}
+	a.agentOrch.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	return nil
 }
 
 func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) {

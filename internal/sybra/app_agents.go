@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -207,11 +208,11 @@ func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 }
 
 func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
-	ag, _, err := o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, workflow.AgentAssignment{})
+	ag, _, err := o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{})
 	return ag, err
 }
 
-func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
+func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -251,6 +252,11 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		t = o.autoAssignProject(t)
 		if t.ProjectID == "" {
 			return nil, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
+		}
+		if cleanRetryRef != "" {
+			if resetErr := o.resetWorktreeForCleanRetry(t, cleanRetryRef); resetErr != nil {
+				return nil, "", resetErr
+			}
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
 		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
@@ -310,19 +316,43 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		SeedWorkingMemory: true,
 	})
 	if err != nil {
-		// Gate block leaves no running agent. Flip the task back to todo so
-		// watchdog / restart-stale loops don't chase a ghost in-progress row.
-		if errors.Is(err, provider.ErrProviderUnhealthy) {
-			if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-				o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
-			}
-			o.logAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
-			o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
-		}
+		o.handleProviderGateStartError(taskID, err)
 		return nil, "", err
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+func (o *AgentOrchestrator) handleProviderGateStartError(taskID string, err error) {
+	if !errors.Is(err, provider.ErrProviderUnhealthy) {
+		return
+	}
+	// Gate block leaves no running agent. Flip the task back to todo so
+	// watchdog / restart-stale loops don't chase a ghost in-progress row.
+	if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
+		o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
+	}
+	o.logAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
+	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+}
+
+func (o *AgentOrchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error {
+	resetDir := t.WorktreeDir
+	if resetDir == "" {
+		resetDir = o.worktrees.PathFor(t)
+	}
+	if _, statErr := os.Stat(resetDir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		return fmt.Errorf("stat clean retry worktree: %w", statErr)
+	}
+	if err := project.ResetWorktreeForRetry(resetDir, ref); err != nil {
+		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
+		return err
+	}
+	o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
+	return nil
 }
 
 // markRebaseBlocked handles a worktree-prep rebase failure. A rebase abort means

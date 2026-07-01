@@ -286,6 +286,7 @@ type startCall struct {
 	NeedsWorktree                                    bool
 	OneShot                                          bool
 	OutputSchema                                     string
+	CleanRetryRef                                    string
 	Assignment                                       AgentAssignment
 }
 
@@ -313,7 +314,7 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -325,7 +326,8 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 		TaskID: taskID, Role: role, Mode: mode, Model: model, Provider: provider,
 		Prompt: prompt, Dir: dir, AllowedTools: allowedTools,
 		NeedsWorktree: needsWorktree, OneShot: oneShot, OutputSchema: outputSchema,
-		Assignment: assignment,
+		CleanRetryRef: cleanRetryRef,
+		Assignment:    assignment,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -788,12 +790,16 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 		wantStatus string
 		wantReason string
 		wantRetry  string
+		baseline   string
+		wantClean  string
 	}{
 		{
 			name:       "first hang retries",
 			wantStarts: 1,
 			wantStatus: "in-progress",
 			wantRetry:  "1",
+			baseline:   "abc123",
+			wantClean:  "abc123",
 		},
 		{
 			name:       "budget exhausted escalates",
@@ -813,6 +819,9 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 			vars := map[string]string{}
 			if tc.retries != "" {
 				vars[watchdogHangRetryKey("implement")] = tc.retries
+			}
+			if tc.baseline != "" {
+				vars[tamperBaselineVar("implement")] = tc.baseline
 			}
 			tasks.Put(TaskInfo{
 				ID:           "t1",
@@ -845,6 +854,14 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 			}
 			if got.Workflow.Variables[watchdogHangRetryKey("implement")] != tc.wantRetry {
 				t.Fatalf("hang retry var = %q, want %q", got.Workflow.Variables[watchdogHangRetryKey("implement")], tc.wantRetry)
+			}
+			if tc.wantStarts > 0 {
+				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
+					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)
+				}
+				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
+					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
+				}
 			}
 		})
 	}
@@ -903,7 +920,7 @@ func TestResumeStalled_WatchdogHangDoesNotBurnBudgetWhileAgentRunning(t *testing
 			StartedAt:   time.Now().UTC(),
 		},
 	})
-	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "p", "", nil, false, false, "", AgentAssignment{}); err != nil {
+	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "p", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1323,7 +1340,7 @@ func TestCancelWorkflow(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 
 	// Pretend an agent is running for "active" so we can verify it's stopped.
-	if _, _, _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, "", AgentAssignment{}); err != nil {
+	if _, _, _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
 
@@ -1894,7 +1911,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	_, _, _, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "", AgentAssignment{})
+	_, _, _, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "", "", AgentAssignment{})
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()
