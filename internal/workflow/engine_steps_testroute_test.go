@@ -691,7 +691,7 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 		{
 			name:       "pass_with_library_exemption_rejects_fabricated_readiness_probe",
 			status:     "completed",
-			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"curl would return 200 if the server were running, but this is a pure library change","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"pure internal-library refactor"}`,
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"curl would have returned 200 for the health endpoint if the server were running, but this is a pure library change","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"pure internal-library refactor"}`,
 			bodySuffix: "",
 			want:       testOutcomeMissingEvidence,
 			wantStatus: "failed",
@@ -876,6 +876,15 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				t.Fatal("fingerprint is empty for evidenced failure")
 			}
 		})
+	}
+}
+
+func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl would have returned 200 for the health endpoint if the server were running, but this is a pure library change"
+	if hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("hypothetical readiness probe evidence was accepted: %q", raw)
 	}
 }
 

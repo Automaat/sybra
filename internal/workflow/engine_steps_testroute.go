@@ -652,7 +652,7 @@ func hasReadinessProbeEvidence(probe readinessProbeEvidence) bool {
 
 func hasRawReadinessProbeEvidence(raw string) bool {
 	lower := strings.ToLower(strings.TrimSpace(raw))
-	if lower == "" || !hasExecutedResultEvidence(lower) {
+	if lower == "" || hasReadinessHypotheticalEvidence(lower) || !hasExecutedResultEvidence(lower) {
 		return false
 	}
 	return hasRawRegressionCheckEvidence(lower) || hasRawManualProbeEvidence(lower)
@@ -770,7 +770,14 @@ func hasRawRegressionCheckEvidence(raw string) bool {
 func hasExecutedResultEvidence(lower string) bool {
 	return containsAny(lower,
 		"->", "=>", "ran ", "ran:", "executed", "exit code", "exit status",
-		"output:", "actual:", "observed:", "returned", "confirmed", "status:")
+		"output:", "actual:", "observed:", "confirmed", "status:")
+}
+
+func hasReadinessHypotheticalEvidence(lower string) bool {
+	return containsAny(lower,
+		"would ", "would've", "would have", "could ", "could've", "could have",
+		"should ", "should've", "should have", "expected to", "if the ",
+		"if it ", "if this ", "if run", "assuming ", "hypothetical")
 }
 
 func hasManualActionEvidence(lower string) bool {
