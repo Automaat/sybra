@@ -597,6 +597,26 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_kubernetes_surface_word",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal Kubernetes informer event handler","app_started":true,` +
+				`"start_command":"kubectl apply -f testdata/informer.yaml",` +
+				`"readiness_probe":"kubectl get pods confirmed the controller pod was running",` +
+				`"manual_probes":[{"command":"kubectl describe pod controller","expected":"event handler active","actual":"event handler active"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","actual":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_docs_surface_word_before_kubernetes_uses_docs_exemption",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"docs for Kubernetes","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"npm run check","actual":"ok"}],"unable_to_run_reason":"documentation-only update"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:       "pass_with_weak_raw_ui_status_rejected",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,"start_command":"npm run dev","readiness_probe":"curl /health -> ok","manual_probes":["UI status: not tested"],"automated_checks":["npm test -> pass"],"unable_to_run_reason":""}`,
@@ -659,6 +679,23 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_accepts_readiness_probe_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"go test ./internal/foo -> ok","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_rejects_fabricated_readiness_probe",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"curl would have returned 200 for the health endpoint if the server were running, but this is a pure library change","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
 			name:       "pass_with_notest_exemption_still_requires_regression_check",
@@ -839,6 +876,15 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 				t.Fatal("fingerprint is empty for evidenced failure")
 			}
 		})
+	}
+}
+
+func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
+	t.Parallel()
+
+	raw := "curl would have returned 200 for the health endpoint if the server were running, but this is a pure library change"
+	if hasRawReadinessProbeEvidence(raw) {
+		t.Fatalf("hypothetical readiness probe evidence was accepted: %q", raw)
 	}
 }
 
