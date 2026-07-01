@@ -291,12 +291,14 @@ func normalizeSymbol(s string) string {
 }
 
 // normalizePath canonicalizes a touches entry for comparison: trims
-// whitespace, strips a leading "./", and trims a trailing "/".
+// whitespace, strips a leading "./", trims a trailing "/", and lowercases
+// (matching normalizeSymbol) so casing differences in the LLM's output don't
+// hide a real overlap.
 func normalizePath(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "./")
 	s = strings.TrimSuffix(s, "/")
-	return s
+	return strings.ToLower(s)
 }
 
 // pathsOverlap reports whether two touches entries name the same file/package

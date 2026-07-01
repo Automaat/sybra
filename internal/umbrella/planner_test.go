@@ -399,6 +399,20 @@ func TestGenerate(t *testing.T) {
 			t.Error("expected cycle to be rejected")
 		}
 	})
+
+	t.Run("cycle derived from mutual requires/produces is rejected", func(t *testing.T) {
+		t.Parallel()
+		// No explicit dependsOn — the cycle only exists once deriveEdges turns
+		// each side's "requires" into an edge on the other's "produces".
+		cyclic := `{"children":[` +
+			`{"issue":"o/r#1","produces":["A"],"requires":["B"]},` +
+			`{"issue":"o/r#2","produces":["B"],"requires":["A"]}` +
+			`],"maxParallel":2}`
+		run := func(_ context.Context, _ string) (string, error) { return cyclic, nil }
+		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err == nil {
+			t.Error("expected derived cycle to be rejected")
+		}
+	})
 }
 
 func TestFallbackPlannerRunnerPassesConfiguredClaudeModel(t *testing.T) {
