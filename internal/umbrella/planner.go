@@ -398,13 +398,16 @@ func (p *Plan) deriveEdges(subs []SubIssue) {
 		c.DependsOn = merged
 	}
 
-	// Pass 2: the serial-default layer. Every child depends on every earlier
-	// canonical sibling unless the pair is justified parallel or that would
-	// create a direct 2-cycle. This is a DISTINCT second loop, not grafted
-	// into pass 1 above: the 2-cycle guard must read each sibling's DependsOn
-	// only after pass 1 has fully merged it, otherwise which pairs get
-	// serialized would depend on iteration order instead of being
-	// deterministic.
+	p.applySerialDefault(refs, order)
+}
+
+// applySerialDefault is pass 2 of deriveEdges: every child depends on every
+// earlier canonical sibling unless the pair is justified parallel or that
+// would create a cycle. This is a DISTINCT second pass, not grafted into
+// pass 1: the cycle guard must read each sibling's DependsOn only after
+// pass 1 has fully merged it, otherwise which pairs get serialized would
+// depend on iteration order instead of being deterministic.
+func (p *Plan) applySerialDefault(refs []string, order map[string]int) {
 	byRef := make(map[string]*PlannedChild, len(p.Children))
 	for i := range p.Children {
 		byRef[p.Children[i].Ref] = &p.Children[i]
@@ -425,14 +428,39 @@ func (p *Plan) deriveEdges(subs []SubIssue) {
 			if justifiedParallel(c, other) {
 				continue
 			}
-			if dependsOn(other, ref) {
-				continue // direct 2-cycle guard: other already depends on c
+			if reachable(byRef, otherRef, ref, map[string]bool{}) {
+				continue // other already transitively depends on ref; adding the reverse edge would close a cycle
 			}
 			if !dependsOn(c, otherRef) {
 				c.DependsOn = append(c.DependsOn, otherRef)
 			}
 		}
 	}
+}
+
+// reachable reports whether fromRef transitively depends on target by
+// walking the (partially built) DependsOn graph. Used instead of a direct
+// membership check so a serial-default edge is never added if it would close
+// a longer cycle through edges pass 1 (or an earlier pass-2 iteration)
+// already created.
+func reachable(byRef map[string]*PlannedChild, fromRef, target string, visiting map[string]bool) bool {
+	if fromRef == target {
+		return true
+	}
+	if visiting[fromRef] {
+		return false
+	}
+	visiting[fromRef] = true
+	from := byRef[fromRef]
+	if from == nil {
+		return false
+	}
+	for _, dep := range from.DependsOn {
+		if reachable(byRef, dep, target, visiting) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeSymbol canonicalizes a produces/requires entry for comparison.

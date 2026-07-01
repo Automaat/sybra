@@ -473,6 +473,27 @@ func TestDeriveEdges(t *testing.T) {
 			t.Fatalf("o/r#2 DependsOn = %v, want none (2-cycle guard)", got)
 		}
 	})
+
+	t.Run("indirect cycle through an intermediate sibling stays acyclic", func(t *testing.T) {
+		t.Parallel()
+		// o/r#1 is canonically first but requires a symbol only the
+		// canonically-last o/r#3 produces (forward requires edge #1 -> #3).
+		// o/r#2 sits between them with no metadata. A direct-only 2-cycle
+		// guard misses this: pass 2 adds #2 -> #1 (no direct edge #1 -> #2),
+		// then reaches #3 vs #2 and — checking only the direct edge — adds
+		// #3 -> #2, closing #1 -> #3 -> #2 -> #1. The guard must walk
+		// transitively so the reverse edge (#3 -> #2) is skipped instead.
+		s := subs("o/r#1", "o/r#2", "o/r#3")
+		plan := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1", Requires: []string{"Sym"}},
+			{Ref: "o/r#2"},
+			{Ref: "o/r#3", Produces: []string{"Sym"}},
+		}}
+		plan.deriveEdges(s)
+		if err := plan.validate(s); err != nil {
+			t.Fatalf("validate: %v (deps: %+v)", err, plan.Children)
+		}
+	})
 }
 
 func TestGenerate(t *testing.T) {
