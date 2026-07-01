@@ -251,6 +251,110 @@ func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsBareHeadersWithNoContent(t *testing.T) {
+	t.Parallel()
+
+	// A report that stacks empty headers with nothing after the colon must not
+	// satisfy the gate — only the "code evidence" header here carries real
+	// content, so command/observed/expected evidence is missing despite the
+	// headers being present.
+	report := "**Command:**\n\n**Actual:**\n\n**Expected:**\n\n**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare-header report with no evidence accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingNextHeaderContent(t *testing.T) {
+	t.Parallel()
+
+	// A bare "**Command:**" header must not be credited with the *following*
+	// header's inline content ("**Actual:** something happened") — that
+	// content belongs to Actual's own section, not Command's. Without this
+	// distinction the report has no stated reproduction command anywhere yet
+	// still passes the gate as grounded.
+	report := "**Command:**\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header borrowing next header's content accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsBareCodeEvidenceHeader(t *testing.T) {
+	t.Parallel()
+
+	// hasGrounding (the code-evidence clause) was a plain substring check that
+	// never verified any content followed the header, unlike the other three
+	// clauses. A bare "**Code evidence:**" header with nothing after the colon
+	// must not satisfy the gate even when command/observed/expected are real.
+	report := "**Command:** go test ./internal/workflow/ -run Foo -v\n\n" +
+		"**Actual:** the test failed with a nil pointer panic\n\n" +
+		"**Expected:** the task says the handler should return an error, not panic\n\n" +
+		"**Code evidence:**\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare code evidence header accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_AcceptsRealFileLineCitation(t *testing.T) {
+	t.Parallel()
+
+	report := "**Command:** go test ./internal/workflow/ -run Foo -v\n\n" +
+		"**Actual:** the test failed with a nil pointer panic\n\n" +
+		"**Expected:** the task says the handler should return an error, not panic\n\n" +
+		"**Code evidence:** internal/workflow/engine_steps_testroute.go:1142\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("real file:line citation rejected as ungrounded; want grounded")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsUnderscoreBareHeader(t *testing.T) {
+	t.Parallel()
+
+	// A bare header decorated with underscore emphasis (__Command:__) instead
+	// of asterisks must not be credited with content: the trailing "__" is
+	// decoration, not a real reproduction command.
+	report := "__Command:__\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("underscore-decorated bare Command header accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsHeaderKeywordInsideIndentedSnippet(t *testing.T) {
+	t.Parallel()
+
+	// "command:" appearing inside an indented (4-space) code snippet must not
+	// be misread as a real evidence header — there is no actual reproduction
+	// command stated anywhere in this report.
+	report := "Some notes about the failure:\n\n" +
+		"    command: this is just quoted snippet text, not a real header\n\n" +
+		"**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("indented snippet text accepted as a grounded Command header; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBackedByEmptyFence(t *testing.T) {
+	t.Parallel()
+
+	// A bare "**Command:**" header immediately followed by an empty fenced
+	// code block has no real content — the empty fence must not count as
+	// evidence backing the header.
+	report := "**Command:**\n```\n```\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header backed by empty fence accepted as grounded; want rejected")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 
