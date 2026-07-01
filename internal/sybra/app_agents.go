@@ -256,7 +256,9 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
-			markRebaseBlocked(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery)
+			if _, recovered := markRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
+				return nil, "", workflow.ErrDispatchInFlight
+			}
 			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
 		}
 		o.completeWorktreeOp(opID)
@@ -347,6 +349,17 @@ func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}
 	return true
+}
+
+func markRebaseBlockedWithRecoveryResult(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) (handled, recovered bool) {
+	if recoverConflict == nil {
+		return markRebaseBlocked(tasks, taskID, err, logger, nil), false
+	}
+	wrappedRecover := func(id string) bool {
+		recovered = recoverConflict(id)
+		return recovered
+	}
+	return markRebaseBlocked(tasks, taskID, err, logger, wrappedRecover), recovered
 }
 
 // recordImplAgentStart emits the agent.started audit event and persists the

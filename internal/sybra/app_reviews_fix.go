@@ -264,6 +264,16 @@ func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
 	}
 	r.logger.Info("pr-monitor.rebase-block.recover-as-conflict",
 		"task_id", taskID, "pr", t.PRNumber)
+	if r.workflowEngine.HasActiveWorkflow(taskID) {
+		if priorStep, cancelErr := r.workflowEngine.CancelWorkflow(taskID, "rebase conflict recovery"); cancelErr != nil {
+			r.logger.Error("pr-monitor.rebase-block.cancel-active-workflow",
+				"task_id", taskID, "err", cancelErr)
+			return false
+		} else {
+			r.logger.Info("pr-monitor.rebase-block.cancelled-active-workflow",
+				"task_id", taskID, "step", priorStep)
+		}
+	}
 	return r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
 }
 
