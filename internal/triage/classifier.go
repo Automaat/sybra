@@ -75,11 +75,19 @@ func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects
 	}, llmexec.Options{
 		Logger: c.Logger,
 		Gate:   c.Gate,
+		Models: claudeModelOverride(c.Model),
 	})
 	if err != nil {
 		return Verdict{}, err
 	}
 	return v, nil
+}
+
+func claudeModelOverride(model string) map[string]string {
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+	return map[string]string{"claude": model}
 }
 
 func buildPrompt(t task.Task, projects []project.Project) string {

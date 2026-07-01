@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -39,7 +40,7 @@ type Meta struct {
 // responses with fresh one-shot attempts.
 func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options) (T, Meta, error) {
 	var zero T
-	o.Models = modelsFor(s.Tier)
+	o.Models = mergeModels(modelsFor(s.Tier), o.Models)
 	if strings.TrimSpace(s.Schema) != "" {
 		prompt += "\n\nOutput schema:\n" + strings.TrimSpace(s.Schema)
 	}
@@ -69,7 +70,10 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 		}
 		lastProvider = res.Provider
 		var out T
-		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		jsonText := extractLastJSONObject(res.Text)
+		if jsonText == "" {
+			lastErr = fmt.Errorf("parse JSON: no JSON object in result: %q", res.Text)
+		} else if err := json.Unmarshal([]byte(jsonText), &out); err != nil {
 			lastErr = fmt.Errorf("parse JSON: %w", err)
 		} else if s.Validate != nil {
 			lastErr = s.Validate(&out)
@@ -91,6 +95,66 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 	logJob(o.Logger, s.Name, lastProvider, s.Tier, maxRepairs, false)
 	return zero, Meta{Provider: lastProvider, Tier: s.Tier, Repairs: maxRepairs},
 		fmt.Errorf("%s job failed with provider %q after %d attempts: %w", s.Name, lastProvider, attempts, lastErr)
+}
+
+func mergeModels(defaults, explicit map[string]string) map[string]string {
+	out := make(map[string]string, len(defaults)+len(explicit))
+	maps.Copy(out, defaults)
+	maps.Copy(out, explicit)
+	return out
+}
+
+// extractLastJSONObject returns the last balanced {...} substring in s, or "".
+// It tolerates common provider wrappers such as prose and fenced code blocks.
+func extractLastJSONObject(s string) string {
+	s = strings.TrimSpace(s)
+	var (
+		inString  bool
+		escape    bool
+		depth     int
+		objStart  = -1
+		lastStart = -1
+		lastEnd   = -1
+	)
+	for i := range len(s) {
+		c := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			switch c {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				objStart = i
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && objStart >= 0 {
+				lastStart = objStart
+				lastEnd = i
+				objStart = -1
+			}
+		}
+	}
+	if lastStart < 0 {
+		return ""
+	}
+	return s[lastStart : lastEnd+1]
 }
 
 func avoidProvider(o llmexec.Options, avoid string) (llmexec.Options, error) {

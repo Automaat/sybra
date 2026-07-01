@@ -217,7 +217,7 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		plan, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Plan]{
 			Name: "umbrella-order",
 			Tier: llmjob.Standard,
-		}, llmexec.Options{Gate: gate})
+		}, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}
@@ -227,6 +227,13 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		}
 		return string(out), nil
 	}
+}
+
+func claudeModelOverride(model string) map[string]string {
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+	return map[string]string{"claude": model}
 }
 
 // IsUmbrellaIssue reports whether a GitHub issue should be auto-expanded as an

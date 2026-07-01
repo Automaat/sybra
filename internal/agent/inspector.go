@@ -51,11 +51,18 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 		Name:     "inspect",
 		Tier:     llmjob.Cheap,
 		Validate: validateInspectorVerdict,
-	}, llmexec.Options{Logger: logger})
+	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model)})
 	if err != nil {
 		return InspectorVerdict{}, fmt.Errorf("inspector: %w", err)
 	}
 	return v, nil
+}
+
+func claudeModelOverride(model string) map[string]string {
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+	return map[string]string{"claude": model}
 }
 
 func validateInspectorVerdict(v *InspectorVerdict) error {

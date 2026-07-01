@@ -29,6 +29,11 @@ func TestRun(t *testing.T) {
 			wantRepairs: 0,
 		},
 		{
+			name:        "decode-fenced-json-without-repair",
+			results:     []llmexec.Result{{Provider: "claude", Text: "Here is the result:\n```json\n{\"ok\":true}\n```"}},
+			wantRepairs: 0,
+		},
+		{
 			name:        "repair-on-bad-json",
 			results:     []llmexec.Result{{Provider: "claude", Text: `{`}, {Provider: "claude", Text: `{"ok":true}`}},
 			wantRepairs: 1,
@@ -127,6 +132,23 @@ func TestRunSetsTierModels(t *testing.T) {
 	defer restore()
 
 	if _, _, err := Run(context.Background(), "prompt", Spec[testOut]{Name: "models", Tier: Cheap}, llmexec.Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunPreservesExplicitModels(t *testing.T) {
+	restore := stubRunner(func(_ context.Context, _ string, opts llmexec.Options) (llmexec.Result, error) {
+		want := map[string]string{"claude": "opus", "codex": "gpt-5.4-mini", "copilot": "gpt-5-mini"}
+		if !reflect.DeepEqual(opts.Models, want) {
+			t.Fatalf("models = %#v, want %#v", opts.Models, want)
+		}
+		return llmexec.Result{Provider: "claude", Text: `{"ok":true}`}, nil
+	})
+	defer restore()
+
+	if _, _, err := Run(context.Background(), "prompt", Spec[testOut]{Name: "models", Tier: Cheap}, llmexec.Options{
+		Models: map[string]string{"claude": "opus"},
+	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 }

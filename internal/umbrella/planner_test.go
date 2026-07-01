@@ -3,6 +3,8 @@ package umbrella
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -245,4 +247,31 @@ func TestGenerate(t *testing.T) {
 			t.Error("expected cycle to be rejected")
 		}
 	})
+}
+
+func TestFallbackPlannerRunnerPassesConfiguredClaudeModel(t *testing.T) {
+	dir := t.TempDir()
+	writePlannerTestExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
+if [[ "$*" != *"--model opus"* ]]; then
+  echo "missing configured model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"result":"{\"children\":[{\"issue\":\"o/r#1\",\"dependsOn\":[]}],\"maxParallel\":1}"}'
+`)
+	t.Setenv("PATH", dir)
+
+	out, err := FallbackPlannerRunner("opus")(context.Background(), "prompt")
+	if err != nil {
+		t.Fatalf("runner: %v", err)
+	}
+	if !strings.Contains(out, `"maxParallel":1`) {
+		t.Fatalf("planner output = %q, want marshaled plan", out)
+	}
+}
+
+func writePlannerTestExe(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
