@@ -311,6 +311,50 @@ func TestHasGroundedFailureEvidence_AcceptsRealFileLineCitation(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsUnderscoreBareHeader(t *testing.T) {
+	t.Parallel()
+
+	// A bare header decorated with underscore emphasis (__Command:__) instead
+	// of asterisks must not be credited with content: the trailing "__" is
+	// decoration, not a real reproduction command.
+	report := "__Command:__\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("underscore-decorated bare Command header accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsHeaderKeywordInsideIndentedSnippet(t *testing.T) {
+	t.Parallel()
+
+	// "command:" appearing inside an indented (4-space) code snippet must not
+	// be misread as a real evidence header — there is no actual reproduction
+	// command stated anywhere in this report.
+	report := "Some notes about the failure:\n\n" +
+		"    command: this is just quoted snippet text, not a real header\n\n" +
+		"**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("indented snippet text accepted as a grounded Command header; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBackedByEmptyFence(t *testing.T) {
+	t.Parallel()
+
+	// A bare "**Command:**" header immediately followed by an empty fenced
+	// code block has no real content — the empty fence must not count as
+	// evidence backing the header.
+	report := "**Command:**\n```\n```\n\n**Actual:** something happened\n\n**Expected:** nothing\n\n" +
+		"**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header backed by empty fence accepted as grounded; want rejected")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 

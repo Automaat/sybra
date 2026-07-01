@@ -1179,7 +1179,7 @@ func hasLabeledSection(report string, keywords ...string) bool {
 			inFence = !inFence
 			continue
 		}
-		if inFence || trimmed == "" {
+		if inFence || trimmed == "" || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
 			continue
 		}
 		lower := strings.ToLower(trimmed)
@@ -1198,7 +1198,7 @@ func hasLabeledSection(report string, keywords ...string) bool {
 			if !strings.HasPrefix(rest, ":") {
 				continue
 			}
-			afterColon := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest[1:]), "*"))
+			afterColon := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest[1:]), "*_"))
 			if afterColon != "" || hasFollowingContent(rawLines, i) {
 				return true
 			}
@@ -1222,12 +1222,35 @@ func hasFollowingContent(rawLines []string, idx int) bool {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			return true
+			content, end := fenceContentEnd(rawLines, j+1)
+			if content {
+				return true
+			}
+			j = end
+			continue
 		}
 		stripped := strings.TrimLeft(strings.ToLower(trimmed), "*_>#- \t")
 		return !headerLikeLineRe.MatchString(stripped)
 	}
 	return false
+}
+
+// fenceContentEnd scans a fenced code block starting at rawLines[start] (the
+// line immediately after the opening fence marker) and reports whether the
+// block contains any non-blank line before its closing fence, plus the index
+// of that closing fence marker (or the last line, if the fence never closes).
+// An empty fence must not count as evidence backing a bare header.
+func fenceContentEnd(rawLines []string, start int) (hasContent bool, end int) {
+	for j := start; j < len(rawLines); j++ {
+		trimmed := strings.TrimSpace(rawLines[j])
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			return hasContent, j
+		}
+		if trimmed != "" {
+			hasContent = true
+		}
+	}
+	return hasContent, len(rawLines) - 1
 }
 
 func containsAny(s string, needles ...string) bool {
