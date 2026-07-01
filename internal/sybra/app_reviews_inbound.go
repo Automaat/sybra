@@ -197,14 +197,15 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 
 func staffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
 	return agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Provider:               staffCodeReviewProvider,
-		Model:                  "opus",
-		HeadlessPermissionMode: posture,
+		TaskID:                  t.ID,
+		Name:                    agent.RoleReview.AgentName(t.Title),
+		Mode:                    "headless",
+		Prompt:                  prompt,
+		Dir:                     dir,
+		Provider:                staffCodeReviewProvider,
+		Model:                   "opus",
+		DisableProviderFailover: true,
+		HeadlessPermissionMode:  posture,
 		// MaxTurns intentionally not inherited: review agents need
 		// enough turns to fetch the PR, run the skill, and write findings.
 	}

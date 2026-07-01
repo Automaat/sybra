@@ -59,6 +59,9 @@ func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
 	if cfg.Model != "opus" {
 		t.Fatalf("Model = %q, want opus", cfg.Model)
 	}
+	if !cfg.DisableProviderFailover {
+		t.Fatal("DisableProviderFailover = false, want true")
+	}
 }
 
 func newExperienceProjectStore(t *testing.T, tmp string) *project.Store {
