@@ -987,7 +987,7 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	unlock := s.lockTask(taskID)
 	defer unlock()
 
-	t, err := s.Get(taskID)
+	t, err := s.read(taskID)
 	if err != nil {
 		return err
 	}
@@ -1136,7 +1136,7 @@ func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	unlock := s.lockTask(taskID)
 	defer unlock()
 
-	t, err := s.Get(taskID)
+	t, err := s.read(taskID)
 	if err != nil {
 		return err
 	}
