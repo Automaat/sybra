@@ -205,17 +205,20 @@ func (m *Manager) CreateChat(projectID string) (Task, error) {
 // Update applies field updates to a task and emits task:updated.
 // Serializes with other Update/AddRun/UpdateRun/Delete calls for the same id.
 //
-// Note on hook ordering: the status-change hook is invoked *after* the
-// per-task mutex is released. Hooks commonly call back into the task
-// manager (e.g. the workflow engine advancing a step, which writes the
-// workflow field via taskAdapter.SetWorkflow → Manager.Update). Calling
-// the hook while still holding the lock would deadlock that re-entry.
+// Note on hook and emitter ordering: both the status-change hook and the
+// task:updated emitter are invoked *after* the per-task mutex is released.
+// Hooks (and the emitter, which app.go wires through Manager.OnExternalUpdate
+// to unify in-process and cross-process status changes) commonly call back
+// into the task manager — e.g. the workflow engine advancing a step, which
+// writes the workflow field via taskAdapter.SetWorkflow → Manager.Update.
+// Calling either while still holding the lock would deadlock that re-entry.
 func (m *Manager) Update(id string, u Update) (Task, error) {
 	mu := m.lockFor(id)
 	mu.Lock()
 
-	t, hook, err := m.updateLocked(id, u)
+	t, hook, filePath, err := m.updateLocked(id, u)
 	mu.Unlock()
+	m.emitUpdated(filePath)
 	m.fireStatusHook(hook)
 	return t, err
 }
@@ -237,8 +240,9 @@ func (m *Manager) UpdateFromCurrent(id string, build func(Task) (Update, error))
 		mu.Unlock()
 		return cur, err
 	}
-	t, hook, err := m.updateLocked(id, u)
+	t, hook, filePath, err := m.updateLocked(id, u)
 	mu.Unlock()
+	m.emitUpdated(filePath)
 	m.fireStatusHook(hook)
 	return t, err
 }
@@ -249,26 +253,48 @@ type statusHookCall struct {
 	newStatus  string
 }
 
-func (m *Manager) updateLocked(id string, u Update) (Task, *statusHookCall, error) {
+// updateLocked applies the update and reports what the caller must do once
+// the per-task lock is released: emit filePath (if non-empty) via
+// m.emitUpdated, then fire hook (if non-nil) via m.fireStatusHook. It never
+// calls the emitter or the status hook itself — both can re-enter the
+// Manager for the same task id, which would deadlock against this method's
+// still-held lock.
+func (m *Manager) updateLocked(id string, u Update) (t Task, hook *statusHookCall, filePath string, err error) {
 	t, prev, err := m.store.UpdateWithPrev(id, u)
 	if err != nil {
-		return t, nil, err
+		return t, nil, "", err
 	}
 	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 
 	if u.Status != nil && m.onStatusHook != nil {
 		prevStatus := string(prev)
 		newStatus := string(t.Status)
 		if newStatus != prevStatus {
-			return t, &statusHookCall{id: id, prevStatus: prevStatus, newStatus: newStatus}, nil
+			return t, &statusHookCall{id: id, prevStatus: prevStatus, newStatus: newStatus}, t.FilePath, nil
 		}
 	}
-	return t, nil, nil
+	return t, nil, t.FilePath, nil
 }
 
+// emitUpdated fires the task:updated event. Must only be called with no
+// per-task lock held — see the ordering note on Update.
+func (m *Manager) emitUpdated(filePath string) {
+	if filePath == "" {
+		return
+	}
+	m.emitter.Emit(events.TaskUpdated, filePath)
+}
+
+// fireStatusHook invokes the status-change hook for a locally-applied update.
+// emitUpdated (called just before this, in Update/UpdateFromCurrent) routes
+// through Manager.OnExternalUpdate, which may have already fired the hook
+// for this exact transition and recorded it in firedStatus; skip the
+// redundant second call so a single status change doesn't dispatch twice.
 func (m *Manager) fireStatusHook(call *statusHookCall) {
 	if call == nil {
+		return
+	}
+	if prev, ok := m.lastFiredStatus(call.id); ok && prev == call.newStatus {
 		return
 	}
 	m.recordFiredStatus(call.id, call.newStatus)
@@ -293,9 +319,9 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return Task{}, err
 	}
 	body := strings.TrimRight(t.Body, "\n")
@@ -304,28 +330,33 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	body += content + "\n"
 	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	mu.Unlock()
 	if err != nil {
 		return t, err
 	}
 	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	m.emitUpdated(t.FilePath)
 	return t, nil
 }
 
-// Delete removes a task and emits task:deleted.
+// Delete removes a task and emits task:deleted. The emitter and delete hook
+// are invoked after the per-task lock is released — see the ordering note
+// on Update.
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
+		mu.Unlock()
 		return err
 	}
 	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
+	mu.Unlock()
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	if m.onDeleteHook != nil {
@@ -339,7 +370,9 @@ func (m *Manager) AddRun(taskID string, run AgentRun) error {
 	return m.AddRunWithStatus(taskID, run, nil)
 }
 
-// AddRunWithStatus appends an agent run and optionally changes task status in one write.
+// AddRunWithStatus appends an agent run and optionally changes task status
+// in one write. The emitter and status hook fire after the per-task lock is
+// released — see the ordering note on Update.
 func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
@@ -353,19 +386,19 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		mu.Unlock()
 		return err
 	}
-	t, err := m.store.Get(taskID)
-	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	}
+	t, getErr := m.store.Get(taskID)
 	var (
 		fireHook  bool
 		newStatus string
 	)
-	if status != nil && m.onStatusHook != nil && err == nil {
+	if status != nil && m.onStatusHook != nil && getErr == nil {
 		newStatus = string(t.Status)
 		fireHook = newStatus != prevStatus
 	}
 	mu.Unlock()
+	if getErr == nil {
+		m.emitUpdated(t.FilePath)
+	}
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
 		m.onStatusHook(taskID, prevStatus, newStatus)
@@ -374,16 +407,19 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 }
 
 // UpdateRun updates fields on a specific agent run and emits task:updated.
+// The emitter fires after the per-task lock is released — see the ordering
+// note on Update.
 func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
-	defer mu.Unlock()
 	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
+		mu.Unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
+	mu.Unlock()
 	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+		m.emitUpdated(t.FilePath)
 	}
 	return nil
 }

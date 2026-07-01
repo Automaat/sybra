@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 )
@@ -360,6 +362,88 @@ func TestLockForTypeMismatchNoPanic(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 	}()
+}
+
+// reentrantEmitter mimics app.go's emit closure: on task:updated it routes
+// through Manager.OnExternalUpdate (using the real, in-process Manager), the
+// same call app.go makes to unify cross-process and in-process status
+// changes. Manager must never invoke this emitter while its own per-task
+// lock is held, or a status hook that writes back through the Manager (as
+// the workflow engine does) deadlocks against itself.
+type reentrantEmitter struct {
+	m *Manager
+}
+
+func (r *reentrantEmitter) Emit(name string, data any) {
+	if name != events.TaskUpdated && name != events.TaskCreated {
+		return
+	}
+	path, ok := data.(string)
+	if !ok {
+		return
+	}
+	r.m.OnExternalUpdate(path)
+}
+
+// TestManagerUpdateFromCurrentDoesNotDeadlockOnReentrantHook is a regression
+// test for the BlessTampering deadlock: a status-change hook that writes
+// back to the same task id via Manager.Update, triggered synchronously from
+// the emitter, used to deadlock because the emitter fired while updateLocked
+// still held the per-task mutex.
+func TestManagerUpdateFromCurrentDoesNotDeadlockOnReentrantHook(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	m := NewManager(store, nil)
+	m.emitter = &reentrantEmitter{m: m}
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var rewritten atomic.Bool
+	m.SetStatusChangeHook(func(id, from, to string) {
+		if to != string(StatusInReview) || !rewritten.CompareAndSwap(false, true) {
+			return
+		}
+		// Re-enter the Manager for the same task id, as the workflow engine
+		// does when a status hook starts a new workflow step.
+		if _, err := m.Update(id, Update{Body: Ptr("rewritten-by-hook")}); err != nil {
+			t.Errorf("re-entrant Update: %v", err)
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.UpdateFromCurrent(task.ID, func(_ Task) (Update, error) {
+			return Update{Status: Ptr(StatusInReview)}, nil
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("UpdateFromCurrent: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("UpdateFromCurrent deadlocked on a re-entrant status hook")
+	}
+
+	got, err := m.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusInReview {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusInReview)
+	}
+	if got.Body != "rewritten-by-hook" {
+		t.Fatalf("Body = %q, want rewritten-by-hook", got.Body)
+	}
 }
 
 func TestNoopEmitter(t *testing.T) {
