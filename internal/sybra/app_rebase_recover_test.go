@@ -146,6 +146,41 @@ func TestRecoverStaleBranchConflict_EscalatesWhenWorkflowAlreadyActive(t *testin
 	}
 }
 
+func TestRecoverStaleBranchConflict_CancelsActiveWorkflowBeforeDispatch(t *testing.T) {
+	r, tk := setupRebaseRecoveryReviewHandler(t, true)
+	tk.Workflow = &workflow.Execution{
+		WorkflowID:  "review-workflow",
+		CurrentStep: "code_review_staff",
+		State:       workflow.ExecRunning,
+	}
+	if _, err := r.tasks.Update(tk.ID, task.Update{Workflow: &tk.Workflow}); err != nil {
+		t.Fatal(err)
+	}
+
+	rebaseErr := fmt.Errorf("rebase x onto main: %w", worktree.ErrRebaseFailed)
+	handled, recovered := markRebaseBlockedWithRecoveryResult(r.tasks, tk.ID, rebaseErr, r.logger, r.recoverStaleBranchConflict)
+	if !handled {
+		t.Fatal("markRebaseBlockedWithRecoveryResult returned handled=false for a rebase failure")
+	}
+	if !recovered {
+		t.Fatal("markRebaseBlockedWithRecoveryResult did not report successful recovery")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want conflict workflow dispatch instead of human-required", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-conflict-fix-test" {
+		t.Fatalf("workflow = %+v, want pr-conflict-fix-test", got.Workflow)
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
+		t.Fatal("conflict issue was not marked handled after workflow start")
+	}
+}
+
 func TestRecoverStaleBranchConflict_EscalatesWhenNoWorkflowMatches(t *testing.T) {
 	r, tk := setupRebaseRecoveryReviewHandler(t, false)
 
@@ -194,6 +229,7 @@ func setupRebaseRecoveryReviewHandler(t *testing.T, withConflictWorkflow bool) (
 	runGit(t, "", "init", "-b", "main", repo)
 	runGit(t, repo, "config", "user.email", "test@example.com")
 	runGit(t, repo, "config", "user.name", "Test User")
+	runGit(t, repo, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
