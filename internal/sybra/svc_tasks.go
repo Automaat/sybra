@@ -3,6 +3,7 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,39 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 		return t, err
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+// BlessTampering marks a human-reviewed tamper finding as accepted and sends
+// the task back into the review lane.
+func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
+	cur, err := s.tasks.Get(taskID)
+	if err != nil {
+		return cur, err
+	}
+
+	tags := slices.Clone(cur.Tags)
+	if !slices.Contains(tags, workflow.TamperBlessedTag) {
+		tags = append(tags, workflow.TamperBlessedTag)
+	}
+
+	updated, err := s.tasks.Update(taskID, task.Update{
+		Tags:   task.Ptr(tags),
+		Status: task.Ptr(task.StatusReadyReview),
+	})
+	if err != nil {
+		return updated, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Log(audit.Event{
+			Type:   audit.EventTamperBlessed,
+			TaskID: taskID,
+			Data: map[string]any{
+				"from_status": cur.Status,
+				"to_status":   updated.Status,
+			},
+		})
+	}
+	return updated, nil
 }
 
 func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {

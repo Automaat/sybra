@@ -1,6 +1,7 @@
 import {
   ListTasks,
   GetTask,
+  BlessTampering,
   CreateTask,
   UpdateTask,
   DeleteTask,
@@ -91,6 +92,12 @@ class TaskStore extends EntityStore<Task> {
 
   async update(id: string, updates: Record<string, any>): Promise<Task> {
     const result = await UpdateTask(id, updates)
+    this.set(result.id, result)
+    return result
+  }
+
+  async blessTampering(id: string): Promise<Task> {
+    const result = await BlessTampering(id)
     this.set(result.id, result)
     return result
   }

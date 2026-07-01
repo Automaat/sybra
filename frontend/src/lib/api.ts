@@ -134,6 +134,7 @@ export const StartReview = pick(ReviewSvc.StartReview, http.StartReview)
 export const GetStats = pick(StatsSvc.GetStats, http.GetStats)
 
 // TaskService
+export const BlessTampering = pick(TaskSvc.BlessTampering, http.BlessTampering)
 export const CreateTask = pick(TaskSvc.CreateTask, http.CreateTask)
 export const DeleteTask = pick(TaskSvc.DeleteTask, http.DeleteTask)
 export const GetTask = pick(TaskSvc.GetTask, http.GetTask)

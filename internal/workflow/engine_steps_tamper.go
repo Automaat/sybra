@@ -17,6 +17,9 @@ import (
 // committed diff and re-flag forever (livelock).
 const tamperBlessedTag = "tamper-blessed"
 
+// TamperBlessedTag marks a task whose tamper finding was manually accepted.
+const TamperBlessedTag = tamperBlessedTag
+
 // tamperCategory classifies a changed file by the role it plays in the
 // project's verification surface. Only test/snapshot/fixture/ci files are
 // scanned for tampering; everything else is treated as implementation.

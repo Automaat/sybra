@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestTaskService_WithEstimatedAgentRunCosts(t *testing.T) {
@@ -132,6 +134,56 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	}
 	if persisted.AgentRuns[0].Provider != "copilot" {
 		t.Fatalf("persisted provider = %q, want copilot", persisted.AgentRuns[0].Provider)
+	}
+}
+
+func TestTaskService_BlessTamperingMergesTagStatusAndAudit(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = al.Close() }()
+	svc.audit = al
+
+	created, err := svc.tasks.CreateFull("flagged task", "", "headless", task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("possible test tampering — needs human bless before review: test.go: skipped test"),
+		Tags:         task.Ptr([]string{"existing"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := svc.BlessTampering(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", updated.Status, task.StatusReadyReview)
+	}
+	if !slices.Contains(updated.Tags, "existing") {
+		t.Fatalf("tags = %v, want existing tag preserved", updated.Tags)
+	}
+	if !slices.Contains(updated.Tags, workflow.TamperBlessedTag) {
+		t.Fatalf("tags = %v, want %q", updated.Tags, workflow.TamperBlessedTag)
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since:  time.Now().Add(-time.Hour),
+		Until:  time.Now().Add(time.Hour),
+		Type:   audit.EventTamperBlessed,
+		TaskID: created.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("tamper blessed audit count = %d, want 1", len(events))
+	}
+	if events[0].Data["from_status"] != string(task.StatusHumanRequired) || events[0].Data["to_status"] != string(task.StatusReadyReview) {
+		t.Fatalf("audit data = %+v, want from/to status", events[0].Data)
 	}
 }
 

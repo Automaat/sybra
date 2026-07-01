@@ -6,6 +6,7 @@ const (
 	EventTaskCreated              = "task.created"
 	EventTaskStatusChanged        = "task.status_changed"
 	EventTaskDeleted              = "task.deleted"
+	EventTamperBlessed            = "task.tamper_blessed"
 	EventAgentStarted             = "agent.started"
 	EventAgentCompleted           = "agent.completed"
 	EventAgentFailed              = "agent.failed"

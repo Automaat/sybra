@@ -15,6 +15,16 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as task$0 from "../task/models.js";
 
 /**
+ * BlessTampering marks a human-reviewed tamper finding as accepted and sends
+ * the task back into the review lane.
+ */
+export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(2730384212, taskID).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * CreateTask creates a new task and starts a matching workflow.
  * If the title is a GitHub issue URL, fetches real title/body from GitHub.
  */

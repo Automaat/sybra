@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/sv
 
 const mockUpdate = vi.fn()
 const mockRemove = vi.fn()
+const mockBlessTampering = vi.fn()
 const mockStartReview = vi.fn()
 const mockStartFixReview = vi.fn()
 
@@ -10,6 +11,7 @@ vi.mock('../../stores/tasks.svelte.js', () => ({
   taskStore: {
     update: (...args: unknown[]) => mockUpdate(...args),
     remove: (...args: unknown[]) => mockRemove(...args),
+    blessTampering: (...args: unknown[]) => mockBlessTampering(...args),
   },
 }))
 
@@ -53,10 +55,12 @@ describe('TaskHeaderBar', () => {
   beforeEach(() => {
     mockUpdate.mockReset()
     mockRemove.mockReset()
+    mockBlessTampering.mockReset()
     mockStartReview.mockReset()
     mockStartFixReview.mockReset()
     mockUpdate.mockResolvedValue(baseTask)
     mockRemove.mockResolvedValue(undefined)
+    mockBlessTampering.mockResolvedValue({ ...baseTask, status: 'ready-review', tags: ['tamper-blessed'] })
   })
   afterEach(cleanup)
 
@@ -183,6 +187,33 @@ describe('TaskHeaderBar', () => {
     await waitFor(() => {
       expect(mockStartReview).toHaveBeenCalledWith('t1')
     })
+  })
+
+  it('shows and calls Bless Tampering for tamper-flagged human-required tasks', async () => {
+    render(TaskHeaderBar, {
+      props: {
+        task: {
+          ...baseTask,
+          status: 'human-required',
+          statusReason: 'possible test tampering — needs human bless before review: test.go',
+        } as never,
+        ondelete: vi.fn(),
+      },
+    })
+    await fireEvent.click(screen.getByText('Bless & send to review'))
+    await waitFor(() => {
+      expect(mockBlessTampering).toHaveBeenCalledWith('t1')
+    })
+  })
+
+  it('hides Bless Tampering for non-tamper human-required tasks', () => {
+    render(TaskHeaderBar, {
+      props: {
+        task: { ...baseTask, status: 'human-required', statusReason: 'approval required' } as never,
+        ondelete: vi.fn(),
+      },
+    })
+    expect(screen.queryByText('Bless & send to review')).toBeNull()
   })
 
   it('Copy ID / Copy branch live in the overflow menu', async () => {

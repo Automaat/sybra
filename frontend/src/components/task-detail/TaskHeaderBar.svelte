@@ -28,6 +28,7 @@
   let copiedBranch = $state(false)
   let reviewLoading = $state(false)
   let fixReviewLoading = $state(false)
+  let blessTamperingLoading = $state(false)
   let error = $state('')
   let menuOpen = $state(false)
 
@@ -85,6 +86,10 @@
     ),
   )
   const isReviewTask = $derived(task.tags?.includes('review') ?? false)
+  const canBlessTampering = $derived(
+    task.status === 'human-required' &&
+      (task.statusReason ?? '').startsWith('possible test tampering'),
+  )
 
   $effect(() => {
     if (editingTitle && titleInputRef) titleInputRef.focus()
@@ -210,6 +215,18 @@
     }
   }
 
+  async function blessTampering() {
+    blessTamperingLoading = true
+    error = ''
+    try {
+      await taskStore.blessTampering(task.id)
+    } catch (e) {
+      error = String(e)
+    } finally {
+      blessTamperingLoading = false
+    }
+  }
+
   async function deleteTask() {
     deleting = true
     try {
@@ -315,6 +332,16 @@
         title="Run fix-review skill to apply unresolved PR review comments"
       >
         {fixReviewLoading ? 'Starting...' : 'Fix Review Comments'}
+      </button>
+    {/if}
+    {#if canBlessTampering}
+      <button
+        type="button"
+        class="rounded bg-success-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-success-600 disabled:opacity-50"
+        onclick={blessTampering}
+        disabled={blessTamperingLoading}
+      >
+        {blessTamperingLoading ? 'Blessing...' : 'Bless & send to review'}
       </button>
     {/if}
     {#if fixingReviewAgent}
