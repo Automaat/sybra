@@ -423,7 +423,9 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 		if strings.TrimSpace(parsed.UnableToRunReason) == "" {
 			return false, "PASS used a no-app exemption but omitted unable_to_run_reason"
 		}
-		if !hasRegressionCheckEvidence(parsed.AutomatedChecks) {
+		if !hasRegressionCheckEvidence(parsed.AutomatedChecks) &&
+			!hasReadinessProbeEvidence(parsed.ReadinessProbe) &&
+			!hasManualProbeEvidence(parsed.ManualProbes) {
 			return false, "PASS used a no-app exemption without CLI/test harness evidence"
 		}
 		return true, ""
@@ -460,6 +462,8 @@ func normalizeSurfaceKind(s string) string {
 			return "web"
 		case "cli", "server", "desktop", "k8s":
 			return token
+		case "kubernetes":
+			return "k8s"
 		}
 	}
 	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
@@ -580,6 +584,11 @@ func hasManualProbeEvidence(probes manualProbeEvidenceList) bool {
 		}
 	}
 	return false
+}
+
+func hasReadinessProbeEvidence(probe evidenceText) bool {
+	raw := string(probe)
+	return hasRawRegressionCheckEvidence(raw) || hasRawManualProbeEvidence(raw)
 }
 
 func hasRegressionCheckEvidence(checks automatedCheckEvidenceList) bool {

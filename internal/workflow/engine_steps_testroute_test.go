@@ -597,6 +597,18 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			name:   "pass_with_kubernetes_surface_word",
+			status: "completed",
+			output: `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"internal Kubernetes informer event handler","app_started":true,` +
+				`"start_command":"kubectl apply -f testdata/informer.yaml",` +
+				`"readiness_probe":"kubectl get pods confirmed the controller pod was running",` +
+				`"manual_probes":[{"command":"kubectl describe pod controller","expected":"event handler active","actual":"event handler active"}],` +
+				`"automated_checks":[{"command":"go test ./internal/workflow","actual":"ok"}],"unable_to_run_reason":""}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
 			name:       "pass_with_weak_raw_ui_status_rejected",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"web","app_started":true,"start_command":"npm run dev","readiness_probe":"curl /health -> ok","manual_probes":["UI status: not tested"],"automated_checks":["npm test -> pass"],"unable_to_run_reason":""}`,
@@ -656,6 +668,14 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			name:       "pass_with_library_exemption_requires_regression_check",
 			status:     "completed",
 			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"","manual_probes":[],"automated_checks":[{"command":"go test ./internal/foo","actual":"ok"}],"unable_to_run_reason":"pure internal-library refactor"}`,
+			bodySuffix: "",
+			want:       testOutcomePass,
+			wantStatus: "completed",
+		},
+		{
+			name:       "pass_with_library_exemption_accepts_readiness_probe_evidence",
+			status:     "completed",
+			output:     `{"verdict":"PASS","outcome":"pass","failures_markdown":"","surface_kind":"library","app_started":false,"start_command":"","readiness_probe":"go test ./internal/foo -> ok","manual_probes":[],"automated_checks":[],"unable_to_run_reason":"pure internal-library refactor"}`,
 			bodySuffix: "",
 			want:       testOutcomePass,
 			wantStatus: "completed",
