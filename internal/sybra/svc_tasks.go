@@ -433,17 +433,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
-	ag, err := s.agents.Run(agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
-		HeadlessPermissionMode: posture,
-		// MaxTurns intentionally not inherited: review agents need
-		// enough turns to fetch the PR, run the skill, and write findings.
-	})
+	ag, err := s.agents.Run(staffCodeReviewRunConfig(t, prompt, dir, posture))
 	if err != nil {
 		return err
 	}

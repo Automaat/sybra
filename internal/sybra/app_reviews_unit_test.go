@@ -50,6 +50,17 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	}
 }
 
+func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
+	cfg := staffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
+
+	if cfg.Provider != staffCodeReviewProvider {
+		t.Fatalf("Provider = %q, want %q", cfg.Provider, staffCodeReviewProvider)
+	}
+	if cfg.Model != "opus" {
+		t.Fatalf("Model = %q, want opus", cfg.Model)
+	}
+}
+
 func newExperienceProjectStore(t *testing.T, tmp string) *project.Store {
 	t.Helper()
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))

@@ -176,17 +176,7 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
-	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:                 current.ID,
-		Name:                   agent.RoleReview.AgentName(current.Title),
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
-		HeadlessPermissionMode: posture,
-		// MaxTurns intentionally not inherited: review agents need
-		// enough turns to fetch the PR, run the skill, and write findings.
-	})
+	ag, err := r.agents.Run(staffCodeReviewRunConfig(current, prompt, dir, posture))
 	if err != nil {
 		return err
 	}
@@ -203,6 +193,21 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber})
 	r.logger.Info("review.agent-started", "task_id", current.ID, "agent_id", ag.ID, "pr", current.PRNumber)
 	return nil
+}
+
+func staffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
+	return agent.RunConfig{
+		TaskID:                 t.ID,
+		Name:                   agent.RoleReview.AgentName(t.Title),
+		Mode:                   "headless",
+		Prompt:                 prompt,
+		Dir:                    dir,
+		Provider:               staffCodeReviewProvider,
+		Model:                  "opus",
+		HeadlessPermissionMode: posture,
+		// MaxTurns intentionally not inherited: review agents need
+		// enough turns to fetch the PR, run the skill, and write findings.
+	}
 }
 
 func reviewAgentAlreadyRan(t task.Task) bool {
