@@ -15,8 +15,9 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// PlannerTimeout bounds a single planner LLM invocation so a hung process
-// cannot wedge an expansion indefinitely.
+// PlannerTimeout bounds the whole Generate call — every attemptPlan retry
+// plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
+// expansion indefinitely.
 const PlannerTimeout = 5 * time.Minute
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot

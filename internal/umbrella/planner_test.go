@@ -420,6 +420,163 @@ func TestGenerate(t *testing.T) {
 			t.Error("expected derived cycle to be rejected")
 		}
 	})
+
+	flat := `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":2}`
+	edged := `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2","dependsOn":["o/r#1"]},{"issue":"o/r#3"}],"maxParallel":2}`
+
+	t.Run("re-ask fires and returns edged plan", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		run := func(_ context.Context, prompt string) (string, error) {
+			calls++
+			if strings.Contains(prompt, criticSuffix) {
+				return edged, nil
+			}
+			return flat, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("expected exactly one re-ask (2 total calls), got %d", calls)
+		}
+		var child2 PlannedChild
+		for _, c := range plan.Children {
+			if c.Ref == "o/r#2" {
+				child2 = c
+			}
+		}
+		if len(child2.DependsOn) != 1 || child2.DependsOn[0] != "o/r#1" {
+			t.Fatalf("expected edged re-ask plan to be returned: %+v", plan)
+		}
+	})
+
+	t.Run("re-ask still flat is accepted", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		run := func(_ context.Context, _ string) (string, error) {
+			calls++
+			return flat, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("expected exactly one re-ask (2 total calls), got %d", calls)
+		}
+		for _, c := range plan.Children {
+			if len(c.DependsOn) != 0 {
+				t.Fatalf("expected still-flat plan to be accepted as-is: %+v", plan)
+			}
+		}
+	})
+
+	t.Run("re-ask parse error falls back to original plan", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		run := func(_ context.Context, prompt string) (string, error) {
+			calls++
+			if strings.Contains(prompt, criticSuffix) {
+				return "not json", nil
+			}
+			return flat, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if calls != 1+plannerAttempts {
+			t.Fatalf("expected 1 initial call + %d re-ask attempts, got %d", plannerAttempts, calls)
+		}
+		if len(plan.Children) != 3 {
+			t.Fatalf("expected fallback to original flat plan: %+v", plan)
+		}
+	})
+
+	t.Run("re-ask context deadline falls back to original plan", func(t *testing.T) {
+		t.Parallel()
+		run := func(_ context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, criticSuffix) {
+				return "", context.DeadlineExceeded
+			}
+			return flat, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if len(plan.Children) != 3 {
+			t.Fatalf("expected fallback to original flat plan: %+v", plan)
+		}
+	})
+
+	t.Run("no re-ask when fewer than three non-done children", func(t *testing.T) {
+		t.Parallel()
+		calls := 0
+		run := func(_ context.Context, _ string) (string, error) {
+			calls++
+			return good, nil
+		}
+		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("expected no re-ask below the 3-child floor, got %d calls", calls)
+		}
+	})
+}
+
+func TestFlatPlanSuspicious(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		plan Plan
+		subs []SubIssue
+		want bool
+	}{
+		{
+			name: "below threshold not suspicious",
+			plan: Plan{Children: []PlannedChild{{Ref: "o/r#1"}, {Ref: "o/r#2"}}},
+			subs: subs("o/r#1", "o/r#2"),
+			want: false,
+		},
+		{
+			name: "flat with three non-done children is suspicious",
+			plan: Plan{Children: []PlannedChild{{Ref: "o/r#1"}, {Ref: "o/r#2"}, {Ref: "o/r#3"}}},
+			subs: subs("o/r#1", "o/r#2", "o/r#3"),
+			want: true,
+		},
+		{
+			name: "any derived edge is not suspicious",
+			plan: Plan{Children: []PlannedChild{
+				{Ref: "o/r#1"},
+				{Ref: "o/r#2", DependsOn: []string{"o/r#1"}},
+				{Ref: "o/r#3"},
+			}},
+			subs: subs("o/r#1", "o/r#2", "o/r#3"),
+			want: false,
+		},
+		{
+			name: "closed subs do not count toward the threshold",
+			plan: Plan{Children: []PlannedChild{{Ref: "o/r#1"}, {Ref: "o/r#2"}, {Ref: "o/r#3"}}},
+			subs: []SubIssue{
+				{Ref: "o/r#1", Closed: true},
+				{Ref: "o/r#2"},
+				{Ref: "o/r#3"},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := flatPlanSuspicious(tt.plan, tt.subs); got != tt.want {
+				t.Errorf("flatPlanSuspicious() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestFallbackPlannerRunnerPassesConfiguredClaudeModel(t *testing.T) {
