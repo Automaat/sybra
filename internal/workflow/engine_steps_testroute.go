@@ -56,10 +56,19 @@ type structuredTestOutput struct {
 	SurfaceKind       string                     `json:"surface_kind,omitempty"`
 	AppStarted        flexBool                   `json:"app_started,omitempty"`
 	StartCommand      string                     `json:"start_command,omitempty"`
-	ReadinessProbe    evidenceText               `json:"readiness_probe,omitempty"`
+	ReadinessProbe    readinessProbeEvidence     `json:"readiness_probe,omitzero"`
 	ManualProbes      manualProbeEvidenceList    `json:"manual_probes,omitempty"`
 	AutomatedChecks   automatedCheckEvidenceList `json:"automated_checks,omitempty"`
 	UnableToRunReason string                     `json:"unable_to_run_reason,omitempty"`
+}
+
+type readinessProbeEvidence struct {
+	Command  string       `json:"command"`
+	Actual   evidenceText `json:"actual"`
+	Output   evidenceText `json:"output"`
+	Observed evidenceText `json:"observed"`
+	Status   evidenceText `json:"status"`
+	Raw      string       `json:"-"`
 }
 
 type manualProbeEvidenceList []manualProbeEvidence
@@ -193,6 +202,36 @@ func (e *automatedCheckEvidence) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (e *readinessProbeEvidence) UnmarshalJSON(data []byte) error {
+	if raw, ok, err := unmarshalEvidenceString(data); err != nil || ok {
+		e.Raw = raw
+		return err
+	}
+	type alias readinessProbeEvidence
+	if err := json.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+	e.fillAliases()
+	return nil
+}
+
+func (e *readinessProbeEvidence) fillAliases() {
+	if strings.TrimSpace(string(e.Actual)) == "" {
+		e.Actual = firstNonEmptyText(e.Observed, e.Output, e.Status)
+	}
+}
+
+func (e *readinessProbeEvidence) text() string {
+	return strings.Join(collectNonEmptyStrings(
+		e.Command,
+		string(e.Actual),
+		string(e.Output),
+		string(e.Observed),
+		string(e.Status),
+		e.Raw,
+	), "\n")
+}
+
 func (e *manualProbeEvidence) fillAliases() {
 	if strings.TrimSpace(string(e.Actual)) == "" {
 		e.Actual = firstNonEmptyText(e.Observed, e.Output, e.Status)
@@ -258,6 +297,16 @@ func firstNonEmptyText(values ...evidenceText) evidenceText {
 		}
 	}
 	return ""
+}
+
+func collectNonEmptyStrings(values ...string) []string {
+	var out []string
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // prepareTestVerdictAttemptVars resets per-attempt verdict metadata before a
@@ -439,7 +488,7 @@ func hasManualPassEvidence(output string, t TaskInfo) (ok bool, reason string) {
 	if strings.TrimSpace(parsed.StartCommand) == "" {
 		return false, "PASS report omitted start_command"
 	}
-	if strings.TrimSpace(string(parsed.ReadinessProbe)) == "" {
+	if strings.TrimSpace(parsed.ReadinessProbe.text()) == "" {
 		return false, "PASS report omitted readiness_probe"
 	}
 	if !hasManualProbeEvidence(parsed.ManualProbes) {
@@ -454,6 +503,7 @@ func normalizeSurfaceKind(s string) string {
 	case "web", "cli", "server", "desktop", "k8s", "library", "docs", "none":
 		return lower
 	}
+	var fallback string
 	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	}) {
@@ -463,18 +513,16 @@ func normalizeSurfaceKind(s string) string {
 		case "cli", "server", "desktop", "k8s":
 			return token
 		case "kubernetes":
-			return "k8s"
-		}
-	}
-	for _, token := range strings.FieldsFunc(lower, func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	}) {
-		switch token {
+			if fallback == "" {
+				fallback = "k8s"
+			}
 		case "library", "docs", "none":
-			return token
+			if fallback == "" || fallback == "k8s" {
+				fallback = token
+			}
 		}
 	}
-	return ""
+	return fallback
 }
 
 func isManualTestExemption(surface string, t TaskInfo) bool {
@@ -586,9 +634,28 @@ func hasManualProbeEvidence(probes manualProbeEvidenceList) bool {
 	return false
 }
 
-func hasReadinessProbeEvidence(probe evidenceText) bool {
-	raw := string(probe)
-	return hasRawRegressionCheckEvidence(raw) || hasRawManualProbeEvidence(raw)
+func hasReadinessProbeEvidence(probe readinessProbeEvidence) bool {
+	cmd := strings.ToLower(strings.TrimSpace(probe.Command))
+	if cmd != "" {
+		if hasRegressionCheckCommandEvidence(cmd) {
+			return hasSuccessfulCheckResult(probe.Actual, probe.Output, probe.Observed, probe.Status)
+		}
+		if strings.TrimSpace(string(probe.Actual)) != "" ||
+			strings.TrimSpace(string(probe.Output)) != "" ||
+			strings.TrimSpace(string(probe.Observed)) != "" ||
+			strings.TrimSpace(string(probe.Status)) != "" {
+			return hasRawManualProbeEvidence(probe.text())
+		}
+	}
+	return hasRawReadinessProbeEvidence(probe.Raw)
+}
+
+func hasRawReadinessProbeEvidence(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" || !hasExecutedResultEvidence(lower) {
+		return false
+	}
+	return hasRawRegressionCheckEvidence(lower) || hasRawManualProbeEvidence(lower)
 }
 
 func hasRegressionCheckEvidence(checks automatedCheckEvidenceList) bool {
@@ -698,6 +765,12 @@ func hasRawRegressionCheckEvidence(raw string) bool {
 		return false
 	}
 	return hasRegressionCheckCommandEvidence(lower) && hasPositiveRegressionEvidence(lower)
+}
+
+func hasExecutedResultEvidence(lower string) bool {
+	return containsAny(lower,
+		"->", "=>", "ran ", "ran:", "executed", "exit code", "exit status",
+		"output:", "actual:", "observed:", "returned", "confirmed", "status:")
 }
 
 func hasManualActionEvidence(lower string) bool {
