@@ -28,6 +28,7 @@ type Store struct {
 	planDecisions *PlanningSidecarStore
 	planBrief     *PlanningSidecarStore
 	codeReviews   *CodeReviewStore
+	writeLocks    sync.Map // map task ID -> *sync.Mutex
 	cacheMu       sync.RWMutex
 	listCache     []Task
 	listValid     bool
@@ -85,6 +86,15 @@ func (s *Store) PlanBrief() *PlanningSidecarStore {
 
 func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
+}
+
+func (s *Store) lockFor(id string) *sync.Mutex {
+	actual, _ := s.writeLocks.LoadOrStore(id, &sync.Mutex{})
+	mu, ok := actual.(*sync.Mutex)
+	if !ok {
+		panic("task store write lock has unexpected type")
+	}
+	return mu
 }
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
@@ -499,6 +509,10 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 }
 
 func (s *Store) Delete(id string) error {
+	mu := s.lockFor(id)
+	mu.Lock()
+	defer mu.Unlock()
+
 	t, err := s.read(id)
 	if err != nil {
 		return err
@@ -707,6 +721,10 @@ func applyUpdateFields(t *Task, u Update) error {
 }
 
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
+	mu := s.lockFor(id)
+	mu.Lock()
+	defer mu.Unlock()
+
 	t, err := s.read(id)
 	if err != nil {
 		return Task{}, "", err
@@ -941,6 +959,10 @@ func (s *Store) AddRunWithStatus(taskID string, run AgentRun, status *Status) er
 }
 
 func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
+	mu := s.lockFor(taskID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	t, err := s.Get(taskID)
 	if err != nil {
 		return err
@@ -1087,6 +1109,10 @@ func applyRunPatch(run *AgentRun, p RunPatch) {
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
+	mu := s.lockFor(taskID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	t, err := s.Get(taskID)
 	if err != nil {
 		return err
