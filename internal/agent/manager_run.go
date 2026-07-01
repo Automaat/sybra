@@ -90,10 +90,7 @@ func defaultReasoningEffort(effort string, prov Provider) string {
 	if effort != "" {
 		return effort
 	}
-	if prov != nil && prov.Name() == "codex" {
-		return DefaultReasoningEffort
-	}
-	return ""
+	return DefaultReasoningEffort
 }
 
 func validateRunDir(dir string) error {

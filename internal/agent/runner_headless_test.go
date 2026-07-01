@@ -1110,7 +1110,7 @@ func TestBuildHeadlessInvocation_EffortFlag(t *testing.T) {
 	}
 }
 
-func TestPrepareRunConfig_DefaultsReasoningEffortForCodex(t *testing.T) {
+func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 	t.Parallel()
 
 	hasPair := func(args []string, key, value string) bool {
@@ -1122,33 +1122,7 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForCodex(t *testing.T) {
 		return false
 	}
 
-	m := newParseTestManager(t)
-	cfg, prov, err := m.prepareRunConfig(RunConfig{
-		Provider: "codex",
-		Mode:     "headless",
-		Prompt:   "hi",
-		Dir:      t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("prepareRunConfig: %v", err)
-	}
-	if cfg.ReasoningEffort != DefaultReasoningEffort {
-		t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, DefaultReasoningEffort)
-	}
-	a := newRunningAgent("a", cfg, prov, func() {})
-	_, args, _, _, err := buildHeadlessInvocation(a, cfg)
-	if err != nil {
-		t.Fatalf("buildHeadlessInvocation: %v", err)
-	}
-	if !hasPair(args, "-c", "model_reasoning_effort="+DefaultReasoningEffort) {
-		t.Fatalf("expected -c model_reasoning_effort=%s in args; got %v", DefaultReasoningEffort, args)
-	}
-}
-
-func TestPrepareRunConfig_DoesNotDefaultEffortForEffortFlagProviders(t *testing.T) {
-	t.Parallel()
-
-	for _, provider := range []string{"claude", "copilot"} {
+	for _, provider := range []string{"claude", "codex", "copilot"} {
 		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
 			m := newParseTestManager(t)
@@ -1161,16 +1135,22 @@ func TestPrepareRunConfig_DoesNotDefaultEffortForEffortFlagProviders(t *testing.
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
 			}
-			if cfg.ReasoningEffort != "" {
-				t.Fatalf("ReasoningEffort = %q, want empty", cfg.ReasoningEffort)
+			if cfg.ReasoningEffort != DefaultReasoningEffort {
+				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, DefaultReasoningEffort)
 			}
 			a := newRunningAgent("a", cfg, prov, func() {})
 			_, args, _, _, err := buildHeadlessInvocation(a, cfg)
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
 			}
-			if slices.Contains(args, "--effort") {
-				t.Fatalf("--effort must be absent for default %s run; got %v", provider, args)
+			if provider == "codex" {
+				if !hasPair(args, "-c", "model_reasoning_effort="+DefaultReasoningEffort) {
+					t.Fatalf("expected -c model_reasoning_effort=%s in args; got %v", DefaultReasoningEffort, args)
+				}
+				return
+			}
+			if !hasPair(args, "--effort", DefaultReasoningEffort) {
+				t.Fatalf("expected --effort %s in %s args; got %v", DefaultReasoningEffort, provider, args)
 			}
 		})
 	}
@@ -1179,19 +1159,24 @@ func TestPrepareRunConfig_DoesNotDefaultEffortForEffortFlagProviders(t *testing.
 func TestPrepareRunConfig_PreservesExplicitReasoningEffort(t *testing.T) {
 	t.Parallel()
 
-	m := newParseTestManager(t)
-	cfg, _, err := m.prepareRunConfig(RunConfig{
-		Provider:        "codex",
-		Mode:            "headless",
-		Prompt:          "hi",
-		Dir:             t.TempDir(),
-		ReasoningEffort: "high",
-	})
-	if err != nil {
-		t.Fatalf("prepareRunConfig: %v", err)
-	}
-	if cfg.ReasoningEffort != "high" {
-		t.Fatalf("ReasoningEffort = %q, want high", cfg.ReasoningEffort)
+	for _, provider := range []string{"claude", "codex", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+			m := newParseTestManager(t)
+			cfg, _, err := m.prepareRunConfig(RunConfig{
+				Provider:        provider,
+				Mode:            "headless",
+				Prompt:          "hi",
+				Dir:             t.TempDir(),
+				ReasoningEffort: "high",
+			})
+			if err != nil {
+				t.Fatalf("prepareRunConfig: %v", err)
+			}
+			if cfg.ReasoningEffort != "high" {
+				t.Fatalf("ReasoningEffort = %q, want high", cfg.ReasoningEffort)
+			}
+		})
 	}
 }
 
