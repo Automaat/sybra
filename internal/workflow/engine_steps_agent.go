@@ -156,6 +156,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 
 	dir := wfExec.Variables[WorkflowVarDir]
+	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
+	cleanRetryRef := wfExec.Variables[cleanRetryKey]
 
 	// Stop stale agents left over from earlier workflow steps (e.g. an
 	// interactive plan agent with reuse_agent that outlived plan approval).
@@ -173,7 +175,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
-	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, assignment)
+	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
 		// recovery loop won the race for this task). That agent will run and its
@@ -200,6 +202,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
+	}
+	if cleanRetryRef != "" {
+		delete(wfExec.Variables, cleanRetryKey)
 	}
 
 	// Track which task+step this agent was spawned for so HandleAgentComplete

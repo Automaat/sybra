@@ -286,6 +286,7 @@ type startCall struct {
 	NeedsWorktree                                    bool
 	OneShot                                          bool
 	OutputSchema                                     string
+	CleanRetryRef                                    string
 	Assignment                                       AgentAssignment
 }
 
@@ -313,7 +314,7 @@ func newMockAgents() *mockAgents {
 	}
 }
 
-func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -325,7 +326,8 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 		TaskID: taskID, Role: role, Mode: mode, Model: model, Provider: provider,
 		Prompt: prompt, Dir: dir, AllowedTools: allowedTools,
 		NeedsWorktree: needsWorktree, OneShot: oneShot, OutputSchema: outputSchema,
-		Assignment: assignment,
+		CleanRetryRef: cleanRetryRef,
+		Assignment:    assignment,
 	})
 	m.running[taskID] = id
 	m.roles[taskID+"/"+role] = id
@@ -777,6 +779,165 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	// Workflow should have advanced past triage or failed.
 	if ti.Workflow.CurrentStep == "triage" && ti.Workflow.State == ExecRunning {
 		t.Fatal("expected workflow to advance past triage after retry exhaustion")
+	}
+}
+
+func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+		baseline   string
+		wantClean  string
+	}{
+		{
+			name:       "first hang retries",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantRetry:  "1",
+			baseline:   "abc123",
+			wantClean:  "abc123",
+		},
+		{
+			name:       "budget exhausted escalates",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog hang: retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogHangRetryKey("implement")] = tc.retries
+			}
+			if tc.baseline != "" {
+				vars[tamperBaselineVar("implement")] = tc.baseline
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: "watchdog hang: no stream activity",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+					StartedAt:   time.Now().UTC(),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("StartAgent calls = %d, want %d", got, tc.wantStarts)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogHangRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("hang retry var = %q, want %q", got.Workflow.Variables[watchdogHangRetryKey("implement")], tc.wantRetry)
+			}
+			if tc.wantStarts > 0 {
+				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
+					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)
+				}
+				if got.Workflow.Variables[watchdogHangCleanRetryKey("implement")] != "" {
+					t.Fatalf("clean retry marker = %q, want cleared after dispatch", got.Workflow.Variables[watchdogHangCleanRetryKey("implement")])
+				}
+			}
+		})
+	}
+}
+
+func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: looping on toolchain setup",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent calls = %d, want 0 for watchdog loop escalation", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != "watchdog: looping on toolchain setup" {
+		t.Fatalf("status_reason = %q, want loop reason preserved", got.StatusReason)
+	}
+}
+
+func TestResumeStalled_WatchdogHangDoesNotBurnBudgetWhileAgentRunning(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog hang: no stream activity",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "p", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want only the pre-existing running agent", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Workflow.Variables[watchdogHangRetryKey("implement")] != "" {
+		t.Fatalf("hang retry var = %q, want empty while agent is still running", got.Workflow.Variables[watchdogHangRetryKey("implement")])
+	}
+	if got.StatusReason != "watchdog hang: no stream activity" {
+		t.Fatalf("status_reason = %q, want marker preserved until no agent is running", got.StatusReason)
 	}
 }
 
@@ -1308,7 +1469,7 @@ func TestCancelWorkflow(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 
 	// Pretend an agent is running for "active" so we can verify it's stopped.
-	if _, _, _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, "", AgentAssignment{}); err != nil {
+	if _, _, _, err := agents.StartAgent("active", "pr-fix", "headless", "sonnet", "claude", "p", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
 
@@ -1879,7 +2040,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 		},
 	})
 	// Simulate an agent already running.
-	_, _, _, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "", AgentAssignment{})
+	_, _, _, _ = agents.StartAgent("t1", "implementation", "headless", "sonnet", "", "test", "", nil, false, false, "", "", AgentAssignment{})
 
 	initialCalls := agents.CallCount()
 	engine.ResumeStalled()
@@ -2368,7 +2529,7 @@ func TestExecRunAgentReuseAgentSkillAlias(t *testing.T) {
 		}},
 	}}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "claude", "initial", "", nil, false, false, "", AgentAssignment{}); err != nil {
+	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "claude", "initial", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
 		t.Fatal(err)
 	}
 	step := &Step{ID: "followup", Type: StepRunAgent, Config: StepConfig{Role: "implementation", ReuseAgent: true, Prompt: "Run /sybra-test"}}

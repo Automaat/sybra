@@ -495,6 +495,96 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 	}
 }
 
+func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(bare)
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	baselineOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse baseline: %v", err)
+	}
+	baseline := strings.TrimSpace(string(baselineOut))
+
+	excludeOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-path", "info/exclude").Output()
+	if err != nil {
+		t.Fatalf("git-path exclude: %v", err)
+	}
+	excludePath := strings.TrimSpace(string(excludeOut))
+	if err := os.WriteFile(excludePath, []byte("NOTES.md\n"), 0o644); err != nil {
+		t.Fatalf("write exclude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "NOTES.md"), []byte("keep scratchpad"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "partial.go"), []byte("package partial\n"), 0o644); err != nil {
+		t.Fatalf("write partial: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "partial.go"},
+		{"commit", "-m", "partial agent commit"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# partial edit"), 0o644); err != nil {
+		t.Fatalf("write dirty readme: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "untracked.agent-dirty"), []byte("dirty"), 0o644); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+
+	if err := ResetWorktreeForRetry(wtPath, baseline); err != nil {
+		t.Fatalf("ResetWorktreeForRetry: %v", err)
+	}
+
+	headOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse head: %v", err)
+	}
+	if got := strings.TrimSpace(string(headOut)); got != baseline {
+		t.Fatalf("HEAD = %q, want baseline %q", got, baseline)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "partial.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial.go exists after reset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "untracked.agent-dirty")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("untracked.agent-dirty exists after clean: %v", err)
+	}
+	if notes, err := os.ReadFile(filepath.Join(wtPath, "NOTES.md")); err != nil || string(notes) != "keep scratchpad" {
+		t.Fatalf("NOTES.md = %q, err %v; want preserved ignored scratchpad", notes, err)
+	}
+	statusOut, _ := exec.Command("git", "-C", wtPath, "status", "--porcelain").Output()
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("expected clean tracked working tree, got: %s", statusOut)
+	}
+}
+
 func TestCreateWorktreeInvalidBase(t *testing.T) {
 	t.Parallel()
 	if !hasGit() {

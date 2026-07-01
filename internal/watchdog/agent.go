@@ -224,7 +224,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 		"recommendation", verdict.Recommendation, "reason", verdict.Reason)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
-	w.applyVerdict(ag, verdict)
+	w.applyVerdict(ag, trigger, verdict)
 
 	// Acknowledge a loop-triggered inspection that left the agent running, so the
 	// same unchanged signature does not re-trigger every debounce window. Skip
@@ -236,19 +236,28 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 	}
 }
 
-func (w *Watchdog) applyVerdict(ag *agent.Agent, verdict agent.InspectorVerdict) {
+func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	switch verdict.Recommendation {
 	case "stop":
-		// Set human-required before stopping so the AdvanceStep callback
-		// (fired via onComplete after the agent exits) sees the escalated
-		// status and the workflow stops instead of advancing to the next step.
+		// Set the task state before stopping so the completion callback sees the
+		// intended recovery path. A stall stop is a retryable hang; the workflow
+		// engine consumes the marker from ResumeStalled. Loop/budget stops remain
+		// immediate human-required escalations.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
 				reason = "watchdog: " + verdict.Reason
 			}
+			status := task.StatusHumanRequired
+			if trigger == "stall" {
+				status = task.StatusInProgress
+				reason = "watchdog hang"
+				if verdict.Reason != "" {
+					reason = "watchdog hang: " + verdict.Reason
+				}
+			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
-				Status:       task.Ptr(task.StatusHumanRequired),
+				Status:       task.Ptr(status),
 				StatusReason: task.Ptr(reason),
 			}); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)

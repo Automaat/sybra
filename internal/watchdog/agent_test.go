@@ -42,7 +42,7 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, agent.InspectorVerdict{
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "ambiguous environment churn",
 		Recommendation: "escalate",
@@ -73,7 +73,7 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, agent.InspectorVerdict{
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "looping on toolchain setup",
 		Recommendation: "stop",
@@ -91,6 +91,37 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatal("stopAgent not called on stop verdict")
+	}
+}
+
+func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "no stream activity",
+		Recommendation: "stop",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "watchdog hang: no stream activity" {
+		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on stall stop verdict")
 	}
 }
 
@@ -143,7 +174,7 @@ func TestApplyVerdict_NudgeLiveTransportDeliversInPlace(t *testing.T) {
 		nudgeAgent: func(_, text string) error { nudged = text; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, agent.InspectorVerdict{
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "fix the root cause first",
@@ -179,7 +210,7 @@ func TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops(t *testing.T) {
 		nudgeAgent: func(_, _ string) error { return errors.New("no active transport") },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, agent.InspectorVerdict{
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "stop retrying the failing command",
