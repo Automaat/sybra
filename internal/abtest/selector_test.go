@@ -317,6 +317,28 @@ experiments:
 	}
 }
 
+func TestConfigValidatePromptAndSkillAllowWorkflowOnlySubject(t *testing.T) {
+	for _, kind := range []string{"prompt", "skill"} {
+		t.Run(kind, func(t *testing.T) {
+			subject := &Subject{WorkflowID: "simple-task"}
+			if kind == "skill" {
+				subject.SkillName = "sybra-test"
+			}
+			cfg := Config{Experiments: []Experiment{{
+				ID:      kind + "-workflow-only",
+				Kind:    kind,
+				Subject: subject,
+				Variants: []Variant{
+					{ID: "v", Provider: "claude", Model: "sonnet", Weight: 1},
+				},
+			}}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -442,7 +464,7 @@ func TestConfigValidateRejectsMissingPromptSkillSubject(t *testing.T) {
 		subject *Subject
 	}{
 		{name: "missing", subject: nil},
-		{name: "whitespace", subject: &Subject{StepID: " \t", Role: "  "}},
+		{name: "whitespace", subject: &Subject{WorkflowID: "  ", StepID: " \t", Role: "  "}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

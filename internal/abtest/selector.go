@@ -151,8 +151,8 @@ func validateExperimentSubject(exp Experiment) error {
 	if exp.Subject == nil {
 		return fmt.Errorf("abtest: experiment %q kind %q requires subject", exp.ID, exp.KindValue())
 	}
-	if strings.TrimSpace(exp.Subject.StepID) == "" && strings.TrimSpace(exp.Subject.Role) == "" {
-		return fmt.Errorf("abtest: experiment %q kind %q requires subject step_id or role", exp.ID, exp.KindValue())
+	if strings.TrimSpace(exp.Subject.WorkflowID) == "" && strings.TrimSpace(exp.Subject.StepID) == "" && strings.TrimSpace(exp.Subject.Role) == "" {
+		return fmt.Errorf("abtest: experiment %q kind %q requires subject workflow_id, step_id, or role", exp.ID, exp.KindValue())
 	}
 	if exp.KindValue() == "skill" && strings.TrimSpace(exp.Subject.SkillName) == "" {
 		return fmt.Errorf("abtest: experiment %q kind %q requires subject skill_name", exp.ID, exp.KindValue())
