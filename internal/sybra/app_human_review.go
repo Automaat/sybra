@@ -594,7 +594,7 @@ func (h *humanReviewHandler) appendNote(taskID, header, body string) bool {
 // that onComplete applied all side-effects. verdictAlreadyRendered reads this
 // field as the durable rendered-marker.
 func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
-	if err := h.tasks.UpdateRun(taskID, agentID, map[string]any{"verdict_rendered": true}); err != nil {
+	if err := h.tasks.UpdateRun(taskID, agentID, task.RunPatch{VerdictRendered: task.Ptr(true)}); err != nil {
 		h.logger.Warn("human-review.mark-rendered", "task_id", taskID, "agent_id", agentID, "err", err)
 	}
 }

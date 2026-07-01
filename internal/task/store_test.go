@@ -647,13 +647,13 @@ func TestStoreUpdateRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = store.UpdateRun(created.ID, "agent-upd", map[string]any{
-		"state":                    "done",
-		"cost_usd":                 0.42,
-		"premium_requests":         1.5,
-		"result":                   "success",
-		"test_outcome":             "product_bug",
-		"test_failure_fingerprint": "abc123",
+	err = store.UpdateRun(created.ID, "agent-upd", RunPatch{
+		State:                  Ptr("done"),
+		CostUSD:                Ptr(0.42),
+		PremiumRequests:        Ptr(1.5),
+		Result:                 Ptr("success"),
+		TestOutcome:            Ptr("product_bug"),
+		TestFailureFingerprint: Ptr("abc123"),
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
@@ -694,7 +694,7 @@ func TestStoreUpdateRunNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = store.UpdateRun("nonexistent", "agent-x", map[string]any{"state": "done"})
+	err = store.UpdateRun("nonexistent", "agent-x", RunPatch{State: Ptr("done")})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
@@ -715,7 +715,7 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = store.UpdateRun(created.ID, "agent-wrong", map[string]any{"state": "done"})
+	err = store.UpdateRun(created.ID, "agent-wrong", RunPatch{State: Ptr("done")})
 	if err == nil {
 		t.Fatal("expected error for wrong agent")
 	}
@@ -744,9 +744,9 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = store.UpdateRun(created.ID, "agent-s", map[string]any{
-		"state":      "done",
-		"session_id": "ses-abc123",
+	err = store.UpdateRun(created.ID, "agent-s", RunPatch{
+		State:     Ptr("done"),
+		SessionID: Ptr("ses-abc123"),
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
@@ -786,9 +786,9 @@ func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
 	}
 
 	// Empty session_id should not overwrite existing value
-	err = store.UpdateRun(created.ID, "agent-e", map[string]any{
-		"state":      "done",
-		"session_id": "",
+	err = store.UpdateRun(created.ID, "agent-e", RunPatch{
+		State:     Ptr("done"),
+		SessionID: Ptr(""),
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)

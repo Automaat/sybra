@@ -87,15 +87,15 @@ func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
 		}
 		run.CostUSD = estimate.CostUSD
 		if estimate.CostUSD > 0 && s.tasks != nil {
-			updates := map[string]any{"cost_usd": estimate.CostUSD}
+			patch := task.RunPatch{CostUSD: task.Ptr(estimate.CostUSD)}
 			if estimate.PremiumRequests > 0 {
-				updates["premium_requests"] = estimate.PremiumRequests
+				patch.PremiumRequests = task.Ptr(estimate.PremiumRequests)
 			}
 			if run.Provider == "" && estimate.Provider != "" {
-				updates["provider"] = estimate.Provider
+				patch.Provider = task.Ptr(estimate.Provider)
 				run.Provider = estimate.Provider
 			}
-			if err := s.tasks.UpdateRun(t.ID, run.AgentID, updates); err != nil && s.logger != nil {
+			if err := s.tasks.UpdateRun(t.ID, run.AgentID, patch); err != nil && s.logger != nil {
 				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
 			}
 		}

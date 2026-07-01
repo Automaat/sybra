@@ -27,7 +27,7 @@ type taskUpdate struct {
 type runUpdate struct {
 	taskID  string
 	agentID string
-	updates map[string]any
+	patch   task.RunPatch
 }
 
 func (f *fakeTasks) List() ([]task.Task, error) {
@@ -68,10 +68,10 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 	return task.Task{}, errNotFound
 }
 
-func (f *fakeTasks) UpdateRun(taskID, agentID string, updates map[string]any) error {
+func (f *fakeTasks) UpdateRun(taskID, agentID string, patch task.RunPatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.runUpdates = append(f.runUpdates, runUpdate{taskID: taskID, agentID: agentID, updates: updates})
+	f.runUpdates = append(f.runUpdates, runUpdate{taskID: taskID, agentID: agentID, patch: patch})
 	for i := range f.tasks {
 		if f.tasks[i].ID != taskID {
 			continue
@@ -80,8 +80,8 @@ func (f *fakeTasks) UpdateRun(taskID, agentID string, updates map[string]any) er
 			if f.tasks[i].AgentRuns[j].AgentID != agentID {
 				continue
 			}
-			if v, ok := updates["state"].(string); ok {
-				f.tasks[i].AgentRuns[j].State = v
+			if patch.State != nil {
+				f.tasks[i].AgentRuns[j].State = *patch.State
 			}
 			return nil
 		}

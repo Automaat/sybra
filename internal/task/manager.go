@@ -339,11 +339,11 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 }
 
 // UpdateRun updates fields on a specific agent run and emits task:updated.
-func (m *Manager) UpdateRun(taskID, agentID string, updates map[string]any) error {
+func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
 	defer mu.Unlock()
-	if err := m.store.UpdateRun(taskID, agentID, updates); err != nil {
+	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
 		return err
 	}
 	t, err := m.store.Get(taskID)

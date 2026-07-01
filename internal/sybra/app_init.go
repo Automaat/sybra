@@ -218,7 +218,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		OnComplete:   a.onAgentComplete,
 		ApprovalAddr: approvalAddr,
 		SessionSink: func(taskID, agentID, sessionID string) error {
-			return a.tasks.UpdateRun(taskID, agentID, map[string]any{"session_id": sessionID})
+			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
 		TaskExists: a.taskExistsForAgent,
 		LimitSink:  a.recordLimitSnapshot,

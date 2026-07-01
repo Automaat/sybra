@@ -127,15 +127,15 @@ func (a *taskAdapter) MarkTaskReviewed(id string) error {
 }
 
 func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
-	return a.tasks.UpdateRun(taskID, agentID, map[string]any{"protocol_violation": violation})
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{ProtocolViolation: task.Ptr(violation)})
 }
 
 func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error {
-	updates := map[string]any{"test_outcome": outcome}
+	patch := task.RunPatch{TestOutcome: task.Ptr(outcome)}
 	if fingerprint != "" {
-		updates["test_failure_fingerprint"] = fingerprint
+		patch.TestFailureFingerprint = task.Ptr(fingerprint)
 	}
-	return a.tasks.UpdateRun(taskID, agentID, updates)
+	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
 func (a *taskAdapter) AppendTaskBody(id, content string) error {
