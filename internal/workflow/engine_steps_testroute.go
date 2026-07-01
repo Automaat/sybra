@@ -1112,46 +1112,63 @@ func reportScanLines(text string) []string {
 
 func hasGroundedFailureEvidence(report string) bool {
 	lower := strings.ToLower(report)
+	// Header-style keywords ("command:", "actual:", "expected:", "output:", ...)
+	// are routed through hasLabeledSection rather than a plain substring check:
+	// a bare header with nothing after the colon (e.g. a report that stacks
+	// "**Command:**\n**Actual:**\n**Expected:**" with no real content) must not
+	// satisfy the gate. Only phrases that are inherently content-bearing on
+	// their own (a shell invocation, a stated exit code) stay as plain
+	// substring checks.
 	hasCommand := containsAny(lower,
-		"command run:", "command:", "reproduction steps:", "repro:", "steps:",
-		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ")
-	hasObserved := containsAny(lower,
-		"actual output:", "actual:", "observed:", "observed output:",
-		"command output:", "stdout:", "stderr:", "exit code",
-		"verbatim output:", "actual behavior:", "actual behaviour:",
-		"observed behavior:", "observed behaviour:", "printed:", "rendered:") || hasReportLinePrefix(report, "output:")
-	hasExpected := containsAny(lower,
-		"expected:", "expected output:", "expected behavior:", "expected behaviour:",
-		"requirement tested:", "task expectation:", "task requirement:", "task says",
-		"task requires", "from the task", "violates", "should render", "should not") ||
+		"go test ", "npm run ", "pnpm ", "yarn ", "curl ", "rg ", "grep ") ||
 		hasLabeledSection(report,
-			"expected", "requirement tested", "task expectation", "task requirement")
+			"command run", "command", "reproduction steps", "repro", "steps")
+	hasObserved := containsAny(lower, "exit code") ||
+		hasLabeledSection(report,
+			"actual output", "actual", "observed output", "observed",
+			"command output", "stdout", "stderr", "output",
+			"verbatim output", "actual behavior", "actual behaviour",
+			"observed behavior", "observed behaviour", "printed", "rendered")
+	hasExpected := containsAny(lower,
+		"task says", "task requires", "from the task", "violates",
+		"should render", "should not") ||
+		hasLabeledSection(report,
+			"expected", "expected output", "expected behavior", "expected behaviour",
+			"requirement tested", "task expectation", "task requirement")
 	hasGrounding := containsAny(lower,
 		"code evidence:", "quoted code", "current source", "src/", "internal/",
 		"current file", "current code line evidence:", "code line evidence:",
 		"source quote", ".go:", ".ts:", ".tsx:", ".svelte:", ".js:", ".jsx:")
-	// Labeled-section fallbacks tolerate annotated headers such as
-	// "**Expected (task's own words):**", where a parenthetical qualifier sits
-	// between the keyword and the colon and defeats the literal substring checks
-	// above — otherwise a well-grounded FAIL report is wrongly rejected as
-	// missing_evidence and forces an unnecessary human escalation.
-	hasCommand = hasCommand || hasLabeledSection(report,
-		"command run", "command", "reproduction steps", "repro", "steps")
-	hasObserved = hasObserved || hasLabeledSection(report,
-		"actual output", "actual", "observed output", "observed",
-		"command output", "stdout", "stderr", "output")
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
+// bareLabelLineRe matches a report line that is nothing but a markdown-decorated
+// label followed by a colon, e.g. "command:" or "actual (observed):" with all
+// decoration already stripped — no evidence content on the same line.
+var bareLabelLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]*:\**$`)
+
 // hasLabeledSection reports whether any report line is a markdown section header
 // whose label starts with one of keywords, optionally followed by a parenthetical
-// qualifier, then a colon — e.g. "**Expected (task's own words):**". Leading
-// markdown decoration (*, _, >, #, -) is stripped before matching. This keeps
+// qualifier, then a colon — e.g. "**Expected (task's own words):**" — AND that
+// header is backed by real evidence: either inline text after the colon, or a
+// fenced code block / non-header line immediately following it. Leading markdown
+// decoration (*, _, >, #, -) is stripped before matching. This keeps
 // hasGroundedFailureEvidence from rejecting grounded FAIL reports that annotate
-// their evidence headers.
+// their evidence headers, while still rejecting reports that stack empty headers
+// with no real content to game the gate.
 func hasLabeledSection(report string, keywords ...string) bool {
-	for _, line := range reportScanLines(report) {
-		lower := strings.ToLower(strings.TrimSpace(line))
+	rawLines := strings.Split(report, "\n")
+	inFence := false
+	for i, line := range rawLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
 		lower = strings.TrimLeft(lower, "*_>#- \t")
 		for _, kw := range keywords {
 			rest, ok := strings.CutPrefix(lower, kw)
@@ -1164,10 +1181,35 @@ func hasLabeledSection(report string, keywords ...string) bool {
 					rest = strings.TrimSpace(rest[idx+1:])
 				}
 			}
-			if strings.HasPrefix(rest, ":") {
+			if !strings.HasPrefix(rest, ":") {
+				continue
+			}
+			afterColon := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest[1:]), "*"))
+			if afterColon != "" || hasFollowingContent(rawLines, i) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// hasFollowingContent reports whether the bare label line at rawLines[idx] (a
+// header with nothing after its colon) is backed by real evidence on a
+// following line — a fenced code block, or any non-blank line that is not
+// itself another bare label. It stops at the first non-blank line: a header
+// immediately followed by another header, with nothing in between, has no
+// content of its own.
+func hasFollowingContent(rawLines []string, idx int) bool {
+	for j := idx + 1; j < len(rawLines); j++ {
+		trimmed := strings.TrimSpace(rawLines[j])
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			return true
+		}
+		stripped := strings.TrimLeft(strings.ToLower(trimmed), "*_>#- \t")
+		return !bareLabelLineRe.MatchString(stripped)
 	}
 	return false
 }

@@ -251,6 +251,20 @@ func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsBareHeadersWithNoContent(t *testing.T) {
+	t.Parallel()
+
+	// A report that stacks empty headers with nothing after the colon must not
+	// satisfy the gate — only the "code evidence" header here carries real
+	// content, so command/observed/expected evidence is missing despite the
+	// headers being present.
+	report := "**Command:**\n\n**Actual:**\n\n**Expected:**\n\n**Code evidence:** internal/x.go:1\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare-header report with no evidence accepted as grounded; want rejected")
+	}
+}
+
 func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	t.Parallel()
 
