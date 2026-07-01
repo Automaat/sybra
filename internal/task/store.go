@@ -972,8 +972,9 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 // RunPatch describes a partial update to an AgentRun. Every field is a
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
-// (see applyRunVerdict/applyRunTestOutcome/applyRunIdentity) so a caller
-// can't accidentally blank out a durable value with a zero value.
+// (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
+// HeadSHA and string verdict/test/session values ignore empty strings, and
+// VerdictRendered is a latch that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
 	State   *string

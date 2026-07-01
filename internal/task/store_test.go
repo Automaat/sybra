@@ -781,14 +781,21 @@ func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-e", Mode: "headless", State: "running", SessionID: "existing-id"}); err != nil {
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID:   "agent-e",
+		Mode:      "headless",
+		State:     "running",
+		SessionID: "existing-id",
+		HeadSHA:   "existing-sha",
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Empty session_id should not overwrite existing value
+	// Empty durable values should not overwrite existing values.
 	err = store.UpdateRun(created.ID, "agent-e", RunPatch{
 		State:     Ptr("done"),
 		SessionID: Ptr(""),
+		HeadSHA:   Ptr(""),
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
@@ -800,6 +807,9 @@ func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
 	}
 	if got.AgentRuns[0].SessionID != "existing-id" {
 		t.Errorf("SessionID = %q, want existing-id preserved", got.AgentRuns[0].SessionID)
+	}
+	if got.AgentRuns[0].HeadSHA != "existing-sha" {
+		t.Errorf("HeadSHA = %q, want existing-sha preserved", got.AgentRuns[0].HeadSHA)
 	}
 }
 
