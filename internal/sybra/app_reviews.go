@@ -29,6 +29,8 @@ const (
 	reviewSmallFiles     = 5
 )
 
+const staffCodeReviewProvider = "claude"
+
 const transientFetchWarnThreshold = 3
 
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
