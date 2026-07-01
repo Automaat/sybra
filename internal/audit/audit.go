@@ -5,6 +5,7 @@ import "time"
 const (
 	EventTaskCreated              = "task.created"
 	EventTaskStatusChanged        = "task.status_changed"
+	EventTaskTamperBlessed        = "task.tamper_blessed"
 	EventTaskDeleted              = "task.deleted"
 	EventAgentStarted             = "agent.started"
 	EventAgentCompleted           = "agent.completed"

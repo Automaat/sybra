@@ -6,6 +6,7 @@
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { StartReview, StartFixReview } from '$lib/api'
   import { statusOptionsFor, STATUS_MAP, coreStatus } from '../../lib/statuses.js'
+  import { isTamperFlaggedTask } from '$lib/tamper.js'
 
   interface Props {
     task: Task
@@ -28,6 +29,7 @@
   let copiedBranch = $state(false)
   let reviewLoading = $state(false)
   let fixReviewLoading = $state(false)
+  let blessLoading = $state(false)
   let error = $state('')
   let menuOpen = $state(false)
 
@@ -85,6 +87,7 @@
     ),
   )
   const isReviewTask = $derived(task.tags?.includes('review') ?? false)
+  const isTamperFlagged = $derived(isTamperFlaggedTask(task))
 
   $effect(() => {
     if (editingTitle && titleInputRef) titleInputRef.focus()
@@ -210,6 +213,19 @@
     }
   }
 
+  async function blessTampering() {
+    if (blessLoading || !isTamperFlagged) return
+    blessLoading = true
+    error = ''
+    try {
+      await taskStore.blessTampering(task.id)
+    } catch (e) {
+      error = String(e)
+    } finally {
+      blessLoading = false
+    }
+  }
+
   async function deleteTask() {
     deleting = true
     try {
@@ -315,6 +331,16 @@
         title="Run fix-review skill to apply unresolved PR review comments"
       >
         {fixReviewLoading ? 'Starting...' : 'Fix Review Comments'}
+      </button>
+    {/if}
+    {#if isTamperFlagged}
+      <button
+        type="button"
+        class="rounded bg-success-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-success-700 disabled:opacity-50"
+        onclick={blessTampering}
+        disabled={blessLoading}
+      >
+        {blessLoading ? 'Blessing...' : 'Bless & send to review'}
       </button>
     {/if}
     {#if fixingReviewAgent}

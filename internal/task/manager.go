@@ -219,9 +219,6 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 		mu.Unlock()
 		return t, err
 	}
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-
 	var (
 		fireHook            bool
 		prevStatus, newStat string
@@ -237,6 +234,8 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 		m.recordFiredStatus(id, newStat)
 		m.onStatusHook(id, prevStatus, newStat)
 	}
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil
 }
 

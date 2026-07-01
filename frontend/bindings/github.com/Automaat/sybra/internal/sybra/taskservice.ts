@@ -14,6 +14,20 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 // @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
+/**
+ * BlessTampering records a human bless for a tamper-flagged task and sends it
+ * back to the review workflow.
+ */
+export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(2730384212, taskID).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
 /**
  * CreateTask creates a new task and starts a matching workflow.
  * If the title is a GitHub issue URL, fetches real title/body from GitHub.
@@ -32,6 +46,15 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * GetTamperReport returns the detector report artifact for a tamper-flagged task.
+ */
+export function GetTamperReport(taskID: string): $CancellablePromise<$models.TamperReportDTO> {
+    return $Call.ByID(929982993, taskID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetTask returns a single task by ID.
  */
 export function GetTask(id: string): $CancellablePromise<task$0.Task> {
@@ -46,7 +69,7 @@ export function GetTask(id: string): $CancellablePromise<task$0.Task> {
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -70,4 +93,5 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
 
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
-const $$createType1 = $Create.Array($$createType0);
+const $$createType1 = $models.TamperReportDTO.createFrom;
+const $$createType2 = $Create.Array($$createType0);

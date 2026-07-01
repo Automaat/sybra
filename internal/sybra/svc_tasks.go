@@ -1,13 +1,18 @@
 package sybra
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
@@ -26,6 +31,7 @@ type TaskService struct {
 	workflowEngine      *workflow.Engine
 	worktrees           *worktree.Manager
 	sandboxes           *sandbox.Manager
+	artifacts           *artifact.Store
 	wg                  *sync.WaitGroup
 	logger              *slog.Logger
 	audit               *audit.Logger
@@ -38,6 +44,23 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+}
+
+type TamperReportDTO struct {
+	TaskID          string             `json:"taskId"`
+	ReportAvailable bool               `json:"reportAvailable"`
+	Base            string             `json:"base"`
+	Range           string             `json:"range"`
+	Files           []string           `json:"files"`
+	Findings        []TamperFindingDTO `json:"findings"`
+}
+
+type TamperFindingDTO struct {
+	File     string `json:"file"`
+	Category string `json:"category"`
+	Severity string `json:"severity"`
+	Rule     string `json:"rule"`
+	Detail   string `json:"detail"`
 }
 
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
@@ -64,6 +87,105 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 		return t, err
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+// GetTamperReport returns the detector report artifact for a tamper-flagged task.
+func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
+	if s.artifacts == nil {
+		return emptyTamperReport(taskID), nil
+	}
+	data, _, err := s.artifacts.Read(taskID, "tamper-report.json")
+	if err != nil {
+		if isMissingArtifactError(err) {
+			return emptyTamperReport(taskID), nil
+		}
+		return TamperReportDTO{}, err
+	}
+	var report TamperReportDTO
+	if err := json.Unmarshal(data, &report); err != nil {
+		return TamperReportDTO{}, fmt.Errorf("parse tamper report: %w", err)
+	}
+	report.TaskID = taskID
+	report.ReportAvailable = true
+	if report.Files == nil {
+		report.Files = []string{}
+	}
+	if report.Findings == nil {
+		report.Findings = []TamperFindingDTO{}
+	}
+	return report, nil
+}
+
+func emptyTamperReport(taskID string) TamperReportDTO {
+	return TamperReportDTO{
+		TaskID:          taskID,
+		ReportAvailable: false,
+		Files:           []string{},
+		Findings:        []TamperFindingDTO{},
+	}
+}
+
+func isMissingArtifactError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), ": not found")
+}
+
+// BlessTampering records a human bless for a tamper-flagged task and sends it
+// back to the review workflow.
+func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
+	cur, err := s.tasks.Get(taskID)
+	if err != nil {
+		return cur, err
+	}
+	if cur.Status != task.StatusHumanRequired || !workflow.IsTamperFlaggedReason(cur.StatusReason) {
+		return cur, conflictError("task is not tamper-flagged")
+	}
+
+	merged := append([]string(nil), cur.Tags...)
+	tagAdded := false
+	if !slices.Contains(merged, workflow.TamperBlessedTag) {
+		merged = append(merged, workflow.TamperBlessedTag)
+		tagAdded = true
+	}
+
+	report, reportErr := s.GetTamperReport(taskID)
+	reportAvailable := reportErr == nil && report.ReportAvailable
+	findingCount := 0
+	highSeverityFindingCount := 0
+	if reportErr == nil {
+		findingCount = len(report.Findings)
+		for i := range report.Findings {
+			if report.Findings[i].Severity == "high" {
+				highSeverityFindingCount++
+			}
+		}
+	} else if s.logger != nil {
+		s.logger.Warn("task.tamper-report.audit-skipped", "task_id", taskID, "err", reportErr)
+	}
+
+	updated, err := s.tasks.Update(taskID, task.Update{
+		Tags:   task.Ptr(merged),
+		Status: task.Ptr(task.StatusReadyReview),
+	})
+	if err != nil {
+		return updated, err
+	}
+	if s.audit != nil {
+		if logErr := s.audit.Log(audit.Event{
+			Type:   audit.EventTaskTamperBlessed,
+			TaskID: taskID,
+			Data: map[string]any{
+				"previousStatus":           string(cur.Status),
+				"previousStatusReason":     cur.StatusReason,
+				"reportAvailable":          reportAvailable,
+				"findingCount":             findingCount,
+				"highSeverityFindingCount": highSeverityFindingCount,
+				"tagAdded":                 tagAdded,
+			},
+		}); logErr != nil && s.logger != nil {
+			s.logger.Warn("task.tamper-bless.audit", "task_id", taskID, "err", logErr)
+		}
+	}
+	return updated, nil
 }
 
 func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
