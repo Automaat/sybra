@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -25,11 +26,16 @@ type SubIssue struct {
 }
 
 // PlannedChild is one child task the planner proposes: the sub-issue it maps
-// to, the issue refs it depends on, and an advisory parallel-track label.
+// to, its change-surface metadata, and an advisory parallel-track label.
+// DependsOn may still carry explicit edges the model emits; deriveEdges unions
+// in edges derived from Touches/Produces/Requires on top of them.
 type PlannedChild struct {
 	Ref       string   `json:"issue"`
 	DependsOn []string `json:"dependsOn"`
 	Track     string   `json:"track,omitempty"`
+	Touches   []string `json:"touches,omitempty"`
+	Produces  []string `json:"produces,omitempty"`
+	Requires  []string `json:"requires,omitempty"`
 }
 
 // Plan is the dependency DAG the planner extracts from an umbrella body.
@@ -68,6 +74,7 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 			lastErr = err
 			continue
 		}
+		plan.deriveEdges(subs)
 		if err := plan.validate(subs); err != nil {
 			lastErr = err
 			continue
@@ -81,11 +88,12 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 }
 
 // BuildPrompt renders the planner instruction. The model is asked to emit ONLY
-// a JSON object covering every sub-issue, reading the umbrella body for
-// dependency edges and parallel tracks.
+// a JSON object covering every sub-issue with its change-surface metadata
+// (touches/produces/requires); dependency edges are derived from that
+// metadata afterward (see deriveEdges), not read from the model.
 func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	var b strings.Builder
-	b.WriteString("You are decomposing a GitHub umbrella issue into a dependency DAG of its sub-issues.\n")
+	b.WriteString("You are decomposing a GitHub umbrella issue into per-sub-issue change-surface metadata.\n")
 	b.WriteString("Umbrella: " + umbrellaRef + "\n\n")
 	b.WriteString("Umbrella body:\n")
 	b.WriteString(umbrellaBody)
@@ -97,16 +105,23 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	b.WriteString("\nFor each sub-issue, infer which other sub-issues it depends on (must finish first)")
-	b.WriteString(" and an optional parallel-track label. Read dependency markers like \"← #N\"")
-	b.WriteString(" (depends on N) and \"⛔ blocks all\", plus prose describing serial vs parallel work.\n\n")
-	b.WriteString("Serialize sub-issues that will edit the SAME files or code area. If two sub-issues")
-	b.WriteString(" clearly modify the same module, file, or feature surface (e.g. both rework the same")
-	b.WriteString(" report, view, schema, or endpoint), add a dependsOn edge so the later one waits and")
-	b.WriteString(" they merge one at a time — concurrent PRs touching the same files collide on merge.")
-	b.WriteString(" Only run sub-issues in parallel when their changes are clearly disjoint.\n\n")
+	b.WriteString("\nFor each sub-issue, report its change surface, not a dependency graph — dependency\n")
+	b.WriteString("edges are derived automatically from this metadata:\n")
+	b.WriteString("  - touches: files, directories, or packages it changes (e.g. \"internal/foo\",")
+	b.WriteString(" \"internal/bar/x.go\"). Sub-issues whose touches overlap on the SAME files or code")
+	b.WriteString(" area get serialized automatically — they merge one at a time instead of colliding,")
+	b.WriteString(" so only list a path here when the change is genuinely disjoint from siblings that")
+	b.WriteString(" should not wait on it.\n")
+	b.WriteString("  - produces: symbols, APIs, schemas, or flags it creates or changes (e.g. \"Foo.Run\",")
+	b.WriteString(" \"Tier type\").\n")
+	b.WriteString("  - requires: symbols, APIs, schemas, or flags it needs another sub-issue to have")
+	b.WriteString(" produced first. A sub-issue that requires something another produces will")
+	b.WriteString(" automatically depend on it.\n")
+	b.WriteString("  - dependsOn (optional): explicit hard-ordering edges the metadata above can't")
+	b.WriteString(" express, e.g. markers like \"← #N\" or \"⛔ blocks all\" in the umbrella body. Kept in")
+	b.WriteString(" addition to the derived edges, not instead of them.\n\n")
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
-	b.WriteString(`{"children":[{"issue":"<ref>","dependsOn":["<ref>"],"track":"<label>"}],"maxParallel":<int>}` + "\n")
+	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"track":"<label>"}],"maxParallel":<int>}` + "\n")
 	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn must")
 	b.WriteString(" reference only the sub-issues above; never create a cycle; maxParallel is the max")
 	b.WriteString(" children to run at once (default 5).\n")
@@ -197,6 +212,131 @@ func (p *Plan) resolve(idx refIndex) error {
 	return nil
 }
 
+// deriveEdges rewrites each child's DependsOn to union in edges derived from
+// change-surface metadata, on top of whatever explicit edges the model already
+// emitted: a child requiring a symbol depends on every child that produces it,
+// and a child touching a file/package another (earlier-ordered) child also
+// touches depends on that earlier child. subs establishes the canonical
+// ordering used both to pick the "earlier" side of a touch overlap and to make
+// edge derivation deterministic regardless of plan.Children's slice order.
+// resolve must run first so every ref here is canonical. Legacy input with no
+// touches/produces/requires is a no-op: DependsOn is left unchanged.
+func (p *Plan) deriveEdges(subs []SubIssue) {
+	order := make(map[string]int, len(subs))
+	for i, s := range subs {
+		order[NormalizeIssueRef(s.Ref)] = i
+	}
+
+	producers := make(map[string][]string, len(p.Children)) // normalized symbol -> producing refs
+	touchesByRef := make(map[string][]string, len(p.Children))
+	refs := make([]string, 0, len(p.Children))
+	for i := range p.Children {
+		c := &p.Children[i]
+		refs = append(refs, c.Ref)
+		for _, sym := range c.Produces {
+			if key := normalizeSymbol(sym); key != "" {
+				producers[key] = append(producers[key], c.Ref)
+			}
+		}
+		touchesByRef[c.Ref] = c.Touches
+	}
+	for key, list := range producers {
+		sort.Slice(list, func(a, b int) bool { return order[list[a]] < order[list[b]] })
+		producers[key] = list
+	}
+	// Sorted by subs order (not plan.Children order) so touch-overlap edges are
+	// derived the same way regardless of how the model ordered its children.
+	sort.Slice(refs, func(a, b int) bool { return order[refs[a]] < order[refs[b]] })
+
+	for i := range p.Children {
+		c := &p.Children[i]
+		seen := make(map[string]bool, len(c.DependsOn))
+		merged := make([]string, 0, len(c.DependsOn))
+		add := func(ref string) {
+			if ref == "" || ref == c.Ref || seen[ref] {
+				return
+			}
+			seen[ref] = true
+			merged = append(merged, ref)
+		}
+		for _, d := range c.DependsOn {
+			add(d)
+		}
+		for _, req := range c.Requires {
+			key := normalizeSymbol(req)
+			if key == "" {
+				continue
+			}
+			for _, producer := range producers[key] {
+				add(producer)
+			}
+		}
+		if len(c.Touches) > 0 {
+			for _, other := range refs {
+				if order[other] >= order[c.Ref] {
+					continue
+				}
+				if touchesOverlap(c.Touches, touchesByRef[other]) {
+					add(other)
+				}
+			}
+		}
+		c.DependsOn = merged
+	}
+}
+
+// normalizeSymbol canonicalizes a produces/requires entry for comparison.
+func normalizeSymbol(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// normalizePath canonicalizes a touches entry for comparison: trims
+// whitespace, strips a leading "./", and trims a trailing "/".
+func normalizePath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "./")
+	s = strings.TrimSuffix(s, "/")
+	return s
+}
+
+// pathsOverlap reports whether two touches entries name the same file/package
+// or one is a slash-delimited ancestor directory of the other, compared
+// segment by segment — never by string prefix, so "internal/foo" does not
+// overlap "internal/foobar".
+func pathsOverlap(a, b string) bool {
+	na, nb := normalizePath(a), normalizePath(b)
+	if na == "" || nb == "" {
+		return false
+	}
+	if na == nb {
+		return true
+	}
+	sa := strings.Split(na, "/")
+	sb := strings.Split(nb, "/")
+	shorter, longer := sa, sb
+	if len(sb) < len(sa) {
+		shorter, longer = sb, sa
+	}
+	for i, seg := range shorter {
+		if longer[i] != seg {
+			return false
+		}
+	}
+	return true
+}
+
+// touchesOverlap reports whether any path in a overlaps any path in b.
+func touchesOverlap(a, b []string) bool {
+	for _, pa := range a {
+		for _, pb := range b {
+			if pathsOverlap(pa, pb) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // validate confirms the plan covers every sub-issue exactly once and is
 // acyclic. resolve must run first so all refs are canonical.
 func (p *Plan) validate(subs []SubIssue) error {
@@ -205,7 +345,8 @@ func (p *Plan) validate(subs []SubIssue) error {
 	}
 	seen := make(map[string]bool, len(p.Children))
 	nodes := make([]Node, 0, len(p.Children))
-	for _, c := range p.Children {
+	for i := range p.Children {
+		c := &p.Children[i]
 		if seen[c.Ref] {
 			return fmt.Errorf("planner listed %s more than once", c.Ref)
 		}

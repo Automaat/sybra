@@ -31,7 +31,8 @@ func ChildSpecs(plan Plan, subs []SubIssue, existingRefs map[string]bool) []Chil
 	}
 
 	var specs []ChildSpec
-	for _, c := range plan.Children {
+	for i := range plan.Children {
+		c := &plan.Children[i]
 		key := NormalizeIssueRef(c.Ref)
 		if existingRefs[key] || closed[key] {
 			continue
