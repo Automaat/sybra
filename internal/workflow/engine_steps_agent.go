@@ -223,7 +223,9 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 	providerAllowed := func(provider string) bool {
 		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
 	}
-	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed)
+	// evalPassed is nil: wiring a live internal/prompteval.Gate here is out of
+	// scope for the offline runner itself (see internal/prompteval doc comment).
+	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, nil)
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -149,6 +150,7 @@ func (a *App) logAutomationsSummary() {
 	if len(projectTypes) == 0 {
 		projectTypes = []string{"*"}
 	}
+	promptevalRunner := prompteval.SelectRunner(a.cfg.Evaluation.Offline)
 	a.logger.Info("app.automations",
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
@@ -157,6 +159,8 @@ func (a *App) logAutomationsSummary() {
 		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
 		"loop_agents_enabled", loopAgentsEnabled,
+		"prompteval_runner", promptevalRunner.Name(),
+		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
 	)
 }
 

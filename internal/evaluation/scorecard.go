@@ -860,7 +860,7 @@ func configuredExperimentRoles(experiments []abtest.Experiment, rows []Compariso
 		if exp.ID == "" || !exp.EnabledValue() || len(exp.Variants) == 0 {
 			continue
 		}
-		eligible, _ := abtest.EligibleVariants(*exp, nil)
+		eligible, _ := abtest.EligibleVariants(*exp, nil, nil)
 		variants := make([]string, 0, len(eligible))
 		disabled := map[string]bool{}
 		for i := range exp.Variants {
