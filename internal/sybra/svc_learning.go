@@ -49,7 +49,7 @@ func (s *LearningService) StoreDigest(d learning.Digest) (bool, error) {
 	}
 	stored, err := s.store.Put(d)
 	if err != nil {
-		return false, err
+		return stored, err
 	}
 	if stored && s.emit != nil {
 		s.emit(events.LearningSummary, d)

@@ -153,7 +153,10 @@ func (s *Store) Latest() (Digest, bool, error) {
 }
 
 // readOneLocked reads and parses a single named file relative to s.dir.
-// Caller must hold mu.
+// A row that parses but fails Digest validation (missing since/until/
+// reportDigest, or until<=since) is treated the same as a missing file —
+// Put never persists such a row, so encountering one means the file was
+// tampered with or corrupted out of band. Caller must hold mu.
 func (s *Store) readOneLocked(name string) (Digest, bool, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, name))
 	if err != nil {
@@ -165,6 +168,9 @@ func (s *Store) readOneLocked(name string) (Digest, bool, error) {
 	var d Digest
 	if err := json.Unmarshal(data, &d); err != nil {
 		return Digest{}, false, fmt.Errorf("learning: parse %s: %w", name, err)
+	}
+	if !validDigest(d) {
+		return Digest{}, false, nil
 	}
 	return d, true, nil
 }
@@ -194,6 +200,10 @@ func (s *Store) readAllLocked() ([]Digest, error) {
 		var d Digest
 		if jErr := json.Unmarshal(data, &d); jErr != nil {
 			slog.Warn("learning.list.parse-err", "file", e.Name(), "err", jErr)
+			continue
+		}
+		if !validDigest(d) {
+			slog.Warn("learning.list.invalid-digest", "file", e.Name())
 			continue
 		}
 		digests = append(digests, d)
@@ -242,6 +252,16 @@ func (s *Store) enforceCapLocked(digests []Digest) error {
 		}
 	}
 	return nil
+}
+
+// validDigest reports whether d satisfies the same invariants Put enforces
+// before persisting (since/until/reportDigest present, until after since).
+// readOneLocked/readAllLocked apply it to rows read back off disk so a file
+// that was corrupted or hand-edited out of band isn't surfaced as a valid
+// digest.
+func validDigest(d Digest) bool {
+	return !d.Since.IsZero() && !d.Until.IsZero() &&
+		strings.TrimSpace(d.ReportDigest) != "" && d.Until.After(d.Since)
 }
 
 // sortNewestFirst orders digests by GeneratedAt descending, breaking ties by
