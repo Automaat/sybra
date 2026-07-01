@@ -13,6 +13,7 @@ import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } f
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
+import type { Digest } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
 
@@ -135,6 +136,10 @@ export function StartReview(arg1: string): Promise<void> { return call('ReviewSe
 
 // StatsService
 export function GetStats(): Promise<StatsResponse> { return call('StatsService', 'GetStats') }
+
+// LearningService
+export function ListDigests(): Promise<Array<Digest>> { return call('LearningService', 'ListDigests') }
+export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('LearningService', 'GetLatestDigest') }
 
 // TaskService
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }

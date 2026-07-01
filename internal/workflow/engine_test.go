@@ -941,6 +941,131 @@ func TestResumeStalled_WatchdogHangDoesNotBurnBudgetWhileAgentRunning(t *testing
 	}
 }
 
+func TestImplementRetry_SucceedsWithinBudget(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	for range 2 {
+		agentID := agents.RunningAgentID("t1")
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{
+			StepID:  "implement",
+			Status:  "failed",
+			AgentID: agentID,
+			Output:  "provider connection closed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 3 {
+		t.Fatalf("implementation calls after retries = %d, want 3", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Fatalf("status = %q, want retry to keep task active", ti.Status)
+	}
+	if ti.Workflow.CurrentStep != "implement" {
+		t.Fatalf("current step = %q, want implement", ti.Workflow.CurrentStep)
+	}
+
+	agentID := agents.RunningAgentID("t1")
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "completed",
+		AgentID: agentID,
+		Output:  "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, _ = tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep == "implement" && ti.Workflow.State == ExecRunning {
+		t.Fatal("implement success after retries did not advance")
+	}
+	if got := ti.Workflow.CountStep("implement"); got != 3 {
+		t.Fatalf("implement records = %d, want 3", got)
+	}
+}
+
+func TestImplementRetry_ExhaustedFallsThrough(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	for range 3 {
+		agentID := agents.RunningAgentID("t1")
+		agents.SimulateComplete("t1")
+		if err := engine.AdvanceStep("t1", StepOutput{
+			StepID:  "implement",
+			Status:  "failed",
+			AgentID: agentID,
+			Output:  "provider connection closed",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 3 {
+		t.Fatalf("implementation calls = %d, want 3 total attempts", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep == "implement" && ti.Workflow.State == ExecRunning {
+		t.Fatal("expected workflow to advance after retry exhaustion")
+	}
+	if got := ti.Workflow.CountStep("implement"); got != 3 {
+		t.Fatalf("implement records = %d, want 3", got)
+	}
+}
+
+func TestImplementRetry_SkipsWhenTaskAlreadyHumanRequired(t *testing.T) {
+	_, tasks, agents, engine := startTestSimpleImplement(t)
+
+	agentID := agents.RunningAgentID("t1")
+	if err := tasks.UpdateTaskStatus("t1", "human-required", "watchdog escalation"); err != nil {
+		t.Fatal(err)
+	}
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "failed",
+		AgentID: agentID,
+		Output:  "agent stopped after watchdog escalation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := roleStartCount(agents, "implementation"); got != 1 {
+		t.Fatalf("implementation calls = %d, want no retry after human-required", got)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed after terminal transition", ti.Workflow.State)
+	}
+}
+
+func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *Engine) {
+	t.Helper()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed", Output: "triaged"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.LastCall().Role; got != "implementation" {
+		t.Fatalf("last agent role = %q, want implementation", got)
+	}
+	return store, tasks, agents, engine
+}
+
 // TestRetry_SupersededAgentLateCompletionDropped reproduces the production bug
 // where a stopped/superseded agent's late (double-delivered) completion was
 // credited to the still-current step and burned its retry budget before the
@@ -1002,11 +1127,15 @@ func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
 }
 
 func triageStartCount(agents *mockAgents) int {
+	return roleStartCount(agents, "triage")
+}
+
+func roleStartCount(agents *mockAgents, role string) int {
 	agents.mu.Lock()
 	defer agents.mu.Unlock()
 	n := 0
 	for i := range agents.calls {
-		if agents.calls[i].Role == "triage" {
+		if agents.calls[i].Role == role {
 			n++
 		}
 	}
@@ -2235,6 +2364,190 @@ func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	}
 }
 
+func TestExecRunAgentVariantPrompt(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+		ID:             "prompt-exp",
+		Kind:           "prompt",
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Subject:        &abtest.Subject{StepID: "implement"},
+		Variants: []abtest.Variant{{
+			ID: "copy-v2", Provider: "claude", Model: "sonnet", Weight: 1,
+			PromptTransform: &abtest.PromptTransform{Op: "template", Text: "variant {{.Task.ID}} {{.Step.ID}}"},
+		}},
+	}}})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control {{.Task.ID}}"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Prompt != "variant t1 implement" {
+		t.Fatalf("Prompt = %q", call.Prompt)
+	}
+	if call.Assignment.PromptTransform == nil || call.Assignment.PromptTransform.Op != "template" {
+		t.Fatalf("assignment prompt transform = %+v", call.Assignment.PromptTransform)
+	}
+}
+
+func TestExecRunAgentSkillAlias(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+		ID:             "skill-exp",
+		Kind:           "skill",
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Subject:        &abtest.Subject{StepID: "implement", SkillName: "sybra-test"},
+		Variants: []abtest.Variant{{
+			ID: "skill-v2", Provider: "codex", Model: "gpt-5.5", Weight: 1,
+			SkillAliases: map[string]string{"sybra-test": "sybra-test-v2"},
+		}},
+	}}})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "Run /sybra-test, not /tmp/sybra-test.md."}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Prompt != "Run /sybra-test-v2, not /tmp/sybra-test.md." {
+		t.Fatalf("Prompt = %q", call.Prompt)
+	}
+	if got := call.Assignment.SkillAliases["sybra-test"]; got != "sybra-test-v2" {
+		t.Fatalf("assignment alias = %q", got)
+	}
+}
+
+func TestExecRunAgentVariantSubjectMismatchDoesNotApplyPayload(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	tests := []struct {
+		name    string
+		subject *abtest.Subject
+		step    Step
+		wfID    string
+	}{
+		{
+			name:    "step",
+			subject: &abtest.Subject{StepID: "implement", SkillName: "sybra-test"},
+			step:    Step{ID: "evaluate", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /sybra-test"}},
+			wfID:    "test-simple",
+		},
+		{
+			name:    "workflow",
+			subject: &abtest.Subject{WorkflowID: "target-workflow", SkillName: "sybra-test"},
+			step:    Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /sybra-test"}},
+			wfID:    "other-workflow",
+		},
+		{
+			name:    "skill",
+			subject: &abtest.Subject{StepID: "implement", SkillName: "sybra-test"},
+			step:    Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "control /other-skill"}},
+			wfID:    "test-simple",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			enabled := true
+			engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+				ID:             "subject-exp",
+				Kind:           "skill",
+				AssignmentUnit: "stage",
+				Roles:          []string{"implementation"},
+				Subject:        tt.subject,
+				Variants: []abtest.Variant{{
+					ID: "variant", Provider: "claude", Model: "sonnet", Weight: 1,
+					PromptTransform: &abtest.PromptTransform{Op: "prepend", Text: "variant: "},
+					SkillAliases:    map[string]string{"sybra-test": "sybra-test-v2"},
+				}},
+			}}})
+			tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+			wfExec := &Execution{WorkflowID: tt.wfID, State: ExecRunning, Variables: map[string]string{}}
+			ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: tt.step, Vars: wfExec.Variables}
+
+			if err := engine.execRunAgent("t1", &tt.step, wfExec, ctx); err != nil {
+				t.Fatal(err)
+			}
+			call := agents.LastCall()
+			if call.Assignment.ExperimentID != "" {
+				t.Fatalf("assignment applied despite subject mismatch: %+v", call.Assignment)
+			}
+			if call.Prompt != tt.step.Config.Prompt {
+				t.Fatalf("prompt = %q, want %q", call.Prompt, tt.step.Config.Prompt)
+			}
+		})
+	}
+}
+
+func TestExecRunAgentReuseAgentSkillAlias(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+		ID:             "skill-exp",
+		Kind:           "skill",
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Subject:        &abtest.Subject{StepID: "followup", SkillName: "sybra-test"},
+		Variants: []abtest.Variant{{
+			ID: "skill-v2", Provider: "claude", Model: "sonnet", Weight: 1,
+			SkillAliases: map[string]string{"sybra-test": "sybra-test-v2"},
+		}},
+	}}})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if _, _, _, err := agents.StartAgent("t1", "implementation", "headless", "sonnet", "claude", "initial", "", nil, false, false, "", "", AgentAssignment{}); err != nil {
+		t.Fatal(err)
+	}
+	step := &Step{ID: "followup", Type: StepRunAgent, Config: StepConfig{Role: "implementation", ReuseAgent: true, Prompt: "Run /sybra-test"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := agents.SentPrompts()
+	if len(sent) != 1 {
+		t.Fatalf("SendPrompt count = %d, want 1", len(sent))
+	}
+	if sent[0].Message != "Run /sybra-test-v2" {
+		t.Fatalf("sent prompt = %q", sent[0].Message)
+	}
+}
+
 func TestSelectABVariantPropagatesExperimentKind(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
@@ -2256,7 +2569,13 @@ func TestSelectABVariantPropagatesExperimentKind(t *testing.T) {
 		}},
 	})
 
-	assignment, ok, err := engine.selectABVariant("t1", "implementation", "implement")
+	assignment, ok, err := engine.selectABVariant(abtest.SelectionContext{
+		TaskID:     "t1",
+		WorkflowID: "test-simple",
+		Role:       "implementation",
+		StepID:     "implement",
+		Prompt:     "Run /sybra-test",
+	})
 	if err != nil || !ok {
 		t.Fatalf("selectABVariant ok=%v err=%v", ok, err)
 	}

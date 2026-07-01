@@ -52,6 +52,15 @@ type AgentAssignment struct {
 	AssignmentUnit  string
 	AssignmentKey   string
 	ReasoningEffort string
+	PromptTransform *PromptTransform
+	SkillAliases    map[string]string
+}
+
+// PromptTransform mirrors the A/B assignment payload used to rewrite a prompt
+// template before workflow rendering.
+type PromptTransform struct {
+	Op   string
+	Text string
 }
 
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared

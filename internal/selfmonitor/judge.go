@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -39,16 +40,34 @@ func (j *ClaudeJudge) Judge(ctx context.Context, f health.Finding, ls *LogSummar
 
 	prompt := buildJudgePrompt(f, ls, t)
 
-	res, err := llmexec.RunJSON(ctx, prompt, llmexec.Options{Model: model, Logger: j.Logger, Gate: j.Gate})
+	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Verdict]{
+		Name:     "selfmonitor-judge",
+		Tier:     selfMonitorTier(model),
+		Validate: validateJudgeVerdict,
+	}, llmexec.Options{Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
 		return Verdict{Classification: VerdictPending}, err
 	}
-
-	v, err := parseJudgeVerdict([]byte(res.Text))
-	if err != nil {
-		return Verdict{Classification: VerdictPending}, fmt.Errorf("parse %s verdict: %w", res.Provider, err)
-	}
 	return v, nil
+}
+
+func selfMonitorTier(model string) llmjob.Tier {
+	model = strings.ToLower(model)
+	switch {
+	case strings.Contains(model, "opus"):
+		return llmjob.Deep
+	case strings.Contains(model, "haiku"):
+		return llmjob.Cheap
+	default:
+		return llmjob.Standard
+	}
+}
+
+func validateJudgeVerdict(v *Verdict) error {
+	if v.Classification == "" {
+		v.Classification = VerdictPending
+	}
+	return nil
 }
 
 func buildJudgePrompt(f health.Finding, ls *LogSummary, t *task.Task) string {
@@ -134,9 +153,7 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
 		return Verdict{}, fmt.Errorf("unmarshal verdict: %w", err)
 	}
-	if v.Classification == "" {
-		v.Classification = VerdictPending
-	}
+	_ = validateJudgeVerdict(&v)
 	return v, nil
 }
 

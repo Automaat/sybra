@@ -71,6 +71,11 @@ const (
 	// provider (claude, codex) flips healthy/unhealthy or a rate-limit window
 	// elapses. Payload matches provider.HealthEvent.
 	ProviderHealth = "provider:health"
+
+	// LearningSummary fires when a new Learning Digest is stored (not on a
+	// deduplicated repeat). Payload is a learning.Digest (see
+	// internal/learning/model.go).
+	LearningSummary = "learning:summary"
 )
 
 // AgentState returns the agent state event name for the given agent ID.

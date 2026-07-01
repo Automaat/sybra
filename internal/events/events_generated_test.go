@@ -87,5 +87,5 @@ var _ = strings.Join([]string{
 	OrchestratorState, MonitorReport, LoopAgentUpdated, ReviewsUpdated, RenovateUpdated,
 	Notification, TodoistSynced, IssuesUpdated,
 	BgOpStarted, BgOpProgress, BgOpCompleted, BgOpFailed,
-	AppQuitConfirm, StartupDegraded,
+	AppQuitConfirm, StartupDegraded, LearningSummary,
 }, ",")

@@ -61,6 +61,52 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	}
 }
 
+func TestRunJSONPassesCodexModel(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "codex"), `#!/bin/bash
+if [[ "$*" != *"--model gpt-5.4-mini"* ]]; then
+  echo "missing model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{
+		Provider: "codex",
+		Models:   map[string]string{"codex": "gpt-5.4-mini"},
+	})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "codex" {
+		t.Fatalf("provider = %q, want codex", res.Provider)
+	}
+}
+
+func TestRunJSONPassesCopilotModel(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "copilot"), `#!/bin/bash
+if [[ "$*" != *"--model gpt-5-mini"* ]]; then
+  echo "missing model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{
+		Provider: "copilot",
+		Models:   map[string]string{"copilot": "gpt-5-mini"},
+	})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "copilot" {
+		t.Fatalf("provider = %q, want copilot", res.Provider)
+	}
+}
+
 func TestRunJSONFallsBackOnCodexUsageLimit(t *testing.T) {
 	dir := t.TempDir()
 	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh

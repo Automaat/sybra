@@ -14,7 +14,7 @@ type Experiment struct {
 	ID             string    `yaml:"id" json:"id"`
 	Kind           string    `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Enabled        *bool     `yaml:"enabled" json:"enabled"`
-	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"
+	AssignmentUnit string    `yaml:"assignment_unit" json:"assignmentUnit"`      // "task" or "stage"; empty defaults to "stage"
 	Bracket        string    `yaml:"bracket,omitempty" json:"bracket,omitempty"` // "cheap" or "expensive"
 	Subject        *Subject  `yaml:"subject,omitempty" json:"subject,omitempty"`
 	Roles          []string  `yaml:"roles" json:"roles"`
@@ -31,14 +31,22 @@ type Subject struct {
 
 // Variant is one provider/model arm of an experiment.
 type Variant struct {
-	ID              string `yaml:"id" json:"id"`
-	Provider        string `yaml:"provider" json:"provider"`
-	Model           string `yaml:"model" json:"model"`
-	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
-	Tier            string `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
-	Version         string `yaml:"version,omitempty" json:"version,omitempty"`
-	Digest          string `yaml:"digest,omitempty" json:"digest,omitempty"`
-	Weight          int    `yaml:"weight" json:"weight"`
+	ID              string            `yaml:"id" json:"id"`
+	Provider        string            `yaml:"provider" json:"provider"`
+	Model           string            `yaml:"model" json:"model"`
+	ReasoningEffort string            `yaml:"reasoning_effort,omitempty" json:"reasoningEffort,omitempty"`
+	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"` // "cheap" or "expensive"
+	Version         string            `yaml:"version,omitempty" json:"version,omitempty"`
+	Digest          string            `yaml:"digest,omitempty" json:"digest,omitempty"`
+	PromptTransform *PromptTransform  `yaml:"prompt_transform,omitempty" json:"promptTransform,omitempty"`
+	SkillAliases    map[string]string `yaml:"skill_aliases,omitempty" json:"skillAliases,omitempty"`
+	Weight          int               `yaml:"weight" json:"weight"`
+}
+
+// PromptTransform describes an optional variant-specific prompt rewrite.
+type PromptTransform struct {
+	Op   string `yaml:"op,omitempty" json:"op,omitempty"`
+	Text string `yaml:"text,omitempty" json:"text,omitempty"`
 }
 
 // Assignment is the durable identity selected for a workflow stage.
@@ -51,6 +59,8 @@ type Assignment struct {
 	ReasoningEffort string
 	AssignmentUnit  string
 	AssignmentKey   string
+	PromptTransform *PromptTransform
+	SkillAliases    map[string]string
 }
 
 // DefaultConfig returns the default A/B suite split by price bracket: code

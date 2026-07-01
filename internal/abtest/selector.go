@@ -5,7 +5,14 @@ import (
 	"hash/fnv"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/skillinvoke"
 )
+
+// defaultReasoningEffort mirrors agent.DefaultReasoningEffort. It cannot be
+// imported directly: internal/agent transitively depends on internal/config,
+// which depends on internal/abtest, so importing agent here would cycle.
+const defaultReasoningEffort = "medium"
 
 // Select deterministically chooses a variant for the task/stage. It returns
 // ok=false when A/B is disabled or no enabled experiment matches the role.
@@ -13,20 +20,34 @@ func Select(cfg Config, taskID, role, stepID string) (Assignment, bool, error) {
 	return SelectEligible(cfg, taskID, role, stepID, nil)
 }
 
+// SelectionContext identifies the workflow step currently being assigned.
+type SelectionContext struct {
+	TaskID     string
+	WorkflowID string
+	Role       string
+	StepID     string
+	Prompt     string
+}
+
 // SelectEligible is Select with an optional provider eligibility predicate.
 // Ineligible positive-weight variants are excluded before hashing so machines
 // without a CLI do not silently fall back to a different provider while keeping
 // stale experiment attribution.
 func SelectEligible(cfg Config, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
+	return SelectEligibleForContext(cfg, SelectionContext{TaskID: taskID, Role: role, StepID: stepID}, providerAllowed)
+}
+
+// SelectEligibleForContext is SelectEligible with workflow subject context.
+func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool) (Assignment, bool, error) {
 	if !cfg.EnabledValue() {
 		return Assignment{}, false, nil
 	}
 	for i := range cfg.Experiments {
 		exp := cfg.Experiments[i]
-		if !exp.EnabledValue() || !roleMatches(exp.Roles, role) {
+		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
-		return selectFromExperiment(exp, taskID, role, stepID, providerAllowed)
+		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed)
 	}
 	return Assignment{}, false, nil
 }
@@ -63,6 +84,8 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 				ReasoningEffort: v.ReasoningEffort,
 				AssignmentUnit:  unit,
 				AssignmentKey:   key,
+				PromptTransform: clonePromptTransform(v.PromptTransform),
+				SkillAliases:    cloneSkillAliases(v.SkillAliases),
 			}, true, nil
 		}
 	}
@@ -94,6 +117,32 @@ func roleMatches(roles []string, role string) bool {
 		role = "implementation"
 	}
 	return slices.Contains(roles, role)
+}
+
+func subjectMatches(subject *Subject, ctx SelectionContext) bool {
+	if subject == nil {
+		return true
+	}
+	if want := strings.TrimSpace(subject.WorkflowID); want != "" && want != ctx.WorkflowID {
+		return false
+	}
+	if want := strings.TrimSpace(subject.StepID); want != "" && want != ctx.StepID {
+		return false
+	}
+	if want := strings.TrimSpace(subject.Role); want != "" && want != defaultRole(ctx.Role) {
+		return false
+	}
+	if want := strings.TrimSpace(subject.SkillName); want != "" && !skillinvoke.ContainsInvocation(ctx.Prompt, want) {
+		return false
+	}
+	return true
+}
+
+func defaultRole(role string) string {
+	if role == "" {
+		return "implementation"
+	}
+	return role
 }
 
 func validateExperiment(exp Experiment, providerAllowed func(string) bool) error {
@@ -171,6 +220,7 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		return nil
 	}
 	base := eligible[0]
+	baseEffort := normalizeReasoningEffort(base.ReasoningEffort)
 	for i := 1; i < len(eligible); i++ {
 		v := eligible[i]
 		if v.Provider != base.Provider {
@@ -179,11 +229,21 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 		if v.Model != base.Model {
 			return fmt.Errorf("abtest: experiment %q model mismatch on variant %q", exp.ID, v.ID)
 		}
-		if v.ReasoningEffort != base.ReasoningEffort {
+		if normalizeReasoningEffort(v.ReasoningEffort) != baseEffort {
 			return fmt.Errorf("abtest: experiment %q reasoning_effort mismatch on variant %q", exp.ID, v.ID)
 		}
 	}
 	return nil
+}
+
+// normalizeReasoningEffort treats an omitted effort as the agent runtime's
+// default, so a variant that explicitly sets "medium" is homogeneous with one
+// that leaves the field empty.
+func normalizeReasoningEffort(effort string) string {
+	if effort == "" {
+		return defaultReasoningEffort
+	}
+	return effort
 }
 
 func validateVariant(expID string, v Variant) error {
@@ -203,7 +263,77 @@ func validateVariant(expID string, v Variant) error {
 	default:
 		return fmt.Errorf("abtest: variant %q has invalid tier %q", v.ID, v.Tier)
 	}
+	if err := validatePromptTransform(v); err != nil {
+		return err
+	}
+	if err := validateSkillAliases(v); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validatePromptTransform(v Variant) error {
+	if v.PromptTransform == nil {
+		return nil
+	}
+	op := strings.TrimSpace(v.PromptTransform.Op)
+	text := strings.TrimSpace(v.PromptTransform.Text)
+	switch op {
+	case "":
+		return nil
+	case "replace", "template":
+		if text == "" {
+			return fmt.Errorf("abtest: variant %q prompt_transform %q requires text", v.ID, op)
+		}
+	case "prepend", "append":
+	default:
+		return fmt.Errorf("abtest: variant %q has invalid prompt_transform op %q", v.ID, v.PromptTransform.Op)
+	}
+	return nil
+}
+
+func validateSkillAliases(v Variant) error {
+	for from, to := range v.SkillAliases {
+		if from != strings.TrimSpace(from) {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
+		}
+		if to != strings.TrimSpace(to) {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
+		}
+		normalizedFrom, ok := skillinvoke.NormalizeName(from)
+		if !ok || normalizedFrom != strings.TrimPrefix(strings.TrimSpace(from), "/") {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias source %q", v.ID, from)
+		}
+		normalizedTo, ok := skillinvoke.NormalizeName(to)
+		if !ok || normalizedTo != strings.TrimPrefix(strings.TrimSpace(to), "/") {
+			return fmt.Errorf("abtest: variant %q has invalid skill alias target %q", v.ID, to)
+		}
+	}
+	return nil
+}
+
+func clonePromptTransform(in *PromptTransform) *PromptTransform {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneSkillAliases(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for from, to := range in {
+		normalizedFrom, okFrom := skillinvoke.NormalizeName(from)
+		normalizedTo, okTo := skillinvoke.NormalizeName(to)
+		if !okFrom || !okTo {
+			continue
+		}
+		out[normalizedFrom] = normalizedTo
+	}
+	return out
 }
 
 func hashKey(s string) uint64 {

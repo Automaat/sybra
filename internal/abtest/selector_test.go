@@ -2,6 +2,7 @@ package abtest
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestSelectDeterministic(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("Select repeat: ok=%v err=%v", ok, err)
 		}
-		if got != a {
+		if !reflect.DeepEqual(got, a) {
 			t.Fatalf("assignment changed: got %+v want %+v", got, a)
 		}
 	}
@@ -237,6 +238,85 @@ func TestSelectEligibleSkipsUnavailableProvider(t *testing.T) {
 	}
 }
 
+func TestSelectPromptSkillPayload(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "payload",
+		Kind:           "compound",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{{
+			ID:              "v2",
+			Provider:        "codex",
+			Model:           "gpt-5.5",
+			PromptTransform: &PromptTransform{Op: "append", Text: "\nUse the variant."},
+			SkillAliases:    map[string]string{"/sybra-test": "/sybra-test-v2"},
+			Weight:          1,
+		}},
+	}}}
+	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("Select ok=%v err=%v", ok, err)
+	}
+	if a.PromptTransform == nil || a.PromptTransform.Op != "append" || a.PromptTransform.Text != "\nUse the variant." {
+		t.Fatalf("PromptTransform = %+v", a.PromptTransform)
+	}
+	if got := a.SkillAliases["sybra-test"]; got != "sybra-test-v2" {
+		t.Fatalf("SkillAliases[sybra-test] = %q", got)
+	}
+}
+
+func TestValidateVariantPromptTransform(t *testing.T) {
+	tests := []struct {
+		name    string
+		pt      *PromptTransform
+		wantErr bool
+	}{
+		{name: "nil"},
+		{name: "empty op", pt: &PromptTransform{}},
+		{name: "prepend empty text", pt: &PromptTransform{Op: "prepend"}},
+		{name: "append empty text", pt: &PromptTransform{Op: "append"}},
+		{name: "replace text", pt: &PromptTransform{Op: "replace", Text: "x"}},
+		{name: "template text", pt: &PromptTransform{Op: "template", Text: "x"}},
+		{name: "replace empty", pt: &PromptTransform{Op: "replace"}, wantErr: true},
+		{name: "template whitespace", pt: &PromptTransform{Op: "template", Text: " \t"}, wantErr: true},
+		{name: "unknown", pt: &PromptTransform{Op: "merge", Text: "x"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", PromptTransform: tt.pt})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateVariantSkillAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		aliases map[string]string
+		wantErr bool
+	}{
+		{name: "nil"},
+		{name: "slash and no slash", aliases: map[string]string{"/sybra-test": "sybra-test-v2"}},
+		{name: "empty source", aliases: map[string]string{"": "sybra-test-v2"}, wantErr: true},
+		{name: "empty target", aliases: map[string]string{"sybra-test": ""}, wantErr: true},
+		{name: "whitespace source", aliases: map[string]string{" sybra-test": "sybra-test-v2"}, wantErr: true},
+		{name: "path source", aliases: map[string]string{"tmp/sybra-test": "sybra-test-v2"}, wantErr: true},
+		{name: "dollar target", aliases: map[string]string{"sybra-test": "$sybra-test-v2"}, wantErr: true},
+		{name: "uppercase target", aliases: map[string]string{"sybra-test": "Sybra-Test-V2"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", SkillAliases: tt.aliases})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfigValidateChecksDisabledExperiments(t *testing.T) {
 	disabled := false
 	cfg := Config{Experiments: []Experiment{{
@@ -404,6 +484,21 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing.T) {
+	cfg := Config{Experiments: []Experiment{{
+		ID:      "prompt-default-effort",
+		Kind:    "prompt",
+		Subject: &Subject{StepID: "implement"},
+		Variants: []Variant{
+			{ID: "explicit-medium", Provider: "claude", Model: "sonnet", ReasoningEffort: "medium", Weight: 1},
+			{ID: "omitted-effort", Provider: "claude", Model: "sonnet", ReasoningEffort: "", Weight: 1},
+		},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }
 

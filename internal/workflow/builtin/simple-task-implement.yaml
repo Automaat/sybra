@@ -19,6 +19,7 @@ steps:
       role: implementation
       mode: "{{.Task.AgentMode}}"
       model: sonnet
+      max_retries: 2
       prompt: >-
         Implement this task. When done, commit your work and push the branch to
         origin. Do NOT create a PR yet — the PR will be created after local code

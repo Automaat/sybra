@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -172,6 +173,14 @@ func (a *App) initStats() {
 	}
 }
 
+// initLocalStores wires the small local-only data stores that degrade to nil
+// on failure rather than blocking startup.
+func (a *App) initLocalStores() {
+	a.initArtifacts()
+	a.initExperience()
+	a.initLearning()
+}
+
 func (a *App) initExperience() {
 	store, err := experience.New(a.cfg.ExperiencesDir())
 	if err != nil {
@@ -179,6 +188,18 @@ func (a *App) initExperience() {
 		return
 	}
 	a.experience = store
+}
+
+// initLearning constructs the Learning Digest store. A failure degrades to a
+// nil store (LearningService methods no-op) rather than blocking startup —
+// the journal is advisory, not load-bearing for core task orchestration.
+func (a *App) initLearning() {
+	store, err := learning.New(config.LearningDir())
+	if err != nil {
+		a.logger.Warn("learning.init.degraded", "err", err)
+		return
+	}
+	a.learning = store
 }
 
 func (a *App) initLimits() {

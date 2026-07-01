@@ -856,20 +856,22 @@ type experimentRoleConfig struct {
 func configuredExperimentRoles(experiments []abtest.Experiment, rows []ComparisonBreakdown) map[string]experimentRoleConfig {
 	out := map[string]experimentRoleConfig{}
 	for i := range experiments {
-		exp := experiments[i]
+		exp := &experiments[i]
 		if exp.ID == "" || !exp.EnabledValue() || len(exp.Variants) == 0 {
 			continue
 		}
-		eligible, _ := abtest.EligibleVariants(exp, nil)
+		eligible, _ := abtest.EligibleVariants(*exp, nil)
 		variants := make([]string, 0, len(eligible))
 		disabled := map[string]bool{}
-		for _, v := range exp.Variants {
+		for i := range exp.Variants {
+			v := &exp.Variants[i]
 			if v.ID != "" && v.Weight <= 0 {
 				disabled[v.ID] = true
 			}
 		}
 		baseline := ""
-		for _, v := range eligible {
+		for i := range eligible {
+			v := &eligible[i]
 			if v.ID != "" {
 				if baseline == "" {
 					baseline = v.ID
@@ -880,7 +882,7 @@ func configuredExperimentRoles(experiments []abtest.Experiment, rows []Compariso
 		if len(variants) == 0 {
 			continue
 		}
-		for _, role := range configuredExperimentRoleNames(exp, rows) {
+		for _, role := range configuredExperimentRoleNames(*exp, rows) {
 			role = normalizedRole(role)
 			out[experimentRoleKey(exp.ID, role)] = experimentRoleConfig{
 				experimentID:       exp.ID,

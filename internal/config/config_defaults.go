@@ -363,7 +363,14 @@ func (c *Config) Directories() map[string]string {
 		"loop_agents": c.LoopAgentsDir,
 		"artifacts":   ArtifactsDir(),
 		"experiences": c.ExperiencesDir(),
+		"learning":    LearningDir(),
 	}
+}
+
+// LearningDir is the directory under ~/.sybra that holds persisted Learning
+// Digests (see internal/learning). Layout: <dir>/<hash>.json + latest.json.
+func LearningDir() string {
+	return filepath.Join(HomeDir(), "learning")
 }
 
 func (c *Config) ExperiencesDir() string {

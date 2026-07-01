@@ -144,9 +144,9 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
 }
 
 /**
- * V3Services exposes the App and its 12 services as v3 application.Service
+ * V3Services exposes the App and its 14 services as v3 application.Service
  * values. Order matches the historical v2 BindTargets so generated bindings
- * keep stable IDs across migrations.
+ * keep stable IDs across migrations — new services must only be appended.
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {

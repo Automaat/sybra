@@ -1,6 +1,12 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseInspectorOutput(t *testing.T) {
 	tests := []struct {
@@ -131,5 +137,37 @@ func TestExtractLastJSONObject_BraceInsideString(t *testing.T) {
 				t.Errorf("extractLastJSONObject(%q) = %q, want %q (brace inside string literal mis-parsed)", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestInspectPassesConfiguredClaudeModel(t *testing.T) {
+	dir := t.TempDir()
+	writeInspectorTestExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
+if [[ "$*" != *"--model claude-haiku-4-5-20251001"* ]]; then
+  echo "missing configured model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"result":"{\"stuck\":false,\"reason\":\"progress\",\"recommendation\":\"continue\"}"}'
+`)
+	t.Setenv("PATH", dir)
+
+	logger := slog.New(slog.DiscardHandler)
+	got, err := Inspect(context.Background(), logger, InspectInput{
+		AgentID:   "agent-1",
+		TaskTitle: "task",
+		Model:     "claude-haiku-4-5-20251001",
+	})
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got.Recommendation != "continue" {
+		t.Fatalf("Recommendation = %q, want continue", got.Recommendation)
+	}
+}
+
+func writeInspectorTestExe(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

@@ -4348,13 +4348,12 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 	if _, err := os.Stat(claudeArgsLog); err == nil {
 		t.Fatalf("claude args log exists; second step should have fallen back to codex")
 	}
-	data, err := os.ReadFile(codexArgsLog)
-	if err != nil {
-		t.Fatalf("read codex args: %v", err)
-	}
-	if !strings.Contains(string(data), "Second") {
-		t.Fatalf("codex args missing second-step prompt:\n%s", string(data))
-	}
+	var data []byte
+	waitFor(t, 10*time.Second, "codex args include second-step prompt", func() bool {
+		var rErr error
+		data, rErr = os.ReadFile(codexArgsLog)
+		return rErr == nil && strings.Contains(string(data), "Second")
+	})
 }
 
 const testHistoryCapWorkflowYAML = `id: test-history-cap
@@ -4585,6 +4584,8 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 
 func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
 	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-no-retry-implement", testNoRetryImplementWorkflowYAML)
+
 	tasks := make([]task.Task, 0, 3)
 	for i := 1; i <= 3; i++ {
 		created, err := env.tasks.Create(fmt.Sprintf("ooo-%d", i), "", "headless")
@@ -4592,7 +4593,7 @@ func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
 			t.Fatal(err)
 		}
 		wfExec := &workflow.Execution{
-			WorkflowID:  "test-simple",
+			WorkflowID:  "test-no-retry-implement",
 			CurrentStep: "implement",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{workflow.WorkflowVarDir: env.agentDir},
@@ -4625,6 +4626,28 @@ func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
 		}
 	}
 }
+
+const testNoRetryImplementWorkflowYAML = `
+id: test-no-retry-implement
+name: Test No Retry Implement
+description: Minimal no-retry implement workflow for completion-isolation tests.
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: evaluate
+
+  - id: evaluate
+    name: Evaluate
+    type: evaluate
+    next:
+      - goto: ""
+`
 
 func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 	env := setupE2E(t, "success")
