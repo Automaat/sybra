@@ -14,7 +14,7 @@ type taskAPI interface {
 	List() ([]task.Task, error)
 	Get(id string) (task.Task, error)
 	Update(id string, u task.Update) (task.Task, error)
-	UpdateRun(taskID, agentID string, updates map[string]any) error
+	UpdateRun(taskID, agentID string, patch task.RunPatch) error
 }
 
 // remediator runs the in-process actions for anomalies that don't need LLM
@@ -57,7 +57,7 @@ func (r *remediator) resetLostAgent(a Anomaly) (string, error) {
 	if t, err := r.tasks.Get(a.TaskID); err == nil {
 		for i := range slices.Backward(t.AgentRuns) {
 			if t.AgentRuns[i].State == "running" {
-				_ = r.tasks.UpdateRun(a.TaskID, t.AgentRuns[i].AgentID, map[string]any{"state": "stopped"})
+				_ = r.tasks.UpdateRun(a.TaskID, t.AgentRuns[i].AgentID, task.RunPatch{State: task.Ptr("stopped")})
 				break
 			}
 		}

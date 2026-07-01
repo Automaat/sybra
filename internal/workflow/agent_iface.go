@@ -45,6 +45,7 @@ type AgentLauncher interface {
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
 type AgentAssignment struct {
 	ExperimentID    string
+	Kind            string
 	VariantID       string
 	Provider        string
 	Model           string

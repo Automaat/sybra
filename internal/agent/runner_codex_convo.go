@@ -262,11 +262,7 @@ func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 
 	waitErr := cmd.Wait()
 	stderrOut := stderrBuf.String()
-	all := a.ConvoOutput()
-	if prevLen > len(all) {
-		prevLen = len(all)
-	}
-	attemptEvents := all[prevLen:]
+	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if streamErr := resultConvoStreamError(attemptEvents); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}

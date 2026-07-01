@@ -2218,6 +2218,36 @@ func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	}
 }
 
+func TestSelectABVariantPropagatesExperimentKind(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "prompt-exp",
+			Kind:           "prompt",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Subject:        &abtest.Subject{StepID: "implement"},
+			Variants: []abtest.Variant{{
+				ID: "copy-v2", Provider: "claude", Model: "sonnet", Weight: 1,
+			}},
+		}},
+	})
+
+	assignment, ok, err := engine.selectABVariant("t1", "implementation", "implement")
+	if err != nil || !ok {
+		t.Fatalf("selectABVariant ok=%v err=%v", ok, err)
+	}
+	if assignment.Kind != "prompt" {
+		t.Fatalf("Kind = %q, want prompt", assignment.Kind)
+	}
+}
+
 func TestExecRunAgent_ABTestingSkipsRateLimitedProvider(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }

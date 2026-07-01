@@ -26,9 +26,9 @@ func (r *Recovery) cleanStaleRuns() {
 				continue
 			}
 			r.Logger.Info("stale-run.cleanup", "task_id", tasks[i].ID, "agent_id", run.AgentID)
-			_ = r.Tasks.UpdateRun(tasks[i].ID, run.AgentID, map[string]any{
-				"state":  string(agent.StateStopped),
-				"result": "stale: marked stopped on startup",
+			_ = r.Tasks.UpdateRun(tasks[i].ID, run.AgentID, task.RunPatch{
+				State:  task.Ptr(string(agent.StateStopped)),
+				Result: task.Ptr("stale: marked stopped on startup"),
 			})
 		}
 	}

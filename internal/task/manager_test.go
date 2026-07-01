@@ -250,7 +250,7 @@ func TestManagerUpdateRunEmitsUpdated(t *testing.T) {
 	if err := m.AddRun(task.ID, AgentRun{AgentID: "a1", State: "running"}); err != nil {
 		t.Fatalf("AddRun: %v", err)
 	}
-	if err := m.UpdateRun(task.ID, "a1", map[string]any{"state": "stopped"}); err != nil {
+	if err := m.UpdateRun(task.ID, "a1", RunPatch{State: Ptr("stopped")}); err != nil {
 		t.Fatalf("UpdateRun: %v", err)
 	}
 

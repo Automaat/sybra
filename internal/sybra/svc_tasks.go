@@ -87,15 +87,15 @@ func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
 		}
 		run.CostUSD = estimate.CostUSD
 		if estimate.CostUSD > 0 && s.tasks != nil {
-			updates := map[string]any{"cost_usd": estimate.CostUSD}
+			patch := task.RunPatch{CostUSD: task.Ptr(estimate.CostUSD)}
 			if estimate.PremiumRequests > 0 {
-				updates["premium_requests"] = estimate.PremiumRequests
+				patch.PremiumRequests = task.Ptr(estimate.PremiumRequests)
 			}
 			if run.Provider == "" && estimate.Provider != "" {
-				updates["provider"] = estimate.Provider
+				patch.Provider = task.Ptr(estimate.Provider)
 				run.Provider = estimate.Provider
 			}
-			if err := s.tasks.UpdateRun(t.ID, run.AgentID, updates); err != nil && s.logger != nil {
+			if err := s.tasks.UpdateRun(t.ID, run.AgentID, patch); err != nil && s.logger != nil {
 				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
 			}
 		}
@@ -433,17 +433,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
-	ag, err := s.agents.Run(agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
-		HeadlessPermissionMode: posture,
-		// MaxTurns intentionally not inherited: review agents need
-		// enough turns to fetch the PR, run the skill, and write findings.
-	})
+	ag, err := s.agents.Run(staffCodeReviewRunConfig(t, prompt, dir, posture))
 	if err != nil {
 		return err
 	}

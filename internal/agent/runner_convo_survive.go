@@ -159,11 +159,7 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
-	all := a.ConvoOutput()
-	if prevLen > len(all) {
-		prevLen = len(all)
-	}
-	attemptEvents := all[prevLen:]
+	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
@@ -257,11 +253,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	if stderrOut != "" {
 		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
 	}
-	all := a.ConvoOutput()
-	if prevLen > len(all) {
-		prevLen = len(all)
-	}
-	attemptEvents := all[prevLen:]
+	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
 		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
