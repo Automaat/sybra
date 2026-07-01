@@ -121,6 +121,28 @@ func TestLookupPrice_ClaudeEffectiveDatedPricing(t *testing.T) {
 	}
 }
 
+func TestPriceForTier_SelectsLatestEligibleTierOutOfOrder(t *testing.T) {
+	t.Parallel()
+
+	intro := modelPrice{in: 2, out: 10}
+	standard := modelPrice{in: 3, out: 15}
+	future := modelPrice{in: 4, out: 20}
+	standardFrom := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	futureFrom := standardFrom.Add(24 * time.Hour)
+
+	got, ok := priceForTier([]pricedTier{
+		{from: futureFrom, price: future},
+		{from: standardFrom, price: standard},
+		{price: intro},
+	}, standardFrom)
+	if !ok {
+		t.Fatal("priceForTier returned ok=false")
+	}
+	if got != standard {
+		t.Fatalf("priceForTier = %#v, want %#v", got, standard)
+	}
+}
+
 func TestLookupPrice_ZeroTimeFallsBackToNow(t *testing.T) {
 	if _, ok := lookupPrice("gpt-5", time.Time{}); !ok {
 		t.Fatal("lookupPrice with zero time should still resolve known models")

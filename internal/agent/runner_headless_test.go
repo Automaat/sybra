@@ -1110,7 +1110,7 @@ func TestBuildHeadlessInvocation_EffortFlag(t *testing.T) {
 	}
 }
 
-func TestPrepareRunConfig_DefaultsReasoningEffortForHeadlessProviders(t *testing.T) {
+func TestPrepareRunConfig_DefaultsReasoningEffortForCodex(t *testing.T) {
 	t.Parallel()
 
 	hasPair := func(args []string, key, value string) bool {
@@ -1122,22 +1122,38 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForHeadlessProviders(t *testing
 		return false
 	}
 
-	tests := []struct {
-		provider string
-		flag     string
-		value    string
-	}{
-		{provider: "claude", flag: "--effort", value: DefaultReasoningEffort},
-		{provider: "copilot", flag: "--effort", value: DefaultReasoningEffort},
-		{provider: "codex", flag: "-c", value: "model_reasoning_effort=" + DefaultReasoningEffort},
+	m := newParseTestManager(t)
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Provider: "codex",
+		Mode:     "headless",
+		Prompt:   "hi",
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
 	}
+	if cfg.ReasoningEffort != DefaultReasoningEffort {
+		t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, DefaultReasoningEffort)
+	}
+	a := newRunningAgent("a", cfg, prov, func() {})
+	_, args, _, _, err := buildHeadlessInvocation(a, cfg)
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	if !hasPair(args, "-c", "model_reasoning_effort="+DefaultReasoningEffort) {
+		t.Fatalf("expected -c model_reasoning_effort=%s in args; got %v", DefaultReasoningEffort, args)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.provider, func(t *testing.T) {
+func TestPrepareRunConfig_DoesNotDefaultEffortForEffortFlagProviders(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"claude", "copilot"} {
+		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
 			m := newParseTestManager(t)
 			cfg, prov, err := m.prepareRunConfig(RunConfig{
-				Provider: tt.provider,
+				Provider: provider,
 				Mode:     "headless",
 				Prompt:   "hi",
 				Dir:      t.TempDir(),
@@ -1145,16 +1161,16 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForHeadlessProviders(t *testing
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
 			}
-			if cfg.ReasoningEffort != DefaultReasoningEffort {
-				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, DefaultReasoningEffort)
+			if cfg.ReasoningEffort != "" {
+				t.Fatalf("ReasoningEffort = %q, want empty", cfg.ReasoningEffort)
 			}
 			a := newRunningAgent("a", cfg, prov, func() {})
 			_, args, _, _, err := buildHeadlessInvocation(a, cfg)
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
 			}
-			if !hasPair(args, tt.flag, tt.value) {
-				t.Fatalf("expected %s %s in args; got %v", tt.flag, tt.value, args)
+			if slices.Contains(args, "--effort") {
+				t.Fatalf("--effort must be absent for default %s run; got %v", provider, args)
 			}
 		})
 	}

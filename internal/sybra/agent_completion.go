@@ -426,7 +426,7 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 			0,
 			ag.GetCacheReadInputTokens(),
 			ag.GetReasoningTokens(),
-			time.Now(),
+			ag.StartedAt,
 		)
 	}
 	return 0

@@ -170,10 +170,12 @@ func priceForTier(tiers []pricedTier, at time.Time) (modelPrice, bool) {
 		return modelPrice{}, false
 	}
 	var selected modelPrice
+	var selectedFrom time.Time
 	found := false
 	for _, tier := range tiers {
-		if tier.from.IsZero() || !tier.from.After(at) {
+		if (tier.from.IsZero() || !tier.from.After(at)) && (!found || tier.from.After(selectedFrom)) {
 			selected = tier.price
+			selectedFrom = tier.from
 			found = true
 		}
 	}

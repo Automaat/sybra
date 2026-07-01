@@ -61,10 +61,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
-	if cfg.ReasoningEffort == "" {
-		cfg.ReasoningEffort = DefaultReasoningEffort
-	}
-
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return cfg, nil, gateErr
@@ -74,6 +70,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, providerErr
 	}
 	cfg.provider = prov
+	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort, prov)
 
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
@@ -87,6 +84,16 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	m.mu.RUnlock()
 	return cfg, prov, nil
+}
+
+func defaultReasoningEffort(effort string, prov Provider) string {
+	if effort != "" {
+		return effort
+	}
+	if prov != nil && prov.Name() == "codex" {
+		return DefaultReasoningEffort
+	}
+	return ""
 }
 
 func validateRunDir(dir string) error {
