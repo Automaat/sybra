@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -229,6 +230,13 @@ func TestTaskService_BlessTamperingRejectsNonTamperTasks(t *testing.T) {
 			updated, err := svc.BlessTampering(created.ID)
 			if err == nil {
 				t.Fatal("BlessTampering succeeded, want error")
+			}
+			var ce *clientError
+			if !errors.As(err, &ce) {
+				t.Fatalf("BlessTampering error = %v (%T), want *clientError so the HTTP handler surfaces it instead of sanitizing to internal error", err, err)
+			}
+			if ce.HTTPStatus() != http.StatusConflict {
+				t.Fatalf("BlessTampering error status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 			}
 			if updated.Status != tc.status {
 				t.Fatalf("returned status = %q, want %q", updated.Status, tc.status)

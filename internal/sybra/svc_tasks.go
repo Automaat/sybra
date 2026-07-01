@@ -75,12 +75,12 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		return cur, err
 	}
 	if !canBlessTampering(cur) {
-		return cur, fmt.Errorf("task %s is not awaiting tamper blessing", taskID)
+		return cur, conflictError(fmt.Sprintf("task %s is not awaiting tamper blessing", taskID))
 	}
 
 	updated, err := s.tasks.UpdateFromCurrent(taskID, func(latest task.Task) (task.Update, error) {
 		if !canBlessTampering(latest) {
-			return task.Update{}, fmt.Errorf("task %s is no longer awaiting tamper blessing", taskID)
+			return task.Update{}, conflictError(fmt.Sprintf("task %s is no longer awaiting tamper blessing", taskID))
 		}
 		tags := slices.Clone(latest.Tags)
 		if !slices.Contains(tags, workflow.TamperBlessedTag) {
