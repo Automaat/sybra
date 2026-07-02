@@ -565,9 +565,6 @@ func mustWriteProjectYAMLWithClone(t *testing.T, dir, id, clonePath string) {
 // bare-clones it, and returns the bare clone path and its default branch.
 func newBareRepoWithTrackedFile(t *testing.T) (barePath, branch string) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"git", "init", src},

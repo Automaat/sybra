@@ -246,10 +246,6 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 
 func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manager, string) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	home, err := os.MkdirTemp("", "sybra-fix-review-*")
 	if err != nil {
 		t.Fatal(err)
