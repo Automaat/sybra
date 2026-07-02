@@ -156,6 +156,20 @@ func TestPlanResolve(t *testing.T) {
 		}
 	})
 
+	t.Run("whitespace-only parallelJustification value is dropped", func(t *testing.T) {
+		t.Parallel()
+		p := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1"},
+			{Ref: "o/r#2", ParallelJustification: map[string]string{"o/r#1": "   "}},
+		}}
+		if err := p.resolve(idx); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if len(p.Children[1].ParallelJustification) != 0 {
+			t.Errorf("ParallelJustification = %v, want blank value dropped", p.Children[1].ParallelJustification)
+		}
+	})
+
 	t.Run("shorthand parallelJustification key is canonicalized", func(t *testing.T) {
 		t.Parallel()
 		p := Plan{Children: []PlannedChild{

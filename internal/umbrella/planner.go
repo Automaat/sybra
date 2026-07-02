@@ -38,9 +38,11 @@ type PlannedChild struct {
 	Produces  []string `json:"produces,omitempty"`
 	Requires  []string `json:"requires,omitempty"`
 	// ParallelJustification maps a sibling ref to why it is safe to run in
-	// parallel with this child (disjoint change surfaces). Its presence on
-	// either side of a pair exempts that pair from deriveEdges's serial-default
-	// layer; the text itself is advisory only (never validated or enforced).
+	// parallel with this child (disjoint change surfaces). A non-empty entry
+	// on either side of a pair exempts that pair from deriveEdges's
+	// serial-default layer; resolve trims and drops blank values so a
+	// whitespace-only entry cannot count. The text itself is advisory only
+	// beyond that presence check (never further validated or enforced).
 	ParallelJustification map[string]string `json:"parallelJustification,omitempty"`
 }
 
@@ -199,7 +201,7 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString("  - parallelJustification (optional): to run this sub-issue in parallel with another,")
 	b.WriteString(" add an entry keyed by that sub-issue's ref explaining concretely why their change")
 	b.WriteString(" surfaces are disjoint. Without an entry for a pair, that pair defaults to serial")
-	b.WriteString(" (the later sub-issue depends on the earlier one). An overlapping touches always")
+	b.WriteString(" (the later sub-issue depends on the earlier one). Overlapping touches always")
 	b.WriteString(" re-serializes the pair even with a justification present.\n\n")
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
 	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"parallelJustification":{"<ref>":"<why disjoint>"},"track":"<label>"}],"maxParallel":<int>}` + "\n")
@@ -297,7 +299,10 @@ func (p *Plan) resolve(idx refIndex) error {
 	// deriveEdges, it never introduces an ordering constraint, so a malformed
 	// key should fail closed to serial rather than abort an otherwise-valid
 	// plan. Do not "fix" this into matching DependsOn's loud failure — the two
-	// fields have opposite risk profiles by design.
+	// fields have opposite risk profiles by design. Values are trimmed and
+	// dropped when blank so a whitespace-only justification can't exempt a
+	// pair from the safety net, and so two raw keys canonicalizing to the same
+	// ref don't produce a nondeterministic blank/non-blank result.
 	for i := range p.Children {
 		c := &p.Children[i]
 		if len(c.ParallelJustification) == 0 {
@@ -307,6 +312,10 @@ func (p *Plan) resolve(idx refIndex) error {
 		for k, v := range c.ParallelJustification {
 			ck, ok := idx.lookup(k)
 			if !ok || ck == c.Ref {
+				continue
+			}
+			v = strings.TrimSpace(v)
+			if v == "" {
 				continue
 			}
 			canon[ck] = v
@@ -326,8 +335,9 @@ func (p *Plan) resolve(idx refIndex) error {
 // (earlier-ordered) child also touches depends on that earlier child. Pass 2
 // applies a serial-default layer on top of pass 1's fully-merged result: every
 // child depends on every earlier canonical sibling unless that pair carries a
-// ParallelJustification on either side, or the sibling already depends on it
-// (direct 2-cycle guard) — so a plan with no metadata at all is serialized
+// ParallelJustification on either side, or the sibling already transitively
+// depends on it (reachability guard, not a direct 2-cycle check) — so a plan
+// with no metadata at all is serialized
 // end to end rather than treated as all-parallel. subs establishes the
 // canonical ordering used to pick the "earlier" side of both the touch
 // overlap and the serial-default layer, and to make edge derivation
