@@ -4595,6 +4595,62 @@ func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+// TestExecVerifyCommits_AutoCommitsUncommittedWork verifies that a worktree
+// with no commits ahead of base but dirty (uncommitted) files is recovered by
+// auto-committing rather than escalated to human-required — the scenario
+// where an implementation agent finished its work but was interrupted (or
+// simply forgot) before running `git commit`.
+func TestExecVerifyCommits_AutoCommitsUncommittedWork(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// HEAD == origin/main (no commits ahead), but leave uncommitted work
+	// sitting dirty in the worktree.
+	wtDir := makeGitRepo(t, false /* no extra commit */)
+	if err := os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("Status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	// Task must not be escalated — the dirty work was recovered.
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress (not escalated)", ti.Status)
+	}
+	// The file must now be committed on the branch.
+	cmd := exec.Command("git", "log", "origin/main..HEAD", "--name-only")
+	cmd.Dir = wtDir
+	log, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(log), "uncommitted.txt") {
+		t.Errorf("git log = %q, want it to contain the auto-committed file", log)
+	}
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = wtDir
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Errorf("worktree still dirty after auto-commit: %q", statusOut)
+	}
+}
+
 // makeGitRepoBehindOrigin builds a worktree where HEAD is an ancestor of
 // origin/main: origin/main points at commit B, HEAD is reset to commit A
 // (a parent of B). `git log origin/main..HEAD` is empty AND HEAD != base.tip.

@@ -165,8 +165,11 @@ func TestSaveRegistry_PreservesOneShot(t *testing.T) {
 }
 
 // TestReattachCodexConvo_OneShotNoResultFinalizes verifies a workflow-owned
-// per-turn Codex run interrupted before a terminal result is finalized as a
-// failed run instead of being resurrected as an idle chat forever.
+// per-turn Codex run interrupted before a terminal result is dropped without
+// firing a completion callback — finalizing it as failed would burn the
+// workflow step's retry budget on a turn that never produced a result, and
+// resurrecting it as an idle chat would hide it from
+// RestartStaleInProgress's interactive-oneshot redispatch.
 func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -181,12 +184,10 @@ func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
 	}
 
 	var completed atomic.Bool
-	var failed atomic.Bool
 	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
 		SurviveRestartDir: regDir,
 		OnComplete: func(a *Agent) {
 			completed.Store(true)
-			failed.Store(a.GetExitErr() != nil)
 		},
 	})
 
@@ -199,19 +200,16 @@ func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
 	}
 
 	if got := m.ReattachAll(); len(got) != 0 {
-		t.Fatalf("expected interrupted one-shot to finalize, not recreate, got %d agents", len(got))
+		t.Fatalf("expected interrupted one-shot to be dropped, not recreated, got %d agents", len(got))
 	}
-	if !completed.Load() {
-		t.Fatal("expected one-shot completion callback")
-	}
-	if !failed.Load() {
-		t.Fatal("expected interrupted one-shot to be marked failed")
+	if completed.Load() {
+		t.Fatal("expected no completion callback for a turn that never produced a result — it must not burn the workflow step's retry budget")
 	}
 	if _, err := m.GetAgent("cx1"); err == nil {
 		t.Fatal("expected no idle agent registered for interrupted one-shot")
 	}
 	if list, _ := m.reg.List(); len(list) != 0 {
-		t.Fatalf("expected registry empty after one-shot finalization, got %d", len(list))
+		t.Fatalf("expected registry empty after dropping the interrupted one-shot, got %d", len(list))
 	}
 }
 
