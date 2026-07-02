@@ -55,6 +55,15 @@ func TestExtractTestVerdict(t *testing.T) {
 		{"prose_then_fenced_json", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
 		// app_started emitted as a quoted string must not break the verdict parse.
 		{"json_string_app_started", `{"verdict":"PASS","app_started":"true"}`, "PASS"},
+		// Malformed object-shaped JSON (e.g. an unescaped quote inside
+		// failures_markdown breaks the whole unmarshal) must still yield the
+		// verdict via regex fallback rather than silently becoming "" (→FAIL,
+		// burning retry budget on an already-diagnosed real bug).
+		{"json_malformed_but_verdict_recoverable", `{"verdict":"FAIL","failures_markdown":"saw a "quoted" value that broke parsing"}`, "FAIL"},
+		{"json_malformed_pass_recoverable", `{"verdict":"PASS","summary":"all good but "oops" unescaped"}`, "PASS"},
+		// A closing fence glued directly to the last content byte (no newline
+		// before the ```) must still be recognized as the end of the block.
+		{"fenced_json_closing_fence_no_newline", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}```", "PASS"},
 	}
 
 	for _, tc := range cases {

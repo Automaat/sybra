@@ -493,6 +493,12 @@ func parseStructuredTestOutput(output string) (structuredTestOutput, bool) {
 	for _, candidate := range structuredTestOutputCandidates(output) {
 		var parsed structuredTestOutput
 		if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
+			// The corruption (e.g. an unescaped quote inside failures_markdown)
+			// is almost never in the verdict field itself, so regex-extract it
+			// directly rather than discarding a confirmed verdict.
+			if v := extractVerdictFieldRegex(candidate); v != "" {
+				return structuredTestOutput{Verdict: v}, true
+			}
 			continue
 		}
 		if strings.TrimSpace(parsed.Verdict) == "" {
@@ -511,31 +517,32 @@ func structuredTestOutputCandidates(output string) []string {
 	return fencedCodeBlockCandidates(s)
 }
 
+// testVerdictFencedBlockRe extracts the contents of a fenced code block
+// (```json ... ``` or ``` ... ```). Unlike a line-by-line scan, this matches
+// even when the closing ``` immediately follows content with no newline
+// before it (e.g. prose-wrapped output like "...text ```json\n{...}```").
+var testVerdictFencedBlockRe = regexp.MustCompile("(?s)```[a-zA-Z]*\\s*(.*?)```")
+
 func fencedCodeBlockCandidates(output string) []string {
 	var candidates []string
-	var block strings.Builder
-	inFence := false
-	for line := range strings.SplitSeq(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
-			if inFence {
-				if candidate := strings.TrimSpace(block.String()); candidate != "" {
-					candidates = append(candidates, candidate)
-				}
-				block.Reset()
-				inFence = false
-				continue
-			}
-			inFence = true
-			block.Reset()
-			continue
-		}
-		if inFence {
-			block.WriteString(line)
-			block.WriteByte('\n')
+	for _, m := range testVerdictFencedBlockRe.FindAllStringSubmatch(output, -1) {
+		if candidate := strings.TrimSpace(m[1]); candidate != "" {
+			candidates = append(candidates, candidate)
 		}
 	}
 	return candidates
+}
+
+// testVerdictFieldRe pulls "verdict": "PASS"/"FAIL" directly out of raw text,
+// used as a fallback when a full JSON unmarshal fails.
+var testVerdictFieldRe = regexp.MustCompile(`(?i)"verdict"\s*:\s*"(pass|fail)"`)
+
+func extractVerdictFieldRegex(s string) string {
+	m := testVerdictFieldRe.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return strings.ToUpper(m[1])
 }
 
 func normalizeStructuredFailuresMarkdown(report, outcome string) string {
@@ -1763,8 +1770,7 @@ func extractTestVerdict(output string) string {
 	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
 	if strings.HasPrefix(s, "{") {
-		// Object-shaped: JSON is authoritative. Parse fail → "" (→FAIL).
-		// No fall-through to marker scan.
+		// Object-shaped: JSON is authoritative. No fall-through to marker scan.
 		var v struct {
 			Verdict string `json:"verdict"`
 		}
@@ -1775,8 +1781,12 @@ func extractTestVerdict(output string) string {
 			case "FAIL":
 				return "FAIL"
 			}
+			return ""
 		}
-		return ""
+		// JSON parse failed (e.g. an unescaped quote inside failures_markdown).
+		// The corruption is almost never in the verdict field itself, so
+		// regex-extract it directly rather than discarding a confirmed verdict.
+		return extractVerdictFieldRegex(s)
 	}
 	if parsed, ok := parseStructuredTestOutput(s); ok {
 		switch strings.ToUpper(strings.TrimSpace(parsed.Verdict)) {
