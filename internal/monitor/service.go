@@ -338,10 +338,6 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 // dispatched to an LLM (the dispatched ones file their own issue from the
 // agent prompt). Returns (opened, updated).
 func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, dispatched []string) (opened, updated int) {
-	dispatchedKinds := make(map[string]bool, len(dispatched))
-	for _, d := range dispatched {
-		dispatchedKinds[d] = true
-	}
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	for i := range anoms {
 		a := anoms[i]
