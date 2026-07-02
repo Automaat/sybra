@@ -17,8 +17,22 @@ const mockLifecycleStore = {
   load: vi.fn(),
 }
 
+const mockLearningStore = {
+  digests: [] as Record<string, unknown>[],
+  status: null as Record<string, unknown> | null,
+  loading: false,
+  error: '',
+  load: vi.fn(),
+  listen: vi.fn(),
+  stopListening: vi.fn(),
+}
+
 vi.mock('../stores/evaluation.svelte.js', () => ({
   evaluationStore: mockEvaluationStore,
+}))
+
+vi.mock('../stores/learning.svelte.js', () => ({
+  learningStore: mockLearningStore,
 }))
 
 vi.mock('../stores/lifecycle.svelte.js', () => ({
@@ -120,6 +134,10 @@ describe('Evaluation', () => {
     mockEvaluationStore.loading = false
     mockEvaluationStore.error = ''
     mockLifecycleStore.data = null
+    mockLearningStore.digests = []
+    mockLearningStore.status = null
+    mockLearningStore.loading = false
+    mockLearningStore.error = ''
   })
 
   afterEach(() => {
@@ -196,5 +214,29 @@ describe('Evaluation', () => {
     expect(within(promptSection).getByText('prompt-author', { exact: false })).toBeDefined()
     expect(within(promptSection).getByText('prompt-review', { exact: false })).toBeDefined()
     expect(within(promptSection).getAllByRole('table')).toHaveLength(2)
+  })
+
+  it('mounts the learning digest card and cleans up the listener', () => {
+    const rendered = render(Evaluation, { props: {} })
+
+    expect(screen.getByText('Agent learning journal')).toBeDefined()
+    expect(mockLearningStore.load).toHaveBeenCalledTimes(1)
+    expect(mockLearningStore.listen).toHaveBeenCalledTimes(1)
+
+    rendered.unmount()
+
+    expect(mockLearningStore.stopListening).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the learning card visible when evaluation data is empty', () => {
+    mockEvaluationStore.data = null
+    mockLearningStore.status = { enabled: false, nextRun: null }
+
+    render(Evaluation, { props: {} })
+
+    expect(screen.getByText('No evaluation data yet.')).toBeDefined()
+    expect(
+      screen.getByText('Learning digest pipeline is off. No journal entries will appear until it is enabled.'),
+    ).toBeDefined()
   })
 })
