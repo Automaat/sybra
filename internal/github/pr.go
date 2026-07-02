@@ -32,6 +32,11 @@ type PRState struct {
 	StatusCheckRollup []struct {
 		State string `json:"state"` // SUCCESS, FAILURE, PENDING, ERROR, etc.
 	} `json:"statusCheckRollup"`
+	// BaseRefName is the PR's target branch.
+	BaseRefName string `json:"baseRefName"`
+	// AutoMergeEnabled reports whether GitHub's native auto-merge is armed,
+	// derived from `autoMergeRequest` being non-null.
+	AutoMergeEnabled bool `json:"-"`
 }
 
 // CIStatus returns a simplified CI status: SUCCESS, FAILURE, PENDING, or "".
@@ -190,14 +195,21 @@ func fetchPRStateWith(e execer, repo string, number int) (PRState, error) {
 	}
 
 	out, err := e.run("pr", "view", strconv.Itoa(number),
-		"--repo", repo, "--json", "state,mergedAt,mergeable,statusCheckRollup")
+		"--repo", repo, "--json", "state,mergedAt,mergeable,statusCheckRollup,baseRefName,autoMergeRequest")
 	if err != nil {
 		return PRState{}, fmt.Errorf("gh pr view %d: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
-	var s PRState
-	if err := json.Unmarshal(out, &s); err != nil {
+	var raw struct {
+		PRState
+		AutoMergeRequest *struct {
+			EnabledAt string `json:"enabledAt"`
+		} `json:"autoMergeRequest"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
 		return PRState{}, fmt.Errorf("parse pr state: %w", err)
 	}
+	s := raw.PRState
+	s.AutoMergeEnabled = raw.AutoMergeRequest != nil
 	if runtimeCacheEnabled(e) {
 		prStateCache.Set(key, s, 30*time.Second)
 	}
@@ -713,6 +725,119 @@ func mergePRWith(e execer, repo string, number int) error {
 // base-branch race that GitHub asks the caller to retry.
 func isBaseBranchModifiedErr(out []byte) bool {
 	return strings.Contains(string(out), "Base branch was modified")
+}
+
+// EnableAutoMerge arms GitHub's native auto-merge (squash) on a PR. Native
+// auto-merge then waits for the base branch's required checks to go green
+// and merges on GitHub's own infrastructure — an accelerator on top of the
+// green-gated MergePR path, not a replacement for it.
+func EnableAutoMerge(repo string, number int) error {
+	return enableAutoMergeWith(defaultExecer, repo, number)
+}
+
+func enableAutoMergeWith(e execer, repo string, number int) error {
+	out, err := e.run("pr", "merge", strconv.Itoa(number),
+		"--repo", repo, "--auto", "--squash")
+	if err != nil {
+		return fmt.Errorf("gh pr merge --auto %d: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	if runtimeCacheEnabled(e) {
+		invalidatePRCaches(repo, number)
+	}
+	return nil
+}
+
+// ghRepoAutoMergeSetting is the subset of the repo settings payload
+// SupportsNativeAutoMerge needs.
+type ghRepoAutoMergeSetting struct {
+	AllowAutoMerge bool `json:"allow_auto_merge"`
+}
+
+// ghBranchProtection is the subset of the branch protection payload
+// SupportsNativeAutoMerge needs. Required status checks can surface as
+// either the legacy `contexts` array or the newer `checks` array depending
+// on the gh/API version, so both are checked.
+type ghBranchProtection struct {
+	RequiredStatusChecks *struct {
+		Contexts []string `json:"contexts"`
+		Checks   []struct {
+			Context string `json:"context"`
+		} `json:"checks"`
+	} `json:"required_status_checks"`
+	RequiredConversationResolution *struct {
+		Enabled bool `json:"enabled"`
+	} `json:"required_conversation_resolution"`
+}
+
+// nativeAutoMergeCache short-TTL-caches the base-branch capability check,
+// keyed by repo+"@"+baseBranch.
+var nativeAutoMergeCache = newTTLCache[bool]()
+
+// SupportsNativeAutoMerge reports whether repo allows native auto-merge and
+// baseBranch's protection requires both status checks and conversation
+// resolution — the minimum GitHub needs to make native auto-merge behave
+// like Sybra's own green-gated merge. baseBranch must be the PR's base
+// (target) branch, never its head branch.
+//
+// Fails CLOSED: any missing prerequisite, or any gh API error (including a
+// 404 from a repo with no branch protection configured, a common and valid
+// state), returns (false, nil) rather than an error. A non-nil error is
+// reserved for something unexpected — e.g. malformed JSON in an otherwise
+// successful response.
+func SupportsNativeAutoMerge(repo, baseBranch string) (bool, error) {
+	return supportsNativeAutoMergeWith(defaultExecer, repo, baseBranch)
+}
+
+func supportsNativeAutoMergeWith(e execer, repo, baseBranch string) (bool, error) {
+	if repo == "" || baseBranch == "" {
+		return false, nil
+	}
+	key := repo + "@" + baseBranch
+	if runtimeCacheEnabled(e) {
+		if cached, ok := nativeAutoMergeCache.Get(key); ok {
+			return cached, nil
+		}
+	}
+
+	// A gh API error on either lookup below (most commonly a 404 from a repo
+	// with no branch protection configured) fails CLOSED: the repo/branch
+	// simply doesn't support native auto-merge, which is an unsupported —
+	// not exceptional — state, so it is folded into the boolean result rather
+	// than propagated as an error.
+	repoResp, repoAPIErr := runGHAPIWith(e, "3m", fmt.Sprintf("repos/%s", repo))
+	allowAutoMerge := false
+	if repoAPIErr == nil {
+		var repoSettings ghRepoAutoMergeSetting
+		if jsonErr := json.Unmarshal(repoResp.body, &repoSettings); jsonErr != nil {
+			return false, fmt.Errorf("parse repo settings %s: %w", repo, jsonErr)
+		}
+		allowAutoMerge = repoSettings.AllowAutoMerge
+	}
+	if !allowAutoMerge {
+		return setNativeAutoMergeCache(e, key, false), nil
+	}
+
+	protResp, protAPIErr := runGHAPIWith(e, "3m", fmt.Sprintf("repos/%s/branches/%s/protection", repo, baseBranch))
+	supported := false
+	if protAPIErr == nil {
+		var prot ghBranchProtection
+		if jsonErr := json.Unmarshal(protResp.body, &prot); jsonErr != nil {
+			return false, fmt.Errorf("parse branch protection %s@%s: %w", repo, baseBranch, jsonErr)
+		}
+		hasRequiredChecks := prot.RequiredStatusChecks != nil &&
+			(len(prot.RequiredStatusChecks.Contexts) > 0 || len(prot.RequiredStatusChecks.Checks) > 0)
+		requiresConversationResolution := prot.RequiredConversationResolution != nil &&
+			prot.RequiredConversationResolution.Enabled
+		supported = hasRequiredChecks && requiresConversationResolution
+	}
+	return setNativeAutoMergeCache(e, key, supported), nil
+}
+
+func setNativeAutoMergeCache(e execer, key string, val bool) bool {
+	if runtimeCacheEnabled(e) {
+		nativeAutoMergeCache.Set(key, val, 3*time.Minute)
+	}
+	return val
 }
 
 // MarkReady marks a draft pull request as ready for review.

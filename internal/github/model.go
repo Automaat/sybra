@@ -33,6 +33,14 @@ type PullRequest struct {
 	CopilotReviewed   bool   `json:"copilotReviewed"` // GitHub Copilot has submitted a review
 	CreatedAt         string `json:"createdAt"`
 	UpdatedAt         string `json:"updatedAt"`
+	// BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
+	// native auto-merge eligibility against the base branch's protection —
+	// never the head branch.
+	BaseRefName string `json:"baseRefName"`
+	// AutoMergeEnabled reports whether GitHub's native auto-merge is currently
+	// armed on this PR (derived live from `autoMergeRequest` being non-null —
+	// never persisted on the task model).
+	AutoMergeEnabled bool `json:"autoMergeEnabled"`
 }
 
 // ReviewSummary contains PRs grouped by relationship to the user.

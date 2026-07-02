@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -510,6 +511,162 @@ func TestMergePRWith_RetriesBaseBranchModified(t *testing.T) {
 		}
 		if se.calls != 1 {
 			t.Fatalf("calls = %d, want 1 (no retry)", se.calls)
+		}
+	})
+}
+
+func TestEnableAutoMerge(t *testing.T) {
+	t.Parallel()
+	t.Run("success passes args", func(t *testing.T) {
+		t.Parallel()
+		fe := &recordingExecer{}
+		if err := enableAutoMergeWith(fe, "owner/repo", 42); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"}
+		if len(fe.lastArgs) != len(want) {
+			t.Fatalf("args = %v, want %v", fe.lastArgs, want)
+		}
+		for i, a := range fe.lastArgs {
+			if a != want[i] {
+				t.Errorf("arg[%d] = %q, want %q", i, a, want[i])
+			}
+		}
+	})
+
+	t.Run("gh error passthrough", func(t *testing.T) {
+		t.Parallel()
+		fe := &fakeExecer{output: []byte("gh: pull request is in unmergeable state"), err: fmt.Errorf("exit 1")}
+		err := enableAutoMergeWith(fe, "owner/repo", 42)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "gh pr merge --auto 42") {
+			t.Errorf("error = %v, want it to mention 'gh pr merge --auto 42'", err)
+		}
+	})
+
+	// enableAutoMergeWith invalidates the PR caches on success exactly like
+	// mergePRWith / markReadyWith (`if runtimeCacheEnabled(e) {
+	// invalidatePRCaches(...) }`), gated off for any non-default execer — the
+	// same idiom every other mutating call in this file already follows and
+	// already exercises via runtimeCacheEnabled's e == defaultExecer check.
+	t.Run("non-default execer never touches the cache", func(t *testing.T) {
+		t.Parallel()
+		key := prCacheKey("owner/repo", 99)
+		prStateCache.Set(key, PRState{State: "OPEN"}, time.Minute)
+		fe := &recordingExecer{}
+		if err := enableAutoMergeWith(fe, "owner/repo", 99); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := prStateCache.Get(key); !ok {
+			t.Error("cache entry was invalidated by a non-default execer, want untouched")
+		}
+	})
+}
+
+func TestSupportsNativeAutoMerge(t *testing.T) {
+	t.Parallel()
+	repoAllowed := `{"allow_auto_merge":true}`
+	repoDisallowed := `{"allow_auto_merge":false}`
+	protectionFull := `{"required_status_checks":{"contexts":["ci/build"]},"required_conversation_resolution":{"enabled":true}}`
+	protectionNoChecks := `{"required_status_checks":{"contexts":[]},"required_conversation_resolution":{"enabled":true}}`
+	protectionNoConvoResolution := `{"required_status_checks":{"contexts":["ci/build"]},"required_conversation_resolution":{"enabled":false}}`
+
+	tests := []struct {
+		name    string
+		results []scriptedResult
+		want    bool
+		wantErr bool
+	}{
+		{
+			name: "allow_auto_merge false -> unsupported",
+			results: []scriptedResult{
+				{output: []byte(repoDisallowed)},
+			},
+			want: false,
+		},
+		{
+			name: "no required status checks -> unsupported",
+			results: []scriptedResult{
+				{output: []byte(repoAllowed)},
+				{output: []byte(protectionNoChecks)},
+			},
+			want: false,
+		},
+		{
+			name: "conversation resolution not required -> unsupported",
+			results: []scriptedResult{
+				{output: []byte(repoAllowed)},
+				{output: []byte(protectionNoConvoResolution)},
+			},
+			want: false,
+		},
+		{
+			name: "branch protection lookup 404/error -> unsupported, not an error",
+			results: []scriptedResult{
+				{output: []byte(repoAllowed)},
+				{output: []byte("gh: HTTP 404: Not Found"), err: fmt.Errorf("exit 1")},
+			},
+			want: false,
+		},
+		{
+			name: "repo settings lookup error -> unsupported, not an error",
+			results: []scriptedResult{
+				{output: []byte("gh: HTTP 404: Not Found"), err: fmt.Errorf("exit 1")},
+			},
+			want: false,
+		},
+		{
+			name: "all conditions met -> supported",
+			results: []scriptedResult{
+				{output: []byte(repoAllowed)},
+				{output: []byte(protectionFull)},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			se := &scriptedExecer{results: tt.results}
+			got, err := supportsNativeAutoMergeWith(se, "owner/repo", "main")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("supportsNativeAutoMergeWith() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("malformed JSON on 200 response is an error", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("not json")},
+		}}
+		if _, err := supportsNativeAutoMergeWith(se, "owner/repo", "main"); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("called with base branch, not head branch", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte(repoAllowed)},
+			{output: []byte(protectionFull)},
+		}}
+		if _, err := supportsNativeAutoMergeWith(se, "owner/repo", "release/base"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(se.lastArgs[len(se.lastArgs)-1], "release/base") {
+			t.Errorf("last call args = %v, want it to reference base branch release/base", se.lastArgs)
+		}
+		for _, a := range se.lastArgs {
+			if strings.Contains(a, "feature/head") {
+				t.Errorf("call args = %v, must never reference a head branch", se.lastArgs)
+			}
 		}
 	})
 }

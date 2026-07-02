@@ -215,12 +215,17 @@ type gqlPR struct {
 	URL            string `json:"url"`
 	State          string `json:"state"`
 	HeadRefName    string `json:"headRefName"`
+	BaseRefName    string `json:"baseRefName"`
 	IsDraft        bool   `json:"isDraft"`
 	Mergeable      string `json:"mergeable"`
 	CreatedAt      string `json:"createdAt"`
 	UpdatedAt      string `json:"updatedAt"`
 	ReviewDecision string `json:"reviewDecision"`
-	Author         struct {
+	// AutoMergeRequest is non-nil when GitHub's native auto-merge is armed.
+	AutoMergeRequest *struct {
+		EnabledAt string `json:"enabledAt"`
+	} `json:"autoMergeRequest"`
+	Author struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
 	} `json:"author"`
@@ -365,6 +370,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		Title:             n.Title,
 		URL:               n.URL,
 		HeadRefName:       n.HeadRefName,
+		BaseRefName:       n.BaseRefName,
 		HeadSHA:           headSHA,
 		Repository:        n.Repository.NameWithOwner,
 		RepoName:          n.Repository.Name,
@@ -382,6 +388,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		CopilotReviewed:   copilotReviewed,
 		CreatedAt:         n.CreatedAt,
 		UpdatedAt:         n.UpdatedAt,
+		AutoMergeEnabled:  n.AutoMergeRequest != nil,
 	}
 }
 

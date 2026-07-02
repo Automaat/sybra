@@ -21,11 +21,13 @@ const reviewSummaryQuery = `query($q: String!) {
         title
         url
         headRefName
+        baseRefName
         isDraft
         mergeable
         createdAt
         updatedAt
         reviewDecision
+        autoMergeRequest { enabledAt }
         author { login type: __typename }
         repository { name nameWithOwner }
         labels(first: 5) { nodes { name } }
@@ -76,11 +78,13 @@ const monitorPRFields = `
       url
       state
       headRefName
+      baseRefName
       isDraft
       mergeable
       createdAt
       updatedAt
       reviewDecision
+      autoMergeRequest { enabledAt }
       author { login type: __typename }
       repository { name nameWithOwner }
       labels(first: 5) { nodes { name } }

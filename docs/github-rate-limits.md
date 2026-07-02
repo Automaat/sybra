@@ -101,6 +101,47 @@ The private key never appears in config — only its path is stored. For
 work-typed projects, keep the key off any artifact that could reach a public
 issue/PR (see Work-Data Confidentiality in `CLAUDE.md`).
 
+## Native auto-merge (`github.native_auto_merge`)
+
+```yaml
+github:
+  native_auto_merge: true  # default false
+```
+
+An accelerator on top of Sybra's own green-gated merge (`internal/github.MergePR`),
+not a replacement — when unsupported or disabled the legacy merge stays the
+fallback. When on, and once Sybra's own review/fix cycle for a pet-project PR is
+done (Copilot reviewed, threads resolved, no changes-requested, mergeable), Sybra
+arms GitHub's native `gh pr merge --auto --squash` instead of polling for CI
+itself. GitHub then merges the PR the moment its required checks go green,
+handled entirely on GitHub's side over REST — cheaper than Sybra's own
+GraphQL-backed poll loop for the last CI-green mile.
+
+**Pre-flight capability check** (`internal/github.SupportsNativeAutoMerge`,
+short-TTL cached ~3m): before arming, Sybra confirms the repo has
+`allow_auto_merge` on *and* the PR's **base** branch's protection rules require
+both status checks and conversation resolution. Fails closed — a repo without
+auto-merge enabled, a base branch with no protection configured (a common,
+valid state, not an error), or protection missing either required check all
+result in "unsupported," so Sybra falls back to its own merge gate.
+
+**Armed PRs stay monitored.** Arming does not remove a PR from Sybra's GraphQL
+(`FetchReviews`/`FetchPRForMonitor`) or REST (`fetchPRForMonitorViaREST`)
+observation — the poll loop keeps watching until the PR reaches a terminal
+MERGED/CLOSED state, same as any other tracked PR. The only change is that an
+already-armed, otherwise-quiet PR no longer pins the fast poll interval
+(`prNeedsAttention`); a newly-failing check, new review feedback, or auto-merge
+getting disabled out from under Sybra all still trigger the fast cadence again.
+
+**Disarm at scale.** If you need to bulk-disable native auto-merge on a repo
+(e.g. rolling back the flag), list and clear armed PRs directly with `gh`:
+
+```bash
+gh pr list --repo <owner/repo> --json number,autoMergeRequest \
+  --jq '.[] | select(.autoMergeRequest != null) | .number' \
+  | xargs -n1 -I{} gh pr merge {} --repo <owner/repo> --disable-auto
+```
+
 ## What was deliberately *not* done
 
 - **Combining the 3 reviews search legs into one request.** The combined form

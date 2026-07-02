@@ -35,6 +35,24 @@ func readyForCopilotAutoMerge(pr github.PullRequest) bool {
 		pr.ReviewDecision != "CHANGES_REQUESTED"
 }
 
+// readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
+// native auto-merge armed: the same review-cycle gate as
+// readyForCopilotAutoMerge MINUS the CI-green requirement (native auto-merge
+// itself waits for CI to go green) PLUS excluding a PR whose CI is already
+// FAILURE — native auto-merge won't retry a hard failure, so arming on red CI
+// would just strand it — and PRs already armed or bot-authored by Renovate
+// (its own bypass path already merges without this gate).
+func readyToArmNativeAutoMerge(pr github.PullRequest) bool {
+	return !pr.IsDraft &&
+		pr.Mergeable == "MERGEABLE" &&
+		pr.CIStatus != "FAILURE" &&
+		pr.CopilotReviewed &&
+		pr.UnresolvedCount == 0 &&
+		pr.ReviewDecision != "CHANGES_REQUESTED" &&
+		!pr.AutoMergeEnabled &&
+		pr.Author != "renovate[bot]"
+}
+
 func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 	t, err := r.tasks.Get(issue.TaskID)
 	if err != nil {
@@ -54,6 +72,34 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		r.logger.Warn("auto-merge.repo-mismatch",
 			"task_id", t.ID, "task_project", proj.ID, "pr_repo", issue.PR.Repository, "pr", issue.PR.Number)
 		return
+	}
+
+	// Prefer arming GitHub's native auto-merge over Sybra's own squash merge
+	// when it's available and the PR is otherwise ready — it's cheaper (REST
+	// poll on GitHub's side) than Sybra's GraphQL merge-gate polling. Only
+	// tried once the CI-green-gated legacy path would otherwise fire, so this
+	// never delays a merge; it just lets GitHub finish the last mile.
+	if r.cfg != nil && r.cfg.GitHub.NativeAutoMerge && readyToArmNativeAutoMerge(issue.PR) {
+		supportsFn := r.supportsAutoMergeFn
+		if supportsFn == nil {
+			supportsFn = github.SupportsNativeAutoMerge
+		}
+		if ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName); serr == nil && ok {
+			enableFn := r.enableAutoMergeFn
+			if enableFn == nil {
+				enableFn = github.EnableAutoMerge
+			}
+			if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
+				r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
+			} else {
+				r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
+				r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
+					"pr": issue.PR.Number, "repo": issue.PR.Repository,
+				})
+				r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", issue.PR.Number)
+				return
+			}
+		}
 	}
 
 	// Hold the merge until Copilot has reviewed and its threads are resolved.
