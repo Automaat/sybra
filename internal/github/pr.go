@@ -857,6 +857,9 @@ func mergePRViaRESTWith(e execer, repo string, number int, headSHA string) error
 	if !ok || owner == "" || name == "" || number <= 0 {
 		return fmt.Errorf("invalid repo or PR: %s#%d", repo, number)
 	}
+	if headSHA == "" {
+		return fmt.Errorf("missing head SHA for %s#%d: refusing unprotected merge", repo, number)
+	}
 	var lastResp ghHTTPResponse
 	var lastErr error
 	for attempt := 0; attempt <= len(mergeRetryDelays); attempt++ {
@@ -883,10 +886,14 @@ func mergePRViaRESTWith(e execer, repo string, number int, headSHA string) error
 
 // isHeadSHAMismatchErr reports whether the REST merge response indicates the
 // supplied sha no longer matches the PR's current head — GitHub returns 409
-// with this message. Terminal: retrying would only re-merge on stale evidence
-// once the head advances further, so the caller must not retry it.
+// with this specific message. Terminal: retrying would only re-merge on stale
+// evidence once the head advances further, so the caller must not retry it.
+// Deliberately keyed on the message rather than the bare 409 status, since
+// the merge endpoint also returns 409 for other conditions (e.g. the
+// transient base-branch race handled by isBaseBranchModifiedErr), which must
+// stay retryable.
 func isHeadSHAMismatchErr(resp ghHTTPResponse) bool {
-	return resp.statusCode == 409 || strings.Contains(string(resp.body), "Head branch was modified")
+	return strings.Contains(string(resp.body), "Head branch was modified")
 }
 
 // MarkReady marks a draft pull request as ready for review.

@@ -697,6 +697,19 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}
 	})
 
+	t.Run("empty head sha is rejected before any request", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 200 OK\n\n{\"merged\":true}"), err: nil},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, ""); err == nil {
+			t.Fatal("expected error for empty head sha")
+		}
+		if se.calls != 0 {
+			t.Fatalf("calls = %d, want 0 (no request without a head sha)", se.calls)
+		}
+	})
+
 	t.Run("head sha mismatch (409) is terminal, no retry", func(t *testing.T) {
 		t.Parallel()
 		se := &scriptedExecer{results: []scriptedResult{
@@ -707,6 +720,19 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}
 		if se.calls != 1 {
 			t.Fatalf("calls = %d, want 1 (no retry on sha mismatch)", se.calls)
+		}
+	})
+
+	t.Run("generic 409 without the mismatch message is not treated as terminal", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 409 Conflict\n\n{\"message\":\"some other conflict\"}"), err: fmt.Errorf("exit 1")},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err == nil {
+			t.Fatal("expected error")
+		}
+		if isHeadSHAMismatchErr(ghHTTPResponse{statusCode: 409, body: []byte("some other conflict")}) {
+			t.Fatal("generic 409 must not be classified as a head-SHA mismatch")
 		}
 	})
 
