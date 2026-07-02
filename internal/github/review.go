@@ -374,7 +374,10 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 	var query strings.Builder
 	query.WriteString("query(")
 	for j := range valid {
-		fmt.Fprintf(&query, "$owner%d: String!, $name%d: String!, $number%d: Int!, ", j, j, j)
+		if j > 0 {
+			query.WriteString(", ")
+		}
+		fmt.Fprintf(&query, "$owner%d: String!, $name%d: String!, $number%d: Int!", j, j, j)
 	}
 	query.WriteString(") {\n  viewer { login }\n")
 	for j := range valid {
