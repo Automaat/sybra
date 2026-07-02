@@ -40,6 +40,36 @@ run = [
 ]
 description = "Run all linters"
 
+# Mirrors every deterministic, CI-aligned gate so a local pass predicts a
+# green CI run. "Deterministic" here doesn't mean no network access — npm ci
+# and Go module resolution may still hit the network — it means the gate's
+# outcome depends only on repo state, not on ambient CI infra. Intentionally
+# excludes gates that need external advisory DBs or a browser and so cannot
+# run reliably as a pre-commit loop: lint-nilaway (installs nilaway),
+# security (govulncheck + npm audit hit the advisory DBs), and the e2e job
+# (Playwright + chromium + a live server). CI remains the source of truth for
+# those three.
+[tasks.verify]
+run = [
+  "cd frontend && npm ci && npm run build:desktop",
+  "go build ./...",
+  "go mod verify",
+  "go mod tidy && git diff --exit-code go.mod go.sum",
+  "go test -race -timeout 5m ./...",
+  "go test -race -tags e2e -timeout 10m ./internal/sybra/...",
+  "golangci-lint run ./...",
+  "cd frontend && npm run check",
+  "cd frontend && npm run build:web",
+  "cd frontend && npm run test:coverage",
+  "cd frontend && npx oxlint .",
+  "cd frontend && node scripts/check-pin-strategy.mjs",
+  "bash scripts/check-api-shim-sync.sh",
+  "command -v wails3 >/dev/null 2>&1 || (echo 'wails3 not found — install with: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87 (see .github/workflows/ci.yml for the full workaround)' && exit 1)",
+  "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
+  "hadolint Dockerfile",
+]
+description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"
 description = "Build frontend for desktop (output: frontend/dist/)"
