@@ -373,11 +373,7 @@ func buildGroundLister(projStore *project.Store) umbrella.TrackedFilesFunc {
 		if err != nil {
 			return nil, fmt.Errorf("ground: project %s: %w", repo, err)
 		}
-		branch, err := project.DefaultBranch(p.ClonePath)
-		if err != nil {
-			return nil, fmt.Errorf("ground: default branch for %s: %w", repo, err)
-		}
-		files, err := project.ListTrackedFiles(p.ClonePath, "refs/heads/"+branch)
+		files, err := project.TrackedFilesAtDefaultBranch(p.ClonePath)
 		if err != nil {
 			return nil, fmt.Errorf("ground: tracked files for %s: %w", repo, err)
 		}

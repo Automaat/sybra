@@ -1847,6 +1847,9 @@ func TestListTrackedFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListTrackedFiles on empty tree: %v", err)
 		}
+		if files == nil {
+			t.Error("files is nil, want non-nil empty slice")
+		}
 		if len(files) != 0 {
 			t.Errorf("files = %v, want empty", files)
 		}
@@ -1856,6 +1859,85 @@ func TestListTrackedFiles(t *testing.T) {
 		t.Parallel()
 		if _, err := ListTrackedFiles(bare, "refs/heads/does-not-exist"); err == nil {
 			t.Fatal("expected error for missing ref")
+		}
+	})
+}
+
+func TestTrackedFilesAtDefaultBranch(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	t.Run("falls back to local head before first fetch", func(t *testing.T) {
+		t.Parallel()
+		src := initRepoWithCommit(t)
+		bare := filepath.Join(t.TempDir(), "bare.git")
+		if err := CloneBare(src, bare); err != nil {
+			t.Fatalf("CloneBare: %v", err)
+		}
+		// git clone --bare only populates refs/heads/*, not
+		// refs/remotes/origin/* (that requires a subsequent fetch), so this
+		// must resolve via the refs/heads/<branch> fallback.
+		files, err := TrackedFilesAtDefaultBranch(bare)
+		if err != nil {
+			t.Fatalf("TrackedFilesAtDefaultBranch: %v", err)
+		}
+		if len(files) != 1 || files[0] != "README.md" {
+			t.Fatalf("files = %v, want [README.md]", files)
+		}
+	})
+
+	t.Run("prefers remote-tracking ref once fetched", func(t *testing.T) {
+		t.Parallel()
+		src := initRepoWithCommit(t)
+		bare := filepath.Join(t.TempDir(), "bare.git")
+		if err := CloneBare(src, bare); err != nil {
+			t.Fatalf("CloneBare: %v", err)
+		}
+		branch, err := DefaultBranch(bare)
+		if err != nil {
+			t.Fatalf("DefaultBranch: %v", err)
+		}
+
+		// Add a file upstream and fetch it into the bare clone, but leave
+		// the local refs/heads/<branch> stale — simulates a bare clone
+		// that's been fetched without its local head being advanced.
+		if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"git", "-C", src, "add", "."},
+			{"git", "-C", src, "commit", "-m", "add new.txt"},
+		} {
+			if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %v: %s", args, err, out)
+			}
+		}
+		if err := FetchOrigin(bare); err != nil {
+			t.Fatalf("FetchOrigin: %v", err)
+		}
+
+		files, err := TrackedFilesAtDefaultBranch(bare)
+		if err != nil {
+			t.Fatalf("TrackedFilesAtDefaultBranch: %v", err)
+		}
+		want := map[string]bool{"README.md": true, "new.txt": true}
+		if len(files) != len(want) {
+			t.Fatalf("files = %v, want %v", files, want)
+		}
+		for _, f := range files {
+			if !want[f] {
+				t.Errorf("unexpected file %q", f)
+			}
+		}
+		// The stale local head must not have been consulted.
+		staleFiles, err := ListTrackedFiles(bare, "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("ListTrackedFiles on stale head: %v", err)
+		}
+		if len(staleFiles) != 1 {
+			t.Fatalf("expected stale local head to remain at 1 file, got %v", staleFiles)
 		}
 	})
 }

@@ -164,18 +164,37 @@ func ListTrackedFiles(barePath, ref string) ([]string, error) {
 		return nil, err
 	}
 	out = strings.TrimSpace(out)
+	files := make([]string, 0)
 	if out == "" {
-		return nil, nil
+		return files, nil
 	}
-	lines := strings.Split(out, "\n")
-	files := make([]string, 0, len(lines))
-	for _, l := range lines {
+	for l := range strings.SplitSeq(out, "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
 			files = append(files, l)
 		}
 	}
 	return files, nil
+}
+
+// TrackedFilesAtDefaultBranch resolves barePath's default branch and returns
+// the files tracked there, preferring the remote-tracking ref
+// (refs/remotes/origin/<branch>) and falling back to the local ref
+// (refs/heads/<branch>) if the tracking ref is absent. Bare clones don't keep
+// local heads current on fetch (remote.origin.fetch only updates
+// refs/remotes/origin/*, see CloneBare), so the tracking ref reflects pushed
+// state most reliably; the local-head fallback covers a fresh clone that
+// hasn't been fetched yet, where only refs/heads/* exist.
+func TrackedFilesAtDefaultBranch(barePath string) ([]string, error) {
+	branch, err := DefaultBranch(barePath)
+	if err != nil {
+		return nil, err
+	}
+	files, err := ListTrackedFiles(barePath, "refs/remotes/origin/"+branch)
+	if err == nil {
+		return files, nil
+	}
+	return ListTrackedFiles(barePath, "refs/heads/"+branch)
 }
 
 func FetchOrigin(barePath string) error {
