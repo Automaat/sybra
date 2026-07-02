@@ -166,12 +166,26 @@ func linearChainFallback(subs []SubIssue) (Plan, error) {
 		}
 		keyed[i] = ns
 	}
-	sort.SliceStable(keyed, func(i, j int) bool {
-		if keyed[i].hasNum && keyed[j].hasNum {
-			return keyed[i].num < keyed[j].num
+	// Sort only the numbered entries by number, then drop them back into the
+	// slots they originally occupied. Non-numbered entries never move, so
+	// they keep fetch order and numeric entries reorder around them instead
+	// of being blocked by a non-numeric ref sitting between them.
+	var numberedIdx []int
+	for i, ns := range keyed {
+		if ns.hasNum {
+			numberedIdx = append(numberedIdx, i)
 		}
-		return false
+	}
+	numbered := make([]numberedSub, len(numberedIdx))
+	for i, idx := range numberedIdx {
+		numbered[i] = keyed[idx]
+	}
+	sort.SliceStable(numbered, func(i, j int) bool {
+		return numbered[i].num < numbered[j].num
 	})
+	for i, idx := range numberedIdx {
+		keyed[idx] = numbered[i]
+	}
 
 	p := Plan{MaxParallel: 1, Fallback: true}
 	prevOpen := ""

@@ -877,6 +877,26 @@ func TestLinearChainFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("mixed numeric and non-numeric refs still sort numeric ones by number", func(t *testing.T) {
+		t.Parallel()
+		// A leading non-numeric ref must not block later numeric refs from
+		// being reordered into numeric order around it.
+		s := []SubIssue{{Ref: "o/r#foo"}, {Ref: "o/r#3"}, {Ref: "o/r#1"}, {Ref: "o/r#2"}}
+		p, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if got := depsOf(t, p, "o/r#1"); len(got) != 1 || got[0] != "o/r#foo" {
+			t.Errorf("o/r#1 deps = %v, want [o/r#foo] (non-numeric keeps its fetch slot)", got)
+		}
+		if got := depsOf(t, p, "o/r#2"); len(got) != 1 || got[0] != "o/r#1" {
+			t.Errorf("o/r#2 deps = %v, want [o/r#1]", got)
+		}
+		if got := depsOf(t, p, "o/r#3"); len(got) != 1 || got[0] != "o/r#2" {
+			t.Errorf("o/r#3 deps = %v, want [o/r#2]", got)
+		}
+	})
+
 	t.Run("semantic agreement: same serial reachability as a metadata-free plan", func(t *testing.T) {
 		t.Parallel()
 		// A closed sub-issue sits mid-chain so the fallback's sparse edges
