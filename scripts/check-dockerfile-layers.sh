@@ -111,12 +111,14 @@ awk -v dockerfile="${DOCKERFILE}" '
 # RUN instructions commonly split a pipeline across backslash-continuation
 # lines, so join continued lines into one logical line (tagged with the
 # starting line number) before matching — a line-at-a-time grep misses
-# `curl ... \` / `| \` / `sh` split across three lines.
-installer_pipe_re='\|[[:space:]]*(sudo[[:space:]]+)?(/usr/bin/env[[:space:]]+)?(/bin/)?(sh|bash)([[:space:]]+-s)?([[:space:]]|$)'
+# `curl ... \` / `| \` / `sh` split across three lines. Limit the match to
+# RUN instructions where curl/wget appears before the pipe, so unrelated
+# `| sh` pipelines and comments do not trigger this rule.
+installer_pipe_re='\\|[[:space:]]*(sudo[[:space:]]+)?(/usr/bin/env[[:space:]]+)?(/bin/)?(sh|bash)([[:space:]]+-s)?([[:space:]]|$)'
 while IFS=: read -r lineno content; do
   err "unverified remote installer pipe (curl|sh / curl|bash) at line ${lineno}: ${content}"
 done < <(
-  awk '
+  awk -v installer_pipe_re="${installer_pipe_re}" '
     {
       line = $0
       cont = (line ~ /\\[[:space:]]*$/)
@@ -124,11 +126,17 @@ done < <(
       if (buf == "") { start = NR }
       buf = (buf == "" ? line : buf " " line)
       if (!cont) {
-        print start ":" buf
+        if (buf ~ /^[[:space:]]*RUN([[:space:]]|\\)/ && buf ~ installer_pipe_re) {
+          pipe_start = match(buf, installer_pipe_re)
+          prefix = substr(buf, 1, pipe_start - 1)
+          if (prefix ~ /(^|[[:space:](&;])(curl|wget)([[:space:]]|$)/) {
+            print start ":" buf
+          }
+        }
         buf = ""
       }
     }
-  ' "${DOCKERFILE}" | grep -E "${installer_pipe_re}" || true
+  ' "${DOCKERFILE}" || true
 )
 
 # --- 5. Healthcheck uses curl, not node ----------------------------------
