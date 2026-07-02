@@ -455,7 +455,11 @@ steps:
     type: run_agent
     config:
       role: plan
-      mode: interactive
+      # headless, like every other planning step: this runs autonomously with no
+      # human attached. An interactive-mode agent escapes the watchdog
+      # (internal/watchdog skips ag.Mode != "headless"), so a hang here wedges the
+      # workflow in `waiting` forever with no stall recovery.
+      mode: headless
       model: opus
       reuse_agent: true
       wait_for_status: plan-review
