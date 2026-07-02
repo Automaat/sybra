@@ -306,7 +306,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		BashTimeoutMs:   cfg.BashTimeoutMs(),
 		RetryWatchdog:   cfg.RetryWatchdog(),
 		FallbackModel:   cfg.Agent.FallbackModel,
-		LimitGate:       a.limits,
+		LimitGate:       agent.LimitGateOrNil(a.limits),
 		LimitPolicy:     policy,
 	}
 }

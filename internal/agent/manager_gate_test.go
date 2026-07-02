@@ -171,6 +171,50 @@ func TestReportProviderHealthSignal_CleanLimitResultMarksRateLimit(t *testing.T)
 	}
 }
 
+func TestLimitGateOrNil_NilStoreYieldsNilInterface(t *testing.T) {
+	var store *limits.Store
+	gate := LimitGateOrNil(store)
+	if gate != nil {
+		t.Fatalf("expected nil interface for nil *limits.Store, got %#v", gate)
+	}
+}
+
+func TestLimitGateOrNil_NonNilStorePassesThrough(t *testing.T) {
+	store, err := limits.NewStore(t.TempDir() + "/limits.json")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	gate := LimitGateOrNil(store)
+	if gate == nil {
+		t.Fatal("expected non-nil LimitGate for non-nil store")
+	}
+}
+
+// TestGateProvider_DegradedLimitsStoreNoPanic reproduces a degraded
+// limits.Store init (nil *limits.Store) wired through LimitGateOrNil, as
+// app_init.go and svc_config.go do. Before the fix, assigning the nil
+// *limits.Store directly to the LimitGate interface field produced a
+// non-nil interface holding a nil pointer, defeating the manager's
+// `lg == nil` guard and panicking on Store.ProviderAvailable's nil
+// receiver mutex.
+func TestGateProvider_DegradedLimitsStoreNoPanic(t *testing.T) {
+	var degradedStore *limits.Store
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			DefaultProvider: "claude",
+			LimitGate:       LimitGateOrNil(degradedStore),
+			LimitPolicy:     limits.DefaultPolicy(),
+		},
+	})
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "claude" {
+		t.Errorf("got %q, want claude", got)
+	}
+}
+
 func TestReportProviderHealthSignal_CleanSuccessMentioningRateLimitDoesNotMarkRateLimit(t *testing.T) {
 	m, _ := newTestManager(t)
 	fg := &fakeGate{healthy: map[string]bool{"claude": true}}
