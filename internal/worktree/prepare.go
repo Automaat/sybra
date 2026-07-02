@@ -377,9 +377,13 @@ func (m *Manager) PrepareForFix(t task.Task, prNumber int) (string, error) {
 
 	wtPath := m.PathFor(t)
 
-	// Remove stale worktree — previous agent may have left dirty state.
+	// Remove stale worktree — previous agent may have left dirty state, or a
+	// prior `worktree prune` (or crash) dropped the admin entry while the
+	// checkout dir survived (orphan). RemoveWorktreeReconcile handles both.
 	if _, statErr := os.Stat(wtPath); statErr == nil {
-		_ = project.RemoveWorktree(proj.ClonePath, wtPath)
+		if err := project.RemoveWorktreeReconcile(proj.ClonePath, wtPath); err != nil {
+			return "", fmt.Errorf("remove stale fix worktree: %w", err)
+		}
 	}
 
 	originRef := "refs/remotes/origin/" + branch
