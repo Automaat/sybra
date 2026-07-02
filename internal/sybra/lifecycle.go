@@ -414,10 +414,12 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 }
 
 // startPromptLabService launches the deterministic (non-LLM) Prompt Lab
-// ticker built by initPromptLab. No-op when the coordinator is nil (Startup
-// not yet through initAutomations) or cfg.PromptLab.Enabled is false — the
-// disabled check lives inside promptLabCoordinator.run so this stays a thin
-// launch point, consistent with the other startX helpers in this file.
+// ticker built by initPromptLab. No-op when the coordinator is nil (e.g.
+// tests or other callers that exercise LifecycleManager without going
+// through App.Startup's initAutomations step) or cfg.PromptLab.Enabled is
+// false — the disabled check lives inside promptLabCoordinator.run so this
+// stays a thin launch point, consistent with the other startX helpers in
+// this file.
 func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(string, any)) {
 	a := lm.app
 	if a.promptLab == nil {

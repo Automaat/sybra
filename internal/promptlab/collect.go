@@ -77,7 +77,7 @@ func projectIDsForRole(records []stats.RunRecord, role string) []string {
 	return out
 }
 
-// taskIdsForRole returns up to limit distinct, sorted task IDs so a reviewer
+// taskIDsForRole returns up to limit distinct, sorted task IDs so a reviewer
 // can jump straight to representative failing runs.
 func taskIDsForRole(records []stats.RunRecord, role string, limit int) []string {
 	seen := map[string]bool{}

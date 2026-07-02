@@ -148,23 +148,26 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 
 // allowsAnyProject reports whether this machine should file a proposal
 // backed by the given evidence project IDs. A subject with no known project
-// (fleet-wide evidence, not traced to one project) is treated as pet-typed —
+// (fleet-wide evidence, not traced to one project) — or one whose project
+// IDs no longer resolve (e.g. a deleted project) — is treated as pet-typed —
 // the least restrictive routing — so it is never silently dropped for lack
 // of attribution.
 func (c *promptLabCoordinator) allowsAnyProject(projectIDs []string) bool {
-	if len(projectIDs) == 0 {
-		return c.allowsProjectType(project.ProjectTypePet)
-	}
+	resolved := false
 	for _, id := range projectIDs {
 		p, err := c.projects.Get(id)
 		if err != nil {
 			continue
 		}
+		resolved = true
 		if c.allowsProjectType(p.Type) {
 			return true
 		}
 	}
-	return false
+	if resolved {
+		return false
+	}
+	return c.allowsProjectType(project.ProjectTypePet)
 }
 
 func (c *promptLabCoordinator) scrubBody(body string, projectIDs []string) string {

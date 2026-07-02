@@ -259,7 +259,7 @@ func TestLoadPromptLabDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadPromptLabPreservesExplicitDisabled(t *testing.T) {
+func TestLoadPromptLabPreservesExplicitEnabled(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	yaml := []byte("prompt_lab:\n  enabled: true\n  min_samples: 10\n")
