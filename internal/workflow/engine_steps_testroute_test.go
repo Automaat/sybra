@@ -553,6 +553,56 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			// A structured {"verdict":"FAIL","outcome":"product_bug"} whose
+			// failures_markdown is thin one-sentence narrative with no command,
+			// no observed result, and no structured evidence fields must still
+			// bounce to missing_evidence — trusting the tester's own outcome
+			// field waives the markdown-*labeling* requirement, not the
+			// underlying evidence requirement itself.
+			name:   "structured_product_bug_with_no_evidence_anywhere_is_missing_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` +
+				strconv.Quote("The feature seems broken.") + `}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
+			// Literal incident shape (#1382): a well-formed structured
+			// {"verdict":"FAIL","outcome":"product_bug"} whose failures_markdown
+			// is thin narrative prose, but whose structured automated_checks
+			// field records a real command and observed result. Trust the
+			// tester's own structured outcome field instead of bouncing it to
+			// missing_evidence and burning the auto-retry budget on an
+			// identical, already-evidenced result every retry.
+			name:   "structured_product_bug_with_thin_narrative_but_structured_evidence_is_trusted",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` +
+				strconv.Quote("mise run verify does not mirror CI: it skips the golangci-lint and "+
+					"frontend gates that CI runs, so a change can pass verify locally and still fail CI.") + `,` +
+				`"automated_checks":[{"command":"mise run verify && mise run ci:parity",` +
+				`"observed":"verify: PASS; ci:parity: FAIL — golangci-lint step missing"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
+			// A structured probe whose only populated field is a command plus a
+			// status explicitly stating it was NOT executed (e.g. "not run",
+			// "could not run") must not count as reproduction evidence — the
+			// probe's own status says it never ran.
+			name:   "structured_product_bug_with_command_and_not_run_status_is_missing_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` +
+				strconv.Quote("The feature seems broken.") + `,` +
+				`"manual_probes":[{"command":"curl /status","status":"could not run — server was down"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "explicit_product_bug_still_requires_evidence",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,

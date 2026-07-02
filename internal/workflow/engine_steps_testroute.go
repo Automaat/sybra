@@ -1108,6 +1108,36 @@ func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID 
 	if strings.TrimSpace(report) == "" {
 		return testOutcomeMissingEvidence, ""
 	}
+
+	// A well-formed structured verdict is authoritative about *classification*:
+	// trust the tester's own `outcome` field instead of re-deriving product_bug
+	// vs. ambiguous_requirement vs. missing_evidence from prose-shape heuristics
+	// the tester's contract never guaranteed a specific markdown layout for.
+	// This does NOT waive the evidence requirement itself — a tester still has
+	// to show a real command and observed result, either as grounded prose
+	// (hasGroundedFailureEvidence) or as populated structured evidence fields
+	// (hasStructuredFailureEvidence: readiness_probe/manual_probes/
+	// automated_checks). Without the grounded-prose fallback, a test-runner
+	// that reports the identical {"verdict":"FAIL","outcome":"product_bug"}
+	// with a real repro every retry, just formatted without a labeled
+	// "Command:"/"Expected:" section or file:line citation, got bounced back as
+	// missing_evidence and burned the whole auto-retry budget on a result the
+	// first run already reported correctly (#1382). A bare narrative sentence
+	// with no evidence anywhere still falls through to the evidence gate below.
+	// Reconstructed reports (body-delta fallback, or a bare "Classification:"
+	// line in prose) are NOT covered here — only an outcome parsed directly off
+	// the agent's own structured output.
+	if parsed, ok := parseStructuredTestOutput(output); ok &&
+		strings.EqualFold(strings.TrimSpace(parsed.Verdict), "FAIL") &&
+		strings.TrimSpace(parsed.FailuresMarkdown) != "" {
+		switch normalizeTestOutcome(parsed.Outcome) {
+		case testOutcomeProductBug, testOutcomeAmbiguousRequirement:
+			if hasGroundedFailureEvidence(report) || hasStructuredFailureEvidence(parsed) {
+				return normalizeTestOutcome(parsed.Outcome), testFailureFingerprint(report)
+			}
+		}
+	}
+
 	if explicit := explicitTestOutcome(report); explicit != "" {
 		if explicit == testOutcomePass {
 			return testOutcomeMissingEvidence, ""
@@ -1208,6 +1238,68 @@ func reportScanLines(text string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+// hasStructuredFailureEvidence reports whether a structured FAIL payload's own
+// evidence fields (readiness_probe/manual_probes/automated_checks) record a
+// real reproduction, as an alternative to hasGroundedFailureEvidence's prose
+// scan. It lets a tester that fills these fields correctly skip the markdown
+// labeling hasGroundedFailureEvidence expects, without waiving evidence
+// entirely (see the classifyTestOutcome comment for the incident this covers).
+func hasStructuredFailureEvidence(parsed structuredTestOutput) bool {
+	for _, p := range parsed.ManualProbes {
+		if hasConcreteProbeEvidence(p.Command, p.Actual, p.Output, p.Observed, p.Status, p.Raw) {
+			return true
+		}
+	}
+	for _, c := range parsed.AutomatedChecks {
+		if hasConcreteProbeEvidence(c.Command, c.Actual, c.Output, c.Observed, c.Status, c.Raw) {
+			return true
+		}
+	}
+	rp := parsed.ReadinessProbe
+	return hasConcreteProbeEvidence(rp.Command, rp.Actual, rp.Output, rp.Observed, rp.Status, rp.Raw)
+}
+
+// hasConcreteProbeEvidence reports whether a structured probe records a real
+// reproduction: a command plus at least one populated result field, or a
+// free-form raw string with both a stated action and an observed result.
+// Unlike hasSuccessfulCheckResult (built to confirm a PASS), this makes no
+// success/failure judgment on the result — a FAIL report showing the probe
+// actually ran and what it returned is exactly the evidence we want.
+func hasConcreteProbeEvidence(command string, actual, output, observed, status evidenceText, raw string) bool {
+	if strings.TrimSpace(command) != "" &&
+		(hasConcreteProbeResult(actual) ||
+			hasConcreteProbeResult(output) ||
+			hasConcreteProbeResult(observed) ||
+			hasConcreteProbeResult(status)) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return false
+	}
+	return hasManualActionEvidence(lower) && hasManualObservationEvidence(lower)
+}
+
+// hasConcreteProbeResult reports whether a probe result field (actual/output/
+// observed/status) records a real outcome rather than a not-executed marker
+// (e.g. "not run", "skipped", "could not run"). Applied uniformly to all four
+// fields because fillAliases backfills an empty Actual from Status, so a
+// negative status would otherwise resurface as "concrete" Actual content and
+// let an admittedly-unexecuted probe pass as reproduction evidence. Unlike
+// hasRegressionNegativeEvidence, this must NOT flag "failed"/"failure" — a
+// probe result of "failed" means it ran and failed, which is exactly the
+// reproduction evidence this gate wants.
+func hasConcreteProbeResult(v evidenceText) bool {
+	trimmed := strings.TrimSpace(string(v))
+	if trimmed == "" {
+		return false
+	}
+	return !containsAny(strings.ToLower(trimmed),
+		"not run", "not executed", "never ran", "never run", "did not run", "didn't run",
+		"was not run", "were not run", "wasn't run", "weren't run", "could not run",
+		"cannot run", "skipped", "without running", "n/a", "unknown")
 }
 
 func hasGroundedFailureEvidence(report string) bool {
