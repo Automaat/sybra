@@ -110,6 +110,22 @@ commit() {
   rm -rf "${dir}"
 )
 
+# --- Case: invalid prev tag fails instead of pretending range is empty -----
+(
+  dir=$(mktemp -d)
+  cd "${dir}"
+  init_repo
+  commit "feat: add widget"
+
+  if "${SCRIPT}" "v9.9.9" >/dev/null 2>&1; then
+    echo "FAIL: invalid-prev-tag: expected script to fail for a missing tag" >&2
+    echo 1 >>"${FAIL_FLAG}"
+  else
+    echo "ok: invalid-prev-tag: missing tag failed as expected"
+  fi
+  rm -rf "${dir}"
+)
+
 if [[ -s "${FAIL_FLAG}" ]]; then
   echo "generate-release-notes.test.sh: FAILED" >&2
   exit 1

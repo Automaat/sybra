@@ -36,7 +36,11 @@ LINES_feat="" LINES_fix="" LINES_perf="" LINES_refactor="" LINES_docs=""
 LINES_ci="" LINES_test="" LINES_build="" LINES_chore="" LINES_other=""
 
 TYPE_RE='^([a-z]+)[(:!]'
+SUBJECTS=$(git log "${RANGE}" --format="%s")
 while IFS= read -r subject; do
+  if [[ -z "${subject}" ]]; then
+    continue
+  fi
   if [[ "${subject}" =~ ${TYPE_RE} ]]; then
     TYPE="${BASH_REMATCH[1]}"
   else
@@ -54,7 +58,7 @@ while IFS= read -r subject; do
     chore) LINES_chore+="- ${subject}"$'\n' ;;
     *) LINES_other+="- ${subject}"$'\n' ;;
   esac
-done < <(git log "${RANGE}" --format="%s" 2>/dev/null)
+done <<<"${SUBJECTS}"
 
 NOTES=""
 for TYPE in feat fix perf refactor docs ci test build chore; do

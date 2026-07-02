@@ -23,6 +23,11 @@ assert_eq() {
   fi
 }
 
+extract_output_value() {
+  local key="$1" content="$2"
+  sed -n "s/^${key}=//p" <<<"${content}" | head -n1
+}
+
 init_repo() {
   git init -q
   git config user.email "test@example.com"
@@ -37,8 +42,8 @@ init_repo() {
   init_repo
 
   OUT=$("${SCRIPT}")
-  VERSION=$(echo "${OUT}" | grep '^version=' | cut -d= -f2)
-  PREV=$(echo "${OUT}" | grep '^prev_version=' | cut -d= -f2-)
+  VERSION=$(extract_output_value "version" "${OUT}")
+  PREV=$(extract_output_value "prev_version" "${OUT}")
   assert_eq "no-tag: version" "v0.1.0" "${VERSION}"
   assert_eq "no-tag: prev_version" "" "${PREV}"
   rm -rf "${dir}"
@@ -52,8 +57,8 @@ init_repo() {
   git -c tag.gpgSign=false tag v1.4.0
 
   OUT=$("${SCRIPT}")
-  VERSION=$(echo "${OUT}" | grep '^version=' | cut -d= -f2)
-  PREV=$(echo "${OUT}" | grep '^prev_version=' | cut -d= -f2-)
+  VERSION=$(extract_output_value "version" "${OUT}")
+  PREV=$(extract_output_value "prev_version" "${OUT}")
   assert_eq "existing-tag: version" "v1.5.0" "${VERSION}"
   assert_eq "existing-tag: prev_version" "v1.4.0" "${PREV}"
   rm -rf "${dir}"
@@ -67,10 +72,25 @@ init_repo() {
   git -c tag.gpgSign=false tag v1.4.0
 
   OUT=$("${SCRIPT}" "v2.0.0")
-  VERSION=$(echo "${OUT}" | grep '^version=' | cut -d= -f2)
-  PREV=$(echo "${OUT}" | grep '^prev_version=' | cut -d= -f2-)
+  VERSION=$(extract_output_value "version" "${OUT}")
+  PREV=$(extract_output_value "prev_version" "${OUT}")
   assert_eq "requested-version: version" "v2.0.0" "${VERSION}"
   assert_eq "requested-version: prev_version" "v1.4.0" "${PREV}"
+  rm -rf "${dir}"
+)
+
+# --- Case: invalid requested version fails validation ----------------------
+(
+  dir=$(mktemp -d)
+  cd "${dir}"
+  init_repo
+
+  if "${SCRIPT}" $'v2.0.0\nextra=bad' >/dev/null 2>&1; then
+    echo "FAIL: invalid-requested-version: expected script to reject newline input" >&2
+    echo 1 >>"${FAIL_FLAG}"
+  else
+    echo "ok: invalid-requested-version: rejected malformed input"
+  fi
   rm -rf "${dir}"
 )
 

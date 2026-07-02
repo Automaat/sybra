@@ -27,7 +27,7 @@ jobs:
 
       - name: Resolve version
         id: version
-        run: scripts/resolve-release-version.sh "${{ inputs.version }}"
+        run: bash scripts/resolve-release-version.sh "${{ inputs.version }}"
 
       - name: Create and push tag
         run: |
@@ -71,7 +71,7 @@ jobs:
       - name: Generate release notes
         shell: bash
         run: |
-          scripts/generate-release-notes.sh "${{ steps.version.outputs.prev_version }}" > /tmp/release-notes.md
+          bash scripts/generate-release-notes.sh "${{ steps.version.outputs.prev_version }}" > /tmp/release-notes.md
           cat /tmp/release-notes.md
 
       - name: Create GitHub Release

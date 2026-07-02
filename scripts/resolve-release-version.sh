@@ -15,10 +15,15 @@
 set -euo pipefail
 
 REQUESTED_VERSION="${1:-}"
+VERSION_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
 LATEST=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
 
 if [[ -n "${REQUESTED_VERSION}" ]]; then
+  if [[ ! "${REQUESTED_VERSION}" =~ ${VERSION_RE} ]]; then
+    echo "requested version must match vX.Y.Z (got: ${REQUESTED_VERSION@Q})" >&2
+    exit 1
+  fi
   VERSION="${REQUESTED_VERSION}"
 elif [[ -z "${LATEST}" ]]; then
   VERSION="v0.1.0"
