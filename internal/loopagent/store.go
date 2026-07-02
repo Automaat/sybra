@@ -115,6 +115,30 @@ func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
 	return la, nil
 }
 
+// UpdateRunMetadata applies mutate to the on-disk record under the same
+// per-record flock as Update, but deliberately does NOT bump UpdatedAt —
+// that field tracks user config changes only, and bumping it here would
+// trip Sync()'s change detection and restart the fetcher every time it
+// fires. Used by the scheduler to persist run bookkeeping (LastRunAt,
+// LastRunID, LastRunCost) without racing GUI/API/CLI config updates.
+func (s *Store) UpdateRunMetadata(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+	unlock, err := fsutil.LockFile(s.filePath(id))
+	if err != nil {
+		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
+	rec, err := s.Get(id)
+	if err != nil {
+		return LoopAgent{}, err
+	}
+	mutate(&rec)
+	if err := s.writeFile(rec); err != nil {
+		return LoopAgent{}, err
+	}
+	return rec, nil
+}
+
 // Delete removes the record file. Missing files are not an error.
 func (s *Store) Delete(id string) error {
 	path := s.filePath(id)
