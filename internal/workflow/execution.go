@@ -122,6 +122,23 @@ func (e *Execution) CountStep(stepID string) int {
 	return n
 }
 
+// ClearStepRecords removes all history records for a given step ID, resetting
+// CountStep(stepID) to 0. Used when a step is deliberately re-armed for a
+// fresh attempt cycle (e.g. route-level auto-retry) so its own in-step
+// max_retries budget is not seen as already exhausted by prior cycles.
+func (e *Execution) ClearStepRecords(stepID string) {
+	if len(e.StepHistory) == 0 {
+		return
+	}
+	kept := e.StepHistory[:0]
+	for i := range e.StepHistory {
+		if e.StepHistory[i].StepID != stepID {
+			kept = append(kept, e.StepHistory[i])
+		}
+	}
+	e.StepHistory = kept
+}
+
 // RecordForStep returns the latest record for a given step ID, or nil.
 func (e *Execution) RecordForStep(stepID string) *StepRecord {
 	for i := range slices.Backward(e.StepHistory) {

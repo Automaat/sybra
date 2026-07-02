@@ -1828,6 +1828,42 @@ func TestRouteTestResult_InfraFailureParksForAutoRetry(t *testing.T) {
 	}
 }
 
+// TestRouteTestResult_AutoRetryClearsRunTestStepHistory guards against
+// CountStep(run_test) — which counts every historical execution, not just the
+// current retry cycle — silently exhausting run_test's own in-step
+// max_retries budget (configured as 1 in testing-task.yaml) across
+// route-level auto-retry cycles. Without clearing run_test's StepHistory
+// records on rewind, a run_test failure after a prior route-level auto-retry
+// would see CountStep(run_test) > 1 and skip its in-step retry entirely.
+func TestRouteTestResult_AutoRetryClearsRunTestStepHistory(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.Put(TaskInfo{ID: "t-history", Status: "testing"})
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: "route_test",
+		State:       ExecRunning,
+		StartedAt:   time.Now().UTC(),
+		Variables:   map[string]string{"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey: testOutcomeInfraFailure},
+		StepHistory: []StepRecord{
+			{StepID: testVerdictSourceStep, Status: "failed"},
+			{StepID: "some_other_step", Status: "completed"},
+		},
+	}
+	out, err := e.execRouteTestResult("t-history", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-history"))
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	_ = out
+	ti := mustGetTaskInfo(t, tasks, "t-history")
+	if n := ti.Workflow.CountStep(testVerdictSourceStep); n != 0 {
+		t.Errorf("CountStep(run_test) = %d, want 0 after re-arm", n)
+	}
+	if n := ti.Workflow.CountStep("some_other_step"); n != 1 {
+		t.Errorf("CountStep(some_other_step) = %d, want 1 (untouched)", n)
+	}
+}
+
 func TestRouteTestResult_InfraFailureEscalatesAtCap(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)

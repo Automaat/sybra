@@ -100,6 +100,11 @@ func (e *Engine) parkTestingRetryOrEscalate(taskID, outcome, reaskNote string, w
 	// Clear the prior run's verdict/outcome/taint so the re-armed run is judged
 	// on its own output, not the stale report that triggered this retry.
 	clearTestVerdictVars(wfExec)
+	// Also clear run_test's step-history records: CountStep(run_test) counts
+	// every historical execution, not just the current retry cycle, so without
+	// this a route-level re-arm would leave the tester's own in-step
+	// max_retries budget looking exhausted from earlier cycles.
+	wfExec.ClearStepRecords(testVerdictSourceStep)
 	// Rewind to the tester step; ResumeStalled re-dispatches it once idle and
 	// past the backoff (run_test is a run_agent step).
 	wfExec.CurrentStep = testVerdictSourceStep
