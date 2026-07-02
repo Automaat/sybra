@@ -2,6 +2,11 @@
   import { interpretExperiment } from '$lib/evaluation-interpretation.js'
   import { evaluationStore } from '../stores/evaluation.svelte.js'
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
+  import type {
+    ComparisonBreakdown,
+    ExperimentGroup,
+    ExperimentKindBreakdown,
+  } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 
   const report = $derived(evaluationStore.data)
   const phases = $derived(lifecycleStore.data)
@@ -146,6 +151,21 @@
     if (row.baseline) return 'baseline'
     if (row.baselineVariantId && !estimate(row, 'failureEstimate')?.hasDelta) return 'no baseline'
     return row.sampleStatus ?? ''
+  }
+
+  // Fixed experiment kind order; 'unknown' (orphaned experiment IDs) only
+  // renders a section when there is actually orphaned data to show.
+  const experimentKinds = ['model', 'prompt', 'skill', 'unknown'] as const
+  function kindLabel(kind: string): string {
+    return kind.charAt(0).toUpperCase() + kind.slice(1)
+  }
+  function kindGroup(kind: string): ExperimentKindBreakdown | undefined {
+    return report?.byExperimentKind?.find((g) => g.kind === kind)
+  }
+  function subjectLabel(row: ComparisonBreakdown): string {
+    const s = row.subject
+    if (!s) return ''
+    return [s.workflowId, s.stepId, s.role, s.skillName].filter(Boolean).join(' · ')
   }
 </script>
 
@@ -482,14 +502,10 @@
         {/if}
       </div>
 
-      <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-        <h3 class="mb-3 text-sm font-semibold text-surface-500">A/B Experiments</h3>
-        <p class="mb-3 max-w-3xl text-xs text-surface-400">
-          Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
-        </p>
-        {#if report?.variantExperiments && report.variantExperiments.length > 0}
+      {#snippet experimentCards(experiments: ExperimentGroup['experiments'])}
+        {#if experiments && experiments.length > 0}
           <div class="mb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {#each report.variantExperiments as exp (exp.key)}
+            {#each experiments as exp (exp.key)}
               <div class="rounded border border-surface-200 p-3 text-xs dark:border-surface-700">
                 <div class="mb-1 flex items-center justify-between gap-2">
                   <span class="truncate font-mono">{exp.experimentId} · {exp.role}</span>
@@ -505,248 +521,196 @@
             {/each}
           </div>
         {/if}
-        {#if report?.byVariant && report.byVariant.length > 0}
-          <table class="w-full min-w-[1180px] text-sm">
-            <thead>
-              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
-                <th class="pb-2">Variant</th>
-                <th class="pb-2">Role</th>
-                <th class="pb-2 text-right">Runs</th>
-                <th class="pb-2 text-right">Landed</th>
-                <th class="pb-2 text-right">Fail %</th>
-                <th class="pb-2 text-right">Merge %</th>
-                <th class="pb-2 text-right">CI 1st</th>
-                <th class="pb-2 text-right">Edited</th>
-                <th class="pb-2 text-right">Rework</th>
-                <th class="pb-2 text-right">Revert</th>
-                <th class="pb-2 text-right">Duration</th>
-                <th class="pb-2 text-right">Cost</th>
-                <th class="pb-2 text-right">Premium req</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each report.byVariant as row (row.key)}
-                {@const interpretation = interpretExperiment(row, report.byVariant)}
-                <tr class="border-b border-surface-100 bg-surface-100/60 dark:border-surface-700 dark:bg-surface-700/30">
-                  <td class="py-1.5">
-                    <div class="font-mono text-xs">{row.variantId || row.key}</div>
-                    <div class="text-xs text-surface-400">
-                      {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
-                    </div>
-                    <div class="mt-1 flex flex-wrap items-center gap-1.5">
-                      <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
-                        {interpretation.verdictLabel}
-                      </span>
-                      <span class="text-[10px] text-surface-500">
-                        {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
-                      </span>
-                    </div>
-                    <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
-                  </td>
-                  <td class="py-1.5 text-xs font-medium">All roles</td>
-                  <td class="py-1.5 text-right">
-                    {row.runs}
-                    {#if rowState(row)}
-                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
-                    {:else if row.insufficientData}
-                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                    {/if}
-                  </td>
-                  <td class="py-1.5 text-right text-xs">{row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
-                  <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
-                  <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
-                  <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
-                </tr>
-                <tr class="border-b border-surface-100 dark:border-surface-700">
-                  <td class="pb-2 pt-0" colspan="13">
-                    <div class="flex flex-wrap gap-1.5">
-                      {#each interpretation.guardrails as guardrail (guardrail.key)}
-                        <span
-                          class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
-                          title={guardrail.detail}
-                        >
-                          {guardrail.label}: {guardrail.status}
-                        </span>
-                      {/each}
-                    </div>
-                    {#if interpretation.limitedSignals.length > 0}
-                      <p class="mt-1 text-[10px] text-surface-400">
-                        Limited signals: {interpretation.limitedSignals.join(' ')}
-                      </p>
-                    {/if}
-                  </td>
-                </tr>
-                {#each row.roleBreakdowns ?? [] as child (child.key)}
-                  <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 pl-6">
-                      <div class="font-mono text-xs text-surface-500">{child.variantId || row.variantId || child.key}</div>
-                      <div class="text-xs text-surface-400">
-                        {child.provider}{child.model ? ` · ${child.model}` : ''}{child.reasoningEffort ? ` · ${child.reasoningEffort}` : ''}
-                      </div>
-                    </td>
-                    <td class="py-1.5 text-xs">{child.role || '—'}</td>
-                    <td class="py-1.5 text-right">
-                      {child.runs}
-                      {#if rowState(child)}
-                        <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
-                      {:else if child.insufficientData}
-                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                      {/if}
-                    </td>
-                    <td class="py-1.5 text-right text-xs">{child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
-                    <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
-                    <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
-                    <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
-                  </tr>
-                {/each}
-              {/each}
-            </tbody>
-          </table>
-        {:else}
-          <p class="text-xs text-surface-400">No data</p>
-        {/if}
-      </div>
+      {/snippet}
 
-      <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-        <h3 class="mb-1 text-sm font-semibold text-surface-500">A/B Experiments contribution</h3>
-        <p class="mb-3 max-w-3xl text-xs text-surface-400">
-          Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
-        </p>
-        {#if report?.byVariantContribution && report.byVariantContribution.length > 0}
-          <table class="w-full min-w-[1180px] text-sm">
-            <thead>
-              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
-                <th class="pb-2">Variant</th>
-                <th class="pb-2">Role</th>
-                <th class="pb-2 text-right">Runs</th>
-                <th class="pb-2 text-right">Landed</th>
-                <th class="pb-2 text-right">Fail %</th>
-                <th class="pb-2 text-right">Merge %</th>
-                <th class="pb-2 text-right">CI 1st</th>
-                <th class="pb-2 text-right">Edited</th>
-                <th class="pb-2 text-right">Rework</th>
-                <th class="pb-2 text-right">Revert</th>
-                <th class="pb-2 text-right">Duration</th>
-                <th class="pb-2 text-right">Cost</th>
-                <th class="pb-2 text-right">Premium req</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each report.byVariantContribution as row (row.key)}
-                {@const interpretation = interpretExperiment(row, report.byVariantContribution)}
-                <tr class="border-b border-surface-100 bg-surface-100/60 dark:border-surface-700 dark:bg-surface-700/30">
-                  <td class="py-1.5">
-                    <div class="font-mono text-xs">{row.variantId || row.key}</div>
-                    <div class="text-xs text-surface-400">
-                      {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
-                    </div>
-                    <div class="mt-1 flex flex-wrap items-center gap-1.5">
-                      <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
-                        {interpretation.verdictLabel}
-                      </span>
-                      <span class="text-[10px] text-surface-500">
-                        {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
-                      </span>
-                    </div>
-                    <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
-                  </td>
-                  <td class="py-1.5 text-xs font-medium">All roles</td>
-                  <td class="py-1.5 text-right">
-                    {row.runs}
-                    {#if rowState(row)}
-                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
-                    {:else if row.insufficientData}
-                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                    {/if}
-                  </td>
-                  <td class="py-1.5 text-right">
+      {#snippet comparisonTable(rows: ComparisonBreakdown[], peers: ComparisonBreakdown[], contribution: boolean)}
+        <table class="w-full min-w-[1180px] text-sm">
+          <thead>
+            <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+              <th class="pb-2">Variant</th>
+              <th class="pb-2">Role</th>
+              <th class="pb-2 text-right">Runs</th>
+              <th class="pb-2 text-right">Landed</th>
+              <th class="pb-2 text-right">Fail %</th>
+              <th class="pb-2 text-right">Merge %</th>
+              <th class="pb-2 text-right">CI 1st</th>
+              <th class="pb-2 text-right">Edited</th>
+              <th class="pb-2 text-right">Rework</th>
+              <th class="pb-2 text-right">Revert</th>
+              <th class="pb-2 text-right">Duration</th>
+              <th class="pb-2 text-right">Cost</th>
+              <th class="pb-2 text-right">Premium req</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each rows as row (row.key)}
+              {@const interpretation = interpretExperiment(row, peers)}
+              <tr class="border-b border-surface-100 bg-surface-100/60 dark:border-surface-700 dark:bg-surface-700/30">
+                <td class="py-1.5">
+                  <div class="font-mono text-xs">{row.variantId || row.key}</div>
+                  <div class="text-xs text-surface-400">
+                    {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
+                  </div>
+                  {#if subjectLabel(row)}
+                    <div class="text-xs text-surface-400">{subjectLabel(row)}</div>
+                  {/if}
+                  <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
+                      {interpretation.verdictLabel}
+                    </span>
+                    <span class="text-[10px] text-surface-500">
+                      {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
+                    </span>
+                  </div>
+                  <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
+                </td>
+                <td class="py-1.5 text-xs font-medium">All roles</td>
+                <td class="py-1.5 text-right">
+                  {row.runs}
+                  {#if rowState(row)}
+                    <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
+                  {:else if row.insufficientData}
+                    <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                  {/if}
+                </td>
+                <td class="py-1.5 text-right text-xs">
+                  {#if contribution}
                     {row.landed}
                     {#if row.qualityAttributionLimited}
                       <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
                     {/if}
-                  </td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
-                  <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
-                  <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
-                  <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
-                </tr>
-                <tr class="border-b border-surface-100 dark:border-surface-700">
-                  <td class="pb-2 pt-0" colspan="13">
-                    <div class="flex flex-wrap gap-1.5">
-                      {#each interpretation.guardrails as guardrail (guardrail.key)}
-                        <span
-                          class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
-                          title={guardrail.detail}
-                        >
-                          {guardrail.label}: {guardrail.status}
-                        </span>
-                      {/each}
+                  {:else}
+                    {row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}
+                  {/if}
+                </td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
+                <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
+                <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
+                <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
+                <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
+              </tr>
+              <tr class="border-b border-surface-100 dark:border-surface-700">
+                <td class="pb-2 pt-0" colspan="13">
+                  <div class="flex flex-wrap gap-1.5">
+                    {#each interpretation.guardrails as guardrail (guardrail.key)}
+                      <span
+                        class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
+                        title={guardrail.detail}
+                      >
+                        {guardrail.label}: {guardrail.status}
+                      </span>
+                    {/each}
+                  </div>
+                  {#if interpretation.limitedSignals.length > 0}
+                    <p class="mt-1 text-[10px] text-surface-400">
+                      Limited signals: {interpretation.limitedSignals.join(' ')}
+                    </p>
+                  {/if}
+                </td>
+              </tr>
+              {#each row.roleBreakdowns ?? [] as child (child.key)}
+                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                  <td class="py-1.5 pl-6">
+                    <div class="font-mono text-xs text-surface-500">{child.variantId || row.variantId || child.key}</div>
+                    <div class="text-xs text-surface-400">
+                      {child.provider}{child.model ? ` · ${child.model}` : ''}{child.reasoningEffort ? ` · ${child.reasoningEffort}` : ''}
                     </div>
-                    {#if interpretation.limitedSignals.length > 0}
-                      <p class="mt-1 text-[10px] text-surface-400">
-                        Limited signals: {interpretation.limitedSignals.join(' ')}
-                      </p>
+                  </td>
+                  <td class="py-1.5 text-xs">{child.role || '—'}</td>
+                  <td class="py-1.5 text-right">
+                    {child.runs}
+                    {#if rowState(child)}
+                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
+                    {:else if child.insufficientData}
+                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                     {/if}
                   </td>
-                </tr>
-                {#each row.roleBreakdowns ?? [] as child (child.key)}
-                  <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 pl-6">
-                      <div class="font-mono text-xs text-surface-500">{child.variantId || row.variantId || child.key}</div>
-                      <div class="text-xs text-surface-400">
-                        {child.provider}{child.model ? ` · ${child.model}` : ''}{child.reasoningEffort ? ` · ${child.reasoningEffort}` : ''}
-                      </div>
-                    </td>
-                    <td class="py-1.5 text-xs">{child.role || '—'}</td>
-                    <td class="py-1.5 text-right">
-                      {child.runs}
-                      {#if rowState(child)}
-                        <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
-                      {:else if child.insufficientData}
-                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                      {/if}
-                    </td>
-                    <td class="py-1.5 text-right">
+                  <td class="py-1.5 text-right text-xs">
+                    {#if contribution}
                       <span class="text-xs">{child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}</span>
                       {#if child.qualityAttributionLimited}
                         <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
                       {/if}
-                    </td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
-                    <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
-                    <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
-                    <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
-                  </tr>
-                {/each}
+                    {:else}
+                      {child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
+                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
+                  <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
+                  <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
+                  <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
+                </tr>
               {/each}
-            </tbody>
-          </table>
-        {:else}
-          <p class="text-xs text-surface-400">No data</p>
+            {/each}
+          </tbody>
+        </table>
+      {/snippet}
+
+      {#each experimentKinds as kind (kind)}
+        {@const kindBreakdown = kindGroup(kind)}
+        {@const groups = kindBreakdown?.groups ?? []}
+        {#if kindBreakdown || kind !== 'unknown'}
+          <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+            <h3 class="mb-1 text-sm font-semibold text-surface-500">{kindLabel(kind)} experiments</h3>
+            {#if kind === 'unknown'}
+              <p class="mb-3 max-w-3xl text-xs text-warning-600 dark:text-warning-400">
+                These rows reference an experiment ID no longer present in configuration (orphaned).
+              </p>
+            {:else}
+              <p class="mb-3 max-w-3xl text-xs text-surface-400">
+                Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
+              </p>
+            {/if}
+
+            {#if !kindBreakdown}
+              <p class="text-xs text-surface-400">No {kind} experiments configured.</p>
+            {:else if groups.length === 0}
+              <p class="text-xs text-surface-400">{kindLabel(kind)} experiments configured, but no runs recorded yet.</p>
+            {:else}
+              {#each groups as expGroup (expGroup.experimentId)}
+                <div class="mb-4 border-t border-surface-200 pt-3 first:mt-0 first:border-0 first:pt-0 dark:border-surface-700">
+                  <h4 class="mb-1 text-xs font-semibold text-surface-500">
+                    {expGroup.experimentId}
+                    {#if expGroup.subject}
+                      <span class="font-normal text-surface-400">
+                        · {[expGroup.subject.workflowId, expGroup.subject.stepId, expGroup.subject.role, expGroup.subject.skillName].filter(Boolean).join(' · ')}
+                      </span>
+                    {/if}
+                  </h4>
+
+                  {#if (expGroup.rows?.length ?? 0) === 0 && (expGroup.rowsContribution?.length ?? 0) === 0}
+                    <p class="text-xs text-surface-400">Configured, but no runs recorded yet.</p>
+                  {:else}
+                    {@render experimentCards(expGroup.experiments)}
+
+                    {#if expGroup.rows && expGroup.rows.length > 0}
+                      <h5 class="mb-2 mt-2 text-xs font-semibold text-surface-400">Latest author</h5>
+                      {@render comparisonTable(expGroup.rows, expGroup.rows, false)}
+                    {/if}
+
+                    {#if expGroup.rowsContribution && expGroup.rowsContribution.length > 0}
+                      <h5 class="mb-2 mt-4 text-xs font-semibold text-surface-400">Contribution</h5>
+                      <p class="mb-2 max-w-3xl text-xs text-surface-400">
+                        Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
+                      </p>
+                      {@render comparisonTable(expGroup.rowsContribution, expGroup.rowsContribution, true)}
+                    {/if}
+                  {/if}
+                </div>
+              {/each}
+            {/if}
+          </div>
         {/if}
-      </div>
+      {/each}
     </div>
 
     {#if report?.notes && report.notes.length > 0}

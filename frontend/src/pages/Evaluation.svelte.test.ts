@@ -1,6 +1,8 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+type Subject = { workflowId?: string; stepId?: string; role?: string; skillName?: string }
+
 const mockEvaluationStore = {
   data: null as Record<string, unknown> | null,
   loading: false,
@@ -25,36 +27,37 @@ vi.mock('../stores/lifecycle.svelte.js', () => ({
 
 const Evaluation = (await import('./Evaluation.svelte')).default
 
+const comparisonRow = {
+  key: 'provider:model:medium:implementation',
+  provider: 'provider',
+  model: 'model',
+  role: 'implementation',
+  reasoningEffort: 'medium',
+  runs: 20,
+  failures: 0,
+  failureRate: 0,
+  landed: 10,
+  merged: 9,
+  mergedWithEdits: 1,
+  closed: 0,
+  mergeRate: 0.9,
+  mergedWithEditsRate: 0.1,
+  ciFirstPassRate: 0.9,
+  reworkRate: 0.1,
+  revertRate: 0,
+  durationP50S: 600,
+  durationP90S: 1_000,
+  totalCostUsd: 50,
+  costPerLanded: 5,
+  premiumRequests: 20,
+  premiumRequestsPerLanded: 2,
+  turnsPerLanded: 3,
+  toolsPerLanded: 10,
+  insufficientData: false,
+  qualityAttributionLimited: false,
+}
+
 function makeReport() {
-  const comparisonRow = {
-    key: 'provider:model:medium:implementation',
-    provider: 'provider',
-    model: 'model',
-    role: 'implementation',
-    reasoningEffort: 'medium',
-    runs: 20,
-    failures: 0,
-    failureRate: 0,
-    landed: 10,
-    merged: 9,
-    mergedWithEdits: 1,
-    closed: 0,
-    mergeRate: 0.9,
-    mergedWithEditsRate: 0.1,
-    ciFirstPassRate: 0.9,
-    reworkRate: 0.1,
-    revertRate: 0,
-    durationP50S: 600,
-    durationP90S: 1_000,
-    totalCostUsd: 50,
-    costPerLanded: 5,
-    premiumRequests: 20,
-    premiumRequestsPerLanded: 2,
-    turnsPerLanded: 3,
-    toolsPerLanded: 10,
-    insufficientData: false,
-    qualityAttributionLimited: false,
-  }
   return {
     overall: {
       windowDays: 30,
@@ -84,13 +87,26 @@ function makeReport() {
     byProvider: [],
     byRole: [],
     byAgentModel: [comparisonRow],
-    byVariant: [
+    byExperimentKind: [
       {
-        ...comparisonRow,
-        key: 'exp-a:v1:implementation',
-        experimentId: 'exp-a',
-        variantId: 'v1',
-        durationP90S: 1_500,
+        kind: 'model',
+        groups: [
+          {
+            experimentId: 'exp-a',
+            subject: undefined as Subject | undefined,
+            rows: [
+              {
+                ...comparisonRow,
+                key: 'exp-a:v1:implementation',
+                experimentId: 'exp-a',
+                variantId: 'v1',
+                durationP90S: 1_500,
+              },
+            ],
+            rowsContribution: [],
+            experiments: [],
+          },
+        ],
       },
     ],
     notes: [],
@@ -114,7 +130,7 @@ describe('Evaluation', () => {
     render(Evaluation, { props: {} })
 
     const agentSection = screen.getByText('Agent / Model').closest('div')
-    const experimentSection = screen.getByText('A/B Experiments').closest('div')
+    const experimentSection = screen.getByText('Model experiments').closest('div')
 
     expect(agentSection).not.toBeNull()
     expect(experimentSection).not.toBeNull()
@@ -130,5 +146,55 @@ describe('Evaluation', () => {
       expect(within(agentSection as HTMLElement).getByText(label)).toBeDefined()
       expect(within(experimentSection as HTMLElement).getByText(label)).toBeDefined()
     }
+  })
+
+  it('shows distinct empty-state messages for unconfigured and zero-runs kinds, and hides unknown when absent', () => {
+    const report = makeReport()
+    report.byExperimentKind.push({ kind: 'skill', groups: [] })
+    mockEvaluationStore.data = report
+
+    render(Evaluation, { props: {} })
+
+    expect(screen.getByText('Model experiments')).toBeDefined()
+    expect(screen.getByText('Prompt experiments')).toBeDefined()
+    expect(screen.getByText('No prompt experiments configured.')).toBeDefined()
+    expect(screen.getByText('Skill experiments')).toBeDefined()
+    expect(screen.getByText('Skill experiments configured, but no runs recorded yet.')).toBeDefined()
+    expect(screen.queryByText('Unknown experiments')).toBeNull()
+  })
+
+  it('renders separate tables for prompt experiments with different subjects', () => {
+    const report = makeReport()
+    report.byExperimentKind.push({
+      kind: 'prompt',
+      groups: [
+        {
+          experimentId: 'prompt-author',
+          subject: { workflowId: 'wf-a', stepId: 'author', role: 'implementation' },
+          rows: [
+            { ...comparisonRow, key: 'prompt-author:p1', experimentId: 'prompt-author', variantId: 'p1' },
+          ],
+          rowsContribution: [],
+          experiments: [],
+        },
+        {
+          experimentId: 'prompt-review',
+          subject: { workflowId: 'wf-b', stepId: 'review', role: 'review' },
+          rows: [
+            { ...comparisonRow, key: 'prompt-review:r1', experimentId: 'prompt-review', variantId: 'r1', provider: 'codex', model: 'gpt-5.5' },
+          ],
+          rowsContribution: [],
+          experiments: [],
+        },
+      ],
+    })
+    mockEvaluationStore.data = report
+
+    render(Evaluation, { props: {} })
+
+    const promptSection = screen.getByText('Prompt experiments').closest('div') as HTMLElement
+    expect(within(promptSection).getByText('prompt-author', { exact: false })).toBeDefined()
+    expect(within(promptSection).getByText('prompt-review', { exact: false })).toBeDefined()
+    expect(within(promptSection).getAllByRole('table')).toHaveLength(2)
   })
 })

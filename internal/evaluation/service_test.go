@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/stats"
@@ -23,6 +24,9 @@ func TestServiceScanBuildsVariantParentsWithRoleBreakdowns(t *testing.T) {
 	in := now.Add(-1 * time.Hour)
 	svc := NewService(Deps{
 		Cfg: config.EvaluationConfig{WindowDays: 7},
+		ABTesting: abtest.Config{Experiments: []abtest.Experiment{
+			{ID: "exp", Variants: []abtest.Variant{{ID: "a"}}},
+		}},
 		Stats: testStatsReader{records: []stats.RunRecord{
 			{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
 			{TaskID: "B", Role: "fix-review", Provider: "claude", Model: "sonnet", ExperimentID: "exp", VariantID: "a", Outcome: "completed", Timestamp: in},
@@ -40,17 +44,47 @@ func TestServiceScanBuildsVariantParentsWithRoleBreakdowns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
-	if len(got.ByVariant) != 1 {
-		t.Fatalf("ByVariant rows = %d, want 1 aggregate parent: %+v", len(got.ByVariant), got.ByVariant)
+	modelKind := mustExperimentKind(t, got.ByExperimentKind, "model")
+	modelGroup := mustExperimentGroup(t, modelKind.Groups, "exp")
+	if len(modelGroup.Rows) != 1 {
+		t.Fatalf("model kind rows = %d, want 1 aggregate parent: %+v", len(modelGroup.Rows), modelGroup.Rows)
 	}
-	parent := got.ByVariant[0]
+	parent := modelGroup.Rows[0]
 	if parent.ExperimentID != "exp" || parent.VariantID != "a" || parent.Role != "" || parent.Runs != 2 || parent.Landed != 2 {
-		t.Fatalf("ByVariant parent = %+v, want aggregate exp/a row across roles", parent)
+		t.Fatalf("model kind parent = %+v, want aggregate exp/a row across roles", parent)
 	}
 	if len(parent.RoleBreakdowns) != 2 {
 		t.Fatalf("roleBreakdowns = %d, want 2: %+v", len(parent.RoleBreakdowns), parent.RoleBreakdowns)
 	}
 	if got.ByAgentModel[0].RoleBreakdowns != nil {
 		t.Fatalf("ByAgentModel should remain flat, got nested rows: %+v", got.ByAgentModel[0])
+	}
+}
+
+func TestServiceScanHandlesRecordsWithoutExperimentMetadata(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	svc := NewService(Deps{
+		Cfg: config.EvaluationConfig{WindowDays: 7},
+		Stats: testStatsReader{records: []stats.RunRecord{
+			{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", Outcome: "completed", Timestamp: in},
+		}},
+		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) {
+			return []audit.Event{
+				{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+			}, nil
+		}),
+		Now: func() time.Time { return now },
+	})
+
+	got, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got.ByExperimentKind) != 0 {
+		t.Fatalf("ByExperimentKind = %+v, want empty for records with no experiment metadata", got.ByExperimentKind)
+	}
+	if len(got.ByAgentModel) == 0 {
+		t.Fatalf("ByAgentModel should still populate from non-experiment records")
 	}
 }

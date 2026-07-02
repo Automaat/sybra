@@ -89,6 +89,8 @@ type ComparisonBreakdown struct {
 	ReasoningEffort           string                `json:"reasoningEffort,omitempty"`
 	ExperimentID              string                `json:"experimentId,omitempty"`
 	VariantID                 string                `json:"variantId,omitempty"`
+	Kind                      string                `json:"kind,omitempty"`
+	Subject                   *abtest.Subject       `json:"subject,omitempty"`
 	Runs                      int                   `json:"runs"`
 	Failures                  int                   `json:"failures"`
 	FailureRate               float64               `json:"failureRate"`
@@ -164,20 +166,47 @@ type ExperimentSampleStatus struct {
 
 // Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
 type Report struct {
-	GeneratedAt              time.Time                `json:"generatedAt"`
-	Since                    time.Time                `json:"since"`
-	Until                    time.Time                `json:"until"`
-	Overall                  Scorecard                `json:"overall"`
-	ByProvider               []Breakdown              `json:"byProvider,omitempty"`
-	ByRole                   []Breakdown              `json:"byRole,omitempty"`
-	ByAgentModel             []ComparisonBreakdown    `json:"byAgentModel,omitempty"`
-	ByAgentModelContribution []ComparisonBreakdown    `json:"byAgentModelContribution,omitempty"`
-	ByVariant                []ComparisonBreakdown    `json:"byVariant,omitempty"`
-	ByVariantContribution    []ComparisonBreakdown    `json:"byVariantContribution,omitempty"`
-	VariantExperiments       []ExperimentSampleStatus `json:"variantExperiments,omitempty"`
-	Weaknesses               []Weakness               `json:"weaknesses,omitempty"`
-	Notes                    []string                 `json:"notes,omitempty"`
+	GeneratedAt              time.Time                 `json:"generatedAt"`
+	Since                    time.Time                 `json:"since"`
+	Until                    time.Time                 `json:"until"`
+	Overall                  Scorecard                 `json:"overall"`
+	ByProvider               []Breakdown               `json:"byProvider,omitempty"`
+	ByRole                   []Breakdown               `json:"byRole,omitempty"`
+	ByAgentModel             []ComparisonBreakdown     `json:"byAgentModel,omitempty"`
+	ByAgentModelContribution []ComparisonBreakdown     `json:"byAgentModelContribution,omitempty"`
+	ByExperimentKind         []ExperimentKindBreakdown `json:"byExperimentKind,omitempty"`
+	Weaknesses               []Weakness                `json:"weaknesses,omitempty"`
+	Notes                    []string                  `json:"notes,omitempty"`
 }
+
+// ExperimentKindBreakdown groups A/B comparison rows by experiment kind
+// (model, prompt, skill) so a prompt/skill rewrite is never compared against a
+// model swap in the same table. "unknown" collects rows whose ExperimentID no
+// longer resolves against the configured abtest.Config (e.g. a retired
+// experiment) so orphaned data stays visible instead of silently vanishing.
+// Within a kind, Groups further partitions rows by ExperimentID: each
+// abtest.Experiment pins one Subject and one set of fixed variant
+// provider/models, so two experiments of the same kind (e.g. two prompt
+// experiments targeting different workflow steps) never share a comparison
+// table even though they share a kind.
+type ExperimentKindBreakdown struct {
+	Kind   string            `json:"kind"`
+	Groups []ExperimentGroup `json:"groups,omitempty"`
+}
+
+// ExperimentGroup is the comparison table for a single experiment: every row
+// shares the same ExperimentID, and therefore the same Subject and (for
+// prompt/skill experiments) the same fixed variant provider/model settings.
+type ExperimentGroup struct {
+	ExperimentID     string                   `json:"experimentId"`
+	Subject          *abtest.Subject          `json:"subject,omitempty"`
+	Rows             []ComparisonBreakdown    `json:"rows,omitempty"`
+	RowsContribution []ComparisonBreakdown    `json:"rowsContribution,omitempty"`
+	Experiments      []ExperimentSampleStatus `json:"experiments,omitempty"`
+}
+
+// experimentKindOrder is the stable rendering order for ExperimentKindBreakdown groups.
+var experimentKindOrder = []string{"model", "prompt", "skill", "unknown"}
 
 // deferredNotes documents metrics that need signals not yet captured, so the
 // report never silently presents a partial picture as complete.
@@ -186,6 +215,7 @@ var deferredNotes = []string{
 	"review-finding density pending review-count capture",
 	"per-project/provider autonomy + throughput breakdowns pending project/provider on task.landed",
 	"revert detection scans the latest 100 default-branch commits per repo; a revert beyond that on a very busy repo can be missed",
+	"non-author-role quality signals (test-runner protocol violations, planning validation failures, review/fix-review follow-up) are not yet attributed to prompt/skill experiments",
 }
 
 // taskSignals accumulates per-task lifecycle facts used for autonomy,
@@ -552,6 +582,126 @@ func compareVariantsByAttribution(records []stats.RunRecord, events []audit.Even
 		})
 	}
 	return CompareResult{Rows: parents, Experiments: childResult.Experiments}
+}
+
+// classifyExperimentKind resolves an experiment ID against configured
+// experiments. An empty ID is not classified (resolved=false, kind=""), a
+// resolved experiment reports its configured KindValue, and a non-empty ID
+// that resolves to nothing configured falls into the "unknown" bucket.
+func classifyExperimentKind(expID string, byID map[string]abtest.Experiment) (kind string, resolved bool) {
+	if expID == "" {
+		return "", false
+	}
+	if exp, ok := byID[expID]; ok {
+		return exp.KindValue(), true
+	}
+	return "unknown", false
+}
+
+// GroupByKind partitions already-computed comparison rows and experiment
+// sample statuses first by experiment kind (model/prompt/skill/unknown), then
+// by ExperimentID within each kind, so callers never need to re-scan records
+// or events per kind and two experiments of the same kind never land in the
+// same comparison table. Rows/statuses are annotated with Kind (and Subject,
+// for resolved experiments) as they are partitioned.
+func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experiment) []ExperimentKindBreakdown {
+	byID := make(map[string]abtest.Experiment, len(exps))
+	configuredKinds := map[string]bool{}
+	for i := range exps {
+		if exps[i].ID != "" {
+			byID[exps[i].ID] = exps[i]
+		}
+		configuredKinds[exps[i].KindValue()] = true
+	}
+
+	classifyRows := func(rows []ComparisonBreakdown) map[string]map[string][]ComparisonBreakdown {
+		out := map[string]map[string][]ComparisonBreakdown{}
+		for i := range rows {
+			row := rows[i]
+			kind, resolved := classifyExperimentKind(row.ExperimentID, byID)
+			if kind == "" {
+				continue
+			}
+			row.Kind = kind
+			if resolved {
+				row.Subject = byID[row.ExperimentID].Subject
+			}
+			if out[kind] == nil {
+				out[kind] = map[string][]ComparisonBreakdown{}
+			}
+			out[kind][row.ExperimentID] = append(out[kind][row.ExperimentID], row)
+		}
+		return out
+	}
+	rowsByKind := classifyRows(latestAuthor.Rows)
+	contribByKind := classifyRows(contribution.Rows)
+
+	statusesByKind := map[string]map[string][]ExperimentSampleStatus{}
+	seen := map[string]bool{}
+	addStatuses := func(statuses []ExperimentSampleStatus) {
+		for i := range statuses {
+			st := statuses[i]
+			kind, _ := classifyExperimentKind(st.ExperimentID, byID)
+			if kind == "" {
+				continue
+			}
+			dedupeKey := kind + "|" + st.Key
+			if seen[dedupeKey] {
+				continue
+			}
+			seen[dedupeKey] = true
+			if statusesByKind[kind] == nil {
+				statusesByKind[kind] = map[string][]ExperimentSampleStatus{}
+			}
+			statusesByKind[kind][st.ExperimentID] = append(statusesByKind[kind][st.ExperimentID], st)
+		}
+	}
+	addStatuses(latestAuthor.Experiments)
+	addStatuses(contribution.Experiments)
+
+	out := make([]ExperimentKindBreakdown, 0, len(experimentKindOrder))
+	for _, kind := range experimentKindOrder {
+		expIDs := map[string]bool{}
+		for id := range rowsByKind[kind] {
+			expIDs[id] = true
+		}
+		for id := range contribByKind[kind] {
+			expIDs[id] = true
+		}
+		for id := range statusesByKind[kind] {
+			expIDs[id] = true
+		}
+		if len(expIDs) == 0 {
+			if !configuredKinds[kind] {
+				continue
+			}
+			out = append(out, ExperimentKindBreakdown{Kind: kind})
+			continue
+		}
+
+		orderedIDs := make([]string, 0, len(expIDs))
+		for id := range expIDs {
+			orderedIDs = append(orderedIDs, id)
+		}
+		sort.Strings(orderedIDs)
+
+		groups := make([]ExperimentGroup, 0, len(orderedIDs))
+		for _, expID := range orderedIDs {
+			var subject *abtest.Subject
+			if exp, ok := byID[expID]; ok {
+				subject = exp.Subject
+			}
+			groups = append(groups, ExperimentGroup{
+				ExperimentID:     expID,
+				Subject:          subject,
+				Rows:             rowsByKind[kind][expID],
+				RowsContribution: contribByKind[kind][expID],
+				Experiments:      statusesByKind[kind][expID],
+			})
+		}
+		out = append(out, ExperimentKindBreakdown{Kind: kind, Groups: groups})
+	}
+	return out
 }
 
 func variantKey(r stats.RunRecord) string {
