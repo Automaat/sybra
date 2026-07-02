@@ -1223,7 +1223,14 @@ func hasGroundedFailureEvidence(report string) bool {
 			"actual output", "actual", "observed output", "observed",
 			"command output", "stdout", "stderr", "output",
 			"verbatim output", "actual behavior", "actual behaviour",
-			"observed behavior", "observed behaviour", "printed", "rendered")
+			"observed behavior", "observed behaviour", "printed", "rendered",
+			// Natural-language observed-evidence headers. hasLabeledSection only
+			// matches a keyword at the START of the line, so a report that writes
+			// "**What actually happened:**" (keyword mid-phrase) would otherwise be
+			// misclassified missing_evidence despite a fully grounded FAIL. Same
+			// class of false rejection #1344/#1345 closed for other markers.
+			"what actually happened", "what happened", "what i observed",
+			"what i saw", "what the code shows", "what the code does")
 	hasExpected := containsAny(lower,
 		"task says", "task requires", "from the task", "violates",
 		"should render", "should not") ||

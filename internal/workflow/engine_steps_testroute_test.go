@@ -245,6 +245,25 @@ func TestHasGroundedFailureEvidence_AcceptsAnnotatedLabels(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_AcceptsNaturalObservedHeader(t *testing.T) {
+	t.Parallel()
+
+	// Reproduces task e000da0e: a fully grounded FAIL report whose observed
+	// section used the natural header "What actually happened:" (keyword
+	// mid-phrase). hasLabeledSection only matched observed keywords at the start
+	// of the line, so the report was misclassified missing_evidence and escalated
+	// to human-required despite reproducible evidence and a file:line citation.
+	report := "## Test Failures\n\n" +
+		"**Command run:** `curl -fsS http://127.0.0.1:8080/rpc`\n\n" +
+		"**What actually happened:**\n\n```text\npanic: runtime error: invalid memory address\n```\n\n" +
+		"**Expected (task's own words):** the per-provider cap degrades to a no-op with a warning.\n\n" +
+		"**Code evidence:** internal/limits/store.go:157 returns a typed-nil interface.\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("natural observed-header FAIL report rejected as ungrounded; want grounded")
+	}
+}
+
 func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
 	t.Parallel()
 
