@@ -208,6 +208,7 @@ func parseOutput(data []byte) (Result, error) {
 		Output:     res.Response.Output,
 		Assertions: assertions,
 		Score:      res.Score,
+		Passed:     res.Success && res.GradingResult.Pass,
 		CostUSD:    res.Cost,
 		LatencyMS:  res.LatencyMS,
 	}, nil

@@ -11,18 +11,24 @@ import (
 	"github.com/Automaat/sybra/internal/prompteval"
 )
 
-// fakeOfflineRunner lets the test control Score deterministically instead of
-// shelling out to a live provider CLI.
+// fakeOfflineRunner lets the test control Score and Passed deterministically
+// instead of shelling out to a live provider CLI. When forcePassed is nil,
+// Passed defaults to score >= 1 so existing score-only tests keep working.
 type fakeOfflineRunner struct {
-	score float64
-	err   error
+	score       float64
+	forcePassed *bool
+	err         error
 }
 
 func (f fakeOfflineRunner) Run(_ context.Context, _ prompteval.Spec) (prompteval.Result, error) {
 	if f.err != nil {
 		return prompteval.Result{}, f.err
 	}
-	return prompteval.Result{Score: f.score}, nil
+	passed := f.score >= 1
+	if f.forcePassed != nil {
+		passed = *f.forcePassed
+	}
+	return prompteval.Result{Score: f.score, Passed: passed}, nil
 }
 func (f fakeOfflineRunner) Available() bool { return true }
 func (f fakeOfflineRunner) Name() string    { return "fake" }
@@ -115,6 +121,41 @@ func TestCmdEvaluationOfflineRunExitsNonzeroOnUnavailable(t *testing.T) {
 	code, output := runCLI(t, "evaluation", "offline", "run", "--variants", variantsPath, "--golden", goldenPath, "--json")
 	if code == 0 {
 		t.Fatalf("expected nonzero exit for an UNAVAILABLE verdict under default fail-closed policy, got 0. output: %s", output)
+	}
+}
+
+// TestCmdEvaluationOfflineRunFailsOnHighScoreRunnerFailure is the regression
+// case for the reported bug: a runner (e.g. promptfoo) can report a high
+// numeric Score while its own success/gradingResult.pass signal says the run
+// failed. The verdict must be FAIL and enrollment must be denied — deriving
+// the verdict from Score alone silently passed this case before the fix.
+func TestCmdEvaluationOfflineRunFailsOnHighScoreRunnerFailure(t *testing.T) {
+	dir := setupStore(t)
+	old := newOfflineRunner
+	defer func() { newOfflineRunner = old }()
+	failed := false
+	newOfflineRunner = func(config.OfflineEvalConfig) prompteval.OfflineRunner {
+		return fakeOfflineRunner{score: 1, forcePassed: &failed}
+	}
+
+	variantsPath := filepath.Join(dir, "variants.json")
+	goldenPath := filepath.Join(dir, "golden.json")
+	writeJSONFile(t, variantsPath, []prompteval.CandidateVariant{
+		{ID: "boundary-variant", Prompt: "SCREENED_PROMPT: avoid unsafe content", Provider: "openai", Model: "gpt-test"},
+	})
+	writeJSONFile(t, goldenPath, []offlineGoldenCase{
+		{CaseID: "case-one", Input: "user asks question", Assertions: []prompteval.Assertion{{Type: "not-contains", Value: "unsafe"}}},
+	})
+
+	code, output := runCLI(t, "evaluation", "offline", "run", "--variants", variantsPath, "--golden", goldenPath, "--json")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit when the runner reports failure despite score=1, got 0. output: %s", output)
+	}
+
+	digest := prompteval.Digest([]byte("SCREENED_PROMPT: avoid unsafe content"))
+	gateCode, gateOut := runCLI(t, "evaluation", "offline", "gate", "boundary-variant", digest, "--json")
+	if gateCode == 0 {
+		t.Fatalf("expected gate to deny enrollment for a runner-failed verdict, got allow. output: %s", gateOut)
 	}
 }
 

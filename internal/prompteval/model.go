@@ -51,10 +51,16 @@ type Spec struct {
 // fraction (0..1) of deterministic assertions that passed; a runner returns
 // an error instead of a zero-value Result when the run itself could not be
 // measured, so a caller never mistakes "could not run" for "scored zero".
+// Passed is the runner's own pass/fail signal for this Spec — for promptfoo
+// that's `success && gradingResult.pass`, for native it's "no deterministic
+// assertion failed" — and is authoritative over Score: a runner can report a
+// high Score while still failing a hard assertion, and the caller must not
+// aggregate to an overall PASS in that case.
 type Result struct {
 	Output     string            `json:"output"`
 	Assertions []AssertionResult `json:"assertions,omitempty"`
 	Score      float64           `json:"score"`
+	Passed     bool              `json:"passed"`
 	CostUSD    float64           `json:"costUsd"`
 	LatencyMS  int64             `json:"latencyMs"`
 }

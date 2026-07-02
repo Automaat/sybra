@@ -161,6 +161,7 @@ func runOfflineVariant(ctx context.Context, runner prompteval.OfflineRunner, v p
 	var totalScore, totalCost float64
 	var totalLatency int64
 	var assertions []prompteval.AssertionResult
+	failedCase := ""
 	for _, c := range cases {
 		spec := prompteval.Spec{
 			CaseID:     c.CaseID,
@@ -178,15 +179,26 @@ func runOfflineVariant(ctx context.Context, runner prompteval.OfflineRunner, v p
 		totalCost += res.CostUSD
 		totalLatency += res.LatencyMS
 		assertions = append(assertions, res.Assertions...)
+		if !res.Passed && failedCase == "" {
+			failedCase = c.CaseID
+		}
 	}
 
 	base.Score = totalScore / float64(len(cases))
 	base.CostUSD = totalCost
 	base.LatencyMS = totalLatency
 	base.Assertions = assertions
-	if base.Score >= minScore {
+	switch {
+	case failedCase != "":
+		// The runner's own pass/fail signal (e.g. promptfoo's
+		// success/gradingResult.pass) is authoritative over Score — a runner
+		// can report a high average score while still failing a hard
+		// assertion on one case, and that must never aggregate to PASS.
+		base.Status = prompteval.StatusFail
+		base.Reason = fmt.Sprintf("case %s: runner reported failure", failedCase)
+	case base.Score >= minScore:
 		base.Status = prompteval.StatusPass
-	} else {
+	default:
 		base.Status = prompteval.StatusFail
 		base.Reason = fmt.Sprintf("score %.2f below min %.2f", base.Score, minScore)
 	}

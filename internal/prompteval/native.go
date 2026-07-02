@@ -72,6 +72,7 @@ func (r *NativeRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 		Output:     out.Text,
 		Assertions: results,
 		Score:      score,
+		Passed:     deterministic == 0 || passed == deterministic,
 		CostUSD:    0,
 		LatencyMS:  latencyMS,
 	}, nil

@@ -32,6 +32,28 @@ func TestParseOutputGoldenFixture(t *testing.T) {
 	if len(res.Assertions) != 1 || !res.Assertions[0].Passed {
 		t.Fatalf("Assertions = %+v", res.Assertions)
 	}
+	if !res.Passed {
+		t.Errorf("Passed = false, want true (success=true, gradingResult.pass=true)")
+	}
+}
+
+// TestParseOutputFailureFlagsOverrideScore is the regression case for the
+// reported bug: promptfoo can report a failing success/gradingResult.pass
+// alongside a high numeric score, and parseOutput must surface that failure
+// via Passed rather than letting the caller derive PASS from Score alone.
+func TestParseOutputFailureFlagsOverrideScore(t *testing.T) {
+	t.Parallel()
+	data := []byte(`{"results":{"results":[{"success":false,"score":1,"latencyMs":45,"cost":0.001,"response":{"output":"unsafe answer"},"gradingResult":{"pass":false,"componentResults":[{"assertion":{"type":"not-contains","value":"unsafe"},"pass":false,"reason":"output contained unsafe"}]}}]}}`)
+	res, err := parseOutput(data)
+	if err != nil {
+		t.Fatalf("parseOutput: %v", err)
+	}
+	if res.Score != 1 {
+		t.Fatalf("Score = %v, want 1 (fixture reports a high score despite failure)", res.Score)
+	}
+	if res.Passed {
+		t.Fatalf("Passed = true, want false (success=false, gradingResult.pass=false must not be masked by a high score)")
+	}
 }
 
 func TestParseOutputTruncatedIsUnavailable(t *testing.T) {
