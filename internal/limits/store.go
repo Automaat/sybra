@@ -116,8 +116,11 @@ func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 	return s.flushLocked()
 }
 
-// reloadLocked re-reads s.path into s.snapshots/s.events/s.seen. Callers
-// must hold s.mu and the cross-process file lock.
+// reloadLocked re-reads s.path into s.snapshots/s.events/s.seen.
+// Read-modify-write callers (UpdateSnapshot, RecordUsage, Import) must hold
+// both s.mu and the cross-process file lock across the whole critical
+// section; NewStore calls it unlocked because it runs before s is returned
+// to any caller, so nothing else can observe or race it yet.
 func (s *Store) reloadLocked() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
