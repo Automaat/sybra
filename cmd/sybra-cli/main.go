@@ -398,7 +398,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	proj := fs.String("project", "", "project id (owner/repo); derived from the worktree origin remote when omitted")
 	wtDir := fs.String("worktree-dir", "", "git worktree Sybra should reuse (default: current directory)")
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
-	stage := fs.String("stage", "implement", "workflow entry stage: implement|review|testing|ready-pr")
+	stage := fs.String("stage", "implement", "workflow entry stage: "+handoffStageCompactList())
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
 	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot")
 	pr := fs.Int("pr", 0, "existing PR number to link when using --stage ready-pr")
@@ -553,20 +553,27 @@ const handoffManualTag = "handoff-manual"
 // --stage usage text all derive from this slice, so nothing else needs to
 // change to keep a new stage reachable.
 type handoffStageDef struct {
-	name    string
-	aliases []string
-	tags    []string
+	name           string
+	aliases        []string
+	tags           []string
+	usage          string
+	requiresSource bool
 }
 
 var handoffStageRegistry = []handoffStageDef{
 	// implement: simple-task-handoff → in-progress → implement → review → testing → PR
-	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"}},
+	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"},
+		usage: "have a plan -> Sybra implements, reviews, tests, opens the PR"},
 	// review: simple-task-handoff-review → ready-review → review → testing → PR
-	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"}},
+	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"},
+		usage: "implemented locally -> Sybra enters agentic review", requiresSource: true},
 	// testing: simple-task-handoff-testing → testing → adversarial test → PR
-	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"}},
+	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
+		usage: "reviewed locally -> Sybra tests, then opens the PR", requiresSource: true},
 	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
-	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"}},
+	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
+		usage: "tested locally -> Sybra opens or updates the PR; pass --pr N\n" +
+			strings.Repeat(" ", 27) + "only to link an existing same-branch PR"},
 }
 
 // handoffStageConfigFor maps a handoff stage (or one of its aliases) to the
@@ -609,12 +616,44 @@ func isExternalPRHandoffStage(stage string) bool {
 }
 
 func handoffStageRequiresSource(stage string) bool {
-	switch stage {
-	case "review", "testing":
-		return true
-	default:
-		return false
+	for _, def := range handoffStageRegistry {
+		if def.name == stage {
+			return def.requiresSource
+		}
 	}
+	return false
+}
+
+// handoffStageCompactList renders the "implement|review|testing|ready-pr"
+// summary used in the --stage flag help, derived from handoffStageRegistry.
+func handoffStageCompactList() string {
+	names := make([]string, len(handoffStageRegistry))
+	for i, def := range handoffStageRegistry {
+		names[i] = def.name
+	}
+	return strings.Join(names, "|")
+}
+
+// handoffStageUsageLines renders one "  name  usage" row per registry stage
+// for the handoff command's long usage text.
+func handoffStageUsageLines() string {
+	var b strings.Builder
+	for _, def := range handoffStageRegistry {
+		fmt.Fprintf(&b, "    %-14s %s\n", def.name, def.usage)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// handoffStageSourceRequirementList renders the comma-separated list of
+// stages that require --source-provider, derived from handoffStageRegistry.
+func handoffStageSourceRequirementList() string {
+	var required []string
+	for _, def := range handoffStageRegistry {
+		if def.requiresSource {
+			required = append(required, def.name)
+		}
+	}
+	return strings.Join(required, "|")
 }
 
 func normalizeHandoffSourceProvider(raw string) (string, error) {
@@ -1737,14 +1776,10 @@ Commands:
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
            when --project is omitted. STAGE (default implement):
-             implement      have a plan -> Sybra implements, reviews, tests, opens the PR
-             review         implemented locally -> Sybra enters agentic review
-             testing        reviewed locally -> Sybra tests, then opens the PR
-             ready-pr       tested locally -> Sybra opens or updates the PR; pass --pr N
-                            only to link an existing same-branch PR
+%s
            --source-provider records which local agent produced handed-off work
            so review/testing/PR steps can run on a different provider.
-           Required for --stage review|testing; optional for implement/ready-pr.
+           Required for --stage %s; optional for the other stages.
            --status STATUS creates the task directly in that status without workflow dispatch
   umbrella <issue-url> [--model M]
            Expand a GitHub umbrella issue into a gated task DAG: one umbrella tracker
@@ -1788,7 +1823,7 @@ Commands:
   artifact reindex <task-id>   Rebuild index.json from *.meta.json files.
 
 Global flags:
-  --json   Output as JSON`, statusListForUsage())
+  --json   Output as JSON`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {
