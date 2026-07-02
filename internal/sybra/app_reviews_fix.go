@@ -167,9 +167,10 @@ func prIssueBody(issue github.PRIssue) (string, bool) {
 	}
 }
 
-// fixKindPriority orders fixable kinds for coalesced dispatch. The lowest-priority
-// kind becomes the "primary": it drives worktree prep, the workflow's
-// pr_issue_kind var, and cancel/phase reconciliation. Conflicts sort first so a
+// fixKindPriority orders fixable kinds for coalesced dispatch. The kind with
+// the lowest numeric priority (i.e. highest priority) becomes the "primary":
+// it drives worktree prep, the workflow's pr_issue_kind var, and cancel/phase
+// reconciliation. Conflicts sort first so a
 // conflicting PR checks out its branch WITHOUT rebasing (PrepareForFix), then
 // comments so any pair that includes review feedback also prefers the
 // branch-preserving checkout; a lone ci_failure keeps its rebasing PrepareForTask
