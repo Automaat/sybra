@@ -99,6 +99,12 @@ export enum ManualTestKind {
     ManualTestKindLibrary = "library",
 };
 
+/**
+ * Project is the YAML-backed metadata record for a GitHub repo mirrored
+ * under ~/.sybra/clones/ as a bare clone. Store persists these under
+ * ~/.sybra/projects/; task-level checkouts are created on demand as
+ * Worktree entries under ~/.sybra/worktrees/ (see CreateWorktree).
+ */
 export class Project {
     "id": string;
     "name": string;
@@ -213,6 +219,11 @@ export enum ProjectStatus {
     ProjectStatusError = "error",
 };
 
+/**
+ * ProjectType classifies a Project for per-machine automation routing (see
+ * Config.AllowsProjectType and the "Per-Machine Automations" section of
+ * CLAUDE.md) and for work-data confidentiality gating.
+ */
 export enum ProjectType {
     /**
      * The Go zero value for the underlying type of the enum.
@@ -280,6 +291,10 @@ export class SandboxConfig {
     }
 }
 
+/**
+ * Worktree describes one `git worktree` checkout of a Project's bare clone,
+ * as reported by ListWorktrees.
+ */
 export class Worktree {
     "path": string;
     "branch": string;

@@ -12,6 +12,13 @@ import * as workflow$0 from "../workflow/models.js";
 // @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
+/**
+ * AgentRun records one dispatch of an agent process against a task: what was
+ * asked, which provider/model ran it, how it concluded, and the metadata
+ * downstream deterministic routing (test outcome, tamper detection, A/B
+ * evaluation) reads back off the run. A Task accumulates these in
+ * Task.AgentRuns across its lifetime, most-recent last.
+ */
 export class AgentRun {
     "agentId": string;
 
@@ -124,6 +131,10 @@ export class AgentRun {
     }
 }
 
+/**
+ * Priority is a task's dispatch priority. PriorityNone (the empty string) is
+ * treated as the lowest priority, distinct from an unset/invalid value.
+ */
 export enum Priority {
     /**
      * The Go zero value for the underlying type of the enum.
@@ -181,6 +192,12 @@ export class ReviewComment {
     }
 }
 
+/**
+ * Status is a task's position in its lifecycle (see the pipeline diagram in
+ * the root CLAUDE.md). Transitions are enforced by the workflow engine and
+ * callers should validate untrusted input with ValidateStatus rather than
+ * casting a string directly.
+ */
 export enum Status {
     /**
      * The Go zero value for the underlying type of the enum.
@@ -202,6 +219,13 @@ export enum Status {
     StatusCancelled = "cancelled",
 };
 
+/**
+ * Task is the in-memory representation of a task markdown file: YAML
+ * frontmatter (everything but Body) plus the GFM markdown Body. Store parses
+ * and marshals it to/from tasks/<id>.md; planning/review/critique content
+ * lives in separate sidecar files (see Store.Plans, Store.PlanContracts,
+ * etc.) and is populated onto these fields only on load.
+ */
 export class Task {
     "id": string;
     "slug": string;
@@ -497,6 +521,11 @@ export class Task {
     }
 }
 
+/**
+ * TaskType distinguishes a task's role for agents beyond its lifecycle
+ * Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
+ * run no agent of their own and are excluded from normal dispatch.
+ */
 export enum TaskType {
     /**
      * The Go zero value for the underlying type of the enum.
