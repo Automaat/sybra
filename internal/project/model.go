@@ -2,6 +2,9 @@ package project
 
 import "time"
 
+// ProjectType classifies a Project for per-machine automation routing (see
+// Config.AllowsProjectType and the "Per-Machine Automations" section of
+// CLAUDE.md) and for work-data confidentiality gating.
 type ProjectType string
 
 const (
@@ -163,6 +166,10 @@ const WorktreeBaseRefFresh = "fresh"
 // pushed yet.
 const WorktreeBaseRefHead = "head"
 
+// Project is the YAML-backed metadata record for a GitHub repo mirrored
+// under ~/.sybra/clones/ as a bare clone. Store persists these under
+// ~/.sybra/projects/; task-level checkouts are created on demand as
+// Worktree entries under ~/.sybra/worktrees/ (see CreateWorktree).
 type Project struct {
 	ID        string      `yaml:"id" json:"id"`
 	Name      string      `yaml:"name" json:"name"`
@@ -186,6 +193,8 @@ type Project struct {
 	UpdatedAt       time.Time `yaml:"updated_at" json:"updatedAt"`
 }
 
+// Worktree describes one `git worktree` checkout of a Project's bare clone,
+// as reported by ListWorktrees.
 type Worktree struct {
 	Path   string `json:"path"`
 	Branch string `json:"branch"`

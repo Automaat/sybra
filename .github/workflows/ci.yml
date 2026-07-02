@@ -207,6 +207,12 @@ jobs:
           NODE_VERSION=$(grep '^node = ' mise.toml | awk -F'"' '{print $2}')
           grep -q "\"node\": \"$NODE_VERSION\"" frontend/package.json || \
             (echo "frontend/package.json engines.node stale (want $NODE_VERSION)" && exit 1)
+          WAILS_GO_VERSION=$(grep '^	github.com/wailsapp/wails/v3 ' go.mod | awk '{print $2}')
+          grep -q "$WAILS_GO_VERSION" README.md || (echo "README Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
+          grep -q "$WAILS_GO_VERSION" CLAUDE.md || (echo "CLAUDE.md Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
+          WAILS_RUNTIME_VERSION=$(node -p "require('./frontend/package.json').dependencies['@wailsio/runtime']")
+          grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
+            (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)
 
   go-mod-integrity:
     name: Go Module Integrity

@@ -1,7 +1,15 @@
 package config
 
+//go:generate go run ../../cmd/gen-config-docs
+
 import "github.com/Automaat/sybra/internal/abtest"
 
+// Config is Sybra's top-level configuration, loaded from
+// ~/.sybra/config.yaml by Load with env-var and default-value fallbacks
+// applied per field. See docs/CONFIG.md (generated from this file's
+// struct tags and doc comments) for the full reference, or run
+// `sybra-cli config dump` to see the resolved, redacted config for this
+// machine.
 type Config struct {
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`

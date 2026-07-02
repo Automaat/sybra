@@ -19,11 +19,16 @@ import (
 // on retry.
 var ErrProjectNotRegistered = errors.New("project not registered locally")
 
+// Store is the YAML-backed CRUD layer for Project metadata under dir
+// (~/.sybra/projects/), plus the bare-clone root (clonesDir,
+// ~/.sybra/clones/) that Create/CreateMeta clone new projects into.
 type Store struct {
 	dir       string
 	clonesDir string
 }
 
+// NewStore creates dir and clonesDir if they do not exist and returns a
+// Store rooted there.
 func NewStore(dir, clonesDir string) (*Store, error) {
 	for _, d := range []string{dir, clonesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -33,6 +38,8 @@ func NewStore(dir, clonesDir string) (*Store, error) {
 	return &Store{dir: dir, clonesDir: clonesDir}, nil
 }
 
+// List returns every registered project. A file that fails to parse is
+// silently skipped rather than failing the whole call.
 func (s *Store) List() ([]Project, error) {
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
@@ -50,11 +57,18 @@ func (s *Store) List() ([]Project, error) {
 	return projects, nil
 }
 
+// Get returns the project registered under id ("owner/repo"). Returns
+// ErrProjectNotRegistered (checkable via errors.Is) if no such project has
+// been created.
 func (s *Store) Get(id string) (Project, error) {
 	path := s.filePath(id)
 	return s.readFile(path)
 }
 
+// Create parses rawURL into an owner/repo ID, clones it as a bare repo
+// under clonesDir, and persists a ready Project record. Fails if a project
+// with the same ID is already registered. See CreateMeta for the
+// register-then-clone-async variant used by the GUI's non-blocking add flow.
 func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	owner, repo, err := ParseGitHubURL(rawURL)
 	if err != nil {
@@ -157,6 +171,9 @@ func (s *Store) MarkError(id string) error {
 	return s.writeFile(p)
 }
 
+// Update sets the project type ("pet" or "work") for an existing project.
+// For other fields see SetSandboxConfig, SetSetupCommands, and
+// SetWorktreeBaseRef.
 func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
 		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
@@ -207,6 +224,9 @@ func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
 	return p, s.writeFile(p)
 }
 
+// Delete removes project id's bare clone directory (if any) and its YAML
+// metadata file. It does not touch any per-task worktrees already checked
+// out from that clone.
 func (s *Store) Delete(id string) error {
 	p, err := s.Get(id)
 	if err != nil {

@@ -84,7 +84,7 @@ sybra/
 ### Backend
 
 - **Go 1.26.4**
-- **Wails v3 alpha** (`v3.0.0-alpha.98-tui`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
+- **Wails v3 alpha** (`v3.0.0-alpha2.106`, per go.mod) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
 
@@ -168,7 +168,11 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 ```
 - Go spawns process, reads stdout NDJSON line-by-line
 - StreamEvent types: `init`, `assistant`, `tool_use`, `tool_result`, `result`
-- Empty `allowed_tools` → `--dangerously-skip-permissions`
+- Permission flags are a 4-case precedence (`claudePermissionArgs`, `internal/agent/provider_claude.go:117-135`):
+  1. `len(allowed_tools) > 0` → `--allowedTools <list>` (explicit allowlist always wins, regardless of the other two settings)
+  2. else `RequirePermissions` (`agent.require_permissions`, default `true`) → no bypass/auto flag; the approval hook gates each tool call
+  3. else `HeadlessPermissionMode` (`agent.headless_permission_mode`) `== "auto"` → `--permission-mode auto` (auto-mode classifier)
+  4. else → `--dangerously-skip-permissions` (legacy full bypass)
 
 **Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
 
@@ -402,11 +406,13 @@ get      <id>
 create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2]
 update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T]
 delete   <id>
+config   dump | doctor
 ```
 
 - `--json` for machine-parseable output (used by skills)
 - Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
 - `mise run dev` auto-installs latest CLI before launching the desktop app
+- `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `todoist.api_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
 
 ### Skills
 
@@ -439,7 +445,7 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Importing directly from `frontend/bindings/` in components/stores — go through `$lib/api` so the desktop ↔ web shim handles transport
 - ❌ Using WebSocket/HTTP for Go↔Frontend IPC on desktop — Wails v3 events + bound services handle this
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
-- ❌ Using `allowed_tools: []` without understanding it means all tools with `--dangerously-skip-permissions`
+- ❌ Using `allowed_tools: []` without understanding the fallback is governed by `agent.require_permissions`/`agent.headless_permission_mode`, not always `--dangerously-skip-permissions` — see the permission-flag precedence under Agent Execution Modes
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
 - ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageTags` (`cmd/sybra-cli/main.go`) mapping it to a `handoff-<name>` tag, and add a `simple-task-handoff-<name>.yaml` builtin that flips a fresh task straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → `simple-task-handoff-testing.yaml` → status `testing`)
 - ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.

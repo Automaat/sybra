@@ -109,6 +109,10 @@ func InstallHooks(worktreePath string, checks *ChecksConfig) error {
 	return write("pre-push", checks.PrePush)
 }
 
+// ParseGitHubURL extracts owner and repo from a GitHub URL in SSH form
+// (git@github.com:owner/repo[.git]) or HTTPS form
+// (https://github.com/owner/repo[.git]). Returns an error for any other
+// host or a malformed owner/repo segment.
 func ParseGitHubURL(raw string) (owner, repo string, err error) {
 	raw = strings.TrimSpace(raw)
 
@@ -149,6 +153,10 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 	return owner, repo, nil
 }
 
+// CloneBare runs `git clone --bare` for repoURL into destPath, then
+// configures remote.origin.fetch with the standard refspec so subsequent
+// `git fetch origin` calls actually update refs/remotes/origin/* (a bare
+// clone otherwise leaves it empty).
 func CloneBare(repoURL, destPath string) error {
 	if err := executil.Run("", "git", "clone", "--bare", repoURL, destPath); err != nil {
 		return err
@@ -159,6 +167,8 @@ func CloneBare(repoURL, destPath string) error {
 	return runBare(destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
+// DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
+// refs/heads/main) and returns just the branch name (main).
 func DefaultBranch(barePath string) (string, error) {
 	ref, err := outputBare(barePath, "symbolic-ref", "HEAD")
 	if err != nil {
@@ -210,6 +220,8 @@ func TrackedFilesAtDefaultBranch(barePath string) ([]string, error) {
 	return ListTrackedFiles(barePath, "refs/heads/"+branch)
 }
 
+// FetchOrigin fetches origin's heads into barePath's refs/remotes/origin/*
+// under the bare-repo lock, retrying transient git-fetch lock contention.
 func FetchOrigin(barePath string) error {
 	return withBareRepoLock(barePath, func() error {
 		return withLockRetry(func() error {
@@ -407,6 +419,10 @@ func rebaseStateDir(wtPath string) string {
 	return filepath.Join(gitDir, "rebase-merge")
 }
 
+// CreateWorktree creates a new branch off baseBranch and checks it out into
+// worktreePath via `git worktree add -b`. For checking out an already
+// existing branch use CreateWorktreeExisting; for a read-only detached
+// checkout use CreateWorktreeDetached.
 func CreateWorktree(barePath, worktreePath, branch, baseBranch string) error {
 	return withBareRepoLock(barePath, func() error {
 		return withLockRetry(func() error {
@@ -447,6 +463,8 @@ func CreateWorktreeDetached(barePath, worktreePath, ref string) error {
 	})
 }
 
+// ListWorktrees parses `git worktree list --porcelain` output for barePath
+// into Worktree entries, excluding the bare repo's own record.
 func ListWorktrees(barePath string) ([]Worktree, error) {
 	out, err := outputBare(barePath, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -718,6 +736,11 @@ func PushSync(worktreePath, branch string) error {
 	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", remote, branch)
 }
 
+// RemoveWorktree deletes worktreePath and its `git worktree` registration
+// from barePath (`git worktree remove --force`), discarding any
+// uncommitted changes in it. Use PruneWorktrees to clean up stale
+// administrative entries left behind if the directory was already removed
+// out-of-band.
 func RemoveWorktree(barePath, worktreePath string) error {
 	return withBareRepoLock(barePath, func() error {
 		return withLockRetry(func() error {
