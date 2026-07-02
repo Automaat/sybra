@@ -266,12 +266,30 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 // dispatch to, applying the same health-gate / limit-gate failover logic as
 // prepareRunConfig. Callers that need to make provider-scoped decisions
 // before Run actually runs (e.g. selecting a resumable session) can use this
-// to avoid assuming the requested/default provider always wins. The gate and
-// limit queries backing this are read-only, so calling it ahead of Run and
-// then again inside Run is safe, though the two calls can in principle
-// disagree if gate state changes in between.
+// to avoid assuming the requested/default provider always wins. Unlike
+// gateProvider, this never emits metrics or logs — it only computes the
+// decision — so calling it ahead of Run and then again inside Run cannot
+// double-emit AgentGated/AgentFailover metrics or agent.run.* log lines,
+// though the two calls can in principle disagree if gate state changes in
+// between.
 func (m *Manager) ResolveProvider(cfg RunConfig) (string, error) {
-	return m.gateProvider(cfg)
+	resolved, _, err := m.resolveProviderDecision(cfg)
+	return resolved, err
+}
+
+// providerGateEvent records a metrics/log side effect that gateProvider
+// would emit for a given routing decision, deferred so resolveProviderDecision
+// can stay side-effect free and be reused by both gateProvider and the
+// prediction-only ResolveProvider.
+type providerGateEvent struct {
+	kind      string // "gated" or "failover"
+	provider  string // gated: the gated provider
+	from, to  string // failover: source and destination provider
+	reason    string
+	altReason string
+	logKey    string // failover: log message key
+	logLevel  string // failover: "warn" or "info"
+	taskID    string
 }
 
 // gateProvider resolves the run's provider through the health gate. If the
@@ -279,12 +297,49 @@ func (m *Manager) ResolveProvider(cfg RunConfig) (string, error) {
 // peer, the peer is returned. Otherwise returns a typed UnhealthyError so
 // callers can detect via errors.Is(err, provider.ErrProviderUnhealthy).
 func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
+	resolved, gateEvents, err := m.resolveProviderDecision(cfg)
+	m.emitProviderGateEvents(gateEvents)
+	return resolved, err
+}
+
+// emitProviderGateEvents applies the metrics/log side effects recorded by
+// resolveProviderDecision. Only gateProvider calls this — ResolveProvider
+// discards the events so prediction stays observation-free.
+func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
+	for i := range gateEvents {
+		e := &gateEvents[i]
+		switch e.kind {
+		case "gated":
+			metrics.AgentGated(e.provider, e.reason)
+		case "failover":
+			metrics.AgentFailover(e.from, e.to)
+			fields := []any{"from", e.from, "to", e.to, "task", e.taskID}
+			if e.reason != "" {
+				fields = append(fields, "reason", e.reason)
+			}
+			if e.altReason != "" {
+				fields = append(fields, "alt_reason", e.altReason)
+			}
+			if e.logLevel == "warn" {
+				m.logger.Warn(e.logKey, fields...)
+			} else {
+				m.logger.Info(e.logKey, fields...)
+			}
+		}
+	}
+}
+
+// resolveProviderDecision computes the provider a Run call with this cfg
+// would dispatch to, applying health-gate / limit-gate failover logic. It is
+// side-effect free: metrics/log emissions are returned as providerGateEvent
+// values for the caller to apply (gateProvider) or discard (ResolveProvider).
+func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGateEvent, error) {
 	resolved, err := m.providerForRun(cfg.Provider)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if cfg.IgnoreHealthGate {
-		return resolved, nil
+		return resolved, nil, nil
 	}
 	m.mu.RLock()
 	g := m.gate
@@ -299,12 +354,13 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 	healthy := func(p string) bool {
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
+	var gateEvents []providerGateEvent
 	candidateProviders := []string{"claude", "codex", "copilot"}
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
-			metrics.AgentGated(resolved, reason)
-			return "", &provider.UnhealthyError{
+			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+			return "", gateEvents, &provider.UnhealthyError{
 				Provider: resolved,
 				Reason:   reason,
 			}
@@ -322,22 +378,24 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 		if alt != "" {
 			altProv, err := lookupProvider(alt)
 			if err != nil {
-				return "", err
+				return "", gateEvents, err
 			}
-			metrics.AgentFailover(resolved, altProv.Name())
-			m.logger.Warn("agent.run.failover", "from", resolved, "to", altProv.Name(), "task", cfg.TaskID, "reason", g.Reason(resolved))
+			gateEvents = append(gateEvents, providerGateEvent{
+				kind: "failover", from: resolved, to: altProv.Name(),
+				reason: g.Reason(resolved), logKey: "agent.run.failover", logLevel: "warn", taskID: cfg.TaskID,
+			})
 			resolved = altProv.Name()
 		} else {
 			reason := g.Reason(resolved)
-			metrics.AgentGated(resolved, reason)
-			return "", &provider.UnhealthyError{
+			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+			return "", gateEvents, &provider.UnhealthyError{
 				Provider: resolved,
 				Reason:   reason,
 			}
 		}
 	}
 	if lg == nil {
-		return resolved, nil
+		return resolved, gateEvents, nil
 	}
 	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
 		if !cfg.DisableProviderFailover {
@@ -351,33 +409,36 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 			// quota heuristic — is what makes the cap actually redirect.
 			if !underCap(resolved) {
 				if alt := firstHealthyProvider(resolved, candidateProviders, healthy); alt != "" {
-					metrics.AgentFailover(resolved, alt)
-					m.logger.Info("agent.run.cap_redirect", "from", resolved, "to", alt, "task", cfg.TaskID)
-					return alt, nil
+					gateEvents = append(gateEvents, providerGateEvent{
+						kind: "failover", from: resolved, to: alt, logKey: "agent.run.cap_redirect", logLevel: "info", taskID: cfg.TaskID,
+					})
+					return alt, gateEvents, nil
 				}
 			} else if lp.PreferUnderused {
 				if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
-					metrics.AgentFailover(resolved, alt)
-					m.logger.Info("agent.run.limit_select", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", altReason)
-					return alt, nil
+					gateEvents = append(gateEvents, providerGateEvent{
+						kind: "failover", from: resolved, to: alt, reason: altReason, logKey: "agent.run.limit_select", logLevel: "info", taskID: cfg.TaskID,
+					})
+					return alt, gateEvents, nil
 				}
 			}
 		}
-		return resolved, nil
+		return resolved, gateEvents, nil
 	} else if !cfg.DisableProviderFailover {
 		if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
-			metrics.AgentFailover(resolved, alt)
-			m.logger.Warn("agent.run.limit_failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", reason, "alt_reason", altReason)
-			return alt, nil
+			gateEvents = append(gateEvents, providerGateEvent{
+				kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.limit_failover", logLevel: "warn", taskID: cfg.TaskID,
+			})
+			return alt, gateEvents, nil
 		}
-		metrics.AgentGated(resolved, reason)
-		return "", &provider.UnhealthyError{
+		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+		return "", gateEvents, &provider.UnhealthyError{
 			Provider: resolved,
 			Reason:   reason,
 		}
 	} else {
-		metrics.AgentGated(resolved, reason)
-		return "", &provider.UnhealthyError{
+		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+		return "", gateEvents, &provider.UnhealthyError{
 			Provider: resolved,
 			Reason:   reason,
 		}
