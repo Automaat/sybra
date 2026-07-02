@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
@@ -3613,6 +3614,147 @@ func TestExecEnsurePRClosesIssue_FetchErrorIsSoftFail(t *testing.T) {
 	after, _ := tasks.GetTask("t1")
 	if after.Status != "in-review" {
 		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
+	}
+}
+
+// --- stamp_pr_attribution step ---
+
+func newStampPRStep() *Step {
+	return &Step{ID: "stamp", Type: StepStampPRAttribution}
+}
+
+func TestExecStampPRAttribution_NoLinkerSkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "no pr linker") {
+		t.Errorf("out = %+v, want completed no-linker skip", out)
+	}
+}
+
+func TestExecStampPRAttribution_MissingFieldsSkip(t *testing.T) {
+	tests := []struct {
+		name string
+		ti   TaskInfo
+	}{
+		{"no pr", TaskInfo{ID: "t1", ProjectID: "owner/repo"}},
+		{"no project", TaskInfo{ID: "t1", PRNumber: 5}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+			linker := &fakePRLinker{}
+			engine.SetPRLinker(linker)
+
+			out, err := engine.execStampPRAttribution("t1", newStampPRStep(), tt.ti)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Status != "completed" || !strings.Contains(out.Output, "missing pr or project") {
+				t.Errorf("out = %+v, want missing-fields skip", out)
+			}
+			if linker.getCalls != 0 || linker.editCalls != 0 {
+				t.Errorf("linker touched: get=%d edit=%d, want 0/0", linker.getCalls, linker.editCalls)
+			}
+		})
+	}
+}
+
+func TestExecStampPRAttribution_AppendsFooter(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{body: "## Motivation\nfix it\n\nCloses https://github.com/owner/repo/issues/7"}},
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "stamped") {
+		t.Errorf("out = %+v, want stamped", out)
+	}
+	if linker.editCalls != 1 {
+		t.Fatalf("editCalls = %d, want 1", linker.editCalls)
+	}
+	if !strings.HasSuffix(linker.lastBody, attribution.Footer) {
+		t.Errorf("body = %q, want footer suffix", linker.lastBody)
+	}
+}
+
+func TestExecStampPRAttribution_IdempotentNoEdit(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{body: "## Motivation\nfix it\n\n" + attribution.Footer}},
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "already stamped") {
+		t.Errorf("out = %+v, want already-stamped", out)
+	}
+	if linker.editCalls != 0 {
+		t.Errorf("editCalls = %d, want 0 (idempotent)", linker.editCalls)
+	}
+}
+
+func TestExecStampPRAttribution_FetchErrorIsSoftFail(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{getQueue: []getResult{{err: errors.New("network timeout")}}}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || linker.editCalls != 0 {
+		t.Errorf("out = %+v edits=%d, want soft-fail no edit", out, linker.editCalls)
+	}
+}
+
+func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{body: "body without footer"}},
+		editErr:  errors.New("gh edit failed"),
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "edit failed") {
+		t.Errorf("out = %+v, want completed edit-failed note", out)
 	}
 }
 
