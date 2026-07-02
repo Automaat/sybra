@@ -587,7 +587,15 @@ func TestGenerate(t *testing.T) {
 		}
 	})
 
-	flat := `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2"},{"issue":"o/r#3"}],"maxParallel":2}`
+	// Every pair must carry a parallelJustification: under the serial-default
+	// derivation, an unjustified 3-child plan is never flat (applySerialDefault
+	// fills it in), so a genuinely flat plan now requires the model to have
+	// justified every pair as disjoint.
+	flat := `{"children":[` +
+		`{"issue":"o/r#1","parallelJustification":{"o/r#2":"disjoint","o/r#3":"disjoint"}},` +
+		`{"issue":"o/r#2","parallelJustification":{"o/r#3":"disjoint"}},` +
+		`{"issue":"o/r#3"}` +
+		`],"maxParallel":2}`
 	edged := `{"children":[{"issue":"o/r#1"},{"issue":"o/r#2","dependsOn":["o/r#1"]},{"issue":"o/r#3"}],"maxParallel":2}`
 
 	t.Run("re-ask fires and returns edged plan", func(t *testing.T) {
