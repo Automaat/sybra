@@ -41,6 +41,31 @@ type PullRequest struct {
 	// armed on this PR (derived live from `autoMergeRequest` being non-null —
 	// never persisted on the task model).
 	AutoMergeEnabled bool `json:"autoMergeEnabled"`
+	// SourcedViaREST marks a PullRequest fetched over GitHub's REST API
+	// (fetchPRForMonitorViaREST) instead of GraphQL, used when the GraphQL
+	// budget is low. REST exposes no thread-resolution or Copilot-review data,
+	// so UnresolvedCount, ActionableCount, CopilotReviewed, and ReviewDecision
+	// are unset/zero on a REST-sourced PR — callers must not trust those fields
+	// and must gate any REST-sourced action on RESTApproved/RESTMergeableState/
+	// RESTCIFetched instead.
+	SourcedViaREST bool `json:"sourcedViaRest"`
+	// RESTMergeableState is the raw GitHub mergeable_state (clean|blocked|
+	// behind|unstable|dirty|unknown) as reported over REST. Only "clean"
+	// authorizes REST-sourced auto-merge — the coarser Mergeable enum also
+	// buckets blocked/behind/unstable under MERGEABLE, which must NOT
+	// authorize a REST-sourced merge.
+	RESTMergeableState string `json:"restMergeableState"`
+	// RESTApproved reports an explicit, current-head approval computed over
+	// REST review data (fetchRESTReviews + restApproval): at least one
+	// non-dismissed APPROVED review whose commit_id matches HeadSHA, and no
+	// non-dismissed CHANGES_REQUESTED review. It is the only review signal the
+	// REST auto-merge gate trusts.
+	RESTApproved bool `json:"restApproved"`
+	// RESTCIFetched reports whether both REST CI legs (check-runs and legacy
+	// commit status) were fetched successfully, distinguishing "fetched,
+	// genuinely no checks" (CIStatus=="") from "fetch failed" — an empty
+	// CIStatus must never read as green when this is false.
+	RESTCIFetched bool `json:"restCiFetched"`
 }
 
 // ReviewSummary contains PRs grouped by relationship to the user.

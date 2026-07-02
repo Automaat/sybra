@@ -542,6 +542,82 @@ func approvedOnly(prs []PullRequest) []PullRequest {
 	return out
 }
 
+// restReview is the subset of a GitHub REST pull-request review payload the
+// review-state helpers need. Shared by hasPendingReviewWith,
+// fetchMyReviewStateWith, and the REST auto-merge approval gate
+// (restApproval) so all three parse the same /pulls/{n}/reviews shape once.
+type restReview struct {
+	State       string `json:"state"`
+	CommitID    string `json:"commit_id"`
+	SubmittedAt string `json:"submitted_at"`
+	User        struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// fetchRESTReviews fetches a PR's reviews over REST. The returned
+// ghHTTPResponse lets callers that need it (the REST auto-merge approval
+// gate) check the Link header for pagination, since the review list is
+// unpaginated in practice for the accounts this fetches but a caller
+// computing merge-authorizing approval must fail closed rather than silently
+// miss a review on a second page.
+func fetchRESTReviews(e execer, repo string, number int) (ghHTTPResponse, []restReview, error) {
+	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	if err != nil {
+		return resp, nil, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(resp.body)), err)
+	}
+	var reviews []restReview
+	if err := json.Unmarshal(resp.body, &reviews); err != nil {
+		return resp, nil, fmt.Errorf("parse reviews: %w", err)
+	}
+	return resp, reviews, nil
+}
+
+// hasMoreReviewPages reports whether the reviews response's Link header
+// advertises a next page.
+func hasMoreReviewPages(resp ghHTTPResponse) bool {
+	return strings.Contains(resp.headers["link"], `rel="next"`)
+}
+
+// restApproval computes an explicit current-head approval from a PR's REST
+// reviews, using each reviewer's *latest* standing verdict rather than their
+// full history: approved iff at least one reviewer's latest APPROVED/
+// CHANGES_REQUESTED review is an APPROVED whose commit_id matches headSHA,
+// and no reviewer's latest such review is CHANGES_REQUESTED. This mirrors
+// GitHub's own PR merge-readiness semantics — an old CHANGES_REQUESTED
+// superseded by a later APPROVED from the same reviewer no longer blocks the
+// PR. A dismissed review's state is reported by GitHub as DISMISSED, so
+// checking State == "APPROVED"/"CHANGES_REQUESTED" already excludes
+// dismissed reviews. A Copilot COMMENTED review never counts as approval.
+func restApproval(reviews []restReview, headSHA string) bool {
+	type verdict struct {
+		state       string
+		commitID    string
+		submittedAt string
+	}
+	latest := make(map[string]verdict)
+	for i := range reviews {
+		r := reviews[i]
+		if r.State != "APPROVED" && r.State != "CHANGES_REQUESTED" {
+			continue
+		}
+		if r.SubmittedAt >= latest[r.User.Login].submittedAt {
+			latest[r.User.Login] = verdict{state: r.State, commitID: r.CommitID, submittedAt: r.SubmittedAt}
+		}
+	}
+
+	approved := false
+	for _, v := range latest {
+		if v.state == "CHANGES_REQUESTED" {
+			return false
+		}
+		if v.state == "APPROVED" && v.commitID == headSHA {
+			approved = true
+		}
+	}
+	return approved
+}
+
 // HasPendingReview checks if the authenticated user has a pending (draft) review on a PR.
 // Pending reviews are only visible to their author via the REST API.
 func HasPendingReview(repo string, number int) (bool, error) {
@@ -556,20 +632,14 @@ func hasPendingReviewWith(e execer, repo string, number int) (bool, error) {
 		}
 	}
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	_, reviews, err := fetchRESTReviews(e, repo, number)
 	if err != nil {
 		if runtimeCacheEnabled(e) {
 			if stale, ok := pendingReviewCache.GetStale(key); ok {
 				return stale, nil
 			}
 		}
-		return false, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(resp.body)), err)
-	}
-	var reviews []struct {
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal(resp.body, &reviews); err != nil {
-		return false, fmt.Errorf("parse reviews: %w", err)
+		return false, err
 	}
 	for i := range reviews {
 		if reviews[i].State == "PENDING" {
@@ -610,26 +680,14 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		}
 	}
 
-	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number))
+	_, reviews, err := fetchRESTReviews(e, repo, number)
 	if err != nil {
 		if runtimeCacheEnabled(e) {
 			if stale, ok := myReviewStateCache.GetStale(key); ok {
 				return stale, nil
 			}
 		}
-		return MyReviewState{}, fmt.Errorf("fetch reviews for %s#%d: %s: %w", repo, number, strings.TrimSpace(string(resp.body)), err)
-	}
-
-	var reviews []struct {
-		State       string `json:"state"`
-		CommitID    string `json:"commit_id"`
-		SubmittedAt string `json:"submitted_at"`
-		User        struct {
-			Login string `json:"login"`
-		} `json:"user"`
-	}
-	if err := json.Unmarshal(resp.body, &reviews); err != nil {
-		return MyReviewState{}, fmt.Errorf("parse reviews: %w", err)
+		return MyReviewState{}, err
 	}
 
 	me := viewerLogin(e)

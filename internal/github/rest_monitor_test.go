@@ -6,9 +6,13 @@ import (
 	"testing"
 )
 
-// pathExecer returns a canned body for the first stub whose key is a substring
-// of the joined gh args, so a single fake can serve the pulls + check-runs legs
-// of one fetchPRForMonitorViaREST call.
+// pathExecer returns a canned body for the stub whose key matches the request
+// endpoint (the first non-flag "api" argument), so a single fake can serve the
+// pulls + check-runs + reviews legs of one fetchPRForMonitorViaREST call.
+// Matching is on the endpoint path exactly (trailing query stripped), not a
+// substring of the joined args — a substring match would let "/pulls/42"
+// wrongly match a request for "/pulls/42/reviews" (or vice versa,
+// nondeterministically, since Go map iteration order is randomized).
 type pathExecer struct {
 	responses map[string]string
 	err       error
@@ -18,13 +22,46 @@ func (p *pathExecer) run(args ...string) ([]byte, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
-	joined := strings.Join(args, " ")
-	for key, body := range p.responses {
-		if strings.Contains(joined, key) {
-			return []byte(body), nil
+	endpoint := restAPIEndpoint(args)
+	if body, ok := p.responses[endpoint]; ok {
+		return []byte(body), nil
+	}
+	return nil, fmt.Errorf("no stub for endpoint %q (args: %s)", endpoint, strings.Join(args, " "))
+}
+
+// ghFlagsWithValue lists the `gh api` flags that consume the following argv
+// element as their value, so restAPIEndpoint can skip both and land on the
+// actual endpoint path instead of mistaking a flag value (e.g. "30s" from
+// "--cache 30s") for it.
+var ghFlagsWithValue = map[string]bool{
+	"--cache": true, "--method": true, "-f": true, "-F": true,
+	"-q": true, "-X": true, "--jq": true,
+}
+
+// restAPIEndpoint extracts the REST endpoint path from a `gh api ...` argv:
+// the first non-flag argument after "api", skipping any flag/value pairs.
+func restAPIEndpoint(args []string) string {
+	for i, a := range args {
+		if a != "api" {
+			continue
+		}
+		for j := i + 1; j < len(args); {
+			cur := args[j]
+			if ghFlagsWithValue[cur] {
+				j += 2
+				continue
+			}
+			if strings.HasPrefix(cur, "-") {
+				j++
+				continue
+			}
+			if path, _, ok := strings.Cut(cur, "?"); ok {
+				return path
+			}
+			return cur
 		}
 	}
-	return nil, fmt.Errorf("no stub for: %s", joined)
+	return strings.Join(args, " ")
 }
 
 func TestRestMergeable(t *testing.T) {
@@ -49,11 +86,11 @@ func TestRestMergeable(t *testing.T) {
 func TestFetchPRForMonitorViaREST_ConflictAndFailingCI(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
-		"/pulls/42": `{"number":42,"title":"feat: x","html_url":"https://gh/pr/42",
+		"repos/Automaat/sybra/pulls/42": `{"number":42,"title":"feat: x","html_url":"https://gh/pr/42",
 			"state":"open","draft":false,"mergeable_state":"dirty",
 			"head":{"ref":"feat/x","sha":"abc123"},"user":{"login":"me"},
 			"labels":[{"name":"backend"}],"created_at":"t1","updated_at":"t2"}`,
-		"/commits/abc123/check-runs": `{"check_runs":[
+		"repos/Automaat/sybra/commits/abc123/check-runs": `{"check_runs":[
 			{"status":"completed","conclusion":"success"},
 			{"status":"completed","conclusion":"failure"}]}`,
 	}}
@@ -87,10 +124,12 @@ func TestFetchPRForMonitorViaREST_ConflictAndFailingCI(t *testing.T) {
 func TestFetchPRForMonitorViaREST_PendingCI(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
-		"/pulls/7": `{"number":7,"state":"open","mergeable_state":"clean",
+		"repos/o/r/pulls/7": `{"number":7,"state":"open","mergeable_state":"clean",
 			"head":{"ref":"b","sha":"s7"}}`,
-		"/commits/s7/check-runs": `{"check_runs":[
+		"repos/o/r/commits/s7/check-runs": `{"check_runs":[
 			{"status":"in_progress","conclusion":""}]}`,
+		"repos/o/r/commits/s7/status": `{"statuses":[]}`,
+		"repos/o/r/pulls/7/reviews":   `[]`,
 	}}
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 7)
 	if err != nil || !open {
@@ -107,11 +146,12 @@ func TestFetchPRForMonitorViaREST_PendingCI(t *testing.T) {
 func TestFetchPRForMonitorViaREST_LegacyStatusFailure(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
-		"/pulls/8": `{"number":8,"state":"open","mergeable_state":"clean",
+		"repos/o/r/pulls/8": `{"number":8,"state":"open","mergeable_state":"clean",
 			"head":{"ref":"b","sha":"s8"}}`,
-		"/commits/s8/check-runs": `{"check_runs":[]}`,
-		"/commits/s8/status": `{"statuses":[
+		"repos/o/r/commits/s8/check-runs": `{"check_runs":[]}`,
+		"repos/o/r/commits/s8/status": `{"statuses":[
 			{"context":"ci/build","state":"failure"}]}`,
+		"repos/o/r/pulls/8/reviews": `[]`,
 	}}
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 8)
 	if err != nil || !open {
@@ -125,13 +165,14 @@ func TestFetchPRForMonitorViaREST_LegacyStatusFailure(t *testing.T) {
 func TestFetchPRForMonitorViaREST_FiltersInformationalAndCancelledChecks(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
-		"/pulls/10": `{"number":10,"state":"open","mergeable_state":"clean",
+		"repos/o/r/pulls/10": `{"number":10,"state":"open","mergeable_state":"clean",
 			"head":{"ref":"b","sha":"s10"}}`,
-		"/commits/s10/check-runs": `{"check_runs":[
+		"repos/o/r/commits/s10/check-runs": `{"check_runs":[
 			{"name":"codecov/patch","status":"completed","conclusion":"failure"},
 			{"name":"ci/cancelled-optional","status":"completed","conclusion":"cancelled"},
 			{"name":"ci/build","status":"completed","conclusion":"success"}]}`,
-		"/commits/s10/status": `{"statuses":[]}`,
+		"repos/o/r/commits/s10/status": `{"statuses":[]}`,
+		"repos/o/r/pulls/10/reviews":   `[]`,
 	}}
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 10)
 	if err != nil || !open {
@@ -145,7 +186,7 @@ func TestFetchPRForMonitorViaREST_FiltersInformationalAndCancelledChecks(t *test
 func TestFetchPRForMonitorViaREST_ClosedPR(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
-		"/pulls/9": `{"number":9,"state":"closed","head":{"sha":"x"}}`,
+		"repos/o/r/pulls/9": `{"number":9,"state":"closed","head":{"sha":"x"}}`,
 	}}
 	_, open, err := fetchPRForMonitorViaREST(e, "o/r", 9)
 	if err != nil {
@@ -181,7 +222,7 @@ func TestFetchPRStateViaREST_MergedAndClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &pathExecer{responses: map[string]string{"/pulls/": tt.body}}
+			e := &pathExecer{responses: map[string]string{"repos/o/r/pulls/11": tt.body}}
 			got, err := fetchPRStateViaREST(e, "o/r", 11)
 			if err != nil {
 				t.Fatalf("fetchPRStateViaREST: %v", err)
@@ -190,6 +231,209 @@ func TestFetchPRStateViaREST_MergedAndClosed(t *testing.T) {
 				t.Errorf("State = %q, want %q", got.State, tt.want)
 			}
 		})
+	}
+}
+
+// TestFetchPRForMonitorViaREST_CleanApproved verifies a clean, !draft PR whose
+// CI is green and REST reviews show an APPROVED-at-head, non-dismissed review
+// sets SourcedViaREST/RESTMergeableState/RESTCIFetched/RESTApproved — the
+// signals the REST auto-merge gate needs.
+func TestFetchPRForMonitorViaREST_CleanApproved(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/pulls/20": `{"number":20,"state":"open","draft":false,"mergeable_state":"clean",
+			"head":{"ref":"b","sha":"headsha"}}`,
+		"repos/o/r/commits/headsha/check-runs": `{"check_runs":[
+			{"status":"completed","conclusion":"success"}]}`,
+		"repos/o/r/commits/headsha/status": `{"statuses":[]}`,
+		"repos/o/r/pulls/20/reviews": `[
+			{"state":"APPROVED","commit_id":"headsha","user":{"login":"alice"}}]`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 20)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if !pr.SourcedViaREST {
+		t.Error("SourcedViaREST must be true")
+	}
+	if pr.RESTMergeableState != "clean" {
+		t.Errorf("RESTMergeableState = %q, want clean", pr.RESTMergeableState)
+	}
+	if !pr.RESTCIFetched {
+		t.Error("RESTCIFetched must be true when both CI legs fetch cleanly")
+	}
+	if !pr.RESTApproved {
+		t.Error("RESTApproved must be true for an APPROVED review at the current head")
+	}
+}
+
+// TestFetchPRForMonitorViaREST_CIFetchFails verifies a failed check-runs leg
+// leaves RESTCIFetched false even though the PR is otherwise clean — an empty
+// CIStatus caused by a failed fetch must never read as green.
+func TestFetchPRForMonitorViaREST_CIFetchFails(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/pulls/21": `{"number":21,"state":"open","draft":false,"mergeable_state":"clean",
+			"head":{"ref":"b","sha":"headsha21"}}`,
+		"repos/o/r/commits/headsha21/status": `{"statuses":[]}`,
+		"repos/o/r/pulls/21/reviews": `[
+			{"state":"APPROVED","commit_id":"headsha21","user":{"login":"alice"}}]`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 21)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if pr.RESTCIFetched {
+		t.Error("RESTCIFetched must be false when the check-runs leg errors")
+	}
+}
+
+// TestFetchPRForMonitorViaREST_StaleApproval verifies an APPROVED review whose
+// commit_id doesn't match the PR's current head does not set RESTApproved.
+func TestFetchPRForMonitorViaREST_StaleApproval(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/pulls/22": `{"number":22,"state":"open","draft":false,"mergeable_state":"clean",
+			"head":{"ref":"b","sha":"newsha"}}`,
+		"repos/o/r/commits/newsha/check-runs": `{"check_runs":[]}`,
+		"repos/o/r/commits/newsha/status":     `{"statuses":[]}`,
+		"repos/o/r/pulls/22/reviews": `[
+			{"state":"APPROVED","commit_id":"oldsha","user":{"login":"alice"}}]`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 22)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if pr.RESTApproved {
+		t.Error("a stale approval (commit_id != HeadSHA) must not set RESTApproved")
+	}
+}
+
+// TestFetchPRForMonitorViaREST_CopilotCommentedOnly verifies a Copilot
+// COMMENTED-only review never sets RESTApproved.
+func TestFetchPRForMonitorViaREST_CopilotCommentedOnly(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/pulls/23": `{"number":23,"state":"open","draft":false,"mergeable_state":"clean",
+			"head":{"ref":"b","sha":"sha23"}}`,
+		"repos/o/r/commits/sha23/check-runs": `{"check_runs":[]}`,
+		"repos/o/r/commits/sha23/status":     `{"statuses":[]}`,
+		"repos/o/r/pulls/23/reviews": `[
+			{"state":"COMMENTED","commit_id":"sha23","user":{"login":"copilot-pull-request-reviewer[bot]"}}]`,
+	}}
+	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 23)
+	if err != nil || !open {
+		t.Fatalf("open=%v err=%v", open, err)
+	}
+	if pr.RESTApproved {
+		t.Error("a Copilot COMMENTED-only review must not set RESTApproved")
+	}
+}
+
+// TestFetchPRForMonitorViaREST_BlockedNotApproved verifies a non-clean
+// mergeable_state (blocked/behind/unstable) skips the reviews fetch
+// altogether, so RESTApproved never gets set from a non-clean PR.
+func TestFetchPRForMonitorViaREST_BlockedNotApproved(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"blocked", "behind", "unstable", "unknown"} {
+		e := &pathExecer{responses: map[string]string{
+			"repos/o/r/pulls/24": fmt.Sprintf(`{"number":24,"state":"open","draft":false,"mergeable_state":%q,
+				"head":{"ref":"b","sha":"sha24"}}`, state),
+			"repos/o/r/commits/sha24/check-runs": `{"check_runs":[]}`,
+			"repos/o/r/commits/sha24/status":     `{"statuses":[]}`,
+		}}
+		pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 24)
+		if err != nil || !open {
+			t.Fatalf("state=%s: open=%v err=%v", state, open, err)
+		}
+		if pr.RESTApproved {
+			t.Errorf("state=%s: RESTApproved must stay false for a non-clean mergeable_state", state)
+		}
+		if pr.RESTMergeableState != state {
+			t.Errorf("RESTMergeableState = %q, want %q", pr.RESTMergeableState, state)
+		}
+	}
+}
+
+func TestRestApproval(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		reviews []restReview
+		headSHA string
+		want    bool
+	}{
+		{"no reviews", nil, "h", false},
+		{"approved at head", []restReview{{State: "APPROVED", CommitID: "h"}}, "h", true},
+		{"approved stale sha", []restReview{{State: "APPROVED", CommitID: "old"}}, "h", false},
+		{"changes requested blocks", []restReview{
+			{State: "APPROVED", CommitID: "h"},
+			{State: "CHANGES_REQUESTED", CommitID: "h"},
+		}, "h", false},
+		{"commented only is not approval", []restReview{{State: "COMMENTED", CommitID: "h"}}, "h", false},
+		{"dismissed changes-request does not block", []restReview{
+			{State: "APPROVED", CommitID: "h"},
+			{State: "DISMISSED", CommitID: "h"},
+		}, "h", true},
+		{"stale changes-request superseded by later approval from same reviewer", []restReview{
+			{State: "CHANGES_REQUESTED", CommitID: "old", SubmittedAt: "2026-01-01T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+			{State: "APPROVED", CommitID: "h", SubmittedAt: "2026-01-02T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+		}, "h", true},
+		{"current changes-request from one reviewer blocks despite another's approval", []restReview{
+			{State: "APPROVED", CommitID: "h", SubmittedAt: "2026-01-01T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+			{State: "CHANGES_REQUESTED", CommitID: "h", SubmittedAt: "2026-01-02T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "bob"}},
+		}, "h", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := restApproval(tt.reviews, tt.headSHA); got != tt.want {
+				t.Errorf("restApproval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchCIStatusViaREST_OK(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		"repos/o/r/commits/sha/status":     `{"statuses":[]}`,
+	}}
+	status, pending, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Error("ok must be true when both legs fetch cleanly")
+	}
+	if status != "SUCCESS" || pending {
+		t.Errorf("status=%q pending=%v, want SUCCESS/false", status, pending)
+	}
+}
+
+func TestFetchCIStatusViaREST_CheckRunsLegErrors(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	_, _, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if ok {
+		t.Error("ok must be false when the check-runs leg errors")
+	}
+}
+
+func TestFetchCIStatusViaREST_EmptySHA(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{}
+	_, _, ok := fetchCIStatusViaREST(e, "o", "r", "")
+	if ok {
+		t.Error("ok must be false for an empty sha (nothing was actually fetched)")
 	}
 }
 

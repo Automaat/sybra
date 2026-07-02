@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -40,6 +41,8 @@ func TestReadyForCopilotAutoMerge(t *testing.T) {
 	noChecks.CIStatus = ""
 	approved := base
 	approved.ReviewDecision = "APPROVED"
+	sourcedViaREST := base
+	sourcedViaREST.SourcedViaREST = true
 
 	tests := []struct {
 		name string
@@ -56,12 +59,63 @@ func TestReadyForCopilotAutoMerge(t *testing.T) {
 		{"conflict blocks", conflict, false},
 		{"ci failure blocks", ciFail, false},
 		{"ci pending blocks", ciPending, false},
+		{"REST-sourced PR always blocks, even when otherwise green", sourcedViaREST, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := readyForCopilotAutoMerge(tt.pr); got != tt.want {
 				t.Errorf("readyForCopilotAutoMerge() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadyForRESTAutoMerge(t *testing.T) {
+	t.Parallel()
+	base := github.PullRequest{
+		RESTMergeableState: "clean",
+		RESTCIFetched:      true,
+		CIStatus:           "SUCCESS",
+		RESTApproved:       true,
+	}
+	withDraft := base
+	withDraft.IsDraft = true
+	noChecks := base
+	noChecks.CIStatus = ""
+	notApproved := base
+	notApproved.RESTApproved = false
+	ciFetchFailed := base
+	ciFetchFailed.RESTCIFetched = false
+	ciFail := base
+	ciFail.CIStatus = "FAILURE"
+
+	tests := []struct {
+		name string
+		pr   github.PullRequest
+		want bool
+	}{
+		{"clean, fetched, green, approved", base, true},
+		{"no checks counts as green", noChecks, true},
+		{"draft blocks", withDraft, false},
+		{"not approved blocks", notApproved, false},
+		{"unfetched CI blocks even though CIStatus is empty", ciFetchFailed, false},
+		{"ci failure blocks", ciFail, false},
+	}
+	for _, state := range []string{"blocked", "behind", "unstable", "unknown", ""} {
+		pr := base
+		pr.RESTMergeableState = state
+		tests = append(tests, struct {
+			name string
+			pr   github.PullRequest
+			want bool
+		}{name: "mergeable_state=" + state + " blocks", pr: pr, want: false})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := readyForRESTAutoMerge(tt.pr); got != tt.want {
+				t.Errorf("readyForRESTAutoMerge() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -358,6 +412,274 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 				t.Errorf("merged=%v (repo=%q num=%d), want merged=%v", merged, mergedRepo, mergedNum, tt.wantMerged)
 			}
 		})
+	}
+}
+
+func TestHandleAutoMerge_REST(t *testing.T) {
+	restApproved := github.PullRequest{
+		Repository: "pet-owner/pet-repo", Number: 30, HeadSHA: "sha30",
+		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+		CIStatus: "SUCCESS", RESTApproved: true,
+	}
+	restNotApproved := restApproved
+	restNotApproved.Number = 31
+	restNotApproved.RESTApproved = false
+	restCIFetchFailed := restApproved
+	restCIFetchFailed.Number = 32
+	restCIFetchFailed.RESTCIFetched = false
+	restCIFetchFailed.CIStatus = ""
+	restBlocked := restApproved
+	restBlocked.Number = 33
+	restBlocked.RESTMergeableState = "blocked"
+	restCopilotCommentedOnly := restApproved
+	restCopilotCommentedOnly.Number = 34
+	restCopilotCommentedOnly.RESTApproved = false // Copilot COMMENTED never sets RESTApproved
+	restRenovateGreenPR := github.PullRequest{
+		Repository: "pet-owner/pet-repo", Number: 35, HeadSHA: "sha35",
+		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+		CIStatus: "SUCCESS", RESTApproved: false,
+	}
+	nonRESTReadyIssue := github.PullRequest{
+		Repository: "pet-owner/pet-repo", Number: 36,
+		Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: false,
+	}
+
+	tests := []struct {
+		name       string
+		tags       []string
+		pr         github.PullRequest
+		wantMerged bool
+	}{
+		{"REST-sourced, clean+fetched+green+approved -> merges via REST", nil, restApproved, true},
+		{"REST-sourced, not approved -> holds", nil, restNotApproved, false},
+		{"REST-sourced, CI fetch failed -> holds (empty CIStatus not read as green)", nil, restCIFetchFailed, false},
+		{"REST-sourced, blocked mergeable_state -> holds", nil, restBlocked, false},
+		{"REST-sourced, Copilot COMMENTED-only -> holds", nil, restCopilotCommentedOnly, false},
+		{"REST-sourced renovate-fix, clean+fetched+green, no approval needed -> merges", []string{"renovate-fix"}, restRenovateGreenPR, true},
+		{"non-REST-sourced ready issue in degraded handler -> holds (Copilot gate, not reviewed)", nil, nonRESTReadyIssue, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projDir := t.TempDir()
+			projStore, err := project.NewStore(projDir, t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+			taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatalf("task NewStore: %v", err)
+			}
+			tasks := task.NewManager(taskStore, nil)
+			created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			upd := task.Update{
+				Status:    task.Ptr(task.StatusInReview),
+				PRNumber:  task.Ptr(tt.pr.Number),
+				ProjectID: task.Ptr("pet-owner/pet-repo"),
+			}
+			if tt.tags != nil {
+				upd.Tags = &tt.tags
+			}
+			if _, err := tasks.Update(created.ID, upd); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+
+			var restMergedRepo, restMergedSHA string
+			var restMergedNum int
+			var gqlMergeCalled bool
+			r := &ReviewHandler{
+				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+				tasks:         tasks,
+				projects:      projStore,
+				prTracker:     github.NewIssueTracker(time.Minute),
+				mergePR: func(repo string, number int) error {
+					gqlMergeCalled = true
+					return nil
+				},
+				mergePRViaREST: func(repo string, number int, headSHA string) error {
+					restMergedRepo, restMergedNum, restMergedSHA = repo, number, headSHA
+					return nil
+				},
+			}
+
+			r.handleAutoMerge(github.PRIssue{
+				Kind:   github.PRIssueReadyToMerge,
+				TaskID: created.ID,
+				PR:     tt.pr,
+			})
+
+			merged := restMergedNum != 0
+			if merged != tt.wantMerged {
+				t.Fatalf("merged=%v (repo=%q num=%d), want merged=%v", merged, restMergedRepo, restMergedNum, tt.wantMerged)
+			}
+			if gqlMergeCalled {
+				t.Error("a REST-sourced PR must never merge via the GraphQL gh-pr-merge path")
+			}
+			if merged && restMergedSHA != tt.pr.HeadSHA {
+				t.Errorf("mergePRViaREST head sha = %q, want %q", restMergedSHA, tt.pr.HeadSHA)
+			}
+		})
+	}
+}
+
+// TestHandleAutoMerge_REST_AuditPayload verifies a REST-sourced merge stamps
+// sourced_via_rest, gate_evidence, and head_sha into the auto-merge audit
+// event, while a GraphQL-sourced merge's payload stays free of those REST-only
+// keys.
+func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
+	tmp := t.TempDir()
+	auditDir := filepath.Join(tmp, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	defer auditLog.Close()
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatalf("task NewStore: %v", err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		PRNumber:  task.Ptr(40),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
+		tasks:         tasks,
+		projects:      projStore,
+		prTracker:     github.NewIssueTracker(time.Minute),
+		mergePRViaREST: func(repo string, number int, headSHA string) error {
+			return nil
+		},
+	}
+
+	r.handleAutoMerge(github.PRIssue{
+		Kind:   github.PRIssueReadyToMerge,
+		TaskID: created.ID,
+		PR: github.PullRequest{
+			Repository: "pet-owner/pet-repo", Number: 40, HeadSHA: "sha40",
+			SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+			CIStatus: "SUCCESS", RESTApproved: true,
+		},
+	})
+
+	events := readExperienceAuditEvents(t, auditDir)
+	var merged *audit.Event
+	for i := range events {
+		if events[i].Type == audit.EventPRAutoMerged {
+			merged = &events[i]
+		}
+	}
+	if merged == nil {
+		t.Fatalf("no %s audit event; events=%+v", audit.EventPRAutoMerged, events)
+	}
+	if merged.Data["sourced_via_rest"] != true {
+		t.Errorf("sourced_via_rest = %v, want true", merged.Data["sourced_via_rest"])
+	}
+	if merged.Data["gate_evidence"] != "approved" {
+		t.Errorf("gate_evidence = %v, want approved", merged.Data["gate_evidence"])
+	}
+	if merged.Data["head_sha"] != "sha40" {
+		t.Errorf("head_sha = %v, want sha40", merged.Data["head_sha"])
+	}
+}
+
+// TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge verifies the
+// budget-exhausted REST-only pass now routes a ready_to_merge issue through
+// to handleAutoMerge (and its REST merge), where it used to be dropped
+// alongside comments.
+func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	tk, err := tasks.Create("Ready PR", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("pet-owner/pet-repo"),
+		PRNumber:  task.Ptr(50),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	projStore, err := project.NewStore(projDir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
+
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+
+	var restMergedNum int
+	var gqlMergeCalled bool
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+		projects:      projStore,
+		agents:        agentMgr,
+		prTracker:     github.NewIssueTracker(time.Minute),
+		mergePR: func(repo string, number int) error {
+			gqlMergeCalled = true
+			return nil
+		},
+		mergePRViaREST: func(repo string, number int, headSHA string) error {
+			restMergedNum = number
+			return nil
+		},
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{
+					Repo: ref.Repo, Number: ref.Number, Open: true,
+					PR: github.PullRequest{
+						Number: ref.Number, Repository: ref.Repo, HeadSHA: "sha50",
+						Mergeable:      "MERGEABLE",
+						SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+						CIStatus: "SUCCESS", RESTApproved: true,
+					},
+				}
+			}
+			return results
+		},
+	}
+
+	got, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.handleKnownPRConflictsViaREST(got)
+
+	if restMergedNum != 50 {
+		t.Fatalf("restMergedNum = %d, want 50 (ready_to_merge must reach handleAutoMerge)", restMergedNum)
+	}
+	if gqlMergeCalled {
+		t.Error("must merge via REST, not the GraphQL gh-pr-merge path")
 	}
 }
 

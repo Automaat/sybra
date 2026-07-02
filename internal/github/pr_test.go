@@ -673,3 +673,85 @@ func TestSupportsNativeAutoMerge(t *testing.T) {
 		}
 	})
 }
+
+func TestMergePRViaRESTWith(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success carries head sha and PUT method", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 200 OK\n\n{\"merged\":true}"), err: nil},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		joined := strings.Join(se.lastArgs, " ")
+		if !strings.Contains(joined, "repos/owner/repo/pulls/42/merge") {
+			t.Errorf("args missing merge endpoint: %s", joined)
+		}
+		if !strings.Contains(joined, "PUT") {
+			t.Errorf("args missing PUT method: %s", joined)
+		}
+		if !strings.Contains(joined, "sha=abc123") {
+			t.Errorf("args missing head sha: %s", joined)
+		}
+	})
+
+	t.Run("empty head sha is rejected before any request", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 200 OK\n\n{\"merged\":true}"), err: nil},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, ""); err == nil {
+			t.Fatal("expected error for empty head sha")
+		}
+		if se.calls != 0 {
+			t.Fatalf("calls = %d, want 0 (no request without a head sha)", se.calls)
+		}
+	})
+
+	t.Run("head sha mismatch (409) is terminal, no retry", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 409 Conflict\n\n{\"message\":\"Head branch was modified. Review and try the merge again.\"}"), err: fmt.Errorf("exit 1")},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err == nil {
+			t.Fatal("expected error")
+		}
+		if se.calls != 1 {
+			t.Fatalf("calls = %d, want 1 (no retry on sha mismatch)", se.calls)
+		}
+	})
+
+	t.Run("generic 409 without the mismatch message is not treated as terminal", func(t *testing.T) {
+		t.Parallel()
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: []byte("HTTP/1.1 409 Conflict\n\n{\"message\":\"some other conflict\"}"), err: fmt.Errorf("exit 1")},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err == nil {
+			t.Fatal("expected error")
+		}
+		if isHeadSHAMismatchErr(ghHTTPResponse{statusCode: 409, body: []byte("some other conflict")}) {
+			t.Fatal("generic 409 must not be classified as a head-SHA mismatch")
+		}
+	})
+
+	t.Run("base branch modified retries then succeeds", func(t *testing.T) {
+		prev := mergeRetryDelays
+		mergeRetryDelays = []time.Duration{0, 0, 0}
+		t.Cleanup(func() { mergeRetryDelays = prev })
+
+		baseModified := []byte("HTTP/1.1 405 Method Not Allowed\n\nBase branch was modified. Review and try the merge again.")
+		se := &scriptedExecer{results: []scriptedResult{
+			{output: baseModified, err: fmt.Errorf("exit 1")},
+			{output: baseModified, err: fmt.Errorf("exit 1")},
+			{output: []byte("HTTP/1.1 200 OK\n\n{\"merged\":true}"), err: nil},
+		}}
+		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if se.calls != 3 {
+			t.Fatalf("calls = %d, want 3", se.calls)
+		}
+	})
+}

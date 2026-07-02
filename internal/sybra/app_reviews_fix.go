@@ -26,8 +26,14 @@ const prFixResultContract = "\n\nBefore your final response, decide the outcome:
 // request. Human approval is intentionally NOT required — pet PRs never get one;
 // Copilot's review is the gate. A repo without Copilot enabled stays parked in
 // In Review until a human merges it.
+//
+// A SourcedViaREST PR always returns false here — REST fetches leave
+// CopilotReviewed/UnresolvedCount/ReviewDecision zero (thread and review data
+// are GraphQL-only), so this gate can never be honestly satisfied over REST;
+// readyForRESTAutoMerge is the REST-sourced equivalent.
 func readyForCopilotAutoMerge(pr github.PullRequest) bool {
-	return !pr.IsDraft &&
+	return !pr.SourcedViaREST &&
+		!pr.IsDraft &&
 		pr.Mergeable == "MERGEABLE" &&
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
 		pr.CopilotReviewed &&
@@ -51,6 +57,35 @@ func readyToArmNativeAutoMerge(pr github.PullRequest) bool {
 		pr.ReviewDecision != "CHANGES_REQUESTED" &&
 		!pr.AutoMergeEnabled &&
 		pr.Author != "renovate[bot]"
+}
+
+// readyForRESTAutoMerge reports whether a REST-sourced PR satisfies the
+// REST auto-merge policy: not draft, GitHub's raw mergeable_state is exactly
+// "clean" (blocked/behind/unstable/unknown do NOT authorize it), both REST CI
+// legs were fetched successfully (an unfetched CI status must never read as
+// green), CI is green or genuinely absent, and RESTApproved — an explicit,
+// current-head approval computed over REST review data. Uses only
+// RESTApproved/RESTMergeableState/RESTCIFetched, never the thread-derived
+// UnresolvedCount/CopilotReviewed which REST never populates.
+func readyForRESTAutoMerge(pr github.PullRequest) bool {
+	return !pr.IsDraft &&
+		pr.RESTMergeableState == "clean" &&
+		pr.RESTCIFetched &&
+		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
+		pr.RESTApproved
+}
+
+// restRenovateGreen reports whether a REST-sourced renovate-fix PR is
+// verified green over REST: strictly clean mergeable state and both CI legs
+// fetched successfully and passing. Mirrors the GraphQL renovate-fix bypass
+// (ReadyToMerge already implies green + mergeable + !draft) but re-derives it
+// from REST-only fields since a REST-sourced PR carries none of the
+// GraphQL-only review/thread data the Copilot gate would otherwise check.
+func restRenovateGreen(pr github.PullRequest) bool {
+	return !pr.IsDraft &&
+		pr.RESTMergeableState == "clean" &&
+		pr.RESTCIFetched &&
+		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "")
 }
 
 func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
@@ -106,31 +141,63 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		}
 	}
 
-	// Hold the merge until Copilot has reviewed and its threads are resolved.
-	// Without this, a green PR merges on the first poll after CI passes — before
-	// Copilot's (asynchronous) review lands — and its feedback is skipped.
-	//
-	// Renovate dependency-bump PRs (surfaced via the "Fix CI" flow) are bot-
-	// authored and never receive a Copilot review, so the Copilot gate would
-	// strand them. The ReadyToMerge issue already implies green + mergeable +
-	// !draft, so preserve their prior green auto-merge.
-	if !slices.Contains(t.Tags, "renovate-fix") && !readyForCopilotAutoMerge(issue.PR) {
+	renovateFix := slices.Contains(t.Tags, "renovate-fix")
+
+	var ready bool
+	var gateEvidence string
+	if issue.PR.SourcedViaREST {
+		if renovateFix {
+			ready = restRenovateGreen(issue.PR)
+			gateEvidence = "renovate_green"
+		} else {
+			ready = readyForRESTAutoMerge(issue.PR)
+			gateEvidence = "approved"
+		}
+	} else {
+		// Hold the merge until Copilot has reviewed and its threads are resolved.
+		// Without this, a green PR merges on the first poll after CI passes —
+		// before Copilot's (asynchronous) review lands — and its feedback is
+		// skipped.
+		//
+		// Renovate dependency-bump PRs (surfaced via the "Fix CI" flow) are bot-
+		// authored and never receive a Copilot review, so the Copilot gate would
+		// strand them. The ReadyToMerge issue already implies green + mergeable +
+		// !draft, so preserve their prior green auto-merge.
+		ready = renovateFix || readyForCopilotAutoMerge(issue.PR)
+	}
+	if !ready {
 		return
 	}
 
-	merge := r.mergePR
-	if merge == nil {
-		merge = github.MergePR
+	var mergeErr error
+	if issue.PR.SourcedViaREST {
+		merge := r.mergePRViaREST
+		if merge == nil {
+			merge = github.MergePRViaREST
+		}
+		mergeErr = merge(issue.PR.Repository, issue.PR.Number, issue.PR.HeadSHA)
+	} else {
+		merge := r.mergePR
+		if merge == nil {
+			merge = github.MergePR
+		}
+		mergeErr = merge(issue.PR.Repository, issue.PR.Number)
 	}
-	if err := merge(issue.PR.Repository, issue.PR.Number); err != nil {
-		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", err)
+	if mergeErr != nil {
+		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
 		return
 	}
 
 	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
-	r.logAudit(audit.EventPRAutoMerged, t.ID, "", map[string]any{
+	auditData := map[string]any{
 		"pr": issue.PR.Number, "repo": issue.PR.Repository,
-	})
+	}
+	if issue.PR.SourcedViaREST {
+		auditData["sourced_via_rest"] = true
+		auditData["gate_evidence"] = gateEvidence
+		auditData["head_sha"] = issue.PR.HeadSHA
+	}
+	r.logAudit(audit.EventPRAutoMerged, t.ID, "", auditData)
 	r.logger.Info("auto-merge.merged", "task_id", t.ID, "pr", issue.PR.Number)
 }
 

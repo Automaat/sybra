@@ -63,6 +63,10 @@ type ReviewHandler struct {
 	// supports arming native auto-merge; overridable in tests. nil falls back
 	// to github.SupportsNativeAutoMerge.
 	supportsAutoMergeFn func(repo, baseBranch string) (bool, error)
+	// mergePRViaREST performs the REST-sourced squash-merge (PUT .../merge
+	// with the observed head SHA); overridable in tests. nil falls back to
+	// github.MergePRViaREST.
+	mergePRViaREST func(repo string, number int, headSHA string) error
 	// fetchThreads / resolveThread back the Copilot-thread auto-resolver;
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
@@ -146,6 +150,7 @@ func newReviewHandler(
 		mergePR:             github.MergePR,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
+		mergePRViaREST:      github.MergePRViaREST,
 		fetchThreads:        github.FetchReviewThreads,
 		resolveThread:       github.ResolveReviewThread,
 		cfg:                 cfg,
@@ -322,13 +327,16 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	return r.pollSlow()
 }
 
-// handleKnownPRConflictsViaREST runs a REST-only conflict/CI pass over linked
-// task PRs, used when the GraphQL search backed off on an exhausted budget. The
-// per-PR fetch routes to the idle REST bucket, so conflict and ci_failure fixes
-// keep moving without GraphQL. Thread-driven kinds (comments, ready_to_merge)
-// are intentionally dropped — REST exposes no thread-resolution data, so acting
-// on them could merge a PR with unresolved threads; they resume once GraphQL
-// recovers.
+// handleKnownPRConflictsViaREST runs a REST-only conflict/CI/ready-to-merge
+// pass over linked task PRs, used when the GraphQL search backed off on an
+// exhausted budget. The per-PR fetch routes to the idle REST bucket, so
+// conflict and ci_failure fixes — and, now that fetchPRForMonitorViaREST
+// computes RESTApproved, auto-merge — keep moving without GraphQL. The
+// comments kind is still dropped: REST exposes no thread-resolution data, so
+// acting on it could stall on unresolved threads it can't see; it resumes
+// once GraphQL recovers. ready_to_merge issues reach handleAutoMerge, which
+// gates a SourcedViaREST PR on the strict REST readiness check
+// (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
 func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 	var matchers, closedMatchers []github.TaskMatcher
 	for i := range tasks {
@@ -351,17 +359,21 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 
 	monitoredPRs := r.fetchKnownTaskPRs(matchers)
 	if len(matchers) > 0 {
-		var conflictCI []github.PRIssue
+		var handled []github.PRIssue
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
 		for i := range matched {
-			if matched[i].Kind == github.PRIssueConflict || matched[i].Kind == github.PRIssueCIFailure {
-				conflictCI = append(conflictCI, matched[i])
+			switch matched[i].Kind {
+			case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
+				handled = append(handled, matched[i])
+			case github.PRIssueComments:
+				// REST exposes no thread-resolution data; comments stay
+				// dropped until GraphQL recovers.
 			}
 		}
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
-		r.handleMatchedPRIssues(conflictCI)
+		r.handleMatchedPRIssues(handled)
 	}
 	if len(closedMatchers) > 0 {
 		fetchState := github.FetchPRStateViaREST
