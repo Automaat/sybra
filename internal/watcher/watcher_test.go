@@ -310,7 +310,9 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 		}
 		return n
 	}
-	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool { return afterSecondCount() > 0 })
+	if !pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool { return afterSecondCount() > 0 }) {
+		t.Errorf("timed out waiting for an event after the trailing write at %v", secondWriteAt)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -379,11 +381,13 @@ func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
 
 	// Poll for the emission instead of blindly sleeping past the 200ms
 	// debounce window; 500ms remains the worst-case bound.
-	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
+	if !pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(seen) > 0
-	})
+	}) {
+		t.Errorf("timed out waiting for an event after atomic rename")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -488,11 +492,13 @@ func TestDebounceIsolatesPerFile(t *testing.T) {
 
 	// Poll for both files' events instead of blindly sleeping past the
 	// debounce window; 500ms remains the worst-case bound.
-	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
+	if !pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return counts["a.md"] >= 1 && counts["b.md"] >= 1
-	})
+	}) {
+		t.Errorf("timed out waiting for events on both a.md and b.md")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -763,18 +763,21 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 	// Respond to the escalation immediately: send false (kill) so the stream
 	// exits cleanly without hanging the test.
 	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	raised := make(chan bool, 1)
 	go func() {
 		// Wait until the escalation has actually been raised, then cancel.
-		if !pollUntil(2*time.Second, time.Millisecond, func() bool {
+		raised <- pollUntil(2*time.Second, time.Millisecond, func() bool {
 			mu.Lock()
 			defer mu.Unlock()
 			return blocked > 0
-		}) {
-			t.Error("turns escalation was never raised before cancellation")
-		}
+		})
 		cancel()
 	}()
 	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+
+	if !<-raised {
+		t.Error("turns escalation was never raised before cancellation")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
