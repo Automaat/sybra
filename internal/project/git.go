@@ -554,14 +554,22 @@ func remoteBranchHead(worktreePath, remote, branch string) (string, error) {
 func ReconcileWithRemote(worktreePath, branch string) error {
 	remote := PushRemote(worktreePath)
 	// Refresh the tracking ref from the live remote; fork remotes are not
-	// covered by the earlier FetchOrigin. Best-effort: a first-push branch has
-	// no remote head yet and fetch failing here is not fatal.
+	// covered by the earlier FetchOrigin. A first-push branch has no remote
+	// head yet, so "couldn't find remote ref" is expected and not fatal — any
+	// other failure (network/auth/remote misconfig) must propagate, since
+	// continuing on stale history is exactly the data-loss scenario this
+	// function exists to prevent.
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	_ = executil.Run(worktreePath, "git", "fetch", remote, refspec)
+	if err := executil.Run(worktreePath, "git", "fetch", remote, refspec); err != nil && !strings.Contains(err.Error(), "couldn't find remote ref") {
+		return fmt.Errorf("fetch %s %s: %w", remote, refspec, err)
+	}
 
-	// Best-effort: a remote-unreachable error or an absent branch (first push)
-	// both mean there is nothing to reconcile.
-	remoteSHA, _ := remoteBranchHead(worktreePath, remote, branch)
+	// An absent branch (first push) means there is nothing to reconcile; any
+	// other ls-remote failure must propagate rather than silently no-op.
+	remoteSHA, err := remoteBranchHead(worktreePath, remote, branch)
+	if err != nil {
+		return fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
+	}
 	if remoteSHA == "" {
 		return nil
 	}
@@ -627,9 +635,14 @@ func PushSync(worktreePath, branch string) error {
 	// Divergence path: about to force-push. Verify the live remote head still
 	// matches the tracking ref this decision was based on. If it advanced since
 	// the last fetch, --force-with-lease would pass against the stale tracking
-	// ref and clobber the newer commits — refuse instead.
+	// ref and clobber the newer commits — refuse instead. Fail closed if the
+	// live head can't even be verified, rather than proceeding with a force
+	// push against an unconfirmed remote state.
 	liveSHA, err := remoteBranchHead(worktreePath, remote, branch)
-	if err == nil && liveSHA != "" && liveSHA != remoteSHA {
+	if err != nil {
+		return fmt.Errorf("%w: could not verify live remote head before force push: %w", ErrRemoteAdvanced, err)
+	}
+	if liveSHA != "" && liveSHA != remoteSHA {
 		return fmt.Errorf("%w: tracking %s but remote %s/%s is at %s", ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
 	}
 

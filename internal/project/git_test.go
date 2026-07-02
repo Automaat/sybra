@@ -1797,6 +1797,32 @@ func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 	}
 }
 
+// TestReconcileWithRemote_PropagatesFetchError guards the fail-closed fix: a
+// fetch failure other than the expected "couldn't find remote ref" (first
+// push) case must propagate instead of letting reconcile silently no-op on
+// stale history.
+func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	_, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Point origin at an unreachable path so fetch fails for a reason other
+	// than a missing remote ref.
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git")).CombinedOutput(); err != nil {
+		t.Fatalf("remote set-url: %v: %s", err, out)
+	}
+
+	if err := ReconcileWithRemote(wtPath, branch); err == nil {
+		t.Fatal("ReconcileWithRemote with broken remote = nil error, want propagated fetch failure")
+	}
+}
+
 // TestPushSync_RefusesForceWhenRemoteAdvanced is the defense-in-depth net: when
 // the live remote head no longer matches the stale tracking ref the push
 // decision was based on, PushSync must refuse the --force-with-lease rather than
@@ -1830,6 +1856,44 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	// The remote fix must survive untouched.
 	if got := remoteRefSHA(t, remoteBare, branch); got != advancedSHA {
 		t.Fatalf("remote SHA = %q, want untouched fix %q", got, advancedSHA)
+	}
+}
+
+// TestPushSync_FailsClosedWhenRemoteHeadUnverifiable guards the fail-closed
+// fix: if the live remote head can't be verified before a force push, PushSync
+// must refuse rather than proceed with --force-with-lease against unconfirmed
+// remote state.
+func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	makeCommit(t, wtPath, "two")
+	if err := PushSync(wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+	beforeSHA := remoteRefSHA(t, remoteBare, branch)
+
+	// Diverge local from the tracking ref so PushSync takes the force path.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
+		t.Fatalf("reset: %v: %s", err, out)
+	}
+	makeCommit(t, wtPath, "two-prime")
+
+	// Break the remote so the live-head verification (ls-remote) errors
+	// instead of returning a SHA.
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git")).CombinedOutput(); err != nil {
+		t.Fatalf("remote set-url: %v: %s", err, out)
+	}
+
+	err := PushSync(wtPath, branch)
+	if !errors.Is(err, ErrRemoteAdvanced) {
+		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced (fail closed)", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != beforeSHA {
+		t.Fatalf("remote SHA = %q, want untouched %q", got, beforeSHA)
 	}
 }
 
