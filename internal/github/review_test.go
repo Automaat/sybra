@@ -514,7 +514,7 @@ func TestFetchPRBatchWith_viewerErrorFailsWholeBatch(t *testing.T) {
 // TestFetchPRBatchWith_updatesGateForNextChunk locks the mechanism
 // fetchPRsForMonitorWith's per-chunk gate recheck depends on: a chunk
 // response carrying low-budget rate-limit headers must update ghGate so that
-// shouldSkipOptional("graphql") reports true immediately after, without
+// shouldSkipOptional("graphql", priorityMergePath) reports true immediately after, without
 // waiting for a separate /rate_limit refresh. (The recheck itself is gated on
 // runtimeCacheEnabled(e), i.e. the real defaultExecer, so it cannot be driven
 // end-to-end through a fake execer — see the identical constraint on the

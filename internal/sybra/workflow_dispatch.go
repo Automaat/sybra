@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 const (
@@ -29,6 +30,11 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 	// A stub awaiting async enrichment is dispatched by the enrich step, not
 	// the emit path — skip until the real title/labels land.
 	if slices.Contains(t.Tags, enrichPendingTag) {
+		return true
+	}
+	// An umbrella-gated child must be held for releaseUnblockedChildren, not
+	// dispatched straight into triage/plan/implement.
+	if slices.Contains(t.Tags, umbrella.GatedTag) {
 		return true
 	}
 	if slices.Contains(t.Tags, handoffManualTag) {

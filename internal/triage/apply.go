@@ -7,7 +7,14 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+// preservedTags are tags never emitted by the classifier vocabulary but that
+// must survive a wholesale tag-replacement in Apply because dropping them
+// would silently break routing the task depends on: escape-hatch opt-outs
+// (see escapeHatchTags) and the umbrella dependency gate marker.
+var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
 
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.
 // All field changes happen in a single UpdateMap call so the write is
@@ -54,13 +61,13 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	}
 
 	if len(v.Tags) > 0 {
-		// Preserve escape-hatch routing tags (noplan/nocritic) already on the
-		// task — the classifier vocabulary excludes them, so replacing tags
-		// wholesale would silently drop a manually-set opt-out.
-		tags := v.Tags
-		for _, hatch := range escapeHatchTags {
-			if slices.Contains(t.Tags, hatch) && !slices.Contains(tags, hatch) {
-				tags = append(tags, hatch)
+		// Preserve routing tags the classifier vocabulary excludes
+		// (escape-hatch opt-outs, umbrella gate marker) — replacing tags
+		// wholesale would otherwise silently drop them.
+		tags := slices.Clone(v.Tags)
+		for _, keep := range preservedTags {
+			if slices.Contains(t.Tags, keep) && !slices.Contains(tags, keep) {
+				tags = append(tags, keep)
 			}
 		}
 		updates["tags"] = tags
