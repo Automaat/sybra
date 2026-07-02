@@ -139,6 +139,16 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"clean_content_mentions_rate_limit", ErrorSample{Content: "fixed rate limit handling", ContentIsCleanResult: true}, SignalNone, "", 0},
 		{"overloaded_ignored", ErrorSample{ErrorStatus: 529, ErrorType: "overloaded_error"}, SignalNone, "", 0},
 		{"unrelated", ErrorSample{Stderr: "random crash"}, SignalNone, "", 0},
+		{
+			"structured_429_with_weekly_content_stays_weekly",
+			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
+		{
+			"structured_rate_limit_error_type_with_weekly_stderr_stays_weekly",
+			ErrorSample{ErrorType: "rate_limit_error", Stderr: "you've hit your weekly limit"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,6 +206,16 @@ func TestClassifyCodexError(t *testing.T) {
 			"clean_result_mentioning_backend_host_is_none",
 			ErrorSample{Content: "fixed the retry handling for wss://chatgpt.com/backend-api/codex/responses and failed to refresh available models errors", ContentIsCleanResult: true},
 			SignalNone, "", 0,
+		},
+		{
+			"structured_429_with_weekly_content_stays_weekly",
+			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
+		{
+			"structured_rate_limit_type_with_weekly_stderr_stays_weekly",
+			ErrorSample{ErrorType: "rate_limit", Stderr: "you've hit your weekly limit"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
 		},
 	}
 	for _, tc := range cases {

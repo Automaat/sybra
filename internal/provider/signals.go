@@ -49,21 +49,25 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 	if s.ErrorStatus == 401 || s.ErrorType == "authentication_error" || s.ErrorType == "invalid_api_key" {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
-	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run claude auth login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run claude auth login") {
 		return SignalAuthFailure, "logged_out", 0
 	}
+	// Weekly-limit phrasing is checked before the structured 429/rate_limit_error
+	// short-circuit below: providers can attach a generic rate-limit error code
+	// to a weekly-quota-exhaustion message, and the longer weeklyLimitCooldown
+	// park only applies if the text is inspected first.
+	if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+	}
+	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+	}
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
-		if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
-			return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
-		}
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
@@ -91,14 +95,18 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	if s.ErrorStatus == 401 || strings.EqualFold(s.ErrorType, "unauthorized") {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
-	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run: codex login", "please run codex login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run: codex login") {
 		return SignalAuthFailure, "logged_out", 0
+	}
+	// Weekly-limit phrasing is checked before the structured 429/rate_limit
+	// short-circuit below: providers can attach a generic rate-limit error
+	// code to a weekly-quota-exhaustion message, and the longer
+	// weeklyLimitCooldown park only applies if the text is inspected first.
+	if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
 	}
 	// Host-anchored: a bare "websocket connection" without the codex backend
 	// host must NOT match — it would false-positive on unrelated network
@@ -115,12 +123,12 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 		(!s.ContentIsCleanResult && containsAny(content, "chatgpt.com/backend-api", "failed to refresh available models")) {
 		return SignalRateLimit, "connectivity", connectivityCooldown
 	}
+	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") {
-		if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
-			return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
-		}
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
