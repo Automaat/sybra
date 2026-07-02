@@ -635,6 +635,7 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
 	a.initTodoist(emit)
 	a.initRenovate(emit)
+	a.initPromptLab()
 	a.initTriage()
 	a.initHumanReview()
 	return a.initIssuesFetcher(emit)

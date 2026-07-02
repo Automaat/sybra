@@ -48,6 +48,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.Monitor = next.Monitor
 	s.cfg.SelfMonitor = next.SelfMonitor
 	s.cfg.HarnessEvolve = next.HarnessEvolve
+	s.cfg.PromptLab = next.PromptLab
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
 	s.cfg.AutoUpdate = next.AutoUpdate

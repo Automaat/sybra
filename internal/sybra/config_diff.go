@@ -94,6 +94,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if !reflect.DeepEqual(old.HarnessEvolve, next.HarnessEvolve) {
 		restart = append(restart, "harness_evolution")
 	}
+	if !reflect.DeepEqual(old.PromptLab, next.PromptLab) {
+		restart = append(restart, "prompt_lab")
+	}
 	if !reflect.DeepEqual(old.ABTesting, next.ABTesting) {
 		restart = append(restart, "ab_testing")
 	}

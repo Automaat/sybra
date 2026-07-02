@@ -123,6 +123,8 @@ func run(args []string) int {
 		return cmdEvaluation(cfg, store, rest, jsonOut)
 	case "harness-evolution":
 		return cmdHarnessEvolution(cfg, store, rest, jsonOut)
+	case "prompt-lab":
+		return cmdPromptLab(cfg, store, projStore, rest, jsonOut)
 	case "stats":
 		return cmdStats(cfg, rest, jsonOut)
 	case "install-skills":
@@ -1724,6 +1726,8 @@ Commands:
   evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
   harness-evolution run [--lookback 168h] [--min-cluster-size 2] [--file] [--json]
            Cluster selfmonitor failures into governed harness-change proposals.
+  prompt-lab run [--lookback 168h] [--min-samples 5] [--file] [--dry-run] [--json]
+           Scaffold versioned prompt/skill variant proposals from fleet evidence.
   stats lifecycle [--since 30d] [--slowest N] [--json]
            Per-phase lead-time breakdown (planning/implementing/testing/review/
            waiting) for tasks that landed in the window — where time is spent.

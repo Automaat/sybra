@@ -459,6 +459,7 @@ func Load() (*Config, error) {
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
 	applyHarnessEvolveDefaults(cfg)
+	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
@@ -556,6 +557,28 @@ func applyHarnessEvolveDefaults(cfg *Config) {
 	}
 	if h.Sink == "" {
 		h.Sink = "local-task"
+	}
+}
+
+// applyPromptLabDefaults fills zero values while preserving Enabled from an
+// explicit YAML override — the zero value (false) is exactly the desired
+// default, so no DefaultConfig entry is needed.
+func applyPromptLabDefaults(cfg *Config) {
+	p := &cfg.PromptLab
+	if p.IntervalHours < 1 {
+		p.IntervalHours = 24
+	}
+	if p.LookbackHours <= 0 {
+		p.LookbackHours = 168
+	}
+	if p.MinSamples <= 0 {
+		p.MinSamples = 5
+	}
+	if p.MinEffectSize <= 0 {
+		p.MinEffectSize = 0.15
+	}
+	if p.MaxProposalsPerRun <= 0 {
+		p.MaxProposalsPerRun = 3
 	}
 }
 
@@ -801,6 +824,13 @@ func SelfMonitorDir() string {
 // records and run snapshots.
 func HarnessEvolveDir() string {
 	return filepath.Join(HomeDir(), "harness-evolution")
+}
+
+// PromptLabDir is the local store for promptlab run snapshots and scaffolded
+// proposal records. It never holds authored prompt/skill text — see
+// internal/promptlab.
+func PromptLabDir() string {
+	return filepath.Join(HomeDir(), "prompt-lab")
 }
 
 // PromptEvalDir is the local store for offline prompt/skill eval verdicts
