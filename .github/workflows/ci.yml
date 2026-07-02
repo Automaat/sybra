@@ -176,6 +176,18 @@ jobs:
       - name: Check HTTP-allowlisted methods have api.ts/api-http.ts shims
         run: bash scripts/check-api-shim-sync.sh
 
+  test-release-scripts:
+    name: Release Scripts Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run resolve-release-version.sh tests
+        run: bash scripts/resolve-release-version.test.sh
+
+      - name: Run generate-release-notes.sh tests
+        run: bash scripts/generate-release-notes.test.sh
+
   build:
     name: Build
     runs-on: macos-15
