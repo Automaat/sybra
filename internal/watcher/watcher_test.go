@@ -26,6 +26,23 @@ func waitReady(t *testing.T, w *Watcher) {
 	}
 }
 
+// pollUntil polls cond every interval until it returns true or timeout
+// elapses, returning whether cond was observed true. Used in place of a
+// fixed time.Sleep before checking async/debounced state — it returns as
+// soon as the condition holds instead of waiting out a worst-case guess.
+func pollUntil(timeout, interval time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(interval)
+	}
+}
+
 func TestNew(t *testing.T) {
 	w := New("/tmp/test", func(string, any) {}, discardLogger())
 	if w == nil {
@@ -279,10 +296,21 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Allow plenty of time for any deferred emission. 500ms is well past
-	// the 200ms debounce window so a correctly-implemented trailing-edge
-	// debounce would have fired by now.
-	time.Sleep(500 * time.Millisecond)
+	// Poll for the deferred emission instead of blindly sleeping past the
+	// 200ms debounce window; 500ms remains the worst-case bound for a
+	// correctly-implemented trailing-edge debounce to fire.
+	afterSecondCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		var n int
+		for _, ts := range events {
+			if ts.After(secondWriteAt) {
+				n++
+			}
+		}
+		return n
+	}
+	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool { return afterSecondCount() > 0 })
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -349,8 +377,13 @@ func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait well past the 200ms debounce window for any emission to flush.
-	time.Sleep(500 * time.Millisecond)
+	// Poll for the emission instead of blindly sleeping past the 200ms
+	// debounce window; 500ms remains the worst-case bound.
+	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(seen) > 0
+	})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -394,16 +427,19 @@ func TestWatcherNoGoroutineLeakOnCancel(t *testing.T) {
 		}
 	}
 
-	// Let the runtime settle — goroutine exit is observed lazily.
-	runtime.GC()
-	runtime.Gosched()
-	time.Sleep(100 * time.Millisecond)
-
-	endCount := runtime.NumGoroutine()
-	// Allow a small slack for unrelated runtime goroutines (GC workers, etc.)
-	// that may come and go, but 20 leaked loop goroutines would blow past this.
+	// Poll for the runtime to settle — goroutine exit is observed lazily, so
+	// a single fixed-delay sample can flake under load. Allow a small slack
+	// for unrelated runtime goroutines (GC workers, etc.) that may come and
+	// go, but 20 leaked loop goroutines would blow past this.
 	const slack = 5
-	if endCount-startCount > slack {
+	var endCount int
+	settled := pollUntil(2*time.Second, 50*time.Millisecond, func() bool {
+		runtime.GC()
+		runtime.Gosched()
+		endCount = runtime.NumGoroutine()
+		return endCount-startCount <= slack
+	})
+	if !settled {
 		t.Errorf("goroutine leak: start=%d end=%d diff=%d (>%d slack)", startCount, endCount, endCount-startCount, slack)
 	}
 }
@@ -450,8 +486,13 @@ func TestDebounceIsolatesPerFile(t *testing.T) {
 		}
 	}
 
-	// Wait well past the debounce window.
-	time.Sleep(500 * time.Millisecond)
+	// Poll for both files' events instead of blindly sleeping past the
+	// debounce window; 500ms remains the worst-case bound.
+	pollUntil(500*time.Millisecond, 10*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts["a.md"] >= 1 && counts["b.md"] >= 1
+	})
 
 	mu.Lock()
 	defer mu.Unlock()
