@@ -64,7 +64,7 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 		// Preserve routing tags the classifier vocabulary excludes
 		// (escape-hatch opt-outs, umbrella gate marker) — replacing tags
 		// wholesale would otherwise silently drop them.
-		tags := v.Tags
+		tags := slices.Clone(v.Tags)
 		for _, keep := range preservedTags {
 			if slices.Contains(t.Tags, keep) && !slices.Contains(tags, keep) {
 				tags = append(tags, keep)
