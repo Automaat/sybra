@@ -98,6 +98,14 @@ export class AgentDefaults {
      */
     "headlessPermissionMode": string;
 
+    /**
+     * DispatchJitterMs bounds a uniform random delay applied before headless
+     * agent dispatch, so a wave of concurrently ready tasks does not all
+     * probe the provider health gate in the same tick. 0 disables jitter.
+     * Never applied to interactive/chat dispatch. Default 0 (opt-in).
+     */
+    "dispatchJitterMs": number;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -153,6 +161,9 @@ export class AgentDefaults {
         }
         if (!("headlessPermissionMode" in $$source)) {
             this["headlessPermissionMode"] = "";
+        }
+        if (!("dispatchJitterMs" in $$source)) {
+            this["dispatchJitterMs"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -326,6 +337,15 @@ export class ProviderLimitsConfig {
     "preferUnderused": boolean;
     "backfillDays": number;
 
+    /**
+     * MaxInFlightPerProvider caps concurrent in-flight agents per provider,
+     * distinct from the global agent.max_concurrent ceiling. 0 (default)
+     * disables the cap. When set, gateProvider redirects new dispatches away
+     * from an at-cap provider even when PreferUnderused is false, so the cap
+     * cannot silently no-op.
+     */
+    "maxInFlightPerProvider": number;
+
     /** Creates a new ProviderLimitsConfig instance. */
     constructor($$source: Partial<ProviderLimitsConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -342,6 +362,9 @@ export class ProviderLimitsConfig {
         }
         if (!("backfillDays" in $$source)) {
             this["backfillDays"] = 0;
+        }
+        if (!("maxInFlightPerProvider" in $$source)) {
+            this["maxInFlightPerProvider"] = 0;
         }
 
         Object.assign(this, $$source);
