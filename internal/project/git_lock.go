@@ -47,9 +47,14 @@ var (
 
 // isLockContention reports whether err looks like a transient git lock-file
 // failure ("Unable to create '.../index.lock': File exists.", or similar for
-// ref/worktree admin locks) rather than a genuine, non-retriable failure.
+// ref/worktree admin locks) rather than a genuine, non-retriable failure such
+// as a permission error on the lock file itself.
 func isLockContention(err error) bool {
-	return err != nil && strings.Contains(err.Error(), ".lock")
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, ".lock") && strings.Contains(msg, "File exists")
 }
 
 // withLockRetry runs fn, retrying on gitOpRetryBackoffs when the failure looks
