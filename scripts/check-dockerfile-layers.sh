@@ -102,7 +102,16 @@ awk -v dockerfile="${DOCKERFILE}" '
   END { exit bad ? 1 : 0 }
 ' "${DOCKERFILE}" || fail=1
 
-# --- 4. Healthcheck uses curl, not node ----------------------------------
+# --- 4. No unverified remote installer pipes ------------------------------
+# `curl ... | sh` (or `| bash`) executes a mutable remote script with no
+# pinning or checksum verification — a changed or compromised endpoint can
+# alter the image with no diff in this repo. Require direct artifact
+# downloads verified against a checksum instead (see Layer B, Layer D).
+while IFS=: read -r lineno content; do
+  err "unverified remote installer pipe (curl|sh / curl|bash) at line ${lineno}: ${content}"
+done < <(grep -nE '\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash)([[:space:]]|$)' "${DOCKERFILE}" || true)
+
+# --- 5. Healthcheck uses curl, not node ----------------------------------
 # Node-based healthchecks are fragile: they depend on the node runtime
 # being on PATH inside the runtime stage. curl is installed in Layer A
 # and is the portable choice. HEALTHCHECK spans line-continuations, so
