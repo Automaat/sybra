@@ -127,6 +127,36 @@ func TestCountStep_CountsMatchingEntries(t *testing.T) {
 	}
 }
 
+func TestClearStepRecords_ResetsCountForStep(t *testing.T) {
+	e := &Execution{}
+	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
+	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
+	e.RecordStep(StepRecord{StepID: "implement", Status: "completed"})
+
+	e.ClearStepRecords("run_test")
+
+	if got := e.CountStep("run_test"); got != 0 {
+		t.Errorf("expected 0 run_test records after clear, got %d", got)
+	}
+	if got := e.CountStep("implement"); got != 1 {
+		t.Errorf("expected unrelated step records to survive, got %d", got)
+	}
+
+	// Re-arming should let a fresh in-step retry budget accrue again.
+	e.RecordStep(StepRecord{StepID: "run_test", Status: "failed"})
+	if got := e.CountStep("run_test"); got != 1 {
+		t.Errorf("expected 1 run_test record after re-arm, got %d", got)
+	}
+}
+
+func TestClearStepRecords_NoOpOnEmptyHistory(t *testing.T) {
+	e := &Execution{}
+	e.ClearStepRecords("run_test")
+	if got := e.CountStep("run_test"); got != 0 {
+		t.Errorf("expected 0, got %d", got)
+	}
+}
+
 func TestRecordForStep_ReturnsLatestMatch(t *testing.T) {
 	e := &Execution{}
 	e.RecordStep(StepRecord{StepID: "triage", Status: "failed", StartedAt: time.Now()})
