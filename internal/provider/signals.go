@@ -105,8 +105,14 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	// errors. Covers websocket refusals to the codex responses endpoint, MCP
 	// transport failures, and model-list refresh timeouts, all of which are
 	// Codex-backend infra blips rather than real task failures.
+	//
+	// The content-side match is restricted to non-clean results: a
+	// successful (exit-0) run's assistant text can legitimately mention the
+	// Codex backend host or quote a log line without that meaning the run
+	// itself hit a connectivity failure — see containsRateLimitContent for
+	// the same distinction on the rate-limit path.
 	if containsAny(stderr, "chatgpt.com/backend-api", "failed to refresh available models") ||
-		containsAny(content, "chatgpt.com/backend-api", "failed to refresh available models") {
+		(!s.ContentIsCleanResult && containsAny(content, "chatgpt.com/backend-api", "failed to refresh available models")) {
 		return SignalRateLimit, "connectivity", connectivityCooldown
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||

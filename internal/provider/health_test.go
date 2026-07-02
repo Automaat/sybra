@@ -192,6 +192,11 @@ func TestClassifyCodexError(t *testing.T) {
 		},
 		{"bare_websocket_no_host_is_none", ErrorSample{Stderr: "websocket connection closed unexpectedly"}, SignalNone, "", 0},
 		{"unrelated", ErrorSample{Stderr: "panic goroutine"}, SignalNone, "", 0},
+		{
+			"clean_result_mentioning_backend_host_is_none",
+			ErrorSample{Content: "fixed the retry handling for wss://chatgpt.com/backend-api/codex/responses and failed to refresh available models errors", ContentIsCleanResult: true},
+			SignalNone, "", 0,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
