@@ -44,6 +44,11 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	// enrichReconciling holds task IDs with an in-flight enrichment goroutine —
+	// either the original CreateTask async fetch or a reconcile-pass retry — so
+	// a maintenance tick never stacks a second concurrent gh fetch on the same
+	// stub. Zero value ready.
+	enrichReconciling sync.Map
 }
 
 type TamperReportDTO struct {
@@ -341,11 +346,15 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	}
 
 	if prRepo != "" {
+		s.enrichReconciling.Store(t.ID, struct{}{})
 		s.wg.Go(func() {
+			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromPR(t.ID, prRepo, prNumber)
 		})
 	} else if issueRepo != "" {
+		s.enrichReconciling.Store(t.ID, struct{}{})
 		s.wg.Go(func() {
+			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromIssue(t.ID, issueRepo, issueNumber)
 		})
 	}
@@ -635,6 +644,71 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		s.startCreatedWorkflow(updated)
 	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
+}
+
+// ReconcilePendingEnrichment re-attempts GitHub enrichment for URL stubs whose
+// initial async enrichment never completed. A stub is created with the raw URL
+// as its title and the enrich-pending marker; enrichment then runs in a
+// fire-and-forget goroutine that, on any failure (a transient GitHub rate
+// limit / gateway blip, or the app exiting before it finished), simply logs and
+// returns. The marker is never cleared, so the stub keeps its raw-URL title
+// forever and — because URL stubs only dispatch a workflow once the marker
+// clears — never starts one. This is the recovery path for that orphaned state:
+// the still-present marker is the retry signal, and the enrich functions are
+// idempotent, so re-running them either succeeds now or fails the same benign
+// way. Driven from the maintenance pass so recovery is continuous rather than a
+// one-shot at startup.
+func (s *TaskService) ReconcilePendingEnrichment() {
+	all, err := s.tasks.List()
+	if err != nil {
+		s.logger.Error("enrich-reconcile.list", "err", err)
+		return
+	}
+	for i := range all {
+		t := all[i]
+		if !slices.Contains(t.Tags, enrichPendingTag) {
+			continue
+		}
+		// The user took the task out of the queue (e.g. cancelled/done); don't
+		// spend a GitHub fetch reviving it.
+		if task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		// An in-flight agent means the stub is already being worked; leave it be.
+		if s.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		// The stub still carries its raw URL as the title; re-derive the target.
+		prRepo, prNumber := github.ParsePRURL(t.Title)
+		issueRepo, issueNumber := github.ParseIssueURL(t.Title)
+		if prRepo == "" && issueRepo == "" {
+			// Title no longer parses as a GitHub URL (manually edited) yet the
+			// marker lingers — nothing to fetch. Warn once per tick; leave the
+			// task for the user to resolve.
+			s.logger.Warn("enrich-reconcile.unparseable", "task_id", t.ID, "title", t.Title)
+			continue
+		}
+		// Dedupe across ticks: skip if a reconcile enrichment is already running
+		// for this task (a slow gh call can span more than one maintenance tick).
+		if _, inFlight := s.enrichReconciling.LoadOrStore(t.ID, struct{}{}); inFlight {
+			continue
+		}
+		id := t.ID
+		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
+		if prRepo != "" {
+			repo, number := prRepo, prNumber
+			s.wg.Go(func() {
+				defer s.enrichReconciling.Delete(id)
+				s.enrichFromPR(id, repo, number)
+			})
+			continue
+		}
+		repo, number := issueRepo, issueNumber
+		s.wg.Go(func() {
+			defer s.enrichReconciling.Delete(id)
+			s.enrichFromIssue(id, repo, number)
+		})
+	}
 }
 
 // umbrellaExpansionEnabled reports whether a detected umbrella issue should be

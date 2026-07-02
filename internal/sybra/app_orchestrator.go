@@ -51,6 +51,12 @@ func (a *App) maintenancePass() {
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
 	a.recovery.RestartStaleInProgress()
+	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
+	// initial fetch — otherwise they keep the enrich-pending marker (and their
+	// raw-URL title) forever and never dispatch a workflow.
+	if a.taskSvc != nil {
+		a.taskSvc.ReconcilePendingEnrichment()
+	}
 	a.worktrees.CleanupOrphaned()
 }
 
