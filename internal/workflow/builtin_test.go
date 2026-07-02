@@ -169,6 +169,45 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 	}
 }
 
+// The planning pipeline runs autonomously with no human attached. Every
+// run_agent step must therefore be headless: an interactive-mode agent is
+// skipped by the watchdog (internal/watchdog only supervises ag.Mode ==
+// "headless"), so a hang leaves the workflow waiting forever with no stall
+// recovery — the failure mode that wedged task 3c1c4f12 in `planning`.
+func TestBuiltinSimpleTaskPlan_AgentStepsAreHeadless(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+
+	var agentSteps int
+	for i := range simple.Steps {
+		step := &simple.Steps[i]
+		if step.Type != StepRunAgent {
+			continue
+		}
+		agentSteps++
+		if step.Config.Mode != "headless" {
+			t.Errorf("run_agent step %q mode = %q, want headless (autonomous planning agents must stay under watchdog supervision)", step.ID, step.Config.Mode)
+		}
+	}
+	if agentSteps == 0 {
+		t.Fatal("expected simple-task-plan to contain run_agent steps")
+	}
+}
+
 func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	t.Parallel()
 
