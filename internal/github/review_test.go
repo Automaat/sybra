@@ -535,11 +535,11 @@ func TestFetchPRBatchWith_updatesGateForNextChunk(t *testing.T) {
 	fe := &fakeExecer{output: []byte(chunk1)}
 	refs := []PRRef{{Repo: "o/r", Number: 1}}
 
-	if ghGate.shouldSkipOptional("graphql") {
+	if ghGate.shouldSkipOptional("graphql", priorityMergePath) {
 		t.Fatal("gate should not skip graphql before any call")
 	}
 	fetchPRBatchWith(fe, refs)
-	if !ghGate.shouldSkipOptional("graphql") {
+	if !ghGate.shouldSkipOptional("graphql", priorityMergePath) {
 		t.Fatal("want gate to skip graphql after a chunk response reports zero remaining budget")
 	}
 }
