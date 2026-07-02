@@ -10,6 +10,12 @@ import (
 // suffix, e.g. "umbrella-max-parallel:5".
 const MaxParallelTagPrefix = "umbrella-max-parallel:"
 
+// FallbackTag marks an umbrella tracker whose DAG was built by
+// linearChainFallback (the planner exhausted its retries) instead of the
+// model, so a systematically-failing planner is board-visible rather than
+// silently masked.
+const FallbackTag = "umbrella-planner-fallback"
+
 // MaxParallelTag renders the tracker tag encoding n.
 func MaxParallelTag(n int) string {
 	return MaxParallelTagPrefix + strconv.Itoa(n)

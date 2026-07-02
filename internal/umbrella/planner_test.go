@@ -562,11 +562,51 @@ func TestGenerate(t *testing.T) {
 		}
 	})
 
-	t.Run("runner error", func(t *testing.T) {
+	t.Run("runner error stays fatal, fallback does not fire", func(t *testing.T) {
 		t.Parallel()
 		run := func(_ context.Context, _ string) (string, error) { return "", errors.New("boom") }
-		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1")); err == nil {
-			t.Error("expected runner error to propagate")
+		_, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1"))
+		if err == nil {
+			t.Fatal("expected runner error to propagate")
+		}
+		if errors.Is(err, errPlannerExhausted) {
+			t.Errorf("runner error must not match errPlannerExhausted (fallback must not fire): %v", err)
+		}
+	})
+
+	t.Run("exhausted retries fall back to a linear chain instead of erroring", func(t *testing.T) {
+		t.Parallel()
+		run := func(_ context.Context, _ string) (string, error) { return "not json", nil }
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
+		if err != nil {
+			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+		}
+		if !plan.Fallback {
+			t.Fatalf("Fallback = false, want true")
+		}
+		if plan.MaxParallel != 1 {
+			t.Fatalf("MaxParallel = %d, want 1", plan.MaxParallel)
+		}
+		if len(plan.Children) != 3 {
+			t.Fatalf("Children = %d, want 3", len(plan.Children))
+		}
+		depsOf := func(ref string) []string {
+			for _, c := range plan.Children {
+				if c.Ref == ref {
+					return c.DependsOn
+				}
+			}
+			t.Fatalf("no child %s in fallback plan", ref)
+			return nil
+		}
+		if got := depsOf("o/r#1"); len(got) != 0 {
+			t.Errorf("o/r#1 deps = %v, want none", got)
+		}
+		if got := depsOf("o/r#2"); len(got) != 1 || got[0] != "o/r#1" {
+			t.Errorf("o/r#2 deps = %v, want [o/r#1]", got)
+		}
+		if got := depsOf("o/r#3"); len(got) != 1 || got[0] != "o/r#2" {
+			t.Errorf("o/r#3 deps = %v, want [o/r#2]", got)
 		}
 	})
 
@@ -580,24 +620,36 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("cycle rejected", func(t *testing.T) {
 		t.Parallel()
+		// A persistently cyclic plan is never accepted as valid; attemptPlan
+		// exhausts its retries and Generate falls back to a linear chain
+		// rather than committing the cyclic plan or hard-erroring.
 		cyclic := `{"children":[{"issue":"o/r#1","dependsOn":["o/r#2"]},{"issue":"o/r#2","dependsOn":["o/r#1"]}],"maxParallel":2}`
 		run := func(_ context.Context, _ string) (string, error) { return cyclic, nil }
-		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err == nil {
-			t.Error("expected cycle to be rejected")
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
+		if err != nil {
+			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+		}
+		if !plan.Fallback {
+			t.Fatalf("expected the cyclic plan to be rejected in favor of a fallback: %+v", plan)
 		}
 	})
 
-	t.Run("cycle derived from mutual requires/produces is rejected", func(t *testing.T) {
+	t.Run("cycle derived from mutual requires/produces falls back", func(t *testing.T) {
 		t.Parallel()
 		// No explicit dependsOn — the cycle only exists once deriveEdges turns
-		// each side's "requires" into an edge on the other's "produces".
+		// each side's "requires" into an edge on the other's "produces". Same
+		// exhaustion-then-fallback behavior as the explicit-cycle case above.
 		cyclic := `{"children":[` +
 			`{"issue":"o/r#1","produces":["A"],"requires":["B"]},` +
 			`{"issue":"o/r#2","produces":["B"],"requires":["A"]}` +
 			`],"maxParallel":2}`
 		run := func(_ context.Context, _ string) (string, error) { return cyclic, nil }
-		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err == nil {
-			t.Error("expected derived cycle to be rejected")
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
+		if err != nil {
+			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+		}
+		if !plan.Fallback {
+			t.Fatalf("expected the derived cycle to be rejected in favor of a fallback: %+v", plan)
 		}
 	})
 
@@ -681,6 +733,9 @@ func TestGenerate(t *testing.T) {
 		if len(plan.Children) != 3 {
 			t.Fatalf("expected fallback to original flat plan: %+v", plan)
 		}
+		if plan.Fallback {
+			t.Fatalf("re-ask failure must return the original valid plan, not linearChainFallback: %+v", plan)
+		}
 	})
 
 	t.Run("re-ask context deadline falls back to original plan", func(t *testing.T) {
@@ -698,6 +753,9 @@ func TestGenerate(t *testing.T) {
 		if len(plan.Children) != 3 {
 			t.Fatalf("expected fallback to original flat plan: %+v", plan)
 		}
+		if plan.Fallback {
+			t.Fatalf("re-ask failure must return the original valid plan, not linearChainFallback: %+v", plan)
+		}
 	})
 
 	t.Run("no re-ask when fewer than three non-done children", func(t *testing.T) {
@@ -714,6 +772,188 @@ func TestGenerate(t *testing.T) {
 			t.Fatalf("expected no re-ask below the 3-child floor, got %d calls", calls)
 		}
 	})
+}
+
+func TestLinearChainFallback(t *testing.T) {
+	t.Parallel()
+
+	depsOf := func(t *testing.T, p Plan, ref string) []string {
+		t.Helper()
+		for _, c := range p.Children {
+			if c.Ref == ref {
+				return c.DependsOn
+			}
+		}
+		t.Fatalf("no child %s in fallback plan", ref)
+		return nil
+	}
+
+	t.Run("orders by issue number regardless of fetch order", func(t *testing.T) {
+		t.Parallel()
+		p, err := linearChainFallback(subs("o/r#3", "o/r#1", "o/r#2"))
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if len(depsOf(t, p, "o/r#1")) != 0 {
+			t.Errorf("o/r#1 should be first, deps = %v", depsOf(t, p, "o/r#1"))
+		}
+		if got := depsOf(t, p, "o/r#2"); len(got) != 1 || got[0] != "o/r#1" {
+			t.Errorf("o/r#2 deps = %v, want [o/r#1]", got)
+		}
+		if got := depsOf(t, p, "o/r#3"); len(got) != 1 || got[0] != "o/r#2" {
+			t.Errorf("o/r#3 deps = %v, want [o/r#2]", got)
+		}
+	})
+
+	t.Run("closed sub mid-chain keeps remaining open children serially chained", func(t *testing.T) {
+		t.Parallel()
+		s := []SubIssue{
+			{Ref: "o/r#1"},
+			{Ref: "o/r#2", Closed: true},
+			{Ref: "o/r#3"},
+			{Ref: "o/r#4"},
+		}
+		p, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if got := depsOf(t, p, "o/r#2"); len(got) != 0 {
+			t.Errorf("closed o/r#2 should carry no edges, got %v", got)
+		}
+		// #3 must chain to the last OPEN sibling (#1), skipping the closed #2 —
+		// not split into a parallel island by the gap.
+		if got := depsOf(t, p, "o/r#3"); len(got) != 1 || got[0] != "o/r#1" {
+			t.Errorf("o/r#3 deps = %v, want [o/r#1] (skips closed o/r#2)", got)
+		}
+		if got := depsOf(t, p, "o/r#4"); len(got) != 1 || got[0] != "o/r#3" {
+			t.Errorf("o/r#4 deps = %v, want [o/r#3]", got)
+		}
+	})
+
+	t.Run("covers every sub-issue exactly once", func(t *testing.T) {
+		t.Parallel()
+		s := subs("o/r#1", "o/r#2", "o/r#3")
+		p, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if err := p.validate(s); err != nil {
+			t.Errorf("validate: %v", err)
+		}
+		if len(p.Children) != len(s) {
+			t.Errorf("Children = %d, want %d", len(p.Children), len(s))
+		}
+	})
+
+	t.Run("ties on issue number keep fetch order", func(t *testing.T) {
+		t.Parallel()
+		// o/r#1 and x/y#1 share the numeric tail "1" but are different
+		// sub-issues (different repos); the tie must not reorder them.
+		s := []SubIssue{{Ref: "o/r#1"}, {Ref: "x/y#1"}, {Ref: "o/r#2"}}
+		p, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if got := depsOf(t, p, "x/y#1"); len(got) != 1 || got[0] != "o/r#1" {
+			t.Errorf("x/y#1 deps = %v, want [o/r#1] (tie keeps fetch order)", got)
+		}
+		if got := depsOf(t, p, "o/r#2"); len(got) != 1 || got[0] != "x/y#1" {
+			t.Errorf("o/r#2 deps = %v, want [x/y#1]", got)
+		}
+	})
+
+	t.Run("non-numeric refs keep fetch order", func(t *testing.T) {
+		t.Parallel()
+		s := []SubIssue{{Ref: "o/r#foo"}, {Ref: "o/r#bar"}, {Ref: "o/r#baz"}}
+		p, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+		if got := depsOf(t, p, "o/r#bar"); len(got) != 1 || got[0] != "o/r#foo" {
+			t.Errorf("o/r#bar deps = %v, want [o/r#foo] (fetch order preserved)", got)
+		}
+		if got := depsOf(t, p, "o/r#baz"); len(got) != 1 || got[0] != "o/r#bar" {
+			t.Errorf("o/r#baz deps = %v, want [o/r#bar]", got)
+		}
+	})
+
+	t.Run("semantic agreement: same serial reachability as a metadata-free plan", func(t *testing.T) {
+		t.Parallel()
+		// A closed sub-issue sits mid-chain so the fallback's sparse edges
+		// (chain to the last OPEN sibling) differ textually from a
+		// metadata-free plan run through deriveEdges (which serializes
+		// against every earlier canonical sibling, closed or not). Both must
+		// still materialize to the same reachability/topological order over
+		// the open children once ChildSpecs drops edges into closed subs.
+		s := []SubIssue{
+			{Ref: "o/r#1"},
+			{Ref: "o/r#2", Closed: true},
+			{Ref: "o/r#3"},
+			{Ref: "o/r#4"},
+		}
+		fallback, err := linearChainFallback(s)
+		if err != nil {
+			t.Fatalf("linearChainFallback: %v", err)
+		}
+
+		dense := Plan{Children: []PlannedChild{
+			{Ref: "o/r#1"}, {Ref: "o/r#2"}, {Ref: "o/r#3"}, {Ref: "o/r#4"},
+		}}
+		dense.deriveEdges(s)
+		if err := dense.validate(s); err != nil {
+			t.Fatalf("dense plan validate: %v", err)
+		}
+
+		existing := map[string]bool{}
+		fallbackDeps := depsMap(ChildSpecs(fallback, s, existing))
+		denseDeps := depsMap(ChildSpecs(dense, s, existing))
+
+		open := []string{"o/r#1", "o/r#3", "o/r#4"} // canonical order, closed o/r#2 excluded
+		for i, later := range open {
+			for _, earlier := range open[:i] {
+				if !reachableFrom(fallbackDeps, later, earlier) {
+					t.Errorf("fallback: %s should transitively depend on %s", later, earlier)
+				}
+				if !reachableFrom(denseDeps, later, earlier) {
+					t.Errorf("dense: %s should transitively depend on %s", later, earlier)
+				}
+			}
+		}
+		// No back-edges: nothing earlier depends on something later, in either plan.
+		for i, earlier := range open {
+			for _, later := range open[i+1:] {
+				if reachableFrom(fallbackDeps, earlier, later) {
+					t.Errorf("fallback: %s must not depend on later sibling %s", earlier, later)
+				}
+				if reachableFrom(denseDeps, earlier, later) {
+					t.Errorf("dense: %s must not depend on later sibling %s", earlier, later)
+				}
+			}
+		}
+	})
+}
+
+// depsMap flattens ChildSpecs into ref -> DependsOn for reachability checks.
+func depsMap(specs []ChildSpec) map[string][]string {
+	out := make(map[string][]string, len(specs))
+	for _, s := range specs {
+		out[s.Issue] = s.DependsOn
+	}
+	return out
+}
+
+// reachableFrom walks deps transitively from `from`, reporting whether
+// `target` is reachable.
+func reachableFrom(deps map[string][]string, from, target string) bool {
+	if from == target {
+		return true
+	}
+	for _, d := range deps[from] {
+		if reachableFrom(deps, d, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFlatPlanSuspicious(t *testing.T) {

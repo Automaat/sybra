@@ -274,6 +274,9 @@ func (f *IssuesFetcher) expandUmbrellaIssue(issue *github.Issue) {
 	if res.Created > 0 {
 		f.logger.Info("issue-sync.umbrella-expanded", "issue", issue.URL, "created", res.Created)
 	}
+	if res.Degraded {
+		f.logger.Warn("issue-sync.umbrella-degraded", "issue", issue.URL, "created", res.Created)
+	}
 }
 
 // syncFlatIssue creates or enriches a single non-umbrella issue task, honoring

@@ -33,19 +33,23 @@ func cmdUmbrella(s *task.Manager, args []string, jsonOut bool) int {
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
-	return reportUmbrella(jsonOut, res.UmbrellaURL, res.Created, res.Skipped)
+	return reportUmbrella(jsonOut, res.UmbrellaURL, res.Created, res.Skipped, res.Degraded)
 }
 
-func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int) int {
+func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int, degraded bool) int {
 	if jsonOut {
 		out, _ := json.Marshal(map[string]any{
 			"umbrella": umbrellaURL,
 			"created":  created,
 			"skipped":  skipped,
+			"degraded": degraded,
 		})
 		fmt.Println(string(out))
 		return 0
 	}
 	fmt.Printf("Expanded %s: created %d child task(s), %d skipped (done or already present).\n", umbrellaURL, created, skipped)
+	if degraded {
+		fmt.Println("WARNING: planner exhausted its retries — fell back to a linear-chain plan (serial, no parallelism).")
+	}
 	return 0
 }

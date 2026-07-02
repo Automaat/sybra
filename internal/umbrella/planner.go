@@ -3,9 +3,11 @@ package umbrella
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +19,12 @@ const DefaultMaxParallel = 5
 // fails to parse or validate. The planner is stochastic, so a fresh sample
 // often fixes a malformed or incomplete DAG.
 const plannerAttempts = 3
+
+// errPlannerExhausted marks attemptPlan's exhaustion return (plannerAttempts
+// samples, none parsed/resolved/validated) so Generate can distinguish it from
+// a fatal runner error via errors.Is and fall back to a linear chain instead
+// of aborting the whole expansion.
+var errPlannerExhausted = errors.New("planner exhausted retries")
 
 // SubIssue is the minimal projection of a GitHub sub-issue the planner needs.
 type SubIssue struct {
@@ -50,6 +58,9 @@ type PlannedChild struct {
 type Plan struct {
 	Children    []PlannedChild `json:"children"`
 	MaxParallel int            `json:"maxParallel"`
+	// Fallback marks a plan built by linearChainFallback instead of the model,
+	// so callers can surface degradation loudly. Never persisted on the wire.
+	Fallback bool `json:"-"`
 }
 
 // Runner executes one planner prompt and returns the model's raw stdout.
@@ -68,6 +79,10 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // first valid plan is suspiciously flat, Generate re-asks the model once with
 // a critic nudge; any failure of that re-ask (parse, validate, or run error)
 // falls back to the original plan rather than failing the whole expansion.
+// If the first attempt exhausts plannerAttempts without ever producing a
+// valid plan, Generate falls back to a fully-serial linear chain
+// (linearChainFallback) instead of aborting the expansion; a fatal runner
+// error (couldn't launch the model) is not exhaustion and still aborts.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue) (Plan, error) {
 	if len(subs) == 0 {
 		return Plan{}, fmt.Errorf("umbrella %s has no sub-issues to expand", umbrellaRef)
@@ -77,6 +92,9 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 
 	plan, err := attemptPlan(ctx, run, idx, prompt, subs)
 	if err != nil {
+		if errors.Is(err, errPlannerExhausted) {
+			return linearChainFallback(subs)
+		}
 		return Plan{}, err
 	}
 	if flatPlanSuspicious(plan, subs) {
@@ -119,7 +137,59 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 		}
 		return plan, nil
 	}
-	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w", plannerAttempts, lastErr)
+	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w: %w", plannerAttempts, errPlannerExhausted, lastErr)
+}
+
+// linearChainFallback builds a fully-serial fallback plan for when the
+// planner exhausts its retries without producing a valid DAG: sub-issues are
+// ordered by numeric issue number (ties and non-numeric refs keep fetch
+// order, via a stable sort), and each open child depends on the previous open
+// child. A closed sub-issue carries no edges — ChildSpecs already drops any
+// dependency on a closed sub-issue as satisfied — so a closed sub-issue in
+// the middle of the chain cannot split the remaining open children into
+// parallel islands; the open child that follows it still chains to the last
+// open child before it. MaxParallel is pinned to 1 and Fallback is set so
+// callers can surface the degradation. The constructed plan still runs
+// through validate as a real guard: a validation failure is returned rather
+// than silently committing a malformed chain.
+func linearChainFallback(subs []SubIssue) (Plan, error) {
+	type numberedSub struct {
+		sub    SubIssue
+		num    int
+		hasNum bool
+	}
+	keyed := make([]numberedSub, len(subs))
+	for i, s := range subs {
+		ns := numberedSub{sub: s}
+		if n, err := strconv.Atoi(numberOf(NormalizeIssueRef(s.Ref))); err == nil {
+			ns.num, ns.hasNum = n, true
+		}
+		keyed[i] = ns
+	}
+	sort.SliceStable(keyed, func(i, j int) bool {
+		if keyed[i].hasNum && keyed[j].hasNum {
+			return keyed[i].num < keyed[j].num
+		}
+		return false
+	})
+
+	p := Plan{MaxParallel: 1, Fallback: true}
+	prevOpen := ""
+	for _, ks := range keyed {
+		canon := NormalizeIssueRef(ks.sub.Ref)
+		child := PlannedChild{Ref: canon}
+		if !ks.sub.Closed {
+			if prevOpen != "" {
+				child.DependsOn = []string{prevOpen}
+			}
+			prevOpen = canon
+		}
+		p.Children = append(p.Children, child)
+	}
+	if err := p.validate(subs); err != nil {
+		return Plan{}, fmt.Errorf("linear-chain fallback failed validation: %w", err)
+	}
+	return p, nil
 }
 
 // flatPlanSuspicious reports whether a validated plan looks like it skipped
