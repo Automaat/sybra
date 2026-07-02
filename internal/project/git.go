@@ -25,6 +25,19 @@ var (
 // ErrBranchMissing is returned by PushSync when the local branch ref does not exist.
 var ErrBranchMissing = errors.New("local branch ref does not exist")
 
+// ErrBranchDiverged is returned by ReconcileWithRemote when the local branch and
+// the remote branch head have genuinely diverged (neither is an ancestor of the
+// other). Proceeding would force-push over remote-only commits — e.g. a fix
+// pushed from another clone/machine — so callers must surface this rather than
+// silently clobber the remote.
+var ErrBranchDiverged = errors.New("local branch diverged from remote head")
+
+// ErrRemoteAdvanced is returned by PushSync when the live remote branch head no
+// longer matches the remote-tracking ref the push decision was based on. The
+// tracking ref is stale, so a --force-with-lease would clobber commits pushed
+// after the last fetch.
+var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
+
 func runBare(barePath string, args ...string) error {
 	return executil.Run(barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
@@ -498,12 +511,85 @@ func CurrentBranch(worktreePath string) (string, error) {
 	return strings.TrimSpace(branch), nil
 }
 
+// isAncestor reports whether ancestor is reachable from descendant in the
+// worktree's history. Returns false when either ref is unknown.
+func isAncestor(worktreePath, ancestor, descendant string) bool {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = worktreePath
+	return cmd.Run() == nil
+}
+
+// remoteBranchHead queries the live head SHA of branch on remote via ls-remote.
+// Returns ("", nil) when the remote branch does not exist (never pushed).
+func remoteBranchHead(worktreePath, remote, branch string) (string, error) {
+	out, err := executil.Output(worktreePath, "git", "ls-remote", remote, "refs/heads/"+branch)
+	if err != nil {
+		return "", err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", nil
+	}
+	// Output is "<sha>\trefs/heads/<branch>"; take the first field.
+	return strings.Fields(out)[0], nil
+}
+
+// ReconcileWithRemote fast-forwards the worktree's checked-out branch to the
+// remote branch head before a rebase, so remote-only commits (e.g. a review fix
+// pushed from another clone or machine) are carried forward instead of dropped
+// by a later rebase + force-push.
+//
+// A bare clone never advances refs/heads/* on fetch, so a reused worktree can
+// check out a branch that is strictly behind its own remote head. Rebasing that
+// stale branch onto the base and then force-pushing (PushSync's divergence path)
+// silently overwrites the remote — and --force-with-lease cannot catch it,
+// because the pre-rebase fetch already advanced the tracking ref to the very
+// commit about to be destroyed.
+//
+// Behaviour by comparison of local HEAD to the live remote head:
+//   - remote branch absent, or local == remote: no-op
+//   - local ahead (remote is ancestor of local): no-op, local already contains it
+//   - remote ahead (local is ancestor of remote): fast-forward local to remote
+//   - diverged (neither is an ancestor): ErrBranchDiverged, caller must not force
+func ReconcileWithRemote(worktreePath, branch string) error {
+	remote := PushRemote(worktreePath)
+	// Refresh the tracking ref from the live remote; fork remotes are not
+	// covered by the earlier FetchOrigin. Best-effort: a first-push branch has
+	// no remote head yet and fetch failing here is not fatal.
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	_ = executil.Run(worktreePath, "git", "fetch", remote, refspec)
+
+	// Best-effort: a remote-unreachable error or an absent branch (first push)
+	// both mean there is nothing to reconcile.
+	remoteSHA, _ := remoteBranchHead(worktreePath, remote, branch)
+	if remoteSHA == "" {
+		return nil
+	}
+
+	localSHA, err := executil.Output(worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	if localSHA == remoteSHA {
+		return nil
+	}
+	if isAncestor(worktreePath, remoteSHA, localSHA) {
+		return nil // local already contains the remote head
+	}
+	if isAncestor(worktreePath, localSHA, remoteSHA) {
+		// Remote strictly ahead — adopt its commits before rebasing.
+		return executil.Run(worktreePath, "git", "merge", "--ff-only", remoteSHA)
+	}
+	return fmt.Errorf("%w: local %s vs remote %s/%s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
 // PushSync syncs the branch to the fork remote (if present) or origin using
 // the minimum mode required:
 //   - first push (remote tracking ref absent): regular push with -u
 //   - local SHA == remote tracking SHA: no-op
 //   - remote tracking SHA is an ancestor of local (fast-forward): regular push
-//   - histories diverged: --force-with-lease
+//   - histories diverged: --force-with-lease, but only after confirming the live
+//     remote head still matches the tracking ref (else ErrRemoteAdvanced)
 //
 // Compared to an unconditional force push, this avoids gratuitous rewrites of
 // the remote when a rebase was a no-op or the agent produced no new commits.
@@ -534,10 +620,17 @@ func PushSync(worktreePath, branch string) error {
 	}
 
 	// Fast-forward when remote SHA is reachable from local SHA.
-	ffCmd := exec.Command("git", "merge-base", "--is-ancestor", remoteSHA, localSHA)
-	ffCmd.Dir = worktreePath
-	if ffCmd.Run() == nil {
+	if isAncestor(worktreePath, remoteSHA, localSHA) {
 		return executil.Run(worktreePath, "git", "push", "-u", remote, branch)
+	}
+
+	// Divergence path: about to force-push. Verify the live remote head still
+	// matches the tracking ref this decision was based on. If it advanced since
+	// the last fetch, --force-with-lease would pass against the stale tracking
+	// ref and clobber the newer commits — refuse instead.
+	liveSHA, err := remoteBranchHead(worktreePath, remote, branch)
+	if err == nil && liveSHA != "" && liveSHA != remoteSHA {
+		return fmt.Errorf("%w: tracking %s but remote %s/%s is at %s", ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
 	}
 
 	return executil.Run(worktreePath, "git", "push", "--force-with-lease", "-u", remote, branch)

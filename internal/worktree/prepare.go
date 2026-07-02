@@ -68,11 +68,8 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 			if err := project.SanitizeWorktree(wtPath); err != nil {
 				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 			}
-			// Rebase must succeed before another agent run. Continuing from a
-			// stale branch makes downstream diff gates scan historical commits.
-			callPhase(onPhase, "Rebasing onto origin…")
-			if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-				return "", fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
+			if err := m.reconcileAndRebase(wtPath, wtBranch, baseRef, onPhase); err != nil {
+				return "", err
 			}
 			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 			// Sync remote after rebase. PushSync picks the minimum mode —
@@ -95,9 +92,8 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 		if err := project.SanitizeWorktree(wtPath); err != nil {
 			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 		}
-		callPhase(onPhase, "Rebasing onto origin…")
-		if err := project.RebaseOnto(wtPath, baseRef); err != nil {
-			return "", fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
+		if err := m.reconcileAndRebase(wtPath, wtBranch, baseRef, onPhase); err != nil {
+			return "", err
 		}
 		// Sync remote after rebase.
 		callPhase(onPhase, "Syncing upstream…")
@@ -129,6 +125,26 @@ func (m *Manager) PrepareForTask(t task.Task, onPhase func(string)) (string, err
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+// reconcileAndRebase prepares a reused worktree branch for another agent run.
+// It first adopts any commits pushed to the remote branch since this worktree's
+// local ref was last updated (e.g. a review fix pushed from another
+// clone/machine), so the rebase carries them forward instead of a later
+// force-push dropping them. Rebasing must then succeed before the agent runs —
+// continuing from a stale branch makes downstream diff gates scan historical
+// commits. Both failures wrap ErrRebaseFailed so the caller can surface a
+// repairable worktree.
+func (m *Manager) reconcileAndRebase(wtPath, wtBranch, baseRef string, onPhase func(string)) error {
+	callPhase(onPhase, "Reconciling with remote…")
+	if err := project.ReconcileWithRemote(wtPath, wtBranch); err != nil {
+		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
+	}
+	callPhase(onPhase, "Rebasing onto origin…")
+	if err := project.RebaseOnto(wtPath, baseRef); err != nil {
+		return fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
+	}
+	return nil
 }
 
 // seedWorktree drops the per-worktree agent context into an implementation
