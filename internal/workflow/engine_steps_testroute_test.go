@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"encoding/json"
+	"errors"
+	"maps"
 	"strconv"
 	"strings"
 	"testing"
@@ -1511,6 +1513,9 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 		}},
 	}
 	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	// Exhaust the auto-retry budget so an infra failure escalates instead of
+	// re-arming the tester (the re-arm path is covered separately).
+	wf.SetVar(testingAutoRetryKey(testOutcomeInfraFailure), strconv.Itoa(testingAutoRetryCap))
 	tasks.Put(TaskInfo{
 		ID:        "t-failed-pass",
 		Status:    "testing",
@@ -1573,6 +1578,9 @@ func TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure(t *testi
 		}},
 	}
 	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	// Exhaust the auto-retry budget so an infra failure escalates instead of
+	// re-arming the tester (the re-arm path is covered separately).
+	wf.SetVar(testingAutoRetryKey(testOutcomeInfraFailure), strconv.Itoa(testingAutoRetryCap))
 	tasks.Put(TaskInfo{
 		ID:        "t-empty-stdout",
 		Status:    "testing",
@@ -1736,6 +1744,9 @@ func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
 		StartedAt:  now,
 		Variables: map[string]string{
 			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey: testOutcomeInfraFailure,
+			// Exhaust the auto-retry budget so this asserts the terminal
+			// escalation path, not a re-arm.
+			testingAutoRetryKey(testOutcomeInfraFailure): strconv.Itoa(testingAutoRetryCap),
 		},
 	}
 	out, err := e.execRouteTestResult("t-infra", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-infra"))
@@ -1751,6 +1762,112 @@ func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
 	}
 	if reason := tasks.Reason("t-infra"); !strings.Contains(reason, "no implementation attempt consumed") {
 		t.Errorf("reason = %q, want no implementation attempt consumed", reason)
+	}
+}
+
+// routeWithOutcome drives execRouteTestResult with a pre-seeded outcome var and
+// arbitrary extra workflow vars (e.g. a primed auto-retry counter), returning
+// the step output, error, and the persisted post-call task state.
+func routeWithOutcome(t *testing.T, e *Engine, tasks *memTasks, taskID, outcome string, vars map[string]string) (StepOutput, TaskInfo, error) {
+	t.Helper()
+	tasks.Put(TaskInfo{ID: taskID, Status: "testing"})
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: "route_test",
+		State:       ExecRunning,
+		StartedAt:   time.Now().UTC(),
+		Variables:   map[string]string{"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey: outcome},
+	}
+	maps.Copy(wf.Variables, vars)
+	out, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID))
+	return out, mustGetTaskInfo(t, tasks, taskID), err
+}
+
+func TestRouteTestResult_InfraFailureParksForAutoRetry(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	out, ti, err := routeWithOutcome(t, e, tasks, "t-infra-retry", testOutcomeInfraFailure, nil)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	_ = out
+	if ti.Status != "testing" {
+		t.Errorf("status = %q, want testing (parked, not escalated)", ti.Status)
+	}
+	if ti.Workflow.CurrentStep != testVerdictSourceStep || ti.Workflow.State != ExecWaiting {
+		t.Errorf("workflow = %+v, want re-armed at run_test/ExecWaiting", ti.Workflow)
+	}
+	if got := ti.Workflow.Variables[testingAutoRetryKey(testOutcomeInfraFailure)]; got != "1" {
+		t.Errorf("auto-retry counter = %q, want 1", got)
+	}
+	if ti.Workflow.Variables[workflowRetryAfterVar] == "" {
+		t.Errorf("retry_after not set — ResumeStalled would re-dispatch immediately")
+	}
+	// Infra failures carry no re-ask note.
+	if ti.Workflow.Variables[testingReaskNoteVar] != "" {
+		t.Errorf("unexpected reask note for infra failure: %q", ti.Workflow.Variables[testingReaskNoteVar])
+	}
+}
+
+func TestRouteTestResult_InfraFailureEscalatesAtCap(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	vars := map[string]string{testingAutoRetryKey(testOutcomeInfraFailure): strconv.Itoa(testingAutoRetryCap)}
+	out, ti, err := routeWithOutcome(t, e, tasks, "t-infra-cap", testOutcomeInfraFailure, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "infra failure" {
+		t.Errorf("output = %q, want infra failure", out.Output)
+	}
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-infra-cap"); !strings.Contains(reason, "auto-retries") {
+		t.Errorf("reason = %q, want auto-retries mention", reason)
+	}
+}
+
+func TestRouteTestResult_MissingEvidenceParksWithReaskThenEscalates(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	taintVar := "step." + testVerdictSourceStep + "." + testVerdictTaintedKey
+
+	// First pass: tainted missing-evidence → park with a targeted re-ask note.
+	out, ti, err := routeWithOutcome(t, e, tasks, "t-evidence", testOutcomeMissingEvidence,
+		map[string]string{taintVar: testProtocolMissingEvidence})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	_ = out
+	if ti.Status != "testing" {
+		t.Errorf("status = %q, want testing (parked)", ti.Status)
+	}
+	if note := ti.Workflow.Variables[testingReaskNoteVar]; !strings.Contains(note, "machine-checkable") {
+		t.Errorf("reask note = %q, want machine-checkable guidance", note)
+	}
+	if got := ti.Workflow.Variables[testingAutoRetryKey(testOutcomeMissingEvidence)]; got != "1" {
+		t.Errorf("auto-retry counter = %q, want 1", got)
+	}
+	// The taint var must be cleared so the re-armed run is judged fresh.
+	if ti.Workflow.Variables[taintVar] != "" {
+		t.Errorf("taint var = %q, want cleared", ti.Workflow.Variables[taintVar])
+	}
+
+	// At cap: escalate to human-required.
+	vars := map[string]string{
+		taintVar: testProtocolMissingEvidence,
+		testingAutoRetryKey(testOutcomeMissingEvidence): strconv.Itoa(testingAutoRetryCap),
+	}
+	_, ti, err = routeWithOutcome(t, e, tasks, "t-evidence-cap", testOutcomeMissingEvidence, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-evidence-cap"); !strings.Contains(reason, "machine-checkable") {
+		t.Errorf("reason = %q, want machine-checkable mention", reason)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -48,6 +49,100 @@ const (
 	testProtocolFixSuggestions  = "fix-suggestions"
 	testProtocolMissingEvidence = "missing-evidence"
 )
+
+const (
+	// testingAutoRetryCap bounds how many times route_test re-runs the tester
+	// for transient (infra) or agent-behaviour (missing-evidence) outcomes
+	// before handing the task to a human. These outcomes describe the *runner*,
+	// not the implementation, so a bounded auto-retry recovers most of them
+	// without a human — a batch of tasks fanning into testing at once no longer
+	// piles up in human-required on one-off runner flakiness.
+	testingAutoRetryCap = 2
+	// testingAutoRetryBackoff spaces re-dispatches so a persistently broken
+	// sandbox or provider is not hammered in a tight loop; ResumeStalled honours
+	// it via workflowRetryAfterVar.
+	testingAutoRetryBackoff = 3 * time.Minute
+	// testingReaskNoteVar carries a targeted instruction into the re-run tester
+	// prompt (see testing-task.yaml). Set on a missing-evidence retry so the
+	// runner is told exactly which machine-checkable evidence its prior report
+	// lacked, rather than being re-run blind.
+	testingReaskNoteVar = "testing_reask_note"
+
+	missingEvidenceReask = "Your previous FAIL report was rejected because it lacked machine-checkable " +
+		"evidence. For EVERY claimed defect you MUST include: the exact command you ran, its verbatim " +
+		"output, the expected behaviour citing the task's own words, and a code line quoted from the " +
+		"CURRENT file (file:line). Re-run the probes and produce that evidence — or, if the feature " +
+		"actually works, emit PASS with the required manual-testing evidence."
+)
+
+func testingAutoRetryKey(outcome string) string {
+	return "step." + testVerdictSourceStep + ".auto_retry." + outcome
+}
+
+// parkTestingRetryOrEscalate re-arms the run_test step for another adversarial
+// run when a transient/agent-behaviour outcome still has retry budget, spacing
+// the re-dispatch with a backoff that ResumeStalled honours. It returns
+// parked=true after scheduling a retry — the caller MUST return errStepParked so
+// executeSteps parks without advancing — and parked=false when the cap is
+// exhausted and the caller should escalate to human-required. The retry counter
+// is keyed by outcome and persists on the workflow across the rewind.
+func (e *Engine) parkTestingRetryOrEscalate(taskID, outcome, reaskNote string, wfExec *Execution, t TaskInfo) (parked bool, err error) {
+	key := testingAutoRetryKey(outcome)
+	attempts := parseWorkflowInt(wfExec.Variables[key])
+	if attempts >= testingAutoRetryCap {
+		return false, nil
+	}
+	wfExec.SetVar(key, strconv.Itoa(attempts+1))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(testingAutoRetryBackoff).Format(time.RFC3339))
+	if reaskNote != "" {
+		wfExec.SetVar(testingReaskNoteVar, reaskNote)
+	}
+	// Clear the prior run's verdict/outcome/taint so the re-armed run is judged
+	// on its own output, not the stale report that triggered this retry.
+	clearTestVerdictVars(wfExec)
+	// Rewind to the tester step; ResumeStalled re-dispatches it once idle and
+	// past the backoff (run_test is a run_agent step).
+	wfExec.CurrentStep = testVerdictSourceStep
+	wfExec.State = ExecWaiting
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return false, err
+	}
+	reason := fmt.Sprintf("auto-retrying adversarial testing (%s, attempt %d/%d)", outcome, attempts+1, testingAutoRetryCap)
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
+		return false, err
+	}
+	e.logger.Info("workflow.test.auto-retry",
+		"task_id", taskID, "outcome", outcome, "attempt", attempts+1, "cap", testingAutoRetryCap)
+	return true, nil
+}
+
+// retryOrEscalateTransient auto-retries a transient/agent-behaviour test outcome
+// while retry budget remains (returning errStepParked so executeSteps parks),
+// otherwise escalates the task to human-required with humanReason and returns a
+// completed step output carrying doneOutput. logMsg names the escalation event.
+func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanReason, doneOutput, logMsg string, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	parked, err := e.parkTestingRetryOrEscalate(taskID, outcome, reask, wfExec, t)
+	if err != nil {
+		return StepOutput{}, err
+	}
+	if parked {
+		return StepOutput{}, errStepParked
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", humanReason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn(logMsg, "task_id", taskID)
+	return StepOutput{StepID: stepID, Status: "completed", Output: doneOutput}, nil
+}
+
+func clearTestVerdictVars(wfExec *Execution) {
+	if wfExec == nil || wfExec.Variables == nil {
+		return
+	}
+	for _, suffix := range []string{".verdict", "." + testVerdictOutcomeKey, "." + testVerdictTaintedKey, "." + testFailureFingerprintKey} {
+		delete(wfExec.Variables, "step."+testVerdictSourceStep+suffix)
+	}
+}
 
 type structuredTestOutput struct {
 	Verdict           string                     `json:"verdict"`
@@ -1547,6 +1642,10 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// Read the untruncated verdict/outcome vars (set in engine_advance from the
 	// full agent output and current body delta). Missing or infrastructure-shaped
 	// outcomes fail closed, but do not burn implementation attempts.
+	// The reask note (if any) was consumed by the just-completed run_test prompt;
+	// drop it so it never bleeds into a later, unrelated testing cycle.
+	delete(wfExec.Variables, testingReaskNoteVar)
+
 	if wfExec.Variables["step."+testVerdictSourceStep+".verdict"] == "PASS" {
 		if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", "manual testing passed"); err != nil {
 			return StepOutput{}, err
@@ -1556,10 +1655,16 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if violation := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictTaintedKey]; violation != "" {
-		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
+		// A missing-evidence report describes the runner, not the code — re-ask
+		// the tester (with the specific evidence it owes) before a human. A
+		// fix-suggestions violation already had one in-step retry and rarely
+		// improves on re-ask, so it still escalates immediately.
 		if violation == testProtocolMissingEvidence {
-			reason = "test-runner report violated testing protocol after retry: missing machine-checkable evidence"
+			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
+				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
+				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
+		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
 		}
@@ -1569,19 +1674,13 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
 	switch outcome {
 	case testOutcomeInfraFailure:
-		reason := "testing infrastructure failed after retry — no implementation attempt consumed; rerun testing or inspect the test-runner log"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.infra-failure", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "infra failure"}, nil
+		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeInfraFailure, "",
+			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
+			"infra failure", "workflow.test.infra-failure", wfExec, t)
 	case testOutcomeMissingEvidence:
-		reason := "test-runner failed without grounded evidence after retry — needs local reproduction before implementation retries"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.missing-evidence", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "missing evidence"}, nil
+		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
+			"test-runner failed without grounded evidence after auto-retries — needs local reproduction before implementation retries",
+			"missing evidence", "workflow.test.missing-evidence", wfExec, t)
 	case testOutcomeAmbiguousRequirement:
 		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
