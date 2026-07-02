@@ -202,6 +202,11 @@ func TestClassifyCodexError(t *testing.T) {
 			SignalRateLimit, "connectivity", connectivityCooldown,
 		},
 		{"bare_websocket_no_host_is_none", ErrorSample{Stderr: "websocket connection closed unexpectedly"}, SignalNone, "", 0},
+		{
+			"bare_host_without_connectivity_phrase_is_none",
+			ErrorSample{Stderr: "unexpected error calling chatgpt.com/backend-api/codex/responses: internal server error"},
+			SignalNone, "", 0,
+		},
 		{"unrelated", ErrorSample{Stderr: "panic goroutine"}, SignalNone, "", 0},
 		{
 			"clean_result_mentioning_backend_host_is_none",

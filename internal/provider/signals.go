@@ -112,6 +112,19 @@ func isWeeklyLimitText(stderr, content string, contentIsCleanResult bool) bool {
 	return isWeeklyLimit(content)
 }
 
+// isCodexConnectivityText reports whether text names a Codex-backend
+// connectivity failure. "failed to refresh available models" matches on its
+// own; the backend host string only counts alongside a connectivity-specific
+// phrase (websocket/MCP transport), since a bare host mention can appear in
+// unrelated errors that merely quote a URL.
+func isCodexConnectivityText(text string) bool {
+	if strings.Contains(text, "failed to refresh available models") {
+		return true
+	}
+	return strings.Contains(text, "chatgpt.com/backend-api") &&
+		containsAny(text, "websocket connection", "mcp transport")
+}
+
 // ClassifyCodexError mirrors ClassifyClaudeError for codex runs. Codex error
 // taxonomy is less well-known at design time, so we lean on substring matching
 // and let the runner log SignalNone cases with the raw strings for iterative
@@ -135,17 +148,22 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	}
 	// Host-anchored: a bare "websocket connection" without the codex backend
 	// host must NOT match — it would false-positive on unrelated network
-	// errors. Covers websocket refusals to the codex responses endpoint, MCP
-	// transport failures, and model-list refresh timeouts, all of which are
-	// Codex-backend infra blips rather than real task failures.
+	// errors. The host string alone is too broad the other way — text merely
+	// mentioning the backend host without a connectivity-specific phrase
+	// (e.g. quoting a URL in an unrelated error) must not match either — so
+	// the host and a connectivity phrase are both required together.
+	// "failed to refresh available models" is host-independent and matches
+	// on its own. Together these cover websocket refusals to the codex
+	// responses endpoint, MCP transport failures, and model-list refresh
+	// timeouts, all of which are Codex-backend infra blips rather than real
+	// task failures.
 	//
 	// The content-side match is restricted to non-clean results: a
 	// successful (exit-0) run's assistant text can legitimately mention the
 	// Codex backend host or quote a log line without that meaning the run
 	// itself hit a connectivity failure — see containsRateLimitContent for
 	// the same distinction on the rate-limit path.
-	if containsAny(stderr, "chatgpt.com/backend-api", "failed to refresh available models") ||
-		(!s.ContentIsCleanResult && containsAny(content, "chatgpt.com/backend-api", "failed to refresh available models")) {
+	if isCodexConnectivityText(stderr) || (!s.ContentIsCleanResult && isCodexConnectivityText(content)) {
 		return SignalRateLimit, "connectivity", connectivityCooldown
 	}
 	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
