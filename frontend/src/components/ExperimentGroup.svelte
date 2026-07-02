@@ -3,7 +3,6 @@
   import {
     guardrailClasses,
     num,
-    pct,
     rateCell,
     sampleClasses,
     seconds,
