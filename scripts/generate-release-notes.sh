@@ -18,18 +18,22 @@ else
   RANGE="${PREV}..HEAD"
 fi
 
-declare -A TITLES
-TITLES[feat]="### Features"
-TITLES[fix]="### Bug Fixes"
-TITLES[perf]="### Performance"
-TITLES[refactor]="### Refactoring"
-TITLES[docs]="### Documentation"
-TITLES[ci]="### CI"
-TITLES[test]="### Tests"
-TITLES[build]="### Build"
-TITLES[chore]="### Chores"
+title_for() {
+  case "$1" in
+    feat) echo "### Features" ;;
+    fix) echo "### Bug Fixes" ;;
+    perf) echo "### Performance" ;;
+    refactor) echo "### Refactoring" ;;
+    docs) echo "### Documentation" ;;
+    ci) echo "### CI" ;;
+    test) echo "### Tests" ;;
+    build) echo "### Build" ;;
+    chore) echo "### Chores" ;;
+  esac
+}
 
-declare -A LINES
+LINES_feat="" LINES_fix="" LINES_perf="" LINES_refactor="" LINES_docs=""
+LINES_ci="" LINES_test="" LINES_build="" LINES_chore="" LINES_other=""
 
 TYPE_RE='^([a-z]+)[(:!]'
 while IFS= read -r subject; do
@@ -38,23 +42,31 @@ while IFS= read -r subject; do
   else
     TYPE=""
   fi
-  if [[ -n "${TYPE}" && -n "${TITLES[${TYPE}]+x}" ]]; then
-    LINES[${TYPE}]+="- ${subject}"$'\n'
-  else
-    LINES[other]+="- ${subject}"$'\n'
-  fi
+  case "${TYPE}" in
+    feat) LINES_feat+="- ${subject}"$'\n' ;;
+    fix) LINES_fix+="- ${subject}"$'\n' ;;
+    perf) LINES_perf+="- ${subject}"$'\n' ;;
+    refactor) LINES_refactor+="- ${subject}"$'\n' ;;
+    docs) LINES_docs+="- ${subject}"$'\n' ;;
+    ci) LINES_ci+="- ${subject}"$'\n' ;;
+    test) LINES_test+="- ${subject}"$'\n' ;;
+    build) LINES_build+="- ${subject}"$'\n' ;;
+    chore) LINES_chore+="- ${subject}"$'\n' ;;
+    *) LINES_other+="- ${subject}"$'\n' ;;
+  esac
 done < <(git log "${RANGE}" --format="%s" 2>/dev/null)
 
 NOTES=""
 for TYPE in feat fix perf refactor docs ci test build chore; do
-  if [[ -n "${LINES[${TYPE}]:-}" ]]; then
-    NOTES+="${TITLES[${TYPE}]}"$'\n'
-    NOTES+="${LINES[${TYPE}]}"$'\n'
+  VAR="LINES_${TYPE}"
+  if [[ -n "${!VAR}" ]]; then
+    NOTES+="$(title_for "${TYPE}")"$'\n'
+    NOTES+="${!VAR}"$'\n'
   fi
 done
-if [[ -n "${LINES[other]:-}" ]]; then
+if [[ -n "${LINES_other}" ]]; then
   NOTES+="### Other"$'\n'
-  NOTES+="${LINES[other]}"$'\n'
+  NOTES+="${LINES_other}"$'\n'
 fi
 
 if [[ -z "${NOTES}" ]]; then
