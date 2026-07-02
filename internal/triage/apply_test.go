@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 func newTestManager(t *testing.T) *task.Manager {
@@ -80,6 +81,32 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	}
 	if !slices.Contains(updated.Tags, "noplan") {
 		t.Errorf("noplan escape-hatch tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("gated child task", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The umbrella expander sets the gate marker before triage runs.
+	created.Tags = []string{umbrella.GatedTag}
+
+	// Classifier verdict does not include umbrella-gated (it's outside the vocabulary).
+	v := Verdict{
+		Title: "feat(github): skip re-polling known-green PRs before merge",
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, umbrella.GatedTag) {
+		t.Errorf("umbrella-gated tag dropped by triage; got %v", updated.Tags)
 	}
 }
 
