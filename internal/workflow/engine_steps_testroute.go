@@ -1347,7 +1347,7 @@ func hasGroundedFailureEvidence(report string) bool {
 // header-like line: a short token of letters, digits and a little punctuation.
 // It keeps keyword matching scoped to real headers instead of arbitrary prose
 // that merely contains a colon (which would carry a comma, longer text, etc.).
-var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}$`)
+var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,59}$`)
 
 // headerLikeLineRe matches a report line that STARTS with a short
 // markdown-decorated label followed by a colon, whether or not further text
@@ -1358,7 +1358,7 @@ var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}$`)
 // or without inline content) still has no content of its own. Its label
 // length ceiling must stay in sync with evidenceLabelRe's, otherwise a bare
 // header can borrow a longer header's content as its own (#1386 follow-up).
-var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}:`)
+var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,59}:`)
 
 // labelMatchesKeyword reports whether a header label matches any keyword.
 // Single-word keywords must match at the label's START (as a whole word), so a

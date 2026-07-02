@@ -340,6 +340,29 @@ func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingLongNextHeaderLabe
 	}
 }
 
+func TestEvidenceLabelRe_EnforcesSixtyCharCeiling(t *testing.T) {
+	t.Parallel()
+
+	// The label ceiling is documented as 60 chars total (1 leading letter +
+	// up to 59 more). A 61-char label must be rejected by both regexes, or a
+	// bare header could borrow an over-long following header's content.
+	sixty := "a" + strings.Repeat("b", 59)
+	sixtyOne := "a" + strings.Repeat("b", 60)
+
+	if !evidenceLabelRe.MatchString(sixty) {
+		t.Fatalf("evidenceLabelRe rejected a 60-char label %q; want accepted", sixty)
+	}
+	if evidenceLabelRe.MatchString(sixtyOne) {
+		t.Fatalf("evidenceLabelRe accepted a 61-char label %q; want rejected", sixtyOne)
+	}
+	if !headerLikeLineRe.MatchString(sixty + ":") {
+		t.Fatalf("headerLikeLineRe rejected a 60-char label header %q; want accepted", sixty)
+	}
+	if headerLikeLineRe.MatchString(sixtyOne + ":") {
+		t.Fatalf("headerLikeLineRe accepted a 61-char label header %q; want rejected", sixtyOne)
+	}
+}
+
 func TestHasGroundedFailureEvidence_RejectsBareCodeEvidenceHeader(t *testing.T) {
 	t.Parallel()
 
