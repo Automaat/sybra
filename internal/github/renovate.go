@@ -85,10 +85,11 @@ func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR
 		if cached, ok := renovatePRsCache.Get(cacheKey); ok {
 			return cached, nil
 		}
-		if ghGate.shouldSkipOptional("graphql") {
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
 			if stale, ok := renovatePRsCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
+			return nil, ErrBudgetExhausted
 		}
 	}
 
