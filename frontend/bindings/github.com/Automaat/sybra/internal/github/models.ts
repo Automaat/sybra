@@ -176,18 +176,41 @@ export class PullRequest {
     "updatedAt": string;
 
     /**
-     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
-     * native auto-merge eligibility against the base branch's protection —
-     * never the head branch.
+     * SourcedViaREST marks a PullRequest fetched over GitHub's REST API
+     * (fetchPRForMonitorViaREST) instead of GraphQL, used when the GraphQL
+     * budget is low. REST exposes no thread-resolution or Copilot-review data,
+     * so UnresolvedCount, ActionableCount, CopilotReviewed, and ReviewDecision
+     * are unset/zero on a REST-sourced PR — callers must not trust those fields
+     * and must gate any REST-sourced action on RESTApproved/RESTMergeableState/
+     * RESTCIFetched instead.
      */
-    "baseRefName": string;
+    "sourcedViaRest": boolean;
 
     /**
-     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
-     * armed on this PR (derived live from `autoMergeRequest` being non-null —
-     * never persisted on the task model).
+     * RESTMergeableState is the raw GitHub mergeable_state (clean|blocked|
+     * behind|unstable|dirty|unknown) as reported over REST. Only "clean"
+     * authorizes REST-sourced auto-merge — the coarser Mergeable enum also
+     * buckets blocked/behind/unstable under MERGEABLE, which must NOT
+     * authorize a REST-sourced merge.
      */
-    "autoMergeEnabled": boolean;
+    "restMergeableState": string;
+
+    /**
+     * RESTApproved reports an explicit, current-head approval computed over
+     * REST review data (fetchRESTReviews + restApproval): at least one
+     * non-dismissed APPROVED review whose commit_id matches HeadSHA, and no
+     * non-dismissed CHANGES_REQUESTED review. It is the only review signal the
+     * REST auto-merge gate trusts.
+     */
+    "restApproved": boolean;
+
+    /**
+     * RESTCIFetched reports whether both REST CI legs (check-runs and legacy
+     * commit status) were fetched successfully, distinguishing "fetched,
+     * genuinely no checks" (CIStatus=="") from "fetch failed" — an empty
+     * CIStatus must never read as green when this is false.
+     */
+    "restCiFetched": boolean;
 
     /** Creates a new PullRequest instance. */
     constructor($$source: Partial<PullRequest> = {}) {
@@ -254,11 +277,17 @@ export class PullRequest {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
         }
-        if (!("baseRefName" in $$source)) {
-            this["baseRefName"] = "";
+        if (!("sourcedViaRest" in $$source)) {
+            this["sourcedViaRest"] = false;
         }
-        if (!("autoMergeEnabled" in $$source)) {
-            this["autoMergeEnabled"] = false;
+        if (!("restMergeableState" in $$source)) {
+            this["restMergeableState"] = "";
+        }
+        if (!("restApproved" in $$source)) {
+            this["restApproved"] = false;
+        }
+        if (!("restCiFetched" in $$source)) {
+            this["restCiFetched"] = false;
         }
 
         Object.assign(this, $$source);
@@ -340,18 +369,41 @@ export class RenovatePR {
     "updatedAt": string;
 
     /**
-     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
-     * native auto-merge eligibility against the base branch's protection —
-     * never the head branch.
+     * SourcedViaREST marks a PullRequest fetched over GitHub's REST API
+     * (fetchPRForMonitorViaREST) instead of GraphQL, used when the GraphQL
+     * budget is low. REST exposes no thread-resolution or Copilot-review data,
+     * so UnresolvedCount, ActionableCount, CopilotReviewed, and ReviewDecision
+     * are unset/zero on a REST-sourced PR — callers must not trust those fields
+     * and must gate any REST-sourced action on RESTApproved/RESTMergeableState/
+     * RESTCIFetched instead.
      */
-    "baseRefName": string;
+    "sourcedViaRest": boolean;
 
     /**
-     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
-     * armed on this PR (derived live from `autoMergeRequest` being non-null —
-     * never persisted on the task model).
+     * RESTMergeableState is the raw GitHub mergeable_state (clean|blocked|
+     * behind|unstable|dirty|unknown) as reported over REST. Only "clean"
+     * authorizes REST-sourced auto-merge — the coarser Mergeable enum also
+     * buckets blocked/behind/unstable under MERGEABLE, which must NOT
+     * authorize a REST-sourced merge.
      */
-    "autoMergeEnabled": boolean;
+    "restMergeableState": string;
+
+    /**
+     * RESTApproved reports an explicit, current-head approval computed over
+     * REST review data (fetchRESTReviews + restApproval): at least one
+     * non-dismissed APPROVED review whose commit_id matches HeadSHA, and no
+     * non-dismissed CHANGES_REQUESTED review. It is the only review signal the
+     * REST auto-merge gate trusts.
+     */
+    "restApproved": boolean;
+
+    /**
+     * RESTCIFetched reports whether both REST CI legs (check-runs and legacy
+     * commit status) were fetched successfully, distinguishing "fetched,
+     * genuinely no checks" (CIStatus=="") from "fetch failed" — an empty
+     * CIStatus must never read as green when this is false.
+     */
+    "restCiFetched": boolean;
     "checkRuns": CheckRunInfo[];
 
     /** Creates a new RenovatePR instance. */
@@ -419,11 +471,17 @@ export class RenovatePR {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
         }
-        if (!("baseRefName" in $$source)) {
-            this["baseRefName"] = "";
+        if (!("sourcedViaRest" in $$source)) {
+            this["sourcedViaRest"] = false;
         }
-        if (!("autoMergeEnabled" in $$source)) {
-            this["autoMergeEnabled"] = false;
+        if (!("restMergeableState" in $$source)) {
+            this["restMergeableState"] = "";
+        }
+        if (!("restApproved" in $$source)) {
+            this["restApproved"] = false;
+        }
+        if (!("restCiFetched" in $$source)) {
+            this["restCiFetched"] = false;
         }
         if (!("checkRuns" in $$source)) {
             this["checkRuns"] = [];
@@ -437,13 +495,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField23_0 = $$createType2;
+        const $$createField25_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField23_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField25_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }
