@@ -317,3 +317,100 @@ func TestHasPendingReview_error(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestFetchPRsForMonitorWith_batchesIntoOneCall(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{
+		"data": {
+			"viewer": {"login": "me"},
+			"repo0": {
+				"pullRequest": {
+					"number": 1,
+					"title": "one",
+					"url": "https://github.com/o/r/pull/1",
+					"state": "OPEN",
+					"author": {"login": "me", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": []},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			},
+			"repo1": {
+				"pullRequest": {
+					"number": 2,
+					"title": "two",
+					"url": "https://github.com/o/r/pull/2",
+					"state": "MERGED",
+					"author": {"login": "peer", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": []},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			}
+		}
+	}`)}
+
+	refs := []PRRef{{Repo: "o/r", Number: 1}, {Repo: "o/r", Number: 2}}
+	results := fetchPRsForMonitorWith(fe, refs)
+
+	if fe.calls != 1 {
+		t.Fatalf("calls = %d, want 1", fe.calls)
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+	if results[0].Err != nil || !results[0].Open || results[0].PR.Title != "one" {
+		t.Fatalf("results[0] = %+v", results[0])
+	}
+	if results[1].Err != nil || results[1].Open {
+		t.Fatalf("results[1] = %+v, want closed PR with no error", results[1])
+	}
+}
+
+func TestFetchPRsForMonitorWith_chunksOverLimit(t *testing.T) {
+	t.Parallel()
+	fe := &sequenceExecer{
+		outputs: [][]byte{
+			[]byte(`{"data": {"viewer": {"login": "me"}}}`),
+			[]byte(`{"data": {"viewer": {"login": "me"}}}`),
+		},
+	}
+
+	refs := make([]PRRef, maxBatchPRsPerQuery+3)
+	for i := range refs {
+		refs[i] = PRRef{Repo: "o/r", Number: i + 1}
+	}
+	results := fetchPRsForMonitorWith(fe, refs)
+
+	if fe.calls != 2 {
+		t.Fatalf("calls = %d, want 2", fe.calls)
+	}
+	if len(results) != len(refs) {
+		t.Fatalf("len(results) = %d, want %d", len(results), len(refs))
+	}
+}
+
+func TestFetchPRsForMonitorWith_graphqlError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{"errors":[{"message":"rate limited"}]}`)}
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("results = %+v, want single error result", results)
+	}
+}
+
+func TestFetchPRsForMonitorWith_invalidRefSkipsQuery(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{}
+	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "bad", Number: 1}})
+	if fe.calls != 0 {
+		t.Fatalf("calls = %d, want 0", fe.calls)
+	}
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("results = %+v, want single error result", results)
+	}
+}

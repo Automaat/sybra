@@ -1743,19 +1743,25 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 			fetchReviewsCalled = true
 			return github.ReviewSummary{}, nil
 		},
-		fetchKnownPRFn: func(repo string, number int) (github.PullRequest, bool, error) {
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
 			knownFetches++
-			if number != 42 {
-				return github.PullRequest{}, false, nil
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number}
+				if ref.Number != 42 {
+					continue
+				}
+				results[i].Open = true
+				results[i].PR = github.PullRequest{
+					Number:          42,
+					Repository:      ref.Repo,
+					HeadSHA:         "abc123",
+					Mergeable:       "MERGEABLE",
+					CIStatus:        "SUCCESS",
+					CopilotReviewed: true,
+				}
 			}
-			return github.PullRequest{
-				Number:          42,
-				Repository:      repo,
-				HeadSHA:         "abc123",
-				Mergeable:       "MERGEABLE",
-				CIStatus:        "SUCCESS",
-				CopilotReviewed: true,
-			}, true, nil
+			return results
 		},
 		fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
 			if repo != "o/r" {
