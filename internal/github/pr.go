@@ -458,12 +458,16 @@ func FetchPRStatsContext(ctx context.Context, repo string, number int) (PRStats,
 // Deliberately uncached: callers use this to validate a cached ready-PR
 // snapshot, and caching it would reintroduce the same staleness it exists to
 // catch.
+// Context-bounded (10s) so a stalled probe in the poll path releases the
+// global ghGate instead of holding it for the kernel TCP timeout.
 func FetchPRHeadState(repo string, number int) (sha string, open bool, updatedAt string, err error) {
-	return fetchPRHeadStateWith(defaultExecer, repo, number)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return fetchPRHeadStateWith(ctx, defaultExecer, repo, number)
 }
 
-func fetchPRHeadStateWith(e execer, repo string, number int) (sha string, open bool, updatedAt string, err error) {
-	out, err := e.run("pr", "view", strconv.Itoa(number),
+func fetchPRHeadStateWith(ctx context.Context, e execer, repo string, number int) (sha string, open bool, updatedAt string, err error) {
+	out, err := runE(ctx, e, "pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "headRefOid,state,updatedAt")
 	if err != nil {
 		return "", false, "", fmt.Errorf("gh pr view %d head state: %s: %w", number, strings.TrimSpace(string(out)), err)
