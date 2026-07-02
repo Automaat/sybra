@@ -906,6 +906,9 @@ func TestE2E_CodexInteractiveAgent_StopTransitionsToStopped(t *testing.T) {
 // Before the provider-guard fix, Codex never retried and the agent stayed
 // failed permanently.
 func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 30s retry-backoff wait in short mode")
+	}
 	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error", "success"})
 
 	ag, err := env.agents.Run(agent.RunConfig{
@@ -943,6 +946,9 @@ func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
 // TestE2E_Codex_HeadlessRetry_OverloadedStructured verifies retry behavior
 // when Codex emits a structured overloaded envelope (code=529).
 func TestE2E_Codex_HeadlessRetry_OverloadedStructured(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 30s retry-backoff wait in short mode")
+	}
 	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error_structured", "success"})
 
 	ag, err := env.agents.Run(agent.RunConfig{
@@ -4040,6 +4046,9 @@ func TestE2E_CrossProvider_FlipsFromLatestMixedHistory(t *testing.T) {
 }
 
 func TestE2E_CodexRetry_OverloadedThenAuthStopsRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 30s retry-backoff wait in short mode")
+	}
 	env := setupE2EMultiProvider(t, "codex", []string{"overloaded_error", "auth_error", "success"})
 
 	ag, err := env.agents.Run(agent.RunConfig{

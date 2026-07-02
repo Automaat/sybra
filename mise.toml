@@ -40,6 +40,19 @@ run = [
 ]
 description = "Run all linters"
 
+[tasks.verify]
+run = [
+  "cd frontend && npm ci && npm run build:desktop",
+  "go test -race -timeout 5m ./...",
+  "go test -race -tags e2e -timeout 10m ./internal/sybra/...",
+  "golangci-lint run ./...",
+  "cd frontend && npm run check",
+  "cd frontend && npx oxlint .",
+  "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
+  "hadolint Dockerfile",
+]
+description = "Mirror the CI gate exactly (go tests+e2e, lint, frontend check+oxlint, bindings sync, hadolint). Run before committing."
+
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"
 description = "Build frontend for desktop (output: frontend/dist/)"
