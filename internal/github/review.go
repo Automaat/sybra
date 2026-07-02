@@ -580,22 +580,39 @@ func hasMoreReviewPages(resp ghHTTPResponse) bool {
 }
 
 // restApproval computes an explicit current-head approval from a PR's REST
-// reviews: approved iff at least one non-dismissed APPROVED review whose
-// commit_id matches headSHA, and no non-dismissed CHANGES_REQUESTED review
-// from any reviewer. A dismissed review's state is reported by GitHub as
-// DISMISSED, so checking State == "APPROVED"/"CHANGES_REQUESTED" already
-// excludes dismissed reviews. A Copilot COMMENTED review never counts as
-// approval.
+// reviews, using each reviewer's *latest* standing verdict rather than their
+// full history: approved iff at least one reviewer's latest APPROVED/
+// CHANGES_REQUESTED review is an APPROVED whose commit_id matches headSHA,
+// and no reviewer's latest such review is CHANGES_REQUESTED. This mirrors
+// GitHub's own PR merge-readiness semantics — an old CHANGES_REQUESTED
+// superseded by a later APPROVED from the same reviewer no longer blocks the
+// PR. A dismissed review's state is reported by GitHub as DISMISSED, so
+// checking State == "APPROVED"/"CHANGES_REQUESTED" already excludes
+// dismissed reviews. A Copilot COMMENTED review never counts as approval.
 func restApproval(reviews []restReview, headSHA string) bool {
-	approved := false
+	type verdict struct {
+		state       string
+		commitID    string
+		submittedAt string
+	}
+	latest := make(map[string]verdict)
 	for i := range reviews {
-		switch reviews[i].State {
-		case "CHANGES_REQUESTED":
+		r := reviews[i]
+		if r.State != "APPROVED" && r.State != "CHANGES_REQUESTED" {
+			continue
+		}
+		if r.SubmittedAt >= latest[r.User.Login].submittedAt {
+			latest[r.User.Login] = verdict{state: r.State, commitID: r.CommitID, submittedAt: r.SubmittedAt}
+		}
+	}
+
+	approved := false
+	for _, v := range latest {
+		if v.state == "CHANGES_REQUESTED" {
 			return false
-		case "APPROVED":
-			if reviews[i].CommitID == headSHA {
-				approved = true
-			}
+		}
+		if v.state == "APPROVED" && v.commitID == headSHA {
+			approved = true
 		}
 	}
 	return approved

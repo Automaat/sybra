@@ -375,6 +375,22 @@ func TestRestApproval(t *testing.T) {
 			{State: "APPROVED", CommitID: "h"},
 			{State: "DISMISSED", CommitID: "h"},
 		}, "h", true},
+		{"stale changes-request superseded by later approval from same reviewer", []restReview{
+			{State: "CHANGES_REQUESTED", CommitID: "old", SubmittedAt: "2026-01-01T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+			{State: "APPROVED", CommitID: "h", SubmittedAt: "2026-01-02T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+		}, "h", true},
+		{"current changes-request from one reviewer blocks despite another's approval", []restReview{
+			{State: "APPROVED", CommitID: "h", SubmittedAt: "2026-01-01T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "alice"}},
+			{State: "CHANGES_REQUESTED", CommitID: "h", SubmittedAt: "2026-01-02T00:00:00Z", User: struct {
+				Login string `json:"login"`
+			}{Login: "bob"}},
+		}, "h", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
