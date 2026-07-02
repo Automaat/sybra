@@ -65,9 +65,15 @@ type ReviewHandler struct {
 	// github.FetchPRState.
 	fetchPRStateFn func(repo string, number int) (github.PRState, error)
 	// fetchKnownPRFn fetches one linked PR without using a GitHub search leg.
-	// Secondary pollers use this to keep local task PRs moving while leaving
-	// global search polling to the primary instance.
+	// Used by the single-PR conflict-recovery path. Overridable in tests; nil
+	// falls back to github.FetchPRForMonitor.
 	fetchKnownPRFn func(repo string, number int) (github.PullRequest, bool, error)
+	// fetchKnownPRsFn batches the linked-PR fetch for every task monitored by
+	// fetchKnownTaskPRs into as few GraphQL requests as possible. Secondary
+	// pollers use this to keep local task PRs moving while leaving global
+	// search polling to the primary instance. Overridable in tests; nil falls
+	// back to github.FetchPRsForMonitor.
+	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
@@ -437,11 +443,11 @@ func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssu
 }
 
 func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
-	fetchFn := github.FetchPRForMonitor
-	if r.fetchKnownPRFn != nil {
-		fetchFn = r.fetchKnownPRFn
+	fetchFn := github.FetchPRsForMonitor
+	if r.fetchKnownPRsFn != nil {
+		fetchFn = r.fetchKnownPRsFn
 	}
-	prs := make([]github.PullRequest, 0, len(matchers))
+	refs := make([]github.PRRef, 0, len(matchers))
 	seen := make(map[string]struct{}, len(matchers))
 	for i := range matchers {
 		m := &matchers[i]
@@ -453,15 +459,24 @@ func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []githu
 			continue
 		}
 		seen[key] = struct{}{}
-		pr, open, err := fetchFn(m.ProjectID, m.PRNumber)
-		if err != nil {
-			r.logger.Warn("pr-monitor.known-pr-fetch", "repo", m.ProjectID, "pr", m.PRNumber, "err", err)
+		refs = append(refs, github.PRRef{Repo: m.ProjectID, Number: m.PRNumber})
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+
+	results := fetchFn(refs)
+	prs := make([]github.PullRequest, 0, len(results))
+	for i := range results {
+		res := &results[i]
+		if res.Err != nil {
+			r.logger.Warn("pr-monitor.known-pr-fetch", "repo", res.Repo, "pr", res.Number, "err", res.Err)
 			continue
 		}
-		if !open {
+		if !res.Open {
 			continue
 		}
-		prs = append(prs, pr)
+		prs = append(prs, res.PR)
 	}
 	return prs
 }

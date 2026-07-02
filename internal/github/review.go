@@ -68,10 +68,9 @@ const reviewSummaryQuery = `query($q: String!) {
   }
 }`
 
-const prForMonitorQuery = `query($owner: String!, $name: String!, $number: Int!) {
-  viewer { login }
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
+// monitorPRFields is the field selection shared by the single-PR and batched
+// monitor queries, kept in one place so the two paths can never drift apart.
+const monitorPRFields = `
       number
       title
       url
@@ -118,10 +117,19 @@ const prForMonitorQuery = `query($owner: String!, $name: String!, $number: Int!)
       }
       latestReviews(first: 10) {
         nodes { state author { login } }
-      }
+      }`
+
+const prForMonitorQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {` + monitorPRFields + `
     }
   }
 }`
+
+// maxBatchPRsPerQuery caps how many PRs are aliased into a single batched
+// monitor query, staying under GitHub's per-request node/complexity limits.
+const maxBatchPRsPerQuery = 20
 
 type gqlReviewSummaryResponse struct {
 	Data struct {
@@ -149,6 +157,93 @@ type gqlPRForMonitorResponse struct {
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
+}
+
+// gqlBatchPRResponse decodes a batched monitor query. Each requested PR gets
+// its own top-level aliased field (repo0, repo1, ...), so Data is decoded as
+// a raw map instead of a fixed struct.
+type gqlBatchPRResponse struct {
+	Data   map[string]json.RawMessage `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+		Path    []any  `json:"path"`
+	} `json:"errors"`
+}
+
+// aliasErrors buckets the response's errors by the top-level aliased field
+// (e.g. "repo3") their path points at. Errors without a path, whose path
+// doesn't start with a string, or whose path points at a field other than a
+// "repoN" ref alias (e.g. the shared "viewer" field) are global: they apply
+// to every ref since GitHub returned no usable per-ref distinction, or the
+// error is scoped to a field every ref's result depends on.
+func (r *gqlBatchPRResponse) aliasErrors() (perAlias map[string]string, global string) {
+	perAlias = make(map[string]string)
+	for _, ge := range r.Errors {
+		if len(ge.Path) == 0 {
+			global = ge.Message
+			continue
+		}
+		alias, ok := ge.Path[0].(string)
+		if !ok || !isRefAlias(alias) {
+			global = ge.Message
+			continue
+		}
+		if _, exists := perAlias[alias]; !exists {
+			perAlias[alias] = ge.Message
+		}
+	}
+	return perAlias, global
+}
+
+// isRefAlias reports whether alias has the "repoN" shape used for per-ref
+// aliases in the batched monitor query (as opposed to shared top-level
+// fields like "viewer").
+func isRefAlias(alias string) bool {
+	rest, ok := strings.CutPrefix(alias, "repo")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *gqlBatchPRResponse) viewerLogin() string {
+	raw, ok := r.Data["viewer"]
+	if !ok {
+		return ""
+	}
+	var v struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	return v.Login
+}
+
+type gqlBatchRepoNode struct {
+	PullRequest *gqlPR `json:"pullRequest"`
+}
+
+// PRRef identifies a single PR to fetch in a batched monitor request.
+type PRRef struct {
+	Repo   string
+	Number int
+}
+
+// MonitorPRResult is one PR's outcome from a batched monitor fetch. Open
+// mirrors the bool FetchPRForMonitor returns: false for closed/merged PRs
+// (left to FetchPRState-based reconciliation) as well as fetch errors.
+type MonitorPRResult struct {
+	Repo   string
+	Number int
+	PR     PullRequest
+	Open   bool
+	Err    error
 }
 
 // FetchReviews returns open PRs created by the user and review requests, excluding bots.
@@ -202,6 +297,159 @@ func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool
 		return PullRequest{}, false, nil
 	}
 	return convertCommonPR(pr, gqlResp.Data.Viewer.Login), true, nil
+}
+
+// FetchPRsForMonitor fetches multiple PRs' monitor signals, aliasing them
+// into as few GraphQL requests as possible (chunked to stay under GitHub's
+// node/complexity limits) instead of issuing one query per PR. Results are
+// returned in the same order as refs.
+func FetchPRsForMonitor(refs []PRRef) []MonitorPRResult {
+	return fetchPRsForMonitorWith(defaultExecer, refs)
+}
+
+func fetchPRsForMonitorWith(e execer, refs []PRRef) []MonitorPRResult {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	// When the GraphQL budget is low, keep the existing single-PR REST
+	// fallback per ref instead of batching — same behavior/data tradeoffs as
+	// fetchPRForMonitorWith. Gated on runtimeCacheEnabled so unit tests (fake
+	// execer) keep the GraphQL path.
+	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql") {
+		results := make([]MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			pr, open, err := fetchPRForMonitorViaREST(e, ref.Repo, ref.Number)
+			results[i] = MonitorPRResult{Repo: ref.Repo, Number: ref.Number, PR: pr, Open: open, Err: err}
+		}
+		return results
+	}
+
+	results := make([]MonitorPRResult, 0, len(refs))
+	cacheEnabled := runtimeCacheEnabled(e)
+	for start := 0; start < len(refs); start += maxBatchPRsPerQuery {
+		end := min(start+maxBatchPRsPerQuery, len(refs))
+		// Recheck the gate before every chunk: an earlier chunk in this same
+		// loop can observe rate-limit headers (via runGHAPIWith) and trip the
+		// gate into a low-budget state, in which case the remaining refs
+		// should fall back to REST instead of continuing to spend GraphQL
+		// budget or hitting rate-limit errors.
+		if cacheEnabled && ghGate.shouldSkipOptional("graphql") {
+			for _, ref := range refs[start:] {
+				pr, open, err := fetchPRForMonitorViaREST(e, ref.Repo, ref.Number)
+				results = append(results, MonitorPRResult{Repo: ref.Repo, Number: ref.Number, PR: pr, Open: open, Err: err})
+			}
+			return results
+		}
+		results = append(results, fetchPRBatchWith(e, refs[start:end])...)
+	}
+	return results
+}
+
+// fetchPRBatchWith fetches one chunk of refs (already capped to
+// maxBatchPRsPerQuery) in a single GraphQL request, aliasing
+// repository(owner,name){ pullRequest(number) } per ref.
+func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
+	type validRef struct {
+		idx    int // index into refs/results
+		owner  string
+		name   string
+		number int
+	}
+	results := make([]MonitorPRResult, len(refs))
+	valid := make([]validRef, 0, len(refs))
+	for i, ref := range refs {
+		results[i] = MonitorPRResult{Repo: ref.Repo, Number: ref.Number}
+		owner, name, ok := strings.Cut(ref.Repo, "/")
+		if !ok || owner == "" || name == "" || ref.Number <= 0 {
+			results[i].Err = fmt.Errorf("invalid repo or PR: %s#%d", ref.Repo, ref.Number)
+			continue
+		}
+		valid = append(valid, validRef{idx: i, owner: owner, name: name, number: ref.Number})
+	}
+	if len(valid) == 0 {
+		return results
+	}
+
+	var query strings.Builder
+	query.WriteString("query(")
+	for j := range valid {
+		if j > 0 {
+			query.WriteString(", ")
+		}
+		fmt.Fprintf(&query, "$owner%d: String!, $name%d: String!, $number%d: Int!", j, j, j)
+	}
+	query.WriteString(") {\n  viewer { login }\n")
+	for j := range valid {
+		fmt.Fprintf(&query, "  repo%d: repository(owner: $owner%d, name: $name%d) {\n    pullRequest(number: $number%d) {%s\n    }\n  }\n", j, j, j, j, monitorPRFields)
+	}
+	query.WriteString("}")
+
+	args := make([]string, 0, 4+len(valid)*6)
+	args = append(args, "graphql", "-f", "query="+query.String())
+	for j, v := range valid {
+		args = append(args,
+			"-f", fmt.Sprintf("owner%d=%s", j, v.owner),
+			"-f", fmt.Sprintf("name%d=%s", j, v.name),
+			"-F", fmt.Sprintf("number%d=%d", j, v.number),
+		)
+	}
+
+	resp, err := runGHAPIWith(e, "", args...)
+	if err != nil {
+		batchErr := fmt.Errorf("gh api graphql pr batch: %s: %w", sanitizeGHOutput(resp.body), err)
+		for _, v := range valid {
+			results[v.idx].Err = batchErr
+		}
+		return results
+	}
+
+	var gqlResp gqlBatchPRResponse
+	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+		parseErr := fmt.Errorf("parse graphql pr batch response: %w", err)
+		for _, v := range valid {
+			results[v.idx].Err = parseErr
+		}
+		return results
+	}
+	// GitHub GraphQL can return partial data: an error scoped to one alias
+	// (e.g. a deleted/inaccessible repo or PR) alongside valid data for every
+	// other alias in the batch. Only fail the aliases named in a per-alias
+	// error path; a query-level error with no path (global) still fails the
+	// whole batch, since there's no per-alias data to salvage.
+	perAliasErr, globalErr := gqlResp.aliasErrors()
+	if globalErr != "" {
+		gqlErr := fmt.Errorf("graphql pr batch: %s", globalErr)
+		for _, v := range valid {
+			results[v.idx].Err = gqlErr
+		}
+		return results
+	}
+
+	viewer := gqlResp.viewerLogin()
+	for j, v := range valid {
+		alias := fmt.Sprintf("repo%d", j)
+		if msg, failed := perAliasErr[alias]; failed {
+			results[v.idx].Err = fmt.Errorf("graphql pr batch %s: %s", alias, msg)
+			continue
+		}
+		raw, ok := gqlResp.Data[alias]
+		if !ok {
+			results[v.idx].Err = fmt.Errorf("graphql pr batch: missing %s in response", alias)
+			continue
+		}
+		var node gqlBatchRepoNode
+		if err := json.Unmarshal(raw, &node); err != nil {
+			results[v.idx].Err = fmt.Errorf("parse graphql pr batch %s: %w", alias, err)
+			continue
+		}
+		if node.PullRequest == nil || node.PullRequest.State != "OPEN" {
+			continue
+		}
+		results[v.idx].PR = convertCommonPR(node.PullRequest, viewer)
+		results[v.idx].Open = true
+	}
+	return results
 }
 
 func fetchReviewsWith(e execer) (ReviewSummary, error) {
