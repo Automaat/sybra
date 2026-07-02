@@ -285,7 +285,7 @@
         {/if}
         <div class="mb-3 flex items-center gap-2">
           <FileText size={16} class="text-surface-400" />
-          <span class="text-xs font-medium text-surface-500">PLAN.md</span>
+          <span class="text-xs font-medium text-surface-500">Plan</span>
           <span class="text-xs text-surface-400">— click <kbd class="rounded bg-surface-200 px-1 dark:bg-surface-700">+</kbd> on any line to comment</span>
         </div>
         <div class="rounded-lg border border-surface-300 bg-white dark:border-surface-700 dark:bg-surface-900">

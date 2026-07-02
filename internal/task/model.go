@@ -7,6 +7,10 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+// Status is a task's position in its lifecycle (see the pipeline diagram in
+// the root CLAUDE.md). Transitions are enforced by the workflow engine and
+// callers should validate untrusted input with ValidateStatus rather than
+// casting a string directly.
 type Status string
 
 const (
@@ -49,6 +53,8 @@ func IsTerminalStatus(s Status) bool {
 	return s == StatusDone || s == StatusCancelled
 }
 
+// ValidateStatus parses s into a Status, returning an error naming every
+// valid status if s does not match one of the known constants.
 func ValidateStatus(s string) (Status, error) {
 	st := Status(s)
 	if !validStatuses[st] {
@@ -57,6 +63,8 @@ func ValidateStatus(s string) (Status, error) {
 	return st, nil
 }
 
+// Priority is a task's dispatch priority. PriorityNone (the empty string) is
+// treated as the lowest priority, distinct from an unset/invalid value.
 type Priority string
 
 const (
@@ -72,6 +80,8 @@ var validPriorities = map[Priority]bool{
 	PriorityHigh: true, PriorityUrgent: true,
 }
 
+// ValidatePriority parses s into a Priority, returning an error if s does
+// not match "", "low", "medium", "high", or "urgent".
 func ValidatePriority(s string) (Priority, error) {
 	p := Priority(s)
 	if !validPriorities[p] {
@@ -80,6 +90,9 @@ func ValidatePriority(s string) (Priority, error) {
 	return p, nil
 }
 
+// TaskType distinguishes a task's role for agents beyond its lifecycle
+// Status — e.g. TaskTypeChat and TaskTypeUmbrella are synthetic types that
+// run no agent of their own and are excluded from normal dispatch.
 type TaskType string
 
 const (
@@ -105,6 +118,8 @@ func AllTaskTypes() []TaskType {
 	return []TaskType{TaskTypeNormal, TaskTypeDebug, TaskTypeResearch, TaskTypeChat, TaskTypeUmbrella}
 }
 
+// ValidateTaskType parses s into a TaskType, returning an error naming every
+// valid task type if s does not match one of the known constants.
 func ValidateTaskType(s string) (TaskType, error) {
 	tt := TaskType(s)
 	if !validTaskTypes[tt] {
@@ -174,6 +189,11 @@ func ValidateAgentProvider(s string) (string, error) {
 	return s, nil
 }
 
+// AgentRun records one dispatch of an agent process against a task: what was
+// asked, which provider/model ran it, how it concluded, and the metadata
+// downstream deterministic routing (test outcome, tamper detection, A/B
+// evaluation) reads back off the run. A Task accumulates these in
+// Task.AgentRuns across its lifetime, most-recent last.
 type AgentRun struct {
 	AgentID  string `json:"agentId"`
 	Role     string `json:"role"` // triage, plan, eval, pr-fix, or "" for implementation
@@ -223,6 +243,11 @@ type AgentRun struct {
 	HeadSHA string `json:"headSha,omitempty"`
 }
 
+// Task is the in-memory representation of a task markdown file: YAML
+// frontmatter (everything but Body) plus the GFM markdown Body. Store parses
+// and marshals it to/from tasks/<id>.md; planning/review/critique content
+// lives in separate sidecar files (see Store.Plans, Store.PlanContracts,
+// etc.) and is populated onto these fields only on load.
 type Task struct {
 	ID           string   `json:"id"`
 	Slug         string   `json:"slug"`
@@ -354,6 +379,8 @@ type Task struct {
 	TamperFlagged bool `json:"tamperFlagged"`
 }
 
+// DirName returns the human-readable worktree/artifact directory name for
+// t: "<slug>-<id>", or bare ID when no slug has been assigned yet.
 func (t Task) DirName() string {
 	if t.Slug == "" {
 		return t.ID

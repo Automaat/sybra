@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
+	"gopkg.in/yaml.v3"
 )
 
 // hookTaskIDRe mirrors agent.safeArgRe: alphanumerics, dot, underscore,
@@ -88,6 +89,12 @@ func run(args []string) int {
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
+	return dispatch(cmd, rest, cfg, store, projStore, jsonOut)
+}
+
+// dispatch routes a parsed subcommand (with its own args and the global
+// --json flag already extracted) to the matching cmdXxx handler.
+func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, jsonOut bool) int {
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
@@ -131,6 +138,8 @@ func run(args []string) int {
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
 		return cmdArtifact(rest, jsonOut)
+	case "config":
+		return cmdConfig(cfg, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -1822,6 +1831,12 @@ Commands:
   artifact get  <task-id> <name>  Print raw artifact bytes to stdout.
   artifact reindex <task-id>   Rebuild index.json from *.meta.json files.
 
+  config dump                  Print the resolved ~/.sybra/config.yaml (env
+                               overrides applied, secrets redacted).
+  config doctor                Sanity-check config: data dirs, agent.provider,
+                               agent.headless_permission_mode, and enabled
+                               integrations missing required credentials.
+
 Global flags:
   --json   Output as JSON
 `, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
@@ -1898,5 +1913,135 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 		return printJSON(map[string]string{"status": "ok", "task_id": taskID})
 	}
 	fmt.Printf("reindexed %s\n", taskID)
+	return 0
+}
+
+func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: config <dump|doctor>")
+	}
+	switch sub := args[0]; sub {
+	case "dump":
+		return cmdConfigDump(cfg, jsonOut)
+	case "doctor":
+		return cmdConfigDoctor(cfg, jsonOut)
+	default:
+		return fatal(jsonOut, "unknown config command: %s", sub)
+	}
+}
+
+// redactedConfig returns a shallow copy of cfg with credential fields
+// blanked out. Keep in sync with cmd/gen-config-docs's redactedYAMLPaths —
+// both exist because the doc generator redacts a default value that's
+// always empty anyway, while this redacts a live, possibly populated value.
+func redactedConfig(cfg *config.Config) config.Config {
+	out := *cfg
+	if out.Todoist.APIToken != "" {
+		out.Todoist.APIToken = "[redacted]"
+	}
+	return out
+}
+
+func cmdConfigDump(cfg *config.Config, jsonOut bool) int {
+	redacted := redactedConfig(cfg)
+	if jsonOut {
+		return printJSON(redacted)
+	}
+	data, err := yaml.Marshal(redacted)
+	if err != nil {
+		return fatal(jsonOut, "marshal config: %v", err)
+	}
+	_, _ = os.Stdout.Write(data)
+	return 0
+}
+
+type configDoctorFinding struct {
+	Severity string `json:"severity"` // "error", "warning", or "ok" (no findings)
+	Message  string `json:"message"`
+}
+
+type configDoctorReport struct {
+	Findings []configDoctorFinding `json:"findings"`
+}
+
+func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
+	var findings []configDoctorFinding
+	add := func(severity, format string, a ...any) {
+		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+	}
+
+	dirs := cfg.Directories()
+	names := make([]string, 0, len(dirs))
+	for name := range dirs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		dir := dirs[name]
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(dir)
+		switch {
+		case os.IsNotExist(err):
+			// Most of these are created lazily on first use (e.g. artifacts,
+			// experiences) — absence alone is not an error.
+			add("warning", "%s dir does not exist yet: %s", name, dir)
+		case err != nil:
+			add("error", "%s dir: %v", name, err)
+		case !info.IsDir():
+			add("error", "%s dir is not a directory: %s", name, dir)
+		}
+	}
+
+	if cfg.Agent.Provider != "" {
+		if _, err := task.ValidateAgentProvider(cfg.Agent.Provider); err != nil {
+			add("error", "agent.provider: %v", err)
+		}
+	}
+	if cfg.Agent.HeadlessPermissionMode != "" {
+		if _, err := config.NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
+			add("error", "agent.headless_permission_mode: %v", err)
+		}
+	}
+
+	if cfg.Todoist.Enabled && cfg.Todoist.APIToken == "" {
+		add("error", "todoist.enabled is true but no API token is set (todoist.api_token or SYBRA_TODOIST_TOKEN)")
+	}
+	if cfg.GitHub.PollerRole != "" && cfg.GitHub.PollerRole != "primary" && cfg.GitHub.PollerRole != "secondary" {
+		add("error", "github.poller_role must be \"primary\", \"secondary\", or empty, got %q", cfg.GitHub.PollerRole)
+	}
+	if cfg.GitHub.App.Enabled && cfg.GitHub.App.PrivateKeyPath == "" {
+		add("error", "github.app.enabled is true but github.app.private_key_path is empty")
+	}
+
+	if len(findings) == 0 {
+		add("ok", "no issues found")
+	}
+
+	errCount := 0
+	for _, f := range findings {
+		if f.Severity == "error" {
+			errCount++
+		}
+	}
+
+	report := configDoctorReport{Findings: findings}
+	if jsonOut {
+		if code := printJSON(report); code != 0 {
+			return code
+		}
+		if errCount > 0 {
+			return 1
+		}
+		return 0
+	}
+
+	for _, f := range findings {
+		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
+	}
+	if errCount > 0 {
+		return 1
+	}
 	return 0
 }

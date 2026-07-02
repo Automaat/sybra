@@ -17,6 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// Store is the filesystem-backed CRUD layer for task markdown files under
+// dir (tasks/<id>.md). It also owns the sidecar stores for planning,
+// review, and comment content that lives in adjacent files rather than the
+// task's own frontmatter+body. Safe for concurrent use within a process; see
+// lockTask for the cross-process locking story.
 type Store struct {
 	dir           string
 	comments      *CommentStore
@@ -40,6 +45,8 @@ type taskWriteLock struct {
 	refs int
 }
 
+// NewStore creates dir if it does not exist and returns a Store rooted
+// there, along with its sidecar stores (comments, plans, code reviews).
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
@@ -59,38 +66,55 @@ func NewStore(dir string) (*Store, error) {
 	}, nil
 }
 
+// Comments returns the sidecar store for per-task comment threads.
 func (s *Store) Comments() *CommentStore {
 	return s.comments
 }
 
+// Plans returns the sidecar store for the human-readable compact plan
+// (Task.Plan).
 func (s *Store) Plans() *PlanStore {
 	return s.plans
 }
 
+// PlanContracts returns the sidecar store for the machine-validated JSON
+// plan contract (Task.PlanContract) that implementation agents consume.
 func (s *Store) PlanContracts() *PlanningSidecarStore {
 	return s.planContracts
 }
 
+// PlanDrafts returns the sidecar store for per-provider raw plan output
+// (Task.PlanDrafts) produced during dual/N-provider planning.
 func (s *Store) PlanDrafts() *PlanDraftStore {
 	return s.planDrafts
 }
 
+// PlanCritiques returns the sidecar store for plan-critic review output
+// (Task.PlanCritique).
 func (s *Store) PlanCritiques() *PlanCritiqueStore {
 	return s.planCritiques
 }
 
+// PlanResearch returns the sidecar store for planning research/evidence
+// material (Task.PlanResearch).
 func (s *Store) PlanResearch() *PlanningSidecarStore {
 	return s.planResearch
 }
 
+// PlanDecisions returns the sidecar store for planning decision-log content
+// (Task.PlanDecisions).
 func (s *Store) PlanDecisions() *PlanningSidecarStore {
 	return s.planDecisions
 }
 
+// PlanBrief returns the sidecar store for the condensed planning brief
+// (Task.PlanBrief).
 func (s *Store) PlanBrief() *PlanningSidecarStore {
 	return s.planBrief
 }
 
+// CodeReviews returns the sidecar store for code-review output
+// (Task.CodeReview).
 func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
 }
@@ -170,6 +194,12 @@ func IsSidecarFile(base string) bool {
 		strings.HasSuffix(base, ".review.md")
 }
 
+// List returns every task under the store's directory, in directory-read
+// order (unspecified — sort by CreatedAt/UpdatedAt if you need an order).
+// A task with a parse error is logged and skipped rather than failing the
+// whole call. Results are served from an in-memory cache invalidated on any
+// Create/Update/Delete; callers do not need to worry about staleness within
+// a single process.
 func (s *Store) List() ([]Task, error) {
 	if tasks, ok := s.cachedList(); ok {
 		return tasks, nil
@@ -353,6 +383,10 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 	return idx
 }
 
+// Get reads task id and populates its planning/review sidecar fields
+// (Plan, PlanContract, PlanCritique, PlanResearch, PlanDecisions, PlanBrief,
+// CodeReview, PlanDrafts) from their sidecar files. Returns an error
+// satisfying errors.Is(err, os.ErrNotExist) when id has no task file.
 func (s *Store) Get(id string) (Task, error) {
 	t, err := s.read(id)
 	if err != nil {
@@ -407,6 +441,10 @@ func (s *Store) safePath(id string) (string, error) {
 	return path, nil
 }
 
+// Create writes a new task file with a fresh 8-char ID, status "todo", and
+// type "normal". mode defaults to AgentModeInteractive when empty and is
+// validated via ValidateAgentMode. Use CreateFull to set additional fields
+// (tags, project, priority, ...) atomically at creation time.
 func (s *Store) Create(title, body, mode string) (Task, error) {
 	if mode == "" {
 		mode = AgentModeInteractive
@@ -565,6 +603,10 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 	return t, nil
 }
 
+// Delete removes task id's file along with every sidecar it may own
+// (comments, plans, contracts, critiques, research, decisions, brief, code
+// reviews). Sidecar deletion errors are ignored — a missing sidecar is not
+// a failure — but a missing task file is.
 func (s *Store) Delete(id string) error {
 	unlock, err := s.lockTask(id)
 	if err != nil {
@@ -637,14 +679,14 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 	return nil
 }
 
+// Update applies a partial field update u to task id and returns the
+// updated task. Only non-nil fields of u are applied; see UpdateWithPrev if
+// you also need the task's status before the update.
 func (s *Store) Update(id string, u Update) (Task, error) {
 	t, _, err := s.UpdateWithPrev(id, u)
 	return t, err
 }
 
-// UpdateWithPrev applies u and returns both the updated task and the prior
-// status. Lets callers (Manager.Update) wire status-change hooks without a
-// redundant Get to read the previous value before the write.
 // applyReviewFields copies the review-flow tracking fields (run role + inbound
 // PR-review phase) from an Update onto a task. Split out of UpdateWithPrev to
 // keep that function within the length budget.
@@ -779,6 +821,10 @@ func applyUpdateFields(t *Task, u Update) error {
 	return nil
 }
 
+// UpdateWithPrev applies u under the per-task write lock and returns both
+// the updated task and its status before the update. Lets callers
+// (Manager.Update) wire status-change hooks without a redundant Get to read
+// the previous value before the write.
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	unlock, err := s.lockTask(id)
 	if err != nil {
@@ -1012,10 +1058,14 @@ func (s *Store) UpdateMap(id string, raw map[string]any) (Task, error) {
 	return s.Update(id, u)
 }
 
+// AddRun appends run to taskID's AgentRuns without changing its status.
 func (s *Store) AddRun(taskID string, run AgentRun) error {
 	return s.addRun(taskID, run, nil)
 }
 
+// AddRunWithStatus appends run to taskID's AgentRuns and atomically sets its
+// status to *status. Use this instead of AddRun+Update when the status
+// transition must be recorded alongside the run that caused it.
 func (s *Store) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
 	return s.addRun(taskID, run, status)
 }
@@ -1172,6 +1222,9 @@ func applyRunPatch(run *AgentRun, p RunPatch) {
 	applyRunIdentity(run, p)
 }
 
+// UpdateRun applies patch to the AgentRun matching agentID within taskID's
+// AgentRuns. Returns an error if the task or the run within it is not
+// found.
 func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	unlock, err := s.lockTask(taskID)
 	if err != nil {

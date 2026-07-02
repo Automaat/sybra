@@ -148,12 +148,15 @@ jobs:
         # Upstream v3 module has a relative `replace` directive that breaks a
         # plain `go install ...@version`. Pulling the deps via `go get` first
         # (so they land in the local module cache without the replace), then
-        # installing, is the workaround. go.mod/go.sum may shift here but we
-        # only diff frontend/bindings/ below, so it does not poison the check.
+        # installing, is the workaround. The Wails version is read from go.mod
+        # so the bindings job follows the app's pinned module version.
+        # go.mod/go.sum may shift here but we only diff frontend/bindings/
+        # below, so it does not poison the check.
         run: |
-          go get github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87
-          go get github.com/wailsapp/wails/v3/internal/commands@v3.0.0-alpha.87
-          go get github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@v3.0.0-alpha.87
+          WAILS_VERSION="$(go list -m -f '{{ .Version }}' github.com/wailsapp/wails/v3)"
+          go get "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/internal/commands@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@${WAILS_VERSION}"
           go install github.com/wailsapp/wails/v3/cmd/wails3
 
       - name: Regenerate bindings
@@ -207,6 +210,12 @@ jobs:
           NODE_VERSION=$(grep '^node = ' mise.toml | awk -F'"' '{print $2}')
           grep -q "\"node\": \"$NODE_VERSION\"" frontend/package.json || \
             (echo "frontend/package.json engines.node stale (want $NODE_VERSION)" && exit 1)
+          WAILS_GO_VERSION=$(grep '^	github.com/wailsapp/wails/v3 ' go.mod | awk '{print $2}')
+          grep -q "$WAILS_GO_VERSION" README.md || (echo "README Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
+          grep -q "$WAILS_GO_VERSION" CLAUDE.md || (echo "CLAUDE.md Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
+          WAILS_RUNTIME_VERSION=$(node -p "require('./frontend/package.json').dependencies['@wailsio/runtime']")
+          grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
+            (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)
 
   go-mod-integrity:
     name: Go Module Integrity
