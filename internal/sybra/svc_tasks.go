@@ -44,9 +44,10 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
-	// enrichReconciling holds task IDs whose enrichment the reconcile pass is
-	// re-attempting, so successive maintenance ticks don't stack a second
-	// goroutine on a stub whose gh fetch is still in flight. Zero value ready.
+	// enrichReconciling holds task IDs with an in-flight enrichment goroutine —
+	// either the original CreateTask async fetch or a reconcile-pass retry — so
+	// a maintenance tick never stacks a second concurrent gh fetch on the same
+	// stub. Zero value ready.
 	enrichReconciling sync.Map
 }
 
@@ -345,11 +346,15 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	}
 
 	if prRepo != "" {
+		s.enrichReconciling.Store(t.ID, struct{}{})
 		s.wg.Go(func() {
+			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromPR(t.ID, prRepo, prNumber)
 		})
 	} else if issueRepo != "" {
+		s.enrichReconciling.Store(t.ID, struct{}{})
 		s.wg.Go(func() {
+			defer s.enrichReconciling.Delete(t.ID)
 			s.enrichFromIssue(t.ID, issueRepo, issueNumber)
 		})
 	}
@@ -662,6 +667,11 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 	for i := range all {
 		t := all[i]
 		if !slices.Contains(t.Tags, enrichPendingTag) {
+			continue
+		}
+		// The user took the task out of the queue (e.g. cancelled/done); don't
+		// spend a GitHub fetch reviving it.
+		if task.IsTerminalStatus(t.Status) {
 			continue
 		}
 		// An in-flight agent means the stub is already being worked; leave it be.
