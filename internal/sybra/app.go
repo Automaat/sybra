@@ -375,13 +375,16 @@ func (a *App) GetLearningDigestStatus() learning.Status {
 // registered work-typed project, for scrubbing fleet-wide artifacts (e.g. a
 // Learning Digest, which aggregates across all projects rather than a single
 // task) that cannot use the narrower per-task workScrubContextForTask.
-func (a *App) fleetWorkBlocklist() []string {
+// Fails closed: a projects.List() error is returned rather than swallowed,
+// so callers treat "couldn't build the blocklist" as a hard error instead of
+// silently proceeding with an unredacted digest.
+func (a *App) fleetWorkBlocklist() ([]string, error) {
 	if a.projects == nil {
-		return nil
+		return nil, nil
 	}
 	projs, err := a.projects.List()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	var bl []string
 	for i := range projs {
@@ -393,7 +396,7 @@ func (a *App) fleetWorkBlocklist() []string {
 			bl = append(bl, projs[i].URL)
 		}
 	}
-	return bl
+	return bl, nil
 }
 
 func (a *App) Shutdown(_ context.Context) {

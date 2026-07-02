@@ -61,7 +61,7 @@ type Packet struct {
 func windowFor(now time.Time, prev *Digest, windowDays, maxWindowDays int) (since, until time.Time) {
 	until = now.Truncate(time.Second)
 	if prev != nil && !prev.Until.IsZero() {
-		since = prev.Until // cold start: no previous digest, fall back to now-windowDays
+		since = prev.Until // previous digest exists: continue contiguously from its Until
 	} else {
 		since = now.AddDate(0, 0, -windowDays)
 	}

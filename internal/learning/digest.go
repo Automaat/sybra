@@ -51,8 +51,10 @@ type Deps struct {
 	Store     *Store
 	// Blocklist returns the current fleet-wide work-project redaction
 	// terms (see internal/sybra.App.fleetWorkBlocklist). Called fresh on
-	// every generation since registered projects can change over time.
-	Blocklist func() []string
+	// every generation since registered projects can change over time. An
+	// error fails the generation closed — RunNow never persists a digest
+	// it could not scrub.
+	Blocklist func() ([]string, error)
 	Emit      EmitFunc
 	Logger    *slog.Logger
 	Now       func() time.Time
@@ -77,7 +79,7 @@ type Service struct {
 	audit     auditReader
 	auditLog  auditWriter
 	store     *Store
-	blocklist func() []string
+	blocklist func() ([]string, error)
 	emit      EmitFunc
 	logger    *slog.Logger
 	now       func() time.Time
@@ -103,7 +105,7 @@ func NewService(d Deps) *Service {
 		d.Emit = func(string, any) {}
 	}
 	if d.Blocklist == nil {
-		d.Blocklist = func() []string { return nil }
+		d.Blocklist = func() ([]string, error) { return nil, nil }
 	}
 	if d.Summarizer == nil {
 		d.Summarizer = llmexec.RunJSON
@@ -220,12 +222,18 @@ func (s *Service) RunNow(ctx context.Context) (Digest, error) {
 		return Digest{}, fmt.Errorf("learning: %w", err)
 	}
 
+	bl, err := s.blocklist()
+	if err != nil {
+		s.recordFailure(start, fmt.Sprintf("blocklist unavailable: %v", err))
+		return Digest{}, fmt.Errorf("learning: blocklist: %w", err)
+	}
+
 	d.SchemaVersion = SchemaVersion
 	d.GeneratedAt = s.now()
 	d.ReportDigest = pkt.ReportDigest
 	d.AuthorProvider = res.Provider
 	d.AuthorModel = s.cfg.Model
-	d.Scrub(s.blocklist())
+	d.Scrub(bl)
 
 	stored, err := s.store.Put(d)
 	if err != nil {
@@ -249,10 +257,20 @@ type Status struct {
 }
 
 // Status returns the service's current state without generating anything.
+// NextRun is anchored to the last persisted digest's Until, not to
+// lastRunAt: the ticker's "elapsed" gate in RunNow compares against
+// prev.Until, and lastRunAt also moves on manual/failed RunNow attempts, so
+// deriving NextRun from it can report a time later than when the next tick
+// will actually succeed.
 func (s *Service) Status() Status {
 	st := Status{Enabled: s.cfg.Enabled}
-	if d := s.previous(); d != nil {
-		st.Last = d
+	prev := s.previous()
+	if prev != nil {
+		st.Last = prev
+	}
+	if prev != nil && !prev.Until.IsZero() {
+		st.NextRun = prev.Until.Add(s.interval())
+		return st
 	}
 	s.statusMu.RLock()
 	last := s.lastRunAt
