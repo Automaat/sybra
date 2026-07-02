@@ -13,7 +13,7 @@ import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } f
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
-import type { Digest } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
+import type { Digest, Status as LearningDigestStatus } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
 
@@ -57,6 +57,8 @@ export function ResumeInClaudeCode(_arg1: string): Promise<void> { return Promis
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
 export function GetEvaluationReport(): Promise<EvaluationReportData> { return call('App', 'GetEvaluationReport') }
 export function GetLifecyclePhases(): Promise<PhaseReportData> { return call('App', 'GetLifecyclePhases') }
+export function GetLearningDigestStatus(): Promise<LearningDigestStatus> { return call('App', 'GetLearningDigestStatus') }
+export function RunLearningDigestNow(): Promise<Digest> { return Promise.reject(new Error('not available in web mode')) }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<Notification>> { return call('App', 'ListNotifications') }
 export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }

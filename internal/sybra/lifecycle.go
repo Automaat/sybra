@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
@@ -54,6 +55,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
 	lm.startEvaluationService(ctx, emit)
+	lm.startLearningDigestService(ctx, emit)
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
@@ -410,6 +412,37 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	}
 	svc := evaluation.NewService(deps)
 	a.evaluationSvc = svc
+	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// startLearningDigestService constructs the periodic Learning Digest service
+// and launches its ticker. The service is built even when disabled so
+// RunLearningDigestNow/GetLearningDigestStatus still work on demand; Run()
+// no-ops when not enabled (mirroring startEvaluationService).
+func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit func(string, any)) {
+	a := lm.app
+	deps := learning.Deps{
+		Cfg:       a.cfg.LearningDigest,
+		ABTesting: a.cfg.ABTesting,
+		Audit:     learning.AuditDirReader(a.cfg.AuditDir()),
+		AuditLog:  a.audit,
+		Store:     a.learning,
+		Blocklist: a.fleetWorkBlocklist,
+		Emit:      emit,
+		Logger:    a.logger,
+	}
+	if a.stats != nil {
+		deps.Stats = a.stats
+	}
+	// a.providerHealth is a typed *provider.Checker that stays nil when
+	// health-checking is disabled; assigning a nil pointer straight into the
+	// Gate interface field would produce a non-nil interface wrapping a nil
+	// receiver, and Checker's methods are not nil-receiver-safe.
+	if a.providerHealth != nil {
+		deps.Gate = a.providerHealth
+	}
+	svc := learning.NewService(deps)
+	a.learningDigestSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
 }
 

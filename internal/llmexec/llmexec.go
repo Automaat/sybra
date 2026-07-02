@@ -29,14 +29,25 @@ type Options struct {
 	Provider string
 	// Models maps provider name to the model slug passed to that provider's CLI.
 	Models map[string]string
-	Logger *slog.Logger
-	Gate   provider.HealthGate
+	// DisableTools runs the call with no tool access instead of the default
+	// full-tool bypass. Use for classifiers/summarizers whose prompt embeds
+	// any text a prior model turn authored — without this, that text runs in
+	// a tool-enabled session and a prompt-injected instruction could act on
+	// it. Claude denies every tool (--disallowedTools "*"); other providers
+	// are invoked unchanged (RunJSON has no tool-enabled peer path today).
+	DisableTools bool
+	Logger       *slog.Logger
+	Gate         provider.HealthGate
 }
 
 // Result is the normalized final assistant text.
 type Result struct {
 	Provider string
 	Text     string
+	// CostUSD is the provider-reported spend for this call. Only populated
+	// for claude, whose --output-format json envelope carries total_cost_usd;
+	// codex/copilot leave this zero.
+	CostUSD float64
 }
 
 // RunJSON runs prompt against the preferred provider and falls back to peers
@@ -57,7 +68,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p])
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools)
 		if err != nil {
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
@@ -74,7 +85,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			return Result{}, providerError(p, err, stderrOut)
 		}
 
-		text, parseErr := parseProviderText(p, raw)
+		text, cost, parseErr := parseProviderText(p, raw)
 		if parseErr != nil {
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
@@ -90,7 +101,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			}
 			return Result{}, fmt.Errorf("%s output: %w", p, parseErr)
 		}
-		return Result{Provider: p, Text: text}, nil
+		return Result{Provider: p, Text: text, CostUSD: cost}, nil
 	}
 	if len(failures) == 0 {
 		return Result{}, errors.New("no providers configured")
@@ -132,8 +143,8 @@ func binaryName(p string) string {
 	return p
 }
 
-func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, stderrOut string, err error) {
-	name, args, stdin := invocation(p, prompt, model)
+func runProvider(ctx context.Context, p, prompt, model string, disableTools bool) (stdout []byte, stderrOut string, err error) {
+	name, args, stdin := invocation(p, prompt, model, disableTools)
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -144,7 +155,7 @@ func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, s
 	return out, stderr.String(), err
 }
 
-func invocation(p, prompt, model string) (name string, args []string, stdin string) {
+func invocation(p, prompt, model string, disableTools bool) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
 		args := []string{
@@ -162,7 +173,12 @@ func invocation(p, prompt, model string) (name string, args []string, stdin stri
 		}
 		return "copilot", args, ""
 	default:
-		args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
+		args := []string{"-p", prompt, "--output-format", "json"}
+		if disableTools {
+			args = append(args, "--disallowedTools", "*")
+		} else {
+			args = append(args, "--dangerously-skip-permissions")
+		}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
@@ -170,28 +186,31 @@ func invocation(p, prompt, model string) (name string, args []string, stdin stri
 	}
 }
 
-func parseProviderText(p string, raw []byte) (string, error) {
+func parseProviderText(p string, raw []byte) (text string, costUSD float64, err error) {
 	switch p {
 	case "codex":
-		return parseCodexText(raw)
+		text, err := parseCodexText(raw)
+		return text, 0, err
 	case "copilot":
-		return parseCopilotText(raw)
+		text, err := parseCopilotText(raw)
+		return text, 0, err
 	default:
 		return parseClaudeText(raw)
 	}
 }
 
-func parseClaudeText(raw []byte) (string, error) {
+func parseClaudeText(raw []byte) (text string, costUSD float64, err error) {
 	var env struct {
-		Result string `json:"result"`
+		Result       string  `json:"result"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return "", fmt.Errorf("unmarshal envelope: %w", err)
+		return "", 0, fmt.Errorf("unmarshal envelope: %w", err)
 	}
 	if strings.TrimSpace(env.Result) == "" {
-		return "", errors.New("empty result field")
+		return "", 0, errors.New("empty result field")
 	}
-	return env.Result, nil
+	return env.Result, env.TotalCostUSD, nil
 }
 
 func parseCodexText(raw []byte) (string, error) {

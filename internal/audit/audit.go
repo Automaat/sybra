@@ -72,6 +72,14 @@ const (
 	// write). The Data.reason field carries a categorical label — never the
 	// raw error message — so failures are observable without exposing content.
 	EventCodexHookFailed = "codex.hook.failed"
+
+	// EventLearningDigest records a successful Learning Digest generation
+	// (internal/learning) with provider/model/duration/cost in Data.
+	EventLearningDigest = "learning.digest"
+	// EventLearningDigestFailed records a failed or malformed digest run.
+	// Data.reason carries an actionable, categorical explanation; the
+	// previous digest is left intact.
+	EventLearningDigestFailed = "learning.digest_failed"
 )
 
 type Event struct {

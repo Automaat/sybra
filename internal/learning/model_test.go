@@ -40,6 +40,7 @@ func TestScrubBoundaries(t *testing.T) {
 		ReportDigest:   "digest-owner/repo-1",
 		Worked:         []string{"shipped owner/repo #42"},
 		NotWorked:      []string{"owner/repo flaked"},
+		Uncertain:      []string{"owner/repo low sample"},
 		NextBets:       []string{"retry owner/repo"},
 		PromptTakeaways: []Takeaway{
 			{Text: "prompt referencing owner/repo", ExperimentRef: "owner/repo-exp", VariantRef: "owner/repo-v2"},
@@ -64,7 +65,7 @@ func TestScrubBoundaries(t *testing.T) {
 
 	allText := []string{
 		d.ReportDigest,
-		d.Worked[0], d.NotWorked[0], d.NextBets[0],
+		d.Worked[0], d.NotWorked[0], d.Uncertain[0], d.NextBets[0],
 		d.PromptTakeaways[0].Text, d.PromptTakeaways[0].ExperimentRef, d.PromptTakeaways[0].VariantRef,
 		d.SkillTakeaways[0].Text,
 		d.ModelTakeaways[0].Text,

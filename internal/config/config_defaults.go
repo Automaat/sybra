@@ -458,6 +458,7 @@ func Load() (*Config, error) {
 	applyWatchdogDefaults(cfg)
 	applySelfMonitorDefaults(cfg)
 	applyEvaluationDefaults(cfg)
+	applyLearningDigestDefaults(cfg)
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
@@ -539,6 +540,30 @@ func applyEvaluationDefaults(cfg *Config) {
 	}
 	if e.Offline.UnavailablePolicy == "" {
 		e.Offline.UnavailablePolicy = "fail"
+	}
+}
+
+// applyLearningDigestDefaults fills zero values for the LearningDigest block.
+// Enabled stays false until operators opt in.
+func applyLearningDigestDefaults(cfg *Config) {
+	d := &cfg.LearningDigest
+	if d.IntervalHours < 1 {
+		d.IntervalHours = 24
+	}
+	if d.WindowDays <= 0 {
+		d.WindowDays = 7
+	}
+	if d.MaxWindowDays <= 0 {
+		d.MaxWindowDays = 30
+	}
+	if d.Model == "" {
+		d.Model = "sonnet"
+	}
+	if d.MinRuns <= 0 {
+		d.MinRuns = 20
+	}
+	if d.MinLandings <= 0 {
+		d.MinLandings = 3
 	}
 }
 

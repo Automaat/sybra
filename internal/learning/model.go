@@ -83,6 +83,7 @@ type Digest struct {
 
 	Worked    []string `json:"worked,omitempty"`
 	NotWorked []string `json:"notWorked,omitempty"`
+	Uncertain []string `json:"uncertain,omitempty"`
 	NextBets  []string `json:"nextBets,omitempty"`
 
 	PromptTakeaways []Takeaway `json:"promptTakeaways,omitempty"`
@@ -131,6 +132,7 @@ func (d *Digest) Scrub(blocklist []string) int {
 
 	scrubSlice(d.Worked)
 	scrubSlice(d.NotWorked)
+	scrubSlice(d.Uncertain)
 	scrubSlice(d.NextBets)
 
 	scrubTakeaways(d.PromptTakeaways)
