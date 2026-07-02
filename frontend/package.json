@@ -22,7 +22,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
-    "@playwright/test": "1.60.0",
+    "@playwright/test": "1.61.1",
     "@skeletonlabs/skeleton": "4.15.2",
     "@skeletonlabs/skeleton-svelte": "4.15.2",
     "@sveltejs/vite-plugin-svelte": "7.1.2",
