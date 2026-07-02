@@ -774,6 +774,57 @@ func TestGenerate(t *testing.T) {
 	})
 }
 
+func TestGenerateGroundedEdge(t *testing.T) {
+	t.Parallel()
+	// Both children are explicitly justified parallel and report no touches
+	// at all — an ungrounded run must therefore leave them fully parallel.
+	plainPlan := `{"children":[` +
+		`{"issue":"o/r#1","parallelJustification":{"o/r#2":"disjoint"}},` +
+		`{"issue":"o/r#2","parallelJustification":{"o/r#1":"disjoint"}}` +
+		`],"maxParallel":2}`
+	run := func(_ context.Context, _ string) (string, error) { return plainPlan, nil }
+
+	body1 := "This change edits `internal/foo/bar.go`."
+	body2 := "This change also edits `internal/foo/bar.go`."
+	s := []SubIssue{{Ref: "o/r#1", Body: body1}, {Ref: "o/r#2", Body: body2}}
+
+	t.Run("ungrounded stays parallel", func(t *testing.T) {
+		t.Parallel()
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", s)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		for _, c := range plan.Children {
+			if len(c.DependsOn) != 0 {
+				t.Fatalf("ungrounded plan should stay fully parallel, got child %s deps %v", c.Ref, c.DependsOn)
+			}
+		}
+	})
+
+	t.Run("grounded shared path adds a touch-overlap edge", func(t *testing.T) {
+		t.Parallel()
+		lister := func(_ context.Context, repo string) ([]string, error) {
+			if repo != "o/r" {
+				t.Fatalf("lister called with unexpected repo %q", repo)
+			}
+			return []string{"internal/foo/bar.go"}, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", s, WithGrounder(lister, 0))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		var child2 PlannedChild
+		for _, c := range plan.Children {
+			if c.Ref == "o/r#2" {
+				child2 = c
+			}
+		}
+		if len(child2.DependsOn) != 1 || child2.DependsOn[0] != "o/r#1" {
+			t.Fatalf("grounding a shared path should add a touch-overlap edge an ungrounded run misses, got deps %v", child2.DependsOn)
+		}
+	})
+}
+
 func TestLinearChainFallback(t *testing.T) {
 	t.Parallel()
 

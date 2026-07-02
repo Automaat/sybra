@@ -155,6 +155,48 @@ func DefaultBranch(barePath string) (string, error) {
 	return filepath.Base(ref), nil
 }
 
+// ListTrackedFiles returns every file path tracked at ref in the bare repo,
+// via `git ls-tree -r --name-only`. An empty tree yields an empty (non-nil
+// wanted) slice; a missing ref returns an error.
+func ListTrackedFiles(barePath, ref string) ([]string, error) {
+	out, err := outputBare(barePath, "ls-tree", "-r", "--name-only", ref)
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	files := make([]string, 0)
+	if out == "" {
+		return files, nil
+	}
+	for l := range strings.SplitSeq(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			files = append(files, l)
+		}
+	}
+	return files, nil
+}
+
+// TrackedFilesAtDefaultBranch resolves barePath's default branch and returns
+// the files tracked there, preferring the remote-tracking ref
+// (refs/remotes/origin/<branch>) and falling back to the local ref
+// (refs/heads/<branch>) if the tracking ref is absent. Bare clones don't keep
+// local heads current on fetch (remote.origin.fetch only updates
+// refs/remotes/origin/*, see CloneBare), so the tracking ref reflects pushed
+// state most reliably; the local-head fallback covers a fresh clone that
+// hasn't been fetched yet, where only refs/heads/* exist.
+func TrackedFilesAtDefaultBranch(barePath string) ([]string, error) {
+	branch, err := DefaultBranch(barePath)
+	if err != nil {
+		return nil, err
+	}
+	files, err := ListTrackedFiles(barePath, "refs/remotes/origin/"+branch)
+	if err == nil {
+		return files, nil
+	}
+	return ListTrackedFiles(barePath, "refs/heads/"+branch)
+}
+
 func FetchOrigin(barePath string) error {
 	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
 	// configured, where `git fetch origin` silently skipped updating

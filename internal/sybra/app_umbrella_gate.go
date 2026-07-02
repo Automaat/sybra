@@ -1,12 +1,14 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -358,4 +360,23 @@ func (a *App) closeUmbrellaIssue(umbRef string) (retry bool) {
 	}
 	a.logger.Info("umbrella.closed", "repo", repo, "number", number)
 	return false
+}
+
+// buildGroundLister returns a TrackedFilesFunc backed by projStore's existing
+// bare clones: it resolves repo -> registered project -> clone's default
+// branch -> tracked files at that branch, with no network fetch. Any
+// resolution failure (unregistered repo, unreadable clone) is returned to the
+// caller so grounding fails open rather than silently skipping.
+func buildGroundLister(projStore *project.Store) umbrella.TrackedFilesFunc {
+	return func(_ context.Context, repo string) ([]string, error) {
+		p, err := projStore.Get(repo)
+		if err != nil {
+			return nil, fmt.Errorf("ground: project %s: %w", repo, err)
+		}
+		files, err := project.TrackedFilesAtDefaultBranch(p.ClonePath)
+		if err != nil {
+			return nil, fmt.Errorf("ground: tracked files for %s: %w", repo, err)
+		}
+		return files, nil
+	}
 }

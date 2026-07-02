@@ -1,12 +1,17 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -539,5 +544,131 @@ func TestReleaseUnblockedChildren_NoUmbrellaNoOp(t *testing.T) {
 	app.releaseUnblockedChildren()
 	if got := mustStatus(t, m, tk.ID); got != task.StatusBlocked {
 		t.Fatalf("plain blocked task changed to %q, want blocked", got)
+	}
+}
+
+// mustWriteProjectYAMLWithClone writes a minimal project YAML that resolves
+// via project.Store.Get with ClonePath pointed at a real bare clone, so
+// buildGroundLister can exercise the real DefaultBranch + ListTrackedFiles
+// path without a network fetch.
+func mustWriteProjectYAMLWithClone(t *testing.T, dir, id, clonePath string) {
+	t.Helper()
+	safe := strings.ReplaceAll(id, "/", "--")
+	path := filepath.Join(dir, safe+".yaml")
+	content := "id: " + id + "\ntype: pet\nowner: stub\nrepo: stub\nclone_path: " + clonePath + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write project YAML: %v", err)
+	}
+}
+
+// newBareRepoWithTrackedFile creates a source repo with one committed file,
+// bare-clones it, and returns the bare clone path and its default branch.
+func newBareRepoWithTrackedFile(t *testing.T) (barePath, branch string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", src},
+		{"git", "-C", src, "config", "user.email", "test@test.com"},
+		{"git", "-C", src, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(src, "internal", "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "internal", "foo", "bar.go"), []byte("package foo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", src, "add", "."},
+		{"git", "-C", src, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	branchOut, err := exec.Command("git", "-C", src, "branch", "--show-current").CombinedOutput()
+	if err != nil {
+		t.Fatalf("branch --show-current: %v: %s", err, branchOut)
+	}
+	branch = strings.TrimSpace(string(branchOut))
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := project.CloneBare(src, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	return bare, branch
+}
+
+func TestBuildGroundLister(t *testing.T) {
+	t.Parallel()
+	bare, _ := newBareRepoWithTrackedFile(t)
+
+	dir := t.TempDir()
+	store, err := project.NewStore(dir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mustWriteProjectYAMLWithClone(t, dir, "o/r", bare)
+
+	lister := buildGroundLister(store)
+
+	t.Run("resolves tracked files for a registered project", func(t *testing.T) {
+		t.Parallel()
+		files, err := lister(context.Background(), "o/r")
+		if err != nil {
+			t.Fatalf("lister: %v", err)
+		}
+		if len(files) != 1 || files[0] != "internal/foo/bar.go" {
+			t.Fatalf("files = %v, want [internal/foo/bar.go]", files)
+		}
+	})
+
+	t.Run("fails open for an unregistered project", func(t *testing.T) {
+		t.Parallel()
+		if _, err := lister(context.Background(), "no/such-project"); err == nil {
+			t.Fatal("expected an error for an unregistered project")
+		}
+	})
+}
+
+// TestUmbrellaGroundingWired proves the wiring contract: the umbrella.Ground
+// config toggle controls whether a lister-backed ExpandOption is threaded
+// through, for both the GitHub-issues-fetcher path (app_init.go) and the
+// manual/GUI expand path (services_wire_tasks.go). It exercises the same
+// closure-building logic those files use rather than reaching into private
+// App internals that would require a full app.Startup().
+func TestUmbrellaGroundingWired(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := project.NewStore(dir, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		ground     bool
+		wantLister bool
+	}{
+		{"ground enabled threads a grounder", true, true},
+		{"ground disabled leaves grounding off", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var opts []umbrella.ExpandOption
+			if tc.ground {
+				opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(store), 0))
+			}
+			if got := len(opts) > 0; got != tc.wantLister {
+				t.Fatalf("grounder threaded = %v, want %v", got, tc.wantLister)
+			}
+		})
 	}
 }

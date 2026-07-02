@@ -67,6 +67,27 @@ type Plan struct {
 // Injected so the planner logic is unit-testable without spawning a CLI.
 type Runner func(ctx context.Context, prompt string) (string, error)
 
+// generateConfig holds the optional settings GenerateOption values apply.
+type generateConfig struct {
+	lister  TrackedFilesFunc
+	minSubs int
+}
+
+// GenerateOption configures an optional Generate behavior.
+type GenerateOption func(*generateConfig)
+
+// WithGrounder enables the grounding step: after a plan resolves and before
+// dependency edges are derived, each child's touches are confirmed against
+// lister's real tracked-file listing for its repo and unioned in. minSubs
+// gates grounding on umbrella size (<=0 means always ground once a lister is
+// set). Omitting this option leaves Generate's behavior unchanged.
+func WithGrounder(lister TrackedFilesFunc, minSubs int) GenerateOption {
+	return func(c *generateConfig) {
+		c.lister = lister
+		c.minSubs = minSubs
+	}
+}
+
 // criticSuffix is appended to the prompt for the single re-ask Generate issues
 // when the first valid plan looks suspiciously flat (see flatPlanSuspicious).
 const criticSuffix = "You produced a fully-parallel plan — re-examine `touches`/`requires` for overlaps you missed. " +
@@ -83,14 +104,18 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // valid plan, Generate falls back to a fully-serial linear chain
 // (linearChainFallback) instead of aborting the expansion; a fatal runner
 // error (couldn't launch the model) is not exhaustion and still aborts.
-func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue) (Plan, error) {
+func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue, opts ...GenerateOption) (Plan, error) {
 	if len(subs) == 0 {
 		return Plan{}, fmt.Errorf("umbrella %s has no sub-issues to expand", umbrellaRef)
+	}
+	var cfg generateConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	idx := buildRefIndex(subs)
 	prompt := BuildPrompt(umbrellaRef, umbrellaBody, subs)
 
-	plan, err := attemptPlan(ctx, run, idx, prompt, subs)
+	plan, err := attemptPlan(ctx, run, idx, prompt, subs, cfg)
 	if err != nil {
 		if errors.Is(err, errPlannerExhausted) {
 			return linearChainFallback(subs)
@@ -98,7 +123,7 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 		return Plan{}, err
 	}
 	if flatPlanSuspicious(plan, subs) {
-		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, subs)
+		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, subs, cfg)
 		if err == nil {
 			return reasked, nil
 		}
@@ -111,7 +136,7 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 // against subs, with MaxParallel defaulted. A runner error is fatal and
 // returned immediately; a parse or validate failure retries with the same
 // prompt.
-func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, subs []SubIssue) (Plan, error) {
+func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, subs []SubIssue, cfg generateConfig) (Plan, error) {
 	var lastErr error
 	for range plannerAttempts {
 		raw, err := run(ctx, prompt)
@@ -126,6 +151,9 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 		if err := plan.resolve(idx); err != nil {
 			lastErr = err
 			continue
+		}
+		if cfg.lister != nil {
+			plan.ground(ctx, cfg.lister, subs, cfg.minSubs)
 		}
 		plan.deriveEdges(subs)
 		if err := plan.validate(subs); err != nil {
