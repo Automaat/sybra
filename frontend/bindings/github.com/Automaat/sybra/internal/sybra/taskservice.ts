@@ -74,6 +74,24 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
 }
 
 /**
+ * ReconcilePendingEnrichment re-attempts GitHub enrichment for URL stubs whose
+ * initial async enrichment never completed. A stub is created with the raw URL
+ * as its title and the enrich-pending marker; enrichment then runs in a
+ * fire-and-forget goroutine that, on any failure (a transient GitHub rate
+ * limit / gateway blip, or the app exiting before it finished), simply logs and
+ * returns. The marker is never cleared, so the stub keeps its raw-URL title
+ * forever and — because URL stubs only dispatch a workflow once the marker
+ * clears — never starts one. This is the recovery path for that orphaned state:
+ * the still-present marker is the retry signal, and the enrich functions are
+ * idempotent, so re-running them either succeeds now or fails the same benign
+ * way. Driven from the maintenance pass so recovery is continuous rather than a
+ * one-shot at startup.
+ */
+export function ReconcilePendingEnrichment(): $CancellablePromise<void> {
+    return $Call.ByID(4012524128);
+}
+
+/**
  * UpdateTask applies field updates to a task. The workflow engine drives
  * all status-based transitions; this method only handles cleanup on done.
  * 
