@@ -23,6 +23,12 @@ import (
 //     store, so claude exits with "No conversation found", cost $0, and
 //     verify_commits flips the task to human-required without ever
 //     running the implementation prompt.
+//  3. Cross-provider pollution: a retry dispatched on a different provider
+//     than the run that created the session must never adopt that session
+//     id. A codex-created session_id is meaningless to claude's session
+//     store (and vice versa), so resuming it fails instantly with
+//     "No conversation found", cost $0, before the retry's prompt is ever
+//     sent.
 func TestPickImplementationResumeSession(t *testing.T) {
 	t.Parallel()
 
@@ -32,6 +38,7 @@ func TestPickImplementationResumeSession(t *testing.T) {
 		name          string
 		runs          []task.AgentRun
 		workflowStart time.Time
+		provider      string
 		want          string
 	}{
 		{
@@ -146,12 +153,86 @@ func TestPickImplementationResumeSession(t *testing.T) {
 			workflowStart: wfStart,
 			want:          "ses-edge",
 		},
+		{
+			name: "codex session must not resume on a claude retry",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-codex",
+					Provider:  "codex",
+				},
+			},
+			provider: "claude",
+			want:     "",
+		},
+		{
+			name: "codex then claude failover — return claude session, not codex",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-codex",
+					Provider:  "codex",
+					StartedAt: wfStart,
+				},
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-claude",
+					Provider:  "claude",
+					StartedAt: wfStart.Add(time.Minute),
+				},
+				{
+					// Failed instant-bail retry left no usable session — falls
+					// through to the still-eligible claude run above it.
+					Role:      string(agent.RoleImplementation),
+					SessionID: "",
+					Provider:  "claude",
+					StartedAt: wfStart.Add(2 * time.Minute),
+				},
+			},
+			workflowStart: wfStart,
+			provider:      "claude",
+			want:          "ses-claude",
+		},
+		{
+			name: "provider match — same-provider session still resumes",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-claude",
+					Provider:  "claude",
+				},
+			},
+			provider: "claude",
+			want:     "ses-claude",
+		},
+		{
+			name: "legacy empty-Provider run still resumes regardless of dispatch provider",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-legacy-provider",
+				},
+			},
+			provider: "claude",
+			want:     "ses-legacy-provider",
+		},
+		{
+			name: "no provider context — filter disabled, most recent impl wins",
+			runs: []task.AgentRun{
+				{
+					Role:      string(agent.RoleImplementation),
+					SessionID: "ses-codex",
+					Provider:  "codex",
+				},
+			},
+			want: "ses-codex",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := pickImplementationResumeSession(tc.runs, tc.workflowStart)
+			got := pickImplementationResumeSession(tc.runs, tc.workflowStart, tc.provider)
 			if got != tc.want {
 				t.Errorf("pickImplementationResumeSession() = %q, want %q", got, tc.want)
 			}
