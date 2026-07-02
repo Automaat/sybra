@@ -321,6 +321,25 @@ func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingNextHeaderContent(
 	}
 }
 
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingLongNextHeaderLabel(t *testing.T) {
+	t.Parallel()
+
+	// Same borrowing bug as RejectsBareHeaderBorrowingNextHeaderContent, but
+	// the following header's label is 41-60 chars long — past the old
+	// headerLikeLineRe's 40-char ceiling but within evidenceLabelRe's 60-char
+	// ceiling used to accept it as an "actual output" header. hasFollowingContent
+	// must recognize that line as a header (not free content) regardless of its
+	// label length, or the bare Command header wrongly borrows it.
+	report := "**Command:**\n\n" +
+		"**Here is the actual output with enough words added:** panic\n\n" +
+		"**Expected:** task says the operation should not panic.\n\n" +
+		"**Code evidence:** internal/limits/store.go:157\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header borrowing long next-header label accepted as grounded; want rejected")
+	}
+}
+
 func TestHasGroundedFailureEvidence_RejectsBareCodeEvidenceHeader(t *testing.T) {
 	t.Parallel()
 

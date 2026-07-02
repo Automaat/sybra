@@ -1343,20 +1343,22 @@ func hasGroundedFailureEvidence(report string) bool {
 	return hasCommand && hasObserved && hasExpected && hasGrounding
 }
 
+// evidenceLabelRe matches the label portion (the text before the colon) of a
+// header-like line: a short token of letters, digits and a little punctuation.
+// It keeps keyword matching scoped to real headers instead of arbitrary prose
+// that merely contains a colon (which would carry a comma, longer text, etc.).
+var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}$`)
+
 // headerLikeLineRe matches a report line that STARTS with a short
 // markdown-decorated label followed by a colon, whether or not further text
 // follows on the same line, e.g. "actual:** something happened" or
 // "command:". Used to recognize that a line belongs to a *different* header's
 // own section rather than being prose content continuing a preceding bare
 // header — a bare header immediately followed by another header's line (with
-// or without inline content) still has no content of its own.
-var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,40}:`)
-
-// evidenceLabelRe matches the label portion (the text before the colon) of a
-// header-like line: a short token of letters, digits and a little punctuation.
-// It keeps keyword matching scoped to real headers instead of arbitrary prose
-// that merely contains a colon (which would carry a comma, longer text, etc.).
-var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}$`)
+// or without inline content) still has no content of its own. Its label
+// length ceiling must stay in sync with evidenceLabelRe's, otherwise a bare
+// header can borrow a longer header's content as its own (#1386 follow-up).
+var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}:`)
 
 // labelMatchesKeyword reports whether a header label matches any keyword.
 // Single-word keywords must match at the label's START (as a whole word), so a
