@@ -171,9 +171,11 @@ type gqlBatchPRResponse struct {
 }
 
 // aliasErrors buckets the response's errors by the top-level aliased field
-// (e.g. "repo3") their path points at. Errors without a path, or whose path
-// doesn't start with a string (a query-level error), are global: they apply
-// to every alias since GitHub returned no usable per-alias distinction.
+// (e.g. "repo3") their path points at. Errors without a path, whose path
+// doesn't start with a string, or whose path points at a field other than a
+// "repoN" ref alias (e.g. the shared "viewer" field) are global: they apply
+// to every ref since GitHub returned no usable per-ref distinction, or the
+// error is scoped to a field every ref's result depends on.
 func (r *gqlBatchPRResponse) aliasErrors() (perAlias map[string]string, global string) {
 	perAlias = make(map[string]string)
 	for _, ge := range r.Errors {
@@ -182,7 +184,7 @@ func (r *gqlBatchPRResponse) aliasErrors() (perAlias map[string]string, global s
 			continue
 		}
 		alias, ok := ge.Path[0].(string)
-		if !ok {
+		if !ok || !isRefAlias(alias) {
 			global = ge.Message
 			continue
 		}
@@ -191,6 +193,22 @@ func (r *gqlBatchPRResponse) aliasErrors() (perAlias map[string]string, global s
 		}
 	}
 	return perAlias, global
+}
+
+// isRefAlias reports whether alias has the "repoN" shape used for per-ref
+// aliases in the batched monitor query (as opposed to shared top-level
+// fields like "viewer").
+func isRefAlias(alias string) bool {
+	rest, ok := strings.CutPrefix(alias, "repo")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *gqlBatchPRResponse) viewerLogin() string {

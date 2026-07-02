@@ -475,6 +475,42 @@ func TestFetchPRBatchWith_globalErrorFailsWholeBatch(t *testing.T) {
 	}
 }
 
+// TestFetchPRBatchWith_viewerErrorFailsWholeBatch locks that a GraphQL error
+// scoped to the shared top-level "viewer" field (not a "repoN" ref alias) is
+// treated as global, not silently dropped or misfiled under a "viewer" key
+// that no ref ever looks up.
+func TestFetchPRBatchWith_viewerErrorFailsWholeBatch(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{
+		"data": {
+			"repo0": {
+				"pullRequest": {
+					"number": 1,
+					"title": "one",
+					"url": "https://github.com/o/r/pull/1",
+					"state": "OPEN",
+					"author": {"login": "me", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": []},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			}
+		},
+		"errors": [{"message": "viewer unavailable", "path": ["viewer"]}]
+	}`)}
+
+	refs := []PRRef{{Repo: "o/r", Number: 1}}
+	results := fetchPRsForMonitorWith(fe, refs)
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatalf("results[0] = %+v, want an error for the viewer-scoped failure, not a silently reported open PR", results[0])
+	}
+}
+
 // TestFetchPRBatchWith_updatesGateForNextChunk locks the mechanism
 // fetchPRsForMonitorWith's per-chunk gate recheck depends on: a chunk
 // response carrying low-budget rate-limit headers must update ghGate so that
