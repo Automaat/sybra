@@ -121,6 +121,9 @@ func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (
 
 	stamped := attribution.Append(body)
 	if stamped == body {
+		if strings.TrimSpace(body) == "" {
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: empty pr body"}, nil
+		}
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "already stamped"}, nil
 	}
 	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {

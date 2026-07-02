@@ -3696,6 +3696,29 @@ func TestExecStampPRAttribution_AppendsFooter(t *testing.T) {
 	}
 }
 
+func TestExecStampPRAttribution_EmptyBodySkips(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	linker := &fakePRLinker{
+		getQueue: []getResult{{body: "   \n\t"}},
+	}
+	engine.SetPRLinker(linker)
+
+	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
+	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "empty pr body") {
+		t.Errorf("out = %+v, want empty-body skip message", out)
+	}
+	if linker.editCalls != 0 {
+		t.Errorf("editCalls = %d, want 0 (nothing to stamp)", linker.editCalls)
+	}
+}
+
 func TestExecStampPRAttribution_IdempotentNoEdit(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

@@ -5,9 +5,10 @@
 // Two layers carry the marker, mirroring internal/scrub's floor+ceiling shape:
 //   - Go-authored text (e.g. monitor issue comments, the stamp_pr_attribution
 //     workflow step) is stamped deterministically via Append at the gh call site.
-//   - Agent-authored text (e.g. fix-review thread replies, create-pr PR bodies)
-//     is instructed to end with Footer through skill/prompt copy; the exact
-//     string lives here so the two stay in sync.
+//   - Agent-authored text (e.g. fix-review thread replies, create-pr PR bodies,
+//     pr-review workflow review comments) is instructed to end with Footer
+//     through skill/prompt copy; the exact string lives here so the two stay
+//     in sync.
 package attribution
 
 import "strings"
