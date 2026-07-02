@@ -184,7 +184,6 @@ type Report struct {
 // model swap in the same table. "unknown" collects rows whose ExperimentID no
 // longer resolves against the configured abtest.Config (e.g. a retired
 // experiment) so orphaned data stays visible instead of silently vanishing.
-//
 // Within a kind, Groups further partitions rows by ExperimentID: each
 // abtest.Experiment pins one Subject and one set of fixed variant
 // provider/models, so two experiments of the same kind (e.g. two prompt
