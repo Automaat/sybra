@@ -420,11 +420,17 @@ func (p *Plan) applySerialDefault(refs []string, order map[string]int) {
 	}
 	for _, ref := range refs {
 		c := byRef[ref]
+		if c == nil {
+			continue
+		}
 		for _, otherRef := range refs {
 			if order[otherRef] >= order[ref] {
 				continue
 			}
 			other := byRef[otherRef]
+			if other == nil {
+				continue
+			}
 			if justifiedParallel(c, other) {
 				continue
 			}
