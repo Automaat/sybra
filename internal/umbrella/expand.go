@@ -3,6 +3,7 @@ package umbrella
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,6 +15,11 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// errSkipUpdate signals tagTrackerDegraded's UpdateFn callback that the tag
+// is already present, so the read-modify-write should short-circuit without
+// writing (and without firing a task:updated event).
+var errSkipUpdate = errors.New("skip update")
 
 // PlannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
@@ -35,8 +41,9 @@ func fetchUmbrellaBounded(ctx context.Context, repo string, number int) (umbrell
 // Result summarizes an expansion.
 type Result struct {
 	UmbrellaURL string
-	Created     int // child tasks created this run
-	Skipped     int // sub-issues already materialized or done
+	Created     int  // child tasks created this run
+	Skipped     int  // sub-issues already materialized or done
+	Degraded    bool // true when the DAG came from linearChainFallback, not the model
 }
 
 // Expand fetches a GitHub umbrella issue's native sub-issues, runs the planner
@@ -72,7 +79,7 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		byRef[NormalizeIssueRef(subs[i].URL)] = subs[i]
 	}
 
-	existing, trackerExists, err := scanExisting(tasks, umb.URL)
+	existing, trackerExists, trackerID, err := scanExisting(tasks, umb.URL)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan existing tasks: %w", err)
 	}
@@ -90,11 +97,11 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	}
 
 	specs := ChildSpecs(plan, planSubs, existing)
-	created, err := materialize(tasks, umb, specs, byRef, trackerExists, plan.MaxParallel)
+	created, err := materialize(tasks, umb, specs, byRef, trackerExists, trackerID, plan.MaxParallel, plan.Fallback)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created}, nil
+	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created, Degraded: plan.Fallback}, nil
 }
 
 // allMaterialized reports whether every open sub-issue already has a task.
@@ -111,13 +118,13 @@ func allMaterialized(subs []SubIssue, existing map[string]bool) bool {
 }
 
 // scanExisting returns the set of normalized issue refs that already have a
-// task, and whether the umbrella tracker exists. A List failure is propagated
-// so the caller aborts rather than treating an unreadable store as empty and
-// creating a duplicate DAG.
-func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, trackerExists bool, err error) {
+// task, whether the umbrella tracker exists, and its task id when it does. A
+// List failure is propagated so the caller aborts rather than treating an
+// unreadable store as empty and creating a duplicate DAG.
+func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, trackerExists bool, trackerID string, err error) {
 	all, err := tasks.List()
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	refs = make(map[string]bool, len(all))
 	umbKey := NormalizeIssueRef(umbrellaURL)
@@ -128,22 +135,37 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
 			trackerExists = true
+			trackerID = t.ID
 		}
 	}
-	return refs, trackerExists, nil
+	return refs, trackerExists, trackerID, nil
 }
 
-// materialize creates the tracker (when absent) and one gated todo child per spec.
-func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, maxParallel int) (int, error) {
+// materialize creates the tracker (when absent) and one gated todo child per
+// spec. When degraded (the plan came from linearChainFallback), the tracker
+// carries FallbackTag so a systematically-failing planner is board-visible:
+// on a fresh tracker the tag is included at creation; on re-expansion against
+// an already-materialized tracker it is appended idempotently (add-if-absent)
+// via UpdateFn, since a partial re-expansion can hit the fallback on a
+// tracker created by an earlier, successful run.
+func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue, trackerExists bool, trackerID string, maxParallel int, degraded bool) (int, error) {
 	if !trackerExists {
+		tags := []string{"umbrella", MaxParallelTag(maxParallel)}
+		if degraded {
+			tags = append(tags, FallbackTag)
+		}
 		if _, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:     task.Ptr(umb.URL),
 			TaskType:  task.Ptr(task.TaskTypeUmbrella),
 			ProjectID: task.Ptr(umb.Repository),
 			Status:    task.Ptr(task.StatusInProgress),
-			Tags:      task.Ptr([]string{"umbrella", MaxParallelTag(maxParallel)}),
+			Tags:      task.Ptr(tags),
 		}); err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
+		}
+	} else if degraded {
+		if err := tagTrackerDegraded(tasks, trackerID); err != nil {
+			return 0, err
 		}
 	}
 
@@ -162,6 +184,28 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		created++
 	}
 	return created, nil
+}
+
+// tagTrackerDegraded appends FallbackTag to an already-materialized tracker
+// if it isn't there yet. Reads first and skips the write when the tag is
+// already present, so a repeated degraded re-expansion against the same
+// tracker doesn't emit a spurious task:updated event.
+func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, FallbackTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{
+			Tags: task.Ptr(append(slices.Clone(cur.Tags), FallbackTag)),
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("tag tracker degraded: %w", err)
+	}
+	return nil
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's
