@@ -89,6 +89,17 @@ type LimitGate interface {
 	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
+// LimitGateOrNil wraps store as a LimitGate, returning a genuine nil
+// interface when store is nil. Assigning a nil *limits.Store directly to a
+// LimitGate field produces a non-nil interface holding a nil pointer, which
+// defeats `== nil` guards and panics on the first method call.
+func LimitGateOrNil(store *limits.Store) LimitGate {
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
 // ManagerConfig contains startup-only wiring. Values that are intentionally
 // live-editable are grouped in Runtime and updated via ReplaceRuntimeConfig.
 type ManagerConfig struct {
