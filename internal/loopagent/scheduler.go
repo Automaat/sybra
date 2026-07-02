@@ -249,20 +249,11 @@ func (s *Scheduler) OnAgentComplete(ag *agent.Agent) {
 	}
 }
 
-// persistRun applies a mutator to a record and writes it back. Crucially
-// it does NOT bump UpdatedAt — that field tracks user config changes only.
-// Bumping it here would trip Sync()'s change detection and restart the
-// fetcher every time it fires.
+// persistRun applies a mutator to a record and writes it back through the
+// store's locked run-metadata path, so it participates in the same
+// cross-process flock as Update instead of racing it.
 func (s *Scheduler) persistRun(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
-	rec, err := s.store.Get(id)
-	if err != nil {
-		return LoopAgent{}, err
-	}
-	mutate(&rec)
-	if err := s.store.writeFile(rec); err != nil {
-		return LoopAgent{}, err
-	}
-	return rec, nil
+	return s.store.UpdateRunMetadata(id, mutate)
 }
 
 // Stop cancels every running fetcher and waits for the goroutines to drain.

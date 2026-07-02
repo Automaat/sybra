@@ -84,7 +84,19 @@ func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
 
 // Update overwrites mutable fields on an existing record. ID and CreatedAt
 // are preserved from the on-disk version regardless of caller input.
+//
+// The Get-then-writeFile sequence is a read-modify-write, so it is flocked
+// across the whole critical section: sybra-cli and the GUI server run
+// separate Store instances in separate OS processes against the same dir,
+// and without a cross-process lock a concurrent Update from the other
+// process can be read here, then clobbered by this write's stale CreatedAt.
 func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
+	unlock, err := fsutil.LockFile(s.filePath(la.ID))
+	if err != nil {
+		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
 	existing, err := s.Get(la.ID)
 	if err != nil {
 		return LoopAgent{}, err
@@ -101,6 +113,30 @@ func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
 		return LoopAgent{}, err
 	}
 	return la, nil
+}
+
+// UpdateRunMetadata applies mutate to the on-disk record under the same
+// per-record flock as Update, but deliberately does NOT bump UpdatedAt —
+// that field tracks user config changes only, and bumping it here would
+// trip Sync()'s change detection and restart the fetcher every time it
+// fires. Used by the scheduler to persist run bookkeeping (LastRunAt,
+// LastRunID, LastRunCost) without racing GUI/API/CLI config updates.
+func (s *Store) UpdateRunMetadata(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+	unlock, err := fsutil.LockFile(s.filePath(id))
+	if err != nil {
+		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
+	rec, err := s.Get(id)
+	if err != nil {
+		return LoopAgent{}, err
+	}
+	mutate(&rec)
+	if err := s.writeFile(rec); err != nil {
+		return LoopAgent{}, err
+	}
+	return rec, nil
 }
 
 // Delete removes the record file. Missing files are not an error.

@@ -37,40 +37,33 @@ func NewStore(path string) (*Store, error) {
 		snapshots: map[string]Snapshot{},
 		seen:      map[string]struct{}{},
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
-		}
+	if err := s.reloadLocked(); err != nil {
 		return nil, err
-	}
-	if len(data) == 0 {
-		return s, nil
-	}
-	var p persisted
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	if p.Snapshots != nil {
-		s.snapshots = p.Snapshots
-	}
-	for i := range p.Events {
-		e := p.Events[i]
-		if e.ID == "" {
-			continue
-		}
-		if _, ok := s.seen[e.ID]; ok {
-			continue
-		}
-		s.events = append(s.events, e)
-		s.seen[e.ID] = struct{}{}
 	}
 	return s, nil
 }
 
+// UpdateSnapshot, RecordUsage, and Import are read-modify-write against the
+// on-disk file: s.snapshots/s.events are populated once at NewStore time and
+// otherwise never re-read, but sybra-cli and the GUI server each hold a
+// separate Store over the same path in separate OS processes. Reloading
+// under the cross-process flock immediately before mutating resyncs this
+// process's view to the authoritative on-disk state, so a write from the
+// other process in the gap since this process last loaded isn't clobbered.
+
 func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := fsutil.LockFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	if !s.updateSnapshotLocked(snapshot) {
 		return nil
 	}
@@ -80,6 +73,16 @@ func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
 func (s *Store) RecordUsage(e UsageEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := fsutil.LockFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	if !s.recordUsageLocked(e) {
 		return nil
 	}
@@ -90,6 +93,16 @@ func (s *Store) RecordUsage(e UsageEvent) error {
 func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := fsutil.LockFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	changed := false
 	for i := range snapshots {
 		changed = s.updateSnapshotLocked(snapshots[i]) || changed
@@ -101,6 +114,52 @@ func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 		return nil
 	}
 	return s.flushLocked()
+}
+
+// reloadLocked re-reads s.path into s.snapshots/s.events/s.seen.
+// Read-modify-write callers (UpdateSnapshot, RecordUsage, Import) must hold
+// both s.mu and the cross-process file lock across the whole critical
+// section; NewStore calls it unlocked because it runs before s is returned
+// to any caller, so nothing else can observe or race it yet.
+func (s *Store) reloadLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.snapshots = map[string]Snapshot{}
+			s.events = nil
+			s.seen = map[string]struct{}{}
+			return nil
+		}
+		return err
+	}
+	if len(data) == 0 {
+		s.snapshots = map[string]Snapshot{}
+		s.events = nil
+		s.seen = map[string]struct{}{}
+		return nil
+	}
+	var p persisted
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	s.snapshots = map[string]Snapshot{}
+	if p.Snapshots != nil {
+		s.snapshots = p.Snapshots
+	}
+	s.events = nil
+	s.seen = map[string]struct{}{}
+	for i := range p.Events {
+		e := p.Events[i]
+		if e.ID == "" {
+			continue
+		}
+		if _, ok := s.seen[e.ID]; ok {
+			continue
+		}
+		s.events = append(s.events, e)
+		s.seen[e.ID] = struct{}{}
+	}
+	return nil
 }
 
 func (s *Store) updateSnapshotLocked(snapshot Snapshot) bool {

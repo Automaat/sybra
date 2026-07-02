@@ -2,6 +2,7 @@ package loopagent
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -156,5 +157,55 @@ func TestStoreCRUD(t *testing.T) {
 	// Delete missing is not an error
 	if err := store.Delete("nonexistent"); err != nil {
 		t.Fatalf("delete missing: %v", err)
+	}
+}
+
+// TestStoreConcurrentUpdatePreservesCreatedAt exercises the Get-then-write
+// critical section inside Update under real concurrency. Both goroutines
+// start from the same on-disk CreatedAt; without flocking that section, one
+// Update can read the record while the other is mid-write and persist a
+// half-applied CreatedAt/UpdatedAt pairing. Because Update fully replaces
+// the caller-supplied fields (there is no field-level merge), the two
+// concurrent writers race for whichever mutation lands last — this test
+// only pins the invariant Update itself owns: the final record on disk is
+// always a complete, validly-parsed record whose CreatedAt matches the
+// original.
+func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	created, err := store.Create(LoopAgent{Name: "race", Prompt: "/race", IntervalSec: 60})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		la := created
+		la.Enabled = i%2 == 0
+		wg.Go(func() {
+			if _, err := store.Update(la); err != nil {
+				errs <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent update: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get after concurrent updates: %v", err)
+	}
+	if !got.CreatedAt.Equal(created.CreatedAt) {
+		t.Errorf("CreatedAt = %v, want %v — dropped by a concurrent write racing the read-modify-write", got.CreatedAt, created.CreatedAt)
+	}
+	if got.Name != "race" || got.IntervalSec != 60 {
+		t.Errorf("record corrupted by concurrent writes: %+v", got)
 	}
 }

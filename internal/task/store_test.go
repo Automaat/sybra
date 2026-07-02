@@ -1,8 +1,10 @@
 package task
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -2011,5 +2013,115 @@ func TestReasoningEffortRoundTrip(t *testing.T) {
 	// Invalid value must error.
 	if _, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": "ultra"}); err == nil {
 		t.Error("expected error for invalid reasoning_effort, got nil")
+	}
+}
+
+// crossProcessHelperEnv triggers TestStoreCrossProcessUpdate to run as a
+// worker process instead of the top-level test. Set by
+// runCrossProcessHelper; unset (and thus falsy) in a normal `go test` run.
+const crossProcessHelperEnv = "SYBRA_TASK_CROSS_PROCESS_DIR"
+
+// TestStoreCrossProcessUpdate spawns two real OS processes — each with its
+// own *Store over the same tasks dir, exactly how the GUI server and
+// sybra-cli run in production — and has one flip Status while the other
+// appends an AgentRun on the same task concurrently. Both do an internal
+// read-modify-write (UpdateWithPrev / addRun); without a cross-process lock
+// held across that whole section, whichever process writes last does so from
+// its own stale read and silently drops the other's change. Regression test
+// for the flock added to lockTask.
+func TestStoreCrossProcessUpdate(t *testing.T) {
+	if dir := os.Getenv(crossProcessHelperEnv); dir != "" {
+		runCrossProcessUpdateWorker(t, dir)
+		return
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := store.Create("cross-process update", "body", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	const rounds = 8
+	for i := range rounds {
+		statusCmd := crossProcessUpdateCmd(t, dir, "status", tk.ID)
+		runCmd := crossProcessUpdateCmd(t, dir, "run", tk.ID)
+
+		if err := statusCmd.Start(); err != nil {
+			t.Fatalf("round %d: start status worker: %v", i, err)
+		}
+		if err := runCmd.Start(); err != nil {
+			t.Fatalf("round %d: start run worker: %v", i, err)
+		}
+		if err := statusCmd.Wait(); err != nil {
+			t.Fatalf("round %d: status worker: %v", i, err)
+		}
+		if err := runCmd.Wait(); err != nil {
+			t.Fatalf("round %d: run worker: %v", i, err)
+		}
+
+		got, err := store.Get(tk.ID)
+		if err != nil {
+			t.Fatalf("round %d: get: %v", i, err)
+		}
+		if got.Status != StatusInProgress {
+			t.Fatalf("round %d: Status = %q, want %q — dropped by concurrent cross-process write", i, got.Status, StatusInProgress)
+		}
+		if len(got.AgentRuns) != i+1 {
+			t.Fatalf("round %d: len(AgentRuns) = %d, want %d — dropped by concurrent cross-process write", i, len(got.AgentRuns), i+1)
+		}
+
+		// Reset status so the next round can observe a fresh flip.
+		if _, err := store.Update(tk.ID, Update{Status: new(StatusTodo)}); err != nil {
+			t.Fatalf("round %d: reset status: %v", i, err)
+		}
+	}
+}
+
+func crossProcessUpdateCmd(t *testing.T, dir, mode, taskID string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreCrossProcessUpdate$", "-test.v")
+	cmd.Env = append(os.Environ(),
+		crossProcessHelperEnv+"="+dir,
+		"SYBRA_TASK_CROSS_PROCESS_MODE="+mode,
+		"SYBRA_TASK_CROSS_PROCESS_TASK_ID="+taskID,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("worker[%s] output:\n%s", mode, out.String())
+		}
+	})
+	return cmd
+}
+
+// runCrossProcessUpdateWorker is the body executed inside the spawned
+// worker process. It performs exactly one store operation, selected by
+// SYBRA_TASK_CROSS_PROCESS_MODE, against the shared tasks dir passed via
+// crossProcessHelperEnv.
+func runCrossProcessUpdateWorker(t *testing.T, dir string) {
+	t.Helper()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("worker: new store: %v", err)
+	}
+	taskID := os.Getenv("SYBRA_TASK_CROSS_PROCESS_TASK_ID")
+	switch os.Getenv("SYBRA_TASK_CROSS_PROCESS_MODE") {
+	case "status":
+		if _, err := store.Update(taskID, Update{Status: new(StatusInProgress)}); err != nil {
+			t.Fatalf("worker: update status: %v", err)
+		}
+	case "run":
+		if err := store.AddRun(taskID, AgentRun{AgentID: fmt.Sprintf("agent-%d", os.Getpid())}); err != nil {
+			t.Fatalf("worker: add run: %v", err)
+		}
+	default:
+		t.Fatal("worker: unknown SYBRA_TASK_CROSS_PROCESS_MODE")
 	}
 }

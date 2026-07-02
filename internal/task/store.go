@@ -95,10 +95,22 @@ func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
 }
 
-// lockTask serializes in-process read/modify/write calls for a single task
-// file. It is deliberately ref-counted so deleted or one-off task IDs do not
-// leave lock entries behind for the lifetime of a long-running server.
-func (s *Store) lockTask(id string) func() {
+// lockTask serializes read/modify/write calls for a single task file, both
+// within this process and across others. sybra-cli and the recovery sweep
+// run task.Store in separate OS processes from the GUI server against the
+// same tasks dir, so the in-process sync.Mutex alone cannot prevent two
+// processes from interleaving a read and a write and silently dropping
+// fields. The in-process lock is acquired first (cheap, avoids paying flock
+// syscalls for intra-process contention) and the cross-process flock second;
+// they are released in reverse order. It is deliberately ref-counted so
+// deleted or one-off task IDs do not leave lock entries behind for the
+// lifetime of a long-running server.
+//
+// If the flock cannot be acquired, the write must not proceed with only the
+// in-process mutex held — that would silently reintroduce the cross-process
+// race this lock exists to close — so the in-process lock is released and an
+// error is returned instead.
+func (s *Store) lockTask(id string) (func(), error) {
 	s.writeLocksMu.Lock()
 	if s.writeLocks == nil {
 		s.writeLocks = map[string]*taskWriteLock{}
@@ -112,9 +124,9 @@ func (s *Store) lockTask(id string) func() {
 	s.writeLocksMu.Unlock()
 
 	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
 
+	releaseInProcess := func() {
+		lock.mu.Unlock()
 		s.writeLocksMu.Lock()
 		defer s.writeLocksMu.Unlock()
 		lock.refs--
@@ -122,6 +134,24 @@ func (s *Store) lockTask(id string) func() {
 			delete(s.writeLocks, id)
 		}
 	}
+
+	path, err := s.safePath(id)
+	if err != nil {
+		releaseInProcess()
+		return nil, err
+	}
+	unlockFile, err := fsutil.LockFile(path)
+	if err != nil {
+		releaseInProcess()
+		return nil, fmt.Errorf("lock task %s: %w", id, err)
+	}
+
+	return func() {
+		if err := unlockFile(); err != nil {
+			slog.Default().Warn("task.lockTask.unlock_failed", "id", id, "err", err)
+		}
+		releaseInProcess()
+	}, nil
 }
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
@@ -536,7 +566,10 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 }
 
 func (s *Store) Delete(id string) error {
-	unlock := s.lockTask(id)
+	unlock, err := s.lockTask(id)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	t, err := s.read(id)
@@ -747,7 +780,10 @@ func applyUpdateFields(t *Task, u Update) error {
 }
 
 func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
-	unlock := s.lockTask(id)
+	unlock, err := s.lockTask(id)
+	if err != nil {
+		return Task{}, "", err
+	}
 	defer unlock()
 
 	t, err := s.read(id)
@@ -985,7 +1021,10 @@ func (s *Store) AddRunWithStatus(taskID string, run AgentRun, status *Status) er
 }
 
 func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
-	unlock := s.lockTask(taskID)
+	unlock, err := s.lockTask(taskID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	t, err := s.read(taskID)
@@ -1134,7 +1173,10 @@ func applyRunPatch(run *AgentRun, p RunPatch) {
 }
 
 func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
-	unlock := s.lockTask(taskID)
+	unlock, err := s.lockTask(taskID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	t, err := s.read(taskID)
