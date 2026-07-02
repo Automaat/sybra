@@ -505,7 +505,7 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 					"### Wilson confidence interval lower bounds can be negative for 0/N rates\n\n"+
 					"Classification: product_bug\n\n"+
 					"Task expectation: the task requires Wilson confidence intervals for rates. A rate confidence interval is expected to stay within [0, 1].\n\n"+
-					"Command run:\n```bash\ncurl -fsS /api/App/GetEvaluationReport | jq '.byVariant[0].ciFirstPassEstimate'\n```\n\n"+
+					"Command run:\n```bash\ncurl -fsS /api/App/GetEvaluationReport | jq '.byExperimentKind[0].rows[0].ciFirstPassEstimate'\n```\n\n"+
 					"Verbatim output:\n```json\n{\"wilsonLower\":-3.185582654932028E-17,\"wilsonUpper\":0.7934506856227624}\n```\n\n"+
 					"Current code line evidence:\n```text\n616\t\test.WilsonLower = finiteOrZero((center - margin) / denom)\n```\n",
 			) + `}`,
