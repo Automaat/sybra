@@ -33,13 +33,20 @@ rate-limited. Never re-diagnose a task the automation already flagged
    ```bash
    sybra-cli --json get <id>
    ```
-   Look at `agentRuns` for an entry with `role: human-review` and a fenced
-   `sybra-verdict` block in its result. If one exists with `decision: sybra_bug`,
-   the task should already be `blocked`, not `human-required` — treat that as a
-   sign something else moved it back (investigate why rather than re-filing). If
-   the verdict says `decision: human`, that's fair game to re-examine — the
-   automation only confirmed a person is needed, it didn't explain why in enough
-   depth to unblock.
+   Look at `agentRuns` for an entry with `role: human-review` and read its
+   `verdict` (`"human"` | `"sybra_bug"`) and `verdictRendered` fields directly —
+   don't go hunting for a fenced block in `result`, the app persists the
+   decision as structured fields for exactly this reason.
+   - `verdict: sybra_bug` **and** `verdictRendered: true` — the side effects
+     (issue filed / local task created, status flipped to `blocked`) already
+     ran. If the task is still `human-required` here, something else moved it
+     back after the fact; investigate that instead of re-filing.
+   - `verdict: sybra_bug` **and** `verdictRendered: false` — filing failed
+     partway (see the `## Auto-review verdict` note appended to the body for
+     the error) and the task is genuinely still stuck. This is squarely this
+     skill's job: retry the diagnosis and filing yourself.
+   - `verdict: human` — the automation only confirmed a person is needed, it
+     didn't explain why in enough depth to unblock. Fair game to re-examine.
 
 3. **Read what actually happened.** Pull together:
    - The task `body`, `statusReason`, and recent `agentRuns` (prompts + results)
@@ -79,13 +86,14 @@ rate-limited. Never re-diagnose a task the automation already flagged
    sybra-cli --json get <id>              # read .projectId
    sybra-cli --json project get <projectId>   # read .type: "work" | "pet"
    ```
-   - **`pet` project, or no project** — file directly on the public repo:
+   - **`pet` project, confirmed** — file directly on the public repo:
      ```bash
      gh issue create --repo Automaat/sybra --label sybra-bug \
        --title "<short root cause summary>" \
        --body  "<root cause, evidence, and how it manifested — see below>"
      ```
-   - **`work` project** — never call `gh issue create`; there is no CLI hook
+   - **`work` project, no project at all, or type lookup fails** — never call
+     `gh issue create`; there is no CLI hook
      into the app's regex scrubber (`internal/scrub`, `App.workScrubContextForTask`
      is Go-only), so you are the scrubber. File a local scrubbed task instead,
      writing the body yourself with every work-repo identifier removed (GitHub
@@ -104,19 +112,24 @@ rate-limited. Never re-diagnose a task the automation already flagged
 5. **Unblock the task**, referencing what you filed. The default path is to
    flip it back into the workflow:
    ```bash
-   sybra-cli update <id> --status todo \
+   sybra-cli --json update <id> --status todo \
      --status-reason "root cause: <one line>; see <issue-url-or-task-id>" \
      --issue <issue-url>   # omit --issue when you filed a local scrubbed task instead
    ```
+   `--issue` only annotates the task record with a reference URL — it doesn't
+   file or link anything by itself, so it's safe to attach alongside either
+   filing path above.
+
    Two exceptions, both from prior painful experience with this exact flow:
-   - **Do not use `link-pr`** to attach the filed issue/PR here — `link-pr`
-     auto-advances the task to `in-review`, which is wrong when the actual
+   - **Do not use `link-pr`** here — `link-pr <id> <pr-number>` does exactly
+     one thing: it sets `prNumber` and auto-advances the task to `in-review`.
+     It does not attach the filed issue and it's wrong whenever the actual
      unblock is "retry the work," not "review a PR."
    - **"Ship as-is" resolutions** (the task already has a PR open and the
      verdict is "the PR is fine, stop blocking on the human-required gate") —
      keep the status at `human-required` and just attach the PR number:
      ```bash
-     sybra-cli update <id> --status human-required --pr <n> \
+     sybra-cli --json update <id> --status human-required --pr <n> \
        --status-reason "ship as-is: <one line>; see <issue-url-or-task-id>"
      ```
      Setting it back to `todo` here would cause Sybra to redo work that's
