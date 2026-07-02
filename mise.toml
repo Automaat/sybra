@@ -40,18 +40,30 @@ run = [
 ]
 description = "Run all linters"
 
+# Mirrors every deterministic, offline CI gate so a local pass predicts a green
+# CI run. Intentionally excludes gates that need network downloads or a browser
+# and so cannot run reliably as a pre-commit loop: lint-nilaway (installs
+# nilaway), security (govulncheck + npm audit hit the advisory DBs), and the
+# e2e job (Playwright + chromium + a live server). CI remains the source of
+# truth for those three.
 [tasks.verify]
 run = [
   "cd frontend && npm ci && npm run build:desktop",
+  "go build ./...",
+  "go mod verify",
   "go test -race -timeout 5m ./...",
   "go test -race -tags e2e -timeout 10m ./internal/sybra/...",
   "golangci-lint run ./...",
   "cd frontend && npm run check",
+  "cd frontend && npm run build:web",
+  "cd frontend && npm run test:coverage",
   "cd frontend && npx oxlint .",
+  "cd frontend && node scripts/check-pin-strategy.mjs",
+  "bash scripts/check-api-shim-sync.sh",
   "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
   "hadolint Dockerfile",
 ]
-description = "Mirror the CI gate exactly (go tests+e2e, lint, frontend check+oxlint, bindings sync, hadolint). Run before committing."
+description = "Run every deterministic offline CI gate (go build+mod+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
 
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"

@@ -337,7 +337,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
-**`mise run verify` is the pre-commit gate — it mirrors `.github/workflows/ci.yml` exactly** (frontend build, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + oxlint, Wails bindings drift check, hadolint). Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+**`mise run verify` is the pre-commit gate — it runs every deterministic, offline gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, Wails bindings drift check, hadolint). It intentionally excludes the CI jobs that need network downloads or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash
 mise run verify
