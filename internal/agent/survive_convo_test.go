@@ -164,13 +164,13 @@ func TestSaveRegistry_PreservesOneShot(t *testing.T) {
 	}
 }
 
-// TestReattachCodexConvo_OneShotNoResultFinalizes verifies a workflow-owned
+// TestReattachCodexConvo_OneShotNoResultDropped verifies a workflow-owned
 // per-turn Codex run interrupted before a terminal result is dropped without
 // firing a completion callback — finalizing it as failed would burn the
 // workflow step's retry budget on a turn that never produced a result, and
 // resurrecting it as an idle chat would hide it from
 // RestartStaleInProgress's interactive-oneshot redispatch.
-func TestReattachCodexConvo_OneShotNoResultFinalizes(t *testing.T) {
+func TestReattachCodexConvo_OneShotNoResultDropped(t *testing.T) {
 	logDir := t.TempDir()
 	regDir := t.TempDir()
 	logPath := filepath.Join(logDir, "agents", "cx1.ndjson")

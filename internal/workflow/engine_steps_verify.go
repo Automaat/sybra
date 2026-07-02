@@ -310,9 +310,27 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		// commits before falling through to the escalation paths below.
 		if project.AutoCommitUncommitted(wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
 			e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
-			if recovered, recErr := e.gitLogAheadOfBase(wtPath); recErr == nil {
-				output = recovered
+			recovered, recErr := e.gitLogAheadOfBase(wtPath)
+			if recErr != nil {
+				// Treat a post-auto-commit re-check failure like any other git
+				// error above — falling through here would misclassify a
+				// transient git problem as "still no commits".
+				if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+					e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", recErr)
+					return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+				}
+				diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
+				e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", recErr, "diagnosis", diagnosis)
+				reason := "worktree git error after auto-commit: " + recErr.Error()
+				if diagnosis != "" {
+					reason += " (" + diagnosis + ")"
+				}
+				if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+					e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+				}
+				return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
 			}
+			output = recovered
 		}
 	}
 

@@ -309,7 +309,13 @@ func AutoCommitUncommitted(wtPath, message string) bool {
 	if err := add.Run(); err != nil {
 		return false
 	}
-	commit := exec.Command("git", "commit", "--no-gpg-sign", "-m", message)
+	// --no-verify skips repo pre-commit hooks (installed from .sybra.yaml) so a
+	// failing hook can't defeat this recovery path. -c user.* supplies a
+	// fallback identity for worktrees where the agent never configured one.
+	commit := exec.Command("git",
+		"-c", "user.name=Sybra",
+		"-c", "user.email=sybra@localhost",
+		"commit", "--no-verify", "--no-gpg-sign", "-m", message)
 	commit.Dir = wtPath
 	return commit.Run() == nil
 }
